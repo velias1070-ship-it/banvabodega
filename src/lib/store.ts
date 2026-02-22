@@ -43,36 +43,40 @@ export interface StoreData {
 
 const PROVEEDORES = ["Idetex", "Container", "Biblias", "Mates", "Delart", "Esperanza"];
 const CATEGORIAS = ["Sábanas", "Toallas", "Quilts", "Almohadas", "Fundas", "Cuero"];
+
+// Pallet positions (floor): P-01 to P-20
+// Shelf positions: E-01-1 to E-04-3 (4 shelving units, 3 levels each)
 const LOCS: string[] = [];
-["A", "B", "C"].forEach(z => {
-  for (let e = 1; e <= 3; e++)
-    for (let n = 1; n <= 3; n++)
-      LOCS.push(`${z}-${String(e).padStart(2, "0")}-${n}`);
-});
+for (let i = 1; i <= 20; i++) LOCS.push(`P-${String(i).padStart(2,"0")}`);
+for (let e = 1; e <= 4; e++) for (let n = 1; n <= 3; n++) LOCS.push(`E-${String(e).padStart(2,"0")}-${n}`);
+
+// Location type helpers
+function isPallet(loc: string) { return loc.startsWith("P-"); }
+function isShelf(loc: string) { return loc.startsWith("E-"); }
 
 const DEFAULT_DB: Record<string, SKUData> = {
-  "TOA-0042": { d: "Toalla Diseño 042", cat: "Toallas", prov: "Container", cost: 5200, price: 14990, locs: { "A-01-3": 25, "B-02-1": 30 }, transit: 15, full: 85, reorder: 30, sales30: 42 },
-  "SAB-0001": { d: "Sábanas Diseño 001", cat: "Sábanas", prov: "Idetex", cost: 8500, price: 24990, locs: { "A-01-1": 45 }, transit: 0, full: 120, reorder: 25, sales30: 38 },
-  "QUI-0003": { d: "Quilt Diseño 003", cat: "Quilts", prov: "Idetex", cost: 12000, price: 34990, locs: { "A-02-2": 30 }, transit: 15, full: 60, reorder: 20, sales30: 22 },
-  "ALM-0004": { d: "Almohada Diseño 004", cat: "Almohadas", prov: "Mates", cost: 3800, price: 9990, locs: { "B-01-1": 80 }, transit: 0, full: 45, reorder: 40, sales30: 55 },
-  "FUN-0005": { d: "Fundas Diseño 005", cat: "Fundas", prov: "Biblias", cost: 2200, price: 6990, locs: { "A-03-1": 60, "C-01-2": 40 }, transit: 20, full: 150, reorder: 35, sales30: 48 },
-  "CUE-0006": { d: "Cuero Diseño 006", cat: "Cuero", prov: "Esperanza", cost: 18000, price: 49990, locs: { "B-01-3": 15 }, transit: 0, full: 22, reorder: 10, sales30: 8 },
-  "TOA-0015": { d: "Toalla Diseño 015", cat: "Toallas", prov: "Container", cost: 4800, price: 12990, locs: { "B-03-2": 35 }, transit: 10, full: 70, reorder: 25, sales30: 30 },
-  "SAB-0022": { d: "Sábanas Diseño 022", cat: "Sábanas", prov: "Idetex", cost: 9200, price: 27990, locs: { "A-02-1": 20 }, transit: 5, full: 95, reorder: 20, sales30: 28 },
+  "TOA-0042": { d: "Toalla Diseño 042", cat: "Toallas", prov: "Container", cost: 5200, price: 14990, locs: { "P-01": 25, "P-08": 30 }, transit: 15, full: 85, reorder: 30, sales30: 42 },
+  "SAB-0001": { d: "Sábanas Diseño 001", cat: "Sábanas", prov: "Idetex", cost: 8500, price: 24990, locs: { "P-02": 45 }, transit: 0, full: 120, reorder: 25, sales30: 38 },
+  "QUI-0003": { d: "Quilt Diseño 003", cat: "Quilts", prov: "Idetex", cost: 12000, price: 34990, locs: { "P-03": 30 }, transit: 15, full: 60, reorder: 20, sales30: 22 },
+  "ALM-0004": { d: "Almohada Diseño 004", cat: "Almohadas", prov: "Mates", cost: 3800, price: 9990, locs: { "E-01-1": 80 }, transit: 0, full: 45, reorder: 40, sales30: 55 },
+  "FUN-0005": { d: "Fundas Diseño 005", cat: "Fundas", prov: "Biblias", cost: 2200, price: 6990, locs: { "P-05": 60, "E-02-1": 40 }, transit: 20, full: 150, reorder: 35, sales30: 48 },
+  "CUE-0006": { d: "Cuero Diseño 006", cat: "Cuero", prov: "Esperanza", cost: 18000, price: 49990, locs: { "E-01-3": 15 }, transit: 0, full: 22, reorder: 10, sales30: 8 },
+  "TOA-0015": { d: "Toalla Diseño 015", cat: "Toallas", prov: "Container", cost: 4800, price: 12990, locs: { "P-10": 35 }, transit: 10, full: 70, reorder: 25, sales30: 30 },
+  "SAB-0022": { d: "Sábanas Diseño 022", cat: "Sábanas", prov: "Idetex", cost: 9200, price: 27990, locs: { "P-06": 20 }, transit: 5, full: 95, reorder: 20, sales30: 28 },
 };
 
 const DEFAULT_MOVEMENTS: Movement[] = [
-  { id: "M001", ts: "2026-02-20T09:30:00", type: "in", sku: "TOA-0042", loc: "A-01-3", qty: 25, who: "Vicente", ref: "FAC-2026-0412" },
-  { id: "M002", ts: "2026-02-20T14:00:00", type: "out-full", sku: "SAB-0001", loc: "A-01-1", qty: 30, who: "Vicente", ref: "ENV-ML-88901" },
-  { id: "M003", ts: "2026-02-21T10:15:00", type: "in", sku: "ALM-0004", loc: "B-01-1", qty: 80, who: "Operario 1", ref: "FAC-2026-0413" },
-  { id: "M004", ts: "2026-02-21T16:45:00", type: "out-flex", sku: "QUI-0003", loc: "A-02-2", qty: 2, who: "Sistema", ref: "ML-ORD-77234521" },
-  { id: "M005", ts: "2026-02-22T09:00:00", type: "out-full", sku: "FUN-0005", loc: "A-03-1", qty: 50, who: "Vicente", ref: "ENV-ML-88920" },
+  { id: "M001", ts: "2026-02-20T09:30:00", type: "in", sku: "TOA-0042", loc: "P-01", qty: 25, who: "Vicente", ref: "FAC-2026-0412" },
+  { id: "M002", ts: "2026-02-20T14:00:00", type: "out-full", sku: "SAB-0001", loc: "P-02", qty: 30, who: "Vicente", ref: "ENV-ML-88901" },
+  { id: "M003", ts: "2026-02-21T10:15:00", type: "in", sku: "ALM-0004", loc: "E-01-1", qty: 80, who: "Operario 1", ref: "FAC-2026-0413" },
+  { id: "M004", ts: "2026-02-21T16:45:00", type: "out-flex", sku: "QUI-0003", loc: "P-03", qty: 2, who: "Sistema", ref: "ML-ORD-77234521" },
+  { id: "M005", ts: "2026-02-22T09:00:00", type: "out-full", sku: "FUN-0005", loc: "P-05", qty: 50, who: "Vicente", ref: "ENV-ML-88920" },
 ];
 
 const DEFAULT_COUNTS: CycleCount[] = [
-  { date: "2026-02-20", sku: "TOA-0042", loc: "A-01-3", expected: 25, counted: 25, diff: 0 },
-  { date: "2026-02-20", sku: "SAB-0001", loc: "A-01-1", expected: 47, counted: 45, diff: -2 },
-  { date: "2026-02-21", sku: "ALM-0004", loc: "B-01-1", expected: 80, counted: 80, diff: 0 },
+  { date: "2026-02-20", sku: "TOA-0042", loc: "P-01", expected: 25, counted: 25, diff: 0 },
+  { date: "2026-02-20", sku: "SAB-0001", loc: "P-02", expected: 47, counted: 45, diff: -2 },
+  { date: "2026-02-21", sku: "ALM-0004", loc: "E-01-1", expected: 80, counted: 80, diff: 0 },
 ];
 
 function loadStore(): StoreData {
@@ -136,4 +140,4 @@ export function nextMovId(store: StoreData) {
 export function fmtMoney(n: number) { return "$" + n.toLocaleString("es-CL"); }
 export function fmtDate(s: string) { return new Date(s).toLocaleDateString("es-CL"); }
 export function fmtTime(s: string) { return new Date(s).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" }); }
-export { PROVEEDORES, CATEGORIAS, LOCS };
+export { PROVEEDORES, CATEGORIAS, LOCS, isPallet, isShelf };

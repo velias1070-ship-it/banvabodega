@@ -61,6 +61,24 @@ function Dashboard() {
 
   return (
     <div>
+      {/* Quick action links */}
+      <div style={{display:"flex",gap:8,marginBottom:16}}>
+        <a href="/admin/qr-codes" style={{flex:1,padding:"14px 12px",borderRadius:"var(--radius)",background:"var(--bg2)",border:"1px solid var(--bg4)",textAlign:"center",textDecoration:"none",color:"var(--txt)"}}>
+          <div style={{fontSize:20,marginBottom:4}}>{"🏷️"}</div>
+          <div style={{fontSize:11,fontWeight:700,color:"var(--cyan)"}}>Imprimir QRs</div>
+          <div style={{fontSize:10,color:"var(--txt3)"}}>Ubicaciones</div>
+        </a>
+        <a href="/admin/importar" style={{flex:1,padding:"14px 12px",borderRadius:"var(--radius)",background:"var(--bg2)",border:"1px solid var(--bg4)",textAlign:"center",textDecoration:"none",color:"var(--txt)"}}>
+          <div style={{fontSize:20,marginBottom:4}}>{"📥"}</div>
+          <div style={{fontSize:11,fontWeight:700,color:"var(--cyan)"}}>Importar SKUs</div>
+          <div style={{fontSize:10,color:"var(--txt3)"}}>CSV / Excel</div>
+        </a>
+        <a href="/admin" onClick={()=>{if(typeof window!=="undefined"&&confirm("Resetear todos los datos a los valores de demo?")){const{resetStore}=require("@/lib/store");resetStore();window.location.reload();}}} style={{flex:1,padding:"14px 12px",borderRadius:"var(--radius)",background:"var(--bg2)",border:"1px solid var(--bg4)",textAlign:"center",textDecoration:"none",color:"var(--txt)"}}>
+          <div style={{fontSize:20,marginBottom:4}}>{"🔄"}</div>
+          <div style={{fontSize:11,fontWeight:700,color:"var(--amber)"}}>Resetear</div>
+          <div style={{fontSize:10,color:"var(--txt3)"}}>Datos demo</div>
+        </a>
+      </div>
       <div className="kpi-grid">
         <KPI label="Total SKUs" val={String(skus.length)} color="var(--cyan)"/>
         <KPI label="Uds en Bodega" val={String(totalBod)} color="var(--green)"/>
@@ -177,17 +195,16 @@ function SkuAdmin({ refresh }: { refresh: () => void }) {
 function LocationAdmin() {
   const [sel, setSel] = useState<string|null>(null);
   const db = getStore().db;
-  const zones = [{id:"A",lb:"Zona A — Alta rotación",c:"var(--green)"},{id:"B",lb:"Zona B — Media",c:"var(--blue)"},{id:"C",lb:"Zona C — Baja rotación",c:"var(--txt3)"}];
+  const zones = [{id:"P",lb:"Pallets en Piso",c:"var(--amber)",locs:LOCS.filter(l=>l.startsWith("P-"))},{id:"E",lb:"Estantes",c:"var(--cyan)",locs:LOCS.filter(l=>l.startsWith("E-"))}];
 
   return (
     <div>
       {zones.map(z => {
-        const zl = LOCS.filter(l => l.startsWith(z.id));
         return (
           <div key={z.id} style={{marginBottom:20}}>
-            <div className="zone-label" style={{color:z.c}}>{z.lb}</div>
-            <div className="loc-grid">
-              {zl.map(loc => {
+            <div className="zone-label" style={{color:z.c}}>{z.lb} ({z.locs.length})</div>
+            <div className="loc-grid" style={{gridTemplateColumns:z.id==="P"?"repeat(4,1fr)":"repeat(3,1fr)"}}>
+              {z.locs.map(loc => {
                 const items = getLocItems(db,loc); const tq = items.reduce((s,i)=>s+i.qty,0); const isSel = sel===loc;
                 return (
                   <div key={loc} className={`loc-cell ${isSel?"selected":""}`} onClick={()=>setSel(isSel?null:loc)}>
@@ -197,7 +214,7 @@ function LocationAdmin() {
                 );
               })}
             </div>
-            {sel && sel.startsWith(z.id) && (
+            {sel && sel.startsWith(z.id==="P"?"P":"E") && (
               <div className="card">
                 <div className="card-title mono" style={{color:z.c}}>📍 {sel}</div>
                 {getLocItems(db,sel).length ? getLocItems(db,sel).map((it,i) => (
