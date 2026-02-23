@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime } from "@/lib/store";
-import type { Product, Movement, Position } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, findProduct } from "@/lib/store";
+import type { Product, Movement, Position, InReason, OutReason } from "@/lib/store";
 import Link from "next/link";
 import SheetSync from "@/components/SheetSync";
 
@@ -51,7 +51,7 @@ function LoginGate({ onLogin }: { onLogin: (pin: string) => boolean }) {
 }
 
 export default function AdminPage() {
-  const [tab, setTab] = useState<"dash"|"inv"|"mov"|"prod"|"pos"|"config">("dash");
+  const [tab, setTab] = useState<"dash"|"ops"|"inv"|"mov"|"prod"|"pos"|"config">("dash");
   const [,setTick] = useState(0);
   const r = useCallback(()=>setTick(t=>t+1),[]);
   const [mounted, setMounted] = useState(false);
@@ -78,7 +78,7 @@ export default function AdminPage() {
       <SheetSync onSynced={r}/>
       <div className="admin-layout">
         <nav className="admin-sidebar">
-          {([["dash","Dashboard","📊"],["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["pos","Posiciones","📍"],["config","Configuración","⚙️"]] as const).map(([key,label,icon])=>(
+          {([["dash","Dashboard","📊"],["ops","Operaciones","⚡"],["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["pos","Posiciones","📍"],["config","Configuración","⚙️"]] as const).map(([key,label,icon])=>(
             <button key={key} className={`sidebar-btn ${tab===key?"active":""}`} onClick={()=>setTab(key as any)}>
               <span className="sidebar-icon">{icon}</span>
               <span className="sidebar-label">{label}</span>
@@ -92,12 +92,13 @@ export default function AdminPage() {
         <main className="admin-main">
           {/* Mobile tabs fallback */}
           <div className="admin-mobile-tabs">
-            {([["dash","Dashboard"],["inv","Inventario"],["mov","Movimientos"],["prod","Productos"],["pos","Posiciones"],["config","Config"]] as const).map(([key,label])=>(
+            {([["dash","Dashboard"],["ops","Operaciones"],["inv","Inventario"],["mov","Movimientos"],["prod","Productos"],["pos","Posiciones"],["config","Config"]] as const).map(([key,label])=>(
               <button key={key} className={`tab ${tab===key?"active-cyan":""}`} onClick={()=>setTab(key as any)}>{label}</button>
             ))}
           </div>
           <div className="admin-content">
             {tab==="dash"&&<Dashboard/>}
+            {tab==="ops"&&<Operaciones refresh={r}/>}
             {tab==="inv"&&<Inventario/>}
             {tab==="mov"&&<Movimientos/>}
             {tab==="prod"&&<Productos refresh={r}/>}
@@ -105,6 +106,172 @@ export default function AdminPage() {
             {tab==="config"&&<Configuracion refresh={r}/>}
           </div>
         </main>
+      </div>
+    </div>
+  );
+}
+
+// ==================== OPERACIONES RÁPIDAS ====================
+function Operaciones({ refresh }: { refresh: () => void }) {
+  const [mode, setMode] = useState<"in"|"out"|"transfer">("in");
+  const [sku, setSku] = useState("");
+  const [skuResults, setSkuResults] = useState<Product[]>([]);
+  const [selected, setSelected] = useState<Product|null>(null);
+  const [pos, setPos] = useState("");
+  const [posFrom, setPosFrom] = useState("");
+  const [qty, setQty] = useState(1);
+  const [reason, setReason] = useState<string>("compra");
+  const [note, setNote] = useState("");
+  const [toast, setToast] = useState("");
+  const [log, setLog] = useState<string[]>([]);
+
+  const positions = activePositions();
+
+  const searchSku = (q: string) => {
+    setSku(q);
+    setSelected(null);
+    if (q.length >= 2) setSkuResults(findProduct(q));
+    else setSkuResults([]);
+  };
+
+  const selectProduct = (p: Product) => {
+    setSelected(p); setSku(p.sku); setSkuResults([]);
+  };
+
+  const doConfirm = () => {
+    if (!selected || !pos || qty < 1) return;
+
+    if (mode === "transfer") {
+      if (!posFrom || posFrom === pos) return;
+      // Salida de origen
+      recordMovement({ ts: new Date().toISOString(), type: "out", reason: "ajuste_salida" as OutReason, sku: selected.sku, pos: posFrom, qty, who: "Admin", note: "Transferencia → " + pos });
+      // Entrada en destino
+      recordMovement({ ts: new Date().toISOString(), type: "in", reason: "transferencia_in" as InReason, sku: selected.sku, pos, qty, who: "Admin", note: "Transferencia ← " + posFrom });
+      setLog(l => [`${qty}× ${selected.sku} | ${posFrom} → ${pos}`, ...l].slice(0, 10));
+      setToast(`Transferido ${qty}× ${selected.sku}`);
+    } else {
+      recordMovement({ ts: new Date().toISOString(), type: mode, reason: reason as any, sku: selected.sku, pos, qty, who: "Admin", note });
+      setLog(l => [`${mode === "in" ? "+" : "-"}${qty}× ${selected.sku} | Pos ${pos}`, ...l].slice(0, 10));
+      setToast(`${mode === "in" ? "+" : "-"}${qty} ${selected.sku}`);
+    }
+
+    // Reset form but keep mode
+    setSelected(null); setSku(""); setPos(""); setPosFrom(""); setQty(1); setNote("");
+    refresh();
+    setTimeout(() => setToast(""), 2000);
+  };
+
+  useEffect(() => {
+    if (mode === "in") setReason("compra");
+    else if (mode === "out") setReason("envio_full");
+  }, [mode]);
+
+  const maxQty = mode === "out" && selected && pos ? (getStore().stock[selected.sku]?.[pos] || 0) : 9999;
+  const transferMax = mode === "transfer" && selected && posFrom ? (getStore().stock[selected.sku]?.[posFrom] || 0) : 9999;
+
+  return (
+    <div>
+      {toast && <div style={{position:"fixed",top:56,left:"50%",transform:"translateX(-50%)",zIndex:200,background:"var(--bg2)",border:"2px solid var(--green)",color:"var(--green)",padding:"10px 24px",borderRadius:10,fontSize:14,fontWeight:700,boxShadow:"0 8px 30px rgba(0,0,0,0.5)"}}>{toast}</div>}
+
+      <div className="admin-grid-2">
+        <div className="card">
+          {/* Mode */}
+          <div style={{display:"flex",gap:6,marginBottom:14}}>
+            <button onClick={()=>setMode("in")} style={{flex:1,padding:"10px",borderRadius:8,fontWeight:700,fontSize:13,background:mode==="in"?"var(--greenBg)":"var(--bg3)",color:mode==="in"?"var(--green)":"var(--txt3)",border:mode==="in"?"2px solid var(--green)":"1px solid var(--bg4)"}}>Entrada</button>
+            <button onClick={()=>setMode("out")} style={{flex:1,padding:"10px",borderRadius:8,fontWeight:700,fontSize:13,background:mode==="out"?"var(--redBg)":"var(--bg3)",color:mode==="out"?"var(--red)":"var(--txt3)",border:mode==="out"?"2px solid var(--red)":"1px solid var(--bg4)"}}>Salida</button>
+            <button onClick={()=>setMode("transfer")} style={{flex:1,padding:"10px",borderRadius:8,fontWeight:700,fontSize:13,background:mode==="transfer"?"var(--cyanBg)":"var(--bg3)",color:mode==="transfer"?"var(--cyan)":"var(--txt3)",border:mode==="transfer"?"2px solid var(--cyan)":"1px solid var(--bg4)"}}>Transferir</button>
+          </div>
+
+          {/* SKU search */}
+          <div style={{position:"relative",marginBottom:10}}>
+            <input className="form-input mono" value={sku} onChange={e=>searchSku(e.target.value.toUpperCase())} placeholder="SKU, nombre o código ML..." style={{fontSize:13}}/>
+            {skuResults.length > 0 && (
+              <div style={{position:"absolute",top:"100%",left:0,right:0,zIndex:50,background:"var(--bg2)",border:"1px solid var(--bg4)",borderRadius:"0 0 8px 8px",maxHeight:180,overflow:"auto",boxShadow:"0 6px 16px rgba(0,0,0,0.4)"}}>
+                {skuResults.slice(0,8).map(p=>(
+                  <div key={p.sku} onClick={()=>selectProduct(p)} style={{padding:"8px 12px",cursor:"pointer",display:"flex",justifyContent:"space-between",borderBottom:"1px solid var(--bg3)"}}
+                    onMouseEnter={e=>e.currentTarget.style.background="var(--bg3)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                    <div><span className="mono" style={{fontWeight:600,fontSize:12}}>{p.sku}</span> <span style={{fontSize:11,color:"var(--txt3)"}}>{p.name}</span></div>
+                    <span className="mono" style={{fontSize:11,color:"var(--blue)"}}>{skuTotal(p.sku)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          {selected && <div style={{padding:"6px 10px",background:"var(--bg3)",borderRadius:6,marginBottom:10,fontSize:12}}><span className="mono" style={{fontWeight:700}}>{selected.sku}</span> — {selected.name} <span className="mono" style={{color:"var(--blue)",marginLeft:8}}>Stock: {skuTotal(selected.sku)}</span></div>}
+
+          {/* Position(s) */}
+          {mode === "transfer" ? (
+            <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:8,marginBottom:10,alignItems:"center"}}>
+              <select className="form-select" value={posFrom} onChange={e=>setPosFrom(e.target.value)} style={{fontSize:12}}>
+                <option value="">Origen...</option>
+                {selected ? skuPositions(selected.sku).map(sp=><option key={sp.pos} value={sp.pos}>{sp.pos} ({sp.qty} uds)</option>) : positions.map(p=><option key={p.id} value={p.id}>{p.id}</option>)}
+              </select>
+              <span style={{color:"var(--cyan)",fontWeight:700,fontSize:16}}>→</span>
+              <select className="form-select" value={pos} onChange={e=>setPos(e.target.value)} style={{fontSize:12}}>
+                <option value="">Destino...</option>
+                {positions.filter(p=>p.id!==posFrom).map(p=><option key={p.id} value={p.id}>{p.id} — {p.label}</option>)}
+              </select>
+            </div>
+          ) : (
+            <select className="form-select" value={pos} onChange={e=>setPos(e.target.value)} style={{fontSize:12,marginBottom:10}}>
+              <option value="">Seleccionar posición...</option>
+              {mode === "out" && selected
+                ? skuPositions(selected.sku).map(sp=><option key={sp.pos} value={sp.pos}>{sp.pos} — {sp.label} ({sp.qty} uds)</option>)
+                : positions.map(p=><option key={p.id} value={p.id}>{p.id} — {p.label}</option>)
+              }
+            </select>
+          )}
+
+          {/* Qty */}
+          <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10}}>
+            <span style={{fontSize:12,color:"var(--txt3)",minWidth:50}}>Cantidad:</span>
+            <button onClick={()=>setQty(Math.max(1,qty-1))} style={{width:36,height:36,borderRadius:"50%",background:"var(--bg3)",color:"var(--txt)",fontSize:18,border:"1px solid var(--bg4)"}}>−</button>
+            <input type="number" className="form-input mono" value={qty} onChange={e=>setQty(Math.max(1,Math.min(mode==="transfer"?transferMax:maxQty,parseInt(e.target.value)||1)))} style={{width:80,textAlign:"center",fontSize:18,fontWeight:700,padding:6}}/>
+            <button onClick={()=>setQty(Math.min(mode==="transfer"?transferMax:maxQty,qty+1))} style={{width:36,height:36,borderRadius:"50%",background:"var(--bg3)",color:"var(--txt)",fontSize:18,border:"1px solid var(--bg4)"}}>+</button>
+            <div className="qty-presets" style={{flex:1}}>{[5,10,20,50].map(n=><button key={n} className={qty===n?"sel":""} onClick={()=>setQty(n)} style={{fontSize:10,padding:"4px 8px"}}>{n}</button>)}</div>
+          </div>
+
+          {/* Reason (not for transfer) */}
+          {mode !== "transfer" && (
+            <select className="form-select" value={reason} onChange={e=>setReason(e.target.value)} style={{fontSize:12,marginBottom:10}}>
+              {(mode==="in"?Object.entries(IN_REASONS):Object.entries(OUT_REASONS)).map(([k,v])=><option key={k} value={k}>{v}</option>)}
+            </select>
+          )}
+
+          <input className="form-input" value={note} onChange={e=>setNote(e.target.value)} placeholder="Nota / referencia (opcional)" style={{fontSize:12,marginBottom:12}}/>
+
+          <button onClick={doConfirm}
+            disabled={!selected || !pos || qty < 1 || (mode==="transfer" && (!posFrom || posFrom===pos))}
+            style={{width:"100%",padding:14,borderRadius:10,fontWeight:700,fontSize:14,color:"#fff",
+              background:mode==="in"?"linear-gradient(135deg,#059669,var(--green))":mode==="out"?"linear-gradient(135deg,#dc2626,var(--red))":"linear-gradient(135deg,#0891b2,var(--cyan))",
+              opacity:(!selected||!pos||qty<1||(mode==="transfer"&&(!posFrom||posFrom===pos)))?0.4:1}}>
+            {mode==="in"?"CONFIRMAR ENTRADA":mode==="out"?"CONFIRMAR SALIDA":"CONFIRMAR TRANSFERENCIA"}
+          </button>
+        </div>
+
+        {/* Log + quick info */}
+        <div>
+          {log.length > 0 && (
+            <div className="card">
+              <div className="card-title">Registro de esta sesión</div>
+              {log.map((l,i)=><div key={i} style={{padding:"5px 0",borderBottom:"1px solid var(--bg3)",fontSize:12,color:i===0?"var(--txt)":"var(--txt3)",fontFamily:"'JetBrains Mono',monospace"}}>{l}</div>)}
+            </div>
+          )}
+          <div className="card">
+            <div className="card-title">Posiciones rápidas</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:4}}>
+              {positions.slice(0,20).map(p=>{
+                const items=posContents(p.id);const tq=items.reduce((s,i)=>s+i.qty,0);
+                return(
+                  <div key={p.id} style={{padding:"8px 4px",borderRadius:6,textAlign:"center",background:tq>0?"var(--bg3)":"var(--bg2)",border:"1px solid var(--bg4)"}}>
+                    <div className="mono" style={{fontWeight:700,fontSize:13,color:tq>0?"var(--green)":"var(--txt3)"}}>{p.id}</div>
+                    {tq>0?<div style={{fontSize:9,color:"var(--txt3)"}}>{tq} uds</div>:<div style={{fontSize:9,color:"var(--txt3)"}}>—</div>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
