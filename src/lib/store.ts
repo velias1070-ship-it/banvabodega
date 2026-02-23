@@ -1,143 +1,251 @@
 "use client";
 
-export interface SKUData {
-  d: string;
+// ==================== TYPES ====================
+export interface Product {
+  sku: string;
+  name: string;
+  mlCode: string;       // codigo ML de la etiqueta
   cat: string;
   prov: string;
   cost: number;
   price: number;
-  locs: Record<string, number>;
-  transit: number;
-  full: number;
   reorder: number;
-  sales30: number;
-  mlCode?: string;
 }
+
+export interface Position {
+  id: string;           // "1", "2", "3"... or "E1-1", "E1-2"
+  label: string;        // display name: "Posición 1", "Estante 1 Nivel 2"
+  type: "pallet" | "shelf";
+  active: boolean;
+}
+
+export type InReason = "compra" | "devolucion" | "ajuste_entrada" | "transferencia_in";
+export type OutReason = "venta_flex" | "envio_full" | "ajuste_salida" | "merma";
+export type MovType = "in" | "out";
 
 export interface Movement {
   id: string;
-  ts: string;
-  type: "in" | "out-full" | "out-flex" | "adjust";
+  ts: string;           // ISO timestamp
+  type: MovType;
+  reason: InReason | OutReason;
   sku: string;
-  loc: string;
+  pos: string;          // position id
   qty: number;
-  who: string;
-  ref: string;
+  who: string;          // operator name
+  note: string;         // optional note/reference
 }
 
-export interface CycleCount {
-  date: string;
-  sku: string;
-  loc: string;
-  expected: number;
-  counted: number;
-  diff: number;
-}
+// stock[sku][positionId] = quantity
+export type StockMap = Record<string, Record<string, number>>;
 
 export interface StoreData {
-  db: Record<string, SKUData>;
+  products: Record<string, Product>;
+  positions: Position[];
+  stock: StockMap;
   movements: Movement[];
-  cycleCounts: CycleCount[];
   movCounter: number;
 }
 
-const PROVEEDORES = ["Idetex", "Container", "Biblias", "Mates", "Delart", "Esperanza"];
-const CATEGORIAS = ["Sábanas", "Toallas", "Quilts", "Almohadas", "Fundas", "Cuero"];
-
-// Pallet positions (floor): P-01 to P-20
-// Shelf positions: E-01-1 to E-04-3 (4 shelving units, 3 levels each)
-const LOCS: string[] = [];
-for (let i = 1; i <= 20; i++) LOCS.push(`P-${String(i).padStart(2,"0")}`);
-for (let e = 1; e <= 4; e++) for (let n = 1; n <= 3; n++) LOCS.push(`E-${String(e).padStart(2,"0")}-${n}`);
-
-// Location type helpers
-function isPallet(loc: string) { return loc.startsWith("P-"); }
-function isShelf(loc: string) { return loc.startsWith("E-"); }
-
-const DEFAULT_DB: Record<string, SKUData> = {
-  "TOA-0042": { d: "Toalla Diseño 042", cat: "Toallas", prov: "Container", cost: 5200, price: 14990, locs: { "P-01": 25, "P-08": 30 }, transit: 15, full: 85, reorder: 30, sales30: 42 },
-  "SAB-0001": { d: "Sábanas Diseño 001", cat: "Sábanas", prov: "Idetex", cost: 8500, price: 24990, locs: { "P-02": 45 }, transit: 0, full: 120, reorder: 25, sales30: 38 },
-  "QUI-0003": { d: "Quilt Diseño 003", cat: "Quilts", prov: "Idetex", cost: 12000, price: 34990, locs: { "P-03": 30 }, transit: 15, full: 60, reorder: 20, sales30: 22 },
-  "ALM-0004": { d: "Almohada Diseño 004", cat: "Almohadas", prov: "Mates", cost: 3800, price: 9990, locs: { "E-01-1": 80 }, transit: 0, full: 45, reorder: 40, sales30: 55 },
-  "FUN-0005": { d: "Fundas Diseño 005", cat: "Fundas", prov: "Biblias", cost: 2200, price: 6990, locs: { "P-05": 60, "E-02-1": 40 }, transit: 20, full: 150, reorder: 35, sales30: 48 },
-  "CUE-0006": { d: "Cuero Diseño 006", cat: "Cuero", prov: "Esperanza", cost: 18000, price: 49990, locs: { "E-01-3": 15 }, transit: 0, full: 22, reorder: 10, sales30: 8 },
-  "TOA-0015": { d: "Toalla Diseño 015", cat: "Toallas", prov: "Container", cost: 4800, price: 12990, locs: { "P-10": 35 }, transit: 10, full: 70, reorder: 25, sales30: 30 },
-  "SAB-0022": { d: "Sábanas Diseño 022", cat: "Sábanas", prov: "Idetex", cost: 9200, price: 27990, locs: { "P-06": 20 }, transit: 5, full: 95, reorder: 20, sales30: 28 },
+// ==================== REASON LABELS ====================
+export const IN_REASONS: Record<InReason, string> = {
+  compra: "Compra de inventario",
+  devolucion: "Devolución",
+  ajuste_entrada: "Ajuste (+)",
+  transferencia_in: "Transferencia entrada",
 };
 
-const DEFAULT_MOVEMENTS: Movement[] = [
-  { id: "M001", ts: "2026-02-20T09:30:00", type: "in", sku: "TOA-0042", loc: "P-01", qty: 25, who: "Vicente", ref: "FAC-2026-0412" },
-  { id: "M002", ts: "2026-02-20T14:00:00", type: "out-full", sku: "SAB-0001", loc: "P-02", qty: 30, who: "Vicente", ref: "ENV-ML-88901" },
-  { id: "M003", ts: "2026-02-21T10:15:00", type: "in", sku: "ALM-0004", loc: "E-01-1", qty: 80, who: "Operario 1", ref: "FAC-2026-0413" },
-  { id: "M004", ts: "2026-02-21T16:45:00", type: "out-flex", sku: "QUI-0003", loc: "P-03", qty: 2, who: "Sistema", ref: "ML-ORD-77234521" },
-  { id: "M005", ts: "2026-02-22T09:00:00", type: "out-full", sku: "FUN-0005", loc: "P-05", qty: 50, who: "Vicente", ref: "ENV-ML-88920" },
-];
+export const OUT_REASONS: Record<OutReason, string> = {
+  venta_flex: "Venta Flex",
+  envio_full: "Envío a ML Full",
+  ajuste_salida: "Ajuste (-)",
+  merma: "Merma / Pérdida",
+};
 
-const DEFAULT_COUNTS: CycleCount[] = [
-  { date: "2026-02-20", sku: "TOA-0042", loc: "P-01", expected: 25, counted: 25, diff: 0 },
-  { date: "2026-02-20", sku: "SAB-0001", loc: "P-02", expected: 47, counted: 45, diff: -2 },
-  { date: "2026-02-21", sku: "ALM-0004", loc: "E-01-1", expected: 80, counted: 80, diff: 0 },
-];
+export const CATEGORIAS = ["Sábanas", "Toallas", "Quilts", "Almohadas", "Fundas", "Cuero", "Otros"];
+export const PROVEEDORES = ["Idetex", "Container", "Biblias", "Mates", "Delart", "Esperanza", "Otro"];
 
-function loadStore(): StoreData {
-  if (typeof window === "undefined") return { db: DEFAULT_DB, movements: DEFAULT_MOVEMENTS, cycleCounts: DEFAULT_COUNTS, movCounter: 6 };
-  try {
-    const raw = localStorage.getItem("banva_store");
-    if (raw) return JSON.parse(raw);
-  } catch {}
-  return { db: DEFAULT_DB, movements: DEFAULT_MOVEMENTS, cycleCounts: DEFAULT_COUNTS, movCounter: 6 };
+// ==================== DEFAULT DATA ====================
+function defaultPositions(): Position[] {
+  const pos: Position[] = [];
+  for (let i = 1; i <= 15; i++) {
+    pos.push({ id: String(i), label: `Posición ${i}`, type: "pallet", active: true });
+  }
+  // A few shelf positions
+  for (let e = 1; e <= 2; e++) {
+    for (let n = 1; n <= 3; n++) {
+      pos.push({ id: `E${e}-${n}`, label: `Estante ${e} Nivel ${n}`, type: "shelf", active: true });
+    }
+  }
+  return pos;
 }
 
-function saveStore(data: StoreData) {
-  if (typeof window !== "undefined") localStorage.setItem("banva_store", JSON.stringify(data));
+function defaultProducts(): Record<string, Product> {
+  return {
+    "TOA-042": { sku: "TOA-042", name: "Toalla Diseño 042", mlCode: "MLC-882734", cat: "Toallas", prov: "Container", cost: 5200, price: 14990, reorder: 30 },
+    "SAB-001": { sku: "SAB-001", name: "Sábanas Diseño 001", mlCode: "MLC-991205", cat: "Sábanas", prov: "Idetex", cost: 8500, price: 24990, reorder: 25 },
+    "QUI-003": { sku: "QUI-003", name: "Quilt Diseño 003", mlCode: "MLC-774521", cat: "Quilts", prov: "Idetex", cost: 12000, price: 34990, reorder: 20 },
+    "ALM-004": { sku: "ALM-004", name: "Almohada Diseño 004", mlCode: "MLC-663418", cat: "Almohadas", prov: "Mates", cost: 3800, price: 9990, reorder: 40 },
+  };
 }
 
-// Singleton store
+function defaultStock(): StockMap {
+  return {
+    "TOA-042": { "1": 25, "5": 30 },
+    "SAB-001": { "2": 45 },
+    "QUI-003": { "3": 30, "E1-2": 10 },
+    "ALM-004": { "E1-1": 80 },
+  };
+}
+
+function defaultMovements(): Movement[] {
+  return [
+    { id: "M001", ts: "2026-02-20T09:30:00", type: "in", reason: "compra", sku: "TOA-042", pos: "1", qty: 25, who: "Vicente", note: "Factura Container #412" },
+    { id: "M002", ts: "2026-02-20T14:00:00", type: "out", reason: "envio_full", sku: "SAB-001", pos: "2", qty: 30, who: "Vicente", note: "Envío ML Full #88901" },
+    { id: "M003", ts: "2026-02-21T10:15:00", type: "in", reason: "compra", sku: "ALM-004", pos: "E1-1", qty: 80, who: "Operario", note: "Factura Mates #413" },
+    { id: "M004", ts: "2026-02-21T16:45:00", type: "out", reason: "venta_flex", sku: "QUI-003", pos: "3", qty: 2, who: "Sistema", note: "Orden ML #77234521" },
+  ];
+}
+
+// ==================== STORE MANAGEMENT ====================
 let _store: StoreData | null = null;
+const STORE_KEY = "banva_wms";
+
 export function getStore(): StoreData {
-  if (!_store) _store = loadStore();
+  if (_store) return _store;
+  if (typeof window === "undefined") {
+    return { products: defaultProducts(), positions: defaultPositions(), stock: defaultStock(), movements: defaultMovements(), movCounter: 5 };
+  }
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (raw) { _store = JSON.parse(raw); return _store!; }
+  } catch {}
+  _store = { products: defaultProducts(), positions: defaultPositions(), stock: defaultStock(), movements: defaultMovements(), movCounter: 5 };
+  localStorage.setItem(STORE_KEY, JSON.stringify(_store));
   return _store;
 }
-export function updateStore(patch: Partial<StoreData>) {
-  _store = { ...getStore(), ...patch };
-  saveStore(_store);
-}
-export function resetStore() {
-  _store = { db: DEFAULT_DB, movements: DEFAULT_MOVEMENTS, cycleCounts: DEFAULT_COUNTS, movCounter: 6 };
-  saveStore(_store);
+
+export function saveStore(data?: Partial<StoreData>) {
+  if (!_store) getStore();
+  if (data) Object.assign(_store!, data);
+  if (typeof window !== "undefined") {
+    localStorage.setItem(STORE_KEY, JSON.stringify(_store));
+  }
 }
 
-// Helpers
-export function getSkuBodTotal(db: Record<string, SKUData>, sku: string) {
-  return Object.values(db[sku]?.locs || {}).reduce((a, b) => a + b, 0);
+export function resetStore() {
+  _store = { products: defaultProducts(), positions: defaultPositions(), stock: defaultStock(), movements: defaultMovements(), movCounter: 5 };
+  if (typeof window !== "undefined") localStorage.setItem(STORE_KEY, JSON.stringify(_store));
 }
-export function getSkuTotal(db: Record<string, SKUData>, sku: string) {
-  const d = db[sku]; if (!d) return 0;
-  return getSkuBodTotal(db, sku) + d.transit + d.full;
+
+// ==================== HELPERS ====================
+export function nextMovId(): string {
+  const s = getStore();
+  s.movCounter++;
+  saveStore();
+  return "M" + String(s.movCounter).padStart(4, "0");
 }
-export function getLocItems(db: Record<string, SKUData>, loc: string) {
-  return Object.entries(db).filter(([, v]) => (v.locs[loc] || 0) > 0).map(([s, v]) => ({ sku: s, qty: v.locs[loc], desc: v.d }));
+
+// Get total stock of a SKU across all positions
+export function skuTotal(sku: string): number {
+  const st = getStore().stock[sku];
+  if (!st) return 0;
+  return Object.values(st).reduce((a, b) => a + b, 0);
 }
-export function getStockStatus(db: Record<string, SKUData>, sku: string) {
-  const t = getSkuTotal(db, sku), r = db[sku]?.reorder || 0;
-  if (t <= 0) return { label: "SIN STOCK", color: "#ef4444" };
-  if (t <= r) return { label: "CRÍTICO", color: "#ef4444" };
-  if (t <= r * 1.5) return { label: "BAJO", color: "#f59e0b" };
-  return { label: "OK", color: "#10b981" };
+
+// Get all positions where a SKU has stock
+export function skuPositions(sku: string): { pos: string; label: string; qty: number }[] {
+  const s = getStore();
+  const st = s.stock[sku];
+  if (!st) return [];
+  return Object.entries(st)
+    .filter(([, q]) => q > 0)
+    .map(([posId, qty]) => {
+      const p = s.positions.find(p => p.id === posId);
+      return { pos: posId, label: p ? p.label : `Pos ${posId}`, qty };
+    })
+    .sort((a, b) => b.qty - a.qty);
 }
-export function getABC(db: Record<string, SKUData>, sku: string) {
-  const sales = db[sku]?.sales30 || 0;
-  const all = Object.values(db).map(v => v.sales30).sort((a, b) => b - a);
-  const p80 = all[Math.floor(all.length * 0.2)] || 0;
-  const p50 = all[Math.floor(all.length * 0.5)] || 0;
-  if (sales >= p80) return "A"; if (sales >= p50) return "B"; return "C";
+
+// Get contents of a position
+export function posContents(posId: string): { sku: string; name: string; qty: number }[] {
+  const s = getStore();
+  const items: { sku: string; name: string; qty: number }[] = [];
+  for (const [sku, posMap] of Object.entries(s.stock)) {
+    if (posMap[posId] && posMap[posId] > 0) {
+      const prod = s.products[sku];
+      items.push({ sku, name: prod?.name || sku, qty: posMap[posId] });
+    }
+  }
+  return items.sort((a, b) => b.qty - a.qty);
 }
-export function nextMovId(store: StoreData) {
-  const id = "M" + String(store.movCounter).padStart(3, "0");
-  store.movCounter++;
-  return id;
+
+// Active positions only
+export function activePositions(): Position[] {
+  return getStore().positions.filter(p => p.active);
 }
+
+// Find product by SKU, mlCode, or partial name
+export function findProduct(query: string): Product[] {
+  const s = getStore();
+  const q = query.toLowerCase().trim();
+  if (!q) return [];
+  return Object.values(s.products).filter(p =>
+    p.sku.toLowerCase().includes(q) ||
+    p.name.toLowerCase().includes(q) ||
+    p.mlCode.toLowerCase().includes(q)
+  );
+}
+
+// Find position by ID or from QR data
+export function findPosition(code: string): Position | null {
+  const s = getStore();
+  const clean = code.replace("BANVA-POS:", "").replace("BANVA-LOC:", "").trim();
+  return s.positions.find(p => p.id === clean && p.active) || null;
+}
+
+// Record a movement and update stock
+export function recordMovement(m: Omit<Movement, "id">): Movement {
+  const s = getStore();
+  const mov: Movement = { ...m, id: nextMovId() };
+
+  // Update stock
+  if (!s.stock[m.sku]) s.stock[m.sku] = {};
+  if (m.type === "in") {
+    s.stock[m.sku][m.pos] = (s.stock[m.sku][m.pos] || 0) + m.qty;
+  } else {
+    s.stock[m.sku][m.pos] = Math.max(0, (s.stock[m.sku][m.pos] || 0) - m.qty);
+    if (s.stock[m.sku][m.pos] === 0) delete s.stock[m.sku][m.pos];
+  }
+
+  s.movements.unshift(mov);
+  saveStore();
+  return mov;
+}
+
+// Record bulk movements (for large shipments)
+export function recordBulkMovements(items: { sku: string; pos: string; qty: number }[], type: MovType, reason: InReason | OutReason, who: string, note: string): number {
+  const s = getStore();
+  let count = 0;
+  for (const item of items) {
+    if (!item.sku || !item.pos || item.qty <= 0) continue;
+    if (!s.stock[item.sku]) s.stock[item.sku] = {};
+    if (type === "in") {
+      s.stock[item.sku][item.pos] = (s.stock[item.sku][item.pos] || 0) + item.qty;
+    } else {
+      s.stock[item.sku][item.pos] = Math.max(0, (s.stock[item.sku][item.pos] || 0) - item.qty);
+      if (s.stock[item.sku][item.pos] === 0) delete s.stock[item.sku][item.pos];
+    }
+    s.movements.unshift({
+      id: nextMovId(), ts: new Date().toISOString(), type, reason,
+      sku: item.sku, pos: item.pos, qty: item.qty, who, note
+    });
+    count++;
+  }
+  saveStore();
+  return count;
+}
+
+// Format helpers
+export function fmtDate(iso: string) { try { return new Date(iso).toLocaleDateString("es-CL"); } catch { return iso; } }
+export function fmtTime(iso: string) { try { return new Date(iso).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" }); } catch { return iso; } }
 export function fmtMoney(n: number) { return "$" + n.toLocaleString("es-CL"); }
-export function fmtDate(s: string) { return new Date(s).toLocaleDateString("es-CL"); }
-export function fmtTime(s: string) { return new Date(s).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" }); }
-export { PROVEEDORES, CATEGORIAS, LOCS, isPallet, isShelf };
