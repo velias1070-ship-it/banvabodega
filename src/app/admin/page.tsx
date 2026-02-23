@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, CATEGORIAS, PROVEEDORES, getLastSyncTime } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime } from "@/lib/store";
 import type { Product, Movement, Position } from "@/lib/store";
 import Link from "next/link";
 import SheetSync from "@/components/SheetSync";
@@ -51,7 +51,7 @@ function LoginGate({ onLogin }: { onLogin: (pin: string) => boolean }) {
 }
 
 export default function AdminPage() {
-  const [tab, setTab] = useState<"dash"|"inv"|"mov"|"prod"|"pos">("dash");
+  const [tab, setTab] = useState<"dash"|"inv"|"mov"|"prod"|"pos"|"config">("dash");
   const [,setTick] = useState(0);
   const r = useCallback(()=>setTick(t=>t+1),[]);
   const [mounted, setMounted] = useState(false);
@@ -78,7 +78,7 @@ export default function AdminPage() {
       <SheetSync onSynced={r}/>
       <div className="admin-layout">
         <nav className="admin-sidebar">
-          {([["dash","Dashboard","📊"],["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["pos","Posiciones","📍"]] as const).map(([key,label,icon])=>(
+          {([["dash","Dashboard","📊"],["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["pos","Posiciones","📍"],["config","Configuración","⚙️"]] as const).map(([key,label,icon])=>(
             <button key={key} className={`sidebar-btn ${tab===key?"active":""}`} onClick={()=>setTab(key as any)}>
               <span className="sidebar-icon">{icon}</span>
               <span className="sidebar-label">{label}</span>
@@ -92,7 +92,7 @@ export default function AdminPage() {
         <main className="admin-main">
           {/* Mobile tabs fallback */}
           <div className="admin-mobile-tabs">
-            {([["dash","Dashboard"],["inv","Inventario"],["mov","Movimientos"],["prod","Productos"],["pos","Posiciones"]] as const).map(([key,label])=>(
+            {([["dash","Dashboard"],["inv","Inventario"],["mov","Movimientos"],["prod","Productos"],["pos","Posiciones"],["config","Config"]] as const).map(([key,label])=>(
               <button key={key} className={`tab ${tab===key?"active-cyan":""}`} onClick={()=>setTab(key as any)}>{label}</button>
             ))}
           </div>
@@ -102,6 +102,7 @@ export default function AdminPage() {
             {tab==="mov"&&<Movimientos/>}
             {tab==="prod"&&<Productos refresh={r}/>}
             {tab==="pos"&&<Posiciones refresh={r}/>}
+            {tab==="config"&&<Configuracion refresh={r}/>}
           </div>
         </main>
       </div>
@@ -405,9 +406,9 @@ function Productos({ refresh }: { refresh: () => void }) {
     return p.sku.toLowerCase().includes(ql)||p.name.toLowerCase().includes(ql)||p.mlCode.toLowerCase().includes(ql)||p.cat.toLowerCase().includes(ql)||p.prov.toLowerCase().includes(ql);
   }).sort((a,b)=>a.sku.localeCompare(b.sku));
 
-  const [form, setForm] = useState<Partial<Product>>({sku:"",name:"",mlCode:"",cat:CATEGORIAS[0],prov:PROVEEDORES[0],cost:0,price:0,reorder:20});
+  const [form, setForm] = useState<Partial<Product>>({sku:"",name:"",mlCode:"",cat:getCategorias()[0],prov:getProveedores()[0],cost:0,price:0,reorder:20});
   const startEdit=(p:Product)=>{setForm({...p});setEditSku(p.sku);setShowAdd(true);};
-  const startAdd=()=>{setForm({sku:"",name:"",mlCode:"",cat:CATEGORIAS[0],prov:PROVEEDORES[0],cost:0,price:0,reorder:20});setEditSku(null);setShowAdd(true);};
+  const startAdd=()=>{setForm({sku:"",name:"",mlCode:"",cat:getCategorias()[0],prov:getProveedores()[0],cost:0,price:0,reorder:20});setEditSku(null);setShowAdd(true);};
   const save=()=>{
     if(!form.sku||!form.name)return;
     const sku=form.sku.toUpperCase();
@@ -433,8 +434,8 @@ function Productos({ refresh }: { refresh: () => void }) {
             <div className="form-group"><label className="form-label">SKU *</label><input className="form-input mono" value={form.sku||""} onChange={e=>setForm({...form,sku:e.target.value.toUpperCase()})} disabled={!!editSku}/></div>
             <div className="form-group"><label className="form-label">Código ML</label><input className="form-input mono" value={form.mlCode||""} onChange={e=>setForm({...form,mlCode:e.target.value})}/></div>
             <div className="form-group" style={{gridColumn:"span 2"}}><label className="form-label">Nombre *</label><input className="form-input" value={form.name||""} onChange={e=>setForm({...form,name:e.target.value})}/></div>
-            <div className="form-group"><label className="form-label">Categoría</label><select className="form-select" value={form.cat} onChange={e=>setForm({...form,cat:e.target.value})}>{CATEGORIAS.map(c=><option key={c}>{c}</option>)}</select></div>
-            <div className="form-group"><label className="form-label">Proveedor</label><select className="form-select" value={form.prov} onChange={e=>setForm({...form,prov:e.target.value})}>{PROVEEDORES.map(p=><option key={p}>{p}</option>)}</select></div>
+            <div className="form-group"><label className="form-label">Categoría</label><select className="form-select" value={form.cat} onChange={e=>setForm({...form,cat:e.target.value})}>{getCategorias().map(c=><option key={c}>{c}</option>)}</select></div>
+            <div className="form-group"><label className="form-label">Proveedor</label><select className="form-select" value={form.prov} onChange={e=>setForm({...form,prov:e.target.value})}>{getProveedores().map(p=><option key={p}>{p}</option>)}</select></div>
             <div className="form-group"><label className="form-label">Costo</label><input type="number" className="form-input mono" value={form.cost||""} onChange={e=>setForm({...form,cost:parseInt(e.target.value)||0})}/></div>
             <div className="form-group"><label className="form-label">Precio ML</label><input type="number" className="form-input mono" value={form.price||""} onChange={e=>setForm({...form,price:parseInt(e.target.value)||0})}/></div>
           </div>
@@ -559,6 +560,150 @@ function Posiciones({ refresh }: { refresh: () => void }) {
             </div>
           );})}
           {shelves.length===0&&<div style={{fontSize:12,color:"var(--txt3)",padding:12}}>No hay estantes creados</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==================== CONFIGURACIÓN ====================
+function Configuracion({ refresh }: { refresh: () => void }) {
+  const [cats, setCats] = useState<string[]>([]);
+  const [provs, setProvs] = useState<string[]>([]);
+  const [newCat, setNewCat] = useState("");
+  const [newProv, setNewProv] = useState("");
+  const [editCat, setEditCat] = useState<{idx:number;val:string}|null>(null);
+  const [editProv, setEditProv] = useState<{idx:number;val:string}|null>(null);
+
+  useEffect(() => { setCats(getCategorias()); setProvs(getProveedores()); }, []);
+
+  // Categories
+  const addCat = () => {
+    if (!newCat.trim() || cats.includes(newCat.trim())) return;
+    const updated = [...cats, newCat.trim()];
+    setCats(updated); saveCategorias(updated); setNewCat(""); refresh();
+  };
+  const removeCat = (idx: number) => {
+    if (!confirm("Eliminar categoría \"" + cats[idx] + "\"?")) return;
+    const updated = cats.filter((_, i) => i !== idx);
+    setCats(updated); saveCategorias(updated); refresh();
+  };
+  const saveEditCat = () => {
+    if (!editCat || !editCat.val.trim()) return;
+    const updated = [...cats]; updated[editCat.idx] = editCat.val.trim();
+    setCats(updated); saveCategorias(updated); setEditCat(null); refresh();
+  };
+
+  // Suppliers
+  const addProv = () => {
+    if (!newProv.trim() || provs.includes(newProv.trim())) return;
+    const updated = [...provs, newProv.trim()];
+    setProvs(updated); saveProveedores(updated); setNewProv(""); refresh();
+  };
+  const removeProv = (idx: number) => {
+    if (!confirm("Eliminar proveedor \"" + provs[idx] + "\"?")) return;
+    const updated = provs.filter((_, i) => i !== idx);
+    setProvs(updated); saveProveedores(updated); refresh();
+  };
+  const saveEditProv = () => {
+    if (!editProv || !editProv.val.trim()) return;
+    const updated = [...provs]; updated[editProv.idx] = editProv.val.trim();
+    setProvs(updated); saveProveedores(updated); setEditProv(null); refresh();
+  };
+
+  // Move up/down
+  const moveCat = (idx: number, dir: -1|1) => {
+    const ni = idx + dir; if (ni < 0 || ni >= cats.length) return;
+    const updated = [...cats]; [updated[idx], updated[ni]] = [updated[ni], updated[idx]];
+    setCats(updated); saveCategorias(updated);
+  };
+  const moveProv = (idx: number, dir: -1|1) => {
+    const ni = idx + dir; if (ni < 0 || ni >= provs.length) return;
+    const updated = [...provs]; [updated[idx], updated[ni]] = [updated[ni], updated[idx]];
+    setProvs(updated); saveProveedores(updated);
+  };
+
+  // Count products using each
+  const s = getStore();
+  const allProducts = Object.values(s.products);
+  const catCount = (cat: string) => allProducts.filter(p => p.cat === cat).length;
+  const provCount = (prov: string) => allProducts.filter(p => p.prov === prov).length;
+
+  return (
+    <div>
+      <div className="admin-grid-2">
+        {/* CATEGORIAS */}
+        <div className="card">
+          <div className="card-title">Categorías de productos ({cats.length})</div>
+          <div style={{display:"flex",gap:6,marginBottom:12}}>
+            <input className="form-input" value={newCat} onChange={e=>setNewCat(e.target.value)} placeholder="Nueva categoría..." onKeyDown={e=>e.key==="Enter"&&addCat()} style={{flex:1,fontSize:12}}/>
+            <button onClick={addCat} disabled={!newCat.trim()} style={{padding:"8px 16px",borderRadius:8,background:newCat.trim()?"var(--green)":"var(--bg3)",color:newCat.trim()?"#fff":"var(--txt3)",fontWeight:700,fontSize:12,whiteSpace:"nowrap"}}>+ Agregar</button>
+          </div>
+          {cats.map((cat, i) => (
+            <div key={i} style={{display:"flex",alignItems:"center",gap:6,padding:"8px 0",borderBottom:"1px solid var(--bg3)"}}>
+              {editCat?.idx === i ? (
+                <>
+                  <input className="form-input" value={editCat.val} onChange={e=>setEditCat({idx:i,val:e.target.value})} onKeyDown={e=>e.key==="Enter"&&saveEditCat()} autoFocus style={{flex:1,fontSize:12,padding:6}}/>
+                  <button onClick={saveEditCat} style={{padding:"4px 10px",borderRadius:4,background:"var(--green)",color:"#fff",fontSize:10,fontWeight:600}}>OK</button>
+                  <button onClick={()=>setEditCat(null)} style={{padding:"4px 10px",borderRadius:4,background:"var(--bg3)",color:"var(--txt3)",fontSize:10,fontWeight:600,border:"1px solid var(--bg4)"}}>X</button>
+                </>
+              ) : (
+                <>
+                  <div style={{display:"flex",flexDirection:"column",gap:2}}>
+                    <button onClick={()=>moveCat(i,-1)} disabled={i===0} style={{background:"none",color:i===0?"var(--bg4)":"var(--txt3)",fontSize:8,lineHeight:1,padding:0,border:"none"}}>▲</button>
+                    <button onClick={()=>moveCat(i,1)} disabled={i===cats.length-1} style={{background:"none",color:i===cats.length-1?"var(--bg4)":"var(--txt3)",fontSize:8,lineHeight:1,padding:0,border:"none"}}>▼</button>
+                  </div>
+                  <span style={{flex:1,fontSize:13,fontWeight:500}}>{cat}</span>
+                  <span className="mono" style={{fontSize:10,color:"var(--txt3)",minWidth:30,textAlign:"right"}}>{catCount(cat)}</span>
+                  <button onClick={()=>setEditCat({idx:i,val:cat})} style={{padding:"4px 8px",borderRadius:4,background:"var(--bg3)",color:"var(--cyan)",fontSize:10,fontWeight:600,border:"1px solid var(--bg4)"}}>Editar</button>
+                  <button onClick={()=>removeCat(i)} style={{padding:"4px 8px",borderRadius:4,background:"var(--bg3)",color:"var(--red)",fontSize:10,fontWeight:600,border:"1px solid var(--bg4)"}}>X</button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* PROVEEDORES */}
+        <div className="card">
+          <div className="card-title">Proveedores ({provs.length})</div>
+          <div style={{display:"flex",gap:6,marginBottom:12}}>
+            <input className="form-input" value={newProv} onChange={e=>setNewProv(e.target.value)} placeholder="Nuevo proveedor..." onKeyDown={e=>e.key==="Enter"&&addProv()} style={{flex:1,fontSize:12}}/>
+            <button onClick={addProv} disabled={!newProv.trim()} style={{padding:"8px 16px",borderRadius:8,background:newProv.trim()?"var(--green)":"var(--bg3)",color:newProv.trim()?"#fff":"var(--txt3)",fontWeight:700,fontSize:12,whiteSpace:"nowrap"}}>+ Agregar</button>
+          </div>
+          {provs.map((prov, i) => (
+            <div key={i} style={{display:"flex",alignItems:"center",gap:6,padding:"8px 0",borderBottom:"1px solid var(--bg3)"}}>
+              {editProv?.idx === i ? (
+                <>
+                  <input className="form-input" value={editProv.val} onChange={e=>setEditProv({idx:i,val:e.target.value})} onKeyDown={e=>e.key==="Enter"&&saveEditProv()} autoFocus style={{flex:1,fontSize:12,padding:6}}/>
+                  <button onClick={saveEditProv} style={{padding:"4px 10px",borderRadius:4,background:"var(--green)",color:"#fff",fontSize:10,fontWeight:600}}>OK</button>
+                  <button onClick={()=>setEditProv(null)} style={{padding:"4px 10px",borderRadius:4,background:"var(--bg3)",color:"var(--txt3)",fontSize:10,fontWeight:600,border:"1px solid var(--bg4)"}}>X</button>
+                </>
+              ) : (
+                <>
+                  <div style={{display:"flex",flexDirection:"column",gap:2}}>
+                    <button onClick={()=>moveProv(i,-1)} disabled={i===0} style={{background:"none",color:i===0?"var(--bg4)":"var(--txt3)",fontSize:8,lineHeight:1,padding:0,border:"none"}}>▲</button>
+                    <button onClick={()=>moveProv(i,1)} disabled={i===provs.length-1} style={{background:"none",color:i===provs.length-1?"var(--bg4)":"var(--txt3)",fontSize:8,lineHeight:1,padding:0,border:"none"}}>▼</button>
+                  </div>
+                  <span style={{flex:1,fontSize:13,fontWeight:500}}>{prov}</span>
+                  <span className="mono" style={{fontSize:10,color:"var(--txt3)",minWidth:30,textAlign:"right"}}>{provCount(prov)}</span>
+                  <button onClick={()=>setEditProv({idx:i,val:prov})} style={{padding:"4px 8px",borderRadius:4,background:"var(--bg3)",color:"var(--cyan)",fontSize:10,fontWeight:600,border:"1px solid var(--bg4)"}}>Editar</button>
+                  <button onClick={()=>removeProv(i)} style={{padding:"4px 8px",borderRadius:4,background:"var(--bg3)",color:"var(--red)",fontSize:10,fontWeight:600,border:"1px solid var(--bg4)"}}>X</button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="card" style={{marginTop:12}}>
+        <div className="card-title">Información del sistema</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,fontSize:12}}>
+          <div><span style={{color:"var(--txt3)"}}>Productos registrados:</span> <strong>{Object.keys(s.products).length}</strong></div>
+          <div><span style={{color:"var(--txt3)"}}>SKUs con stock:</span> <strong>{Object.keys(s.stock).filter(sku=>skuTotal(sku)>0).length}</strong></div>
+          <div><span style={{color:"var(--txt3)"}}>Posiciones activas:</span> <strong>{activePositions().length}</strong></div>
+          <div><span style={{color:"var(--txt3)"}}>Movimientos totales:</span> <strong>{s.movements.length}</strong></div>
+          <div><span style={{color:"var(--txt3)"}}>Última sync Sheet:</span> <strong>{getLastSyncTime()||"Nunca"}</strong></div>
+          <div><span style={{color:"var(--txt3)"}}>PIN Admin:</span> <strong>1234</strong> <span style={{color:"var(--amber)",fontSize:10}}>(editar en código)</span></div>
         </div>
       </div>
     </div>

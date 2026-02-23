@@ -61,8 +61,32 @@ export const OUT_REASONS: Record<OutReason, string> = {
   merma: "Merma / Pérdida",
 };
 
-export const CATEGORIAS = ["Sábanas", "Toallas", "Quilts", "Almohadas", "Fundas", "Cuero", "Otros"];
-export const PROVEEDORES = ["Idetex", "Container", "Biblias", "Mates", "Delart", "Esperanza", "Otro"];
+export const DEFAULT_CATEGORIAS = ["Sábanas", "Toallas", "Quilts", "Almohadas", "Fundas", "Cuero", "Otros"];
+export const DEFAULT_PROVEEDORES = ["Idetex", "Container", "Biblias", "Mates", "Delart", "Esperanza", "Otro"];
+
+const CAT_KEY = "banva_categorias";
+const PROV_KEY = "banva_proveedores";
+
+export function getCategorias(): string[] {
+  if (typeof window === "undefined") return DEFAULT_CATEGORIAS;
+  try { const raw = localStorage.getItem(CAT_KEY); if (raw) return JSON.parse(raw); } catch {}
+  return DEFAULT_CATEGORIAS;
+}
+export function saveCategorias(cats: string[]) {
+  if (typeof window !== "undefined") localStorage.setItem(CAT_KEY, JSON.stringify(cats));
+}
+export function getProveedores(): string[] {
+  if (typeof window === "undefined") return DEFAULT_PROVEEDORES;
+  try { const raw = localStorage.getItem(PROV_KEY); if (raw) return JSON.parse(raw); } catch {}
+  return DEFAULT_PROVEEDORES;
+}
+export function saveProveedores(provs: string[]) {
+  if (typeof window !== "undefined") localStorage.setItem(PROV_KEY, JSON.stringify(provs));
+}
+
+// Keep backward-compatible exports
+export const CATEGORIAS = DEFAULT_CATEGORIAS;
+export const PROVEEDORES = DEFAULT_PROVEEDORES;
 
 // ==================== DEFAULT DATA ====================
 function defaultPositions(): Position[] {
