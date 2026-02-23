@@ -106,6 +106,80 @@ function defaultMovements(): Movement[] {
   ];
 }
 
+// ==================== GOOGLE SHEETS SYNC ====================
+const SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRqskx-hK2bLc8vDOflxzx6dtyZZZm81c_pfLhSPz1KJL_FVTcGQjg75iftOyi-tU9hJGidJqu6jjtW/pub?gid=224135022&single=true&output=csv";
+const SYNC_KEY = "banva_sheet_last_sync";
+const SYNC_INTERVAL = 5 * 60 * 1000; // 5 minutes
+
+function parseCSVLine(line: string): string[] {
+  const cells: string[] = [];
+  let current = "", inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') { inQuotes = !inQuotes; }
+    else if (ch === ',' && !inQuotes) { cells.push(current.trim()); current = ""; }
+    else { current += ch; }
+  }
+  cells.push(current.trim());
+  return cells;
+}
+
+export async function syncFromSheet(): Promise<{ added: number; updated: number; total: number }> {
+  const result = { added: 0, updated: 0, total: 0 };
+  try {
+    const resp = await fetch(SHEET_CSV_URL, { cache: "no-store" });
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const text = await resp.text();
+    const lines = text.split("\n").map(l => l.replace(/\r/g, "").trim()).filter(l => l.length > 0);
+    if (lines.length < 2) return result;
+
+    // Skip header row
+    const s = getStore();
+    for (let i = 1; i < lines.length; i++) {
+      const cols = parseCSVLine(lines[i]);
+      const mlCode = (cols[0] || "").trim();
+      const name = (cols[1] || "").trim();
+      const sku = (cols[2] || "").trim().toUpperCase();
+      if (!sku || !name) continue;
+
+      result.total++;
+      if (s.products[sku]) {
+        // Update existing: sync name and mlCode from sheet, keep local cost/price/etc
+        if (s.products[sku].name !== name || s.products[sku].mlCode !== mlCode) {
+          s.products[sku].name = name;
+          s.products[sku].mlCode = mlCode;
+          result.updated++;
+        }
+      } else {
+        // New product from sheet
+        s.products[sku] = { sku, name, mlCode, cat: "Otros", prov: "Otro", cost: 0, price: 0, reorder: 20 };
+        result.added++;
+      }
+    }
+    saveStore();
+    if (typeof window !== "undefined") {
+      localStorage.setItem(SYNC_KEY, Date.now().toString());
+    }
+  } catch (err) {
+    console.error("Sheet sync error:", err);
+  }
+  return result;
+}
+
+export function shouldSync(): boolean {
+  if (typeof window === "undefined") return false;
+  const last = localStorage.getItem(SYNC_KEY);
+  if (!last) return true;
+  return Date.now() - parseInt(last) > SYNC_INTERVAL;
+}
+
+export function getLastSyncTime(): string | null {
+  if (typeof window === "undefined") return null;
+  const last = localStorage.getItem(SYNC_KEY);
+  if (!last) return null;
+  try { return new Date(parseInt(last)).toLocaleString("es-CL"); } catch { return null; }
+}
+
 // ==================== STORE MANAGEMENT ====================
 let _store: StoreData | null = null;
 const STORE_KEY = "banva_wms";

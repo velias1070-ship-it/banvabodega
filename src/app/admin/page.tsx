@@ -1,8 +1,9 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, CATEGORIAS, PROVEEDORES } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, CATEGORIAS, PROVEEDORES, getLastSyncTime } from "@/lib/store";
 import type { Product, Movement, Position } from "@/lib/store";
 import Link from "next/link";
+import SheetSync from "@/components/SheetSync";
 
 const ADMIN_PIN = "1234"; // Change this
 const AUTH_KEY = "banva_admin_auth";
@@ -74,7 +75,7 @@ export default function AdminPage() {
           <button onClick={auth.logout} style={{padding:"6px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--red)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>Cerrar sesión</button>
         </div>
       </div>
-
+      <SheetSync onSynced={r}/>
       <div className="admin-layout">
         <nav className="admin-sidebar">
           {([["dash","Dashboard","📊"],["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["pos","Posiciones","📍"]] as const).map(([key,label,icon])=>(

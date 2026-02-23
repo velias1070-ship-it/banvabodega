@@ -5,6 +5,7 @@ import type { Product, InReason, OutReason } from "@/lib/store";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 const BarcodeScanner = dynamic(() => import("@/components/BarcodeScanner"), { ssr: false });
+import SheetSync from "@/components/SheetSync";
 
 export default function OperadorPage() {
   const [tab, setTab] = useState<"in"|"out"|"stock"|"bulk">("in");
@@ -21,6 +22,7 @@ export default function OperadorPage() {
         <h1>BANVA Bodega</h1>
         <div style={{fontSize:10,color:"var(--txt3)"}}>{new Date().toLocaleDateString("es-CL")}</div>
       </div>
+      <SheetSync onSynced={r}/>
       <div className="tabs">
         <button className={`tab ${tab==="in"?"active-green":""}`} onClick={()=>setTab("in")}>INGRESO</button>
         <button className={`tab ${tab==="out"?"active-out":""}`} onClick={()=>setTab("out")}>SALIDA</button>
