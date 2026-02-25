@@ -13,10 +13,34 @@ export interface Product {
 }
 
 export interface Position {
-  id: string;           // "1", "2", "3"... or "E1-1", "E1-2"
-  label: string;        // display name: "Posición 1", "Estante 1 Nivel 2"
+  id: string;
+  label: string;
   type: "pallet" | "shelf";
   active: boolean;
+  // Map coordinates (grid units)
+  mx?: number;
+  my?: number;
+  mw?: number;
+  mh?: number;
+  color?: string;
+}
+
+export interface MapObject {
+  id: string;
+  label: string;
+  kind: "desk" | "door" | "wall" | "zone" | "label";
+  mx: number;
+  my: number;
+  mw: number;
+  mh: number;
+  color: string;
+  rotation?: number;
+}
+
+export interface MapConfig {
+  gridW: number;  // warehouse width in grid units
+  gridH: number;  // warehouse height in grid units
+  objects: MapObject[];
 }
 
 export type InReason = "compra" | "devolucion" | "ajuste_entrada" | "transferencia_in";
@@ -44,6 +68,7 @@ export interface StoreData {
   stock: StockMap;
   movements: Movement[];
   movCounter: number;
+  mapConfig?: MapConfig;
 }
 
 // ==================== REASON LABELS ====================
@@ -347,3 +372,25 @@ export function recordBulkMovements(items: { sku: string; pos: string; qty: numb
 export function fmtDate(iso: string) { try { return new Date(iso).toLocaleDateString("es-CL"); } catch { return iso; } }
 export function fmtTime(iso: string) { try { return new Date(iso).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" }); } catch { return iso; } }
 export function fmtMoney(n: number) { return "$" + n.toLocaleString("es-CL"); }
+
+// ==================== MAP CONFIG ====================
+export function getMapConfig(): MapConfig {
+  const s = getStore();
+  if (s.mapConfig) return s.mapConfig;
+  return { gridW: 20, gridH: 14, objects: [
+    { id: "door1", label: "ENTRADA", kind: "door", mx: 0, my: 5, mw: 1, mh: 3, color: "#f59e0b" },
+    { id: "desk1", label: "Escritorio", kind: "desk", mx: 1, my: 1, mw: 3, mh: 2, color: "#6366f1" },
+  ]};
+}
+
+export function saveMapConfig(cfg: MapConfig) {
+  const s = getStore();
+  s.mapConfig = cfg;
+  saveStore();
+}
+
+export function savePositionMap(posId: string, mx: number, my: number, mw: number, mh: number) {
+  const s = getStore();
+  const p = s.positions.find(x => x.id === posId);
+  if (p) { p.mx = mx; p.my = my; p.mw = mw; p.mh = mh; saveStore(); }
+}

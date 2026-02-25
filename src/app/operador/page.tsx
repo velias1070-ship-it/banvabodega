@@ -20,7 +20,7 @@ export default function OperadorPage() {
       <div className="topbar">
         <Link href="/"><button className="back-btn">&#8592;</button></Link>
         <h1>BANVA Bodega</h1>
-        <div style={{fontSize:10,color:"var(--txt3)"}}>{new Date().toLocaleDateString("es-CL")}</div>
+        <Link href="/mapa"><button style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"var(--cyan)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>🗺️ Mapa</button></Link>
       </div>
       <SheetSync onSynced={r}/>
       <div className="tabs">
