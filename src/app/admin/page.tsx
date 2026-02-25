@@ -769,36 +769,8 @@ function CargaStock({ refresh }: { refresh: () => void }) {
   const unassigned = getUnassignedStock();
   const totalUnassigned = unassigned.reduce((s, u) => s + u.qty, 0);
 
-  // Bulk assign state
-  const [assignments, setAssignments] = useState<Record<string, string>>({});
-
-  const setAssign = (sku: string, posId: string) => {
-    setAssignments(a => ({ ...a, [sku]: posId }));
-  };
-
-  const assignOne = (sku: string, posId: string, qty: number) => {
-    if (assignPosition(sku, posId, qty)) {
-      setAssignments(a => { const n = { ...a }; delete n[sku]; return n; });
-      setTick(t => t + 1);
-      refresh();
-    }
-  };
-
-  const assignAll = () => {
-    const toAssign = unassigned.filter(u => assignments[u.sku]);
-    if (toAssign.length === 0) return;
-    if (!confirm(`Asignar ${toAssign.length} SKUs a sus posiciones seleccionadas?`)) return;
-    let count = 0;
-    toAssign.forEach(u => {
-      if (assignPosition(u.sku, assignments[u.sku], u.qty)) count++;
-    });
-    setAssignments({});
-    setTick(t => t + 1);
-    refresh();
-    alert(`${count} SKUs asignados correctamente`);
-  };
-
-  const assignedCount = unassigned.filter(u => assignments[u.sku]).length;
+  // Split assign state: each SKU can have multiple {pos, qty} rows
+  const [splits, setSplits] = useState<Record<string, {pos:string;qty:number}[]>>({});
 
   return (
     <div>
@@ -839,74 +811,119 @@ function CargaStock({ refresh }: { refresh: () => void }) {
           <div className="card-title">Paso 2 — Asignar posiciones ({unassigned.length} SKUs, {totalUnassigned.toLocaleString()} uds sin ubicación)</div>
 
           {/* Quick assign all to same position */}
-          <div style={{display:"flex",gap:8,marginBottom:12,alignItems:"center",flexWrap:"wrap"}}>
-            <span style={{fontSize:11,fontWeight:600,color:"var(--txt3)"}}>Asignar todos a:</span>
+          <div style={{padding:"10px 14px",background:"var(--bg2)",borderRadius:8,marginBottom:12,display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+            <span style={{fontSize:11,fontWeight:600,color:"var(--txt3)"}}>Asignar todos (100%) a una posición:</span>
             <select className="form-select" id="bulkPos" style={{fontSize:11,padding:6,flex:"1",maxWidth:200}}>
-              <option value="">— Seleccionar posición —</option>
+              <option value="">— Posición —</option>
               {positions.map(p=><option key={p.id} value={p.id}>{p.id} — {p.label}</option>)}
             </select>
             <button onClick={()=>{
               const sel = (document.getElementById("bulkPos") as HTMLSelectElement)?.value;
               if(!sel) return;
-              const newA: Record<string,string> = {};
-              unassigned.forEach(u => { newA[u.sku] = sel; });
-              setAssignments(newA);
-            }} style={{padding:"6px 14px",borderRadius:6,background:"var(--blue)",color:"#fff",fontSize:11,fontWeight:700}}>Seleccionar todos</button>
+              const newA: Record<string, {pos:string;qty:number}[]> = {};
+              unassigned.forEach(u => { newA[u.sku] = [{pos:sel,qty:u.qty}]; });
+              setSplits(newA);
+            }} style={{padding:"6px 14px",borderRadius:6,background:"var(--blue)",color:"#fff",fontSize:11,fontWeight:700}}>Aplicar a todos</button>
           </div>
 
-          {assignedCount > 0 && (
-            <button onClick={assignAll}
-              style={{width:"100%",padding:12,borderRadius:10,background:"var(--green)",color:"#fff",fontWeight:700,fontSize:13,marginBottom:12}}>
-              Asignar {assignedCount} SKUs seleccionados a sus posiciones
-            </button>
-          )}
+          {/* Confirm all button */}
+          {(() => {
+            const ready = unassigned.filter(u => {
+              const sp = splits[u.sku];
+              if(!sp || sp.length===0) return false;
+              const total = sp.reduce((s,r)=>s+r.qty,0);
+              return total === u.qty && sp.every(r=>r.pos && r.qty>0);
+            });
+            return ready.length > 0 ? (
+              <button onClick={()=>{
+                if(!confirm(`Asignar ${ready.length} SKUs a sus posiciones?`))return;
+                let count=0;
+                ready.forEach(u=>{
+                  const sp = splits[u.sku];
+                  sp.forEach(r=>{ if(assignPosition(u.sku,r.pos,r.qty)) count++; });
+                });
+                setSplits({});setTick(t=>t+1);refresh();
+                alert(`${count} asignaciones realizadas`);
+              }} style={{width:"100%",padding:12,borderRadius:10,background:"var(--green)",color:"#fff",fontWeight:700,fontSize:13,marginBottom:12}}>
+                Confirmar {ready.length} SKUs listos para asignar
+              </button>
+            ) : null;
+          })()}
 
-          {/* Desktop table */}
-          <div className="desktop-only">
-            <table className="tbl">
-              <thead><tr><th>SKU</th><th>Producto</th><th style={{textAlign:"right"}}>Uds</th><th style={{width:160}}>Asignar a posición</th><th style={{width:80}}></th></tr></thead>
-              <tbody>{unassigned.map(u => (
-                <tr key={u.sku}>
-                  <td className="mono" style={{fontWeight:700,fontSize:12}}>{u.sku}</td>
-                  <td style={{fontSize:12,color:"var(--txt2)"}}>{u.name}</td>
-                  <td className="mono" style={{textAlign:"right",fontWeight:700,color:"var(--blue)"}}>{u.qty}</td>
-                  <td>
-                    <select className="form-select" value={assignments[u.sku]||""} onChange={e=>setAssign(u.sku,e.target.value)} style={{fontSize:11,padding:6}}>
-                      <option value="">— Seleccionar —</option>
-                      {positions.map(p=><option key={p.id} value={p.id}>{p.id} — {p.label}</option>)}
-                    </select>
-                  </td>
-                  <td>
-                    {assignments[u.sku] && <button onClick={()=>assignOne(u.sku,assignments[u.sku],u.qty)}
-                      style={{padding:"4px 10px",borderRadius:4,background:"var(--green)",color:"#fff",fontSize:10,fontWeight:700}}>OK</button>}
-                  </td>
-                </tr>
-              ))}</tbody>
-            </table>
-          </div>
+          {/* SKU list */}
+          {unassigned.map(u => {
+            const sp = splits[u.sku] || [];
+            const assigned = sp.reduce((s,r)=>s+r.qty,0);
+            const remaining = u.qty - assigned;
+            const isComplete = remaining === 0 && sp.every(r=>r.pos && r.qty>0);
+            const isOver = remaining < 0;
 
-          {/* Mobile cards */}
-          <div className="mobile-only">
-            {unassigned.map(u => (
-              <div key={u.sku} style={{padding:"10px 0",borderBottom:"1px solid var(--bg3)"}}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+            return (
+              <div key={u.sku} style={{padding:"12px 14px",marginBottom:8,borderRadius:8,background:isComplete?"var(--greenBg)":isOver?"var(--redBg)":"var(--bg2)",border:`1px solid ${isComplete?"var(--greenBd)":isOver?"var(--red)":"var(--bg3)"}`}}>
+                {/* Header */}
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:sp.length>0?8:0}}>
                   <div>
                     <span className="mono" style={{fontWeight:700,fontSize:13}}>{u.sku}</span>
-                    <div style={{fontSize:11,color:"var(--txt3)"}}>{u.name}</div>
+                    <span style={{fontSize:11,color:"var(--txt3)",marginLeft:8}}>{u.name}</span>
                   </div>
-                  <span className="mono" style={{fontWeight:700,color:"var(--blue)",fontSize:16}}>{u.qty}</span>
+                  <div style={{textAlign:"right"}}>
+                    <span className="mono" style={{fontWeight:700,color:"var(--blue)",fontSize:15}}>{u.qty}</span>
+                    <span style={{fontSize:10,color:"var(--txt3)",marginLeft:4}}>uds</span>
+                    {sp.length > 0 && remaining !== 0 && (
+                      <div style={{fontSize:10,color:isOver?"var(--red)":"var(--amber)",fontWeight:600}}>
+                        {isOver ? `${Math.abs(remaining)} de más` : `${remaining} sin asignar`}
+                      </div>
+                    )}
+                    {isComplete && <div style={{fontSize:10,color:"var(--green)",fontWeight:700}}>Listo</div>}
+                  </div>
                 </div>
-                <div style={{display:"flex",gap:6}}>
-                  <select className="form-select" value={assignments[u.sku]||""} onChange={e=>setAssign(u.sku,e.target.value)} style={{fontSize:11,padding:8,flex:1}}>
-                    <option value="">Posición...</option>
-                    {positions.map(p=><option key={p.id} value={p.id}>{p.id} — {p.label}</option>)}
-                  </select>
-                  {assignments[u.sku] && <button onClick={()=>assignOne(u.sku,assignments[u.sku],u.qty)}
-                    style={{padding:"8px 14px",borderRadius:6,background:"var(--green)",color:"#fff",fontSize:11,fontWeight:700}}>Asignar</button>}
+
+                {/* Split rows */}
+                {sp.map((row, idx) => (
+                  <div key={idx} style={{display:"flex",gap:6,alignItems:"center",marginBottom:4}}>
+                    <select className="form-select" value={row.pos} onChange={e=>{
+                      const n=[...sp]; n[idx]={...n[idx],pos:e.target.value}; setSplits(s=>({...s,[u.sku]:n}));
+                    }} style={{fontSize:11,padding:6,flex:1}}>
+                      <option value="">Posición...</option>
+                      {positions.map(p=><option key={p.id} value={p.id}>{p.id} — {p.label}</option>)}
+                    </select>
+                    <input type="number" min={1} max={u.qty} value={row.qty||""} onChange={e=>{
+                      const n=[...sp]; n[idx]={...n[idx],qty:Math.max(0,parseInt(e.target.value)||0)}; setSplits(s=>({...s,[u.sku]:n}));
+                    }} style={{width:70,textAlign:"center",padding:6,borderRadius:6,border:"1px solid var(--bg4)",background:"var(--bg1)",color:"var(--txt1)",fontSize:12,fontWeight:700}} placeholder="Cant"/>
+                    <button onClick={()=>{
+                      const n=sp.filter((_,i)=>i!==idx); setSplits(s=>({...s,[u.sku]:n}));
+                    }} style={{padding:"4px 8px",borderRadius:4,background:"var(--bg3)",color:"var(--red)",fontSize:12,fontWeight:700,border:"1px solid var(--bg4)"}}>✕</button>
+                  </div>
+                ))}
+
+                {/* Add row / quick buttons */}
+                <div style={{display:"flex",gap:6,marginTop:sp.length>0?4:0,flexWrap:"wrap"}}>
+                  {sp.length === 0 && (
+                    <button onClick={()=>{
+                      setSplits(s=>({...s,[u.sku]:[{pos:"",qty:u.qty}]}));
+                    }} style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"var(--blue)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
+                      Todo a 1 posición
+                    </button>
+                  )}
+                  <button onClick={()=>{
+                    const defQty = Math.max(0, remaining);
+                    setSplits(s=>({...s,[u.sku]:[...sp,{pos:"",qty:defQty}]}));
+                  }} style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"var(--txt2)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
+                    + Dividir en otra posición
+                  </button>
+                  {isComplete && (
+                    <button onClick={()=>{
+                      sp.forEach(r=>{ assignPosition(u.sku,r.pos,r.qty); });
+                      setSplits(s=>{const n={...s};delete n[u.sku];return n;});
+                      setTick(t=>t+1);refresh();
+                    }} style={{padding:"6px 14px",borderRadius:6,background:"var(--green)",color:"#fff",fontSize:11,fontWeight:700,marginLeft:"auto"}}>
+                      Asignar
+                    </button>
+                  )}
                 </div>
               </div>
-            ))}
-          </div>
+            );
+          })}
         </div>
       )}
 
