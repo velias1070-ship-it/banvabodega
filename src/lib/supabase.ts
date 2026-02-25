@@ -5,8 +5,8 @@
 // 3. Pégalos aquí abajo
 // 4. Ve a SQL Editor y ejecuta el SQL del archivo supabase-setup.sql
 
-const SUPABASE_URL = ""; // ej: "https://xxxxx.supabase.co"
-const SUPABASE_ANON_KEY = ""; // ej: "eyJhbGciOiJI..."
+const SUPABASE_URL = "https://qaircihuiafgnnrwcjls.supabase.co"; // ej: "https://xxxxx.supabase.co"
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFhaXJjaWh1aWFmZ25ucndjamxzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIwNTM0MDIsImV4cCI6MjA4NzYyOTQwMn0.R3jT5azcoj1IPacCo0HJFVYlLrqbbM4PoihKQoz0FS8; // ej: "eyJhbGciOiJI..."
 
 // ==================== HELPERS ====================
 export function isSupabaseConfigured(): boolean {
