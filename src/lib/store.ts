@@ -1,5 +1,7 @@
 "use client";
 
+import { schedulePush, pullFromCloud, isSupabaseConfigured } from "./supabase";
+
 // ==================== TYPES ====================
 export interface Product {
   sku: string;
@@ -367,8 +369,32 @@ export function saveStore(data?: Partial<StoreData>) {
   if (data) Object.assign(_store!, data);
   if (typeof window !== "undefined") {
     localStorage.setItem(STORE_KEY, JSON.stringify(_store));
+    // Push to Supabase (debounced, non-blocking)
+    schedulePush(_store);
   }
 }
+
+// Pull latest state from Supabase (for operator sync)
+export async function pullCloudState(): Promise<boolean> {
+  if (!isSupabaseConfigured()) return false;
+  try {
+    const result = await pullFromCloud();
+    if (!result || !result.changed || !result.data) return false;
+    const cloudData = result.data as StoreData;
+    // Validate it has expected shape
+    if (!cloudData.products || !cloudData.positions) return false;
+    _store = cloudData;
+    if (typeof window !== "undefined") {
+      localStorage.setItem(STORE_KEY, JSON.stringify(_store));
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export { isSupabaseConfigured } from "./supabase";
+export { getCloudStatus } from "./supabase";
 
 export function resetStore() {
   _store = { products: defaultProducts(), positions: defaultPositions(), stock: defaultStock(), movements: defaultMovements(), movCounter: 5 };

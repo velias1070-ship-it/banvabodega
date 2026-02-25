@@ -1,18 +1,35 @@
 "use client";
 import { useState, useCallback, useEffect, useRef } from "react";
-import { getStore, saveStore, findProduct, findPosition, activePositions, skuTotal, skuPositions, posContents, recordMovement, recordBulkMovements, fmtMoney, IN_REASONS, OUT_REASONS } from "@/lib/store";
+import { getStore, saveStore, findProduct, findPosition, activePositions, skuTotal, skuPositions, posContents, recordMovement, recordBulkMovements, fmtMoney, IN_REASONS, OUT_REASONS, pullCloudState, isSupabaseConfigured } from "@/lib/store";
 import type { Product, InReason, OutReason } from "@/lib/store";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 const BarcodeScanner = dynamic(() => import("@/components/BarcodeScanner"), { ssr: false });
 import SheetSync from "@/components/SheetSync";
 
+const CLOUD_SYNC_INTERVAL = 10_000; // 10 seconds
+
 export default function OperadorPage() {
   const [tab, setTab] = useState<"in"|"out"|"stock"|"bulk">("in");
   const [,setTick] = useState(0);
   const r = useCallback(() => setTick(t => t + 1), []);
   const [mounted, setMounted] = useState(false);
+  const [cloudOk, setCloudOk] = useState(false);
   useEffect(() => setMounted(true), []);
+
+  // Cloud sync polling
+  useEffect(() => {
+    if (!isSupabaseConfigured()) return;
+    setCloudOk(true);
+    const poll = async () => {
+      const changed = await pullCloudState();
+      if (changed) r(); // re-render with new data
+    };
+    poll(); // initial pull
+    const interval = setInterval(poll, CLOUD_SYNC_INTERVAL);
+    return () => clearInterval(interval);
+  }, [r]);
+
   if (!mounted) return null;
 
   return (
@@ -20,7 +37,10 @@ export default function OperadorPage() {
       <div className="topbar">
         <Link href="/"><button className="back-btn">&#8592;</button></Link>
         <h1>BANVA Bodega</h1>
-        <Link href="/mapa"><button style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"var(--cyan)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>🗺️ Mapa</button></Link>
+        <div style={{display:"flex",gap:6,alignItems:"center"}}>
+          {cloudOk && <span title="Sincronizado con la nube" style={{fontSize:10,color:"var(--green)"}}>☁️</span>}
+          <Link href="/mapa"><button style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"var(--cyan)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>🗺️ Mapa</button></Link>
+        </div>
       </div>
       <SheetSync onSynced={r}/>
       <div className="tabs">
