@@ -231,10 +231,20 @@ export async function importStockFromSheet(): Promise<{ imported: number; skippe
     if (lines.length < 2) return result;
 
     const s = getStore();
-    // First pass: log headers to help debug
     const headers = parseCSVLine(lines[0]);
     console.log("Sheet headers:", headers);
 
+    // STEP 1: Clear ALL previous SIN_ASIGNAR stock and import movements
+    for (const sku of Object.keys(s.stock)) {
+      if (s.stock[sku]["SIN_ASIGNAR"]) {
+        delete s.stock[sku]["SIN_ASIGNAR"];
+        if (Object.keys(s.stock[sku]).length === 0) delete s.stock[sku];
+      }
+    }
+    // Remove old import movements to keep history clean
+    s.movements = s.movements.filter(m => m.note !== "Carga inicial desde Google Sheet");
+
+    // STEP 2: Import fresh from sheet (idempotent)
     for (let i = 1; i < lines.length; i++) {
       const cols = parseCSVLine(lines[i]);
       const sku = (cols[2] || "").trim().toUpperCase();
@@ -252,11 +262,11 @@ export async function importStockFromSheet(): Promise<{ imported: number; skippe
         if (name) s.products[sku] = { sku, name, mlCode, cat: "Otros", prov: "Otro", cost: 0, price: 0, reorder: 20 };
       }
 
-      // Add stock to "SIN_ASIGNAR" position (temporary, user will assign later)
+      // SET stock (not add) to SIN_ASIGNAR
       if (!s.stock[sku]) s.stock[sku] = {};
-      s.stock[sku]["SIN_ASIGNAR"] = (s.stock[sku]["SIN_ASIGNAR"] || 0) + qty;
+      s.stock[sku]["SIN_ASIGNAR"] = qty;
 
-      // Record movement
+      // Record single movement
       s.movCounter++;
       s.movements.unshift({
         id: "M" + String(s.movCounter).padStart(4, "0"),

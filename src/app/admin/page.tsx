@@ -795,11 +795,11 @@ function CargaStock({ refresh }: { refresh: () => void }) {
               {importResult && <span style={{color:"var(--txt2)",marginLeft:8}}>— {importResult.imported} SKUs, {importResult.totalUnits.toLocaleString()} unidades</span>}
             </div>
             <button onClick={()=>{
-              if(!confirm("Reimportar? Esto agregará más stock a SIN_ASIGNAR (no borra lo anterior)"))return;
+              if(!confirm("Reimportar? Esto reemplazará el stock en SIN_ASIGNAR con los datos actuales del Sheet (no duplica)."))return;
               if(typeof window!=="undefined")localStorage.removeItem("banva_stock_imported");
               setImported(false);setImportResult(null);
             }} style={{marginTop:8,padding:"6px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--amber)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
-              Reimportar
+              Reimportar (seguro, no duplica)
             </button>
           </div>
         )}
