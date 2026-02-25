@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason } from "@/lib/store";
 import Link from "next/link";
 import SheetSync from "@/components/SheetSync";
@@ -55,10 +55,15 @@ export default function AdminPage() {
   const [,setTick] = useState(0);
   const r = useCallback(()=>setTick(t=>t+1),[]);
   const [mounted, setMounted] = useState(false);
+  const [loading, setLoading] = useState(true);
   const auth = useAuth();
-  useEffect(()=>setMounted(true),[]);
+  useEffect(()=>{
+    setMounted(true);
+    initStore().then(()=>setLoading(false));
+  },[]);
   if(!mounted) return null;
   if(!auth.ok) return <LoginGate onLogin={auth.login}/>;
+  if(loading) return <div style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100dvh",background:"var(--bg)"}}><div style={{textAlign:"center"}}><div style={{fontSize:24,fontWeight:700,marginBottom:8}}>BANVA WMS</div><div style={{color:"var(--txt3)"}}>Cargando datos...</div></div></div>;
 
   return (
     <div className="app-admin">

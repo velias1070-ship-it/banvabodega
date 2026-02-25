@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useRef } from "react";
-import { getStore, activePositions, posContents, skuPositions, getMapConfig, findProduct } from "@/lib/store";
+import { getStore, activePositions, posContents, skuPositions, getMapConfig, findProduct, initStore } from "@/lib/store";
 import type { Position } from "@/lib/store";
 import Link from "next/link";
 
@@ -14,7 +14,7 @@ export default function MapaOperador() {
   const containerRef = useRef<HTMLDivElement>(null);
   const [cellSize, setCellSize] = useState(32);
 
-  useEffect(() => setMounted(true), []);
+  useEffect(() => { initStore().then(() => setMounted(true)); }, []);
   const cfg = mounted ? getMapConfig() : { gridW: 20, gridH: 14, objects: [] };
   const positions = mounted ? getStore().positions.filter(p => p.active) : [];
 

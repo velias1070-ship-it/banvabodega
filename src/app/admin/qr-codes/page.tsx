@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect } from "react";
-import { getStore, activePositions } from "@/lib/store";
+import { getStore, activePositions, initStore } from "@/lib/store";
 import Link from "next/link";
 
 export default function QRCodesPage() {
@@ -10,7 +10,7 @@ export default function QRCodesPage() {
   const [generating, setGenerating] = useState(false);
   const [qrImages, setQrImages] = useState<Record<string,string>>({});
 
-  useEffect(() => { setMounted(true); }, []);
+  useEffect(() => { initStore().then(() => setMounted(true)); }, []);
 
   const positions = activePositions();
   const filtered = filterType === "all" ? positions : positions.filter(p => p.type === filterType);

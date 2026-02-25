@@ -1,36 +1,41 @@
 "use client";
 import { useState, useCallback, useEffect, useRef } from "react";
-import { getStore, saveStore, findProduct, findPosition, activePositions, skuTotal, skuPositions, posContents, recordMovement, recordBulkMovements, fmtMoney, IN_REASONS, OUT_REASONS, pullCloudState, isSupabaseConfigured } from "@/lib/store";
+import { getStore, saveStore, findProduct, findPosition, activePositions, skuTotal, skuPositions, posContents, recordMovement, recordBulkMovements, fmtMoney, IN_REASONS, OUT_REASONS, initStore, isStoreReady, refreshStore, isSupabaseConfigured } from "@/lib/store";
 import type { Product, InReason, OutReason } from "@/lib/store";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 const BarcodeScanner = dynamic(() => import("@/components/BarcodeScanner"), { ssr: false });
 import SheetSync from "@/components/SheetSync";
 
-const CLOUD_SYNC_INTERVAL = 10_000; // 10 seconds
+const CLOUD_SYNC_INTERVAL = 10_000;
 
 export default function OperadorPage() {
   const [tab, setTab] = useState<"in"|"out"|"stock"|"bulk">("in");
   const [,setTick] = useState(0);
   const r = useCallback(() => setTick(t => t + 1), []);
   const [mounted, setMounted] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [cloudOk, setCloudOk] = useState(false);
-  useEffect(() => setMounted(true), []);
+
+  useEffect(() => {
+    setMounted(true);
+    initStore().then(() => setLoading(false));
+  }, []);
 
   // Cloud sync polling
   useEffect(() => {
-    if (!isSupabaseConfigured()) return;
+    if (!isSupabaseConfigured() || loading) return;
     setCloudOk(true);
     const poll = async () => {
-      const changed = await pullCloudState();
-      if (changed) r(); // re-render with new data
+      await refreshStore();
+      r();
     };
-    poll(); // initial pull
     const interval = setInterval(poll, CLOUD_SYNC_INTERVAL);
     return () => clearInterval(interval);
-  }, [r]);
+  }, [r, loading]);
 
   if (!mounted) return null;
+  if (loading) return <div style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100dvh",background:"var(--bg)"}}><div style={{textAlign:"center"}}><div style={{fontSize:24,fontWeight:700,marginBottom:8}}>BANVA Bodega</div><div style={{color:"var(--txt3)"}}>Conectando...</div></div></div>;
 
   return (
     <div className="app">

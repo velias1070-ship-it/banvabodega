@@ -1,17 +1,19 @@
 "use client";
+import * as db from "./db";
+import { isConfigured } from "./supabase";
+export { isConfigured as isSupabaseConfigured } from "./supabase";
 
-import { schedulePush, pullFromCloud, isSupabaseConfigured } from "./supabase";
-
-// ==================== TYPES ====================
+// ==================== TYPES (backward compatible) ====================
 export interface Product {
   sku: string;
   name: string;
-  mlCode: string;       // codigo ML de la etiqueta
+  mlCode: string;
   cat: string;
   prov: string;
   cost: number;
   price: number;
   reorder: number;
+  requiresLabel?: boolean;
 }
 
 export interface Position {
@@ -19,30 +21,19 @@ export interface Position {
   label: string;
   type: "pallet" | "shelf";
   active: boolean;
-  // Map coordinates (grid units)
-  mx?: number;
-  my?: number;
-  mw?: number;
-  mh?: number;
+  mx?: number; my?: number; mw?: number; mh?: number;
   color?: string;
 }
 
 export interface MapObject {
-  id: string;
-  label: string;
+  id: string; label: string;
   kind: "desk" | "door" | "wall" | "zone" | "label";
-  mx: number;
-  my: number;
-  mw: number;
-  mh: number;
-  color: string;
-  rotation?: number;
+  mx: number; my: number; mw: number; mh: number;
+  color: string; rotation?: number;
 }
 
 export interface MapConfig {
-  gridW: number;  // warehouse width in grid units
-  gridH: number;  // warehouse height in grid units
-  objects: MapObject[];
+  gridW: number; gridH: number; objects: MapObject[];
 }
 
 export type InReason = "compra" | "devolucion" | "ajuste_entrada" | "transferencia_in";
@@ -50,18 +41,12 @@ export type OutReason = "venta_flex" | "envio_full" | "ajuste_salida" | "merma";
 export type MovType = "in" | "out";
 
 export interface Movement {
-  id: string;
-  ts: string;           // ISO timestamp
-  type: MovType;
+  id: string; ts: string; type: MovType;
   reason: InReason | OutReason;
-  sku: string;
-  pos: string;          // position id
-  qty: number;
-  who: string;          // operator name
-  note: string;         // optional note/reference
+  sku: string; pos: string; qty: number;
+  who: string; note: string;
 }
 
-// stock[sku][positionId] = quantity
 export type StockMap = Record<string, Record<string, number>>;
 
 export interface StoreData {
@@ -73,451 +58,367 @@ export interface StoreData {
   mapConfig?: MapConfig;
 }
 
-// ==================== REASON LABELS ====================
+// ==================== CONSTANTS ====================
 export const IN_REASONS: Record<InReason, string> = {
-  compra: "Compra de inventario",
-  devolucion: "Devolución",
-  ajuste_entrada: "Ajuste (+)",
-  transferencia_in: "Transferencia entrada",
+  compra: "Compra de inventario", devolucion: "Devolución",
+  ajuste_entrada: "Ajuste (+)", transferencia_in: "Transferencia entrada",
 };
-
 export const OUT_REASONS: Record<OutReason, string> = {
-  venta_flex: "Venta Flex",
-  envio_full: "Envío a ML Full",
-  ajuste_salida: "Ajuste (-)",
-  merma: "Merma / Pérdida",
+  venta_flex: "Venta Flex", envio_full: "Envío a ML Full",
+  ajuste_salida: "Ajuste (-)", merma: "Merma / Pérdida",
 };
 
-export const DEFAULT_CATEGORIAS = ["Sábanas", "Toallas", "Quilts", "Almohadas", "Fundas", "Cuero", "Otros"];
-export const DEFAULT_PROVEEDORES = ["Idetex", "Container", "Biblias", "Mates", "Delart", "Esperanza", "Otro"];
-
-const CAT_KEY = "banva_categorias";
-const PROV_KEY = "banva_proveedores";
+// Categorías y proveedores — localStorage para config de UI
+const DEFAULT_CATEGORIAS = ["Sábanas", "Toallas", "Quilts", "Almohadas", "Fundas", "Cuero", "Otros"];
+const DEFAULT_PROVEEDORES = ["Idetex", "Container", "Biblias", "Mates", "Delart", "Esperanza", "Otro"];
 
 export function getCategorias(): string[] {
   if (typeof window === "undefined") return DEFAULT_CATEGORIAS;
-  try { const raw = localStorage.getItem(CAT_KEY); if (raw) return JSON.parse(raw); } catch {}
+  try { const r = localStorage.getItem("banva_categorias"); if (r) return JSON.parse(r); } catch {}
   return DEFAULT_CATEGORIAS;
 }
 export function saveCategorias(cats: string[]) {
-  if (typeof window !== "undefined") localStorage.setItem(CAT_KEY, JSON.stringify(cats));
+  if (typeof window !== "undefined") localStorage.setItem("banva_categorias", JSON.stringify(cats));
 }
 export function getProveedores(): string[] {
   if (typeof window === "undefined") return DEFAULT_PROVEEDORES;
-  try { const raw = localStorage.getItem(PROV_KEY); if (raw) return JSON.parse(raw); } catch {}
+  try { const r = localStorage.getItem("banva_proveedores"); if (r) return JSON.parse(r); } catch {}
   return DEFAULT_PROVEEDORES;
 }
 export function saveProveedores(provs: string[]) {
-  if (typeof window !== "undefined") localStorage.setItem(PROV_KEY, JSON.stringify(provs));
+  if (typeof window !== "undefined") localStorage.setItem("banva_proveedores", JSON.stringify(provs));
 }
 
-// Keep backward-compatible exports
-export const CATEGORIAS = DEFAULT_CATEGORIAS;
-export const PROVEEDORES = DEFAULT_PROVEEDORES;
+// ==================== CACHE ====================
+let _cache: StoreData = {
+  products: {}, positions: [], stock: {}, movements: [], movCounter: 0,
+};
+let _initialized = false;
+let _loading = false;
 
-// ==================== DEFAULT DATA ====================
-function defaultPositions(): Position[] {
-  const pos: Position[] = [];
-  for (let i = 1; i <= 15; i++) {
-    pos.push({ id: String(i), label: `Posición ${i}`, type: "pallet", active: true });
-  }
-  // A few shelf positions
-  for (let e = 1; e <= 2; e++) {
-    for (let n = 1; n <= 3; n++) {
-      pos.push({ id: `E${e}-${n}`, label: `Estante ${e} Nivel ${n}`, type: "shelf", active: true });
-    }
-  }
-  return pos;
-}
-
-function defaultProducts(): Record<string, Product> {
-  return {
-    "TOA-042": { sku: "TOA-042", name: "Toalla Diseño 042", mlCode: "MLC-882734", cat: "Toallas", prov: "Container", cost: 5200, price: 14990, reorder: 30 },
-    "SAB-001": { sku: "SAB-001", name: "Sábanas Diseño 001", mlCode: "MLC-991205", cat: "Sábanas", prov: "Idetex", cost: 8500, price: 24990, reorder: 25 },
-    "QUI-003": { sku: "QUI-003", name: "Quilt Diseño 003", mlCode: "MLC-774521", cat: "Quilts", prov: "Idetex", cost: 12000, price: 34990, reorder: 20 },
-    "ALM-004": { sku: "ALM-004", name: "Almohada Diseño 004", mlCode: "MLC-663418", cat: "Almohadas", prov: "Mates", cost: 3800, price: 9990, reorder: 40 },
-  };
-}
-
-function defaultStock(): StockMap {
-  return {
-    "TOA-042": { "1": 25, "5": 30 },
-    "SAB-001": { "2": 45 },
-    "QUI-003": { "3": 30, "E1-2": 10 },
-    "ALM-004": { "E1-1": 80 },
-  };
-}
-
-function defaultMovements(): Movement[] {
-  return [
-    { id: "M001", ts: "2026-02-20T09:30:00", type: "in", reason: "compra", sku: "TOA-042", pos: "1", qty: 25, who: "Vicente", note: "Factura Container #412" },
-    { id: "M002", ts: "2026-02-20T14:00:00", type: "out", reason: "envio_full", sku: "SAB-001", pos: "2", qty: 30, who: "Vicente", note: "Envío ML Full #88901" },
-    { id: "M003", ts: "2026-02-21T10:15:00", type: "in", reason: "compra", sku: "ALM-004", pos: "E1-1", qty: 80, who: "Operario", note: "Factura Mates #413" },
-    { id: "M004", ts: "2026-02-21T16:45:00", type: "out", reason: "venta_flex", sku: "QUI-003", pos: "3", qty: 2, who: "Sistema", note: "Orden ML #77234521" },
-  ];
-}
-
-// ==================== GOOGLE SHEETS SYNC ====================
-const SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRqskx-hK2bLc8vDOflxzx6dtyZZZm81c_pfLhSPz1KJL_FVTcGQjg75iftOyi-tU9hJGidJqu6jjtW/pub?gid=224135022&single=true&output=csv";
-const SYNC_KEY = "banva_sheet_last_sync";
-const SYNC_INTERVAL = 5 * 60 * 1000; // 5 minutes
-const STOCK_IMPORTED_KEY = "banva_stock_imported";
-
-function parseCSVLine(line: string): string[] {
-  const cells: string[] = [];
-  let current = "", inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') { inQuotes = !inQuotes; }
-    else if (ch === ',' && !inQuotes) { cells.push(current.trim()); current = ""; }
-    else { current += ch; }
-  }
-  cells.push(current.trim());
-  return cells;
-}
-
-export async function syncFromSheet(): Promise<{ added: number; updated: number; total: number }> {
-  const result = { added: 0, updated: 0, total: 0 };
+// ==================== INIT (call on mount) ====================
+export async function initStore(): Promise<void> {
+  if (_initialized || _loading) return;
+  if (!isConfigured()) { _initialized = true; return; }
+  _loading = true;
   try {
-    const resp = await fetch(SHEET_CSV_URL, { cache: "no-store" });
-    if (!resp.ok) throw new Error("HTTP " + resp.status);
-    const text = await resp.text();
-    const lines = text.split("\n").map(l => l.replace(/\r/g, "").trim()).filter(l => l.length > 0);
-    if (lines.length < 2) return result;
+    const [prods, poss, stocks, movs, mapCfg] = await Promise.all([
+      db.fetchProductos(),
+      db.fetchPosiciones(),
+      db.fetchStock(),
+      db.fetchMovimientos(500),
+      db.fetchMapConfig(),
+    ]);
 
-    // Skip header row
-    const s = getStore();
-    for (let i = 1; i < lines.length; i++) {
-      const cols = parseCSVLine(lines[i]);
-      const mlCode = (cols[0] || "").trim();
-      const name = (cols[1] || "").trim();
-      const sku = (cols[2] || "").trim().toUpperCase();
-      if (!sku || !name) continue;
+    // Products → Record<sku, Product>
+    const products: Record<string, Product> = {};
+    for (const p of prods) {
+      products[p.sku] = {
+        sku: p.sku, name: p.nombre, mlCode: p.codigo_ml,
+        cat: p.categoria, prov: p.proveedor, cost: p.costo,
+        price: p.precio, reorder: p.reorder,
+        requiresLabel: p.requiere_etiqueta,
+      };
+    }
 
-      result.total++;
-      if (s.products[sku]) {
-        if (s.products[sku].name !== name || s.products[sku].mlCode !== mlCode) {
-          s.products[sku].name = name;
-          s.products[sku].mlCode = mlCode;
-          result.updated++;
-        }
-      } else {
-        s.products[sku] = { sku, name, mlCode, cat: "Otros", prov: "Otro", cost: 0, price: 0, reorder: 20 };
-        result.added++;
-      }
+    // Positions
+    const positions: Position[] = poss.map(p => ({
+      id: p.id, label: p.label, type: p.tipo as "pallet" | "shelf",
+      active: p.activa, mx: p.mx, my: p.my, mw: p.mw, mh: p.mh, color: p.color,
+    }));
+
+    // Stock → StockMap
+    const stock: StockMap = {};
+    for (const s of stocks) {
+      if (!stock[s.sku]) stock[s.sku] = {};
+      stock[s.sku][s.posicion_id] = s.cantidad;
     }
-    saveStore();
-    if (typeof window !== "undefined") {
-      localStorage.setItem(SYNC_KEY, Date.now().toString());
+
+    // Movements
+    const movements: Movement[] = movs.map(m => ({
+      id: m.id || "", ts: m.created_at || "", type: m.tipo === "entrada" ? "in" as const : "out" as const,
+      reason: mapMotivo(m.motivo), sku: m.sku, pos: m.posicion_id,
+      qty: m.cantidad, who: m.operario, note: m.nota,
+    }));
+
+    // Map config
+    let mapConfig: MapConfig | undefined;
+    if (mapCfg) {
+      mapConfig = {
+        gridW: mapCfg.grid_w, gridH: mapCfg.grid_h,
+        objects: (mapCfg.config as MapObject[]) || [],
+      };
     }
+
+    _cache = { products, positions, stock, movements, movCounter: movements.length, mapConfig };
+    _initialized = true;
   } catch (err) {
-    console.error("Sheet sync error:", err);
+    console.error("initStore error:", err);
+    _initialized = true; // Allow app to work even if init fails
   }
-  return result;
+  _loading = false;
 }
 
-// Import stock quantities from Sheet column K (index 10) — ONE TIME use
-const STOCK_IMPORT_KEY = "banva_stock_imported";
-export function wasStockImported(): boolean {
-  if (typeof window === "undefined") return false;
-  return localStorage.getItem(STOCK_IMPORT_KEY) === "1";
+// Refresh cache from DB (for polling)
+export async function refreshStore(): Promise<boolean> {
+  if (!isConfigured()) return false;
+  const prev = _initialized;
+  _initialized = false;
+  _loading = false;
+  await initStore();
+  return prev; // true if was already initialized (i.e. this is a refresh)
 }
 
-export async function importStockFromSheet(): Promise<{ imported: number; skipped: number; totalUnits: number }> {
-  const result = { imported: 0, skipped: 0, totalUnits: 0 };
-  try {
-    const resp = await fetch(SHEET_CSV_URL, { cache: "no-store" });
-    if (!resp.ok) throw new Error("HTTP " + resp.status);
-    const text = await resp.text();
-    const lines = text.split("\n").map(l => l.replace(/\r/g, "").trim()).filter(l => l.length > 0);
-    if (lines.length < 2) return result;
-
-    const s = getStore();
-    const headers = parseCSVLine(lines[0]);
-    console.log("Sheet headers:", headers);
-
-    // STEP 1: Clear ALL previous SIN_ASIGNAR stock and import movements
-    for (const sku of Object.keys(s.stock)) {
-      if (s.stock[sku]["SIN_ASIGNAR"]) {
-        delete s.stock[sku]["SIN_ASIGNAR"];
-        if (Object.keys(s.stock[sku]).length === 0) delete s.stock[sku];
-      }
-    }
-    // Remove old import movements to keep history clean
-    s.movements = s.movements.filter(m => m.note !== "Carga inicial desde Google Sheet");
-
-    // STEP 2: Import fresh from sheet (idempotent)
-    for (let i = 1; i < lines.length; i++) {
-      const cols = parseCSVLine(lines[i]);
-      const sku = (cols[2] || "").trim().toUpperCase();
-      if (!sku) continue;
-
-      // Column K = index 10
-      const rawQty = (cols[10] || "").replace(/[^0-9]/g, "");
-      const qty = parseInt(rawQty) || 0;
-      if (qty <= 0) { result.skipped++; continue; }
-
-      // Ensure product exists
-      if (!s.products[sku]) {
-        const mlCode = (cols[0] || "").trim();
-        const name = (cols[1] || "").trim();
-        if (name) s.products[sku] = { sku, name, mlCode, cat: "Otros", prov: "Otro", cost: 0, price: 0, reorder: 20 };
-      }
-
-      // SET stock (not add) to SIN_ASIGNAR
-      if (!s.stock[sku]) s.stock[sku] = {};
-      s.stock[sku]["SIN_ASIGNAR"] = qty;
-
-      // Record single movement
-      s.movCounter++;
-      s.movements.unshift({
-        id: "M" + String(s.movCounter).padStart(4, "0"),
-        ts: new Date().toISOString(),
-        type: "in", reason: "ajuste_entrada",
-        sku, pos: "SIN_ASIGNAR", qty,
-        who: "Importación", note: "Carga inicial desde Google Sheet"
-      });
-
-      result.imported++;
-      result.totalUnits += qty;
-    }
-
-    // Ensure SIN_ASIGNAR position exists
-    if (!s.positions.find(p => p.id === "SIN_ASIGNAR")) {
-      s.positions.push({ id: "SIN_ASIGNAR", label: "Sin asignar", type: "pallet", active: true });
-    }
-
-    saveStore();
-    if (typeof window !== "undefined") localStorage.setItem(STOCK_IMPORT_KEY, "1");
-  } catch (err) {
-    console.error("Stock import error:", err);
-  }
-  return result;
+function mapMotivo(motivo: string): InReason | OutReason {
+  const map: Record<string, InReason | OutReason> = {
+    recepcion: "compra", compra: "compra", devolucion: "devolucion",
+    ajuste_entrada: "ajuste_entrada", carga_inicial: "ajuste_entrada",
+    transferencia_in: "transferencia_in", transferencia_out: "ajuste_salida",
+    venta_flex: "venta_flex", envio_full: "envio_full",
+    ajuste_salida: "ajuste_salida", merma: "merma", ajuste: "ajuste_entrada",
+  };
+  return map[motivo] || "ajuste_entrada";
 }
 
-// Get all SKUs that have stock in SIN_ASIGNAR
-export function getUnassignedStock(): { sku: string; name: string; qty: number }[] {
-  const s = getStore();
-  const items: { sku: string; name: string; qty: number }[] = [];
-  for (const [sku, posMap] of Object.entries(s.stock)) {
-    const qty = posMap["SIN_ASIGNAR"] || 0;
-    if (qty > 0) {
-      const prod = s.products[sku];
-      items.push({ sku, name: prod?.name || sku, qty });
-    }
-  }
-  return items.sort((a, b) => b.qty - a.qty);
+function motivoToDB(reason: InReason | OutReason, type: MovType): string {
+  if (reason === "compra") return "recepcion";
+  return reason;
 }
 
-// Move stock from SIN_ASIGNAR to a real position
-export function assignPosition(sku: string, targetPos: string, qty: number): boolean {
-  const s = getStore();
-  if (!s.stock[sku] || !s.stock[sku]["SIN_ASIGNAR"] || s.stock[sku]["SIN_ASIGNAR"] < qty) return false;
-
-  // Remove from SIN_ASIGNAR
-  s.stock[sku]["SIN_ASIGNAR"] -= qty;
-  if (s.stock[sku]["SIN_ASIGNAR"] <= 0) delete s.stock[sku]["SIN_ASIGNAR"];
-
-  // Add to target
-  if (!s.stock[sku]) s.stock[sku] = {};
-  s.stock[sku][targetPos] = (s.stock[sku][targetPos] || 0) + qty;
-
-  // Record movements
-  s.movCounter++;
-  s.movements.unshift({ id: "M" + String(s.movCounter).padStart(4, "0"), ts: new Date().toISOString(), type: "out", reason: "ajuste_salida", sku, pos: "SIN_ASIGNAR", qty, who: "Admin", note: "Asignación → " + targetPos });
-  s.movCounter++;
-  s.movements.unshift({ id: "M" + String(s.movCounter).padStart(4, "0"), ts: new Date().toISOString(), type: "in", reason: "transferencia_in", sku, pos: targetPos, qty, who: "Admin", note: "Asignación ← SIN_ASIGNAR" });
-
-  saveStore();
-  return true;
-}
-
-export function shouldSync(): boolean {
-  if (typeof window === "undefined") return false;
-  const last = localStorage.getItem(SYNC_KEY);
-  if (!last) return true;
-  return Date.now() - parseInt(last) > SYNC_INTERVAL;
-}
-
-export function getLastSyncTime(): string | null {
-  if (typeof window === "undefined") return null;
-  const last = localStorage.getItem(SYNC_KEY);
-  if (!last) return null;
-  try { return new Date(parseInt(last)).toLocaleString("es-CL"); } catch { return null; }
-}
-
-// ==================== STORE MANAGEMENT ====================
-let _store: StoreData | null = null;
-const STORE_KEY = "banva_wms";
-
+// ==================== SYNC READ (from cache) ====================
 export function getStore(): StoreData {
-  if (_store) return _store;
-  if (typeof window === "undefined") {
-    return { products: defaultProducts(), positions: defaultPositions(), stock: defaultStock(), movements: defaultMovements(), movCounter: 5 };
-  }
-  try {
-    const raw = localStorage.getItem(STORE_KEY);
-    if (raw) { _store = JSON.parse(raw); return _store!; }
-  } catch {}
-  _store = { products: defaultProducts(), positions: defaultPositions(), stock: defaultStock(), movements: defaultMovements(), movCounter: 5 };
-  localStorage.setItem(STORE_KEY, JSON.stringify(_store));
-  return _store;
+  return _cache;
 }
 
-export function saveStore(data?: Partial<StoreData>) {
-  if (!_store) getStore();
-  if (data) Object.assign(_store!, data);
-  if (typeof window !== "undefined") {
-    localStorage.setItem(STORE_KEY, JSON.stringify(_store));
-    // Push to Supabase (debounced, non-blocking)
-    schedulePush(_store);
-  }
+export function isStoreReady(): boolean {
+  return _initialized;
 }
 
-// Pull latest state from Supabase (for operator sync)
-export async function pullCloudState(): Promise<boolean> {
-  if (!isSupabaseConfigured()) return false;
+export function saveStore(_data?: Partial<StoreData>) {
+  if (_data) Object.assign(_cache, _data);
+  // Debounced flush to Supabase
+  scheduleFlush();
+}
+
+let _flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleFlush() {
+  if (!isConfigured()) return;
+  if (_flushTimer) clearTimeout(_flushTimer);
+  _flushTimer = setTimeout(flushToSupabase, 500);
+}
+
+async function flushToSupabase() {
   try {
-    const result = await pullFromCloud();
-    if (!result || !result.changed || !result.data) return false;
-    const cloudData = result.data as StoreData;
-    // Validate it has expected shape
-    if (!cloudData.products || !cloudData.positions) return false;
-    _store = cloudData;
-    if (typeof window !== "undefined") {
-      localStorage.setItem(STORE_KEY, JSON.stringify(_store));
+    // Flush products
+    const dbProds: db.DBProduct[] = Object.values(_cache.products).map(p => ({
+      sku: p.sku, sku_venta: "", codigo_ml: p.mlCode, nombre: p.name,
+      categoria: p.cat, proveedor: p.prov, costo: p.cost, precio: p.price,
+      reorder: p.reorder, requiere_etiqueta: p.requiresLabel !== false,
+    }));
+    if (dbProds.length > 0) await db.upsertProductos(dbProds);
+
+    // Flush positions
+    for (const p of _cache.positions) {
+      await db.upsertPosicion({
+        id: p.id, label: p.label, tipo: p.type, activa: p.active,
+        mx: p.mx || 0, my: p.my || 0, mw: p.mw || 2, mh: p.mh || 2, color: p.color || "#3b82f6",
+      });
     }
-    return true;
-  } catch {
-    return false;
+
+    // Flush stock (reconcile: set each sku+pos to exact value)
+    const currentDBStock = await db.fetchStock();
+    const dbStockMap = new Map(currentDBStock.map(s => [`${s.sku}|${s.posicion_id}`, s.cantidad]));
+    
+    // Set values from cache
+    for (const [sku, posMap] of Object.entries(_cache.stock)) {
+      for (const [posId, qty] of Object.entries(posMap)) {
+        if (qty > 0) {
+          const key = `${sku}|${posId}`;
+          if (dbStockMap.get(key) !== qty) {
+            await db.setStock(sku, posId, qty);
+          }
+          dbStockMap.delete(key);
+        }
+      }
+    }
+    // Delete stock that's in DB but not in cache
+    Array.from(dbStockMap.entries()).forEach(([key]) => {
+      const [sku, posId] = key.split("|");
+      db.setStock(sku, posId, 0).catch(console.error);
+    });
+  } catch (err) {
+    console.error("Flush to Supabase error:", err);
   }
 }
-
-export { isSupabaseConfigured } from "./supabase";
-export { getCloudStatus } from "./supabase";
 
 export function resetStore() {
-  _store = { products: defaultProducts(), positions: defaultPositions(), stock: defaultStock(), movements: defaultMovements(), movCounter: 5 };
-  if (typeof window !== "undefined") localStorage.setItem(STORE_KEY, JSON.stringify(_store));
+  _cache = { products: {}, positions: [], stock: {}, movements: [], movCounter: 0 };
 }
 
-// ==================== HELPERS ====================
-export function nextMovId(): string {
-  const s = getStore();
-  s.movCounter++;
-  saveStore();
-  return "M" + String(s.movCounter).padStart(4, "0");
-}
-
-// Get total stock of a SKU across all positions
+// ==================== STOCK HELPERS (sync, from cache) ====================
 export function skuTotal(sku: string): number {
-  const st = getStore().stock[sku];
+  const st = _cache.stock[sku];
   if (!st) return 0;
   return Object.values(st).reduce((a, b) => a + b, 0);
 }
 
-// Get all positions where a SKU has stock
 export function skuPositions(sku: string): { pos: string; label: string; qty: number }[] {
-  const s = getStore();
-  const st = s.stock[sku];
+  const st = _cache.stock[sku];
   if (!st) return [];
   return Object.entries(st)
     .filter(([, q]) => q > 0)
     .map(([posId, qty]) => {
-      const p = s.positions.find(p => p.id === posId);
+      const p = _cache.positions.find(p => p.id === posId);
       return { pos: posId, label: p ? p.label : `Pos ${posId}`, qty };
     })
     .sort((a, b) => b.qty - a.qty);
 }
 
-// Get contents of a position
 export function posContents(posId: string): { sku: string; name: string; qty: number }[] {
-  const s = getStore();
   const items: { sku: string; name: string; qty: number }[] = [];
-  for (const [sku, posMap] of Object.entries(s.stock)) {
+  for (const [sku, posMap] of Object.entries(_cache.stock)) {
     if (posMap[posId] && posMap[posId] > 0) {
-      const prod = s.products[sku];
+      const prod = _cache.products[sku];
       items.push({ sku, name: prod?.name || sku, qty: posMap[posId] });
     }
   }
   return items.sort((a, b) => b.qty - a.qty);
 }
 
-// Active positions only
 export function activePositions(): Position[] {
-  return getStore().positions.filter(p => p.active);
+  return _cache.positions.filter(p => p.active);
 }
 
-// Find product by SKU, mlCode, or partial name
 export function findProduct(query: string): Product[] {
-  const s = getStore();
   const q = query.toLowerCase().trim();
   if (!q) return [];
-  return Object.values(s.products).filter(p =>
+  return Object.values(_cache.products).filter(p =>
     p.sku.toLowerCase().includes(q) ||
     p.name.toLowerCase().includes(q) ||
     p.mlCode.toLowerCase().includes(q)
   );
 }
 
-// Find position by ID or from QR data
 export function findPosition(code: string): Position | null {
-  const s = getStore();
   const clean = code.replace("BANVA-POS:", "").replace("BANVA-LOC:", "").trim();
-  return s.positions.find(p => p.id === clean && p.active) || null;
+  return _cache.positions.find(p => p.id === clean && p.active) || null;
 }
 
-// Record a movement and update stock
-export function recordMovement(m: Omit<Movement, "id">): Movement {
-  const s = getStore();
-  const mov: Movement = { ...m, id: nextMovId() };
+// ==================== ASYNC MUTATIONS ====================
 
-  // Update stock
-  if (!s.stock[m.sku]) s.stock[m.sku] = {};
+// Record movement + update stock (writes to Supabase + cache)
+export async function recordMovementAsync(m: Omit<Movement, "id">): Promise<Movement> {
+  const mov: Movement = { ...m, id: "M" + Date.now() };
+
+  // Update cache
+  if (!_cache.stock[m.sku]) _cache.stock[m.sku] = {};
   if (m.type === "in") {
-    s.stock[m.sku][m.pos] = (s.stock[m.sku][m.pos] || 0) + m.qty;
+    _cache.stock[m.sku][m.pos] = (_cache.stock[m.sku][m.pos] || 0) + m.qty;
   } else {
-    s.stock[m.sku][m.pos] = Math.max(0, (s.stock[m.sku][m.pos] || 0) - m.qty);
-    if (s.stock[m.sku][m.pos] === 0) delete s.stock[m.sku][m.pos];
+    _cache.stock[m.sku][m.pos] = Math.max(0, (_cache.stock[m.sku][m.pos] || 0) - m.qty);
+    if (_cache.stock[m.sku][m.pos] === 0) delete _cache.stock[m.sku][m.pos];
   }
+  _cache.movements.unshift(mov);
 
-  s.movements.unshift(mov);
-  saveStore();
+  // Write to Supabase
+  if (isConfigured()) {
+    const delta = m.type === "in" ? m.qty : -m.qty;
+    await db.updateStock(m.sku, m.pos, delta);
+    await db.insertMovimiento({
+      tipo: m.type === "in" ? "entrada" : "salida",
+      motivo: motivoToDB(m.reason, m.type),
+      sku: m.sku, posicion_id: m.pos, cantidad: m.qty,
+      operario: m.who, nota: m.note,
+    });
+  }
   return mov;
 }
 
-// Record bulk movements (for large shipments)
-export function recordBulkMovements(items: { sku: string; pos: string; qty: number }[], type: MovType, reason: InReason | OutReason, who: string, note: string): number {
-  const s = getStore();
+// Backward compat sync wrapper (fires async, returns immediately)
+export function recordMovement(m: Omit<Movement, "id">): Movement {
+  const mov: Movement = { ...m, id: "M" + Date.now() };
+  if (!_cache.stock[m.sku]) _cache.stock[m.sku] = {};
+  if (m.type === "in") {
+    _cache.stock[m.sku][m.pos] = (_cache.stock[m.sku][m.pos] || 0) + m.qty;
+  } else {
+    _cache.stock[m.sku][m.pos] = Math.max(0, (_cache.stock[m.sku][m.pos] || 0) - m.qty);
+    if (_cache.stock[m.sku][m.pos] === 0) delete _cache.stock[m.sku][m.pos];
+  }
+  _cache.movements.unshift(mov);
+
+  // Fire & forget to Supabase
+  if (isConfigured()) {
+    const delta = m.type === "in" ? m.qty : -m.qty;
+    db.updateStock(m.sku, m.pos, delta).catch(console.error);
+    db.insertMovimiento({
+      tipo: m.type === "in" ? "entrada" : "salida",
+      motivo: motivoToDB(m.reason, m.type),
+      sku: m.sku, posicion_id: m.pos, cantidad: m.qty,
+      operario: m.who, nota: m.note,
+    }).catch(console.error);
+  }
+  return mov;
+}
+
+export function recordBulkMovements(
+  items: { sku: string; pos: string; qty: number }[],
+  type: MovType, reason: InReason | OutReason, who: string, note: string
+): number {
   let count = 0;
   for (const item of items) {
     if (!item.sku || !item.pos || item.qty <= 0) continue;
-    if (!s.stock[item.sku]) s.stock[item.sku] = {};
-    if (type === "in") {
-      s.stock[item.sku][item.pos] = (s.stock[item.sku][item.pos] || 0) + item.qty;
-    } else {
-      s.stock[item.sku][item.pos] = Math.max(0, (s.stock[item.sku][item.pos] || 0) - item.qty);
-      if (s.stock[item.sku][item.pos] === 0) delete s.stock[item.sku][item.pos];
-    }
-    s.movements.unshift({
-      id: nextMovId(), ts: new Date().toISOString(), type, reason,
-      sku: item.sku, pos: item.pos, qty: item.qty, who, note
+    recordMovement({
+      ts: new Date().toISOString(), type, reason,
+      sku: item.sku, pos: item.pos, qty: item.qty, who, note,
     });
     count++;
   }
-  saveStore();
   return count;
 }
 
-// Format helpers
-export function fmtDate(iso: string) { try { return new Date(iso).toLocaleDateString("es-CL"); } catch { return iso; } }
-export function fmtTime(iso: string) { try { return new Date(iso).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" }); } catch { return iso; } }
-export function fmtMoney(n: number) { return "$" + n.toLocaleString("es-CL"); }
+// Product CRUD (async)
+export async function saveProductAsync(p: Product) {
+  _cache.products[p.sku] = p;
+  if (isConfigured()) {
+    await db.upsertProducto({
+      sku: p.sku, sku_venta: "", codigo_ml: p.mlCode, nombre: p.name,
+      categoria: p.cat, proveedor: p.prov, costo: p.cost, precio: p.price,
+      reorder: p.reorder, requiere_etiqueta: p.requiresLabel !== false,
+    });
+  }
+}
+
+export async function deleteProductAsync(sku: string) {
+  const hasStock = skuTotal(sku) > 0;
+  if (hasStock) {
+    delete _cache.stock[sku];
+    if (isConfigured()) await db.deleteStockBySku(sku);
+  }
+  delete _cache.products[sku];
+  if (isConfigured()) await db.deleteProducto(sku);
+}
+
+// Position CRUD (async)
+export async function savePosAsync(p: Position) {
+  const idx = _cache.positions.findIndex(x => x.id === p.id);
+  if (idx >= 0) _cache.positions[idx] = p; else _cache.positions.push(p);
+  if (isConfigured()) {
+    await db.upsertPosicion({
+      id: p.id, label: p.label, tipo: p.type, activa: p.active,
+      mx: p.mx || 0, my: p.my || 0, mw: p.mw || 2, mh: p.mh || 2, color: p.color || "#3b82f6",
+    });
+  }
+}
+
+export async function deletePosAsync(id: string) {
+  _cache.positions = _cache.positions.filter(p => p.id !== id);
+  if (isConfigured()) await db.deletePosicion(id);
+}
 
 // ==================== MAP CONFIG ====================
 export function getMapConfig(): MapConfig {
-  const s = getStore();
-  if (s.mapConfig) return s.mapConfig;
+  if (_cache.mapConfig) return _cache.mapConfig;
   return { gridW: 20, gridH: 14, objects: [
     { id: "door1", label: "ENTRADA", kind: "door", mx: 0, my: 5, mw: 1, mh: 3, color: "#f59e0b" },
     { id: "desk1", label: "Escritorio", kind: "desk", mx: 1, my: 1, mw: 3, mh: 2, color: "#6366f1" },
@@ -525,13 +426,216 @@ export function getMapConfig(): MapConfig {
 }
 
 export function saveMapConfig(cfg: MapConfig) {
-  const s = getStore();
-  s.mapConfig = cfg;
-  saveStore();
+  _cache.mapConfig = cfg;
+  if (isConfigured()) {
+    db.saveMapConfigDB({
+      id: "main", config: cfg.objects as unknown[],
+      grid_w: cfg.gridW, grid_h: cfg.gridH,
+    }).catch(console.error);
+  }
 }
 
 export function savePositionMap(posId: string, mx: number, my: number, mw: number, mh: number) {
-  const s = getStore();
-  const p = s.positions.find(x => x.id === posId);
-  if (p) { p.mx = mx; p.my = my; p.mw = mw; p.mh = mh; saveStore(); }
+  const p = _cache.positions.find(x => x.id === posId);
+  if (p) {
+    p.mx = mx; p.my = my; p.mw = mw; p.mh = mh;
+    if (isConfigured()) {
+      db.updatePosicion(posId, { mx, my, mw, mh }).catch(console.error);
+    }
+  }
 }
+
+// ==================== SHEET SYNC ====================
+export async function syncFromSheet(): Promise<{ added: number; updated: number; total: number }> {
+  const result = await db.syncProductosFromSheet();
+  if (result.added > 0 || result.updated > 0) {
+    // Refresh products in cache
+    const prods = await db.fetchProductos();
+    _cache.products = {};
+    for (const p of prods) {
+      _cache.products[p.sku] = {
+        sku: p.sku, name: p.nombre, mlCode: p.codigo_ml,
+        cat: p.categoria, prov: p.proveedor, cost: p.costo,
+        price: p.precio, reorder: p.reorder,
+      };
+    }
+  }
+  if (typeof window !== "undefined") {
+    localStorage.setItem("banva_sheet_last_sync", Date.now().toString());
+  }
+  return result;
+}
+
+export function shouldSync(): boolean {
+  if (typeof window === "undefined") return false;
+  const last = localStorage.getItem("banva_sheet_last_sync");
+  if (!last) return true;
+  return Date.now() - parseInt(last) > 5 * 60 * 1000;
+}
+
+export function getLastSyncTime(): string | null {
+  if (typeof window === "undefined") return null;
+  const last = localStorage.getItem("banva_sheet_last_sync");
+  if (!last) return null;
+  try { return new Date(parseInt(last)).toLocaleString("es-CL"); } catch { return null; }
+}
+
+// ==================== STOCK IMPORT ====================
+export function wasStockImported(): boolean {
+  if (typeof window === "undefined") return false;
+  return localStorage.getItem("banva_stock_imported") === "1";
+}
+
+export async function importStockFromSheet(): Promise<{ imported: number; skipped: number; totalUnits: number }> {
+  const result = await db.importStockFromSheet();
+  if (typeof window !== "undefined") localStorage.setItem("banva_stock_imported", "1");
+  // Refresh stock cache
+  const stocks = await db.fetchStock();
+  _cache.stock = {};
+  for (const s of stocks) {
+    if (!_cache.stock[s.sku]) _cache.stock[s.sku] = {};
+    _cache.stock[s.sku][s.posicion_id] = s.cantidad;
+  }
+  return { ...result, skipped: 0 };
+}
+
+export function getUnassignedStock(): { sku: string; name: string; qty: number }[] {
+  const items: { sku: string; name: string; qty: number }[] = [];
+  for (const [sku, posMap] of Object.entries(_cache.stock)) {
+    const qty = posMap["SIN_ASIGNAR"] || 0;
+    if (qty > 0) {
+      const prod = _cache.products[sku];
+      items.push({ sku, name: prod?.name || sku, qty });
+    }
+  }
+  return items.sort((a, b) => b.qty - a.qty);
+}
+
+export function assignPosition(sku: string, targetPos: string, qty: number): boolean {
+  if (!_cache.stock[sku]?.["SIN_ASIGNAR"] || _cache.stock[sku]["SIN_ASIGNAR"] < qty) return false;
+
+  // Update cache synchronously
+  _cache.stock[sku]["SIN_ASIGNAR"] -= qty;
+  if (_cache.stock[sku]["SIN_ASIGNAR"] <= 0) delete _cache.stock[sku]["SIN_ASIGNAR"];
+  if (!_cache.stock[sku][targetPos]) _cache.stock[sku][targetPos] = 0;
+  _cache.stock[sku][targetPos] += qty;
+
+  // Fire & forget to Supabase
+  if (isConfigured()) {
+    (async () => {
+      await db.updateStock(sku, "SIN_ASIGNAR", -qty);
+      await db.updateStock(sku, targetPos, qty);
+      await db.insertMovimiento({
+        tipo: "salida", motivo: "transferencia_out", sku,
+        posicion_id: "SIN_ASIGNAR", cantidad: qty,
+        operario: "Admin", nota: "Asignación → " + targetPos,
+      });
+      await db.insertMovimiento({
+        tipo: "entrada", motivo: "transferencia_in", sku,
+        posicion_id: targetPos, cantidad: qty,
+        operario: "Admin", nota: "Asignación ← SIN_ASIGNAR",
+      });
+    })().catch(console.error);
+  }
+  return true;
+}
+
+// ==================== RECEPCIONES (NEW) ====================
+export type { DBRecepcion, DBRecepcionLinea, DBOperario } from "./db";
+
+export async function getRecepciones() { return db.fetchRecepciones(); }
+export async function getRecepcionesActivas() { return db.fetchRecepcionesActivas(); }
+export async function getRecepcionLineas(recId: string) { return db.fetchRecepcionLineas(recId); }
+
+export async function crearRecepcion(folio: string, proveedor: string, imagenUrl: string, lineas: { sku: string; codigoML: string; nombre: string; cantidad: number; costo: number; requiereEtiqueta: boolean }[]): Promise<string | null> {
+  const id = await db.insertRecepcion({
+    folio, proveedor, imagen_url: imagenUrl, estado: "CREADA",
+    notas: "", created_by: "admin",
+  });
+  if (!id) return null;
+
+  const dbLineas = lineas.map(l => ({
+    recepcion_id: id, sku: l.sku, codigo_ml: l.codigoML,
+    nombre: l.nombre, qty_factura: l.cantidad, qty_recibida: 0,
+    qty_etiquetada: 0, qty_ubicada: 0, estado: "PENDIENTE" as const,
+    requiere_etiqueta: l.requiereEtiqueta, costo_unitario: l.costo,
+    notas: "", operario_conteo: "", operario_etiquetado: "", operario_ubicacion: "",
+  }));
+  await db.insertRecepcionLineas(dbLineas);
+  return id;
+}
+
+export async function actualizarRecepcion(id: string, fields: Partial<db.DBRecepcion>) {
+  await db.updateRecepcion(id, fields);
+}
+
+export async function actualizarLineaRecepcion(id: string, fields: Partial<db.DBRecepcionLinea>) {
+  await db.updateRecepcionLinea(id, fields);
+}
+
+// Contar línea: operario confirma cantidad real
+export async function contarLinea(lineaId: string, qtyReal: number, operario: string) {
+  await db.updateRecepcionLinea(lineaId, {
+    qty_recibida: qtyReal, estado: "CONTADA",
+    operario_conteo: operario, ts_conteo: new Date().toISOString(),
+  });
+}
+
+// Etiquetar línea: operario marca unidades etiquetadas
+export async function etiquetarLinea(lineaId: string, qtyEtiquetada: number, operario: string, totalLinea: number) {
+  const estado = qtyEtiquetada >= totalLinea ? "ETIQUETADA" : "EN_ETIQUETADO";
+  await db.updateRecepcionLinea(lineaId, {
+    qty_etiquetada: qtyEtiquetada, estado,
+    operario_etiquetado: operario,
+    ...(estado === "ETIQUETADA" ? { ts_etiquetado: new Date().toISOString() } : {}),
+  });
+}
+
+// Ubicar línea: operario pone en posición → stock entra al WMS
+export async function ubicarLinea(lineaId: string, sku: string, posicionId: string, qty: number, operario: string, recepcionId: string) {
+  // Update stock
+  if (isConfigured()) {
+    await db.updateStock(sku, posicionId, qty);
+    await db.insertMovimiento({
+      tipo: "entrada", motivo: "recepcion", sku, posicion_id: posicionId,
+      cantidad: qty, recepcion_id: recepcionId, operario, nota: "Recepción - ubicación en bodega",
+    });
+  }
+
+  // Update cache
+  if (!_cache.stock[sku]) _cache.stock[sku] = {};
+  _cache.stock[sku][posicionId] = (_cache.stock[sku][posicionId] || 0) + qty;
+
+  // Fetch current line to calculate new qty_ubicada
+  const lineas = await db.fetchRecepcionLineas(recepcionId);
+  const linea = lineas.find(l => l.id === lineaId);
+  const newQtyUbicada = (linea?.qty_ubicada || 0) + qty;
+  const qtyTotal = linea?.qty_recibida || linea?.qty_factura || 0;
+
+  await db.updateRecepcionLinea(lineaId, {
+    qty_ubicada: newQtyUbicada,
+    estado: newQtyUbicada >= qtyTotal ? "UBICADA" : linea?.estado,
+    operario_ubicacion: operario,
+    ...(newQtyUbicada >= qtyTotal ? { ts_ubicacion: new Date().toISOString() } : {}),
+  });
+}
+
+// Upload factura image
+export async function uploadFacturaImage(base64: string, folio: string): Promise<string> {
+  return db.uploadFacturaImage(base64, folio);
+}
+
+// Operarios
+export async function getOperarios() { return db.fetchOperarios(); }
+export async function loginOperario(id: string, pin: string) { return db.loginOperario(id, pin); }
+export async function guardarOperario(o: db.DBOperario) { return db.upsertOperario(o); }
+
+// ==================== FORMAT HELPERS ====================
+export function fmtDate(iso: string) { try { return new Date(iso).toLocaleDateString("es-CL"); } catch { return iso; } }
+export function fmtTime(iso: string) { try { return new Date(iso).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" }); } catch { return iso; } }
+export function fmtMoney(n: number) { return "$" + n.toLocaleString("es-CL"); }
+
+// ==================== LEGACY COMPAT ====================
+export function nextMovId(): string { return "M" + Date.now(); }
+export async function pullCloudState(): Promise<boolean> { return refreshStore(); }
+export async function getCloudStatus(): Promise<string> { return isConfigured() ? "connected" : "not_configured"; }

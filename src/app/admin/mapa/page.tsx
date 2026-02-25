@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getStore, saveStore, activePositions, posContents, skuPositions, skuTotal, getMapConfig, saveMapConfig, savePositionMap, findProduct } from "@/lib/store";
+import { getStore, saveStore, activePositions, posContents, skuPositions, skuTotal, getMapConfig, saveMapConfig, savePositionMap, findProduct, initStore } from "@/lib/store";
 import type { Position, MapObject, MapConfig, Product } from "@/lib/store";
 import Link from "next/link";
 
@@ -28,7 +28,7 @@ export default function MapaPage() {
   const [,setTick] = useState(0);
   const refresh = () => setTick(t => t + 1);
 
-  useEffect(() => { setMounted(true); }, []);
+  useEffect(() => { initStore().then(() => setMounted(true)); }, []);
   useEffect(() => {
     if (!mounted) return;
     setCfg(getMapConfig());
