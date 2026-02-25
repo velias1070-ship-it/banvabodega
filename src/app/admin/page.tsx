@@ -583,7 +583,18 @@ function Productos({ refresh }: { refresh: () => void }) {
     s.products[sku]={sku,name:form.name!,mlCode:form.mlCode||"",cat:form.cat||"Otros",prov:form.prov||"Otro",cost:form.cost||0,price:form.price||0,reorder:form.reorder||20};
     saveStore();setShowAdd(false);setEditSku(null);refresh();
   };
-  const remove=(sku:string)=>{if(!confirm("Eliminar "+sku+"?"))return;delete s.products[sku];saveStore();refresh();};
+  const remove=(sku:string)=>{
+    const stock = skuTotal(sku);
+    if(stock > 0){
+      if(!confirm("⚠️ "+sku+" tiene "+stock+" unidades en stock.\n\nSi eliminas el producto, el stock quedará huérfano.\n\n¿Eliminar producto Y su stock?")) return;
+      // Clean orphan stock
+      delete s.stock[sku];
+    } else {
+      if(!confirm("Eliminar "+sku+"?")) return;
+    }
+    delete s.products[sku];
+    saveStore();refresh();
+  };
 
   return(
     <div>
@@ -863,15 +874,53 @@ function Configuracion({ refresh }: { refresh: () => void }) {
         </div>
       </div>
 
-      <div className="card" style={{marginTop:12}}>
-        <div className="card-title">Información del sistema</div>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,fontSize:12}}>
-          <div><span style={{color:"var(--txt3)"}}>Productos registrados:</span> <strong>{Object.keys(s.products).length}</strong></div>
-          <div><span style={{color:"var(--txt3)"}}>SKUs con stock:</span> <strong>{Object.keys(s.stock).filter(sku=>skuTotal(sku)>0).length}</strong></div>
-          <div><span style={{color:"var(--txt3)"}}>Posiciones activas:</span> <strong>{activePositions().length}</strong></div>
-          <div><span style={{color:"var(--txt3)"}}>Movimientos totales:</span> <strong>{s.movements.length}</strong></div>
-          <div><span style={{color:"var(--txt3)"}}>Última sync Sheet:</span> <strong>{getLastSyncTime()||"Nunca"}</strong></div>
-          <div><span style={{color:"var(--txt3)"}}>PIN Admin:</span> <strong>1234</strong> <span style={{color:"var(--amber)",fontSize:10}}>(editar en código)</span></div>
+      <div className="admin-grid-2" style={{marginTop:12}}>
+        <div className="card">
+          <div className="card-title">Mantenimiento</div>
+          {(() => {
+            const orphanSkus = Object.keys(s.stock).filter(sku => !s.products[sku] && skuTotal(sku) > 0);
+            const orphanTotal = orphanSkus.reduce((sum, sku) => sum + skuTotal(sku), 0);
+            return <>
+              {orphanSkus.length > 0 ? (
+                <div>
+                  <div style={{padding:"10px 12px",background:"var(--amberBg)",border:"1px solid var(--amberBd)",borderRadius:8,marginBottom:10}}>
+                    <div style={{fontSize:12,fontWeight:700,color:"var(--amber)",marginBottom:4}}>⚠️ Stock huérfano detectado</div>
+                    <div style={{fontSize:11,color:"var(--txt2)"}}>{orphanSkus.length} SKU{orphanSkus.length>1?"s":""} con {orphanTotal} unidades sin producto en el diccionario</div>
+                  </div>
+                  {orphanSkus.map(sku => (
+                    <div key={sku} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:"1px solid var(--bg3)",fontSize:12}}>
+                      <div>
+                        <span className="mono" style={{fontWeight:700}}>{sku}</span>
+                        <span style={{color:"var(--txt3)",marginLeft:6}}>{skuTotal(sku)} uds en {Object.keys(s.stock[sku]||{}).filter(p=>(s.stock[sku][p]||0)>0).join(", ")}</span>
+                      </div>
+                      <button onClick={()=>{
+                        if(!confirm("Eliminar todo el stock de "+sku+"? ("+skuTotal(sku)+" unidades)"))return;
+                        delete s.stock[sku];saveStore();refresh();
+                      }} style={{padding:"4px 10px",borderRadius:4,background:"var(--redBg)",color:"var(--red)",fontSize:10,fontWeight:600,border:"1px solid var(--red)"}}>Eliminar stock</button>
+                    </div>
+                  ))}
+                  <button onClick={()=>{
+                    if(!confirm("Eliminar TODO el stock huérfano? ("+orphanTotal+" unidades de "+orphanSkus.length+" SKUs)"))return;
+                    orphanSkus.forEach(sku=>{delete s.stock[sku];});saveStore();refresh();
+                  }} style={{width:"100%",marginTop:10,padding:10,borderRadius:8,background:"var(--red)",color:"#fff",fontWeight:700,fontSize:12}}>Limpiar todo el stock huérfano</button>
+                </div>
+              ) : (
+                <div style={{padding:12,textAlign:"center",color:"var(--green)",fontSize:12,fontWeight:600}}>Sin stock huérfano — todo limpio</div>
+              )}
+            </>;
+          })()}
+        </div>
+
+        <div className="card">
+          <div className="card-title">Información del sistema</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,fontSize:12}}>
+            <div><span style={{color:"var(--txt3)"}}>Productos registrados:</span> <strong>{Object.keys(s.products).length}</strong></div>
+            <div><span style={{color:"var(--txt3)"}}>SKUs con stock:</span> <strong>{Object.keys(s.stock).filter(sku=>skuTotal(sku)>0).length}</strong></div>
+            <div><span style={{color:"var(--txt3)"}}>Posiciones activas:</span> <strong>{activePositions().length}</strong></div>
+            <div><span style={{color:"var(--txt3)"}}>Movimientos totales:</span> <strong>{s.movements.length}</strong></div>
+            <div><span style={{color:"var(--txt3)"}}>Última sync Sheet:</span> <strong>{getLastSyncTime()||"Nunca"}</strong></div>
+            <div><span style={{color:"var(--txt3)"}}>PIN Admin:</span> <strong>1234</strong> <span style={{color:"var(--amber)",fontSize:10}}>(editar en código)</span></div>
+          </div>
         </div>
       </div>
     </div>
