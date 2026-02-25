@@ -159,6 +159,7 @@ function defaultMovements(): Movement[] {
 const SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRqskx-hK2bLc8vDOflxzx6dtyZZZm81c_pfLhSPz1KJL_FVTcGQjg75iftOyi-tU9hJGidJqu6jjtW/pub?gid=224135022&single=true&output=csv";
 const SYNC_KEY = "banva_sheet_last_sync";
 const SYNC_INTERVAL = 5 * 60 * 1000; // 5 minutes
+const STOCK_IMPORTED_KEY = "banva_stock_imported";
 
 function parseCSVLine(line: string): string[] {
   const cells: string[] = [];
@@ -193,14 +194,12 @@ export async function syncFromSheet(): Promise<{ added: number; updated: number;
 
       result.total++;
       if (s.products[sku]) {
-        // Update existing: sync name and mlCode from sheet, keep local cost/price/etc
         if (s.products[sku].name !== name || s.products[sku].mlCode !== mlCode) {
           s.products[sku].name = name;
           s.products[sku].mlCode = mlCode;
           result.updated++;
         }
       } else {
-        // New product from sheet
         s.products[sku] = { sku, name, mlCode, cat: "Otros", prov: "Otro", cost: 0, price: 0, reorder: 20 };
         result.added++;
       }
@@ -213,6 +212,112 @@ export async function syncFromSheet(): Promise<{ added: number; updated: number;
     console.error("Sheet sync error:", err);
   }
   return result;
+}
+
+// Import stock quantities from Sheet column K (index 10) — ONE TIME use
+const STOCK_IMPORT_KEY = "banva_stock_imported";
+export function wasStockImported(): boolean {
+  if (typeof window === "undefined") return false;
+  return localStorage.getItem(STOCK_IMPORT_KEY) === "1";
+}
+
+export async function importStockFromSheet(): Promise<{ imported: number; skipped: number; totalUnits: number }> {
+  const result = { imported: 0, skipped: 0, totalUnits: 0 };
+  try {
+    const resp = await fetch(SHEET_CSV_URL, { cache: "no-store" });
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const text = await resp.text();
+    const lines = text.split("\n").map(l => l.replace(/\r/g, "").trim()).filter(l => l.length > 0);
+    if (lines.length < 2) return result;
+
+    const s = getStore();
+    // First pass: log headers to help debug
+    const headers = parseCSVLine(lines[0]);
+    console.log("Sheet headers:", headers);
+
+    for (let i = 1; i < lines.length; i++) {
+      const cols = parseCSVLine(lines[i]);
+      const sku = (cols[2] || "").trim().toUpperCase();
+      if (!sku) continue;
+
+      // Column K = index 10
+      const rawQty = (cols[10] || "").replace(/[^0-9]/g, "");
+      const qty = parseInt(rawQty) || 0;
+      if (qty <= 0) { result.skipped++; continue; }
+
+      // Ensure product exists
+      if (!s.products[sku]) {
+        const mlCode = (cols[0] || "").trim();
+        const name = (cols[1] || "").trim();
+        if (name) s.products[sku] = { sku, name, mlCode, cat: "Otros", prov: "Otro", cost: 0, price: 0, reorder: 20 };
+      }
+
+      // Add stock to "SIN_ASIGNAR" position (temporary, user will assign later)
+      if (!s.stock[sku]) s.stock[sku] = {};
+      s.stock[sku]["SIN_ASIGNAR"] = (s.stock[sku]["SIN_ASIGNAR"] || 0) + qty;
+
+      // Record movement
+      s.movCounter++;
+      s.movements.unshift({
+        id: "M" + String(s.movCounter).padStart(4, "0"),
+        ts: new Date().toISOString(),
+        type: "in", reason: "ajuste_entrada",
+        sku, pos: "SIN_ASIGNAR", qty,
+        who: "Importación", note: "Carga inicial desde Google Sheet"
+      });
+
+      result.imported++;
+      result.totalUnits += qty;
+    }
+
+    // Ensure SIN_ASIGNAR position exists
+    if (!s.positions.find(p => p.id === "SIN_ASIGNAR")) {
+      s.positions.push({ id: "SIN_ASIGNAR", label: "Sin asignar", type: "pallet", active: true });
+    }
+
+    saveStore();
+    if (typeof window !== "undefined") localStorage.setItem(STOCK_IMPORT_KEY, "1");
+  } catch (err) {
+    console.error("Stock import error:", err);
+  }
+  return result;
+}
+
+// Get all SKUs that have stock in SIN_ASIGNAR
+export function getUnassignedStock(): { sku: string; name: string; qty: number }[] {
+  const s = getStore();
+  const items: { sku: string; name: string; qty: number }[] = [];
+  for (const [sku, posMap] of Object.entries(s.stock)) {
+    const qty = posMap["SIN_ASIGNAR"] || 0;
+    if (qty > 0) {
+      const prod = s.products[sku];
+      items.push({ sku, name: prod?.name || sku, qty });
+    }
+  }
+  return items.sort((a, b) => b.qty - a.qty);
+}
+
+// Move stock from SIN_ASIGNAR to a real position
+export function assignPosition(sku: string, targetPos: string, qty: number): boolean {
+  const s = getStore();
+  if (!s.stock[sku] || !s.stock[sku]["SIN_ASIGNAR"] || s.stock[sku]["SIN_ASIGNAR"] < qty) return false;
+
+  // Remove from SIN_ASIGNAR
+  s.stock[sku]["SIN_ASIGNAR"] -= qty;
+  if (s.stock[sku]["SIN_ASIGNAR"] <= 0) delete s.stock[sku]["SIN_ASIGNAR"];
+
+  // Add to target
+  if (!s.stock[sku]) s.stock[sku] = {};
+  s.stock[sku][targetPos] = (s.stock[sku][targetPos] || 0) + qty;
+
+  // Record movements
+  s.movCounter++;
+  s.movements.unshift({ id: "M" + String(s.movCounter).padStart(4, "0"), ts: new Date().toISOString(), type: "out", reason: "ajuste_salida", sku, pos: "SIN_ASIGNAR", qty, who: "Admin", note: "Asignación → " + targetPos });
+  s.movCounter++;
+  s.movements.unshift({ id: "M" + String(s.movCounter).padStart(4, "0"), ts: new Date().toISOString(), type: "in", reason: "transferencia_in", sku, pos: targetPos, qty, who: "Admin", note: "Asignación ← SIN_ASIGNAR" });
+
+  saveStore();
+  return true;
 }
 
 export function shouldSync(): boolean {

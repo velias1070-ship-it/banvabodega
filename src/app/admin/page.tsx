@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, findProduct } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason } from "@/lib/store";
 import Link from "next/link";
 import SheetSync from "@/components/SheetSync";
@@ -51,7 +51,7 @@ function LoginGate({ onLogin }: { onLogin: (pin: string) => boolean }) {
 }
 
 export default function AdminPage() {
-  const [tab, setTab] = useState<"dash"|"ops"|"inv"|"mov"|"prod"|"pos"|"config">("dash");
+  const [tab, setTab] = useState<"dash"|"ops"|"inv"|"mov"|"prod"|"pos"|"stock_load"|"config">("dash");
   const [,setTick] = useState(0);
   const r = useCallback(()=>setTick(t=>t+1),[]);
   const [mounted, setMounted] = useState(false);
@@ -78,7 +78,7 @@ export default function AdminPage() {
       <SheetSync onSynced={r}/>
       <div className="admin-layout">
         <nav className="admin-sidebar">
-          {([["dash","Dashboard","📊"],["ops","Operaciones","⚡"],["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["pos","Posiciones","📍"],["config","Configuración","⚙️"]] as const).map(([key,label,icon])=>(
+          {([["dash","Dashboard","📊"],["ops","Operaciones","⚡"],["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["pos","Posiciones","📍"],["stock_load","Carga Stock","📥"],["config","Configuración","⚙️"]] as const).map(([key,label,icon])=>(
             <button key={key} className={`sidebar-btn ${tab===key?"active":""}`} onClick={()=>setTab(key as any)}>
               <span className="sidebar-icon">{icon}</span>
               <span className="sidebar-label">{label}</span>
@@ -93,7 +93,7 @@ export default function AdminPage() {
         <main className="admin-main">
           {/* Mobile tabs fallback */}
           <div className="admin-mobile-tabs">
-            {([["dash","Dashboard"],["ops","Operaciones"],["inv","Inventario"],["mov","Movimientos"],["prod","Productos"],["pos","Posiciones"],["config","Config"]] as const).map(([key,label])=>(
+            {([["dash","Dashboard"],["ops","Ops"],["inv","Inventario"],["mov","Movim."],["prod","Productos"],["pos","Posiciones"],["stock_load","Carga"],["config","Config"]] as const).map(([key,label])=>(
               <button key={key} className={`tab ${tab===key?"active-cyan":""}`} onClick={()=>setTab(key as any)}>{label}</button>
             ))}
           </div>
@@ -104,6 +104,7 @@ export default function AdminPage() {
             {tab==="mov"&&<Movimientos/>}
             {tab==="prod"&&<Productos refresh={r}/>}
             {tab==="pos"&&<Posiciones refresh={r}/>}
+            {tab==="stock_load"&&<CargaStock refresh={r}/>}
             {tab==="config"&&<Configuracion refresh={r}/>}
           </div>
         </main>
@@ -745,6 +746,180 @@ function Posiciones({ refresh }: { refresh: () => void }) {
   );
 }
 
+// ==================== CARGA DE STOCK ====================
+function CargaStock({ refresh }: { refresh: () => void }) {
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<{imported:number;skipped:number;totalUnits:number}|null>(null);
+  const [imported, setImported] = useState(false);
+  const [,setTick] = useState(0);
+  const positions = activePositions().filter(p => p.id !== "SIN_ASIGNAR");
+
+  useEffect(() => { setImported(wasStockImported()); }, []);
+
+  const doImport = async () => {
+    if (!confirm("Esto importará las unidades de la columna K de tu Google Sheet y las dejará en posición 'SIN_ASIGNAR' para que luego les asignes ubicación.\n\n¿Continuar?")) return;
+    setImporting(true);
+    const result = await importStockFromSheet();
+    setImportResult(result);
+    setImported(true);
+    setImporting(false);
+    refresh();
+  };
+
+  const unassigned = getUnassignedStock();
+  const totalUnassigned = unassigned.reduce((s, u) => s + u.qty, 0);
+
+  // Bulk assign state
+  const [assignments, setAssignments] = useState<Record<string, string>>({});
+
+  const setAssign = (sku: string, posId: string) => {
+    setAssignments(a => ({ ...a, [sku]: posId }));
+  };
+
+  const assignOne = (sku: string, posId: string, qty: number) => {
+    if (assignPosition(sku, posId, qty)) {
+      setAssignments(a => { const n = { ...a }; delete n[sku]; return n; });
+      setTick(t => t + 1);
+      refresh();
+    }
+  };
+
+  const assignAll = () => {
+    const toAssign = unassigned.filter(u => assignments[u.sku]);
+    if (toAssign.length === 0) return;
+    if (!confirm(`Asignar ${toAssign.length} SKUs a sus posiciones seleccionadas?`)) return;
+    let count = 0;
+    toAssign.forEach(u => {
+      if (assignPosition(u.sku, assignments[u.sku], u.qty)) count++;
+    });
+    setAssignments({});
+    setTick(t => t + 1);
+    refresh();
+    alert(`${count} SKUs asignados correctamente`);
+  };
+
+  const assignedCount = unassigned.filter(u => assignments[u.sku]).length;
+
+  return (
+    <div>
+      {/* Step 1: Import */}
+      <div className="card">
+        <div className="card-title">Paso 1 — Importar stock desde Google Sheet</div>
+        {!imported ? (
+          <div>
+            <p style={{fontSize:12,color:"var(--txt2)",marginBottom:12,lineHeight:1.6}}>
+              Lee la columna K (unidades) de tu Sheet sincronizado y carga el stock actual de cada SKU.
+              Las unidades quedarán en posición "SIN_ASIGNAR" hasta que les asignes ubicación en el Paso 2.
+            </p>
+            <button onClick={doImport} disabled={importing}
+              style={{width:"100%",padding:14,borderRadius:10,background:importing?"var(--bg3)":"var(--green)",color:importing?"var(--txt3)":"#fff",fontWeight:700,fontSize:14}}>
+              {importing ? "Importando..." : "Importar stock desde Sheet"}
+            </button>
+          </div>
+        ) : (
+          <div>
+            <div style={{padding:"10px 14px",background:"var(--greenBg)",border:"1px solid var(--greenBd)",borderRadius:8,fontSize:12}}>
+              <span style={{color:"var(--green)",fontWeight:700}}>Stock importado</span>
+              {importResult && <span style={{color:"var(--txt2)",marginLeft:8}}>— {importResult.imported} SKUs, {importResult.totalUnits.toLocaleString()} unidades</span>}
+            </div>
+            <button onClick={()=>{
+              if(!confirm("Reimportar? Esto agregará más stock a SIN_ASIGNAR (no borra lo anterior)"))return;
+              if(typeof window!=="undefined")localStorage.removeItem("banva_stock_imported");
+              setImported(false);setImportResult(null);
+            }} style={{marginTop:8,padding:"6px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--amber)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
+              Reimportar
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Step 2: Assign positions */}
+      {unassigned.length > 0 && (
+        <div className="card" style={{marginTop:12}}>
+          <div className="card-title">Paso 2 — Asignar posiciones ({unassigned.length} SKUs, {totalUnassigned.toLocaleString()} uds sin ubicación)</div>
+
+          {/* Quick assign all to same position */}
+          <div style={{display:"flex",gap:8,marginBottom:12,alignItems:"center",flexWrap:"wrap"}}>
+            <span style={{fontSize:11,fontWeight:600,color:"var(--txt3)"}}>Asignar todos a:</span>
+            <select className="form-select" id="bulkPos" style={{fontSize:11,padding:6,flex:"1",maxWidth:200}}>
+              <option value="">— Seleccionar posición —</option>
+              {positions.map(p=><option key={p.id} value={p.id}>{p.id} — {p.label}</option>)}
+            </select>
+            <button onClick={()=>{
+              const sel = (document.getElementById("bulkPos") as HTMLSelectElement)?.value;
+              if(!sel) return;
+              const newA: Record<string,string> = {};
+              unassigned.forEach(u => { newA[u.sku] = sel; });
+              setAssignments(newA);
+            }} style={{padding:"6px 14px",borderRadius:6,background:"var(--blue)",color:"#fff",fontSize:11,fontWeight:700}}>Seleccionar todos</button>
+          </div>
+
+          {assignedCount > 0 && (
+            <button onClick={assignAll}
+              style={{width:"100%",padding:12,borderRadius:10,background:"var(--green)",color:"#fff",fontWeight:700,fontSize:13,marginBottom:12}}>
+              Asignar {assignedCount} SKUs seleccionados a sus posiciones
+            </button>
+          )}
+
+          {/* Desktop table */}
+          <div className="desktop-only">
+            <table className="tbl">
+              <thead><tr><th>SKU</th><th>Producto</th><th style={{textAlign:"right"}}>Uds</th><th style={{width:160}}>Asignar a posición</th><th style={{width:80}}></th></tr></thead>
+              <tbody>{unassigned.map(u => (
+                <tr key={u.sku}>
+                  <td className="mono" style={{fontWeight:700,fontSize:12}}>{u.sku}</td>
+                  <td style={{fontSize:12,color:"var(--txt2)"}}>{u.name}</td>
+                  <td className="mono" style={{textAlign:"right",fontWeight:700,color:"var(--blue)"}}>{u.qty}</td>
+                  <td>
+                    <select className="form-select" value={assignments[u.sku]||""} onChange={e=>setAssign(u.sku,e.target.value)} style={{fontSize:11,padding:6}}>
+                      <option value="">— Seleccionar —</option>
+                      {positions.map(p=><option key={p.id} value={p.id}>{p.id} — {p.label}</option>)}
+                    </select>
+                  </td>
+                  <td>
+                    {assignments[u.sku] && <button onClick={()=>assignOne(u.sku,assignments[u.sku],u.qty)}
+                      style={{padding:"4px 10px",borderRadius:4,background:"var(--green)",color:"#fff",fontSize:10,fontWeight:700}}>OK</button>}
+                  </td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+
+          {/* Mobile cards */}
+          <div className="mobile-only">
+            {unassigned.map(u => (
+              <div key={u.sku} style={{padding:"10px 0",borderBottom:"1px solid var(--bg3)"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                  <div>
+                    <span className="mono" style={{fontWeight:700,fontSize:13}}>{u.sku}</span>
+                    <div style={{fontSize:11,color:"var(--txt3)"}}>{u.name}</div>
+                  </div>
+                  <span className="mono" style={{fontWeight:700,color:"var(--blue)",fontSize:16}}>{u.qty}</span>
+                </div>
+                <div style={{display:"flex",gap:6}}>
+                  <select className="form-select" value={assignments[u.sku]||""} onChange={e=>setAssign(u.sku,e.target.value)} style={{fontSize:11,padding:8,flex:1}}>
+                    <option value="">Posición...</option>
+                    {positions.map(p=><option key={p.id} value={p.id}>{p.id} — {p.label}</option>)}
+                  </select>
+                  {assignments[u.sku] && <button onClick={()=>assignOne(u.sku,assignments[u.sku],u.qty)}
+                    style={{padding:"8px 14px",borderRadius:6,background:"var(--green)",color:"#fff",fontSize:11,fontWeight:700}}>Asignar</button>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {imported && unassigned.length === 0 && (
+        <div className="card" style={{marginTop:12,textAlign:"center",padding:24}}>
+          <div style={{fontSize:16,fontWeight:700,color:"var(--green)",marginBottom:4}}>Todo el stock tiene posición asignada</div>
+          <div style={{fontSize:12,color:"var(--txt3)"}}>Puedes ver el inventario completo en la pestaña Inventario</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ==================== CONFIGURACIÓN ====================
 function Configuracion({ refresh }: { refresh: () => void }) {
   const [cats, setCats] = useState<string[]>([]);
@@ -754,7 +929,62 @@ function Configuracion({ refresh }: { refresh: () => void }) {
   const [editCat, setEditCat] = useState<{idx:number;val:string}|null>(null);
   const [editProv, setEditProv] = useState<{idx:number;val:string}|null>(null);
 
-  useEffect(() => { setCats(getCategorias()); setProvs(getProveedores()); }, []);
+  // Stock import
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<{imported:number;totalUnits:number}|null>(null);
+  const [imported, setImported] = useState(false);
+
+  // Assign positions
+  const [unassigned, setUnassigned] = useState<{sku:string;name:string;qty:number}[]>([]);
+  const [assignMap, setAssignMap] = useState<Record<string,string>>({});
+  const [assignToast, setAssignToast] = useState("");
+
+  useEffect(() => {
+    setCats(getCategorias()); setProvs(getProveedores());
+    setImported(wasStockImported());
+    setUnassigned(getUnassignedStock());
+  }, []);
+
+  const doImport = async () => {
+    if (!confirm("Esto importará las cantidades de la columna K de tu Google Sheet como stock inicial.\n\nTodo queda en posición 'SIN_ASIGNAR' hasta que les asignes posición.\n\n¿Continuar?")) return;
+    setImporting(true);
+    const res = await importStockFromSheet();
+    setImportResult(res);
+    setImporting(false);
+    setImported(true);
+    setUnassigned(getUnassignedStock());
+    refresh();
+  };
+
+  const doAssign = (sku: string) => {
+    const pos = assignMap[sku];
+    if (!pos) return;
+    const item = unassigned.find(u => u.sku === sku);
+    if (!item) return;
+    const ok = assignPosition(sku, pos, item.qty);
+    if (ok) {
+      setAssignToast(`${item.qty}× ${sku} → Posición ${pos}`);
+      setUnassigned(getUnassignedStock());
+      refresh();
+      setTimeout(() => setAssignToast(""), 2000);
+    }
+  };
+
+  const doAssignAll = () => {
+    let count = 0;
+    unassigned.forEach(item => {
+      const pos = assignMap[item.sku];
+      if (pos) { assignPosition(item.sku, pos, item.qty); count++; }
+    });
+    if (count > 0) {
+      setAssignToast(`${count} SKUs asignados`);
+      setUnassigned(getUnassignedStock());
+      refresh();
+      setTimeout(() => setAssignToast(""), 2500);
+    }
+  };
+
+  const positions = activePositions().filter(p => p.id !== "SIN_ASIGNAR");
 
   // Categories
   const addCat = () => {
