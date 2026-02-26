@@ -543,32 +543,146 @@ function CreatePickingSession({ onCreated, onCancel }: { onCreated: () => void; 
 }
 
 // ==================== PICKING SESSION DETAIL ====================
-function PickingSessionDetail({ session, onBack }: { session: DBPickingSession; onBack: () => void }) {
+function PickingSessionDetail({ session: initialSession, onBack }: { session: DBPickingSession; onBack: () => void }) {
+  const [session, setSession] = useState<DBPickingSession>(initialSession);
+  const [editing, setEditing] = useState(false);
+  const [addRaw, setAddRaw] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [toast, setToast] = useState("");
+
   const totalComps = session.lineas.reduce((s, l) => s + l.componentes.length, 0);
   const doneComps = session.lineas.reduce((s, l) => s + l.componentes.filter(c => c.estado === "PICKEADO").length, 0);
   const pct = totalComps > 0 ? Math.round((doneComps / totalComps) * 100) : 0;
 
+  const showToast = (m: string) => { setToast(m); setTimeout(() => setToast(""), 2500); };
+
   const doDelete = async () => {
-    if (!confirm("¿Eliminar esta sesión de picking?")) return;
+    if (!confirm("¿Eliminar esta sesión de picking completa?")) return;
     await eliminarPicking(session.id!);
     onBack();
   };
 
+  // Remove a single line
+  const removeLine = async (lineaId: string) => {
+    const linea = session.lineas.find(l => l.id === lineaId);
+    if (linea?.estado === "PICKEADO") {
+      if (!confirm("Esta línea ya fue pickeada. ¿Eliminar de todas formas? (no revierte el stock)")) return;
+    }
+    const newLineas = session.lineas.filter(l => l.id !== lineaId);
+    setSaving(true);
+    const allDone = newLineas.length > 0 && newLineas.every(l => l.estado === "PICKEADO");
+    await actualizarPicking(session.id!, {
+      lineas: newLineas,
+      estado: newLineas.length === 0 ? "ABIERTA" : allDone ? "COMPLETADA" : session.estado,
+    });
+    setSession({ ...session, lineas: newLineas });
+    setSaving(false);
+    showToast(`Línea ${lineaId} eliminada`);
+  };
+
+  // Change quantity of a pending line
+  const changeQty = async (lineaId: string, newQty: number) => {
+    if (newQty < 1) return;
+    const newLineas = session.lineas.map(l => {
+      if (l.id !== lineaId) return l;
+      if (l.estado === "PICKEADO") return l; // can't change picked
+      // Rebuild components with new qty
+      const result = buildPickingLineas([{ skuVenta: l.skuVenta, qty: newQty }]);
+      if (result.lineas.length === 0) return l;
+      return { ...result.lineas[0], id: l.id };
+    });
+    setSaving(true);
+    await actualizarPicking(session.id!, { lineas: newLineas });
+    setSession({ ...session, lineas: newLineas });
+    setSaving(false);
+    showToast("Cantidad actualizada");
+  };
+
+  // Add new lines from text input
+  const addLines = async () => {
+    const lines = addRaw.trim().split("\n").filter(l => l.trim());
+    if (lines.length === 0) return;
+
+    const orders: { skuVenta: string; qty: number }[] = [];
+    for (const line of lines) {
+      const parts = line.trim().split(/[\s,;\t]+/);
+      const sku = parts[0]?.trim();
+      const qty = parts.length > 1 ? parseInt(parts[1]) || 1 : 1;
+      if (sku) orders.push({ skuVenta: sku, qty });
+    }
+
+    const result = buildPickingLineas(orders);
+    if (result.lineas.length === 0) {
+      showToast("No se pudo agregar ninguna línea");
+      return;
+    }
+
+    // Re-number new lines to continue from existing
+    const maxNum = session.lineas.reduce((max, l) => {
+      const n = parseInt(l.id.replace("P", "")) || 0;
+      return Math.max(max, n);
+    }, 0);
+    const newLineas = result.lineas.map((l, i) => ({ ...l, id: `P${String(maxNum + i + 1).padStart(3, "0")}` }));
+
+    const allLineas = [...session.lineas, ...newLineas];
+    setSaving(true);
+    await actualizarPicking(session.id!, { lineas: allLineas, estado: "ABIERTA" });
+    setSession({ ...session, lineas: allLineas, estado: "ABIERTA" });
+    setSaving(false);
+    setAddRaw("");
+    setEditing(false);
+    showToast(`+${newLineas.length} pedidos agregados`);
+
+    if (result.errors.length > 0) {
+      alert("Advertencias:\n" + result.errors.join("\n"));
+    }
+  };
+
   return (
     <div>
+      {toast && (
+        <div style={{position:"fixed",top:60,left:"50%",transform:"translateX(-50%)",zIndex:200,background:"var(--bg2)",
+          border:"2px solid var(--green)",color:"var(--green)",padding:"10px 20px",borderRadius:10,fontSize:13,fontWeight:700,boxShadow:"0 8px 30px rgba(0,0,0,0.5)"}}>
+          {toast}
+        </div>
+      )}
+
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
         <button onClick={onBack} style={{padding:"6px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--txt2)",fontSize:12,fontWeight:600,border:"1px solid var(--bg4)"}}>← Volver</button>
-        <button onClick={doDelete} style={{padding:"6px 14px",borderRadius:6,background:"var(--redBg)",color:"var(--red)",fontSize:11,fontWeight:600,border:"1px solid var(--red)33"}}>Eliminar</button>
+        <div style={{display:"flex",gap:6}}>
+          <button onClick={() => setEditing(!editing)} style={{padding:"6px 14px",borderRadius:6,background:editing?"var(--amberBg)":"var(--bg3)",color:editing?"var(--amber)":"var(--cyan)",fontSize:11,fontWeight:600,border:`1px solid ${editing?"var(--amber)33":"var(--bg4)"}`}}>
+            {editing ? "✕ Cerrar edición" : "✏️ Editar"}
+          </button>
+          <button onClick={doDelete} style={{padding:"6px 14px",borderRadius:6,background:"var(--redBg)",color:"var(--red)",fontSize:11,fontWeight:600,border:"1px solid var(--red)33"}}>Eliminar</button>
+        </div>
       </div>
 
+      {/* Header */}
       <div style={{padding:16,background:"var(--bg2)",borderRadius:10,border:"1px solid var(--bg3)",marginBottom:16}}>
         <div style={{fontSize:16,fontWeight:700}}>Picking {session.fecha}</div>
-        <div style={{fontSize:12,color:"var(--txt3)"}}>Estado: <strong>{session.estado}</strong> · {doneComps}/{totalComps} items ({pct}%)</div>
+        <div style={{fontSize:12,color:"var(--txt3)"}}>Estado: <strong>{session.estado}</strong> · {session.lineas.length} pedidos · {doneComps}/{totalComps} items ({pct}%)</div>
         <div style={{marginTop:8,background:"var(--bg3)",borderRadius:4,height:6,overflow:"hidden"}}>
           <div style={{width:`${pct}%`,height:"100%",background:pct===100?"var(--green)":"var(--amber)",borderRadius:4}}/>
         </div>
       </div>
 
+      {/* Add lines panel */}
+      {editing && (
+        <div style={{padding:16,background:"var(--bg2)",borderRadius:10,border:"2px solid var(--cyan)33",marginBottom:16}}>
+          <div style={{fontSize:14,fontWeight:700,color:"var(--cyan)",marginBottom:8}}>➕ Agregar pedidos</div>
+          <textarea className="form-input mono" value={addRaw} onChange={e => setAddRaw(e.target.value)}
+            placeholder={"TXV23QLAT25BE 1\nSAB180BL-PK2 2"} rows={4}
+            style={{fontSize:12,lineHeight:1.6,resize:"vertical",marginBottom:8}}/>
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={addLines} disabled={saving || !addRaw.trim()}
+              style={{padding:"8px 18px",borderRadius:8,background:"var(--green)",color:"#fff",fontSize:12,fontWeight:700,border:"none",cursor:"pointer",opacity:(!addRaw.trim()||saving)?0.4:1}}>
+              {saving ? "Guardando..." : "Agregar"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Lines table */}
       <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
         <thead>
           <tr style={{borderBottom:"2px solid var(--bg3)"}}>
@@ -578,13 +692,31 @@ function PickingSessionDetail({ session, onBack }: { session: DBPickingSession; 
             <th style={{textAlign:"center",padding:"8px 6px",color:"var(--txt3)"}}>Qty</th>
             <th style={{textAlign:"center",padding:"8px 6px",color:"var(--txt3)"}}>Estado</th>
             <th style={{textAlign:"left",padding:"8px 6px",color:"var(--txt3)"}}>Operario</th>
+            {editing && <th style={{textAlign:"center",padding:"8px 6px",color:"var(--txt3)",width:80}}>Acciones</th>}
           </tr>
         </thead>
         <tbody>
-          {session.lineas.map(linea =>
-            linea.componentes.map((comp, ci) => (
+          {session.lineas.map(linea => {
+            const isPicked = linea.estado === "PICKEADO";
+            return linea.componentes.map((comp, ci) => (
               <tr key={linea.id + "-" + ci} style={{borderBottom:"1px solid var(--bg3)",background:comp.estado==="PICKEADO"?"var(--greenBg)":"transparent"}}>
-                {ci === 0 && <td rowSpan={linea.componentes.length} className="mono" style={{padding:"8px 6px",fontWeight:700,verticalAlign:"top"}}>{linea.skuVenta}<br/><span style={{fontSize:10,color:"var(--txt3)"}}>×{linea.qtyPedida}</span></td>}
+                {ci === 0 && (
+                  <td rowSpan={linea.componentes.length} className="mono" style={{padding:"8px 6px",fontWeight:700,verticalAlign:"top"}}>
+                    {linea.skuVenta}
+                    <br/>
+                    {editing && !isPicked ? (
+                      <div style={{display:"flex",alignItems:"center",gap:4,marginTop:4}}>
+                        <button onClick={() => changeQty(linea.id, linea.qtyPedida - 1)} disabled={linea.qtyPedida <= 1 || saving}
+                          style={{width:22,height:22,borderRadius:4,background:"var(--bg3)",color:"var(--txt2)",fontSize:12,fontWeight:700,border:"1px solid var(--bg4)",cursor:"pointer",lineHeight:"20px"}}>−</button>
+                        <span style={{fontSize:13,fontWeight:700,color:"var(--blue)",minWidth:20,textAlign:"center"}}>{linea.qtyPedida}</span>
+                        <button onClick={() => changeQty(linea.id, linea.qtyPedida + 1)} disabled={saving}
+                          style={{width:22,height:22,borderRadius:4,background:"var(--bg3)",color:"var(--txt2)",fontSize:12,fontWeight:700,border:"1px solid var(--bg4)",cursor:"pointer",lineHeight:"20px"}}>+</button>
+                      </div>
+                    ) : (
+                      <span style={{fontSize:10,color:"var(--txt3)"}}>×{linea.qtyPedida}</span>
+                    )}
+                  </td>
+                )}
                 <td style={{padding:"8px 6px"}}>{comp.nombre?.slice(0, 30) || comp.skuOrigen}</td>
                 <td style={{textAlign:"center",padding:"8px 6px"}}><span className="mono" style={{fontWeight:700,color:"var(--green)"}}>{comp.posicion}</span></td>
                 <td style={{textAlign:"center",padding:"8px 6px"}} className="mono">{comp.unidades}</td>
@@ -596,11 +728,25 @@ function PickingSessionDetail({ session, onBack }: { session: DBPickingSession; 
                   </span>
                 </td>
                 <td style={{padding:"8px 6px",fontSize:11,color:"var(--txt3)"}}>{comp.operario || "—"}</td>
+                {editing && ci === 0 && (
+                  <td rowSpan={linea.componentes.length} style={{textAlign:"center",padding:"8px 6px",verticalAlign:"top"}}>
+                    <button onClick={() => removeLine(linea.id)} disabled={saving}
+                      style={{padding:"4px 10px",borderRadius:6,background:"var(--redBg)",color:"var(--red)",fontSize:11,fontWeight:700,border:"1px solid var(--red)33",cursor:"pointer"}}>
+                      🗑️
+                    </button>
+                  </td>
+                )}
               </tr>
-            ))
-          )}
+            ));
+          })}
         </tbody>
       </table>
+
+      {session.lineas.length === 0 && (
+        <div style={{textAlign:"center",padding:24,color:"var(--txt3)",fontSize:13}}>
+          Sin pedidos. Usa el botón &quot;Editar&quot; para agregar.
+        </div>
+      )}
     </div>
   );
 }
