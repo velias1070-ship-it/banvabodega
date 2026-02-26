@@ -14,6 +14,15 @@ export interface Product {
   price: number;
   reorder: number;
   requiresLabel?: boolean;
+  tamano?: string;
+  color?: string;
+}
+
+export interface ComposicionVenta {
+  skuVenta: string;
+  codigoMl: string;
+  skuOrigen: string;
+  unidades: number;
 }
 
 export interface Position {
@@ -56,6 +65,7 @@ export interface StoreData {
   movements: Movement[];
   movCounter: number;
   mapConfig?: MapConfig;
+  composicion: ComposicionVenta[];
 }
 
 // ==================== CONSTANTS ====================
@@ -91,7 +101,7 @@ export function saveProveedores(provs: string[]) {
 
 // ==================== CACHE ====================
 let _cache: StoreData = {
-  products: {}, positions: [], stock: {}, movements: [], movCounter: 0,
+  products: {}, positions: [], stock: {}, movements: [], movCounter: 0, composicion: [],
 };
 let _initialized = false;
 let _loading = false;
@@ -102,12 +112,13 @@ export async function initStore(): Promise<void> {
   if (!isConfigured()) { _initialized = true; return; }
   _loading = true;
   try {
-    const [prods, poss, stocks, movs, mapCfg] = await Promise.all([
+    const [prods, poss, stocks, movs, mapCfg, compVenta] = await Promise.all([
       db.fetchProductos(),
       db.fetchPosiciones(),
       db.fetchStock(),
       db.fetchMovimientos(500),
       db.fetchMapConfig(),
+      db.fetchComposicionVenta(),
     ]);
 
     // Products → Record<sku, Product>
@@ -118,6 +129,7 @@ export async function initStore(): Promise<void> {
         cat: p.categoria, prov: p.proveedor, cost: p.costo,
         price: p.precio, reorder: p.reorder,
         requiresLabel: p.requiere_etiqueta,
+        tamano: p.tamano || "", color: p.color || "",
       };
     }
 
@@ -150,11 +162,17 @@ export async function initStore(): Promise<void> {
       };
     }
 
-    _cache = { products, positions, stock, movements, movCounter: movements.length, mapConfig };
+    // Composicion venta
+    const composicion: ComposicionVenta[] = compVenta.map(c => ({
+      skuVenta: c.sku_venta, codigoMl: c.codigo_ml,
+      skuOrigen: c.sku_origen, unidades: c.unidades,
+    }));
+
+    _cache = { products, positions, stock, movements, movCounter: movements.length, mapConfig, composicion };
     _initialized = true;
   } catch (err) {
     console.error("initStore error:", err);
-    _initialized = true; // Allow app to work even if init fails
+    _initialized = true;
   }
   _loading = false;
 }
@@ -215,6 +233,7 @@ async function flushToSupabase() {
       sku: p.sku, sku_venta: "", codigo_ml: p.mlCode, nombre: p.name,
       categoria: p.cat, proveedor: p.prov, costo: p.cost, precio: p.price,
       reorder: p.reorder, requiere_etiqueta: p.requiresLabel !== false,
+      tamano: p.tamano || "", color: p.color || "",
     }));
     if (dbProds.length > 0) await db.upsertProductos(dbProds);
 
@@ -253,7 +272,7 @@ async function flushToSupabase() {
 }
 
 export function resetStore() {
-  _cache = { products: {}, positions: [], stock: {}, movements: [], movCounter: 0 };
+  _cache = { products: {}, positions: [], stock: {}, movements: [], movCounter: 0, composicion: [] };
 }
 
 // ==================== STOCK HELPERS (sync, from cache) ====================
@@ -303,6 +322,35 @@ export function findProduct(query: string): Product[] {
 export function findPosition(code: string): Position | null {
   const clean = code.replace("BANVA-POS:", "").replace("BANVA-LOC:", "").trim();
   return _cache.positions.find(p => p.id === clean && p.active) || null;
+}
+
+// ==================== COMPOSICION VENTA HELPERS ====================
+
+// Dado un código ML, retorna los componentes físicos del pack/combo
+export function getComponentesPorML(codigoMl: string): ComposicionVenta[] {
+  return _cache.composicion.filter(c => c.codigoMl === codigoMl);
+}
+
+// Dado un SKU Venta, retorna los componentes físicos
+export function getComponentesPorSkuVenta(skuVenta: string): ComposicionVenta[] {
+  return _cache.composicion.filter(c => c.skuVenta === skuVenta);
+}
+
+// Dado un SKU Origen (físico), en qué packs/ventas participa
+export function getVentasPorSkuOrigen(skuOrigen: string): ComposicionVenta[] {
+  return _cache.composicion.filter(c => c.skuOrigen === skuOrigen);
+}
+
+// Todos los SKUs de venta únicos
+export function getSkusVenta(): { skuVenta: string; codigoMl: string; componentes: ComposicionVenta[] }[] {
+  const map = new Map<string, ComposicionVenta[]>();
+  for (const c of _cache.composicion) {
+    if (!map.has(c.skuVenta)) map.set(c.skuVenta, []);
+    map.get(c.skuVenta)!.push(c);
+  }
+  return Array.from(map.entries()).map(([skuVenta, comps]) => ({
+    skuVenta, codigoMl: comps[0]?.codigoMl || "", componentes: comps,
+  }));
 }
 
 // ==================== ASYNC MUTATIONS ====================
@@ -385,6 +433,7 @@ export async function saveProductAsync(p: Product) {
       sku: p.sku, sku_venta: "", codigo_ml: p.mlCode, nombre: p.name,
       categoria: p.cat, proveedor: p.prov, costo: p.cost, precio: p.price,
       reorder: p.reorder, requiere_etiqueta: p.requiresLabel !== false,
+      tamano: p.tamano || "", color: p.color || "",
     });
   }
 }
@@ -447,23 +496,32 @@ export function savePositionMap(posId: string, mx: number, my: number, mw: numbe
 
 // ==================== SHEET SYNC ====================
 export async function syncFromSheet(): Promise<{ added: number; updated: number; total: number }> {
-  const result = await db.syncProductosFromSheet();
-  if (result.added > 0 || result.updated > 0) {
-    // Refresh products in cache
-    const prods = await db.fetchProductos();
-    _cache.products = {};
-    for (const p of prods) {
-      _cache.products[p.sku] = {
-        sku: p.sku, name: p.nombre, mlCode: p.codigo_ml,
-        cat: p.categoria, prov: p.proveedor, cost: p.costo,
-        price: p.precio, reorder: p.reorder,
-      };
-    }
+  const result = await db.syncDiccionarioFromSheet();
+  
+  // Refresh products in cache
+  const prods = await db.fetchProductos();
+  _cache.products = {};
+  for (const p of prods) {
+    _cache.products[p.sku] = {
+      sku: p.sku, name: p.nombre, mlCode: p.codigo_ml,
+      cat: p.categoria, prov: p.proveedor, cost: p.costo,
+      price: p.precio, reorder: p.reorder,
+      requiresLabel: p.requiere_etiqueta,
+      tamano: p.tamano || "", color: p.color || "",
+    };
   }
+
+  // Refresh composicion cache
+  const compVenta = await db.fetchComposicionVenta();
+  _cache.composicion = compVenta.map(c => ({
+    skuVenta: c.sku_venta, codigoMl: c.codigo_ml,
+    skuOrigen: c.sku_origen, unidades: c.unidades,
+  }));
+
   if (typeof window !== "undefined") {
     localStorage.setItem("banva_sheet_last_sync", Date.now().toString());
   }
-  return result;
+  return result.productos;
 }
 
 export function shouldSync(): boolean {
