@@ -1,6 +1,6 @@
 "use client";
 import { useState, useCallback, useEffect, useRef } from "react";
-import { getStore, saveStore, findProduct, findPosition, activePositions, skuTotal, skuPositions, posContents, recordMovement, recordBulkMovements, fmtMoney, IN_REASONS, OUT_REASONS, initStore, isStoreReady, refreshStore, isSupabaseConfigured, getRecepcionesActivas, getRecepcionLineas, contarLinea, etiquetarLinea, ubicarLinea, actualizarRecepcion, fmtDate, fmtTime, getUnassignedStock, assignPosition } from "@/lib/store";
+import { getStore, saveStore, findProduct, findPosition, activePositions, skuTotal, skuPositions, posContents, recordMovement, recordBulkMovements, fmtMoney, IN_REASONS, OUT_REASONS, initStore, isStoreReady, refreshStore, isSupabaseConfigured, getRecepcionesActivas, getRecepcionLineas, contarLinea, etiquetarLinea, ubicarLinea, actualizarRecepcion, fmtDate, fmtTime, getUnassignedStock, assignPosition, getMapConfig } from "@/lib/store";
 import type { Product, InReason, OutReason, DBRecepcion, DBRecepcionLinea } from "@/lib/store";
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -132,6 +132,71 @@ function ProductSearch({ onSelect, placeholder }: { onSelect: (p: Product) => vo
   );
 }
 
+// ==================== OPERATOR MINI MAP ====================
+function OperatorMiniMap({ selectedPos, onSelectPos }: { selectedPos: string; onSelectPos: (posId: string) => void }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [cellSize, setCellSize] = useState(16);
+  const cfg = getMapConfig();
+  const positions = activePositions().filter(p => p.active && p.mx !== undefined);
+
+  useEffect(() => {
+    const handleResize = () => {
+      if (containerRef.current) {
+        const w = containerRef.current.clientWidth;
+        setCellSize(Math.max(10, Math.floor((w - 4) / cfg.gridW)));
+      }
+    };
+    handleResize();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [cfg.gridW]);
+
+  const mapW = cfg.gridW * cellSize;
+  const mapH = cfg.gridH * cellSize;
+
+  return (
+    <div ref={containerRef} style={{width:"100%",position:"relative",background:"var(--bg2)",border:"1px solid var(--bg4)",borderRadius:8,overflow:"hidden",marginBottom:8}}>
+      <div style={{width:mapW,height:mapH,position:"relative",margin:"0 auto"}}>
+        {/* Grid */}
+        <svg width={mapW} height={mapH} style={{position:"absolute",top:0,left:0,pointerEvents:"none",opacity:0.06}}>
+          {Array.from({length:cfg.gridW+1}).map((_,i)=><line key={"v"+i} x1={i*cellSize} y1={0} x2={i*cellSize} y2={mapH} stroke="var(--txt3)" strokeWidth={1}/>)}
+          {Array.from({length:cfg.gridH+1}).map((_,i)=><line key={"h"+i} x1={0} y1={i*cellSize} x2={mapW} y2={i*cellSize} stroke="var(--txt3)" strokeWidth={1}/>)}
+        </svg>
+
+        {/* Objects */}
+        {cfg.objects.map(o=>(
+          <div key={o.id} style={{position:"absolute",left:o.mx*cellSize,top:o.my*cellSize,width:o.mw*cellSize,height:o.mh*cellSize,background:(o.color||"#64748b")+"18",border:`1px dashed ${o.color||"#64748b"}44`,borderRadius:3,display:"flex",alignItems:"center",justifyContent:"center",pointerEvents:"none",zIndex:1}}>
+            {o.mw*cellSize > 30 && <div style={{fontSize:Math.max(6,cellSize*0.28),color:(o.color||"#64748b")+"88",fontWeight:600,textAlign:"center",overflow:"hidden"}}>{o.label}</div>}
+          </div>
+        ))}
+
+        {/* Positions */}
+        {positions.map(p=>{
+          const mx=p.mx??0,my=p.my??0,mw=p.mw??2,mh=p.mh??2;
+          const color=p.color||"#10b981";
+          const isSel=selectedPos===p.id;
+          const items=posContents(p.id);
+          const tq=items.reduce((s,i)=>s+i.qty,0);
+          const isEmpty=tq===0;
+          return(
+            <div key={p.id} onClick={()=>onSelectPos(p.id)}
+              style={{position:"absolute",left:mx*cellSize,top:my*cellSize,width:mw*cellSize,height:mh*cellSize,
+                background:isSel?color+"55":isEmpty?color+"0a":color+"1a",
+                border:`2px solid ${isSel?"#fff":isEmpty?color+"33":color}`,borderRadius:4,
+                display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+                cursor:"pointer",zIndex:isSel?20:10,
+                boxShadow:isSel?`0 0 0 2px ${color}, 0 0 12px ${color}66`:"none",
+                transition:"all .15s",userSelect:"none"}}>
+              <div className="mono" style={{fontSize:Math.max(8,Math.min(13,cellSize*0.45)),fontWeight:800,color:isSel?"#fff":isEmpty?color+"55":color,lineHeight:1}}>{p.id}</div>
+              {tq>0 && mh*cellSize>24 && <div className="mono" style={{fontSize:Math.max(6,cellSize*0.25),color:"var(--blue)",fontWeight:600,marginTop:1}}>{tq}</div>}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ==================== INGRESO ====================
 function Ingreso({ refresh }: { refresh: () => void }) {
   const { show, Toast } = useToast();
@@ -190,20 +255,8 @@ function Ingreso({ refresh }: { refresh: () => void }) {
             </button>
           </div>
           {cam && <BarcodeScanner active={cam} onScan={handleScan} label="Apunta al QR de la POSICIÓN"/>}
-          <div style={{fontSize:11,color:"var(--txt3)",marginBottom:8}}>O selecciona manualmente:</div>
-          <div className="pos-grid">
-            {positions.map(p => {
-              const items = posContents(p.id);
-              const totalQ = items.reduce((s,i) => s + i.qty, 0);
-              return (
-                <button key={p.id} className="pos-btn" onClick={() => handleManualPos(p.id)}>
-                  <div className="pos-number">{p.id}</div>
-                  <div className="pos-label">{p.type === "shelf" ? "Estante" : "Pallet"}</div>
-                  {totalQ > 0 ? <div className="pos-count">{totalQ} uds</div> : <div className="pos-free">LIBRE</div>}
-                </button>
-              );
-            })}
-          </div>
+          <div style={{fontSize:11,color:"var(--txt3)",marginBottom:8}}>O toca una posición en el mapa:</div>
+          <OperatorMiniMap selectedPos={pos} onSelectPos={handleManualPos} />
         </div>
       </>}
 
@@ -1080,17 +1133,8 @@ function CargaInventario({ refresh }: { refresh: () => void }) {
           </div>
         )}
 
-        <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
-          {positions.slice(0,20).map(p => (
-            <button key={p.id} onClick={()=>{setCurrentPos(p.id);show(`Posición ${p.id}`);setTimeout(()=>skuInputRef.current?.focus(),100);}}
-              style={{padding:"8px 10px",borderRadius:6,fontSize:12,fontWeight:700,fontFamily:"'JetBrains Mono',monospace",
-                background:currentPos===p.id?"var(--greenBg)":"var(--bg3)",
-                color:currentPos===p.id?"var(--green)":"var(--txt3)",
-                border:currentPos===p.id?"2px solid var(--green)":"1px solid var(--bg4)"}}>
-              {p.id}
-            </button>
-          ))}
-        </div>
+        <div style={{fontSize:11,color:"var(--txt3)",marginBottom:6}}>O toca una posición en el mapa:</div>
+        <OperatorMiniMap selectedPos={currentPos} onSelectPos={(id)=>{setCurrentPos(id);show(`Posición ${id}`);setTimeout(()=>skuInputRef.current?.focus(),100);}} />
 
         {currentPos && currentPosTotal > 0 && (
           <div style={{marginTop:8,padding:"6px 10px",background:"var(--bg2)",borderRadius:6,fontSize:11,color:"var(--txt3)"}}>
