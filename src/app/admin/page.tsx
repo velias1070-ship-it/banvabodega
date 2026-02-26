@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady } from "@/lib/store";
-import type { Product, Movement, Position, InReason, OutReason } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion } from "@/lib/store";
+import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea } from "@/lib/store";
 import Link from "next/link";
 import SheetSync from "@/components/SheetSync";
 
@@ -51,7 +51,7 @@ function LoginGate({ onLogin }: { onLogin: (pin: string) => boolean }) {
 }
 
 export default function AdminPage() {
-  const [tab, setTab] = useState<"dash"|"ops"|"inv"|"mov"|"prod"|"pos"|"stock_load"|"config">("dash");
+  const [tab, setTab] = useState<"dash"|"rec"|"ops"|"inv"|"mov"|"prod"|"pos"|"stock_load"|"config">("dash");
   const [,setTick] = useState(0);
   const r = useCallback(()=>setTick(t=>t+1),[]);
   const [mounted, setMounted] = useState(false);
@@ -83,7 +83,7 @@ export default function AdminPage() {
       <SheetSync onSynced={r}/>
       <div className="admin-layout">
         <nav className="admin-sidebar">
-          {([["dash","Dashboard","📊"],["ops","Operaciones","⚡"],["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["pos","Posiciones","📍"],["stock_load","Carga Stock","📥"],["config","Configuración","⚙️"]] as const).map(([key,label,icon])=>(
+          {([["dash","Dashboard","📊"],["rec","Recepciones","📦"],["ops","Operaciones","⚡"],["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["pos","Posiciones","📍"],["stock_load","Carga Stock","📥"],["config","Configuración","⚙️"]] as const).map(([key,label,icon])=>(
             <button key={key} className={`sidebar-btn ${tab===key?"active":""}`} onClick={()=>setTab(key as any)}>
               <span className="sidebar-icon">{icon}</span>
               <span className="sidebar-label">{label}</span>
@@ -98,12 +98,13 @@ export default function AdminPage() {
         <main className="admin-main">
           {/* Mobile tabs fallback */}
           <div className="admin-mobile-tabs">
-            {([["dash","Dashboard"],["ops","Ops"],["inv","Inventario"],["mov","Movim."],["prod","Productos"],["pos","Posiciones"],["stock_load","Carga"],["config","Config"]] as const).map(([key,label])=>(
+            {([["dash","Dashboard"],["rec","Recepción"],["ops","Ops"],["inv","Inventario"],["mov","Movim."],["prod","Productos"],["pos","Posiciones"],["stock_load","Carga"],["config","Config"]] as const).map(([key,label])=>(
               <button key={key} className={`tab ${tab===key?"active-cyan":""}`} onClick={()=>setTab(key as any)}>{label}</button>
             ))}
           </div>
           <div className="admin-content">
             {tab==="dash"&&<Dashboard/>}
+            {tab==="rec"&&<AdminRecepciones refresh={r}/>}
             {tab==="ops"&&<Operaciones refresh={r}/>}
             {tab==="inv"&&<Inventario/>}
             {tab==="mov"&&<Movimientos/>}
@@ -113,6 +114,211 @@ export default function AdminPage() {
             {tab==="config"&&<Configuracion refresh={r}/>}
           </div>
         </main>
+      </div>
+    </div>
+  );
+}
+
+// ==================== ADMIN RECEPCIONES ====================
+const ESTADO_COLORS_A: Record<string, string> = { CREADA: "var(--amber)", EN_PROCESO: "var(--blue)", COMPLETADA: "var(--green)", CERRADA: "var(--txt3)" };
+
+function AdminRecepciones({ refresh }: { refresh: () => void }) {
+  const [recs, setRecs] = useState<DBRecepcion[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
+  const [selRec, setSelRec] = useState<DBRecepcion|null>(null);
+  const [lineas, setLineas] = useState<DBRecepcionLinea[]>([]);
+
+  // Create form
+  const [newFolio, setNewFolio] = useState("");
+  const [newProv, setNewProv] = useState("");
+  const [newLineas, setNewLineas] = useState<{sku:string;nombre:string;codigoML:string;cantidad:number;costo:number;requiereEtiqueta:boolean}[]>([]);
+  const [newSku, setNewSku] = useState("");
+  const [newQty, setNewQty] = useState(1);
+
+  const loadRecs = async () => { setLoading(true); setRecs(await getRecepciones()); setLoading(false); };
+  useEffect(() => { loadRecs(); }, []);
+
+  const openRec = async (rec: DBRecepcion) => {
+    setSelRec(rec);
+    setLineas(await getRecepcionLineas(rec.id!));
+  };
+
+  const addLinea = () => {
+    if (!newSku) return;
+    const s = getStore();
+    const prod = s.products[newSku.toUpperCase()];
+    setNewLineas(l => [...l, {
+      sku: newSku.toUpperCase(), nombre: prod?.name || newSku, codigoML: prod?.mlCode || "",
+      cantidad: newQty, costo: prod?.cost || 0, requiereEtiqueta: prod?.requiresLabel !== false,
+    }]);
+    setNewSku(""); setNewQty(1);
+  };
+
+  const doCreate = async () => {
+    if (!newFolio || !newProv || newLineas.length === 0) return;
+    setLoading(true);
+    await crearRecepcion(newFolio, newProv, "", newLineas);
+    setNewFolio(""); setNewProv(""); setNewLineas([]); setShowCreate(false);
+    await loadRecs();
+    setLoading(false);
+  };
+
+  // Detail view
+  if (selRec) {
+    const total = lineas.length;
+    const ubicadas = lineas.filter(l => l.estado === "UBICADA").length;
+    const progress = total > 0 ? Math.round((ubicadas / total) * 100) : 0;
+
+    return (
+      <div>
+        <button onClick={() => { setSelRec(null); loadRecs(); }} style={{marginBottom:12,padding:"6px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--txt2)",fontSize:12,fontWeight:600,border:"1px solid var(--bg4)"}}>
+          ← Volver
+        </button>
+        <div className="card">
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div>
+              <div className="card-title">{selRec.proveedor} — Folio {selRec.folio}</div>
+              <div style={{fontSize:11,color:"var(--txt3)"}}>{fmtDate(selRec.created_at||"")} · {fmtTime(selRec.created_at||"")}</div>
+            </div>
+            <span style={{padding:"4px 12px",borderRadius:6,background:ESTADO_COLORS_A[selRec.estado],color:"#fff",fontSize:11,fontWeight:700}}>{selRec.estado}</span>
+          </div>
+          <div style={{marginTop:10,background:"var(--bg3)",borderRadius:6,height:8,overflow:"hidden"}}>
+            <div style={{width:`${progress}%`,height:"100%",background:"var(--green)",borderRadius:6}}/>
+          </div>
+          <div style={{fontSize:11,color:"var(--txt3)",marginTop:4}}>{ubicadas}/{total} completadas</div>
+        </div>
+        <div className="card" style={{marginTop:12}}>
+          <table className="tbl">
+            <thead><tr><th>SKU</th><th>Producto</th><th>ML</th><th style={{textAlign:"right"}}>Factura</th><th style={{textAlign:"right"}}>Recibido</th><th style={{textAlign:"right"}}>Etiq.</th><th style={{textAlign:"right"}}>Ubic.</th><th>Estado</th></tr></thead>
+            <tbody>{lineas.map(l => (
+              <tr key={l.id} style={{background:l.estado==="UBICADA"?"var(--greenBg)":"transparent"}}>
+                <td className="mono" style={{fontSize:11,fontWeight:700}}>{l.sku}</td>
+                <td style={{fontSize:11}}>{l.nombre}</td>
+                <td className="mono" style={{fontSize:10,color:"var(--txt3)"}}>{l.codigo_ml||"—"}</td>
+                <td className="mono" style={{textAlign:"right"}}>{l.qty_factura}</td>
+                <td className="mono" style={{textAlign:"right",color:l.qty_recibida>0?(l.qty_recibida===l.qty_factura?"var(--green)":"var(--amber)"):"var(--txt3)"}}>{l.qty_recibida||"—"}</td>
+                <td className="mono" style={{textAlign:"right"}}>{l.qty_etiquetada||"—"}</td>
+                <td className="mono" style={{textAlign:"right",color:(l.qty_ubicada||0)>0?"var(--green)":"var(--txt3)"}}>{l.qty_ubicada||"—"}</td>
+                <td style={{fontSize:10,fontWeight:700,color:l.estado==="UBICADA"?"var(--green)":l.estado==="PENDIENTE"?"var(--red)":"var(--amber)"}}>{l.estado}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      </div>
+    );
+  }
+
+  // Create form
+  if (showCreate) {
+    const s = getStore();
+    const suggestions = newSku.length >= 2 ? findProduct(newSku).slice(0, 5) : [];
+    return (
+      <div>
+        <button onClick={() => setShowCreate(false)} style={{marginBottom:12,padding:"6px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--txt2)",fontSize:12,fontWeight:600,border:"1px solid var(--bg4)"}}>← Cancelar</button>
+        <div className="card">
+          <div className="card-title">Nueva recepción manual</div>
+          <div className="admin-grid-2">
+            <div>
+              <label style={{fontSize:11,color:"var(--txt3)",fontWeight:600}}>Folio factura</label>
+              <input className="form-input" value={newFolio} onChange={e=>setNewFolio(e.target.value)} placeholder="Ej: 12345" style={{marginTop:4}}/>
+            </div>
+            <div>
+              <label style={{fontSize:11,color:"var(--txt3)",fontWeight:600}}>Proveedor</label>
+              <select className="form-select" value={newProv} onChange={e=>setNewProv(e.target.value)} style={{marginTop:4}}>
+                <option value="">Seleccionar...</option>
+                {getProveedores().map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
+          </div>
+          <div style={{marginTop:16}}>
+            <label style={{fontSize:11,color:"var(--txt3)",fontWeight:600}}>Agregar producto</label>
+            <div style={{display:"flex",gap:6,marginTop:4}}>
+              <div style={{flex:1,position:"relative"}}>
+                <input className="form-input" value={newSku} onChange={e=>setNewSku(e.target.value)} placeholder="SKU o nombre" onKeyDown={e=>e.key==="Enter"&&addLinea()}/>
+                {suggestions.length > 0 && (
+                  <div style={{position:"absolute",top:"100%",left:0,right:0,background:"var(--bg2)",border:"1px solid var(--bg3)",borderRadius:6,zIndex:10,maxHeight:150,overflow:"auto"}}>
+                    {suggestions.map(p => (
+                      <div key={p.sku} onClick={()=>{setNewSku(p.sku);}} style={{padding:"6px 10px",fontSize:11,cursor:"pointer",borderBottom:"1px solid var(--bg3)"}}>
+                        <strong>{p.sku}</strong> — {p.name}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <input type="number" className="form-input" value={newQty} onChange={e=>setNewQty(parseInt(e.target.value)||1)} style={{width:70,textAlign:"center"}}/>
+              <button onClick={addLinea} style={{padding:"8px 14px",borderRadius:6,background:"var(--green)",color:"#fff",fontSize:12,fontWeight:700}}>+</button>
+            </div>
+          </div>
+          {newLineas.length > 0 && (
+            <div style={{marginTop:12}}>
+              {newLineas.map((l, i) => (
+                <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:"1px solid var(--bg3)",fontSize:12}}>
+                  <span><strong>{l.sku}</strong> — {l.nombre}</span>
+                  <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                    <span className="mono" style={{fontWeight:700}}>{l.cantidad}</span>
+                    <button onClick={()=>setNewLineas(nl=>nl.filter((_,j)=>j!==i))} style={{color:"var(--red)",background:"none",border:"none",cursor:"pointer",fontSize:14}}>✕</button>
+                  </div>
+                </div>
+              ))}
+              <button onClick={doCreate} disabled={!newFolio||!newProv||loading}
+                style={{width:"100%",marginTop:12,padding:12,borderRadius:8,background:"var(--green)",color:"#fff",fontSize:13,fontWeight:700}}>
+                {loading ? "Creando..." : `Crear recepción (${newLineas.length} líneas)`}
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // List view
+  return (
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+        <div className="card-title" style={{margin:0}}>Recepciones</div>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={loadRecs} disabled={loading} style={{padding:"6px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--cyan)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
+            {loading?"...":"🔄"}
+          </button>
+          <button onClick={()=>setShowCreate(true)} style={{padding:"8px 16px",borderRadius:6,background:"var(--green)",color:"#fff",fontSize:12,fontWeight:700}}>
+            + Nueva recepción
+          </button>
+        </div>
+      </div>
+
+      {recs.length === 0 && !loading && (
+        <div className="card" style={{textAlign:"center",padding:32}}>
+          <div style={{fontSize:13,color:"var(--txt3)"}}>Sin recepciones. Crea una manualmente o desde la app de etiquetas.</div>
+        </div>
+      )}
+
+      <div className="desktop-only">
+        <table className="tbl">
+          <thead><tr><th>Folio</th><th>Proveedor</th><th>Fecha</th><th>Estado</th><th style={{textAlign:"right"}}>Líneas</th><th></th></tr></thead>
+          <tbody>{recs.map(rec => (
+            <tr key={rec.id} onClick={()=>openRec(rec)} style={{cursor:"pointer"}}>
+              <td className="mono" style={{fontWeight:700}}>{rec.folio}</td>
+              <td>{rec.proveedor}</td>
+              <td style={{fontSize:11,color:"var(--txt3)"}}>{fmtDate(rec.created_at||"")} {fmtTime(rec.created_at||"")}</td>
+              <td><span style={{padding:"2px 8px",borderRadius:4,background:ESTADO_COLORS_A[rec.estado],color:"#fff",fontSize:10,fontWeight:700}}>{rec.estado}</span></td>
+              <td style={{textAlign:"right"}}>—</td>
+              <td><button style={{fontSize:10,padding:"4px 8px",borderRadius:4,background:"var(--bg3)",color:"var(--cyan)",border:"1px solid var(--bg4)"}}>Ver →</button></td>
+            </tr>
+          ))}</tbody>
+        </table>
+      </div>
+
+      <div className="mobile-only">
+        {recs.map(rec => (
+          <div key={rec.id} onClick={()=>openRec(rec)} style={{padding:12,marginBottom:6,borderRadius:8,background:"var(--bg2)",border:"1px solid var(--bg3)",cursor:"pointer"}}>
+            <div style={{display:"flex",justifyContent:"space-between"}}>
+              <div style={{fontWeight:700,fontSize:13}}>{rec.proveedor}</div>
+              <span style={{padding:"2px 8px",borderRadius:4,background:ESTADO_COLORS_A[rec.estado],color:"#fff",fontSize:10,fontWeight:700}}>{rec.estado}</span>
+            </div>
+            <div style={{fontSize:11,color:"var(--txt3)"}}>Folio: {rec.folio} · {fmtDate(rec.created_at||"")}</div>
+          </div>
+        ))}
       </div>
     </div>
   );

@@ -1,7 +1,7 @@
 "use client";
 import { useState, useCallback, useEffect, useRef } from "react";
-import { getStore, saveStore, findProduct, findPosition, activePositions, skuTotal, skuPositions, posContents, recordMovement, recordBulkMovements, fmtMoney, IN_REASONS, OUT_REASONS, initStore, isStoreReady, refreshStore, isSupabaseConfigured } from "@/lib/store";
-import type { Product, InReason, OutReason } from "@/lib/store";
+import { getStore, saveStore, findProduct, findPosition, activePositions, skuTotal, skuPositions, posContents, recordMovement, recordBulkMovements, fmtMoney, IN_REASONS, OUT_REASONS, initStore, isStoreReady, refreshStore, isSupabaseConfigured, getRecepcionesActivas, getRecepcionLineas, contarLinea, etiquetarLinea, ubicarLinea, actualizarRecepcion, fmtDate, fmtTime } from "@/lib/store";
+import type { Product, InReason, OutReason, DBRecepcion, DBRecepcionLinea } from "@/lib/store";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 const BarcodeScanner = dynamic(() => import("@/components/BarcodeScanner"), { ssr: false });
@@ -10,7 +10,7 @@ import SheetSync from "@/components/SheetSync";
 const CLOUD_SYNC_INTERVAL = 10_000;
 
 export default function OperadorPage() {
-  const [tab, setTab] = useState<"in"|"out"|"stock"|"bulk">("in");
+  const [tab, setTab] = useState<"rec"|"in"|"out"|"stock"|"bulk">("rec");
   const [,setTick] = useState(0);
   const r = useCallback(() => setTick(t => t + 1), []);
   const [mounted, setMounted] = useState(false);
@@ -44,17 +44,20 @@ export default function OperadorPage() {
         <h1>BANVA Bodega</h1>
         <div style={{display:"flex",gap:6,alignItems:"center"}}>
           {cloudOk && <span title="Sincronizado con la nube" style={{fontSize:10,color:"var(--green)"}}>☁️</span>}
+          <Link href="/operador/recepciones"><button style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"var(--green)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>📦 Recepción</button></Link>
           <Link href="/mapa"><button style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"var(--cyan)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>🗺️ Mapa</button></Link>
         </div>
       </div>
       <SheetSync onSynced={r}/>
       <div className="tabs">
+        <button className={`tab ${tab==="rec"?"active-cyan":""}`} onClick={()=>setTab("rec")}>📦 RECEPCIÓN</button>
         <button className={`tab ${tab==="in"?"active-green":""}`} onClick={()=>setTab("in")}>INGRESO</button>
         <button className={`tab ${tab==="out"?"active-out":""}`} onClick={()=>setTab("out")}>SALIDA</button>
         <button className={`tab ${tab==="stock"?"active-blue":""}`} onClick={()=>setTab("stock")}>STOCK</button>
         <button className={`tab ${tab==="bulk"?"active-cyan":""}`} onClick={()=>setTab("bulk")}>MASIVO</button>
       </div>
       <div style={{padding:12}}>
+        {tab==="rec"&&<Recepciones refresh={r}/>}
         {tab==="in"&&<Ingreso refresh={r}/>}
         {tab==="out"&&<Salida refresh={r}/>}
         {tab==="stock"&&<StockView/>}
@@ -526,6 +529,423 @@ function BulkMode({ refresh }: { refresh: () => void }) {
       </button>
 
       {done && <div style={{textAlign:"center",padding:20,color:"var(--green)",fontSize:16,fontWeight:700}}>Registrado correctamente</div>}
+    </div>
+  );
+}
+
+// ==================== RECEPCIONES ====================
+const ESTADO_COLORS: Record<string, string> = {
+  PENDIENTE: "var(--red)", CONTADA: "var(--amber)", EN_ETIQUETADO: "var(--blue)",
+  ETIQUETADA: "var(--cyan)", UBICADA: "var(--green)",
+};
+const ESTADO_ICONS: Record<string, string> = {
+  PENDIENTE: "🔴", CONTADA: "🟡", EN_ETIQUETADO: "🔵", ETIQUETADA: "🟢", UBICADA: "✅",
+};
+
+function Recepciones({ refresh }: { refresh: () => void }) {
+  const [view, setView] = useState<"list"|"detail"|"process">("list");
+  const [recs, setRecs] = useState<DBRecepcion[]>([]);
+  const [selRec, setSelRec] = useState<DBRecepcion|null>(null);
+  const [lineas, setLineas] = useState<DBRecepcionLinea[]>([]);
+  const [selLinea, setSelLinea] = useState<DBRecepcionLinea|null>(null);
+  const [loading, setLoading] = useState(false);
+  const [operario, setOperario] = useState(() => {
+    if (typeof window !== "undefined") return localStorage.getItem("banva_operario") || "";
+    return "";
+  });
+
+  // Load recepciones
+  const loadRecs = async () => {
+    setLoading(true);
+    const data = await getRecepcionesActivas();
+    setRecs(data);
+    setLoading(false);
+  };
+
+  useEffect(() => { loadRecs(); }, []);
+
+  // Load lineas when rec selected
+  const openRec = async (rec: DBRecepcion) => {
+    setSelRec(rec);
+    setLoading(true);
+    const data = await getRecepcionLineas(rec.id!);
+    setLineas(data);
+    setView("detail");
+    setLoading(false);
+    // Mark as EN_PROCESO if CREADA
+    if (rec.estado === "CREADA") {
+      await actualizarRecepcion(rec.id!, { estado: "EN_PROCESO" });
+    }
+  };
+
+  const refreshLineas = async () => {
+    if (!selRec?.id) return;
+    const data = await getRecepcionLineas(selRec.id);
+    setLineas(data);
+  };
+
+  // Save operario name
+  const saveOperario = (name: string) => {
+    setOperario(name);
+    if (typeof window !== "undefined") localStorage.setItem("banva_operario", name);
+  };
+
+  // Operario gate
+  if (!operario) {
+    return (
+      <div style={{textAlign:"center",padding:32}}>
+        <div style={{fontSize:18,fontWeight:700,marginBottom:16}}>¿Quién eres?</div>
+        <input className="form-input" placeholder="Tu nombre" autoFocus
+          onKeyDown={e => { if (e.key === "Enter" && (e.target as HTMLInputElement).value.trim()) saveOperario((e.target as HTMLInputElement).value.trim()); }}
+          style={{fontSize:16,textAlign:"center",padding:14,marginBottom:12,width:"100%",maxWidth:300}}/>
+        <div style={{fontSize:11,color:"var(--txt3)"}}>Escribe tu nombre y presiona Enter</div>
+      </div>
+    );
+  }
+
+  // ====== VIEW: LIST ======
+  if (view === "list") {
+    return (
+      <div>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+          <div>
+            <div style={{fontSize:16,fontWeight:700}}>Recepciones</div>
+            <div style={{fontSize:11,color:"var(--txt3)"}}>Operario: <strong style={{color:"var(--cyan)"}}>{operario}</strong>
+              <button onClick={()=>saveOperario("")} style={{marginLeft:8,fontSize:10,color:"var(--txt3)",background:"none",border:"none",textDecoration:"underline",cursor:"pointer"}}>cambiar</button>
+            </div>
+          </div>
+          <button onClick={loadRecs} disabled={loading} style={{padding:"8px 14px",borderRadius:8,background:"var(--bg3)",color:"var(--cyan)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
+            {loading ? "..." : "🔄 Actualizar"}
+          </button>
+        </div>
+
+        {recs.length === 0 && !loading && (
+          <div style={{textAlign:"center",padding:40,color:"var(--txt3)"}}>
+            <div style={{fontSize:32,marginBottom:8}}>📦</div>
+            <div style={{fontSize:14,fontWeight:600}}>Sin recepciones pendientes</div>
+            <div style={{fontSize:12,marginTop:4}}>Las recepciones se crean desde la app de etiquetas o desde el panel admin</div>
+          </div>
+        )}
+
+        {recs.map(rec => (
+          <button key={rec.id} onClick={() => openRec(rec)}
+            style={{width:"100%",textAlign:"left",padding:14,marginBottom:8,borderRadius:10,background:"var(--bg2)",border:"1px solid var(--bg3)",cursor:"pointer"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div>
+                <div style={{fontSize:14,fontWeight:700}}>{rec.proveedor}</div>
+                <div style={{fontSize:11,color:"var(--txt3)"}}>Folio: {rec.folio} · {fmtDate(rec.created_at||"")}</div>
+              </div>
+              <div style={{padding:"4px 10px",borderRadius:6,background:rec.estado==="CREADA"?"var(--amberBg)":"var(--blueBg)",
+                color:rec.estado==="CREADA"?"var(--amber)":"var(--blue)",fontSize:10,fontWeight:700}}>
+                {rec.estado === "CREADA" ? "NUEVA" : "EN PROCESO"}
+              </div>
+            </div>
+          </button>
+        ))}
+      </div>
+    );
+  }
+
+  // ====== VIEW: DETAIL ======
+  if (view === "detail" && selRec) {
+    const total = lineas.length;
+    const ubicadas = lineas.filter(l => l.estado === "UBICADA").length;
+    const progress = total > 0 ? Math.round((ubicadas / total) * 100) : 0;
+
+    return (
+      <div>
+        <button onClick={() => { setView("list"); loadRecs(); }} style={{marginBottom:12,padding:"6px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--txt2)",fontSize:12,fontWeight:600,border:"1px solid var(--bg4)"}}>
+          ← Volver a lista
+        </button>
+
+        <div style={{padding:14,background:"var(--bg2)",borderRadius:10,border:"1px solid var(--bg3)",marginBottom:12}}>
+          <div style={{fontSize:16,fontWeight:700}}>{selRec.proveedor}</div>
+          <div style={{fontSize:12,color:"var(--txt3)"}}>Folio: {selRec.folio} · {fmtDate(selRec.created_at||"")}</div>
+          {/* Progress bar */}
+          <div style={{marginTop:10,background:"var(--bg3)",borderRadius:6,height:8,overflow:"hidden"}}>
+            <div style={{width:`${progress}%`,height:"100%",background:"var(--green)",borderRadius:6,transition:"width 0.3s"}}/>
+          </div>
+          <div style={{fontSize:11,color:"var(--txt3)",marginTop:4}}>{ubicadas}/{total} líneas completadas ({progress}%)</div>
+        </div>
+
+        <button onClick={refreshLineas} style={{width:"100%",padding:8,marginBottom:12,borderRadius:6,background:"var(--bg3)",color:"var(--cyan)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
+          🔄 Refrescar líneas
+        </button>
+
+        {/* Lines */}
+        {lineas.map(linea => (
+          <div key={linea.id} onClick={() => { if (linea.estado !== "UBICADA") { setSelLinea(linea); setView("process"); } }}
+            style={{padding:12,marginBottom:6,borderRadius:8,background:linea.estado==="UBICADA"?"var(--greenBg)":"var(--bg2)",
+              border:`1px solid ${linea.estado==="UBICADA"?"var(--greenBd)":"var(--bg3)"}`,
+              cursor:linea.estado==="UBICADA"?"default":"pointer",opacity:linea.estado==="UBICADA"?0.7:1}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div style={{flex:1}}>
+                <div style={{fontSize:13,fontWeight:700}}>{linea.nombre}</div>
+                <div style={{fontSize:11,color:"var(--txt3)"}}>
+                  SKU: {linea.sku} · ML: {linea.codigo_ml || "—"}
+                </div>
+                <div style={{fontSize:11,marginTop:4,display:"flex",gap:12}}>
+                  <span>Factura: <strong>{linea.qty_factura}</strong></span>
+                  {linea.qty_recibida > 0 && <span>Recibido: <strong style={{color:linea.qty_recibida===linea.qty_factura?"var(--green)":"var(--amber)"}}>{linea.qty_recibida}</strong></span>}
+                  {linea.qty_etiquetada > 0 && <span>Etiq: <strong>{linea.qty_etiquetada}</strong></span>}
+                  {linea.qty_ubicada > 0 && <span>Ubicado: <strong style={{color:"var(--green)"}}>{linea.qty_ubicada}</strong></span>}
+                </div>
+              </div>
+              <div style={{textAlign:"right",marginLeft:8}}>
+                <span style={{fontSize:16}}>{ESTADO_ICONS[linea.estado]||"⚪"}</span>
+                <div style={{fontSize:9,fontWeight:700,color:ESTADO_COLORS[linea.estado]||"var(--txt3)",marginTop:2}}>{linea.estado}</div>
+              </div>
+            </div>
+          </div>
+        ))}
+
+        {/* Complete button */}
+        {ubicadas === total && total > 0 && (
+          <button onClick={async () => {
+            await actualizarRecepcion(selRec.id!, { estado: "COMPLETADA", completed_at: new Date().toISOString() });
+            setView("list"); loadRecs();
+          }} style={{width:"100%",marginTop:12,padding:14,borderRadius:10,background:"var(--green)",color:"#fff",fontSize:14,fontWeight:700}}>
+            ✅ Cerrar recepción — Todo ubicado
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  // ====== VIEW: PROCESS LINE ======
+  if (view === "process" && selLinea) {
+    return <ProcessLine linea={selLinea} operario={operario} recepcionId={selRec!.id!}
+      onBack={async () => { await refreshLineas(); setView("detail"); }}
+      refresh={refresh} />;
+  }
+
+  return null;
+}
+
+// ==================== PROCESS LINE COMPONENT ====================
+function ProcessLine({ linea, operario, recepcionId, onBack, refresh }: {
+  linea: DBRecepcionLinea; operario: string; recepcionId: string;
+  onBack: () => void; refresh: () => void;
+}) {
+  const [currentLinea, setCurrentLinea] = useState(linea);
+  const [saving, setSaving] = useState(false);
+
+  // --- STEP 1: CONTAR ---
+  const [qtyReal, setQtyReal] = useState(linea.qty_factura);
+
+  const doContar = async () => {
+    setSaving(true);
+    await contarLinea(linea.id!, qtyReal, operario);
+    setCurrentLinea(l => ({ ...l, qty_recibida: qtyReal, estado: "CONTADA", operario_conteo: operario }));
+    setSaving(false);
+  };
+
+  // --- STEP 2: ETIQUETAR ---
+  const [qtyEtiq, setQtyEtiq] = useState(0);
+  const [scanMode, setScanMode] = useState(false);
+
+  const doEtiquetar = async (addQty: number) => {
+    setSaving(true);
+    const newTotal = (currentLinea.qty_etiquetada || 0) + addQty;
+    const qtyTotal = currentLinea.qty_recibida || currentLinea.qty_factura;
+    await etiquetarLinea(linea.id!, newTotal, operario, qtyTotal);
+    const newEstado = newTotal >= qtyTotal ? "ETIQUETADA" : "EN_ETIQUETADO";
+    setCurrentLinea(l => ({ ...l, qty_etiquetada: newTotal, estado: newEstado as any }));
+    setQtyEtiq(0);
+    setSaving(false);
+  };
+
+  // --- STEP 3: UBICAR ---
+  const [ubicarQty, setUbicarQty] = useState(0);
+  const [ubicarPos, setUbicarPos] = useState("");
+  const [scanPosMode, setScanPosMode] = useState(false);
+  const positions = activePositions().filter(p => p.id !== "SIN_ASIGNAR");
+
+  const doUbicar = async () => {
+    if (!ubicarPos || ubicarQty <= 0) return;
+    setSaving(true);
+    await ubicarLinea(linea.id!, linea.sku, ubicarPos, ubicarQty, operario, recepcionId);
+    const newUbicada = (currentLinea.qty_ubicada || 0) + ubicarQty;
+    const qtyTotal = currentLinea.qty_recibida || currentLinea.qty_factura;
+    setCurrentLinea(l => ({ ...l, qty_ubicada: newUbicada, estado: newUbicada >= qtyTotal ? "UBICADA" as any : l.estado }));
+    setUbicarQty(0); setUbicarPos("");
+    refresh();
+    setSaving(false);
+    if (newUbicada >= qtyTotal) {
+      setTimeout(onBack, 500);
+    }
+  };
+
+  const qtyTotal = currentLinea.qty_recibida || currentLinea.qty_factura;
+  const skipEtiqueta = !currentLinea.requiere_etiqueta;
+
+  // Determine current step
+  let step: "contar" | "etiquetar" | "ubicar" = "contar";
+  if (currentLinea.estado === "CONTADA" || currentLinea.estado === "EN_ETIQUETADO") {
+    step = skipEtiqueta ? "ubicar" : "etiquetar";
+  }
+  if (currentLinea.estado === "ETIQUETADA") step = "ubicar";
+  if (currentLinea.estado === "UBICADA") step = "ubicar";
+  // If etiquetado complete, go to ubicar
+  if (step === "etiquetar" && (currentLinea.qty_etiquetada || 0) >= qtyTotal) step = "ubicar";
+
+  const remainEtiq = qtyTotal - (currentLinea.qty_etiquetada || 0);
+  const remainUbic = qtyTotal - (currentLinea.qty_ubicada || 0);
+
+  return (
+    <div>
+      <button onClick={onBack} style={{marginBottom:12,padding:"6px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--txt2)",fontSize:12,fontWeight:600,border:"1px solid var(--bg4)"}}>
+        ← Volver
+      </button>
+
+      {/* Header */}
+      <div style={{padding:14,background:"var(--bg2)",borderRadius:10,border:"1px solid var(--bg3)",marginBottom:16}}>
+        <div style={{fontSize:15,fontWeight:700}}>{currentLinea.nombre}</div>
+        <div style={{fontSize:11,color:"var(--txt3)",marginTop:2}}>SKU: {currentLinea.sku} · ML: {currentLinea.codigo_ml || "sin etiqueta"}</div>
+        <div style={{fontSize:12,marginTop:8,display:"flex",gap:16}}>
+          <span>Factura: <strong>{currentLinea.qty_factura}</strong></span>
+          <span>Recibido: <strong style={{color:(currentLinea.qty_recibida||0)>0?"var(--green)":"var(--txt3)"}}>{currentLinea.qty_recibida||"—"}</strong></span>
+          {!skipEtiqueta && <span>Etiquetado: <strong>{currentLinea.qty_etiquetada||0}/{qtyTotal}</strong></span>}
+          <span>Ubicado: <strong style={{color:(currentLinea.qty_ubicada||0)>=qtyTotal?"var(--green)":"var(--txt3)"}}>{currentLinea.qty_ubicada||0}/{qtyTotal}</strong></span>
+        </div>
+        {/* Steps indicator */}
+        <div style={{display:"flex",gap:4,marginTop:10}}>
+          {["contar","etiquetar","ubicar"].map((s,i) => {
+            if (s === "etiquetar" && skipEtiqueta) return null;
+            const done = (s === "contar" && step !== "contar") || (s === "etiquetar" && (step === "ubicar")) || (s === "ubicar" && currentLinea.estado === "UBICADA");
+            const active = s === step;
+            return <div key={s} style={{flex:1,height:4,borderRadius:2,background:done?"var(--green)":active?"var(--cyan)":"var(--bg3)"}}/>; 
+          })}
+        </div>
+      </div>
+
+      {/* STEP 1: CONTAR */}
+      {step === "contar" && (
+        <div style={{padding:16,background:"var(--bg2)",borderRadius:10,border:"1px solid var(--bg3)"}}>
+          <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>Paso 1 — Contar</div>
+          <div style={{fontSize:12,color:"var(--txt3)",marginBottom:16}}>Factura dice: <strong style={{color:"var(--txt1)",fontSize:20}}>{currentLinea.qty_factura}</strong> unidades</div>
+          <div style={{fontSize:12,fontWeight:600,marginBottom:8}}>¿Cuántas recibiste realmente?</div>
+          <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:12}}>
+            <button onClick={()=>setQtyReal(Math.max(0,qtyReal-1))} style={{width:44,height:44,borderRadius:8,background:"var(--bg3)",fontSize:20,fontWeight:700,color:"var(--txt1)",border:"1px solid var(--bg4)"}}>−</button>
+            <input type="number" value={qtyReal} onChange={e=>setQtyReal(Math.max(0,parseInt(e.target.value)||0))}
+              style={{flex:1,textAlign:"center",fontSize:28,fontWeight:700,padding:10,borderRadius:8,border:"2px solid var(--bg4)",background:"var(--bg1)",color:"var(--txt1)"}}/>
+            <button onClick={()=>setQtyReal(qtyReal+1)} style={{width:44,height:44,borderRadius:8,background:"var(--bg3)",fontSize:20,fontWeight:700,color:"var(--txt1)",border:"1px solid var(--bg4)"}}>+</button>
+          </div>
+          {qtyReal !== currentLinea.qty_factura && (
+            <div style={{padding:8,borderRadius:6,background:qtyReal<currentLinea.qty_factura?"var(--amberBg)":"var(--redBg)",
+              color:qtyReal<currentLinea.qty_factura?"var(--amber)":"var(--red)",fontSize:12,fontWeight:600,marginBottom:12,textAlign:"center"}}>
+              {qtyReal < currentLinea.qty_factura ? `⚠️ Faltan ${currentLinea.qty_factura - qtyReal} unidades` : `⚠️ Sobran ${qtyReal - currentLinea.qty_factura} unidades`}
+            </div>
+          )}
+          <button onClick={doContar} disabled={saving}
+            style={{width:"100%",padding:14,borderRadius:10,background:"var(--green)",color:"#fff",fontSize:14,fontWeight:700,opacity:saving?0.6:1}}>
+            {saving ? "Guardando..." : `Confirmar: ${qtyReal} unidades recibidas`}
+          </button>
+        </div>
+      )}
+
+      {/* STEP 2: ETIQUETAR */}
+      {step === "etiquetar" && (
+        <div style={{padding:16,background:"var(--bg2)",borderRadius:10,border:"1px solid var(--bg3)"}}>
+          <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>Paso 2 — Etiquetar</div>
+          <div style={{fontSize:12,color:"var(--txt3)",marginBottom:16}}>
+            Faltan <strong style={{color:"var(--amber)",fontSize:18}}>{remainEtiq}</strong> unidades por etiquetar
+            {currentLinea.qty_etiquetada > 0 && <span> · Ya etiquetadas: {currentLinea.qty_etiquetada}</span>}
+          </div>
+
+          <div style={{fontSize:12,fontWeight:600,marginBottom:8}}>¿Cuántas etiquetaste en esta tanda?</div>
+          <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:12}}>
+            <button onClick={()=>setQtyEtiq(Math.max(0,qtyEtiq-1))} style={{width:44,height:44,borderRadius:8,background:"var(--bg3)",fontSize:20,fontWeight:700,color:"var(--txt1)",border:"1px solid var(--bg4)"}}>−</button>
+            <input type="number" value={qtyEtiq||""} onChange={e=>setQtyEtiq(Math.min(remainEtiq,Math.max(0,parseInt(e.target.value)||0)))}
+              style={{flex:1,textAlign:"center",fontSize:28,fontWeight:700,padding:10,borderRadius:8,border:"2px solid var(--bg4)",background:"var(--bg1)",color:"var(--txt1)"}}/>
+            <button onClick={()=>setQtyEtiq(Math.min(remainEtiq,qtyEtiq+1))} style={{width:44,height:44,borderRadius:8,background:"var(--bg3)",fontSize:20,fontWeight:700,color:"var(--txt1)",border:"1px solid var(--bg4)"}}>+</button>
+          </div>
+          <div style={{display:"flex",gap:6,marginBottom:12}}>
+            {[6,12,remainEtiq].filter((v,i,a)=>a.indexOf(v)===i&&v>0&&v<=remainEtiq).map(n => (
+              <button key={n} onClick={()=>setQtyEtiq(n)}
+                style={{flex:1,padding:8,borderRadius:6,background:qtyEtiq===n?"var(--cyan)":"var(--bg3)",color:qtyEtiq===n?"#fff":"var(--txt2)",fontSize:12,fontWeight:700,border:"1px solid var(--bg4)"}}>
+                {n === remainEtiq ? `Todo (${n})` : n}
+              </button>
+            ))}
+          </div>
+          <button onClick={()=>doEtiquetar(qtyEtiq)} disabled={saving||qtyEtiq<=0}
+            style={{width:"100%",padding:14,borderRadius:10,background:qtyEtiq>0?"var(--green)":"var(--bg3)",color:qtyEtiq>0?"#fff":"var(--txt3)",fontSize:14,fontWeight:700}}>
+            {saving ? "Guardando..." : `Registrar ${qtyEtiq} etiquetadas`}
+          </button>
+        </div>
+      )}
+
+      {/* STEP 3: UBICAR */}
+      {step === "ubicar" && remainUbic > 0 && (
+        <div style={{padding:16,background:"var(--bg2)",borderRadius:10,border:"1px solid var(--bg3)"}}>
+          <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>
+            {skipEtiqueta ? "Paso 2" : "Paso 3"} — Ubicar en posición
+          </div>
+          <div style={{fontSize:12,color:"var(--txt3)",marginBottom:16}}>
+            <strong style={{color:"var(--cyan)",fontSize:18}}>{remainUbic}</strong> unidades por ubicar
+          </div>
+
+          {/* Scan QR or select position */}
+          {scanPosMode ? (
+            <div style={{marginBottom:12}}>
+              <BarcodeScanner onScan={(code: string) => {
+                const pos = findPosition(code);
+                if (pos) { setUbicarPos(pos.id); setScanPosMode(false); }
+              }} active={scanPosMode} />
+              <button onClick={()=>setScanPosMode(false)} style={{width:"100%",marginTop:8,padding:8,borderRadius:6,background:"var(--bg3)",color:"var(--txt2)",fontSize:11}}>Cancelar escaneo</button>
+            </div>
+          ) : (
+            <div style={{marginBottom:12}}>
+              <button onClick={()=>setScanPosMode(true)}
+                style={{width:"100%",padding:12,borderRadius:8,background:"var(--bg3)",color:"var(--cyan)",fontSize:13,fontWeight:600,border:"1px solid var(--bg4)",marginBottom:8}}>
+                📷 Escanear QR de posición
+              </button>
+              <select className="form-select" value={ubicarPos} onChange={e=>setUbicarPos(e.target.value)}
+                style={{width:"100%",padding:12,fontSize:13}}>
+                <option value="">Seleccionar posición...</option>
+                {positions.map(p => <option key={p.id} value={p.id}>{p.id} — {p.label}</option>)}
+              </select>
+            </div>
+          )}
+
+          {ubicarPos && (
+            <div style={{padding:10,background:"var(--greenBg)",borderRadius:8,marginBottom:12,textAlign:"center"}}>
+              <span style={{fontSize:12,color:"var(--green)",fontWeight:700}}>📍 Posición: {ubicarPos} — {positions.find(p=>p.id===ubicarPos)?.label}</span>
+            </div>
+          )}
+
+          <div style={{fontSize:12,fontWeight:600,marginBottom:8}}>Cantidad a ubicar aquí:</div>
+          <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:12}}>
+            <button onClick={()=>setUbicarQty(Math.max(0,ubicarQty-1))} style={{width:44,height:44,borderRadius:8,background:"var(--bg3)",fontSize:20,fontWeight:700,color:"var(--txt1)",border:"1px solid var(--bg4)"}}>−</button>
+            <input type="number" value={ubicarQty||""} onChange={e=>setUbicarQty(Math.min(remainUbic,Math.max(0,parseInt(e.target.value)||0)))}
+              style={{flex:1,textAlign:"center",fontSize:28,fontWeight:700,padding:10,borderRadius:8,border:"2px solid var(--bg4)",background:"var(--bg1)",color:"var(--txt1)"}}/>
+            <button onClick={()=>setUbicarQty(Math.min(remainUbic,ubicarQty+1))} style={{width:44,height:44,borderRadius:8,background:"var(--bg3)",fontSize:20,fontWeight:700,color:"var(--txt1)",border:"1px solid var(--bg4)"}}>+</button>
+          </div>
+          <div style={{display:"flex",gap:6,marginBottom:12}}>
+            {[6,12,remainUbic].filter((v,i,a)=>a.indexOf(v)===i&&v>0&&v<=remainUbic).map(n => (
+              <button key={n} onClick={()=>setUbicarQty(n)}
+                style={{flex:1,padding:8,borderRadius:6,background:ubicarQty===n?"var(--cyan)":"var(--bg3)",color:ubicarQty===n?"#fff":"var(--txt2)",fontSize:12,fontWeight:700,border:"1px solid var(--bg4)"}}>
+                {n === remainUbic ? `Todo (${n})` : n}
+              </button>
+            ))}
+          </div>
+          <button onClick={doUbicar} disabled={saving||!ubicarPos||ubicarQty<=0}
+            style={{width:"100%",padding:14,borderRadius:10,background:(ubicarPos&&ubicarQty>0)?"var(--green)":"var(--bg3)",color:(ubicarPos&&ubicarQty>0)?"#fff":"var(--txt3)",fontSize:14,fontWeight:700}}>
+            {saving ? "Guardando..." : `Ubicar ${ubicarQty} en ${ubicarPos || "..."}`}
+          </button>
+        </div>
+      )}
+
+      {/* DONE */}
+      {currentLinea.estado === "UBICADA" && (
+        <div style={{textAlign:"center",padding:24}}>
+          <div style={{fontSize:32,marginBottom:8}}>✅</div>
+          <div style={{fontSize:16,fontWeight:700,color:"var(--green)"}}>Línea completada</div>
+          <button onClick={onBack} style={{marginTop:12,padding:"10px 24px",borderRadius:8,background:"var(--bg3)",color:"var(--cyan)",fontSize:13,fontWeight:600,border:"1px solid var(--bg4)"}}>
+            Volver a recepción
+          </button>
+        </div>
+      )}
     </div>
   );
 }
