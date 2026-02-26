@@ -14,6 +14,16 @@ export interface DBProduct {
   precio: number;
   reorder: number;
   requiere_etiqueta: boolean;
+  tamano: string;
+  color: string;
+}
+
+export interface DBComposicionVenta {
+  id?: string;
+  sku_venta: string;
+  codigo_ml: string;
+  sku_origen: string;
+  unidades: number;
 }
 
 export interface DBPosition {
@@ -285,8 +295,45 @@ export async function uploadFacturaImage(base64: string, folio: string): Promise
   }
 }
 
-// ==================== SYNC PRODUCTOS FROM SHEET ====================
-const SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRqskx-hK2bLc8vDOflxzx6dtyZZZm81c_pfLhSPz1KJL_FVTcGQjg75iftOyi-tU9hJGidJqu6jjtW/pub?gid=224135022&single=true&output=csv";
+// ==================== COMPOSICION VENTA (PACKS/COMBOS) ====================
+export async function fetchComposicionVenta(): Promise<DBComposicionVenta[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("composicion_venta").select("*");
+  return data || [];
+}
+
+export async function upsertComposicionVenta(items: DBComposicionVenta[]) {
+  const sb = getSupabase(); if (!sb) return;
+  for (let i = 0; i < items.length; i += 500) {
+    await sb.from("composicion_venta").upsert(
+      items.slice(i, i + 500),
+      { onConflict: "sku_venta,sku_origen" }
+    );
+  }
+}
+
+export async function clearComposicionVenta() {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("composicion_venta").delete().neq("sku_venta", "");
+}
+
+// Dado un código ML, ¿qué SKUs físicos necesito? (para ventas)
+export async function getComponentesVenta(codigoMl: string): Promise<DBComposicionVenta[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("composicion_venta").select("*").eq("codigo_ml", codigoMl);
+  return data || [];
+}
+
+// Dado un SKU venta, ¿qué SKUs físicos necesito?
+export async function getComponentesPorSkuVenta(skuVenta: string): Promise<DBComposicionVenta[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("composicion_venta").select("*").eq("sku_venta", skuVenta);
+  return data || [];
+}
+
+// ==================== SYNC DICCIONARIO FROM SHEET ====================
+// Sheet columns: SKU Venta | CODIGO ML | Nombre Origen | Proveedor | Sku Origen | Unidades | Tamaño | Color | Categoria
+const DICT_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQZxKcXM-OaJ5_B-lEM87PPy9B4675FRFLfpWtL-ZhTqpalZNqODq18XFY2C4txj7fXc5n1jYZSTWrJ/pub?gid=348421726&single=true&output=csv";
 
 function parseCSVLine(line: string): string[] {
   const cells: string[] = [];
@@ -301,56 +348,138 @@ function parseCSVLine(line: string): string[] {
   return cells;
 }
 
-export async function syncProductosFromSheet(): Promise<{ added: number; updated: number; total: number }> {
-  const result = { added: 0, updated: 0, total: 0 };
+export async function syncDiccionarioFromSheet(): Promise<{
+  productos: { added: number; updated: number; total: number };
+  composicion: { total: number };
+}> {
+  const result = {
+    productos: { added: 0, updated: 0, total: 0 },
+    composicion: { total: 0 },
+  };
+
   try {
-    const resp = await fetch(SHEET_CSV_URL, { cache: "no-store" });
+    const resp = await fetch(DICT_CSV_URL, { cache: "no-store" });
     if (!resp.ok) throw new Error("HTTP " + resp.status);
     const text = await resp.text();
     const lines = text.split("\n").map(l => l.replace(/\r/g, "").trim()).filter(l => l.length > 0);
     if (lines.length < 2) return result;
 
-    // Fetch existing products to detect new vs update
+    // Parse all rows
+    const rows: Array<{
+      skuVenta: string; codigoMl: string; nombreOrigen: string;
+      proveedor: string; skuOrigen: string; unidades: number;
+      tamano: string; color: string; categoria: string;
+    }> = [];
+
+    for (let i = 1; i < lines.length; i++) {
+      const cols = parseCSVLine(lines[i]);
+      const skuVenta = (cols[0] || "").trim().toUpperCase();
+      const codigoMl = (cols[1] || "").trim();
+      const nombreOrigen = (cols[2] || "").trim();
+      const proveedor = (cols[3] || "").trim();
+      const skuOrigen = (cols[4] || "").trim().toUpperCase();
+      const unidades = parseInt(cols[5] || "1") || 1;
+      const tamano = (cols[6] || "").trim();
+      const color = (cols[7] || "").trim();
+      const categoria = (cols[8] || "").trim() || "Otros";
+
+      if (!skuOrigen || !nombreOrigen) continue;
+      rows.push({ skuVenta, codigoMl, nombreOrigen, proveedor, skuOrigen, unidades, tamano, color, categoria });
+    }
+
+    // 1) Build unique productos (keyed by SKU Origen = producto físico)
+    const productMap = new Map<string, DBProduct>();
+    for (const row of rows) {
+      if (!productMap.has(row.skuOrigen)) {
+        // For codigo_ml on the product, use the first one we find
+        // (packs may have different codigo_ml but the physical product is the same)
+        productMap.set(row.skuOrigen, {
+          sku: row.skuOrigen,
+          sku_venta: row.skuVenta,
+          codigo_ml: row.codigoMl,
+          nombre: row.nombreOrigen,
+          categoria: row.categoria,
+          proveedor: row.proveedor,
+          costo: 0,
+          precio: 0,
+          reorder: 20,
+          requiere_etiqueta: !!row.codigoMl,
+          tamano: row.tamano,
+          color: row.color,
+        });
+      }
+    }
+
+    // Fetch existing to detect added vs updated
     const existing = await fetchProductos();
     const existingMap = new Map(existing.map(p => [p.sku, p]));
 
     const toUpsert: DBProduct[] = [];
-    for (let i = 1; i < lines.length; i++) {
-      const cols = parseCSVLine(lines[i]);
-      const mlCode = (cols[0] || "").trim();
-      const name = (cols[1] || "").trim();
-      const sku = (cols[2] || "").trim().toUpperCase();
-      if (!sku || !name) continue;
-      result.total++;
-
+    productMap.forEach((prod, sku) => {
       const ex = existingMap.get(sku);
       if (ex) {
-        if (ex.nombre !== name || ex.codigo_ml !== mlCode) {
-          toUpsert.push({ ...ex, nombre: name, codigo_ml: mlCode });
-          result.updated++;
+        // Update if anything changed (preserve cost/price/reorder set by admin)
+        if (ex.nombre !== prod.nombre || ex.proveedor !== prod.proveedor ||
+            ex.categoria !== prod.categoria || ex.tamano !== prod.tamano ||
+            ex.color !== prod.color) {
+          toUpsert.push({
+            ...ex,
+            nombre: prod.nombre,
+            proveedor: prod.proveedor,
+            categoria: prod.categoria,
+            tamano: prod.tamano,
+            color: prod.color,
+          });
+          result.productos.updated++;
         }
       } else {
-        toUpsert.push({
-          sku, sku_venta: "", codigo_ml: mlCode, nombre: name,
-          categoria: "Otros", proveedor: "Otro", costo: 0, precio: 0,
-          reorder: 20, requiere_etiqueta: true,
-        });
-        result.added++;
+        toUpsert.push(prod);
+        result.productos.added++;
       }
-    }
+      result.productos.total++;
+    });
 
     if (toUpsert.length > 0) await upsertProductos(toUpsert);
+
+    // 2) Build composicion_venta (packs/combos)
+    // Clear old and re-insert (simpler than diffing)
+    await clearComposicionVenta();
+
+    const composicionItems: DBComposicionVenta[] = [];
+    for (const row of rows) {
+      if (!row.skuVenta) continue;
+      composicionItems.push({
+        sku_venta: row.skuVenta,
+        codigo_ml: row.codigoMl,
+        sku_origen: row.skuOrigen,
+        unidades: row.unidades,
+      });
+    }
+
+    if (composicionItems.length > 0) {
+      await upsertComposicionVenta(composicionItems);
+    }
+    result.composicion.total = composicionItems.length;
+
   } catch (err) {
-    console.error("Sheet sync error:", err);
+    console.error("Diccionario sync error:", err);
   }
   return result;
 }
 
-// Import stock from Sheet column K (one-time)
+// Legacy: keep old sync as alias that calls new one
+export async function syncProductosFromSheet(): Promise<{ added: number; updated: number; total: number }> {
+  const result = await syncDiccionarioFromSheet();
+  return result.productos;
+}
+
+// Import stock from Sheet (keep for backward compat, uses old sheet)
+const STOCK_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRqskx-hK2bLc8vDOflxzx6dtyZZZm81c_pfLhSPz1KJL_FVTcGQjg75iftOyi-tU9hJGidJqu6jjtW/pub?gid=224135022&single=true&output=csv";
+
 export async function importStockFromSheet(): Promise<{ imported: number; totalUnits: number }> {
   const result = { imported: 0, totalUnits: 0 };
   try {
-    const resp = await fetch(SHEET_CSV_URL, { cache: "no-store" });
+    const resp = await fetch(STOCK_CSV_URL, { cache: "no-store" });
     if (!resp.ok) throw new Error("HTTP " + resp.status);
     const text = await resp.text();
     const lines = text.split("\n").map(l => l.replace(/\r/g, "").trim()).filter(l => l.length > 0);
@@ -375,7 +504,7 @@ export async function importStockFromSheet(): Promise<{ imported: number; totalU
         await upsertProducto({
           sku, sku_venta: "", codigo_ml: mlCode, nombre,
           categoria: "Otros", proveedor: "Otro", costo: 0, precio: 0,
-          reorder: 20, requiere_etiqueta: true,
+          reorder: 20, requiere_etiqueta: true, tamano: "", color: "",
         });
       }
 
