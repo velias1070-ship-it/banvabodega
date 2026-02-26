@@ -310,13 +310,73 @@ export function activePositions(): Position[] {
 }
 
 export function findProduct(query: string): Product[] {
-  const q = query.toLowerCase().trim();
-  if (!q) return [];
-  return Object.values(_cache.products).filter(p =>
-    p.sku.toLowerCase().includes(q) ||
-    p.name.toLowerCase().includes(q) ||
-    p.mlCode.toLowerCase().includes(q)
-  );
+  const raw = query.trim();
+  if (!raw) return [];
+  
+  // Normalize: strip accents, lowercase
+  const normalize = (s: string) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const words = normalize(raw).split(/\s+/).filter(w => w.length > 0);
+  if (words.length === 0) return [];
+  
+  const scored: { p: Product; score: number }[] = [];
+  
+  for (const p of Object.values(_cache.products)) {
+    const skuN = normalize(p.sku);
+    const nameN = normalize(p.name);
+    const mlN = normalize(p.mlCode || "");
+    const catN = normalize(p.cat || "");
+    const provN = normalize(p.prov || "");
+    const haystack = `${skuN} ${nameN} ${mlN} ${catN} ${provN}`;
+    
+    let score = 0;
+    let allMatch = true;
+    
+    for (const w of words) {
+      // Exact SKU match = high score
+      if (skuN === w) { score += 100; continue; }
+      // SKU starts with word
+      if (skuN.startsWith(w)) { score += 50; continue; }
+      // SKU contains
+      if (skuN.includes(w)) { score += 30; continue; }
+      // ML code match
+      if (mlN && mlN.includes(w)) { score += 40; continue; }
+      // Name contains word
+      if (nameN.includes(w)) { score += 20; continue; }
+      // Any field contains
+      if (haystack.includes(w)) { score += 10; continue; }
+      // Fuzzy: check if word is close to any token in haystack (1 char tolerance)
+      const tokens = haystack.split(/[\s\-_]+/);
+      let fuzzyMatch = false;
+      for (const tok of tokens) {
+        if (tok.length >= 3 && w.length >= 3) {
+          // Simple fuzzy: allow 1 char difference for words >= 3 chars
+          if (Math.abs(tok.length - w.length) <= 1) {
+            let diff = 0;
+            const minLen = Math.min(tok.length, w.length);
+            for (let i = 0; i < minLen; i++) {
+              if (tok[i] !== w[i]) diff++;
+            }
+            diff += Math.abs(tok.length - w.length);
+            if (diff <= 1) { score += 5; fuzzyMatch = true; break; }
+          }
+          // Substring containment (at least 70% of word found)
+          const minSubLen = Math.ceil(w.length * 0.7);
+          for (let start = 0; start <= w.length - minSubLen; start++) {
+            const sub = w.slice(start, start + minSubLen);
+            if (tok.includes(sub)) { score += 3; fuzzyMatch = true; break; }
+          }
+          if (fuzzyMatch) break;
+        }
+      }
+      if (!fuzzyMatch) { allMatch = false; break; }
+    }
+    
+    if (allMatch && score > 0) {
+      scored.push({ p, score });
+    }
+  }
+  
+  return scored.sort((a, b) => b.score - a.score).map(x => x.p);
 }
 
 export function findPosition(code: string): Position | null {
