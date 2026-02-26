@@ -1,6 +1,6 @@
 "use client";
 import { useState, useCallback, useEffect, useRef } from "react";
-import { getStore, saveStore, findProduct, findPosition, activePositions, skuTotal, skuPositions, posContents, recordMovement, recordBulkMovements, fmtMoney, IN_REASONS, OUT_REASONS, initStore, isStoreReady, refreshStore, isSupabaseConfigured, getRecepcionesActivas, getRecepcionLineas, contarLinea, etiquetarLinea, ubicarLinea, actualizarRecepcion, fmtDate, fmtTime } from "@/lib/store";
+import { getStore, saveStore, findProduct, findPosition, activePositions, skuTotal, skuPositions, posContents, recordMovement, recordBulkMovements, fmtMoney, IN_REASONS, OUT_REASONS, initStore, isStoreReady, refreshStore, isSupabaseConfigured, getRecepcionesActivas, getRecepcionLineas, contarLinea, etiquetarLinea, ubicarLinea, actualizarRecepcion, fmtDate, fmtTime, getUnassignedStock, assignPosition } from "@/lib/store";
 import type { Product, InReason, OutReason, DBRecepcion, DBRecepcionLinea } from "@/lib/store";
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -961,13 +961,22 @@ function CargaInventario({ refresh }: { refresh: () => void }) {
   const [skuResults, setSkuResults] = useState<Product[]>([]);
   const [selectedProduct, setSelectedProduct] = useState<Product|null>(null);
   const [qty, setQty] = useState(1);
-  const [sessionLog, setSessionLog] = useState<{pos:string;sku:string;name:string;qty:number}[]>([]);
+  const [sessionLog, setSessionLog] = useState<{pos:string;sku:string;name:string;qty:number;fromUnassigned:boolean}[]>([]);
+  const [sugFilter, setSugFilter] = useState("");
+  const [,setTick] = useState(0);
   const skuInputRef = useRef<HTMLInputElement>(null);
 
-  const positions = activePositions();
+  const positions = activePositions().filter(p => p.id !== "SIN_ASIGNAR");
   const currentPosItems = currentPos ? posContents(currentPos) : [];
   const currentPosTotal = currentPosItems.reduce((s,i)=>s+i.qty,0);
   const sessionTotal = sessionLog.reduce((s,l) => s+l.qty, 0);
+
+  // Unassigned stock
+  const unassigned = getUnassignedStock();
+  const totalUnassigned = unassigned.reduce((s,u) => s+u.qty, 0);
+  const filteredUnassigned = sugFilter
+    ? unassigned.filter(u => u.sku.toLowerCase().includes(sugFilter.toLowerCase()) || u.name.toLowerCase().includes(sugFilter.toLowerCase()))
+    : unassigned;
 
   const handleScanPos = (code: string) => {
     setScanning(false);
@@ -975,7 +984,6 @@ function CargaInventario({ refresh }: { refresh: () => void }) {
     if (pos) {
       setCurrentPos(pos.id);
       show(`Posición ${pos.id} seleccionada`);
-      setTimeout(() => skuInputRef.current?.focus(), 300);
     } else {
       show(`Posición "${code}" no encontrada`, "err");
     }
@@ -995,18 +1003,40 @@ function CargaInventario({ refresh }: { refresh: () => void }) {
     setQty(1);
   };
 
+  // Select from unassigned suggestions
+  const selectUnassigned = (u: {sku:string;name:string;qty:number}) => {
+    const prod = findProduct(u.sku)[0];
+    if (prod) {
+      setSelectedProduct(prod);
+      setSkuSearch(prod.sku);
+      setSkuResults([]);
+      setQty(u.qty); // Pre-fill with full unassigned quantity
+    }
+  };
+
   const doAdd = () => {
     if (!selectedProduct || !currentPos || qty < 1) return;
-    recordMovement({
-      ts: new Date().toISOString(), type: "in", reason: "ajuste_entrada" as InReason,
-      sku: selectedProduct.sku, pos: currentPos, qty,
-      who: "Operario", note: "Carga inventario inicial",
-    });
-    setSessionLog(l => [{ pos: currentPos, sku: selectedProduct.sku, name: selectedProduct.name, qty }, ...l]);
-    show(`+${qty} ${selectedProduct.sku} → ${currentPos}`);
+
+    // Check if this SKU has unassigned stock — if so, use assignPosition (move from SIN_ASIGNAR)
+    const unassignedItem = unassigned.find(u => u.sku === selectedProduct.sku);
+    const fromUnassigned = unassignedItem && unassignedItem.qty >= qty;
+
+    if (fromUnassigned) {
+      assignPosition(selectedProduct.sku, currentPos, qty);
+    } else {
+      recordMovement({
+        ts: new Date().toISOString(), type: "in", reason: "ajuste_entrada" as InReason,
+        sku: selectedProduct.sku, pos: currentPos, qty,
+        who: "Operario", note: "Carga inventario inicial",
+      });
+    }
+
+    setSessionLog(l => [{ pos: currentPos, sku: selectedProduct.sku, name: selectedProduct.name, qty, fromUnassigned: !!fromUnassigned }, ...l]);
+    show(`${fromUnassigned?"📦":"+"} ${qty}× ${selectedProduct.sku} → ${currentPos}`);
     setSelectedProduct(null);
     setSkuSearch("");
     setQty(1);
+    setTick(t=>t+1);
     refresh();
     setTimeout(() => skuInputRef.current?.focus(), 100);
   };
@@ -1016,18 +1046,18 @@ function CargaInventario({ refresh }: { refresh: () => void }) {
       {Toast}
 
       {/* Header stats */}
-      <div style={{display:"flex",gap:8,marginBottom:12}}>
-        <div style={{flex:1,padding:"10px 12px",background:"var(--bg2)",borderRadius:8,textAlign:"center"}}>
-          <div style={{fontSize:20,fontWeight:800,color:"var(--green)"}}>{sessionLog.length}</div>
-          <div style={{fontSize:10,color:"var(--txt3)"}}>registros</div>
+      <div style={{display:"flex",gap:6,marginBottom:12}}>
+        <div style={{flex:1,padding:"8px 10px",background:"var(--bg2)",borderRadius:8,textAlign:"center"}}>
+          <div style={{fontSize:18,fontWeight:800,color:"var(--green)"}}>{sessionLog.length}</div>
+          <div style={{fontSize:9,color:"var(--txt3)"}}>registros</div>
         </div>
-        <div style={{flex:1,padding:"10px 12px",background:"var(--bg2)",borderRadius:8,textAlign:"center"}}>
-          <div style={{fontSize:20,fontWeight:800,color:"var(--blue)"}}>{sessionTotal}</div>
-          <div style={{fontSize:10,color:"var(--txt3)"}}>unidades</div>
+        <div style={{flex:1,padding:"8px 10px",background:"var(--bg2)",borderRadius:8,textAlign:"center"}}>
+          <div style={{fontSize:18,fontWeight:800,color:"var(--blue)"}}>{sessionTotal}</div>
+          <div style={{fontSize:9,color:"var(--txt3)"}}>unidades</div>
         </div>
-        <div style={{flex:1,padding:"10px 12px",background:"var(--bg2)",borderRadius:8,textAlign:"center"}}>
-          <div style={{fontSize:20,fontWeight:800,color:"var(--cyan)"}}>{new Set(sessionLog.map(l=>l.pos)).size}</div>
-          <div style={{fontSize:10,color:"var(--txt3)"}}>posiciones</div>
+        <div style={{flex:1,padding:"8px 10px",background:totalUnassigned>0?"var(--amberBg)":"var(--bg2)",borderRadius:8,textAlign:"center",border:totalUnassigned>0?"1px solid var(--amber)33":"none"}}>
+          <div style={{fontSize:18,fontWeight:800,color:totalUnassigned>0?"var(--amber)":"var(--txt3)"}}>{totalUnassigned}</div>
+          <div style={{fontSize:9,color:"var(--txt3)"}}>sin ubicar</div>
         </div>
       </div>
 
@@ -1082,19 +1112,55 @@ function CargaInventario({ refresh }: { refresh: () => void }) {
               style={{fontSize:14}} autoFocus/>
             {skuResults.length > 0 && (
               <div style={{position:"absolute",top:"100%",left:0,right:0,zIndex:50,background:"var(--bg2)",border:"1px solid var(--bg4)",borderRadius:"0 0 8px 8px",maxHeight:200,overflow:"auto",boxShadow:"0 6px 16px rgba(0,0,0,0.4)"}}>
-                {skuResults.map(p=>(
-                  <div key={p.sku} onClick={()=>selectProduct(p)} style={{padding:"10px 12px",cursor:"pointer",borderBottom:"1px solid var(--bg3)"}}
-                    onMouseEnter={e=>e.currentTarget.style.background="var(--bg3)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                    <div style={{display:"flex",justifyContent:"space-between"}}>
-                      <span className="mono" style={{fontWeight:700,fontSize:13}}>{p.sku}</span>
-                      <span className="mono" style={{fontSize:11,color:"var(--blue)"}}>{skuTotal(p.sku)} en stock</span>
+                {skuResults.map(p=>{
+                  const unItem = unassigned.find(u=>u.sku===p.sku);
+                  return(
+                    <div key={p.sku} onClick={()=>selectProduct(p)} style={{padding:"10px 12px",cursor:"pointer",borderBottom:"1px solid var(--bg3)"}}
+                      onMouseEnter={e=>e.currentTarget.style.background="var(--bg3)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                      <div style={{display:"flex",justifyContent:"space-between"}}>
+                        <span className="mono" style={{fontWeight:700,fontSize:13}}>{p.sku}</span>
+                        <div style={{textAlign:"right"}}>
+                          {unItem && <span style={{fontSize:10,color:"var(--amber)",fontWeight:600,marginRight:6}}>{unItem.qty} sin ubicar</span>}
+                          <span className="mono" style={{fontSize:11,color:"var(--blue)"}}>{skuTotal(p.sku)} total</span>
+                        </div>
+                      </div>
+                      <div style={{fontSize:11,color:"var(--txt3)"}}>{p.name}</div>
                     </div>
-                    <div style={{fontSize:11,color:"var(--txt3)"}}>{p.name}</div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
+
+          {/* Unassigned suggestions */}
+          {!selectedProduct && unassigned.length > 0 && (
+            <div style={{marginBottom:10}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                <div style={{fontSize:11,fontWeight:700,color:"var(--amber)"}}>📦 Sin ubicar ({unassigned.length} SKUs, {totalUnassigned} uds)</div>
+              </div>
+              {unassigned.length > 5 && (
+                <input className="form-input mono" value={sugFilter} onChange={e=>setSugFilter(e.target.value)}
+                  placeholder="Filtrar sugerencias..." style={{fontSize:12,marginBottom:6,padding:6}}/>
+              )}
+              <div style={{maxHeight:200,overflow:"auto",border:"1px solid var(--bg4)",borderRadius:8}}>
+                {filteredUnassigned.slice(0,20).map(u=>(
+                  <div key={u.sku} onClick={()=>selectUnassigned(u)}
+                    style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",borderBottom:"1px solid var(--bg3)",cursor:"pointer",transition:"background .1s"}}
+                    onMouseEnter={e=>e.currentTarget.style.background="var(--bg3)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                    <div style={{width:6,height:6,borderRadius:"50%",background:"var(--amber)",flexShrink:0}}/>
+                    <div style={{flex:1,minWidth:0}}>
+                      <span className="mono" style={{fontWeight:700,fontSize:12}}>{u.sku}</span>
+                      <div style={{fontSize:10,color:"var(--txt3)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.name}</div>
+                    </div>
+                    <span className="mono" style={{fontWeight:800,fontSize:14,color:"var(--amber)"}}>{u.qty}</span>
+                  </div>
+                ))}
+                {filteredUnassigned.length > 20 && (
+                  <div style={{padding:8,textAlign:"center",fontSize:10,color:"var(--txt3)"}}>+{filteredUnassigned.length-20} más — usa el filtro</div>
+                )}
+              </div>
+            </div>
+          )}
 
           {selectedProduct && (
             <div style={{padding:"8px 10px",background:"var(--bg3)",borderRadius:6,marginBottom:10}}>
@@ -1102,6 +1168,9 @@ function CargaInventario({ refresh }: { refresh: () => void }) {
                 <div>
                   <span className="mono" style={{fontWeight:700,fontSize:13}}>{selectedProduct.sku}</span>
                   <div style={{fontSize:11,color:"var(--txt3)"}}>{selectedProduct.name}</div>
+                  {unassigned.find(u=>u.sku===selectedProduct.sku) && (
+                    <div style={{fontSize:10,color:"var(--amber)",fontWeight:600,marginTop:2}}>📦 {unassigned.find(u=>u.sku===selectedProduct.sku)?.qty} sin ubicar — se moverán a {currentPos}</div>
+                  )}
                 </div>
                 <button onClick={()=>{setSelectedProduct(null);setSkuSearch("");}} style={{background:"none",color:"var(--txt3)",fontSize:16,border:"none",padding:"0 4px"}}>✕</button>
               </div>
@@ -1116,7 +1185,7 @@ function CargaInventario({ refresh }: { refresh: () => void }) {
                   style={{flex:1,textAlign:"center",fontSize:28,fontWeight:800,padding:8}}/>
                 <button onClick={()=>setQty(qty+1)} style={{width:44,height:44,borderRadius:"50%",background:"var(--bg3)",color:"var(--txt)",fontSize:20,fontWeight:700,border:"1px solid var(--bg4)"}}>+</button>
               </div>
-              <div style={{display:"flex",gap:4,marginBottom:12,justifyContent:"center"}}>
+              <div style={{display:"flex",gap:4,marginBottom:12,justifyContent:"center",flexWrap:"wrap"}}>
                 {[1,5,10,12,20,50].map(n=>(
                   <button key={n} onClick={()=>setQty(n)}
                     style={{padding:"6px 12px",borderRadius:6,fontSize:12,fontWeight:700,
@@ -1125,10 +1194,24 @@ function CargaInventario({ refresh }: { refresh: () => void }) {
                     {n}
                   </button>
                 ))}
+                {(() => {
+                  const unItem = unassigned.find(u=>u.sku===selectedProduct.sku);
+                  return unItem && unItem.qty > 1 ? (
+                    <button onClick={()=>setQty(unItem.qty)}
+                      style={{padding:"6px 12px",borderRadius:6,fontSize:12,fontWeight:700,
+                        background:qty===unItem.qty?"var(--amberBg)":"var(--bg3)",color:qty===unItem.qty?"var(--amber)":"var(--amber)",
+                        border:qty===unItem.qty?"1px solid var(--amber)":"1px solid var(--bg4)"}}>
+                      Todo ({unItem.qty})
+                    </button>
+                  ) : null;
+                })()}
               </div>
               <button onClick={doAdd}
                 style={{width:"100%",padding:16,borderRadius:10,fontWeight:700,fontSize:16,color:"#fff",background:"linear-gradient(135deg,#059669,var(--green))"}}>
-                + AGREGAR {qty}× {selectedProduct.sku}
+                {unassigned.find(u=>u.sku===selectedProduct.sku && u.qty >= qty)
+                  ? `📦 UBICAR ${qty}× → ${currentPos}`
+                  : `+ AGREGAR ${qty}× ${selectedProduct.sku}`
+                }
               </button>
             </>
           )}
@@ -1149,6 +1232,7 @@ function CargaInventario({ refresh }: { refresh: () => void }) {
               <span className="mono" style={{fontWeight:700,minWidth:80}}>{l.sku}</span>
               <span style={{flex:1,fontSize:10,color:"var(--txt3)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</span>
               <span className="mono" style={{fontWeight:800,color:"var(--green)"}}>+{l.qty}</span>
+              {l.fromUnassigned && <span style={{fontSize:8,color:"var(--amber)"}}>📦</span>}
             </div>
           ))}
         </div>
