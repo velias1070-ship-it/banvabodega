@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, ComposicionVenta } from "@/lib/store";
 import Link from "next/link";
 import SheetSync from "@/components/SheetSync";
@@ -1663,6 +1663,9 @@ function CargaStock({ refresh }: { refresh: () => void }) {
 
       {/* Bulk paste with positions */}
       <CargaMasivaPosiciones refresh={refresh} />
+
+      {/* Export / Import CSV */}
+      <ExportImportCSV refresh={refresh} />
     </div>
   );
 }
@@ -1797,6 +1800,433 @@ function CargaMasivaPosiciones({ refresh }: { refresh: () => void }) {
       )}
     </div>
   );
+}
+
+// ==================== EXPORT / IMPORT CSV INVENTARIO ====================
+function ExportImportCSV({ refresh }: { refresh: () => void }) {
+  const [mode, setMode] = useState<"export"|"import">("export");
+  const [importText, setImportText] = useState("");
+  const [parsed, setParsed] = useState<{sku:string;name:string;stock:number;pos:string;valid:boolean;error?:string;isNew?:boolean}[]>([]);
+  const [importMode, setImportMode] = useState<"add"|"replace">("add");
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<{ok:number;err:number;units:number}|null>(null);
+
+  const doExport = () => {
+    const s = getStore();
+    const rows: string[] = [];
+    rows.push(["sku_origen","nombre","unidades","codigo_ml","sku_venta","stock","posicion"].join(","));
+
+    // Get all stock entries grouped by (sku, pos)
+    for (const [sku, posMap] of Object.entries(s.stock)) {
+      const prod = s.products[sku];
+      const ventas = getVentasPorSkuOrigen(sku);
+      
+      for (const [pos, qty] of Object.entries(posMap)) {
+        if (qty <= 0) continue;
+        const name = prod?.name || "";
+        
+        if (ventas.length > 0) {
+          // One row per venta mapping × position
+          for (const v of ventas) {
+            rows.push([
+              csvEscape(sku),
+              csvEscape(name),
+              String(v.unidades),
+              csvEscape(v.codigoMl),
+              csvEscape(v.skuVenta),
+              String(qty),
+              csvEscape(pos),
+            ].join(","));
+          }
+        } else {
+          // No venta mapping — still export stock
+          rows.push([
+            csvEscape(sku),
+            csvEscape(name),
+            "",
+            "",
+            "",
+            String(qty),
+            csvEscape(pos),
+          ].join(","));
+        }
+      }
+    }
+
+    const csv = rows.join("\n");
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `banva_inventario_${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const doExportSimple = () => {
+    // Simplified: one row per (sku, pos), ventas joined
+    const s = getStore();
+    const rows: string[] = [];
+    rows.push(["sku_origen","nombre","stock","posicion"].join(","));
+
+    for (const [sku, posMap] of Object.entries(s.stock)) {
+      const prod = s.products[sku];
+      for (const [pos, qty] of Object.entries(posMap)) {
+        if (qty <= 0) continue;
+        rows.push([csvEscape(sku), csvEscape(prod?.name || ""), String(qty), csvEscape(pos)].join(","));
+      }
+    }
+
+    const csv = rows.join("\n");
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `banva_stock_${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const doParse = () => {
+    if (!importText.trim()) return;
+    const lines = importText.split("\n").map(l => l.trim()).filter(l => l.length > 0);
+    const items: typeof parsed = [];
+    const s = getStore();
+    const posSet = new Set(activePositions().map(p => p.id));
+    posSet.add("SIN_ASIGNAR");
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      // Skip header row
+      if (i === 0 && /sku_origen|sku|nombre/i.test(line)) continue;
+
+      // Parse CSV (handle quoted fields)
+      const parts = parseCSVLine(line);
+      
+      // We need at minimum: sku_origen, and stock, posicion 
+      // Full format: sku_origen, nombre, unidades, codigo_ml, sku_venta, stock, posicion
+      // Simple format: sku_origen, stock, posicion  OR  sku_origen, nombre, stock, posicion
+      let sku = "", name = "", stock = 0, pos = "";
+
+      if (parts.length >= 7) {
+        // Full format: sku_origen, nombre, unidades, codigo_ml, sku_venta, stock, posicion
+        sku = parts[0].toUpperCase().trim();
+        name = parts[1].trim();
+        stock = parseInt(parts[5]) || 0;
+        pos = parts[6].toUpperCase().trim();
+      } else if (parts.length >= 4) {
+        // 4-col: sku_origen, nombre, stock, posicion
+        sku = parts[0].toUpperCase().trim();
+        name = parts[1].trim();
+        stock = parseInt(parts[2]) || 0;
+        pos = parts[3].toUpperCase().trim();
+      } else if (parts.length >= 3) {
+        // 3-col: sku_origen, stock, posicion  OR  posicion, sku, stock (legacy)
+        const maybeQty = parseInt(parts[2]);
+        const maybeQty1 = parseInt(parts[1]);
+        if (!isNaN(maybeQty) && isNaN(maybeQty1)) {
+          // sku, ???, stock → sku, posicion, stock? or sku, stock, posicion?
+          // Check if parts[2] looks like a number and parts[1] like a position
+          if (posSet.has(parts[1].toUpperCase().trim())) {
+            // sku, posicion, stock
+            sku = parts[0].toUpperCase().trim();
+            pos = parts[1].toUpperCase().trim();
+            stock = maybeQty;
+          } else {
+            // sku, stock, posicion
+            sku = parts[0].toUpperCase().trim();
+            stock = parseInt(parts[1]) || 0;
+            pos = parts[2].toUpperCase().trim();
+          }
+        } else if (!isNaN(maybeQty1)) {
+          // posicion, sku, stock (legacy format)
+          pos = parts[0].toUpperCase().trim();
+          sku = parts[1].toUpperCase().trim();
+          stock = maybeQty;
+        } else {
+          sku = parts[0].toUpperCase().trim();
+          stock = parseInt(parts[1]) || 0;
+          pos = parts[2].toUpperCase().trim();
+        }
+      } else {
+        items.push({ sku: line, name: "", stock: 0, pos: "", valid: false, error: "Formato no reconocido" });
+        continue;
+      }
+
+      const prod = s.products[sku];
+      const errors: string[] = [];
+      if (!sku) errors.push("SKU vacío");
+      if (!prod) errors.push(`SKU "${sku}" no existe`);
+      if (stock <= 0) errors.push("Stock inválido");
+      if (!pos) errors.push("Posición vacía");
+      if (pos && !posSet.has(pos)) errors.push(`Posición "${pos}" no existe`);
+
+      items.push({
+        sku, name: name || prod?.name || "?", stock, pos,
+        valid: errors.length === 0, error: errors.join(", "),
+        isNew: !prod,
+      });
+    }
+    setParsed(items);
+    setResult(null);
+  };
+
+  const doImport = async () => {
+    const valid = parsed.filter(p => p.valid);
+    if (valid.length === 0) return;
+    const totalUnits = valid.reduce((s, p) => s + p.stock, 0);
+    
+    const modeText = importMode === "replace" 
+      ? "⚠️ REEMPLAZAR: Se borrará TODO el stock actual y se cargará solo lo del CSV."
+      : "AGREGAR: Se sumará el stock del CSV al existente.";
+    
+    if (!confirm(`${modeText}\n\n${valid.length} líneas, ${totalUnits.toLocaleString()} unidades.\n\n¿Continuar?`)) return;
+    
+    setLoading(true);
+    let ok = 0, err = 0;
+
+    if (importMode === "replace") {
+      // Clear ALL existing stock first
+      const s = getStore();
+      for (const [sku, posMap] of Object.entries(s.stock)) {
+        for (const [pos, qty] of Object.entries(posMap)) {
+          if (qty > 0) {
+            recordMovement({
+              ts: new Date().toISOString(), type: "out", reason: "ajuste_salida" as OutReason,
+              sku, pos, qty, who: "Admin", note: "CSV import — reset stock",
+            });
+          }
+        }
+      }
+    }
+
+    // Now add all lines
+    for (const item of valid) {
+      try {
+        recordMovement({
+          ts: new Date().toISOString(), type: "in", reason: "ajuste_entrada" as InReason,
+          sku: item.sku, pos: item.pos, qty: item.stock,
+          who: "Admin", note: `CSV import${importMode === "replace" ? " (reemplazo)" : ""}`,
+        });
+        ok++;
+      } catch { err++; }
+    }
+
+    setResult({ ok, err, units: totalUnits });
+    setLoading(false);
+    setImportText("");
+    setParsed([]);
+    refresh();
+  };
+
+  const validCount = parsed.filter(p => p.valid).length;
+  const errorCount = parsed.filter(p => !p.valid).length;
+  const totalUnits = parsed.filter(p => p.valid).reduce((s, p) => s + p.stock, 0);
+
+  // Count current stock for export info
+  const s = getStore();
+  const stockEntries = Object.entries(s.stock).reduce((count, [, posMap]) => 
+    count + Object.values(posMap).filter(q => q > 0).length, 0);
+  const totalStockUnits = Object.values(s.stock).reduce((total, posMap) => 
+    total + Object.values(posMap).reduce((s, q) => s + Math.max(0, q), 0), 0);
+
+  return (
+    <div className="card" style={{marginTop:12}}>
+      <div className="card-title">📤📥 Exportar / Importar CSV</div>
+      
+      <div style={{display:"flex",gap:4,marginBottom:12}}>
+        <button onClick={()=>{setMode("export");setParsed([]);setResult(null);}}
+          style={{flex:1,padding:10,borderRadius:8,fontWeight:700,fontSize:13,
+            background:mode==="export"?"var(--cyan)":"var(--bg3)",
+            color:mode==="export"?"#000":"var(--txt3)",
+            border:`1px solid ${mode==="export"?"var(--cyan)":"var(--bg4)"}`}}>
+          📤 Exportar
+        </button>
+        <button onClick={()=>{setMode("import");setResult(null);}}
+          style={{flex:1,padding:10,borderRadius:8,fontWeight:700,fontSize:13,
+            background:mode==="import"?"var(--green)":"var(--bg3)",
+            color:mode==="import"?"#fff":"var(--txt3)",
+            border:`1px solid ${mode==="import"?"var(--green)":"var(--bg4)"}`}}>
+          📥 Importar
+        </button>
+      </div>
+
+      {mode === "export" && (
+        <div>
+          <div style={{padding:"10px 14px",background:"var(--bg2)",borderRadius:8,marginBottom:12,fontSize:12,color:"var(--txt2)",lineHeight:1.6}}>
+            <strong>{stockEntries}</strong> registros · <strong>{totalStockUnits.toLocaleString()}</strong> unidades totales
+          </div>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            <button onClick={doExport}
+              style={{flex:1,padding:12,borderRadius:8,fontWeight:700,fontSize:13,
+                background:"var(--cyan)",color:"#000",minWidth:160}}>
+              📤 Completo (con ventas ML)
+            </button>
+            <button onClick={doExportSimple}
+              style={{flex:1,padding:12,borderRadius:8,fontWeight:700,fontSize:13,
+                background:"var(--bg3)",color:"var(--cyan)",border:"1px solid var(--cyan)33",minWidth:160}}>
+              📤 Simple (SKU + stock + pos)
+            </button>
+          </div>
+          <div style={{marginTop:8,fontSize:10,color:"var(--txt3)",lineHeight:1.5}}>
+            <strong>Completo:</strong> sku_origen, nombre, unidades, codigo_ml, sku_venta, stock, posicion<br/>
+            <strong>Simple:</strong> sku_origen, nombre, stock, posicion
+          </div>
+        </div>
+      )}
+
+      {mode === "import" && (
+        <div>
+          <div style={{marginBottom:10}}>
+            <div style={{fontSize:11,fontWeight:700,marginBottom:6}}>Modo de importación:</div>
+            <div style={{display:"flex",gap:6}}>
+              <button onClick={()=>setImportMode("add")}
+                style={{flex:1,padding:"8px 12px",borderRadius:6,fontSize:12,fontWeight:700,
+                  background:importMode==="add"?"var(--greenBg)":"var(--bg3)",
+                  color:importMode==="add"?"var(--green)":"var(--txt3)",
+                  border:`1px solid ${importMode==="add"?"var(--green)33":"var(--bg4)"}`}}>
+                ➕ Agregar al existente
+              </button>
+              <button onClick={()=>setImportMode("replace")}
+                style={{flex:1,padding:"8px 12px",borderRadius:6,fontSize:12,fontWeight:700,
+                  background:importMode==="replace"?"var(--amberBg)":"var(--bg3)",
+                  color:importMode==="replace"?"var(--amber)":"var(--txt3)",
+                  border:`1px solid ${importMode==="replace"?"var(--amber)33":"var(--bg4)"}`}}>
+                🔄 Reemplazar todo
+              </button>
+            </div>
+            {importMode === "replace" && (
+              <div style={{marginTop:6,padding:"6px 10px",background:"var(--amberBg)",borderRadius:6,fontSize:10,color:"var(--amber)",lineHeight:1.5}}>
+                ⚠️ Reemplazar borra TODO el stock actual y carga solo lo del CSV. Úsalo para un conteo completo de inventario.
+              </div>
+            )}
+          </div>
+
+          <p style={{fontSize:11,color:"var(--txt3)",marginBottom:6,lineHeight:1.5}}>
+            Pega CSV o datos separados por tab/coma. Acepta formato completo (7 cols) o simple (3-4 cols). La primera fila de encabezado se ignora automáticamente.
+          </p>
+          <div style={{padding:"6px 10px",background:"var(--bg2)",borderRadius:6,marginBottom:8,fontSize:10,fontFamily:"'JetBrains Mono',monospace",color:"var(--txt3)"}}>
+            sku_origen, nombre, unidades, codigo_ml, sku_venta, stock, posicion<br/>
+            SAB-180-BL, Sábana 180 Blanca, 1, MLC123, PACK-SAB, 25, 1<br/>
+            — o simplemente —<br/>
+            SAB-180-BL, 25, 1
+          </div>
+
+          <div style={{display:"flex",gap:6,marginBottom:8}}>
+            <textarea
+              value={importText} onChange={e => { setImportText(e.target.value); setParsed([]); setResult(null); }}
+              placeholder="Pega datos CSV aquí..."
+              style={{flex:1,minHeight:120,padding:10,borderRadius:8,border:"1px solid var(--bg4)",background:"var(--bg1)",color:"var(--txt)",fontSize:12,fontFamily:"'JetBrains Mono',monospace",resize:"vertical"}}
+            />
+          </div>
+
+          {/* Upload CSV file */}
+          <div style={{display:"flex",gap:8,marginBottom:12}}>
+            <label style={{flex:1,padding:10,borderRadius:8,background:"var(--bg3)",color:"var(--txt2)",fontSize:12,fontWeight:600,textAlign:"center",cursor:"pointer",border:"1px dashed var(--bg4)"}}>
+              📎 Subir archivo CSV
+              <input type="file" accept=".csv,.txt,.tsv" hidden onChange={e => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = ev => {
+                  const text = ev.target?.result as string;
+                  setImportText(text);
+                  setParsed([]);
+                  setResult(null);
+                };
+                reader.readAsText(file);
+                e.target.value = "";
+              }}/>
+            </label>
+            <button onClick={doParse} disabled={!importText.trim()}
+              style={{padding:"10px 20px",borderRadius:8,fontWeight:700,fontSize:13,
+                background:importText.trim()?"var(--cyan)":"var(--bg3)",
+                color:importText.trim()?"#000":"var(--txt3)"}}>
+              Previsualizar
+            </button>
+          </div>
+
+          {result && (
+            <div style={{padding:"10px 14px",background:"var(--greenBg)",border:"1px solid var(--greenBd)",borderRadius:8,marginBottom:12,fontSize:12}}>
+              <span style={{color:"var(--green)",fontWeight:700}}>
+                ✓ Importado: {result.ok} líneas, {result.units.toLocaleString()} unidades
+                {importMode === "replace" && " (stock anterior reemplazado)"}
+              </span>
+              {result.err > 0 && <span style={{color:"var(--red)",marginLeft:8}}>{result.err} errores</span>}
+            </div>
+          )}
+
+          {parsed.length > 0 && (
+            <>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                <div style={{fontSize:11}}>
+                  <span style={{color:"var(--green)",fontWeight:700}}>{validCount} OK</span>
+                  {errorCount > 0 && <span style={{color:"var(--red)",fontWeight:700,marginLeft:8}}>{errorCount} errores</span>}
+                  <span style={{color:"var(--txt3)",marginLeft:8}}>({totalUnits.toLocaleString()} uds)</span>
+                </div>
+                <button onClick={()=>{setParsed([]);setImportText("");}}
+                  style={{padding:"4px 10px",borderRadius:4,background:"var(--bg3)",color:"var(--txt3)",fontSize:10,fontWeight:600,border:"1px solid var(--bg4)"}}>Limpiar</button>
+              </div>
+              <div style={{maxHeight:300,overflow:"auto",border:"1px solid var(--bg4)",borderRadius:8,marginBottom:12}}>
+                {parsed.map((p, i) => (
+                  <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",borderBottom:"1px solid var(--bg3)",background:p.valid?"transparent":"var(--redBg)",fontSize:11}}>
+                    <span style={{width:8,height:8,borderRadius:"50%",background:p.valid?"var(--green)":"var(--red)",flexShrink:0}}/>
+                    <span className="mono" style={{fontWeight:700,minWidth:100}}>{p.sku}</span>
+                    <span style={{flex:1,color:"var(--txt3)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</span>
+                    <span className="mono" style={{fontWeight:700,color:"var(--blue)",minWidth:36,textAlign:"right"}}>{p.stock}</span>
+                    <span className="mono" style={{fontWeight:600,color:"var(--cyan)",minWidth:40}}>{p.pos}</span>
+                    {p.error && <span style={{color:"var(--red)",fontSize:9}}>⚠ {p.error}</span>}
+                  </div>
+                ))}
+              </div>
+              {validCount > 0 && (
+                <button onClick={doImport} disabled={loading}
+                  style={{width:"100%",padding:14,borderRadius:10,fontWeight:700,fontSize:14,color:"#fff",
+                    background:importMode==="replace"
+                      ?"linear-gradient(135deg,#d97706,#f59e0b)"
+                      :"linear-gradient(135deg,#059669,var(--green))",
+                    opacity:loading?0.5:1}}>
+                  {loading ? "Importando..." 
+                    : importMode==="replace" 
+                      ? `🔄 REEMPLAZAR stock — ${validCount} líneas, ${totalUnits.toLocaleString()} uds`
+                      : `➕ AGREGAR ${validCount} líneas — ${totalUnits.toLocaleString()} uds`
+                  }
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function csvEscape(val: string): string {
+  if (!val) return "";
+  if (val.includes(",") || val.includes('"') || val.includes("\n")) {
+    return '"' + val.replace(/"/g, '""') + '"';
+  }
+  return val;
+}
+
+function parseCSVLine(line: string): string[] {
+  const parts: string[] = [];
+  let current = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQuotes) {
+      if (ch === '"' && line[i+1] === '"') { current += '"'; i++; }
+      else if (ch === '"') inQuotes = false;
+      else current += ch;
+    } else {
+      if (ch === '"') inQuotes = true;
+      else if (ch === "," || ch === "\t" || ch === ";") { parts.push(current); current = ""; }
+      else current += ch;
+    }
+  }
+  parts.push(current);
+  return parts;
 }
 
 // ==================== CONFIGURACIÓN ====================
