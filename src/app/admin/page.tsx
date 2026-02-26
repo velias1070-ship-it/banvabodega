@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, getMapConfig } from "@/lib/store";
-import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta } from "@/lib/store";
+import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, ComposicionVenta } from "@/lib/store";
 import Link from "next/link";
 import SheetSync from "@/components/SheetSync";
 
@@ -326,7 +326,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
 
 // ==================== OPERACIONES RÁPIDAS ====================
 function Operaciones({ refresh }: { refresh: () => void }) {
-  const [mode, setMode] = useState<"in"|"out"|"transfer">("in");
+  const [mode, setMode] = useState<"in"|"out"|"transfer"|"venta_ml">("in");
   const [sku, setSku] = useState("");
   const [skuResults, setSkuResults] = useState<Product[]>([]);
   const [selected, setSelected] = useState<Product|null>(null);
@@ -337,6 +337,12 @@ function Operaciones({ refresh }: { refresh: () => void }) {
   const [note, setNote] = useState("");
   const [toast, setToast] = useState("");
   const [log, setLog] = useState<string[]>([]);
+
+  // Venta ML state
+  const [mlSearch, setMlSearch] = useState("");
+  const [mlResults, setMlResults] = useState<{skuVenta:string;codigoMl:string;componentes:ComposicionVenta[]}[]>([]);
+  const [selectedVenta, setSelectedVenta] = useState<{skuVenta:string;codigoMl:string;componentes:ComposicionVenta[]}|null>(null);
+  const [ventaQty, setVentaQty] = useState(1);
 
   const positions = activePositions();
 
@@ -351,27 +357,105 @@ function Operaciones({ refresh }: { refresh: () => void }) {
     setSelected(p); setSku(p.sku); setSkuResults([]);
   };
 
+  // ML search
+  const searchML = (q: string) => {
+    setMlSearch(q);
+    setSelectedVenta(null);
+    if (q.length < 2) { setMlResults([]); return; }
+    const ql = q.toLowerCase();
+    const all = getSkusVenta();
+    const filtered = all.filter(v =>
+      v.skuVenta.toLowerCase().includes(ql) ||
+      v.codigoMl.toLowerCase().includes(ql) ||
+      v.componentes.some(c => {
+        const prod = getStore().products[c.skuOrigen];
+        return prod?.name.toLowerCase().includes(ql);
+      })
+    );
+    setMlResults(filtered.slice(0, 10));
+  };
+
+  const selectVenta = (v: typeof mlResults[0]) => {
+    setSelectedVenta(v);
+    setMlSearch(v.codigoMl || v.skuVenta);
+    setMlResults([]);
+    setVentaQty(1);
+  };
+
+  // Calculate available packs for selected venta
+  const getDisponibleVenta = (v: typeof selectedVenta): number => {
+    if (!v) return 0;
+    let min = Infinity;
+    for (const comp of v.componentes) {
+      const stockTotal = skuTotal(comp.skuOrigen);
+      const available = Math.floor(stockTotal / comp.unidades);
+      if (available < min) min = available;
+    }
+    return min === Infinity ? 0 : min;
+  };
+
+  // Auto-pick best positions for a component SKU
+  const pickPositions = (skuOrigen: string, needed: number): {pos:string;qty:number}[] => {
+    const picks: {pos:string;qty:number}[] = [];
+    const posiciones = skuPositions(skuOrigen).sort((a,b) => b.qty - a.qty);
+    let remaining = needed;
+    for (const sp of posiciones) {
+      if (remaining <= 0) break;
+      const take = Math.min(sp.qty, remaining);
+      picks.push({ pos: sp.pos, qty: take });
+      remaining -= take;
+    }
+    return picks;
+  };
+
   const doConfirm = () => {
     if (!selected || !pos || qty < 1) return;
 
     if (mode === "transfer") {
       if (!posFrom || posFrom === pos) return;
-      // Salida de origen
       recordMovement({ ts: new Date().toISOString(), type: "out", reason: "ajuste_salida" as OutReason, sku: selected.sku, pos: posFrom, qty, who: "Admin", note: "Transferencia → " + pos });
-      // Entrada en destino
       recordMovement({ ts: new Date().toISOString(), type: "in", reason: "transferencia_in" as InReason, sku: selected.sku, pos, qty, who: "Admin", note: "Transferencia ← " + posFrom });
       setLog(l => [`${qty}× ${selected.sku} | ${posFrom} → ${pos}`, ...l].slice(0, 10));
       setToast(`Transferido ${qty}× ${selected.sku}`);
     } else {
-      recordMovement({ ts: new Date().toISOString(), type: mode, reason: reason as any, sku: selected.sku, pos, qty, who: "Admin", note });
+      recordMovement({ ts: new Date().toISOString(), type: mode as "in"|"out", reason: reason as any, sku: selected.sku, pos, qty, who: "Admin", note });
       setLog(l => [`${mode === "in" ? "+" : "-"}${qty}× ${selected.sku} | Pos ${pos}`, ...l].slice(0, 10));
       setToast(`${mode === "in" ? "+" : "-"}${qty} ${selected.sku}`);
     }
 
-    // Reset form but keep mode
     setSelected(null); setSku(""); setPos(""); setPosFrom(""); setQty(1); setNote("");
     refresh();
     setTimeout(() => setToast(""), 2000);
+  };
+
+  const doConfirmVentaML = () => {
+    if (!selectedVenta || ventaQty < 1) return;
+    const disponible = getDisponibleVenta(selectedVenta);
+    if (ventaQty > disponible) return;
+
+    let totalMoved = 0;
+    const logLines: string[] = [];
+
+    for (const comp of selectedVenta.componentes) {
+      const needed = comp.unidades * ventaQty;
+      const picks = pickPositions(comp.skuOrigen, needed);
+
+      for (const pick of picks) {
+        recordMovement({
+          ts: new Date().toISOString(), type: "out", reason: "venta_flex" as OutReason,
+          sku: comp.skuOrigen, pos: pick.pos, qty: pick.qty, who: "Admin",
+          note: `Venta ML: ${selectedVenta.codigoMl || selectedVenta.skuVenta} ×${ventaQty}`,
+        });
+        totalMoved += pick.qty;
+      }
+      logLines.push(`-${needed}× ${comp.skuOrigen}`);
+    }
+
+    setLog(l => [`🛒 ${selectedVenta.codigoMl} ×${ventaQty}: ${logLines.join(", ")}`, ...l].slice(0, 10));
+    setToast(`Venta ML: ${totalMoved} unidades descontadas`);
+    setSelectedVenta(null); setMlSearch(""); setVentaQty(1);
+    refresh();
+    setTimeout(() => setToast(""), 3000);
   };
 
   useEffect(() => {
@@ -381,6 +465,7 @@ function Operaciones({ refresh }: { refresh: () => void }) {
 
   const maxQty = mode === "out" && selected && pos ? (getStore().stock[selected.sku]?.[pos] || 0) : 9999;
   const transferMax = mode === "transfer" && selected && posFrom ? (getStore().stock[selected.sku]?.[posFrom] || 0) : 9999;
+  const ventaDisponible = getDisponibleVenta(selectedVenta);
 
   return (
     <div>
@@ -389,77 +474,170 @@ function Operaciones({ refresh }: { refresh: () => void }) {
       <div className="admin-grid-2">
         <div className="card">
           {/* Mode */}
-          <div style={{display:"flex",gap:6,marginBottom:14}}>
-            <button onClick={()=>setMode("in")} style={{flex:1,padding:"10px",borderRadius:8,fontWeight:700,fontSize:13,background:mode==="in"?"var(--greenBg)":"var(--bg3)",color:mode==="in"?"var(--green)":"var(--txt3)",border:mode==="in"?"2px solid var(--green)":"1px solid var(--bg4)"}}>Entrada</button>
-            <button onClick={()=>setMode("out")} style={{flex:1,padding:"10px",borderRadius:8,fontWeight:700,fontSize:13,background:mode==="out"?"var(--redBg)":"var(--bg3)",color:mode==="out"?"var(--red)":"var(--txt3)",border:mode==="out"?"2px solid var(--red)":"1px solid var(--bg4)"}}>Salida</button>
-            <button onClick={()=>setMode("transfer")} style={{flex:1,padding:"10px",borderRadius:8,fontWeight:700,fontSize:13,background:mode==="transfer"?"var(--cyanBg)":"var(--bg3)",color:mode==="transfer"?"var(--cyan)":"var(--txt3)",border:mode==="transfer"?"2px solid var(--cyan)":"1px solid var(--bg4)"}}>Transferir</button>
+          <div style={{display:"flex",gap:4,marginBottom:14,flexWrap:"wrap"}}>
+            <button onClick={()=>setMode("in")} style={{flex:1,padding:"10px 6px",borderRadius:8,fontWeight:700,fontSize:12,background:mode==="in"?"var(--greenBg)":"var(--bg3)",color:mode==="in"?"var(--green)":"var(--txt3)",border:mode==="in"?"2px solid var(--green)":"1px solid var(--bg4)"}}>Entrada</button>
+            <button onClick={()=>setMode("out")} style={{flex:1,padding:"10px 6px",borderRadius:8,fontWeight:700,fontSize:12,background:mode==="out"?"var(--redBg)":"var(--bg3)",color:mode==="out"?"var(--red)":"var(--txt3)",border:mode==="out"?"2px solid var(--red)":"1px solid var(--bg4)"}}>Salida</button>
+            <button onClick={()=>setMode("transfer")} style={{flex:1,padding:"10px 6px",borderRadius:8,fontWeight:700,fontSize:12,background:mode==="transfer"?"var(--cyanBg)":"var(--bg3)",color:mode==="transfer"?"var(--cyan)":"var(--txt3)",border:mode==="transfer"?"2px solid var(--cyan)":"1px solid var(--bg4)"}}>Transferir</button>
+            <button onClick={()=>setMode("venta_ml")} style={{flex:1,padding:"10px 6px",borderRadius:8,fontWeight:700,fontSize:12,background:mode==="venta_ml"?"var(--amberBg)":"var(--bg3)",color:mode==="venta_ml"?"var(--amber)":"var(--txt3)",border:mode==="venta_ml"?"2px solid var(--amber)":"1px solid var(--bg4)"}}>🛒 Venta ML</button>
           </div>
 
-          {/* SKU search */}
-          <div style={{position:"relative",marginBottom:10}}>
-            <input className="form-input mono" value={sku} onChange={e=>searchSku(e.target.value.toUpperCase())} placeholder="SKU, nombre o código ML..." style={{fontSize:13}}/>
-            {skuResults.length > 0 && (
-              <div style={{position:"absolute",top:"100%",left:0,right:0,zIndex:50,background:"var(--bg2)",border:"1px solid var(--bg4)",borderRadius:"0 0 8px 8px",maxHeight:180,overflow:"auto",boxShadow:"0 6px 16px rgba(0,0,0,0.4)"}}>
-                {skuResults.slice(0,8).map(p=>(
-                  <div key={p.sku} onClick={()=>selectProduct(p)} style={{padding:"8px 12px",cursor:"pointer",display:"flex",justifyContent:"space-between",borderBottom:"1px solid var(--bg3)"}}
-                    onMouseEnter={e=>e.currentTarget.style.background="var(--bg3)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                    <div><span className="mono" style={{fontWeight:600,fontSize:12}}>{p.sku}</span> <span style={{fontSize:11,color:"var(--txt3)"}}>{p.name}</span></div>
-                    <span className="mono" style={{fontSize:11,color:"var(--blue)"}}>{skuTotal(p.sku)}</span>
+          {mode === "venta_ml" ? (
+            /* ===== VENTA ML MODE ===== */
+            <>
+              <div style={{fontSize:11,color:"var(--txt3)",marginBottom:8}}>Busca por código ML, SKU Venta o nombre del producto</div>
+              <div style={{position:"relative",marginBottom:10}}>
+                <input className="form-input mono" value={mlSearch} onChange={e=>searchML(e.target.value.toUpperCase())} placeholder="MLC123456, SKU-PACK-001, almohada..." style={{fontSize:13}}/>
+                {mlResults.length > 0 && (
+                  <div style={{position:"absolute",top:"100%",left:0,right:0,zIndex:50,background:"var(--bg2)",border:"1px solid var(--bg4)",borderRadius:"0 0 8px 8px",maxHeight:220,overflow:"auto",boxShadow:"0 6px 16px rgba(0,0,0,0.4)"}}>
+                    {mlResults.map(v=>{
+                      const disp = getDisponibleVenta(v);
+                      const names = v.componentes.map(c=>getStore().products[c.skuOrigen]?.name||c.skuOrigen).join(" + ");
+                      return(
+                        <div key={v.skuVenta} onClick={()=>selectVenta(v)} style={{padding:"8px 12px",cursor:"pointer",borderBottom:"1px solid var(--bg3)"}}
+                          onMouseEnter={e=>e.currentTarget.style.background="var(--bg3)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                            <div>
+                              <span className="mono" style={{fontWeight:700,fontSize:12,color:"var(--amber)"}}>{v.codigoMl}</span>
+                              <span className="mono" style={{fontSize:10,color:"var(--txt3)",marginLeft:8}}>{v.skuVenta}</span>
+                            </div>
+                            <span className="mono" style={{fontSize:12,color:disp>0?"var(--green)":"var(--red)",fontWeight:700}}>{disp} disp.</span>
+                          </div>
+                          <div style={{fontSize:10,color:"var(--txt3)",marginTop:2}}>{names}</div>
+                          {v.componentes.length > 1 && <div style={{fontSize:9,color:"var(--cyan)",marginTop:1}}>Pack de {v.componentes.length} componentes</div>}
+                        </div>
+                      );
+                    })}
                   </div>
-                ))}
+                )}
               </div>
-            )}
-          </div>
-          {selected && <div style={{padding:"6px 10px",background:"var(--bg3)",borderRadius:6,marginBottom:10,fontSize:12}}><span className="mono" style={{fontWeight:700}}>{selected.sku}</span> — {selected.name} <span className="mono" style={{color:"var(--blue)",marginLeft:8}}>Stock: {skuTotal(selected.sku)}</span></div>}
 
-          {/* Position(s) */}
-          {mode === "transfer" ? (
-            <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:8,marginBottom:10,alignItems:"center"}}>
-              <select className="form-select" value={posFrom} onChange={e=>setPosFrom(e.target.value)} style={{fontSize:12}}>
-                <option value="">Origen...</option>
-                {selected ? skuPositions(selected.sku).map(sp=><option key={sp.pos} value={sp.pos}>{sp.pos} ({sp.qty} uds)</option>) : positions.map(p=><option key={p.id} value={p.id}>{p.id}</option>)}
-              </select>
-              <span style={{color:"var(--cyan)",fontWeight:700,fontSize:16}}>→</span>
-              <select className="form-select" value={pos} onChange={e=>setPos(e.target.value)} style={{fontSize:12}}>
-                <option value="">Destino...</option>
-                {positions.filter(p=>p.id!==posFrom).map(p=><option key={p.id} value={p.id}>{p.id} — {p.label}</option>)}
-              </select>
-            </div>
+              {selectedVenta && (
+                <>
+                  {/* Selected publication card */}
+                  <div style={{padding:"10px 12px",background:"var(--bg3)",borderRadius:8,marginBottom:12,border:"1px solid var(--amber)33"}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                      <div>
+                        <span className="mono" style={{fontWeight:800,fontSize:14,color:"var(--amber)"}}>{selectedVenta.codigoMl}</span>
+                        <span className="mono" style={{fontSize:11,color:"var(--txt3)",marginLeft:8}}>{selectedVenta.skuVenta}</span>
+                      </div>
+                      <div style={{textAlign:"right"}}>
+                        <div className="mono" style={{fontSize:18,fontWeight:800,color:ventaDisponible>0?"var(--green)":"var(--red)"}}>{ventaDisponible}</div>
+                        <div style={{fontSize:9,color:"var(--txt3)"}}>disponibles</div>
+                      </div>
+                    </div>
+
+                    {/* Components breakdown */}
+                    <div style={{fontSize:11,fontWeight:700,color:"var(--txt3)",marginBottom:4}}>Componentes del pack:</div>
+                    {selectedVenta.componentes.map(comp=>{
+                      const prod = getStore().products[comp.skuOrigen];
+                      const stockOrigen = skuTotal(comp.skuOrigen);
+                      const posiciones = skuPositions(comp.skuOrigen);
+                      return(
+                        <div key={comp.skuOrigen} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"1px solid var(--bg4)"}}>
+                          <div style={{flex:1}}>
+                            <span className="mono" style={{fontWeight:700,fontSize:12}}>{comp.skuOrigen}</span>
+                            <span style={{fontSize:10,color:"var(--txt3)",marginLeft:6}}>{prod?.name}</span>
+                            <div style={{fontSize:9,color:"var(--txt3)",marginTop:1}}>
+                              ×{comp.unidades} por pack · Stock: {stockOrigen} · En: {posiciones.map(p=>`${p.pos}(${p.qty})`).join(", ")}
+                            </div>
+                          </div>
+                          <div className="mono" style={{fontSize:13,fontWeight:700,color:stockOrigen>=comp.unidades*ventaQty?"var(--green)":"var(--red)"}}>
+                            -{comp.unidades * ventaQty}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Qty selector */}
+                  <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:12}}>
+                    <span style={{fontSize:12,color:"var(--txt3)",minWidth:90}}>Packs a vender:</span>
+                    <button onClick={()=>setVentaQty(Math.max(1,ventaQty-1))} style={{width:36,height:36,borderRadius:"50%",background:"var(--bg3)",color:"var(--txt)",fontSize:18,border:"1px solid var(--bg4)"}}>−</button>
+                    <input type="number" className="form-input mono" value={ventaQty} onChange={e=>setVentaQty(Math.max(1,Math.min(ventaDisponible,parseInt(e.target.value)||1)))} style={{width:80,textAlign:"center",fontSize:18,fontWeight:700,padding:6}}/>
+                    <button onClick={()=>setVentaQty(Math.min(ventaDisponible,ventaQty+1))} style={{width:36,height:36,borderRadius:"50%",background:"var(--bg3)",color:"var(--txt)",fontSize:18,border:"1px solid var(--bg4)"}}>+</button>
+                    <div className="qty-presets" style={{flex:1}}>{[1,2,5,10].map(n=><button key={n} className={ventaQty===n?"sel":""} onClick={()=>setVentaQty(Math.min(ventaDisponible,n))} style={{fontSize:10,padding:"4px 8px"}}>{n}</button>)}</div>
+                  </div>
+
+                  <button onClick={doConfirmVentaML}
+                    disabled={ventaQty < 1 || ventaQty > ventaDisponible}
+                    style={{width:"100%",padding:14,borderRadius:10,fontWeight:700,fontSize:14,color:"#000",
+                      background:"linear-gradient(135deg,#f59e0b,#eab308)",
+                      opacity:(ventaQty<1||ventaQty>ventaDisponible)?0.4:1}}>
+                    🛒 CONFIRMAR VENTA — {selectedVenta.componentes.reduce((s,c)=>s+c.unidades*ventaQty,0)} unidades
+                  </button>
+                </>
+              )}
+            </>
           ) : (
-            <select className="form-select" value={pos} onChange={e=>setPos(e.target.value)} style={{fontSize:12,marginBottom:10}}>
-              <option value="">Seleccionar posición...</option>
-              {mode === "out" && selected
-                ? skuPositions(selected.sku).map(sp=><option key={sp.pos} value={sp.pos}>{sp.pos} — {sp.label} ({sp.qty} uds)</option>)
-                : positions.map(p=><option key={p.id} value={p.id}>{p.id} — {p.label}</option>)
-              }
-            </select>
+            /* ===== NORMAL MODES (in/out/transfer) ===== */
+            <>
+              {/* SKU search */}
+              <div style={{position:"relative",marginBottom:10}}>
+                <input className="form-input mono" value={sku} onChange={e=>searchSku(e.target.value.toUpperCase())} placeholder="SKU, nombre o código ML..." style={{fontSize:13}}/>
+                {skuResults.length > 0 && (
+                  <div style={{position:"absolute",top:"100%",left:0,right:0,zIndex:50,background:"var(--bg2)",border:"1px solid var(--bg4)",borderRadius:"0 0 8px 8px",maxHeight:180,overflow:"auto",boxShadow:"0 6px 16px rgba(0,0,0,0.4)"}}>
+                    {skuResults.slice(0,8).map(p=>(
+                      <div key={p.sku} onClick={()=>selectProduct(p)} style={{padding:"8px 12px",cursor:"pointer",display:"flex",justifyContent:"space-between",borderBottom:"1px solid var(--bg3)"}}
+                        onMouseEnter={e=>e.currentTarget.style.background="var(--bg3)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                        <div><span className="mono" style={{fontWeight:600,fontSize:12}}>{p.sku}</span> <span style={{fontSize:11,color:"var(--txt3)"}}>{p.name}</span></div>
+                        <span className="mono" style={{fontSize:11,color:"var(--blue)"}}>{skuTotal(p.sku)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {selected && <div style={{padding:"6px 10px",background:"var(--bg3)",borderRadius:6,marginBottom:10,fontSize:12}}><span className="mono" style={{fontWeight:700}}>{selected.sku}</span> — {selected.name} <span className="mono" style={{color:"var(--blue)",marginLeft:8}}>Stock: {skuTotal(selected.sku)}</span></div>}
+
+              {/* Position(s) */}
+              {mode === "transfer" ? (
+                <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:8,marginBottom:10,alignItems:"center"}}>
+                  <select className="form-select" value={posFrom} onChange={e=>setPosFrom(e.target.value)} style={{fontSize:12}}>
+                    <option value="">Origen...</option>
+                    {selected ? skuPositions(selected.sku).map(sp=><option key={sp.pos} value={sp.pos}>{sp.pos} ({sp.qty} uds)</option>) : positions.map(p=><option key={p.id} value={p.id}>{p.id}</option>)}
+                  </select>
+                  <span style={{color:"var(--cyan)",fontWeight:700,fontSize:16}}>→</span>
+                  <select className="form-select" value={pos} onChange={e=>setPos(e.target.value)} style={{fontSize:12}}>
+                    <option value="">Destino...</option>
+                    {positions.filter(p=>p.id!==posFrom).map(p=><option key={p.id} value={p.id}>{p.id} — {p.label}</option>)}
+                  </select>
+                </div>
+              ) : (
+                <select className="form-select" value={pos} onChange={e=>setPos(e.target.value)} style={{fontSize:12,marginBottom:10}}>
+                  <option value="">Seleccionar posición...</option>
+                  {mode === "out" && selected
+                    ? skuPositions(selected.sku).map(sp=><option key={sp.pos} value={sp.pos}>{sp.pos} — {sp.label} ({sp.qty} uds)</option>)
+                    : positions.map(p=><option key={p.id} value={p.id}>{p.id} — {p.label}</option>)
+                  }
+                </select>
+              )}
+
+              {/* Qty */}
+              <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10}}>
+                <span style={{fontSize:12,color:"var(--txt3)",minWidth:50}}>Cantidad:</span>
+                <button onClick={()=>setQty(Math.max(1,qty-1))} style={{width:36,height:36,borderRadius:"50%",background:"var(--bg3)",color:"var(--txt)",fontSize:18,border:"1px solid var(--bg4)"}}>−</button>
+                <input type="number" className="form-input mono" value={qty} onChange={e=>setQty(Math.max(1,Math.min(mode==="transfer"?transferMax:maxQty,parseInt(e.target.value)||1)))} style={{width:80,textAlign:"center",fontSize:18,fontWeight:700,padding:6}}/>
+                <button onClick={()=>setQty(Math.min(mode==="transfer"?transferMax:maxQty,qty+1))} style={{width:36,height:36,borderRadius:"50%",background:"var(--bg3)",color:"var(--txt)",fontSize:18,border:"1px solid var(--bg4)"}}>+</button>
+                <div className="qty-presets" style={{flex:1}}>{[5,10,20,50].map(n=><button key={n} className={qty===n?"sel":""} onClick={()=>setQty(n)} style={{fontSize:10,padding:"4px 8px"}}>{n}</button>)}</div>
+              </div>
+
+              {/* Reason (not for transfer) */}
+              {mode !== "transfer" && (
+                <select className="form-select" value={reason} onChange={e=>setReason(e.target.value)} style={{fontSize:12,marginBottom:10}}>
+                  {(mode==="in"?Object.entries(IN_REASONS):Object.entries(OUT_REASONS)).map(([k,v])=><option key={k} value={k}>{v}</option>)}
+                </select>
+              )}
+
+              <input className="form-input" value={note} onChange={e=>setNote(e.target.value)} placeholder="Nota / referencia (opcional)" style={{fontSize:12,marginBottom:12}}/>
+
+              <button onClick={doConfirm}
+                disabled={!selected || !pos || qty < 1 || (mode==="transfer" && (!posFrom || posFrom===pos))}
+                style={{width:"100%",padding:14,borderRadius:10,fontWeight:700,fontSize:14,color:"#fff",
+                  background:mode==="in"?"linear-gradient(135deg,#059669,var(--green))":mode==="out"?"linear-gradient(135deg,#dc2626,var(--red))":"linear-gradient(135deg,#0891b2,var(--cyan))",
+                  opacity:(!selected||!pos||qty<1||(mode==="transfer"&&(!posFrom||posFrom===pos)))?0.4:1}}>
+                {mode==="in"?"CONFIRMAR ENTRADA":mode==="out"?"CONFIRMAR SALIDA":"CONFIRMAR TRANSFERENCIA"}
+              </button>
+            </>
           )}
-
-          {/* Qty */}
-          <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10}}>
-            <span style={{fontSize:12,color:"var(--txt3)",minWidth:50}}>Cantidad:</span>
-            <button onClick={()=>setQty(Math.max(1,qty-1))} style={{width:36,height:36,borderRadius:"50%",background:"var(--bg3)",color:"var(--txt)",fontSize:18,border:"1px solid var(--bg4)"}}>−</button>
-            <input type="number" className="form-input mono" value={qty} onChange={e=>setQty(Math.max(1,Math.min(mode==="transfer"?transferMax:maxQty,parseInt(e.target.value)||1)))} style={{width:80,textAlign:"center",fontSize:18,fontWeight:700,padding:6}}/>
-            <button onClick={()=>setQty(Math.min(mode==="transfer"?transferMax:maxQty,qty+1))} style={{width:36,height:36,borderRadius:"50%",background:"var(--bg3)",color:"var(--txt)",fontSize:18,border:"1px solid var(--bg4)"}}>+</button>
-            <div className="qty-presets" style={{flex:1}}>{[5,10,20,50].map(n=><button key={n} className={qty===n?"sel":""} onClick={()=>setQty(n)} style={{fontSize:10,padding:"4px 8px"}}>{n}</button>)}</div>
-          </div>
-
-          {/* Reason (not for transfer) */}
-          {mode !== "transfer" && (
-            <select className="form-select" value={reason} onChange={e=>setReason(e.target.value)} style={{fontSize:12,marginBottom:10}}>
-              {(mode==="in"?Object.entries(IN_REASONS):Object.entries(OUT_REASONS)).map(([k,v])=><option key={k} value={k}>{v}</option>)}
-            </select>
-          )}
-
-          <input className="form-input" value={note} onChange={e=>setNote(e.target.value)} placeholder="Nota / referencia (opcional)" style={{fontSize:12,marginBottom:12}}/>
-
-          <button onClick={doConfirm}
-            disabled={!selected || !pos || qty < 1 || (mode==="transfer" && (!posFrom || posFrom===pos))}
-            style={{width:"100%",padding:14,borderRadius:10,fontWeight:700,fontSize:14,color:"#fff",
-              background:mode==="in"?"linear-gradient(135deg,#059669,var(--green))":mode==="out"?"linear-gradient(135deg,#dc2626,var(--red))":"linear-gradient(135deg,#0891b2,var(--cyan))",
-              opacity:(!selected||!pos||qty<1||(mode==="transfer"&&(!posFrom||posFrom===pos)))?0.4:1}}>
-            {mode==="in"?"CONFIRMAR ENTRADA":mode==="out"?"CONFIRMAR SALIDA":"CONFIRMAR TRANSFERENCIA"}
-          </button>
         </div>
 
         {/* Mini map + position detail */}
@@ -472,7 +650,7 @@ function Operaciones({ refresh }: { refresh: () => void }) {
           )}
           <MiniMapPanel
             positions={positions}
-            onSelectProduct={(p,posId)=>{setSelected(p);setSku(p.sku);setPos(posId);setSkuResults([]);}}
+            onSelectProduct={(p,posId)=>{setMode("out");setSelected(p);setSku(p.sku);setPos(posId);setSkuResults([]);}}
             onSetMode={setMode}
             refresh={refresh}
           />
@@ -783,7 +961,10 @@ function Dashboard() {
 function Inventario() {
   const [q, setQ] = useState("");
   const [expanded, setExpanded] = useState<string|null>(null);
+  const [viewMode, setViewMode] = useState<"fisico"|"ml">("fisico");
   const s = getStore();
+
+  // Physical stock view
   const allSkus = Object.keys(s.stock).filter(sku => {
     if (skuTotal(sku) === 0) return false;
     if (!q) return true;
@@ -793,94 +974,222 @@ function Inventario() {
   }).sort((a,b)=>skuTotal(b)-skuTotal(a));
   const grandTotal = allSkus.reduce((s,sku)=>s+skuTotal(sku),0);
 
+  // ML publication view
+  const allVentas = getSkusVenta();
+  const ventasConStock = allVentas.map(v => {
+    let minDisp = Infinity;
+    const comps = v.componentes.map(c => {
+      const stock = skuTotal(c.skuOrigen);
+      const disp = Math.floor(stock / c.unidades);
+      if (disp < minDisp) minDisp = disp;
+      return { ...c, stock, disp, nombre: s.products[c.skuOrigen]?.name || c.skuOrigen };
+    });
+    return { ...v, disponible: minDisp === Infinity ? 0 : minDisp, comps };
+  }).filter(v => {
+    if (!q) return true;
+    const ql = q.toLowerCase();
+    return v.skuVenta.toLowerCase().includes(ql) ||
+      v.codigoMl.toLowerCase().includes(ql) ||
+      v.comps.some(c => c.nombre.toLowerCase().includes(ql) || c.skuOrigen.toLowerCase().includes(ql));
+  }).sort((a,b) => b.disponible - a.disponible);
+  const totalPublicaciones = ventasConStock.length;
+  const conStock = ventasConStock.filter(v => v.disponible > 0).length;
+  const sinStock = totalPublicaciones - conStock;
+
   return (
     <div>
       <div className="card">
-        <div style={{display:"flex",gap:10,alignItems:"center"}}>
-          <input className="form-input mono" value={q} onChange={e=>setQ(e.target.value)} placeholder="Filtrar SKU, nombre, proveedor, categoría..." style={{fontSize:13,flex:1}}/>
+        <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+          <div style={{display:"flex",gap:4}}>
+            <button onClick={()=>setViewMode("fisico")} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
+              background:viewMode==="fisico"?"var(--cyanBg)":"var(--bg3)",color:viewMode==="fisico"?"var(--cyan)":"var(--txt3)",
+              border:viewMode==="fisico"?"1px solid var(--cyan)":"1px solid var(--bg4)"}}>📦 Stock Físico</button>
+            <button onClick={()=>setViewMode("ml")} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
+              background:viewMode==="ml"?"var(--amberBg)":"var(--bg3)",color:viewMode==="ml"?"var(--amber)":"var(--txt3)",
+              border:viewMode==="ml"?"1px solid var(--amber)":"1px solid var(--bg4)"}}>🛒 Publicaciones ML</button>
+          </div>
+          <input className="form-input mono" value={q} onChange={e=>setQ(e.target.value)} placeholder={viewMode==="fisico"?"Filtrar SKU, nombre, proveedor...":"Filtrar código ML, SKU venta, nombre..."} style={{fontSize:13,flex:1}}/>
           <div style={{textAlign:"right",whiteSpace:"nowrap"}}>
-            <div style={{fontSize:10,color:"var(--txt3)"}}>{allSkus.length} SKUs</div>
-            <div className="mono" style={{fontSize:14,fontWeight:700,color:"var(--blue)"}}>{grandTotal.toLocaleString("es-CL")} uds</div>
+            {viewMode === "fisico" ? (
+              <>
+                <div style={{fontSize:10,color:"var(--txt3)"}}>{allSkus.length} SKUs</div>
+                <div className="mono" style={{fontSize:14,fontWeight:700,color:"var(--blue)"}}>{grandTotal.toLocaleString("es-CL")} uds</div>
+              </>
+            ) : (
+              <>
+                <div style={{fontSize:10,color:"var(--txt3)"}}>{totalPublicaciones} publicaciones</div>
+                <div style={{fontSize:11}}><span style={{color:"var(--green)",fontWeight:700}}>{conStock} con stock</span> · <span style={{color:"var(--red)"}}>{sinStock} sin stock</span></div>
+              </>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Desktop: table view */}
-      <div className="desktop-only">
-        <div className="card" style={{padding:0,overflow:"hidden"}}>
-          <table className="tbl">
-            <thead><tr>
-              <th>SKU</th><th>Producto</th><th>Cat.</th><th>Proveedor</th><th>Ubicaciones</th><th style={{textAlign:"right"}}>Total</th><th style={{textAlign:"right"}}>Valor</th>
-            </tr></thead>
-            <tbody>
-              {allSkus.map(sku=>{
-                const prod=s.products[sku];const total=skuTotal(sku);const positions=skuPositions(sku);
-                const isOpen=expanded===sku;
-                return([
-                  <tr key={sku} onClick={()=>setExpanded(isOpen?null:sku)} style={{cursor:"pointer",background:isOpen?"var(--bg3)":"transparent"}}>
-                    <td className="mono" style={{fontWeight:700,fontSize:12}}>{sku}</td>
-                    <td style={{fontSize:12}}>{prod?.name||sku}</td>
-                    <td><span className="tag">{prod?.cat}</span></td>
-                    <td><span className="tag">{prod?.prov}</span></td>
-                    <td>{positions.map(p=><span key={p.pos} className="mono" style={{fontSize:10,marginRight:6,padding:"2px 6px",background:"var(--bg3)",borderRadius:4}}>{p.pos}: {p.qty}</span>)}</td>
-                    <td className="mono" style={{textAlign:"right",fontWeight:700,color:"var(--blue)"}}>{total}</td>
-                    <td className="mono" style={{textAlign:"right",fontSize:11}}>{prod?fmtMoney(prod.cost*total):"-"}</td>
-                  </tr>,
-                  isOpen && <tr key={sku+"-detail"}><td colSpan={7} style={{background:"var(--bg3)",padding:16}}>
-                    <div style={{fontSize:12,fontWeight:700,marginBottom:8}}>Historial de movimientos — {sku}</div>
-                    <table className="tbl"><thead><tr><th>Fecha</th><th>Tipo</th><th>Motivo</th><th>Pos</th><th>Quien</th><th>Nota</th><th style={{textAlign:"right"}}>Qty</th></tr></thead>
-                      <tbody>{s.movements.filter(m=>m.sku===sku).slice(0,20).map(m=>(
-                        <tr key={m.id}>
-                          <td style={{fontSize:11}}>{fmtDate(m.ts)} {fmtTime(m.ts)}</td>
-                          <td><span className="mov-badge" style={{background:m.type==="in"?"var(--greenBg)":"var(--redBg)",color:m.type==="in"?"var(--green)":"var(--red)"}}>{m.type==="in"?"IN":"OUT"}</span></td>
-                          <td style={{fontSize:10}}>{(IN_REASONS as any)[m.reason]||(OUT_REASONS as any)[m.reason]}</td>
-                          <td className="mono">{m.pos}</td><td style={{fontSize:11}}>{m.who}</td><td style={{fontSize:10,color:"var(--cyan)"}}>{m.note}</td>
-                          <td className="mono" style={{textAlign:"right",fontWeight:700,color:m.type==="in"?"var(--green)":"var(--red)"}}>{m.type==="in"?"+":"-"}{m.qty}</td>
-                        </tr>
-                      ))}</tbody>
-                    </table>
-                  </td></tr>
-                ]);
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Mobile: card view */}
-      <div className="mobile-only">
-        {allSkus.map(sku=>{
-          const prod=s.products[sku];const positions=skuPositions(sku);const total=skuTotal(sku);const isOpen=expanded===sku;
-          const movs=s.movements.filter(m=>m.sku===sku);
-          return(
-            <div key={sku} className="card" style={{marginTop:6,cursor:"pointer"}} onClick={()=>setExpanded(isOpen?null:sku)}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                <div>
-                  <div className="mono" style={{fontSize:14,fontWeight:700}}>{sku}</div>
-                  <div style={{fontSize:12,color:"var(--txt2)"}}>{prod?.name||sku}</div>
-                  <div style={{display:"flex",gap:4,marginTop:3}}>{prod?.cat&&<span className="tag">{prod.cat}</span>}{prod?.prov&&<span className="tag">{prod.prov}</span>}</div>
-                </div>
-                <div style={{textAlign:"right"}}>
-                  <div className="mono" style={{fontSize:20,fontWeight:700,color:"var(--blue)"}}>{total}</div>
-                  <div style={{fontSize:9,color:"var(--txt3)"}}>en {positions.length} pos.</div>
-                </div>
-              </div>
-              <div style={{marginTop:8}}>{positions.map(sp=>(
-                <div key={sp.pos} className="mini-row"><span className="mono" style={{fontWeight:700,color:"var(--green)",minWidth:50,fontSize:13}}>{sp.pos}</span><span style={{flex:1,fontSize:10,color:"var(--txt3)"}}>{sp.label}</span><span className="mono" style={{fontWeight:700,fontSize:13}}>{sp.qty}</span></div>
-              ))}</div>
-              {isOpen&&<div style={{marginTop:10,borderTop:"1px solid var(--bg4)",paddingTop:10}}>
-                <div style={{fontSize:11,fontWeight:700,color:"var(--txt2)",marginBottom:6}}>Historial ({movs.length})</div>
-                {movs.slice(0,15).map(m=>(
-                  <div key={m.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"4px 0",fontSize:11}}>
-                    <div><span style={{color:"var(--txt3)"}}>{fmtDate(m.ts)} {fmtTime(m.ts)}</span><span style={{marginLeft:6,color:"var(--txt3)"}}>Pos {m.pos}</span><span style={{marginLeft:6,fontSize:10,color:"var(--txt3)"}}>({(IN_REASONS as any)[m.reason]||(OUT_REASONS as any)[m.reason]})</span></div>
-                    <span className="mono" style={{fontWeight:700,color:m.type==="in"?"var(--green)":"var(--red)"}}>{m.type==="in"?"+":"-"}{m.qty}</span>
-                  </div>
-                ))}
-              </div>}
+      {viewMode === "ml" ? (
+        /* ===== ML PUBLICATIONS VIEW ===== */
+        <>
+          <div className="desktop-only">
+            <div className="card" style={{padding:0,overflow:"hidden"}}>
+              <table className="tbl">
+                <thead><tr>
+                  <th>Código ML</th><th>SKU Venta</th><th>Componentes</th><th style={{textAlign:"center"}}>Pack</th><th style={{textAlign:"right"}}>Disponible</th>
+                </tr></thead>
+                <tbody>
+                  {ventasConStock.map(v=>{
+                    const isOpen = expanded === v.skuVenta;
+                    return([
+                      <tr key={v.skuVenta} onClick={()=>setExpanded(isOpen?null:v.skuVenta)} style={{cursor:"pointer",background:isOpen?"var(--bg3)":"transparent"}}>
+                        <td className="mono" style={{fontWeight:700,fontSize:12,color:"var(--amber)"}}>{v.codigoMl}</td>
+                        <td className="mono" style={{fontSize:11}}>{v.skuVenta}</td>
+                        <td style={{fontSize:11}}>
+                          {v.comps.map((c,i)=>(
+                            <span key={c.skuOrigen}>
+                              {i>0 && <span style={{color:"var(--txt3)"}}> + </span>}
+                              {c.unidades > 1 && <span style={{color:"var(--cyan)"}}>{c.unidades}×</span>}
+                              <span>{c.nombre}</span>
+                            </span>
+                          ))}
+                        </td>
+                        <td style={{textAlign:"center"}}>{v.comps.length > 1 || v.comps[0]?.unidades > 1 ? <span className="tag" style={{background:"var(--amberBg)",color:"var(--amber)"}}>Pack</span> : <span className="tag">Unitario</span>}</td>
+                        <td className="mono" style={{textAlign:"right",fontWeight:700,fontSize:16,color:v.disponible>0?"var(--green)":"var(--red)"}}>{v.disponible}</td>
+                      </tr>,
+                      isOpen && <tr key={v.skuVenta+"-detail"}><td colSpan={5} style={{background:"var(--bg3)",padding:12}}>
+                        <div style={{fontSize:11,fontWeight:700,marginBottom:6}}>Desglose de componentes:</div>
+                        <table className="tbl"><thead><tr><th>SKU Origen</th><th>Producto</th><th style={{textAlign:"center"}}>Uds/Pack</th><th style={{textAlign:"right"}}>Stock Total</th><th style={{textAlign:"right"}}>Packs posibles</th></tr></thead>
+                          <tbody>{v.comps.map(c=>(
+                            <tr key={c.skuOrigen}>
+                              <td className="mono" style={{fontWeight:700,fontSize:12}}>{c.skuOrigen}</td>
+                              <td style={{fontSize:11}}>{c.nombre}</td>
+                              <td className="mono" style={{textAlign:"center"}}>{c.unidades}</td>
+                              <td className="mono" style={{textAlign:"right",color:"var(--blue)"}}>{c.stock}</td>
+                              <td className="mono" style={{textAlign:"right",fontWeight:700,color:c.disp===v.disponible&&v.disponible>0?"var(--green)":c.disp===v.disponible?"var(--red)":"var(--txt2)"}}>{c.disp} {c.disp===v.disponible&&<span style={{fontSize:9}}>← limita</span>}</td>
+                            </tr>
+                          ))}</tbody>
+                        </table>
+                      </td></tr>
+                    ]);
+                  })}
+                </tbody>
+              </table>
             </div>
-          );
-        })}
-      </div>
+          </div>
+
+          <div className="mobile-only">
+            {ventasConStock.map(v=>{
+              const isOpen = expanded === v.skuVenta;
+              return(
+                <div key={v.skuVenta} className="card" style={{marginTop:6,cursor:"pointer"}} onClick={()=>setExpanded(isOpen?null:v.skuVenta)}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <div>
+                      <div className="mono" style={{fontSize:13,fontWeight:700,color:"var(--amber)"}}>{v.codigoMl}</div>
+                      <div className="mono" style={{fontSize:10,color:"var(--txt3)"}}>{v.skuVenta}</div>
+                      <div style={{fontSize:11,color:"var(--txt2)",marginTop:2}}>
+                        {v.comps.map((c,i)=>(
+                          <span key={c.skuOrigen}>{i>0?" + ":""}{c.unidades>1?`${c.unidades}× `:""}{c.nombre}</span>
+                        ))}
+                      </div>
+                    </div>
+                    <div style={{textAlign:"right"}}>
+                      <div className="mono" style={{fontSize:22,fontWeight:800,color:v.disponible>0?"var(--green)":"var(--red)"}}>{v.disponible}</div>
+                      <div style={{fontSize:9,color:"var(--txt3)"}}>disponibles</div>
+                    </div>
+                  </div>
+                  {isOpen && <div style={{marginTop:8,borderTop:"1px solid var(--bg4)",paddingTop:8}}>
+                    {v.comps.map(c=>(
+                      <div key={c.skuOrigen} className="mini-row" style={{alignItems:"center"}}>
+                        <span className="mono" style={{fontWeight:700,fontSize:12,minWidth:80}}>{c.skuOrigen}</span>
+                        <span style={{flex:1,fontSize:10,color:"var(--txt3)"}}>{c.nombre} ×{c.unidades}/pack</span>
+                        <span className="mono" style={{fontWeight:700,fontSize:12,color:"var(--blue)"}}>{c.stock}</span>
+                        <span style={{fontSize:9,color:"var(--txt3)",marginLeft:4}}>→ {c.disp} packs</span>
+                      </div>
+                    ))}
+                  </div>}
+                </div>
+              );
+            })}
+          </div>
+        </>
+      ) : (
+        /* ===== PHYSICAL STOCK VIEW (original) ===== */
+        <>
+          {/* Desktop: table view */}
+          <div className="desktop-only">
+            <div className="card" style={{padding:0,overflow:"hidden"}}>
+              <table className="tbl">
+                <thead><tr>
+                  <th>SKU</th><th>Producto</th><th>Cat.</th><th>Proveedor</th><th>Ubicaciones</th><th style={{textAlign:"right"}}>Total</th><th style={{textAlign:"right"}}>Valor</th>
+                </tr></thead>
+                <tbody>
+                  {allSkus.map(sku=>{
+                    const prod=s.products[sku];const total=skuTotal(sku);const positions=skuPositions(sku);
+                    const isOpen=expanded===sku;
+                    return([
+                      <tr key={sku} onClick={()=>setExpanded(isOpen?null:sku)} style={{cursor:"pointer",background:isOpen?"var(--bg3)":"transparent"}}>
+                        <td className="mono" style={{fontWeight:700,fontSize:12}}>{sku}</td>
+                        <td style={{fontSize:12}}>{prod?.name||sku}</td>
+                        <td><span className="tag">{prod?.cat}</span></td>
+                        <td><span className="tag">{prod?.prov}</span></td>
+                        <td>{positions.map(p=><span key={p.pos} className="mono" style={{fontSize:10,marginRight:6,padding:"2px 6px",background:"var(--bg3)",borderRadius:4}}>{p.pos}: {p.qty}</span>)}</td>
+                        <td className="mono" style={{textAlign:"right",fontWeight:700,color:"var(--blue)"}}>{total}</td>
+                        <td className="mono" style={{textAlign:"right",fontSize:11}}>{prod?fmtMoney(prod.cost*total):"-"}</td>
+                      </tr>,
+                      isOpen && <tr key={sku+"-detail"}><td colSpan={7} style={{background:"var(--bg3)",padding:16}}>
+                        <div style={{fontSize:12,fontWeight:700,marginBottom:8}}>Historial de movimientos — {sku}</div>
+                        <table className="tbl"><thead><tr><th>Fecha</th><th>Tipo</th><th>Motivo</th><th>Pos</th><th>Quien</th><th>Nota</th><th style={{textAlign:"right"}}>Qty</th></tr></thead>
+                          <tbody>{s.movements.filter(m=>m.sku===sku).slice(0,20).map(m=>(
+                            <tr key={m.id}>
+                              <td style={{fontSize:11}}>{fmtDate(m.ts)} {fmtTime(m.ts)}</td>
+                              <td><span className="mov-badge" style={{background:m.type==="in"?"var(--greenBg)":"var(--redBg)",color:m.type==="in"?"var(--green)":"var(--red)"}}>{m.type==="in"?"IN":"OUT"}</span></td>
+                              <td style={{fontSize:10}}>{(IN_REASONS as any)[m.reason]||(OUT_REASONS as any)[m.reason]}</td>
+                              <td className="mono">{m.pos}</td><td style={{fontSize:11}}>{m.who}</td><td style={{fontSize:10,color:"var(--cyan)"}}>{m.note}</td>
+                              <td className="mono" style={{textAlign:"right",fontWeight:700,color:m.type==="in"?"var(--green)":"var(--red)"}}>{m.type==="in"?"+":"-"}{m.qty}</td>
+                            </tr>
+                          ))}</tbody>
+                        </table>
+                      </td></tr>
+                    ]);
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Mobile: card view */}
+          <div className="mobile-only">
+            {allSkus.map(sku=>{
+              const prod=s.products[sku];const positions=skuPositions(sku);const total=skuTotal(sku);const isOpen=expanded===sku;
+              const movs=s.movements.filter(m=>m.sku===sku);
+              return(
+                <div key={sku} className="card" style={{marginTop:6,cursor:"pointer"}} onClick={()=>setExpanded(isOpen?null:sku)}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <div>
+                      <div className="mono" style={{fontSize:14,fontWeight:700}}>{sku}</div>
+                      <div style={{fontSize:12,color:"var(--txt2)"}}>{prod?.name||sku}</div>
+                      <div style={{display:"flex",gap:4,marginTop:3}}>{prod?.cat&&<span className="tag">{prod.cat}</span>}{prod?.prov&&<span className="tag">{prod.prov}</span>}</div>
+                    </div>
+                    <div style={{textAlign:"right"}}>
+                      <div className="mono" style={{fontSize:20,fontWeight:700,color:"var(--blue)"}}>{total}</div>
+                      <div style={{fontSize:9,color:"var(--txt3)"}}>en {positions.length} pos.</div>
+                    </div>
+                  </div>
+                  <div style={{marginTop:8}}>{positions.map(sp=>(
+                    <div key={sp.pos} className="mini-row"><span className="mono" style={{fontWeight:700,color:"var(--green)",minWidth:50,fontSize:13}}>{sp.pos}</span><span style={{flex:1,fontSize:10,color:"var(--txt3)"}}>{sp.label}</span><span className="mono" style={{fontWeight:700,fontSize:13}}>{sp.qty}</span></div>
+                  ))}</div>
+                  {isOpen&&<div style={{marginTop:10,borderTop:"1px solid var(--bg4)",paddingTop:10}}>
+                    <div style={{fontSize:11,fontWeight:700,color:"var(--txt2)",marginBottom:6}}>Historial ({movs.length})</div>
+                    {movs.slice(0,15).map(m=>(
+                      <div key={m.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"4px 0",fontSize:11}}>
+                        <div><span style={{color:"var(--txt3)"}}>{fmtDate(m.ts)} {fmtTime(m.ts)}</span><span style={{marginLeft:6,color:"var(--txt3)"}}>Pos {m.pos}</span><span style={{marginLeft:6,fontSize:10,color:"var(--txt3)"}}>({(IN_REASONS as any)[m.reason]||(OUT_REASONS as any)[m.reason]})</span></div>
+                        <span className="mono" style={{fontWeight:700,color:m.type==="in"?"var(--green)":"var(--red)"}}>{m.type==="in"?"+":"-"}{m.qty}</span>
+                      </div>
+                    ))}
+                  </div>}
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -1350,6 +1659,141 @@ function CargaStock({ refresh }: { refresh: () => void }) {
           <div style={{fontSize:16,fontWeight:700,color:"var(--green)",marginBottom:4}}>Todo el stock tiene posición asignada</div>
           <div style={{fontSize:12,color:"var(--txt3)"}}>Puedes ver el inventario completo en la pestaña Inventario</div>
         </div>
+      )}
+
+      {/* Bulk paste with positions */}
+      <CargaMasivaPosiciones refresh={refresh} />
+    </div>
+  );
+}
+
+function CargaMasivaPosiciones({ refresh }: { refresh: () => void }) {
+  const [pasteText, setPasteText] = useState("");
+  const [parsed, setParsed] = useState<{pos:string;sku:string;qty:number;name:string;valid:boolean;error?:string}[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<{ok:number;err:number}|null>(null);
+
+  const doParse = () => {
+    if (!pasteText.trim()) return;
+    const lines = pasteText.split("\n").map(l => l.trim()).filter(l => l.length > 0);
+    const items: typeof parsed = [];
+    const s = getStore();
+    const posSet = new Set(activePositions().map(p => p.id));
+
+    for (const line of lines) {
+      // Support tab, comma, semicolon, or multiple spaces as separator
+      const parts = line.split(/[\t,;]+|\s{2,}/).map(p => p.trim()).filter(p => p);
+      if (parts.length < 3) {
+        items.push({ pos: "", sku: line, qty: 0, name: "", valid: false, error: "Formato: Posición | SKU | Cantidad" });
+        continue;
+      }
+      const pos = parts[0].toUpperCase();
+      const sku = parts[1].toUpperCase();
+      const qty = parseInt(parts[2]) || 0;
+
+      const prod = s.products[sku];
+      const errors: string[] = [];
+      if (!posSet.has(pos)) errors.push(`Posición "${pos}" no existe`);
+      if (!prod) errors.push(`SKU "${sku}" no encontrado`);
+      if (qty <= 0) errors.push("Cantidad inválida");
+
+      items.push({
+        pos, sku, qty, name: prod?.name || "?",
+        valid: errors.length === 0, error: errors.join(", "),
+      });
+    }
+    setParsed(items);
+    setResult(null);
+  };
+
+  const doImport = async () => {
+    const valid = parsed.filter(p => p.valid);
+    if (valid.length === 0) return;
+    if (!confirm(`Importar ${valid.length} líneas de stock con posición asignada?\n\nEsto AGREGA al stock existente (no reemplaza).`)) return;
+    setLoading(true);
+    let ok = 0, err = 0;
+    for (const item of valid) {
+      try {
+        recordMovement({
+          ts: new Date().toISOString(), type: "in", reason: "ajuste_entrada" as InReason,
+          sku: item.sku, pos: item.pos, qty: item.qty,
+          who: "Admin", note: "Carga masiva con posición",
+        });
+        ok++;
+      } catch { err++; }
+    }
+    setResult({ ok, err });
+    setLoading(false);
+    setPasteText("");
+    setParsed([]);
+    refresh();
+  };
+
+  const validCount = parsed.filter(p => p.valid).length;
+  const errorCount = parsed.filter(p => !p.valid).length;
+  const totalUnits = parsed.filter(p => p.valid).reduce((s, p) => s + p.qty, 0);
+
+  return (
+    <div className="card" style={{marginTop:12}}>
+      <div className="card-title">📋 Carga masiva con posiciones</div>
+      <p style={{fontSize:12,color:"var(--txt3)",marginBottom:8,lineHeight:1.5}}>
+        Pega datos con formato: <strong>Posición  SKU  Cantidad</strong> (separado por tab, coma o punto y coma). Una línea por entrada.
+      </p>
+      <div style={{padding:"8px 12px",background:"var(--bg2)",borderRadius:6,marginBottom:10,fontSize:11,fontFamily:"'JetBrains Mono',monospace",color:"var(--txt3)"}}>
+        Ejemplo:<br/>
+        1  SAB-180-BL  25<br/>
+        1  ALM-VISCO  10<br/>
+        3  TOA-70-GR  50<br/>
+        E1-1  FUN-50-NE  12
+      </div>
+      <textarea
+        value={pasteText} onChange={e => { setPasteText(e.target.value); setParsed([]); setResult(null); }}
+        placeholder={"Posición\tSKU\tCantidad\n1\tSAB-180-BL\t25\n3\tTOA-70-GR\t50"}
+        style={{width:"100%",minHeight:120,padding:10,borderRadius:8,border:"1px solid var(--bg4)",background:"var(--bg1)",color:"var(--txt)",fontSize:12,fontFamily:"'JetBrains Mono',monospace",resize:"vertical",marginBottom:8}}
+      />
+      <div style={{display:"flex",gap:8,marginBottom:12}}>
+        <button onClick={doParse} disabled={!pasteText.trim()}
+          style={{flex:1,padding:10,borderRadius:8,fontWeight:700,fontSize:13,background:pasteText.trim()?"var(--cyan)":"var(--bg3)",color:pasteText.trim()?"#000":"var(--txt3)"}}>
+          Previsualizar ({pasteText.split("\n").filter(l=>l.trim()).length} líneas)
+        </button>
+        {parsed.length > 0 && <button onClick={()=>{setPasteText("");setParsed([]);}} style={{padding:"10px 16px",borderRadius:8,background:"var(--bg3)",color:"var(--txt3)",fontSize:12,fontWeight:600,border:"1px solid var(--bg4)"}}>Limpiar</button>}
+      </div>
+
+      {result && (
+        <div style={{padding:"10px 14px",background:"var(--greenBg)",border:"1px solid var(--greenBd)",borderRadius:8,marginBottom:12,fontSize:12}}>
+          <span style={{color:"var(--green)",fontWeight:700}}>Importado: {result.ok} entradas, {totalUnits.toLocaleString()} unidades</span>
+          {result.err > 0 && <span style={{color:"var(--red)",marginLeft:8}}>{result.err} errores</span>}
+        </div>
+      )}
+
+      {parsed.length > 0 && (
+        <>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+            <div style={{fontSize:11}}>
+              <span style={{color:"var(--green)",fontWeight:700}}>{validCount} OK</span>
+              {errorCount > 0 && <span style={{color:"var(--red)",fontWeight:700,marginLeft:8}}>{errorCount} errores</span>}
+              <span style={{color:"var(--txt3)",marginLeft:8}}>({totalUnits.toLocaleString()} uds)</span>
+            </div>
+          </div>
+          <div style={{maxHeight:300,overflow:"auto",border:"1px solid var(--bg4)",borderRadius:8,marginBottom:12}}>
+            {parsed.map((p, i) => (
+              <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",borderBottom:"1px solid var(--bg3)",background:p.valid?"transparent":"var(--redBg)",fontSize:11}}>
+                <span style={{width:8,height:8,borderRadius:"50%",background:p.valid?"var(--green)":"var(--red)",flexShrink:0}}/>
+                <span className="mono" style={{fontWeight:700,color:"var(--cyan)",minWidth:40}}>{p.pos}</span>
+                <span className="mono" style={{fontWeight:700,minWidth:100}}>{p.sku}</span>
+                <span style={{flex:1,color:"var(--txt3)"}}>{p.name}</span>
+                <span className="mono" style={{fontWeight:700,color:"var(--blue)"}}>{p.qty}</span>
+                {p.error && <span style={{color:"var(--red)",fontSize:10}}>⚠ {p.error}</span>}
+              </div>
+            ))}
+          </div>
+          {validCount > 0 && (
+            <button onClick={doImport} disabled={loading}
+              style={{width:"100%",padding:14,borderRadius:10,fontWeight:700,fontSize:14,color:"#fff",background:"linear-gradient(135deg,#059669,var(--green))",opacity:loading?0.5:1}}>
+              {loading ? "Importando..." : `IMPORTAR ${validCount} líneas — ${totalUnits.toLocaleString()} unidades`}
+            </button>
+          )}
+        </>
       )}
     </div>
   );
