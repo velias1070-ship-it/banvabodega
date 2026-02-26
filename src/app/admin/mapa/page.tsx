@@ -33,17 +33,6 @@ export default function MapaPage() {
     if (!mounted) return;
     setCfg(getMapConfig());
     setPositions(getStore().positions);
-    // Auto-place unplaced positions
-    const s = getStore();
-    let col = 2, row = 4;
-    s.positions.forEach(p => {
-      if (p.mx === undefined) {
-        p.mx = col; p.my = row; p.mw = 2; p.mh = 2;
-        col += 3; if (col > cfg.gridW - 3) { col = 2; row += 3; }
-      }
-    });
-    saveStore();
-    setPositions([...s.positions]);
   }, [mounted]);
 
   useEffect(() => {
