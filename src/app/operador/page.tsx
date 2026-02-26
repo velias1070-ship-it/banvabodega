@@ -10,7 +10,7 @@ import SheetSync from "@/components/SheetSync";
 const CLOUD_SYNC_INTERVAL = 10_000;
 
 export default function OperadorPage() {
-  const [tab, setTab] = useState<"rec"|"in"|"out"|"stock"|"bulk">("rec");
+  const [tab, setTab] = useState<"rec"|"in"|"out"|"stock"|"bulk"|"carga">("rec");
   const [,setTick] = useState(0);
   const r = useCallback(() => setTick(t => t + 1), []);
   const [mounted, setMounted] = useState(false);
@@ -55,6 +55,7 @@ export default function OperadorPage() {
         <button className={`tab ${tab==="out"?"active-out":""}`} onClick={()=>setTab("out")}>SALIDA</button>
         <button className={`tab ${tab==="stock"?"active-blue":""}`} onClick={()=>setTab("stock")}>STOCK</button>
         <button className={`tab ${tab==="bulk"?"active-cyan":""}`} onClick={()=>setTab("bulk")}>MASIVO</button>
+        <button className={`tab ${tab==="carga"?"active-green":""}`} onClick={()=>setTab("carga")}>📋 CARGA</button>
       </div>
       <div style={{padding:12}}>
         {tab==="rec"&&<Recepciones refresh={r}/>}
@@ -62,6 +63,7 @@ export default function OperadorPage() {
         {tab==="out"&&<Salida refresh={r}/>}
         {tab==="stock"&&<StockView/>}
         {tab==="bulk"&&<BulkMode refresh={r}/>}
+        {tab==="carga"&&<CargaInventario refresh={r}/>}
       </div>
     </div>
   );
@@ -944,6 +946,211 @@ function ProcessLine({ linea, operario, recepcionId, onBack, refresh }: {
           <button onClick={onBack} style={{marginTop:12,padding:"10px 24px",borderRadius:8,background:"var(--bg3)",color:"var(--cyan)",fontSize:13,fontWeight:600,border:"1px solid var(--bg4)"}}>
             Volver a recepción
           </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ==================== CARGA INVENTARIO (SCAN POSITION BY POSITION) ====================
+function CargaInventario({ refresh }: { refresh: () => void }) {
+  const { show, Toast } = useToast();
+  const [currentPos, setCurrentPos] = useState<string>("");
+  const [scanning, setScanning] = useState(false);
+  const [skuSearch, setSkuSearch] = useState("");
+  const [skuResults, setSkuResults] = useState<Product[]>([]);
+  const [selectedProduct, setSelectedProduct] = useState<Product|null>(null);
+  const [qty, setQty] = useState(1);
+  const [sessionLog, setSessionLog] = useState<{pos:string;sku:string;name:string;qty:number}[]>([]);
+  const skuInputRef = useRef<HTMLInputElement>(null);
+
+  const positions = activePositions();
+  const currentPosItems = currentPos ? posContents(currentPos) : [];
+  const currentPosTotal = currentPosItems.reduce((s,i)=>s+i.qty,0);
+  const sessionTotal = sessionLog.reduce((s,l) => s+l.qty, 0);
+
+  const handleScanPos = (code: string) => {
+    setScanning(false);
+    const pos = findPosition(code);
+    if (pos) {
+      setCurrentPos(pos.id);
+      show(`Posición ${pos.id} seleccionada`);
+      setTimeout(() => skuInputRef.current?.focus(), 300);
+    } else {
+      show(`Posición "${code}" no encontrada`, "err");
+    }
+  };
+
+  const doSearchSku = (q: string) => {
+    setSkuSearch(q);
+    setSelectedProduct(null);
+    if (q.length >= 2) setSkuResults(findProduct(q).slice(0,6));
+    else setSkuResults([]);
+  };
+
+  const selectProduct = (p: Product) => {
+    setSelectedProduct(p);
+    setSkuSearch(p.sku);
+    setSkuResults([]);
+    setQty(1);
+  };
+
+  const doAdd = () => {
+    if (!selectedProduct || !currentPos || qty < 1) return;
+    recordMovement({
+      ts: new Date().toISOString(), type: "in", reason: "ajuste_entrada" as InReason,
+      sku: selectedProduct.sku, pos: currentPos, qty,
+      who: "Operario", note: "Carga inventario inicial",
+    });
+    setSessionLog(l => [{ pos: currentPos, sku: selectedProduct.sku, name: selectedProduct.name, qty }, ...l]);
+    show(`+${qty} ${selectedProduct.sku} → ${currentPos}`);
+    setSelectedProduct(null);
+    setSkuSearch("");
+    setQty(1);
+    refresh();
+    setTimeout(() => skuInputRef.current?.focus(), 100);
+  };
+
+  return (
+    <div>
+      {Toast}
+
+      {/* Header stats */}
+      <div style={{display:"flex",gap:8,marginBottom:12}}>
+        <div style={{flex:1,padding:"10px 12px",background:"var(--bg2)",borderRadius:8,textAlign:"center"}}>
+          <div style={{fontSize:20,fontWeight:800,color:"var(--green)"}}>{sessionLog.length}</div>
+          <div style={{fontSize:10,color:"var(--txt3)"}}>registros</div>
+        </div>
+        <div style={{flex:1,padding:"10px 12px",background:"var(--bg2)",borderRadius:8,textAlign:"center"}}>
+          <div style={{fontSize:20,fontWeight:800,color:"var(--blue)"}}>{sessionTotal}</div>
+          <div style={{fontSize:10,color:"var(--txt3)"}}>unidades</div>
+        </div>
+        <div style={{flex:1,padding:"10px 12px",background:"var(--bg2)",borderRadius:8,textAlign:"center"}}>
+          <div style={{fontSize:20,fontWeight:800,color:"var(--cyan)"}}>{new Set(sessionLog.map(l=>l.pos)).size}</div>
+          <div style={{fontSize:10,color:"var(--txt3)"}}>posiciones</div>
+        </div>
+      </div>
+
+      {/* Step 1: Select position */}
+      <div className="card">
+        <div style={{fontSize:13,fontWeight:700,marginBottom:8,color:currentPos?"var(--green)":"var(--txt)"}}>
+          {currentPos ? `📍 Posición: ${currentPos}` : "1️⃣ Seleccionar posición"}
+        </div>
+
+        <div style={{display:"flex",gap:8,marginBottom:8}}>
+          <button onClick={()=>setScanning(!scanning)}
+            style={{flex:1,padding:12,borderRadius:8,background:scanning?"var(--amberBg)":"var(--bg3)",color:scanning?"var(--amber)":"var(--cyan)",fontWeight:700,fontSize:13,border:`1px solid ${scanning?"var(--amber)":"var(--bg4)"}`}}>
+            {scanning ? "Cancelar" : "📷 Escanear QR posición"}
+          </button>
+        </div>
+
+        {scanning && (
+          <div style={{marginBottom:10,borderRadius:8,overflow:"hidden"}}>
+            <BarcodeScanner onScan={handleScanPos} active={scanning} />
+          </div>
+        )}
+
+        <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+          {positions.slice(0,20).map(p => (
+            <button key={p.id} onClick={()=>{setCurrentPos(p.id);show(`Posición ${p.id}`);setTimeout(()=>skuInputRef.current?.focus(),100);}}
+              style={{padding:"8px 10px",borderRadius:6,fontSize:12,fontWeight:700,fontFamily:"'JetBrains Mono',monospace",
+                background:currentPos===p.id?"var(--greenBg)":"var(--bg3)",
+                color:currentPos===p.id?"var(--green)":"var(--txt3)",
+                border:currentPos===p.id?"2px solid var(--green)":"1px solid var(--bg4)"}}>
+              {p.id}
+            </button>
+          ))}
+        </div>
+
+        {currentPos && currentPosTotal > 0 && (
+          <div style={{marginTop:8,padding:"6px 10px",background:"var(--bg2)",borderRadius:6,fontSize:11,color:"var(--txt3)"}}>
+            Ya tiene {currentPosTotal} uds ({currentPosItems.length} SKUs)
+          </div>
+        )}
+      </div>
+
+      {/* Step 2: Add SKUs */}
+      {currentPos && (
+        <div className="card" style={{marginTop:8}}>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>2️⃣ Agregar productos a {currentPos}</div>
+
+          <div style={{position:"relative",marginBottom:8}}>
+            <input ref={skuInputRef} className="form-input mono" value={skuSearch}
+              onChange={e=>doSearchSku(e.target.value.toUpperCase())}
+              onKeyDown={e=>{if(e.key==="Enter"&&selectedProduct)doAdd();}}
+              placeholder="Buscar SKU o nombre..."
+              style={{fontSize:14}} autoFocus/>
+            {skuResults.length > 0 && (
+              <div style={{position:"absolute",top:"100%",left:0,right:0,zIndex:50,background:"var(--bg2)",border:"1px solid var(--bg4)",borderRadius:"0 0 8px 8px",maxHeight:200,overflow:"auto",boxShadow:"0 6px 16px rgba(0,0,0,0.4)"}}>
+                {skuResults.map(p=>(
+                  <div key={p.sku} onClick={()=>selectProduct(p)} style={{padding:"10px 12px",cursor:"pointer",borderBottom:"1px solid var(--bg3)"}}
+                    onMouseEnter={e=>e.currentTarget.style.background="var(--bg3)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                    <div style={{display:"flex",justifyContent:"space-between"}}>
+                      <span className="mono" style={{fontWeight:700,fontSize:13}}>{p.sku}</span>
+                      <span className="mono" style={{fontSize:11,color:"var(--blue)"}}>{skuTotal(p.sku)} en stock</span>
+                    </div>
+                    <div style={{fontSize:11,color:"var(--txt3)"}}>{p.name}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {selectedProduct && (
+            <div style={{padding:"8px 10px",background:"var(--bg3)",borderRadius:6,marginBottom:10}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div>
+                  <span className="mono" style={{fontWeight:700,fontSize:13}}>{selectedProduct.sku}</span>
+                  <div style={{fontSize:11,color:"var(--txt3)"}}>{selectedProduct.name}</div>
+                </div>
+                <button onClick={()=>{setSelectedProduct(null);setSkuSearch("");}} style={{background:"none",color:"var(--txt3)",fontSize:16,border:"none",padding:"0 4px"}}>✕</button>
+              </div>
+            </div>
+          )}
+
+          {selectedProduct && (
+            <>
+              <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:10}}>
+                <button onClick={()=>setQty(Math.max(1,qty-1))} style={{width:44,height:44,borderRadius:"50%",background:"var(--bg3)",color:"var(--txt)",fontSize:20,fontWeight:700,border:"1px solid var(--bg4)"}}>−</button>
+                <input type="number" className="form-input mono" value={qty} onChange={e=>setQty(Math.max(1,parseInt(e.target.value)||1))}
+                  style={{flex:1,textAlign:"center",fontSize:28,fontWeight:800,padding:8}}/>
+                <button onClick={()=>setQty(qty+1)} style={{width:44,height:44,borderRadius:"50%",background:"var(--bg3)",color:"var(--txt)",fontSize:20,fontWeight:700,border:"1px solid var(--bg4)"}}>+</button>
+              </div>
+              <div style={{display:"flex",gap:4,marginBottom:12,justifyContent:"center"}}>
+                {[1,5,10,12,20,50].map(n=>(
+                  <button key={n} onClick={()=>setQty(n)}
+                    style={{padding:"6px 12px",borderRadius:6,fontSize:12,fontWeight:700,
+                      background:qty===n?"var(--greenBg)":"var(--bg3)",color:qty===n?"var(--green)":"var(--txt3)",
+                      border:qty===n?"1px solid var(--green)":"1px solid var(--bg4)"}}>
+                    {n}
+                  </button>
+                ))}
+              </div>
+              <button onClick={doAdd}
+                style={{width:"100%",padding:16,borderRadius:10,fontWeight:700,fontSize:16,color:"#fff",background:"linear-gradient(135deg,#059669,var(--green))"}}>
+                + AGREGAR {qty}× {selectedProduct.sku}
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Session log */}
+      {sessionLog.length > 0 && (
+        <div className="card" style={{marginTop:8}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+            <div style={{fontSize:12,fontWeight:700}}>Registros esta sesión ({sessionLog.length})</div>
+            <button onClick={()=>{if(confirm("Limpiar historial visual? (no afecta el stock ya registrado)"))setSessionLog([]);}}
+              style={{padding:"4px 10px",borderRadius:4,background:"var(--bg3)",color:"var(--txt3)",fontSize:10,fontWeight:600,border:"1px solid var(--bg4)"}}>Limpiar</button>
+          </div>
+          {sessionLog.slice(0,30).map((l,i)=>(
+            <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"1px solid var(--bg3)",fontSize:12}}>
+              <span className="mono" style={{fontWeight:700,color:"var(--cyan)",minWidth:36}}>{l.pos}</span>
+              <span className="mono" style={{fontWeight:700,minWidth:80}}>{l.sku}</span>
+              <span style={{flex:1,fontSize:10,color:"var(--txt3)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</span>
+              <span className="mono" style={{fontWeight:800,color:"var(--green)"}}>+{l.qty}</span>
+            </div>
+          ))}
         </div>
       )}
     </div>
