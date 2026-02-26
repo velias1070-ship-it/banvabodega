@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect } from "react";
-import { syncFromSheet, shouldSync, getLastSyncTime } from "@/lib/store";
+import { syncFromSheet, shouldSync, getLastSyncTime, getStore } from "@/lib/store";
 
 interface SyncStatus {
   state: "idle" | "syncing" | "done" | "error";
@@ -24,30 +24,38 @@ export default function SheetSync({ onSynced }: { onSynced?: () => void }) {
     setStatus(s => ({ ...s, state: "syncing" }));
     try {
       const result = await syncFromSheet();
+      const composicionCount = getStore().composicion.length;
       setStatus({ state: "done", ...result, lastSync: getLastSyncTime() });
       if (onSynced) onSynced();
-      // Auto-hide success after 3 seconds
-      setTimeout(() => setStatus(s => s.state === "done" ? { ...s, state: "idle" } : s), 3000);
+      setTimeout(() => setStatus(s => s.state === "done" ? { ...s, state: "idle" } : s), 4000);
     } catch {
       setStatus(s => ({ ...s, state: "error" }));
     }
   };
 
+  const composicionCount = getStore().composicion?.length || 0;
+
   return (
     <div style={{ padding: "8px 12px", background: "var(--bg2)", borderBottom: "1px solid var(--bg3)", display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <span style={{ width: 8, height: 8, borderRadius: "50%", background: status.state === "syncing" ? "var(--amber)" : status.state === "error" ? "var(--red)" : "var(--green)", display: "inline-block", animation: status.state === "syncing" ? "pulse 1s infinite" : "none" }} />
-        {status.state === "syncing" && <span style={{ color: "var(--amber)" }}>Sincronizando con Google Sheets...</span>}
+        {status.state === "syncing" && <span style={{ color: "var(--amber)" }}>Sincronizando diccionario...</span>}
         {status.state === "done" && (
           <span style={{ color: "var(--green)" }}>
-            Sincronizado — {status.total} productos
+            Sincronizado — {status.total} productos físicos
             {status.added > 0 && <span> (+{status.added} nuevos)</span>}
             {status.updated > 0 && <span> ({status.updated} actualizados)</span>}
+            {composicionCount > 0 && <span style={{ color: "var(--cyan)" }}> · {composicionCount} combos/packs</span>}
           </span>
         )}
         {status.state === "error" && <span style={{ color: "var(--red)" }}>Error de sincronización</span>}
-        {status.state === "idle" && status.lastSync && <span style={{ color: "var(--txt3)" }}>Sync: {status.lastSync}</span>}
-        {status.state === "idle" && !status.lastSync && <span style={{ color: "var(--txt3)" }}>Google Sheets: sin sincronizar</span>}
+        {status.state === "idle" && status.lastSync && (
+          <span style={{ color: "var(--txt3)" }}>
+            Diccionario: {status.lastSync}
+            {composicionCount > 0 && <span> · {composicionCount} combos</span>}
+          </span>
+        )}
+        {status.state === "idle" && !status.lastSync && <span style={{ color: "var(--txt3)" }}>Diccionario: sin sincronizar</span>}
       </div>
       <button onClick={doSync} disabled={status.state === "syncing"}
         style={{ padding: "4px 12px", borderRadius: 6, background: "var(--bg3)", color: "var(--cyan)", fontSize: 10, fontWeight: 600, border: "1px solid var(--bg4)", whiteSpace: "nowrap" }}>
