@@ -1,7 +1,7 @@
 "use client";
 import { useState, useCallback, useEffect, useRef } from "react";
 import { getStore, saveStore, findProduct, findPosition, activePositions, skuTotal, skuPositions, posContents, recordMovement, recordBulkMovements, fmtMoney, IN_REASONS, OUT_REASONS, initStore, isStoreReady, refreshStore, isSupabaseConfigured, getRecepcionesActivas, getRecepcionLineas, contarLinea, etiquetarLinea, ubicarLinea, actualizarRecepcion, fmtDate, fmtTime, getUnassignedStock, assignPosition, getMapConfig } from "@/lib/store";
-import type { Product, InReason, OutReason, DBRecepcion, DBRecepcionLinea } from "@/lib/store";
+import type { Product, InReason, OutReason, DBRecepcion, DBRecepcionLinea, MovType } from "@/lib/store";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 const BarcodeScanner = dynamic(() => import("@/components/BarcodeScanner"), { ssr: false });
@@ -1005,6 +1005,86 @@ function ProcessLine({ linea, operario, recepcionId, onBack, refresh }: {
   );
 }
 
+// ==================== POS STOCK ADJUST (INLINE +/- FOR EXISTING STOCK) ====================
+function PosStockAdjust({ pos, items, total, onAdjust }: {
+  pos: string;
+  items: { sku: string; name: string; qty: number }[];
+  total: number;
+  onAdjust: (sku: string, name: string, delta: number) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [adjusting, setAdjusting] = useState<string | null>(null);
+  const [adjQty, setAdjQty] = useState(1);
+
+  return (
+    <div style={{marginTop:8,background:"var(--bg2)",borderRadius:8,border:"1px solid var(--bg4)",overflow:"hidden"}}>
+      <div onClick={()=>setExpanded(!expanded)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",cursor:"pointer"}}>
+        <div style={{fontSize:12,color:"var(--txt3)"}}>
+          📦 {total} uds ({items.length} SKUs)
+        </div>
+        <span style={{fontSize:10,color:"var(--cyan)",fontWeight:600}}>
+          {expanded ? "▲ cerrar" : "▼ ver / ajustar"}
+        </span>
+      </div>
+
+      {expanded && (
+        <div style={{borderTop:"1px solid var(--bg4)"}}>
+          {items.map(item => (
+            <div key={item.sku} style={{padding:"8px 12px",borderBottom:"1px solid var(--bg3)"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div style={{flex:1,minWidth:0}}>
+                  <span className="mono" style={{fontWeight:700,fontSize:12}}>{item.sku}</span>
+                  <div style={{fontSize:10,color:"var(--txt3)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{item.name}</div>
+                </div>
+                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                  <span className="mono" style={{fontWeight:800,fontSize:16,color:"var(--green)",minWidth:30,textAlign:"right"}}>{item.qty}</span>
+                  <button onClick={()=>{setAdjusting(adjusting===item.sku?null:item.sku);setAdjQty(1);}}
+                    style={{padding:"4px 8px",borderRadius:4,fontSize:10,fontWeight:700,
+                      background:adjusting===item.sku?"var(--bg4)":"var(--bg3)",
+                      color:adjusting===item.sku?"var(--cyan)":"var(--txt3)",
+                      border:"1px solid var(--bg4)"}}>
+                    {adjusting===item.sku ? "✕" : "±"}
+                  </button>
+                </div>
+              </div>
+
+              {adjusting === item.sku && (
+                <div style={{marginTop:8,display:"flex",gap:4,alignItems:"center",flexWrap:"wrap"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:4,flex:1,minWidth:140}}>
+                    <button onClick={()=>setAdjQty(Math.max(1,adjQty-1))}
+                      style={{width:32,height:32,borderRadius:6,background:"var(--bg3)",color:"var(--txt)",fontSize:16,fontWeight:700,border:"1px solid var(--bg4)"}}>−</button>
+                    <input type="number" className="mono" value={adjQty} onChange={e=>setAdjQty(Math.max(1,parseInt(e.target.value)||1))}
+                      style={{flex:1,textAlign:"center",fontSize:16,fontWeight:800,padding:4,background:"var(--bg3)",border:"1px solid var(--bg4)",borderRadius:6,color:"var(--txt)",maxWidth:60}}/>
+                    <button onClick={()=>setAdjQty(adjQty+1)}
+                      style={{width:32,height:32,borderRadius:6,background:"var(--bg3)",color:"var(--txt)",fontSize:16,fontWeight:700,border:"1px solid var(--bg4)"}}>+</button>
+                  </div>
+                  <div style={{display:"flex",gap:4}}>
+                    <button onClick={()=>{onAdjust(item.sku, item.name, -adjQty);setAdjusting(null);}}
+                      disabled={adjQty > item.qty}
+                      style={{padding:"6px 12px",borderRadius:6,fontSize:12,fontWeight:700,
+                        background:adjQty > item.qty ? "var(--bg3)" : "var(--redBg,#2d1b1b)",
+                        color:adjQty > item.qty ? "var(--txt3)" : "var(--red,#ef4444)",
+                        border:`1px solid ${adjQty > item.qty ? "var(--bg4)" : "var(--red,#ef4444)33"}`,
+                        opacity:adjQty > item.qty ? 0.5 : 1}}>
+                      🔻 −{adjQty}
+                    </button>
+                    <button onClick={()=>{onAdjust(item.sku, item.name, adjQty);setAdjusting(null);}}
+                      style={{padding:"6px 12px",borderRadius:6,fontSize:12,fontWeight:700,
+                        background:"var(--greenBg,#1a2e1a)",color:"var(--green)",
+                        border:"1px solid var(--green)33"}}>
+                      ➕ +{adjQty}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ==================== CARGA INVENTARIO (SCAN POSITION BY POSITION) ====================
 function CargaInventario({ refresh }: { refresh: () => void }) {
   const { show, Toast } = useToast();
@@ -1014,7 +1094,7 @@ function CargaInventario({ refresh }: { refresh: () => void }) {
   const [skuResults, setSkuResults] = useState<Product[]>([]);
   const [selectedProduct, setSelectedProduct] = useState<Product|null>(null);
   const [qty, setQty] = useState(1);
-  const [sessionLog, setSessionLog] = useState<{pos:string;sku:string;name:string;qty:number;fromUnassigned:boolean}[]>([]);
+  const [sessionLog, setSessionLog] = useState<{pos:string;sku:string;name:string;qty:number;fromUnassigned:boolean;isAdjust?:boolean}[]>([]);
   const [sugFilter, setSugFilter] = useState("");
   const [,setTick] = useState(0);
   const skuInputRef = useRef<HTMLInputElement>(null);
@@ -1137,9 +1217,21 @@ function CargaInventario({ refresh }: { refresh: () => void }) {
         <OperatorMiniMap selectedPos={currentPos} onSelectPos={(id)=>{setCurrentPos(id);show(`Posición ${id}`);setTimeout(()=>skuInputRef.current?.focus(),100);}} />
 
         {currentPos && currentPosTotal > 0 && (
-          <div style={{marginTop:8,padding:"6px 10px",background:"var(--bg2)",borderRadius:6,fontSize:11,color:"var(--txt3)"}}>
-            Ya tiene {currentPosTotal} uds ({currentPosItems.length} SKUs)
-          </div>
+          <PosStockAdjust pos={currentPos} items={currentPosItems} total={currentPosTotal}
+            onAdjust={(sku, name, delta) => {
+              const reason = delta > 0 ? "ajuste_entrada" as InReason : "ajuste_salida" as OutReason;
+              const type = delta > 0 ? "in" as MovType : "out" as MovType;
+              recordMovement({
+                ts: new Date().toISOString(), type, reason,
+                sku, pos: currentPos, qty: Math.abs(delta),
+                who: "Operario", note: `Ajuste en carga: ${delta > 0 ? "+" : ""}${delta}`,
+              });
+              setSessionLog(l => [{ pos: currentPos, sku, name, qty: delta, fromUnassigned: false, isAdjust: true }, ...l]);
+              show(`${delta > 0 ? "+" : ""}${delta}× ${sku} en ${currentPos}`);
+              setTick(t=>t+1);
+              refresh();
+            }}
+          />
         )}
       </div>
 
@@ -1275,8 +1367,9 @@ function CargaInventario({ refresh }: { refresh: () => void }) {
               <span className="mono" style={{fontWeight:700,color:"var(--cyan)",minWidth:36}}>{l.pos}</span>
               <span className="mono" style={{fontWeight:700,minWidth:80}}>{l.sku}</span>
               <span style={{flex:1,fontSize:10,color:"var(--txt3)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</span>
-              <span className="mono" style={{fontWeight:800,color:"var(--green)"}}>+{l.qty}</span>
+              <span className="mono" style={{fontWeight:800,color:l.isAdjust ? (l.qty > 0 ? "var(--green)" : "var(--red,#ef4444)") : "var(--green)"}}>{l.isAdjust ? (l.qty > 0 ? `+${l.qty}` : `${l.qty}`) : `+${l.qty}`}</span>
               {l.fromUnassigned && <span style={{fontSize:8,color:"var(--amber)"}}>📦</span>}
+              {l.isAdjust && <span style={{fontSize:8,color:"var(--cyan)"}}>±</span>}
             </div>
           ))}
         </div>
