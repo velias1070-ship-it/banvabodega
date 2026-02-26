@@ -359,6 +359,11 @@ function Salida({ refresh }: { refresh: () => void }) {
               <div className="mono" style={{fontWeight:700,fontSize:18,color:"#3b82f6"}}>{sp.qty}</div>
             </button>
           ))}
+          <div style={{marginTop:8,fontSize:11,color:"#06b6d4",fontWeight:600,marginBottom:4}}>🗺️ Posiciones en mapa:</div>
+          <OperatorMiniMap selectedPos="" onSelectPos={(id)=>{
+            const sp = skuPositions(product.sku).find(x=>x.pos===id);
+            if(sp){setSelectedPos(sp.pos);setSelectedPosLabel(sp.label);setMaxQty(sp.qty);setQty(1);setStep(2);}
+          }} highlightPositions={new Set(skuPositions(product.sku).map(x=>x.pos))}/>
           <CancelBtn onClick={reset}/>
         </div>
       )}
@@ -525,7 +530,7 @@ function Traspaso({ refresh }: { refresh: () => void }) {
 // ==================== STOCK VIEW ====================
 function StockView() {
   const [q, setQ] = useState("");
-  const [viewMode, setViewMode] = useState<"list"|"map">("list");
+  const [selectedSku, setSelectedSku] = useState<string|null>(null);
   const [selectedPos, setSelectedPos] = useState("");
   const s = getStore();
 
@@ -533,83 +538,151 @@ function StockView() {
     ? findProduct(q).map(p => p.sku).filter(sku => skuTotal(sku) > 0)
     : Object.keys(s.stock).filter(sku => skuTotal(sku) > 0);
 
+  // When a SKU is selected (or search narrows to 1), get its positions
+  const focusSku = selectedSku || (q.length >= 2 && allSkus.length === 1 ? allSkus[0] : null);
+  const focusPositions = focusSku ? skuPositions(focusSku) : [];
+  const focusPosSet = new Set(focusPositions.map(p => p.pos));
+  const focusProd = focusSku ? s.products[focusSku] : null;
+
+  // Position detail when tapping map
   const selectedPosItems = selectedPos ? posContents(selectedPos) : [];
   const selectedPosTotal = selectedPosItems.reduce((s,i)=>s+i.qty, 0);
+
+  const clearFocus = () => { setSelectedSku(null); setQ(""); setSelectedPos(""); };
 
   return (
     <div>
       <div className="card">
-        <input className="form-input" value={q} onChange={e=>setQ(e.target.value)}
-          placeholder="Buscar producto..."
-          style={{fontSize:16,padding:"14px 16px",borderRadius:12,marginBottom:8}}/>
-        <div style={{display:"flex",gap:6}}>
-          <button onClick={()=>{setViewMode("list");setSelectedPos("");}}
-            style={{flex:1,padding:8,borderRadius:6,fontSize:12,fontWeight:700,
-              background:viewMode==="list"?"#3b82f6":"var(--bg3)",color:viewMode==="list"?"#fff":"#94a3b8",border:"1px solid var(--bg4)"}}>
-            📋 Lista
-          </button>
-          <button onClick={()=>setViewMode("map")}
-            style={{flex:1,padding:8,borderRadius:6,fontSize:12,fontWeight:700,
-              background:viewMode==="map"?"#06b6d4":"var(--bg3)",color:viewMode==="map"?"#000":"#94a3b8",border:"1px solid var(--bg4)"}}>
-            🗺️ Mapa
-          </button>
-        </div>
+        <input className="form-input" value={q}
+          onChange={e=>{setQ(e.target.value); setSelectedSku(null); setSelectedPos("");}}
+          placeholder="¿Qué producto buscas?"
+          style={{fontSize:16,padding:"14px 16px",borderRadius:12,marginBottom:4}}/>
       </div>
 
-      {viewMode === "map" && (
-        <div className="card" style={{marginTop:8}}>
-          <OperatorMiniMap selectedPos={selectedPos} onSelectPos={setSelectedPos}/>
-          {selectedPos && (
-            <div style={{marginTop:4}}>
-              <div style={{fontSize:14,fontWeight:700,color:"#10b981",marginBottom:8}}>📍 {selectedPos} — {selectedPosTotal} uds</div>
-              {selectedPosItems.length === 0 ? (
-                <div style={{fontSize:12,color:"#94a3b8"}}>Vacía</div>
-              ) : selectedPosItems.map(it => (
-                <div key={it.sku} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:"1px solid var(--bg3)"}}>
-                  <div style={{flex:1,minWidth:0}}>
-                    <div className="mono" style={{fontWeight:700,fontSize:13}}>{it.sku}</div>
-                    <div style={{fontSize:11,color:"#94a3b8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{it.name}</div>
-                  </div>
-                  <div className="mono" style={{fontWeight:700,fontSize:16,color:"#3b82f6"}}>{it.qty}</div>
-                </div>
-              ))}
+      {/* === PRODUCT FOUND — LOCATION PANEL === */}
+      {focusSku && focusPositions.length > 0 && (
+        <div style={{marginTop:8}}>
+          {/* Product info */}
+          <div style={{padding:"14px 16px",background:"#3b82f615",border:"2px solid #3b82f644",borderRadius:12,marginBottom:8}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div className="mono" style={{fontWeight:800,fontSize:16}}>{focusSku}</div>
+                <div style={{fontSize:13,color:"#94a3b8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{focusProd?.name || focusSku}</div>
+              </div>
+              <div style={{textAlign:"center",marginLeft:12}}>
+                <div className="mono" style={{fontSize:24,fontWeight:800,color:"#3b82f6"}}>{skuTotal(focusSku)}</div>
+                <div style={{fontSize:10,color:"#94a3b8"}}>total</div>
+              </div>
             </div>
-          )}
+            {selectedSku && (
+              <button onClick={clearFocus} style={{marginTop:8,padding:"4px 12px",borderRadius:6,background:"var(--bg3)",color:"#94a3b8",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>✕ Limpiar búsqueda</button>
+            )}
+          </div>
+
+          {/* WHERE TO FIND IT */}
+          <div style={{padding:"14px 16px",background:"#10b98115",border:"2px solid #10b98144",borderRadius:12,marginBottom:8}}>
+            <div style={{fontSize:14,fontWeight:700,color:"#10b981",marginBottom:10}}>
+              📍 {focusPositions.length === 1 ? "Está en:" : "Está en estas posiciones:"}
+            </div>
+            {focusPositions.map(sp => (
+              <div key={sp.pos}
+                onClick={()=>setSelectedPos(sp.pos)}
+                style={{display:"flex",alignItems:"center",gap:12,padding:"12px 14px",marginBottom:6,borderRadius:10,
+                  background:selectedPos===sp.pos?"#10b98122":"var(--bg2)",
+                  border:`2px solid ${selectedPos===sp.pos?"#10b981":"var(--bg3)"}`,cursor:"pointer",transition:"all .15s"}}>
+                <div style={{width:48,height:48,borderRadius:10,background:"linear-gradient(135deg,#064e3b,#065f46)",
+                  display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                  <span className="mono" style={{fontSize:18,fontWeight:800,color:"#10b981"}}>{sp.pos}</span>
+                </div>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:13,fontWeight:600,color:"var(--txt1)"}}>{sp.label}</div>
+                  <div style={{fontSize:11,color:"#94a3b8"}}>Posición {sp.pos}</div>
+                </div>
+                <div style={{textAlign:"right"}}>
+                  <div className="mono" style={{fontSize:22,fontWeight:800,color:"#3b82f6"}}>{sp.qty}</div>
+                  <div style={{fontSize:10,color:"#94a3b8"}}>uds</div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* MAP with highlighted positions */}
+          <div className="card">
+            <div style={{fontSize:12,fontWeight:700,color:"#06b6d4",marginBottom:6}}>🗺️ Ubicación en mapa</div>
+            <OperatorMiniMap selectedPos={selectedPos} onSelectPos={setSelectedPos} highlightPositions={focusPosSet}/>
+          </div>
         </div>
       )}
 
-      {viewMode === "list" && (
-        <div>
-          <div style={{fontSize:11,color:"#94a3b8",padding:"8px 0"}}>{allSkus.length} productos</div>
-          {allSkus.slice(0, 50).map(sku => {
-            const prod = s.products[sku];
-            const positions = skuPositions(sku);
-            const total = skuTotal(sku);
-            if (total === 0) return null;
-            return (
-              <div key={sku} style={{padding:"12px 14px",marginBottom:6,borderRadius:10,background:"var(--bg2)",border:"1px solid var(--bg3)"}}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:positions.length>1?8:0}}>
-                  <div style={{flex:1,minWidth:0}}>
-                    <div className="mono" style={{fontSize:14,fontWeight:700}}>{sku}</div>
-                    <div style={{fontSize:12,color:"#94a3b8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{prod?.name || sku}</div>
-                  </div>
-                  <div style={{textAlign:"center",background:"var(--bg3)",borderRadius:8,padding:"6px 14px",marginLeft:8}}>
-                    <div className="mono" style={{fontSize:18,fontWeight:700,color:"#3b82f6"}}>{total}</div>
-                  </div>
-                </div>
-                {positions.length > 1 && positions.map(sp => (
-                  <div key={sp.pos} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"4px 0",fontSize:12}}>
-                    <span className="mono" style={{fontWeight:700,color:"#10b981"}}>{sp.pos}</span>
-                    <span style={{flex:1,fontSize:11,color:"#94a3b8",marginLeft:8}}>{sp.label}</span>
-                    <span className="mono" style={{fontWeight:700}}>{sp.qty}</span>
+      {/* === PRODUCT SEARCHED BUT NO STOCK === */}
+      {focusSku && focusPositions.length === 0 && (
+        <div style={{marginTop:8,padding:24,textAlign:"center",background:"var(--bg2)",borderRadius:12,border:"1px solid var(--bg3)"}}>
+          <div style={{fontSize:32,marginBottom:8}}>🚫</div>
+          <div style={{fontSize:14,fontWeight:700,color:"#ef4444"}}>{focusSku} sin stock</div>
+          <div style={{fontSize:12,color:"#94a3b8",marginTop:4}}>No hay unidades en ninguna posición</div>
+        </div>
+      )}
+
+      {/* === NO SEARCH — BROWSE MODE === */}
+      {!focusSku && (
+        <>
+          {/* Map browser */}
+          <div className="card" style={{marginTop:8}}>
+            <div style={{fontSize:12,fontWeight:700,color:"#06b6d4",marginBottom:6}}>🗺️ Toca una posición para ver su contenido</div>
+            <OperatorMiniMap selectedPos={selectedPos} onSelectPos={setSelectedPos}/>
+            {selectedPos && (
+              <div style={{marginTop:4}}>
+                <div style={{fontSize:14,fontWeight:700,color:"#10b981",marginBottom:8}}>📍 {selectedPos} — {selectedPosTotal} uds</div>
+                {selectedPosItems.length === 0 ? (
+                  <div style={{fontSize:12,color:"#94a3b8"}}>Vacía</div>
+                ) : selectedPosItems.map(it => (
+                  <div key={it.sku} onClick={()=>{setSelectedSku(it.sku);setQ(it.sku);}}
+                    style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:"1px solid var(--bg3)",cursor:"pointer"}}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div className="mono" style={{fontWeight:700,fontSize:13}}>{it.sku}</div>
+                      <div style={{fontSize:11,color:"#94a3b8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{it.name}</div>
+                    </div>
+                    <div className="mono" style={{fontWeight:700,fontSize:16,color:"#3b82f6"}}>{it.qty}</div>
                   </div>
                 ))}
               </div>
-            );
-          })}
-          {allSkus.length > 50 && <div style={{textAlign:"center",padding:12,color:"#94a3b8",fontSize:12}}>Mostrando 50 de {allSkus.length} — usa el buscador</div>}
-          {allSkus.length === 0 && <div style={{textAlign:"center",padding:24,color:"#94a3b8"}}>Sin resultados</div>}
-        </div>
+            )}
+          </div>
+
+          {/* Product list */}
+          <div style={{marginTop:8}}>
+            <div style={{fontSize:11,color:"#94a3b8",padding:"4px 0",marginBottom:4}}>{allSkus.length} productos en bodega</div>
+            {allSkus.slice(0, 50).map(sku => {
+              const prod = s.products[sku];
+              const positions = skuPositions(sku);
+              const total = skuTotal(sku);
+              if (total === 0) return null;
+              return (
+                <div key={sku} onClick={()=>{setSelectedSku(sku);setQ(sku);}}
+                  style={{padding:"12px 14px",marginBottom:6,borderRadius:10,background:"var(--bg2)",border:"1px solid var(--bg3)",cursor:"pointer"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div className="mono" style={{fontSize:14,fontWeight:700}}>{sku}</div>
+                      <div style={{fontSize:12,color:"#94a3b8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{prod?.name || sku}</div>
+                      <div style={{display:"flex",gap:6,marginTop:4,flexWrap:"wrap"}}>
+                        {positions.map(sp => (
+                          <span key={sp.pos} style={{padding:"2px 8px",borderRadius:4,background:"#10b98118",border:"1px solid #10b98133",fontSize:10,fontWeight:700,color:"#10b981"}}>
+                            {sp.pos}: {sp.qty}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <div style={{textAlign:"center",background:"var(--bg3)",borderRadius:8,padding:"6px 14px",marginLeft:8}}>
+                      <div className="mono" style={{fontSize:18,fontWeight:700,color:"#3b82f6"}}>{total}</div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+            {allSkus.length > 50 && <div style={{textAlign:"center",padding:12,color:"#94a3b8",fontSize:12}}>Mostrando 50 de {allSkus.length} — usa el buscador</div>}
+            {allSkus.length === 0 && q.length >= 2 && <div style={{textAlign:"center",padding:24,color:"#94a3b8"}}>Sin resultados para &quot;{q}&quot;</div>}
+          </div>
+        </>
       )}
     </div>
   );
