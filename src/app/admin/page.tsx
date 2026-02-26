@@ -1,6 +1,6 @@
 "use client";
-import { useState, useEffect, useCallback } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion } from "@/lib/store";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, getMapConfig } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea } from "@/lib/store";
 import Link from "next/link";
 import SheetSync from "@/components/SheetSync";
@@ -462,31 +462,238 @@ function Operaciones({ refresh }: { refresh: () => void }) {
           </button>
         </div>
 
-        {/* Log + quick info */}
+        {/* Mini map + position detail */}
         <div>
           {log.length > 0 && (
-            <div className="card">
-              <div className="card-title">Registro de esta sesión</div>
-              {log.map((l,i)=><div key={i} style={{padding:"5px 0",borderBottom:"1px solid var(--bg3)",fontSize:12,color:i===0?"var(--txt)":"var(--txt3)",fontFamily:"'JetBrains Mono',monospace"}}>{l}</div>)}
+            <div className="card" style={{marginBottom:8}}>
+              <div className="card-title" style={{fontSize:11}}>Registro sesión</div>
+              {log.slice(0,5).map((l,i)=><div key={i} style={{padding:"4px 0",borderBottom:"1px solid var(--bg3)",fontSize:11,color:i===0?"var(--txt)":"var(--txt3)",fontFamily:"'JetBrains Mono',monospace"}}>{l}</div>)}
             </div>
           )}
-          <div className="card">
-            <div className="card-title">Posiciones rápidas</div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:4}}>
-              {positions.slice(0,20).map(p=>{
-                const items=posContents(p.id);const tq=items.reduce((s,i)=>s+i.qty,0);
-                return(
-                  <div key={p.id} style={{padding:"8px 4px",borderRadius:6,textAlign:"center",background:tq>0?"var(--bg3)":"var(--bg2)",border:"1px solid var(--bg4)"}}>
-                    <div className="mono" style={{fontWeight:700,fontSize:13,color:tq>0?"var(--green)":"var(--txt3)"}}>{p.id}</div>
-                    {tq>0?<div style={{fontSize:9,color:"var(--txt3)"}}>{tq} uds</div>:<div style={{fontSize:9,color:"var(--txt3)"}}>—</div>}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+          <MiniMapPanel
+            positions={positions}
+            onSelectProduct={(p,posId)=>{setSelected(p);setSku(p.sku);setPos(posId);setSkuResults([]);}}
+            onSetMode={setMode}
+            refresh={refresh}
+          />
         </div>
       </div>
     </div>
+  );
+}
+
+// ==================== MINI MAP PANEL ====================
+function MiniMapPanel({ positions, onSelectProduct, onSetMode, refresh }: {
+  positions: ReturnType<typeof activePositions>;
+  onSelectProduct: (p: Product, posId: string) => void;
+  onSetMode: (m: "in"|"out"|"transfer") => void;
+  refresh: () => void;
+}) {
+  const [selectedPos, setSelectedPos] = useState<string|null>(null);
+  const [checkedSkus, setCheckedSkus] = useState<Set<string>>(new Set());
+  const [bulkAction, setBulkAction] = useState<""|"out"|"transfer">("");
+  const [bulkQtyMap, setBulkQtyMap] = useState<Record<string,number>>({});
+  const [transferDest, setTransferDest] = useState("");
+  const [toast, setToast] = useState("");
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [cellSize, setCellSize] = useState(22);
+  const cfg = getMapConfig();
+
+  useEffect(() => {
+    const handleResize = () => {
+      if (containerRef.current) {
+        const w = containerRef.current.clientWidth;
+        setCellSize(Math.max(14, Math.floor((w - 8) / cfg.gridW)));
+      }
+    };
+    handleResize();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [cfg.gridW]);
+
+  const mapW = cfg.gridW * cellSize;
+  const mapH = cfg.gridH * cellSize;
+  const selItems = selectedPos ? posContents(selectedPos) : [];
+  const selTotalQty = selItems.reduce((s,i) => s + i.qty, 0);
+
+  const toggleCheck = (sku: string) => {
+    const next = new Set(checkedSkus);
+    if (next.has(sku)) next.delete(sku); else next.add(sku);
+    setCheckedSkus(next);
+  };
+  const toggleAll = () => {
+    if (checkedSkus.size === selItems.length) setCheckedSkus(new Set());
+    else setCheckedSkus(new Set(selItems.map(i=>i.sku)));
+  };
+
+  const initBulkQty = (items: typeof selItems) => {
+    const m: Record<string,number> = {};
+    items.forEach(i => { m[i.sku] = i.qty; });
+    setBulkQtyMap(m);
+  };
+
+  const executeBulk = () => {
+    if (!selectedPos || checkedSkus.size === 0) return;
+    const items = selItems.filter(i => checkedSkus.has(i.sku));
+    let count = 0;
+    items.forEach(item => {
+      const qty = bulkQtyMap[item.sku] || 0;
+      if (qty <= 0) return;
+      if (bulkAction === "out") {
+        recordMovement({ ts: new Date().toISOString(), type: "out", reason: "ajuste_salida" as any, sku: item.sku, pos: selectedPos, qty, who: "Admin", note: "Salida rápida desde mapa" });
+        count += qty;
+      } else if (bulkAction === "transfer" && transferDest && transferDest !== selectedPos) {
+        recordMovement({ ts: new Date().toISOString(), type: "out", reason: "ajuste_salida" as any, sku: item.sku, pos: selectedPos, qty, who: "Admin", note: "Transferencia → " + transferDest });
+        recordMovement({ ts: new Date().toISOString(), type: "in", reason: "transferencia_in" as any, sku: item.sku, pos: transferDest, qty, who: "Admin", note: "Transferencia ← " + selectedPos });
+        count += qty;
+      }
+    });
+    if (count > 0) {
+      setToast(`${bulkAction === "out" ? "Sacadas" : "Movidas"} ${count} uds`);
+      setTimeout(() => setToast(""), 2000);
+      setCheckedSkus(new Set());
+      setBulkAction("");
+      setBulkQtyMap({});
+      setTransferDest("");
+      refresh();
+    }
+  };
+
+  return (
+    <>
+      {toast && <div style={{position:"fixed",top:56,left:"50%",transform:"translateX(-50%)",zIndex:200,background:"var(--bg2)",border:"2px solid var(--green)",color:"var(--green)",padding:"10px 24px",borderRadius:10,fontSize:14,fontWeight:700,boxShadow:"0 8px 30px rgba(0,0,0,0.5)"}}>{toast}</div>}
+
+      <div className="card" style={{padding:8}}>
+        <div className="card-title" style={{fontSize:11,marginBottom:6}}>🗺️ Mapa de bodega</div>
+        <div ref={containerRef} style={{width:"100%",height:mapH,position:"relative",background:"var(--bg2)",border:"1px solid var(--bg4)",borderRadius:6,overflow:"hidden"}}>
+          {/* Grid lines */}
+          <svg width={mapW} height={mapH} style={{position:"absolute",top:0,left:0,pointerEvents:"none",opacity:0.06}}>
+            {Array.from({length:cfg.gridW+1}).map((_,i)=><line key={"v"+i} x1={i*cellSize} y1={0} x2={i*cellSize} y2={mapH} stroke="var(--txt3)" strokeWidth={1}/>)}
+            {Array.from({length:cfg.gridH+1}).map((_,i)=><line key={"h"+i} x1={0} y1={i*cellSize} x2={mapW} y2={i*cellSize} stroke="var(--txt3)" strokeWidth={1}/>)}
+          </svg>
+
+          {/* Static objects */}
+          {cfg.objects.map(o=>(
+            <div key={o.id} style={{position:"absolute",left:o.mx*cellSize,top:o.my*cellSize,width:o.mw*cellSize,height:o.mh*cellSize,background:(o.color||"#64748b")+"18",border:`1px dashed ${o.color||"#64748b"}44`,borderRadius:3,display:"flex",alignItems:"center",justifyContent:"center",pointerEvents:"none",zIndex:1}}>
+              <div style={{fontSize:Math.max(7,cellSize*0.3),color:(o.color||"#64748b")+"88",fontWeight:600,textAlign:"center",overflow:"hidden"}}>{o.label}</div>
+            </div>
+          ))}
+
+          {/* Position blocks */}
+          {positions.filter(p=>p.active && p.mx !== undefined).map(p=>{
+            const mx=p.mx??0,my=p.my??0,mw=p.mw??2,mh=p.mh??2;
+            const color=p.color||"#10b981";
+            const isSel=selectedPos===p.id;
+            const items=posContents(p.id);
+            const tq=items.reduce((s,i)=>s+i.qty,0);
+            const isEmpty=tq===0;
+            return(
+              <div key={p.id} onClick={(e)=>{e.stopPropagation();setSelectedPos(isSel?null:p.id);setCheckedSkus(new Set());setBulkAction("");}}
+                style={{position:"absolute",left:mx*cellSize,top:my*cellSize,width:mw*cellSize,height:mh*cellSize,
+                  background:isSel?color+"44":isEmpty?color+"08":color+"1a",
+                  border:`2px solid ${isSel?"#fff":isEmpty?color+"33":color}`,borderRadius:4,
+                  display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+                  cursor:"pointer",zIndex:isSel?20:10,
+                  boxShadow:isSel?`0 0 0 2px ${color}, 0 0 12px ${color}44`:"none",
+                  transition:"all .15s",userSelect:"none"}}>
+                <div className="mono" style={{fontSize:Math.max(9,Math.min(14,cellSize*0.5)),fontWeight:800,color:isEmpty?color+"66":color,lineHeight:1}}>{p.id}</div>
+                {tq>0 && mh*cellSize>28 && <div className="mono" style={{fontSize:Math.max(7,cellSize*0.28),color:"var(--blue)",fontWeight:600,marginTop:1}}>{tq}</div>}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Position detail panel */}
+      {selectedPos && (
+        <div className="card" style={{marginTop:8,padding:0,overflow:"hidden",border:"1px solid var(--cyan)33"}}>
+          {/* Header */}
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 12px",background:"var(--bg3)",borderBottom:"1px solid var(--bg4)"}}>
+            <div>
+              <span className="mono" style={{fontWeight:800,fontSize:16,color:"var(--cyan)"}}>{selectedPos}</span>
+              <span style={{fontSize:12,color:"var(--txt3)",marginLeft:8}}>{selTotalQty} uds · {selItems.length} SKUs</span>
+            </div>
+            <button onClick={()=>setSelectedPos(null)} style={{background:"none",color:"var(--txt3)",fontSize:18,padding:"0 4px",border:"none",cursor:"pointer"}}>✕</button>
+          </div>
+
+          {selItems.length === 0 ? (
+            <div style={{padding:20,textAlign:"center",color:"var(--txt3)",fontSize:13}}>Posición vacía</div>
+          ) : (
+            <>
+              {/* Select all + actions bar */}
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:"var(--bg2)",borderBottom:"1px solid var(--bg4)"}}>
+                <label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer",fontSize:11,color:"var(--txt3)"}}>
+                  <input type="checkbox" checked={checkedSkus.size===selItems.length && selItems.length>0} onChange={toggleAll} style={{accentColor:"var(--cyan)"}}/>
+                  {checkedSkus.size>0 ? `${checkedSkus.size} seleccionados` : "Seleccionar todo"}
+                </label>
+                {checkedSkus.size > 0 && !bulkAction && (
+                  <div style={{display:"flex",gap:4}}>
+                    <button onClick={()=>{setBulkAction("out");initBulkQty(selItems.filter(i=>checkedSkus.has(i.sku)));}} style={{padding:"5px 10px",borderRadius:6,fontSize:11,fontWeight:600,background:"var(--redBg)",color:"var(--red)",border:"1px solid var(--red)"}}>🔻 Sacar</button>
+                    <button onClick={()=>{setBulkAction("transfer");initBulkQty(selItems.filter(i=>checkedSkus.has(i.sku)));}} style={{padding:"5px 10px",borderRadius:6,fontSize:11,fontWeight:600,background:"var(--cyanBg)",color:"var(--cyan)",border:"1px solid var(--cyan)"}}>↗️ Mover</button>
+                  </div>
+                )}
+              </div>
+
+              {/* Bulk action panel */}
+              {bulkAction && (
+                <div style={{padding:"10px 12px",background:bulkAction==="out"?"var(--redBg)":"var(--cyanBg)",borderBottom:"1px solid var(--bg4)"}}>
+                  <div style={{fontSize:12,fontWeight:700,color:bulkAction==="out"?"var(--red)":"var(--cyan)",marginBottom:8}}>
+                    {bulkAction==="out"?"🔻 Sacar stock":"↗️ Mover a otra posición"}
+                  </div>
+                  {bulkAction==="transfer" && (
+                    <select className="form-select" value={transferDest} onChange={e=>setTransferDest(e.target.value)} style={{fontSize:12,marginBottom:8,width:"100%"}}>
+                      <option value="">Destino...</option>
+                      {positions.filter(p=>p.id!==selectedPos).map(p=><option key={p.id} value={p.id}>{p.id} — {p.label}</option>)}
+                    </select>
+                  )}
+                  {/* Per-SKU qty adjustment */}
+                  {selItems.filter(i=>checkedSkus.has(i.sku)).map(item=>(
+                    <div key={item.sku} style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,fontSize:11}}>
+                      <span className="mono" style={{flex:1,fontWeight:600}}>{item.sku}</span>
+                      <button onClick={()=>setBulkQtyMap(m=>({...m,[item.sku]:Math.max(0,(m[item.sku]||0)-1)}))} style={{width:24,height:24,borderRadius:4,background:"var(--bg3)",border:"1px solid var(--bg4)",color:"var(--txt)",fontSize:14}}>−</button>
+                      <input type="number" className="form-input mono" value={bulkQtyMap[item.sku]||0} onChange={e=>setBulkQtyMap(m=>({...m,[item.sku]:Math.max(0,Math.min(item.qty,parseInt(e.target.value)||0))}))} style={{width:50,textAlign:"center",fontSize:12,padding:4}}/>
+                      <button onClick={()=>setBulkQtyMap(m=>({...m,[item.sku]:Math.min(item.qty,(m[item.sku]||0)+1)}))} style={{width:24,height:24,borderRadius:4,background:"var(--bg3)",border:"1px solid var(--bg4)",color:"var(--txt)",fontSize:14}}>+</button>
+                      <span style={{color:"var(--txt3)",fontSize:10,minWidth:28}}>/ {item.qty}</span>
+                    </div>
+                  ))}
+                  <div style={{display:"flex",gap:6,marginTop:8}}>
+                    <button onClick={()=>{setBulkAction("");setBulkQtyMap({});setTransferDest("");}} style={{flex:1,padding:8,borderRadius:6,fontSize:11,fontWeight:600,background:"var(--bg3)",color:"var(--txt3)",border:"1px solid var(--bg4)"}}>Cancelar</button>
+                    <button onClick={executeBulk} disabled={bulkAction==="transfer"&&!transferDest}
+                      style={{flex:1,padding:8,borderRadius:6,fontSize:11,fontWeight:700,color:"#fff",
+                        background:bulkAction==="out"?"linear-gradient(135deg,#dc2626,var(--red))":"linear-gradient(135deg,#0891b2,var(--cyan))",
+                        opacity:(bulkAction==="transfer"&&!transferDest)?0.4:1}}>
+                      {bulkAction==="out"?"Confirmar salida":"Confirmar movimiento"}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Stock list */}
+              <div style={{maxHeight:280,overflow:"auto"}}>
+                {selItems.map(item=>{
+                  const product = findProduct(item.sku)[0];
+                  return(
+                    <div key={item.sku} onClick={()=>toggleCheck(item.sku)}
+                      style={{display:"flex",alignItems:"center",gap:8,padding:"8px 12px",borderBottom:"1px solid var(--bg3)",cursor:"pointer",
+                        background:checkedSkus.has(item.sku)?"var(--bg3)":"transparent",transition:"background .1s"}}>
+                      <input type="checkbox" checked={checkedSkus.has(item.sku)} onChange={()=>toggleCheck(item.sku)} onClick={e=>e.stopPropagation()} style={{accentColor:"var(--cyan)",flexShrink:0}}/>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div className="mono" style={{fontWeight:700,fontSize:12}}>{item.sku}</div>
+                        <div style={{fontSize:10,color:"var(--txt3)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{item.name}</div>
+                      </div>
+                      <div style={{textAlign:"right",flexShrink:0}}>
+                        <div className="mono" style={{fontWeight:700,fontSize:14,color:"var(--blue)"}}>{item.qty}</div>
+                        {product?.cost ? <div style={{fontSize:9,color:"var(--txt3)"}}>{fmtMoney(product.cost * item.qty)}</div> : null}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </>
   );
 }
 
