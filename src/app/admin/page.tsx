@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen } from "@/lib/store";
-import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, ComposicionVenta } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking } from "@/lib/store";
+import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, ComposicionVenta, DBPickingSession, PickingLinea } from "@/lib/store";
 import Link from "next/link";
 import SheetSync from "@/components/SheetSync";
 
@@ -51,7 +51,7 @@ function LoginGate({ onLogin }: { onLogin: (pin: string) => boolean }) {
 }
 
 export default function AdminPage() {
-  const [tab, setTab] = useState<"dash"|"rec"|"ops"|"inv"|"mov"|"prod"|"pos"|"stock_load"|"config">("dash");
+  const [tab, setTab] = useState<"dash"|"rec"|"picking"|"ops"|"inv"|"mov"|"prod"|"pos"|"stock_load"|"config">("dash");
   const [,setTick] = useState(0);
   const r = useCallback(()=>setTick(t=>t+1),[]);
   const [mounted, setMounted] = useState(false);
@@ -83,7 +83,7 @@ export default function AdminPage() {
       <SheetSync onSynced={r}/>
       <div className="admin-layout">
         <nav className="admin-sidebar">
-          {([["dash","Dashboard","📊"],["rec","Recepciones","📦"],["ops","Operaciones","⚡"],["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["pos","Posiciones","📍"],["stock_load","Carga Stock","📥"],["config","Configuración","⚙️"]] as const).map(([key,label,icon])=>(
+          {([["dash","Dashboard","📊"],["rec","Recepciones","📦"],["picking","Picking Flex","🏷️"],["ops","Operaciones","⚡"],["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["pos","Posiciones","📍"],["stock_load","Carga Stock","📥"],["config","Configuración","⚙️"]] as const).map(([key,label,icon])=>(
             <button key={key} className={`sidebar-btn ${tab===key?"active":""}`} onClick={()=>setTab(key as any)}>
               <span className="sidebar-icon">{icon}</span>
               <span className="sidebar-label">{label}</span>
@@ -98,13 +98,14 @@ export default function AdminPage() {
         <main className="admin-main">
           {/* Mobile tabs fallback */}
           <div className="admin-mobile-tabs">
-            {([["dash","Dashboard"],["rec","Recepción"],["ops","Ops"],["inv","Inventario"],["mov","Movim."],["prod","Productos"],["pos","Posiciones"],["stock_load","Carga"],["config","Config"]] as const).map(([key,label])=>(
+            {([["dash","Dashboard"],["rec","Recepción"],["picking","Picking"],["ops","Ops"],["inv","Inventario"],["mov","Movim."],["prod","Productos"],["pos","Posiciones"],["stock_load","Carga"],["config","Config"]] as const).map(([key,label])=>(
               <button key={key} className={`tab ${tab===key?"active-cyan":""}`} onClick={()=>setTab(key as any)}>{label}</button>
             ))}
           </div>
           <div className="admin-content">
             {tab==="dash"&&<Dashboard/>}
             {tab==="rec"&&<AdminRecepciones refresh={r}/>}
+            {tab==="picking"&&<AdminPicking refresh={r}/>}
             {tab==="ops"&&<Operaciones refresh={r}/>}
             {tab==="inv"&&<Inventario/>}
             {tab==="mov"&&<Movimientos/>}
@@ -325,6 +326,285 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
 }
 
 // ==================== OPERACIONES RÁPIDAS ====================
+// ==================== ADMIN PICKING FLEX ====================
+function AdminPicking({ refresh }: { refresh: () => void }) {
+  const [sessions, setSessions] = useState<DBPickingSession[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
+  const [selSession, setSelSession] = useState<DBPickingSession | null>(null);
+
+  const loadSessions = async () => {
+    setLoading(true);
+    const today = new Date().toISOString().slice(0, 10);
+    const active = await getActivePickings();
+    const todaySessions = await getPickingsByDate(today);
+    // Merge unique
+    const map = new Map<string, DBPickingSession>();
+    [...active, ...todaySessions].forEach(s => { if (s.id) map.set(s.id, s); });
+    setSessions(Array.from(map.values()).sort((a, b) => (b.created_at || "").localeCompare(a.created_at || "")));
+    setLoading(false);
+  };
+
+  useEffect(() => { loadSessions(); }, []);
+
+  if (selSession) {
+    return <PickingSessionDetail session={selSession} onBack={() => { setSelSession(null); loadSessions(); }}/>;
+  }
+
+  if (showCreate) {
+    return <CreatePickingSession onCreated={() => { setShowCreate(false); loadSessions(); }} onCancel={() => setShowCreate(false)}/>;
+  }
+
+  return (
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+        <div>
+          <h2 style={{fontSize:18,fontWeight:700,margin:0}}>Picking Flex</h2>
+          <p style={{fontSize:12,color:"var(--txt3)",margin:0}}>Sesiones de picking diario para envíos Flex</p>
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={loadSessions} disabled={loading} style={{padding:"8px 14px",borderRadius:8,background:"var(--bg3)",color:"var(--cyan)",fontSize:12,fontWeight:600,border:"1px solid var(--bg4)"}}>
+            {loading ? "..." : "🔄"}
+          </button>
+          <button onClick={() => setShowCreate(true)} style={{padding:"8px 18px",borderRadius:8,background:"var(--green)",color:"#fff",fontSize:12,fontWeight:700,border:"none"}}>
+            + Nueva sesión
+          </button>
+        </div>
+      </div>
+
+      {sessions.length === 0 && !loading && (
+        <div style={{textAlign:"center",padding:40,color:"var(--txt3)"}}>
+          <div style={{fontSize:40,marginBottom:8}}>🏷️</div>
+          <div style={{fontSize:14,fontWeight:600}}>No hay sesiones de picking</div>
+          <div style={{fontSize:12,marginTop:4}}>Crea una nueva para el picking del día</div>
+        </div>
+      )}
+
+      {sessions.map(sess => {
+        const totalComps = sess.lineas.reduce((s, l) => s + l.componentes.length, 0);
+        const doneComps = sess.lineas.reduce((s, l) => s + l.componentes.filter(c => c.estado === "PICKEADO").length, 0);
+        const pct = totalComps > 0 ? Math.round((doneComps / totalComps) * 100) : 0;
+        const totalUnits = sess.lineas.reduce((s, l) => s + l.componentes.reduce((s2, c) => s2 + c.unidades, 0), 0);
+
+        return (
+          <div key={sess.id} onClick={() => setSelSession(sess)}
+            style={{padding:16,marginBottom:8,borderRadius:10,background:"var(--bg2)",border:"1px solid var(--bg3)",cursor:"pointer"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div>
+                <div style={{fontSize:14,fontWeight:700}}>Picking {sess.fecha}</div>
+                <div style={{fontSize:12,color:"var(--txt3)"}}>{sess.lineas.length} pedidos · {totalUnits} unidades · {doneComps}/{totalComps} items</div>
+              </div>
+              <div style={{padding:"4px 10px",borderRadius:6,fontSize:10,fontWeight:700,
+                background: pct === 100 ? "var(--greenBg)" : pct > 0 ? "var(--amberBg)" : "var(--redBg)",
+                color: pct === 100 ? "var(--green)" : pct > 0 ? "var(--amber)" : "var(--red)"}}>
+                {sess.estado === "COMPLETADA" ? "✅ COMPLETADA" : pct > 0 ? `${pct}%` : "PENDIENTE"}
+              </div>
+            </div>
+            <div style={{marginTop:8,background:"var(--bg3)",borderRadius:4,height:4,overflow:"hidden"}}>
+              <div style={{width:`${pct}%`,height:"100%",background:pct===100?"var(--green)":"var(--amber)",borderRadius:4}}/>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ==================== CREATE PICKING SESSION ====================
+function CreatePickingSession({ onCreated, onCancel }: { onCreated: () => void; onCancel: () => void }) {
+  const [raw, setRaw] = useState("");
+  const [fecha, setFecha] = useState(new Date().toISOString().slice(0, 10));
+  const [preview, setPreview] = useState<{ lineas: PickingLinea[]; errors: string[] } | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const parseOrders = () => {
+    const lines = raw.trim().split("\n").filter(l => l.trim());
+    const orders: { skuVenta: string; qty: number }[] = [];
+
+    for (const line of lines) {
+      // Flexible parsing: "SKU QTY", "SKU,QTY", "SKU;QTY", "SKU\tQTY", or just "SKU" (qty=1)
+      const parts = line.trim().split(/[\s,;\t]+/);
+      const sku = parts[0]?.trim();
+      const qty = parts.length > 1 ? parseInt(parts[1]) || 1 : 1;
+      if (sku) orders.push({ skuVenta: sku, qty });
+    }
+
+    const result = buildPickingLineas(orders);
+    setPreview(result);
+  };
+
+  const doCreate = async () => {
+    if (!preview || preview.lineas.length === 0) return;
+    setSaving(true);
+    await crearPickingSession(fecha, preview.lineas);
+    setSaving(false);
+    onCreated();
+  };
+
+  return (
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+        <h2 style={{fontSize:18,fontWeight:700,margin:0}}>Nueva sesión de picking</h2>
+        <button onClick={onCancel} style={{padding:"6px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--txt2)",fontSize:12,fontWeight:600,border:"1px solid var(--bg4)"}}>Cancelar</button>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+        {/* Left: Input */}
+        <div>
+          <div style={{marginBottom:12}}>
+            <label style={{fontSize:12,fontWeight:600,color:"var(--txt3)",display:"block",marginBottom:4}}>Fecha de picking</label>
+            <input type="date" className="form-input" value={fecha} onChange={e => setFecha(e.target.value)} style={{fontSize:14,padding:10}}/>
+          </div>
+
+          <div style={{marginBottom:12}}>
+            <label style={{fontSize:12,fontWeight:600,color:"var(--txt3)",display:"block",marginBottom:4}}>
+              Pedidos (SKU Venta + Cantidad, uno por línea)
+            </label>
+            <textarea className="form-input mono" value={raw} onChange={e => setRaw(e.target.value)}
+              placeholder={"TXV23QLAT25BE 1\nSAB180BL-PK2 2\nJUE2PCAM15GR 1"}
+              rows={12} style={{fontSize:12,lineHeight:1.6,resize:"vertical"}}/>
+            <div style={{fontSize:11,color:"var(--txt3)",marginTop:4}}>
+              Formato: <code>SKU_VENTA CANTIDAD</code> — Si no pones cantidad, asume 1.<br/>
+              Separadores válidos: espacio, tab, coma, punto y coma.
+            </div>
+          </div>
+
+          <button onClick={parseOrders}
+            style={{width:"100%",padding:12,borderRadius:8,background:"var(--blue)",color:"#fff",fontSize:14,fontWeight:700,border:"none",cursor:"pointer"}}>
+            Vista previa
+          </button>
+        </div>
+
+        {/* Right: Preview */}
+        <div>
+          {!preview && (
+            <div style={{textAlign:"center",padding:40,color:"var(--txt3)"}}>
+              <div style={{fontSize:32,marginBottom:8}}>👈</div>
+              <div style={{fontSize:13}}>Pega los pedidos y haz clic en &quot;Vista previa&quot;</div>
+            </div>
+          )}
+
+          {preview && (
+            <div>
+              <div style={{marginBottom:12,display:"flex",gap:12}}>
+                <div style={{padding:"8px 14px",borderRadius:8,background:"var(--greenBg)",color:"var(--green)",fontSize:13,fontWeight:700}}>
+                  {preview.lineas.length} pedidos OK
+                </div>
+                {preview.errors.length > 0 && (
+                  <div style={{padding:"8px 14px",borderRadius:8,background:"var(--amberBg)",color:"var(--amber)",fontSize:13,fontWeight:700}}>
+                    {preview.errors.length} advertencias
+                  </div>
+                )}
+              </div>
+
+              {/* Errors */}
+              {preview.errors.length > 0 && (
+                <div style={{padding:12,background:"var(--amberBg)",borderRadius:8,marginBottom:12,maxHeight:150,overflow:"auto"}}>
+                  {preview.errors.map((e, i) => (
+                    <div key={i} style={{fontSize:11,color:"var(--amber)",padding:"2px 0"}}>{e}</div>
+                  ))}
+                </div>
+              )}
+
+              {/* Lines */}
+              <div style={{maxHeight:400,overflow:"auto"}}>
+                {preview.lineas.map(linea => (
+                  <div key={linea.id} style={{padding:10,marginBottom:6,borderRadius:8,background:"var(--bg2)",border:"1px solid var(--bg3)"}}>
+                    <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                      <span className="mono" style={{fontWeight:700,fontSize:12}}>{linea.skuVenta}</span>
+                      <span style={{fontSize:11,color:"var(--txt3)"}}>×{linea.qtyPedida}</span>
+                    </div>
+                    {linea.componentes.map((comp, ci) => (
+                      <div key={ci} style={{display:"flex",justifyContent:"space-between",fontSize:11,padding:"2px 0",color:"var(--txt2)"}}>
+                        <span>{comp.nombre?.slice(0, 35) || comp.skuOrigen}</span>
+                        <span>
+                          <strong style={{color:"var(--green)"}}>{comp.posicion}</strong>
+                          {" · "}{comp.unidades} uds
+                          {comp.stockDisponible < comp.unidades && <span style={{color:"var(--red)"}}> ⚠️ bajo stock</span>}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+
+              {preview.lineas.length > 0 && (
+                <button onClick={doCreate} disabled={saving}
+                  style={{width:"100%",marginTop:12,padding:14,borderRadius:10,background:"var(--green)",color:"#fff",fontSize:14,fontWeight:700,border:"none",cursor:"pointer",opacity:saving?0.6:1}}>
+                  {saving ? "Creando..." : `Crear sesión — ${preview.lineas.length} pedidos`}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==================== PICKING SESSION DETAIL ====================
+function PickingSessionDetail({ session, onBack }: { session: DBPickingSession; onBack: () => void }) {
+  const totalComps = session.lineas.reduce((s, l) => s + l.componentes.length, 0);
+  const doneComps = session.lineas.reduce((s, l) => s + l.componentes.filter(c => c.estado === "PICKEADO").length, 0);
+  const pct = totalComps > 0 ? Math.round((doneComps / totalComps) * 100) : 0;
+
+  const doDelete = async () => {
+    if (!confirm("¿Eliminar esta sesión de picking?")) return;
+    await eliminarPicking(session.id!);
+    onBack();
+  };
+
+  return (
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+        <button onClick={onBack} style={{padding:"6px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--txt2)",fontSize:12,fontWeight:600,border:"1px solid var(--bg4)"}}>← Volver</button>
+        <button onClick={doDelete} style={{padding:"6px 14px",borderRadius:6,background:"var(--redBg)",color:"var(--red)",fontSize:11,fontWeight:600,border:"1px solid var(--red)33"}}>Eliminar</button>
+      </div>
+
+      <div style={{padding:16,background:"var(--bg2)",borderRadius:10,border:"1px solid var(--bg3)",marginBottom:16}}>
+        <div style={{fontSize:16,fontWeight:700}}>Picking {session.fecha}</div>
+        <div style={{fontSize:12,color:"var(--txt3)"}}>Estado: <strong>{session.estado}</strong> · {doneComps}/{totalComps} items ({pct}%)</div>
+        <div style={{marginTop:8,background:"var(--bg3)",borderRadius:4,height:6,overflow:"hidden"}}>
+          <div style={{width:`${pct}%`,height:"100%",background:pct===100?"var(--green)":"var(--amber)",borderRadius:4}}/>
+        </div>
+      </div>
+
+      <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+        <thead>
+          <tr style={{borderBottom:"2px solid var(--bg3)"}}>
+            <th style={{textAlign:"left",padding:"8px 6px",color:"var(--txt3)"}}>SKU Venta</th>
+            <th style={{textAlign:"left",padding:"8px 6px",color:"var(--txt3)"}}>Componente</th>
+            <th style={{textAlign:"center",padding:"8px 6px",color:"var(--txt3)"}}>Pos</th>
+            <th style={{textAlign:"center",padding:"8px 6px",color:"var(--txt3)"}}>Qty</th>
+            <th style={{textAlign:"center",padding:"8px 6px",color:"var(--txt3)"}}>Estado</th>
+            <th style={{textAlign:"left",padding:"8px 6px",color:"var(--txt3)"}}>Operario</th>
+          </tr>
+        </thead>
+        <tbody>
+          {session.lineas.map(linea =>
+            linea.componentes.map((comp, ci) => (
+              <tr key={linea.id + "-" + ci} style={{borderBottom:"1px solid var(--bg3)",background:comp.estado==="PICKEADO"?"var(--greenBg)":"transparent"}}>
+                {ci === 0 && <td rowSpan={linea.componentes.length} className="mono" style={{padding:"8px 6px",fontWeight:700,verticalAlign:"top"}}>{linea.skuVenta}<br/><span style={{fontSize:10,color:"var(--txt3)"}}>×{linea.qtyPedida}</span></td>}
+                <td style={{padding:"8px 6px"}}>{comp.nombre?.slice(0, 30) || comp.skuOrigen}</td>
+                <td style={{textAlign:"center",padding:"8px 6px"}}><span className="mono" style={{fontWeight:700,color:"var(--green)"}}>{comp.posicion}</span></td>
+                <td style={{textAlign:"center",padding:"8px 6px"}} className="mono">{comp.unidades}</td>
+                <td style={{textAlign:"center",padding:"8px 6px"}}>
+                  <span style={{padding:"2px 8px",borderRadius:4,fontSize:10,fontWeight:700,
+                    background:comp.estado==="PICKEADO"?"var(--greenBg)":"var(--amberBg)",
+                    color:comp.estado==="PICKEADO"?"var(--green)":"var(--amber)"}}>
+                    {comp.estado === "PICKEADO" ? "✅" : "⏳"}
+                  </span>
+                </td>
+                <td style={{padding:"8px 6px",fontSize:11,color:"var(--txt3)"}}>{comp.operario || "—"}</td>
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function Operaciones({ refresh }: { refresh: () => void }) {
   const [mode, setMode] = useState<"in"|"out"|"transfer"|"venta_ml">("in");
   const [sku, setSku] = useState("");
