@@ -748,6 +748,167 @@ export async function getOperarios() { return db.fetchOperarios(); }
 export async function loginOperario(id: string, pin: string) { return db.loginOperario(id, pin); }
 export async function guardarOperario(o: db.DBOperario) { return db.upsertOperario(o); }
 
+// ==================== PICKING FLEX ====================
+export type { PickingLinea, PickingComponente, DBPickingSession } from "./db";
+
+// Build picking session from pasted orders
+export function buildPickingLineas(orders: { skuVenta: string; qty: number }[]): { lineas: db.PickingLinea[]; errors: string[] } {
+  const lineas: db.PickingLinea[] = [];
+  const errors: string[] = [];
+
+  for (let i = 0; i < orders.length; i++) {
+    const { skuVenta, qty } = orders[i];
+    const comps = getComponentesPorSkuVenta(skuVenta);
+    
+    if (comps.length === 0) {
+      // Try finding by SKU directly (maybe it's a simple product, not a pack)
+      const prod = _cache.products[skuVenta];
+      if (prod) {
+        // It's a product used directly as SKU Venta
+        const positions = skuPositions(skuVenta);
+        const bestPos = positions.length > 0 ? positions[0] : null;
+        lineas.push({
+          id: `P${String(i + 1).padStart(3, "0")}`,
+          skuVenta,
+          qtyPedida: qty,
+          estado: "PENDIENTE",
+          componentes: [{
+            skuOrigen: skuVenta,
+            codigoMl: prod.mlCode || "",
+            nombre: prod.name,
+            unidades: qty,
+            posicion: bestPos?.pos || "?",
+            posLabel: bestPos?.label || "Sin posición",
+            stockDisponible: bestPos?.qty || 0,
+            estado: "PENDIENTE",
+            pickedAt: null,
+            operario: null,
+          }],
+        });
+      } else {
+        errors.push(`Línea ${i + 1}: SKU Venta "${skuVenta}" no encontrado en diccionario`);
+      }
+      continue;
+    }
+
+    // Decompose into physical components
+    const componentes: db.PickingComponente[] = [];
+    for (const comp of comps) {
+      const prod = _cache.products[comp.skuOrigen];
+      const totalNeeded = comp.unidades * qty;
+      const positions = skuPositions(comp.skuOrigen);
+      const bestPos = positions.length > 0 ? positions[0] : null;
+
+      componentes.push({
+        skuOrigen: comp.skuOrigen,
+        codigoMl: comp.codigoMl || prod?.mlCode || "",
+        nombre: prod?.name || comp.skuOrigen,
+        unidades: totalNeeded,
+        posicion: bestPos?.pos || "?",
+        posLabel: bestPos?.label || "Sin posición",
+        stockDisponible: bestPos?.qty || 0,
+        estado: "PENDIENTE",
+        pickedAt: null,
+        operario: null,
+      });
+
+      if (!bestPos || bestPos.qty < totalNeeded) {
+        errors.push(`⚠️ ${comp.skuOrigen}: necesitas ${totalNeeded}, disponible ${bestPos?.qty || 0} en ${bestPos?.pos || "ninguna posición"}`);
+      }
+    }
+
+    lineas.push({
+      id: `P${String(i + 1).padStart(3, "0")}`,
+      skuVenta,
+      qtyPedida: qty,
+      estado: "PENDIENTE",
+      componentes,
+    });
+  }
+
+  return { lineas, errors };
+}
+
+// Verify a scanned code against expected component
+export function verificarScanPicking(scannedCode: string, componente: db.PickingComponente): boolean {
+  const code = scannedCode.trim().toUpperCase();
+  const skuMatch = componente.skuOrigen.toUpperCase() === code;
+  const mlMatch = !!(componente.codigoMl && componente.codigoMl.toUpperCase() === code);
+  
+  // Also check if scanned code matches any product's ML code that maps to this SKU
+  const prod = _cache.products[componente.skuOrigen];
+  const prodMlMatch = !!(prod?.mlCode && prod.mlCode.toUpperCase() === code);
+  
+  return skuMatch || mlMatch || prodMlMatch;
+}
+
+// Get all active picking sessions
+export async function getActivePickings(): Promise<db.DBPickingSession[]> {
+  return db.getActivePickingSessions();
+}
+
+// Get sessions by date
+export async function getPickingsByDate(fecha: string): Promise<db.DBPickingSession[]> {
+  return db.getPickingSessionsByDate(fecha);
+}
+
+// Create picking session
+export async function crearPickingSession(fecha: string, lineas: db.PickingLinea[]): Promise<string | null> {
+  return db.createPickingSession({ fecha, estado: "ABIERTA", lineas });
+}
+
+// Update picking session
+export async function actualizarPicking(id: string, updates: Partial<db.DBPickingSession>): Promise<boolean> {
+  return db.updatePickingSession(id, updates);
+}
+
+// Delete picking session  
+export async function eliminarPicking(id: string): Promise<boolean> {
+  return db.deletePickingSession(id);
+}
+
+// Mark component as picked + decrement stock
+export async function pickearComponente(
+  sessionId: string, lineaId: string, compIdx: number, operario: string,
+  session: db.DBPickingSession
+): Promise<boolean> {
+  const linea = session.lineas.find(l => l.id === lineaId);
+  if (!linea) return false;
+  const comp = linea.componentes[compIdx];
+  if (!comp || comp.estado === "PICKEADO") return false;
+
+  // Decrement stock from the suggested position
+  const pos = comp.posicion;
+  if (pos && pos !== "?") {
+    recordMovement({
+      ts: new Date().toISOString(), type: "out", reason: "venta_flex" as OutReason,
+      sku: comp.skuOrigen, pos, qty: comp.unidades,
+      who: operario, note: `Picking Flex: ${linea.skuVenta} ×${linea.qtyPedida}`,
+    });
+  }
+
+  // Update session data
+  comp.estado = "PICKEADO";
+  comp.pickedAt = new Date().toISOString();
+  comp.operario = operario;
+
+  // Check if all components of this line are picked
+  if (linea.componentes.every(c => c.estado === "PICKEADO")) {
+    linea.estado = "PICKEADO";
+  }
+
+  // Check if all lines are picked
+  const allDone = session.lineas.every(l => l.estado === "PICKEADO");
+
+  await db.updatePickingSession(sessionId, {
+    lineas: session.lineas,
+    estado: allDone ? "COMPLETADA" : "EN_PROCESO",
+    ...(allDone ? { completed_at: new Date().toISOString() } : {}),
+  });
+
+  return true;
+}
+
 // ==================== FORMAT HELPERS ====================
 export function fmtDate(iso: string) { try { return new Date(iso).toLocaleDateString("es-CL"); } catch { return iso; } }
 export function fmtTime(iso: string) { try { return new Date(iso).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" }); } catch { return iso; } }
