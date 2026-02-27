@@ -260,14 +260,14 @@ function PickFlow({session,linea,compIdx,operario,onDone}:{
 
   const handleScan=useCallback((code:string)=>{
     setScanActive(false);setScanCode(code);
-    if(verificarScanPicking(code,comp)){setScanResult("ok");doConfirm();}
+    if(verificarScanPicking(code,comp,linea.skuVenta)){setScanResult("ok");doConfirm();}
     else setScanResult("error");
   },[comp,doConfirm]);
 
   const handleManual=()=>{
     if(!manualCode.trim())return;
     setScanCode(manualCode.trim());
-    if(verificarScanPicking(manualCode.trim(),comp)){setScanResult("ok");doConfirm();}
+    if(verificarScanPicking(manualCode.trim(),comp,linea.skuVenta)){setScanResult("ok");doConfirm();}
     else setScanResult("error");
   };
 
