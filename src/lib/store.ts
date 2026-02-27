@@ -830,16 +830,42 @@ export function buildPickingLineas(orders: { skuVenta: string; qty: number }[]):
 }
 
 // Verify a scanned code against expected component
-export function verificarScanPicking(scannedCode: string, componente: db.PickingComponente): boolean {
+export function verificarScanPicking(scannedCode: string, componente: db.PickingComponente, skuVenta?: string): boolean {
   const code = scannedCode.trim().toUpperCase();
-  const skuMatch = componente.skuOrigen.toUpperCase() === code;
-  const mlMatch = !!(componente.codigoMl && componente.codigoMl.toUpperCase() === code);
+  if (!code) return false;
   
-  // Also check if scanned code matches any product's ML code that maps to this SKU
+  // 1. Direct SKU origen match
+  if (componente.skuOrigen.toUpperCase() === code) return true;
+  
+  // 2. Codigo ML of the composicion entry
+  if (componente.codigoMl && componente.codigoMl.toUpperCase() === code) return true;
+  
+  // 3. Product's ML code (e.g. MLC...)
   const prod = _cache.products[componente.skuOrigen];
-  const prodMlMatch = !!(prod?.mlCode && prod.mlCode.toUpperCase() === code);
+  if (prod?.mlCode && prod.mlCode.toUpperCase() === code) return true;
   
-  return skuMatch || mlMatch || prodMlMatch;
+  // 4. SKU Venta match (the "Cod. Universal" on the label)
+  if (skuVenta && skuVenta.toUpperCase() === code) return true;
+  
+  // 5. Check ALL composicion entries for this skuOrigen — any codigoMl match
+  const ventas = getVentasPorSkuOrigen(componente.skuOrigen);
+  for (const v of ventas) {
+    if (v.codigoMl && v.codigoMl.toUpperCase() === code) return true;
+    if (v.skuVenta && v.skuVenta.toUpperCase() === code) return true;
+  }
+  
+  // 6. Check if the scanned barcode value appears in any product field
+  //    (some ML labels have internal codes like YJIH30730)
+  for (const p of Object.values(_cache.products)) {
+    if (p.sku.toUpperCase() === componente.skuOrigen.toUpperCase()) {
+      // Check all known codes of this product
+      if (p.mlCode && p.mlCode.toUpperCase() === code) return true;
+      // Check if product has this as any alias/code
+      break;
+    }
+  }
+  
+  return false;
 }
 
 // Get all active picking sessions
