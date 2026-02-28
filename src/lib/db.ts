@@ -63,7 +63,7 @@ export interface DBRecepcion {
   folio: string;
   proveedor: string;
   imagen_url: string;
-  estado: "CREADA" | "EN_PROCESO" | "COMPLETADA" | "CERRADA";
+  estado: "CREADA" | "EN_PROCESO" | "COMPLETADA" | "CERRADA" | "ANULADA" | "PAUSADA";
   notas: string;
   created_at?: string;
   created_by: string;
@@ -239,6 +239,11 @@ export async function insertRecepcionLineas(lineas: Omit<DBRecepcionLinea, "id">
 export async function updateRecepcionLinea(id: string, fields: Partial<DBRecepcionLinea>) {
   const sb = getSupabase(); if (!sb) return;
   await sb.from("recepcion_lineas").update(fields).eq("id", id);
+}
+
+export async function deleteRecepcionLinea(id: string) {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("recepcion_lineas").delete().eq("id", id);
 }
 
 // ==================== OPERARIOS ====================

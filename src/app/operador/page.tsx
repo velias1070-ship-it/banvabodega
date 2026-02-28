@@ -265,7 +265,7 @@ function Ingreso({ refresh }: { refresh: () => void }) {
               {cam ? "Cancelar" : "📷 Escanear QR"}
             </button>
           </div>
-          {cam && <BarcodeScanner active={cam} onScan={handleScan} label="Apunta al QR de la POSICIÓN"/>}
+          {cam && <BarcodeScanner active={cam} onScan={handleScan} label="Apunta al QR de la POSICIÓN" mode="qr"/>}
           <div style={{fontSize:11,color:"#94a3b8",marginBottom:6}}>O toca en el mapa:</div>
           <OperatorMiniMap selectedPos={pos} onSelectPos={handleManualPos}/>
         </div>
@@ -458,7 +458,7 @@ function Traspaso({ refresh }: { refresh: () => void }) {
               {cam ? "Cancelar" : "📷 Escanear QR origen"}
             </button>
           </div>
-          {cam && <BarcodeScanner active={cam} onScan={handleScanSource} label="Escanea posición ORIGEN"/>}
+          {cam && <BarcodeScanner active={cam} onScan={handleScanSource} label="Escanea posición ORIGEN" mode="qr"/>}
           <div style={{fontSize:11,color:"#94a3b8",marginBottom:6}}>O toca en el mapa:</div>
           <OperatorMiniMap selectedPos={sourcePos} onSelectPos={(id)=>{
             const p = activePositions().find(x=>x.id===id);
@@ -504,7 +504,7 @@ function Traspaso({ refresh }: { refresh: () => void }) {
               {camDest ? "Cancelar" : "📷 Escanear QR destino"}
             </button>
           </div>
-          {camDest && <BarcodeScanner active={camDest} onScan={handleScanDest} label="Escanea posición DESTINO"/>}
+          {camDest && <BarcodeScanner active={camDest} onScan={handleScanDest} label="Escanea posición DESTINO" mode="qr"/>}
           <div style={{fontSize:11,color:"#94a3b8",marginBottom:6}}>O toca en el mapa:</div>
           <OperatorMiniMap selectedPos={destPos} onSelectPos={selectDestPos}/>
           <CancelBtn onClick={()=>setStep(1)} label="Volver"/>
