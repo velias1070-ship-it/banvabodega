@@ -259,13 +259,7 @@ function Ingreso({ refresh }: { refresh: () => void }) {
       {step === 0 && (
         <div className="card">
           <div style={{fontSize:15,fontWeight:700,marginBottom:12,color:"#10b981"}}>📥 ¿Dónde guardas?</div>
-          <div style={{display:"flex",gap:8,marginBottom:12}}>
-            <button onClick={()=>setCam(!cam)}
-              style={{flex:1,padding:14,borderRadius:10,background:cam?"#78350f22":"var(--bg3)",color:cam?"#f59e0b":"#06b6d4",fontWeight:700,fontSize:14,border:`1px solid ${cam?"#f59e0b33":"var(--bg4)"}`}}>
-              {cam ? "Cancelar" : "📷 Escanear QR"}
-            </button>
-          </div>
-          {cam && <BarcodeScanner active={cam} onScan={handleScan} label="Apunta al QR de la POSICIÓN" mode="qr"/>}
+          <BarcodeScanner active={true} onScan={handleScan} label="Escanea QR de la POSICIÓN" mode="qr"/>
           <div style={{fontSize:11,color:"#94a3b8",marginBottom:6}}>O toca en el mapa:</div>
           <OperatorMiniMap selectedPos={pos} onSelectPos={handleManualPos}/>
         </div>
@@ -452,13 +446,7 @@ function Traspaso({ refresh }: { refresh: () => void }) {
       {step === 0 && (
         <div className="card">
           <div style={{fontSize:15,fontWeight:700,marginBottom:12,color:"#06b6d4"}}>🔄 ¿De dónde mueves?</div>
-          <div style={{display:"flex",gap:8,marginBottom:12}}>
-            <button onClick={()=>setCam(!cam)}
-              style={{flex:1,padding:14,borderRadius:10,background:cam?"#78350f22":"var(--bg3)",color:cam?"#f59e0b":"#06b6d4",fontWeight:700,fontSize:14,border:`1px solid ${cam?"#f59e0b33":"var(--bg4)"}`}}>
-              {cam ? "Cancelar" : "📷 Escanear QR origen"}
-            </button>
-          </div>
-          {cam && <BarcodeScanner active={cam} onScan={handleScanSource} label="Escanea posición ORIGEN" mode="qr"/>}
+          <BarcodeScanner active={true} onScan={handleScanSource} label="Escanea posición ORIGEN" mode="qr"/>
           <div style={{fontSize:11,color:"#94a3b8",marginBottom:6}}>O toca en el mapa:</div>
           <OperatorMiniMap selectedPos={sourcePos} onSelectPos={(id)=>{
             const p = activePositions().find(x=>x.id===id);
@@ -498,13 +486,7 @@ function Traspaso({ refresh }: { refresh: () => void }) {
           <SelTag color="#06b6d4" label="Origen" value={sourcePos}/>
           <SelTag color="#3b82f6" label="Producto" value={`${product.sku} — ${product.name} (${product.qty})`}/>
           <div style={{fontSize:15,fontWeight:700,marginBottom:12,marginTop:8}}>¿A dónde lo mueves?</div>
-          <div style={{display:"flex",gap:8,marginBottom:12}}>
-            <button onClick={()=>setCamDest(!camDest)}
-              style={{flex:1,padding:14,borderRadius:10,background:camDest?"#78350f22":"var(--bg3)",color:camDest?"#f59e0b":"#06b6d4",fontWeight:700,fontSize:14,border:`1px solid ${camDest?"#f59e0b33":"var(--bg4)"}`}}>
-              {camDest ? "Cancelar" : "📷 Escanear QR destino"}
-            </button>
-          </div>
-          {camDest && <BarcodeScanner active={camDest} onScan={handleScanDest} label="Escanea posición DESTINO" mode="qr"/>}
+          <BarcodeScanner active={true} onScan={handleScanDest} label="Escanea posición DESTINO" mode="qr"/>
           <div style={{fontSize:11,color:"#94a3b8",marginBottom:6}}>O toca en el mapa:</div>
           <OperatorMiniMap selectedPos={destPos} onSelectPos={selectDestPos}/>
           <CancelBtn onClick={()=>setStep(1)} label="Volver"/>

@@ -441,17 +441,7 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
             </div>
 
             {/* Scan to verify */}
-            {!scanning ? (
-              <button onClick={() => setScanning(true)}
-                style={{width:"100%",padding:10,borderRadius:8,background:"var(--bg3)",color:"var(--cyan)",fontSize:12,fontWeight:600,border:"1px solid var(--bg4)",marginBottom:10}}>
-                📷 Escanear código ML para verificar
-              </button>
-            ) : (
-              <div style={{marginBottom:10}}>
-                <BarcodeScanner onScan={onScanML} active={true} label="Escanear código ML" mode="barcode" />
-                <button onClick={() => setScanning(false)} style={{width:"100%",marginTop:6,padding:8,borderRadius:6,background:"var(--bg3)",color:"var(--txt3)",fontSize:11}}>Cancelar escaneo</button>
-              </div>
-            )}
+            <BarcodeScanner onScan={onScanML} active={true} label="Escanear código ML para verificar" mode="barcode" />
 
             {/* Mark quantity as labeled */}
             <div style={{fontSize:12,fontWeight:600,color:"var(--txt2)",marginBottom:6}}>¿Cuántas etiquetaste en esta tanda?</div>
@@ -481,17 +471,7 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
             </div>
 
             {/* Scan position QR */}
-            {!scanningPos ? (
-              <button onClick={() => setScanningPos(true)}
-                style={{width:"100%",padding:10,borderRadius:8,background:"var(--bg3)",color:"var(--cyan)",fontSize:12,fontWeight:600,border:"1px solid var(--bg4)",marginBottom:10}}>
-                📷 Escanear QR de posición
-              </button>
-            ) : (
-              <div style={{marginBottom:10}}>
-                <BarcodeScanner onScan={onScanPos} active={true} label="Escanear QR posición" mode="qr" />
-                <button onClick={() => setScanningPos(false)} style={{width:"100%",marginTop:6,padding:8,borderRadius:6,background:"var(--bg3)",color:"var(--txt3)",fontSize:11}}>Cancelar escaneo</button>
-              </div>
-            )}
+            <BarcodeScanner onScan={onScanPos} active={true} label="Escanear QR de posición" mode="qr" />
 
             {/* Or select manually */}
             <div style={{fontSize:11,textAlign:"center",color:"var(--txt3)",marginBottom:6}}>o selecciona manualmente</div>
