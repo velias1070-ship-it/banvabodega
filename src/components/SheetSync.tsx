@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect } from "react";
-import { syncFromSheet, shouldSync, getLastSyncTime, getStore } from "@/lib/store";
+import { syncFromSheet, shouldSync, getLastSyncTime, getStore, getSkusVenta } from "@/lib/store";
 
 interface SyncStatus {
   state: "idle" | "syncing" | "done" | "error";
@@ -34,6 +34,7 @@ export default function SheetSync({ onSynced }: { onSynced?: () => void }) {
   };
 
   const composicionCount = getStore().composicion?.length || 0;
+  const skuVentaCount = getSkusVenta().length;
 
   return (
     <div style={{ padding: "8px 12px", background: "var(--bg2)", borderBottom: "1px solid var(--bg3)", display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11 }}>
@@ -42,17 +43,17 @@ export default function SheetSync({ onSynced }: { onSynced?: () => void }) {
         {status.state === "syncing" && <span style={{ color: "var(--amber)" }}>Sincronizando diccionario...</span>}
         {status.state === "done" && (
           <span style={{ color: "var(--green)" }}>
-            Sincronizado — {status.total} productos físicos
+            Sincronizado — {status.total} SKU origen
             {status.added > 0 && <span> (+{status.added} nuevos)</span>}
             {status.updated > 0 && <span> ({status.updated} actualizados)</span>}
-            {composicionCount > 0 && <span style={{ color: "var(--cyan)" }}> · {composicionCount} combos/packs</span>}
+            {skuVentaCount > 0 && <span style={{ color: "var(--cyan)" }}> · {skuVentaCount} SKU venta</span>}
           </span>
         )}
         {status.state === "error" && <span style={{ color: "var(--red)" }}>Error de sincronización</span>}
         {status.state === "idle" && status.lastSync && (
           <span style={{ color: "var(--txt3)" }}>
             Diccionario: {status.lastSync}
-            {composicionCount > 0 && <span> · {composicionCount} combos</span>}
+            {skuVentaCount > 0 && <span> · {skuVentaCount} SKU venta</span>}
           </span>
         )}
         {status.state === "idle" && !status.lastSync && <span style={{ color: "var(--txt3)" }}>Diccionario: sin sincronizar</span>}

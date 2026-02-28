@@ -414,10 +414,11 @@ export function findSkuVenta(query: string): { skuVenta: string; codigoMl: strin
   const scored: { item: { skuVenta: string; codigoMl: string; nombre: string; componentes: ComposicionVenta[] }; score: number }[] = [];
 
   for (const sv of allSkusVenta) {
-    // Build a descriptive name from components
+    // Build a descriptive name from components (include units if >1)
     const compNames = sv.componentes.map(c => {
       const prod = _cache.products[c.skuOrigen];
-      return prod?.name || c.skuOrigen;
+      const name = prod?.name || c.skuOrigen;
+      return c.unidades > 1 ? `${name} x${c.unidades}` : name;
     });
     const nombre = compNames.join(" + ");
 
@@ -919,42 +920,37 @@ export function buildPickingLineas(orders: { skuVenta: string; qty: number }[]):
   return { lineas, errors };
 }
 
+// Check if a code matches any value in a comma-separated field
+function matchesAnyCode(field: string | undefined, code: string): boolean {
+  if (!field) return false;
+  return field.toUpperCase().split(",").some(c => c.trim() === code);
+}
+
 // Verify a scanned code against expected component
 export function verificarScanPicking(scannedCode: string, componente: db.PickingComponente, skuVenta?: string): boolean {
   const code = scannedCode.trim().toUpperCase();
   if (!code) return false;
-  
+
   // 1. Direct SKU origen match
   if (componente.skuOrigen.toUpperCase() === code) return true;
-  
+
   // 2. Codigo ML of the composicion entry
-  if (componente.codigoMl && componente.codigoMl.toUpperCase() === code) return true;
-  
-  // 3. Product's ML code (e.g. MLC...)
+  if (componente.codigoMl && matchesAnyCode(componente.codigoMl, code)) return true;
+
+  // 3. Product's ML codes (may be comma-separated: "ML1,ML2")
   const prod = _cache.products[componente.skuOrigen];
-  if (prod?.mlCode && prod.mlCode.toUpperCase() === code) return true;
-  
+  if (prod?.mlCode && matchesAnyCode(prod.mlCode, code)) return true;
+
   // 4. SKU Venta match (the "Cod. Universal" on the label)
   if (skuVenta && skuVenta.toUpperCase() === code) return true;
-  
+
   // 5. Check ALL composicion entries for this skuOrigen — any codigoMl match
   const ventas = getVentasPorSkuOrigen(componente.skuOrigen);
   for (const v of ventas) {
     if (v.codigoMl && v.codigoMl.toUpperCase() === code) return true;
     if (v.skuVenta && v.skuVenta.toUpperCase() === code) return true;
   }
-  
-  // 6. Check if the scanned barcode value appears in any product field
-  //    (some ML labels have internal codes like YJIH30730)
-  for (const p of Object.values(_cache.products)) {
-    if (p.sku.toUpperCase() === componente.skuOrigen.toUpperCase()) {
-      // Check all known codes of this product
-      if (p.mlCode && p.mlCode.toUpperCase() === code) return true;
-      // Check if product has this as any alias/code
-      break;
-    }
-  }
-  
+
   return false;
 }
 
