@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
-import { initStore, isStoreReady, getRecepcionesActivas, getRecepcionLineas, contarLinea, etiquetarLinea, ubicarLinea, actualizarRecepcion, activePositions, findPosition, fmtDate, fmtTime } from "@/lib/store";
+import { initStore, isStoreReady, getRecepcionesActivas, getRecepcionesParaOperario, getRecepcionLineas, contarLinea, etiquetarLinea, ubicarLinea, actualizarRecepcion, activePositions, findPosition, fmtDate, fmtTime } from "@/lib/store";
 import type { DBRecepcion, DBRecepcionLinea } from "@/lib/store";
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -26,13 +26,13 @@ export default function RecepcionesOperador() {
     if (saved) setOperario(saved);
   }, []);
 
-  const loadRecs = async () => {
+  const loadRecs = useCallback(async () => {
     setLoading(true);
-    setRecs(await getRecepcionesActivas());
+    setRecs(operario ? await getRecepcionesParaOperario(operario) : await getRecepcionesActivas());
     setLoading(false);
-  };
+  }, [operario]);
 
-  useEffect(() => { if (mounted) loadRecs(); }, [mounted]);
+  useEffect(() => { if (mounted && operario) loadRecs(); }, [mounted, operario, loadRecs]);
 
   const openRec = async (rec: DBRecepcion) => {
     setSelRec(rec);
@@ -293,7 +293,7 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
 
   const doEtiquetar = async (qty: number) => {
     const newTotal = (linea.qty_etiquetada || 0) + qty;
-    const qtyTotal = linea.qty_recibida || linea.qty_factura;
+    const qtyTotal = linea.qty_recibida ?? linea.qty_factura;
     setSaving(true);
     await etiquetarLinea(linea.id!, newTotal, operario, qtyTotal);
     showToast(`${qty} unidades etiquetadas (${newTotal}/${qtyTotal})`);
@@ -318,7 +318,7 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
   const [scanningPos, setScanningPos] = useState(false);
 
   useEffect(() => {
-    const qtyTotal = linea.qty_recibida || linea.qty_factura;
+    const qtyTotal = linea.qty_recibida ?? linea.qty_factura;
     const remaining = qtyTotal - (linea.qty_ubicada || 0);
     setUbicarQty(Math.max(0, remaining));
   }, [linea]);
@@ -345,7 +345,7 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
   };
 
   const isComplete = linea.estado === "UBICADA";
-  const qtyTotal = linea.qty_recibida || linea.qty_factura;
+  const qtyTotal = linea.qty_recibida ?? linea.qty_factura;
   const qtyPendienteUbicar = qtyTotal - (linea.qty_ubicada || 0);
 
   return (
@@ -448,7 +448,7 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
               </button>
             ) : (
               <div style={{marginBottom:10}}>
-                <BarcodeScanner onScan={onScanML} active={true} label="Escanear código ML" />
+                <BarcodeScanner onScan={onScanML} active={true} label="Escanear código ML" mode="barcode" />
                 <button onClick={() => setScanning(false)} style={{width:"100%",marginTop:6,padding:8,borderRadius:6,background:"var(--bg3)",color:"var(--txt3)",fontSize:11}}>Cancelar escaneo</button>
               </div>
             )}
@@ -488,7 +488,7 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
               </button>
             ) : (
               <div style={{marginBottom:10}}>
-                <BarcodeScanner onScan={onScanPos} active={true} label="Escanear QR posición" />
+                <BarcodeScanner onScan={onScanPos} active={true} label="Escanear QR posición" mode="qr" />
                 <button onClick={() => setScanningPos(false)} style={{width:"100%",marginTop:6,padding:8,borderRadius:6,background:"var(--bg3)",color:"var(--txt3)",fontSize:11}}>Cancelar escaneo</button>
               </div>
             )}
