@@ -302,24 +302,28 @@ export async function uploadFacturaImage(base64: string, folio: string): Promise
 
 // ==================== COMPOSICION VENTA (PACKS/COMBOS) ====================
 export async function fetchComposicionVenta(): Promise<DBComposicionVenta[]> {
-  const sb = getSupabase(); if (!sb) return [];
-  const { data } = await sb.from("composicion_venta").select("*");
+  const sb = getSupabase(); if (!sb) { console.error("[composicion] no supabase client"); return []; }
+  const { data, error } = await sb.from("composicion_venta").select("*");
+  if (error) console.error("[composicion] fetch error:", error.message, error.code, error.details);
+  console.log("[composicion] fetched rows:", data?.length ?? 0);
   return data || [];
 }
 
 export async function upsertComposicionVenta(items: DBComposicionVenta[]) {
   const sb = getSupabase(); if (!sb) return;
   for (let i = 0; i < items.length; i += 500) {
-    await sb.from("composicion_venta").upsert(
-      items.slice(i, i + 500),
-      { onConflict: "sku_venta,sku_origen" }
-    );
+    const batch = items.slice(i, i + 500);
+    const { error } = await sb.from("composicion_venta").upsert(batch, { onConflict: "sku_venta,sku_origen" });
+    if (error) console.error(`[composicion] upsert error (batch ${i}-${i + batch.length}):`, error.message, error.code, error.details);
+    else console.log(`[composicion] upserted batch ${i}-${i + batch.length} OK`);
   }
 }
 
 export async function clearComposicionVenta() {
   const sb = getSupabase(); if (!sb) return;
-  await sb.from("composicion_venta").delete().neq("sku_venta", "");
+  const { error } = await sb.from("composicion_venta").delete().neq("sku_venta", "");
+  if (error) console.error("[composicion] clear error:", error.message, error.code, error.details);
+  else console.log("[composicion] cleared OK");
 }
 
 // Dado un código ML, ¿qué SKUs físicos necesito? (para ventas)
