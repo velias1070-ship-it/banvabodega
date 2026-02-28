@@ -645,9 +645,9 @@ export function savePositionMap(posId: string, mx: number, my: number, mw: numbe
 }
 
 // ==================== SHEET SYNC ====================
-export async function syncFromSheet(): Promise<{ added: number; updated: number; total: number }> {
+export async function syncFromSheet(): Promise<{ added: number; updated: number; total: number; composicionTotal: number }> {
   const result = await db.syncDiccionarioFromSheet();
-  
+
   // Refresh products in cache
   const prods = await db.fetchProductos();
   _cache.products = {};
@@ -668,10 +668,12 @@ export async function syncFromSheet(): Promise<{ added: number; updated: number;
     skuOrigen: c.sku_origen, unidades: c.unidades,
   }));
 
+  console.log(`[sync] composicion from CSV: ${result.composicion.total}, from DB: ${compVenta.length}, cache: ${_cache.composicion.length}`);
+
   if (typeof window !== "undefined") {
     localStorage.setItem("banva_sheet_last_sync", Date.now().toString());
   }
-  return result.productos;
+  return { ...result.productos, composicionTotal: result.composicion.total };
 }
 
 export function shouldSync(): boolean {
