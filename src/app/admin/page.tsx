@@ -2614,45 +2614,92 @@ function Productos({ refresh }: { refresh: () => void }) {
       <div className="desktop-only">
         <div className="card" style={{padding:0,overflow:"hidden"}}>
           <table className="tbl">
-            <thead><tr><th>SKU</th><th>Nombre</th><th>Código ML</th><th>Categoría</th><th>Proveedor</th><th style={{textAlign:"right"}}>Costo</th><th style={{textAlign:"right"}}>Precio ML</th><th style={{textAlign:"right"}}>Stock</th><th></th></tr></thead>
-            <tbody>{prods.map(p=>(
+            <thead><tr><th>SKU Origen</th><th>Nombre</th><th>Publicaciones ML</th><th>Cat.</th><th>Prov.</th><th style={{textAlign:"right"}}>Costo</th><th style={{textAlign:"right"}}>Stock</th><th style={{textAlign:"right"}}>Vendible</th><th></th></tr></thead>
+            <tbody>{prods.map(p=>{
+              const ventas = getVentasPorSkuOrigen(p.sku);
+              const stock = skuTotal(p.sku);
+              return (
               <tr key={p.sku}>
                 <td className="mono" style={{fontWeight:700,fontSize:12}}>{p.sku}</td>
                 <td style={{fontSize:12}}>{p.name}</td>
-                <td className="mono" style={{fontSize:11,color:"var(--txt3)"}}>{p.mlCode||"-"}</td>
+                <td style={{fontSize:11}}>
+                  {ventas.length > 0 ? ventas.map((v, i) => (
+                    <div key={i} style={{display:"flex",alignItems:"center",gap:4,marginBottom:i<ventas.length-1?2:0}}>
+                      <span style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:3,whiteSpace:"nowrap",
+                        background:v.unidades>1?"var(--amber)15":"var(--cyan)15",
+                        color:v.unidades>1?"var(--amber)":"var(--cyan)"}}>
+                        {v.unidades>1?`x${v.unidades}`:"x1"}
+                      </span>
+                      <span className="mono" style={{fontSize:10}}>{v.codigoMl}</span>
+                      <span style={{fontSize:9,color:"var(--txt3)"}}>{v.skuVenta}</span>
+                    </div>
+                  )) : <span style={{color:"var(--txt3)"}}>Sin publicación</span>}
+                </td>
                 <td><span className="tag">{p.cat}</span></td>
                 <td><span className="tag">{p.prov}</span></td>
                 <td className="mono" style={{textAlign:"right",fontSize:11}}>{fmtMoney(p.cost)}</td>
-                <td className="mono" style={{textAlign:"right",fontSize:11}}>{fmtMoney(p.price)}</td>
-                <td className="mono" style={{textAlign:"right",fontWeight:700,color:"var(--blue)"}}>{skuTotal(p.sku)}</td>
+                <td className="mono" style={{textAlign:"right",fontWeight:700,color:"var(--blue)"}}>{stock}</td>
+                <td style={{textAlign:"right",fontSize:11}}>
+                  {ventas.length > 0 ? ventas.map((v, i) => {
+                    const sellable = Math.floor(stock / v.unidades);
+                    return (
+                      <div key={i} style={{color:sellable>0?"var(--green)":"var(--red)",fontWeight:600}}>
+                        {sellable}{v.unidades>1?` pack${sellable!==1?"s":""}`:""}</div>
+                    );
+                  }) : <span className="mono" style={{fontWeight:700,color:"var(--blue)"}}>{stock}</span>}
+                </td>
                 <td style={{textAlign:"right"}}>
                   <button onClick={()=>startEdit(p)} style={{padding:"4px 10px",borderRadius:4,background:"var(--bg3)",color:"var(--cyan)",fontSize:10,fontWeight:600,border:"1px solid var(--bg4)",marginRight:4}}>Editar</button>
                   <button onClick={()=>remove(p.sku)} style={{padding:"4px 10px",borderRadius:4,background:"var(--bg3)",color:"var(--red)",fontSize:10,fontWeight:600,border:"1px solid var(--bg4)"}}>X</button>
                 </td>
-              </tr>
-            ))}</tbody>
+              </tr>);
+            })}</tbody>
           </table>
         </div>
       </div>
 
       {/* Mobile cards */}
       <div className="mobile-only">
-        {prods.map(p=>(
+        {prods.map(p=>{
+          const ventas = getVentasPorSkuOrigen(p.sku);
+          const stock = skuTotal(p.sku);
+          return (
           <div key={p.sku} className="card" style={{marginTop:6}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
-              <div>
+              <div style={{flex:1,minWidth:0}}>
                 <div className="mono" style={{fontWeight:700,fontSize:13}}>{p.sku}</div>
                 <div style={{fontSize:12,color:"var(--txt2)"}}>{p.name}</div>
-                <div style={{display:"flex",gap:4,marginTop:3}}><span className="tag">{p.cat}</span><span className="tag">{p.prov}</span>{p.mlCode&&<span className="tag mono">{p.mlCode}</span>}</div>
-                <div style={{fontSize:10,color:"var(--txt3)",marginTop:3}}>Costo: {fmtMoney(p.cost)} | ML: {fmtMoney(p.price)} | Stock: {skuTotal(p.sku)}</div>
+                <div style={{display:"flex",gap:4,marginTop:3,flexWrap:"wrap"}}><span className="tag">{p.cat}</span><span className="tag">{p.prov}</span></div>
+                <div style={{fontSize:10,color:"var(--txt3)",marginTop:3}}>Costo: {fmtMoney(p.cost)} | Stock: <strong style={{color:"var(--blue)"}}>{stock}</strong> uds</div>
+                {ventas.length > 0 && (
+                  <div style={{marginTop:4,borderTop:"1px solid var(--bg4)",paddingTop:4}}>
+                    <div style={{fontSize:10,color:"var(--txt3)",fontWeight:600,marginBottom:2}}>Publicaciones:</div>
+                    {ventas.map((v, i) => {
+                      const sellable = Math.floor(stock / v.unidades);
+                      return (
+                        <div key={i} style={{display:"flex",alignItems:"center",gap:4,fontSize:10,marginBottom:1}}>
+                          <span style={{fontWeight:700,padding:"1px 4px",borderRadius:3,
+                            background:v.unidades>1?"var(--amber)15":"var(--cyan)15",
+                            color:v.unidades>1?"var(--amber)":"var(--cyan)"}}>
+                            {v.unidades>1?`Pack x${v.unidades}`:"x1"}
+                          </span>
+                          <span className="mono">{v.codigoMl}</span>
+                          <span style={{color:sellable>0?"var(--green)":"var(--red)",fontWeight:600,marginLeft:"auto"}}>
+                            {sellable} vendibles
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
-              <div style={{display:"flex",gap:4}}>
+              <div style={{display:"flex",gap:4,marginLeft:8}}>
                 <button onClick={()=>startEdit(p)} style={{padding:"6px 10px",borderRadius:6,background:"var(--bg3)",color:"var(--cyan)",fontSize:10,fontWeight:600,border:"1px solid var(--bg4)"}}>Editar</button>
                 <button onClick={()=>remove(p.sku)} style={{padding:"6px 10px",borderRadius:6,background:"var(--bg3)",color:"var(--red)",fontSize:10,fontWeight:600,border:"1px solid var(--bg4)"}}>X</button>
               </div>
             </div>
-          </div>
-        ))}
+          </div>);
+        })}
       </div>
     </div>
   );

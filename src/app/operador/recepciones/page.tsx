@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
-import { initStore, isStoreReady, getRecepcionesActivas, getRecepcionesParaOperario, getRecepcionLineas, contarLinea, etiquetarLinea, ubicarLinea, actualizarRecepcion, activePositions, findPosition, fmtDate, fmtTime } from "@/lib/store";
-import type { DBRecepcion, DBRecepcionLinea } from "@/lib/store";
+import { initStore, isStoreReady, getRecepcionesActivas, getRecepcionesParaOperario, getRecepcionLineas, contarLinea, etiquetarLinea, ubicarLinea, actualizarRecepcion, activePositions, findPosition, fmtDate, fmtTime, getVentasPorSkuOrigen } from "@/lib/store";
+import type { DBRecepcion, DBRecepcionLinea, ComposicionVenta } from "@/lib/store";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 const BarcodeScanner = dynamic(() => import("@/components/BarcodeScanner"), { ssr: false });
@@ -304,9 +304,23 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
     setEtiqQty(0);
   };
 
+  // Get ALL packs/ventas this physical product participates in
+  const packsForSku: ComposicionVenta[] = getVentasPorSkuOrigen(linea.sku);
+  const allValidMlCodes = packsForSku.map(p => p.codigoMl).filter(Boolean);
+  // Also include the line's own codigo_ml if set
+  if (linea.codigo_ml && !allValidMlCodes.includes(linea.codigo_ml)) {
+    allValidMlCodes.push(linea.codigo_ml);
+  }
+
   const onScanML = (code: string) => {
-    setScanCode(code.trim());
-    if (linea.codigo_ml && code.trim() !== linea.codigo_ml.trim()) {
+    const trimmed = code.trim().toUpperCase();
+    setScanCode(trimmed);
+
+    // Check against ALL valid ML codes for this physical product
+    const isValid = allValidMlCodes.some(ml => ml.toUpperCase() === trimmed)
+      || trimmed === linea.sku.toUpperCase(); // also accept the SKU itself
+
+    if (!isValid) {
       setScanResult("error");
       if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
       return;
@@ -431,9 +445,38 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
         {step === "etiquetar" && !isComplete && (
           <div style={{padding:"16px",borderRadius:10,background:"var(--bg2)",border:"2px solid var(--blue)"}}>
             <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>Paso 2 — Etiquetado</div>
-            <div style={{fontSize:12,color:"var(--txt3)",marginBottom:4}}>
-              Etiqueta cada unidad con código ML: <strong style={{color:"var(--cyan)"}}>{linea.codigo_ml}</strong>
-            </div>
+
+            {/* Show ALL associated ML codes / packs for this product */}
+            {packsForSku.length > 1 ? (
+              <div style={{marginBottom:10}}>
+                <div style={{fontSize:12,color:"var(--txt3)",marginBottom:6}}>
+                  Este producto se vende en <strong style={{color:"var(--cyan)"}}>{packsForSku.length} publicaciones</strong>:
+                </div>
+                {packsForSku.map((pack, i) => (
+                  <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",marginBottom:4,
+                    background:"var(--bg3)",borderRadius:8,border:"1px solid var(--bg4)"}}>
+                    <span style={{fontSize:11,fontWeight:700,color:pack.unidades > 1 ? "var(--amber)" : "var(--cyan)",
+                      background:pack.unidades > 1 ? "var(--amber)15" : "var(--cyan)15",
+                      padding:"2px 8px",borderRadius:4,whiteSpace:"nowrap"}}>
+                      {pack.unidades > 1 ? `Pack x${pack.unidades}` : "Unitario"}
+                    </span>
+                    <span style={{fontFamily:"monospace",fontSize:12,fontWeight:700,color:"var(--txt1)"}}>{pack.codigoMl}</span>
+                    <span style={{fontSize:10,color:"var(--txt3)",flex:1,textAlign:"right"}}>{pack.skuVenta}</span>
+                  </div>
+                ))}
+                <div style={{fontSize:11,color:"var(--txt3)",marginTop:4}}>
+                  Cualquiera de estos códigos es válido al escanear
+                </div>
+              </div>
+            ) : (
+              <div style={{fontSize:12,color:"var(--txt3)",marginBottom:4}}>
+                Etiqueta cada unidad con código ML: <strong style={{color:"var(--cyan)"}}>{linea.codigo_ml || packsForSku[0]?.codigoMl || "—"}</strong>
+                {packsForSku.length === 1 && packsForSku[0].unidades > 1 && (
+                  <span style={{color:"var(--amber)",fontWeight:700}}> (Pack x{packsForSku[0].unidades})</span>
+                )}
+              </div>
+            )}
+
             {/* Progress */}
             <div style={{background:"var(--bg3)",borderRadius:6,height:8,overflow:"hidden",marginBottom:8}}>
               <div style={{width:`${Math.round(((linea.qty_etiquetada||0)/qtyTotal)*100)}%`,height:"100%",background:"var(--blue)",borderRadius:6}}/>
@@ -444,14 +487,25 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
             </div>
 
             {/* Scan to verify */}
-            <BarcodeScanner onScan={onScanML} active={true} label="Verificar código ML" mode="barcode" placeholder={linea.codigo_ml ? `Esperado: ${linea.codigo_ml}` : "Escanea código ML..."} />
+            <BarcodeScanner onScan={onScanML} active={true} label="Verificar código ML" mode="barcode"
+              placeholder={allValidMlCodes.length === 1 ? `Esperado: ${allValidMlCodes[0]}` : "Escanea cualquier código ML válido..."} />
 
             {scanResult === "error" && (
               <div style={{padding:14,background:"#ef444422",border:"2px solid #ef4444",borderRadius:12,marginBottom:12,textAlign:"center"}}>
                 <div style={{fontSize:28,marginBottom:6}}>&#10060;</div>
                 <div style={{fontSize:15,fontWeight:700,color:"#ef4444"}}>CODIGO INCORRECTO</div>
                 <div style={{fontSize:13,color:"#94a3b8",marginTop:6}}>Escaneaste: <strong style={{fontFamily:"monospace",color:"#ef4444"}}>{scanCode}</strong></div>
-                {linea.codigo_ml && <div style={{fontSize:13,color:"#94a3b8",marginTop:2}}>Esperado: <strong style={{fontFamily:"monospace",color:"#10b981"}}>{linea.codigo_ml}</strong></div>}
+                <div style={{fontSize:12,color:"#94a3b8",marginTop:4}}>
+                  Códigos válidos para <strong>{linea.sku}</strong>:
+                </div>
+                {allValidMlCodes.map((ml, i) => {
+                  const pack = packsForSku.find(p => p.codigoMl === ml);
+                  return (
+                    <div key={i} style={{fontFamily:"monospace",fontSize:12,color:"#10b981",marginTop:2}}>
+                      {ml} {pack ? `(${pack.unidades > 1 ? `Pack x${pack.unidades}` : "Unitario"})` : ""}
+                    </div>
+                  );
+                })}
                 <div style={{fontSize:12,color:"#f59e0b",marginTop:8,fontWeight:600}}>Verifica que la etiqueta corresponde a este producto</div>
                 <button onClick={() => setScanResult(null)}
                   style={{marginTop:10,padding:"8px 20px",borderRadius:8,background:"var(--bg3)",color:"var(--cyan)",fontWeight:700,fontSize:12,border:"1px solid var(--bg4)"}}>
@@ -460,13 +514,19 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
               </div>
             )}
 
-            {scanResult === "ok" && (
-              <div style={{padding:14,background:"#10b98122",border:"2px solid #10b981",borderRadius:12,marginBottom:12,textAlign:"center"}}>
-                <div style={{fontSize:28,marginBottom:6}}>&#9989;</div>
-                <div style={{fontSize:15,fontWeight:700,color:"#10b981"}}>CODIGO CORRECTO</div>
-                <div style={{fontSize:13,color:"#94a3b8",marginTop:4,fontFamily:"monospace"}}>{scanCode}</div>
-              </div>
-            )}
+            {scanResult === "ok" && (() => {
+              const matchedPack = packsForSku.find(p => p.codigoMl.toUpperCase() === scanCode);
+              return (
+                <div style={{padding:14,background:"#10b98122",border:"2px solid #10b981",borderRadius:12,marginBottom:12,textAlign:"center"}}>
+                  <div style={{fontSize:28,marginBottom:6}}>&#9989;</div>
+                  <div style={{fontSize:15,fontWeight:700,color:"#10b981"}}>CODIGO CORRECTO</div>
+                  <div style={{fontSize:13,color:"#94a3b8",marginTop:4,fontFamily:"monospace"}}>{scanCode}</div>
+                  {matchedPack && matchedPack.unidades > 1 && (
+                    <div style={{fontSize:12,color:"var(--amber)",marginTop:4,fontWeight:600}}>Pack x{matchedPack.unidades} — {matchedPack.skuVenta}</div>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* Mark quantity as labeled */}
             <div style={{fontSize:12,fontWeight:600,color:"var(--txt2)",marginBottom:6}}>¿Cuántas etiquetaste en esta tanda?</div>
