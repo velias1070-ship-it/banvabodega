@@ -289,6 +289,8 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
 
   // ---- PASO 2: ETIQUETAR ----
   const [scanning, setScanning] = useState(false);
+  const [scanResult, setScanResult] = useState<"ok" | "error" | null>(null);
+  const [scanCode, setScanCode] = useState("");
   const [etiqQty, setEtiqQty] = useState(0);
 
   const doEtiquetar = async (qty: number) => {
@@ -303,13 +305,14 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
   };
 
   const onScanML = (code: string) => {
-    setScanning(false);
-    // Verify scanned code matches this product's ML code
+    setScanCode(code.trim());
     if (linea.codigo_ml && code.trim() !== linea.codigo_ml.trim()) {
-      showToast(`⚠️ Código ${code} no corresponde a ${linea.codigo_ml}`);
+      setScanResult("error");
+      if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
       return;
     }
-    showToast(`✓ Código ML verificado: ${code}`);
+    setScanResult("ok");
+    if (navigator.vibrate) navigator.vibrate([50, 30, 50]);
   };
 
   // ---- PASO 3: UBICAR ----
@@ -441,7 +444,29 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
             </div>
 
             {/* Scan to verify */}
-            <BarcodeScanner onScan={onScanML} active={true} label="Escanear código ML para verificar" mode="barcode" />
+            <BarcodeScanner onScan={onScanML} active={true} label="Verificar código ML" mode="barcode" placeholder={linea.codigo_ml ? `Esperado: ${linea.codigo_ml}` : "Escanea código ML..."} />
+
+            {scanResult === "error" && (
+              <div style={{padding:14,background:"#ef444422",border:"2px solid #ef4444",borderRadius:12,marginBottom:12,textAlign:"center"}}>
+                <div style={{fontSize:28,marginBottom:6}}>&#10060;</div>
+                <div style={{fontSize:15,fontWeight:700,color:"#ef4444"}}>CODIGO INCORRECTO</div>
+                <div style={{fontSize:13,color:"#94a3b8",marginTop:6}}>Escaneaste: <strong style={{fontFamily:"monospace",color:"#ef4444"}}>{scanCode}</strong></div>
+                {linea.codigo_ml && <div style={{fontSize:13,color:"#94a3b8",marginTop:2}}>Esperado: <strong style={{fontFamily:"monospace",color:"#10b981"}}>{linea.codigo_ml}</strong></div>}
+                <div style={{fontSize:12,color:"#f59e0b",marginTop:8,fontWeight:600}}>Verifica que la etiqueta corresponde a este producto</div>
+                <button onClick={() => setScanResult(null)}
+                  style={{marginTop:10,padding:"8px 20px",borderRadius:8,background:"var(--bg3)",color:"var(--cyan)",fontWeight:700,fontSize:12,border:"1px solid var(--bg4)"}}>
+                  Intentar de nuevo
+                </button>
+              </div>
+            )}
+
+            {scanResult === "ok" && (
+              <div style={{padding:14,background:"#10b98122",border:"2px solid #10b981",borderRadius:12,marginBottom:12,textAlign:"center"}}>
+                <div style={{fontSize:28,marginBottom:6}}>&#9989;</div>
+                <div style={{fontSize:15,fontWeight:700,color:"#10b981"}}>CODIGO CORRECTO</div>
+                <div style={{fontSize:13,color:"#94a3b8",marginTop:4,fontFamily:"monospace"}}>{scanCode}</div>
+              </div>
+            )}
 
             {/* Mark quantity as labeled */}
             <div style={{fontSize:12,fontWeight:600,color:"var(--txt2)",marginBottom:6}}>¿Cuántas etiquetaste en esta tanda?</div>
