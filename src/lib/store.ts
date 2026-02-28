@@ -220,6 +220,11 @@ export function saveStore(_data?: Partial<StoreData>) {
 
 let _flushTimer: ReturnType<typeof setTimeout> | null = null;
 
+let _movIdCounter = 0;
+function uniqueMovId(): string {
+  return `M${Date.now()}-${++_movIdCounter}`;
+}
+
 function scheduleFlush() {
   if (!isConfigured()) return;
   if (_flushTimer) clearTimeout(_flushTimer);
@@ -245,34 +250,17 @@ async function flushToSupabase() {
       });
     }
 
-    // Flush stock (reconcile: set each sku+pos to exact value)
-    const currentDBStock = await db.fetchStock();
-    const dbStockMap = new Map(currentDBStock.map(s => [`${s.sku}|${s.posicion_id}`, s.cantidad]));
-    
-    // Set values from cache
-    for (const [sku, posMap] of Object.entries(_cache.stock)) {
-      for (const [posId, qty] of Object.entries(posMap)) {
-        if (qty > 0) {
-          const key = `${sku}|${posId}`;
-          if (dbStockMap.get(key) !== qty) {
-            await db.setStock(sku, posId, qty);
-          }
-          dbStockMap.delete(key);
-        }
-      }
-    }
-    // Delete stock that's in DB but not in cache
-    Array.from(dbStockMap.entries()).forEach(([key]) => {
-      const [sku, posId] = key.split("|");
-      db.setStock(sku, posId, 0).catch(console.error);
-    });
+    // Stock is managed exclusively via delta-based operations (recordMovement/ubicarLinea)
+    // to avoid race conditions with concurrent updates. No stock reconciliation here.
   } catch (err) {
     console.error("Flush to Supabase error:", err);
   }
 }
 
 export function resetStore() {
+  if (_flushTimer) { clearTimeout(_flushTimer); _flushTimer = null; }
   _cache = { products: {}, positions: [], stock: {}, movements: [], movCounter: 0, composicion: [] };
+  _initialized = false;
 }
 
 // ==================== STOCK HELPERS (sync, from cache) ====================
@@ -417,26 +405,30 @@ export function getSkusVenta(): { skuVenta: string; codigoMl: string; componente
 
 // Record movement + update stock (writes to Supabase + cache)
 export async function recordMovementAsync(m: Omit<Movement, "id">): Promise<Movement> {
-  const mov: Movement = { ...m, id: "M" + Date.now() };
+  const mov: Movement = { ...m, id: uniqueMovId() };
 
-  // Update cache
+  // Update cache (clamp "out" to prevent negative stock)
   if (!_cache.stock[m.sku]) _cache.stock[m.sku] = {};
+  let actualQty = m.qty;
   if (m.type === "in") {
     _cache.stock[m.sku][m.pos] = (_cache.stock[m.sku][m.pos] || 0) + m.qty;
   } else {
-    _cache.stock[m.sku][m.pos] = Math.max(0, (_cache.stock[m.sku][m.pos] || 0) - m.qty);
+    const prev = _cache.stock[m.sku][m.pos] || 0;
+    actualQty = Math.min(m.qty, prev);
+    _cache.stock[m.sku][m.pos] = prev - actualQty;
     if (_cache.stock[m.sku][m.pos] === 0) delete _cache.stock[m.sku][m.pos];
   }
+  mov.qty = actualQty;
   _cache.movements.unshift(mov);
 
   // Write to Supabase
   if (isConfigured()) {
-    const delta = m.type === "in" ? m.qty : -m.qty;
+    const delta = m.type === "in" ? actualQty : -actualQty;
     await db.updateStock(m.sku, m.pos, delta);
     await db.insertMovimiento({
       tipo: m.type === "in" ? "entrada" : "salida",
       motivo: motivoToDB(m.reason, m.type),
-      sku: m.sku, posicion_id: m.pos, cantidad: m.qty,
+      sku: m.sku, posicion_id: m.pos, cantidad: actualQty,
       operario: m.who, nota: m.note,
     });
   }
@@ -445,24 +437,37 @@ export async function recordMovementAsync(m: Omit<Movement, "id">): Promise<Move
 
 // Backward compat sync wrapper (fires async, returns immediately)
 export function recordMovement(m: Omit<Movement, "id">): Movement {
-  const mov: Movement = { ...m, id: "M" + Date.now() };
+  const mov: Movement = { ...m, id: uniqueMovId() };
   if (!_cache.stock[m.sku]) _cache.stock[m.sku] = {};
+  let actualQty = m.qty;
   if (m.type === "in") {
     _cache.stock[m.sku][m.pos] = (_cache.stock[m.sku][m.pos] || 0) + m.qty;
   } else {
-    _cache.stock[m.sku][m.pos] = Math.max(0, (_cache.stock[m.sku][m.pos] || 0) - m.qty);
+    const prev = _cache.stock[m.sku][m.pos] || 0;
+    actualQty = Math.min(m.qty, prev);
+    _cache.stock[m.sku][m.pos] = prev - actualQty;
     if (_cache.stock[m.sku][m.pos] === 0) delete _cache.stock[m.sku][m.pos];
   }
+  mov.qty = actualQty;
   _cache.movements.unshift(mov);
 
-  // Fire & forget to Supabase
+  // Fire to Supabase with cache rollback on failure
   if (isConfigured()) {
-    const delta = m.type === "in" ? m.qty : -m.qty;
-    db.updateStock(m.sku, m.pos, delta).catch(console.error);
+    const delta = m.type === "in" ? actualQty : -actualQty;
+    db.updateStock(m.sku, m.pos, delta).catch((err) => {
+      console.error("Stock update failed, reverting cache:", err);
+      if (!_cache.stock[m.sku]) _cache.stock[m.sku] = {};
+      if (m.type === "in") {
+        _cache.stock[m.sku][m.pos] = Math.max(0, (_cache.stock[m.sku][m.pos] || 0) - actualQty);
+        if (_cache.stock[m.sku][m.pos] === 0) delete _cache.stock[m.sku][m.pos];
+      } else {
+        _cache.stock[m.sku][m.pos] = (_cache.stock[m.sku][m.pos] || 0) + actualQty;
+      }
+    });
     db.insertMovimiento({
       tipo: m.type === "in" ? "entrada" : "salida",
       motivo: motivoToDB(m.reason, m.type),
-      sku: m.sku, posicion_id: m.pos, cantidad: m.qty,
+      sku: m.sku, posicion_id: m.pos, cantidad: actualQty,
       operario: m.who, nota: m.note,
     }).catch(console.error);
   }
@@ -724,17 +729,18 @@ export async function ubicarLinea(lineaId: string, sku: string, posicionId: stri
   if (!_cache.stock[sku]) _cache.stock[sku] = {};
   _cache.stock[sku][posicionId] = (_cache.stock[sku][posicionId] || 0) + qty;
 
-  // Fetch current line to calculate new qty_ubicada
+  // Fetch current line to calculate new qty_ubicada (read closest to write to minimize race window)
   const lineas = await db.fetchRecepcionLineas(recepcionId);
   const linea = lineas.find(l => l.id === lineaId);
-  const newQtyUbicada = (linea?.qty_ubicada || 0) + qty;
-  const qtyTotal = linea?.qty_recibida || linea?.qty_factura || 0;
+  if (!linea) return;
+  const newQtyUbicada = (linea.qty_ubicada || 0) + qty;
+  const qtyTotal = (linea.qty_recibida ?? linea.qty_factura) ?? 0;
 
   await db.updateRecepcionLinea(lineaId, {
     qty_ubicada: newQtyUbicada,
-    estado: newQtyUbicada >= qtyTotal ? "UBICADA" : linea?.estado,
+    estado: newQtyUbicada >= qtyTotal && qtyTotal > 0 ? "UBICADA" : linea.estado,
     operario_ubicacion: operario,
-    ...(newQtyUbicada >= qtyTotal ? { ts_ubicacion: new Date().toISOString() } : {}),
+    ...(newQtyUbicada >= qtyTotal && qtyTotal > 0 ? { ts_ubicacion: new Date().toISOString() } : {}),
   });
 }
 
@@ -941,6 +947,6 @@ export function fmtTime(iso: string) { try { return new Date(iso).toLocaleTimeSt
 export function fmtMoney(n: number) { return "$" + n.toLocaleString("es-CL"); }
 
 // ==================== LEGACY COMPAT ====================
-export function nextMovId(): string { return "M" + Date.now(); }
+export function nextMovId(): string { return uniqueMovId(); }
 export async function pullCloudState(): Promise<boolean> { return refreshStore(); }
 export async function getCloudStatus(): Promise<string> { return isConfigured() ? "connected" : "not_configured"; }

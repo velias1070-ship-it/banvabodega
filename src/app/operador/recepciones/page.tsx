@@ -293,7 +293,7 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
 
   const doEtiquetar = async (qty: number) => {
     const newTotal = (linea.qty_etiquetada || 0) + qty;
-    const qtyTotal = linea.qty_recibida || linea.qty_factura;
+    const qtyTotal = linea.qty_recibida ?? linea.qty_factura;
     setSaving(true);
     await etiquetarLinea(linea.id!, newTotal, operario, qtyTotal);
     showToast(`${qty} unidades etiquetadas (${newTotal}/${qtyTotal})`);
@@ -318,7 +318,7 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
   const [scanningPos, setScanningPos] = useState(false);
 
   useEffect(() => {
-    const qtyTotal = linea.qty_recibida || linea.qty_factura;
+    const qtyTotal = linea.qty_recibida ?? linea.qty_factura;
     const remaining = qtyTotal - (linea.qty_ubicada || 0);
     setUbicarQty(Math.max(0, remaining));
   }, [linea]);
@@ -345,7 +345,7 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
   };
 
   const isComplete = linea.estado === "UBICADA";
-  const qtyTotal = linea.qty_recibida || linea.qty_factura;
+  const qtyTotal = linea.qty_recibida ?? linea.qty_factura;
   const qtyPendienteUbicar = qtyTotal - (linea.qty_ubicada || 0);
 
   return (
