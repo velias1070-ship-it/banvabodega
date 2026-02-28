@@ -477,16 +477,19 @@ export async function syncDiccionarioFromSheet(): Promise<{
     // Clear old and re-insert (simpler than diffing)
     await clearComposicionVenta();
 
-    const composicionItems: DBComposicionVenta[] = [];
+    // Deduplicate by (sku_venta, sku_origen) — CSV may have duplicate rows
+    const composicionMap = new Map<string, DBComposicionVenta>();
     for (const row of rows) {
       if (!row.skuVenta) continue;
-      composicionItems.push({
+      const key = `${row.skuVenta}|${row.skuOrigen}`;
+      composicionMap.set(key, {
         sku_venta: row.skuVenta,
         codigo_ml: row.codigoMl,
         sku_origen: row.skuOrigen,
         unidades: row.unidades,
       });
     }
+    const composicionItems = Array.from(composicionMap.values());
 
     if (composicionItems.length > 0) {
       await upsertComposicionVenta(composicionItems);
