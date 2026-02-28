@@ -941,6 +941,78 @@ export async function pickearComponente(
   return true;
 }
 
+// ==================== RECEPCION ADMIN (metadata, anular, pausar, asignar) ====================
+
+export interface RecepcionMeta {
+  notas: string;
+  asignados: string[];
+  motivo_anulacion?: string;
+}
+
+export function parseRecepcionMeta(notasField: string): RecepcionMeta {
+  if (!notasField) return { notas: "", asignados: [] };
+  try {
+    const parsed = JSON.parse(notasField);
+    if (parsed && typeof parsed === "object" && "notas" in parsed) {
+      return { notas: parsed.notas || "", asignados: parsed.asignados || [], motivo_anulacion: parsed.motivo_anulacion || "" };
+    }
+  } catch { /* not JSON, legacy plain text */ }
+  return { notas: notasField, asignados: [] };
+}
+
+export function encodeRecepcionMeta(meta: RecepcionMeta): string {
+  return JSON.stringify({ notas: meta.notas, asignados: meta.asignados, ...(meta.motivo_anulacion ? { motivo_anulacion: meta.motivo_anulacion } : {}) });
+}
+
+export async function anularRecepcion(id: string, motivo: string) {
+  const recs = await db.fetchRecepciones();
+  const rec = recs.find(r => r.id === id);
+  const meta = parseRecepcionMeta(rec?.notas || "");
+  meta.motivo_anulacion = motivo;
+  await db.updateRecepcion(id, { estado: "ANULADA" as db.DBRecepcion["estado"], notas: encodeRecepcionMeta(meta) });
+}
+
+export async function pausarRecepcion(id: string) {
+  await db.updateRecepcion(id, { estado: "PAUSADA" as db.DBRecepcion["estado"] });
+}
+
+export async function reactivarRecepcion(id: string) {
+  await db.updateRecepcion(id, { estado: "CREADA" });
+}
+
+export async function cerrarRecepcion(id: string) {
+  await db.updateRecepcion(id, { estado: "CERRADA" });
+}
+
+export async function asignarOperariosRecepcion(id: string, operarios: string[], currentNotas: string) {
+  const meta = parseRecepcionMeta(currentNotas);
+  meta.asignados = operarios;
+  await db.updateRecepcion(id, { notas: encodeRecepcionMeta(meta) });
+}
+
+export async function getRecepcionesParaOperario(operarioNombre: string) {
+  const recs = await db.fetchRecepcionesActivas();
+  return recs.filter(rec => {
+    const { asignados } = parseRecepcionMeta(rec.notas || "");
+    if (asignados.length === 0) return true;
+    return asignados.some(a => a.toLowerCase() === operarioNombre.toLowerCase());
+  });
+}
+
+export async function eliminarLineaRecepcion(lineaId: string) {
+  await db.deleteRecepcionLinea(lineaId);
+}
+
+export async function agregarLineaRecepcion(recepcionId: string, linea: { sku: string; codigoML: string; nombre: string; cantidad: number; costo: number; requiereEtiqueta: boolean }) {
+  await db.insertRecepcionLineas([{
+    recepcion_id: recepcionId, sku: linea.sku, codigo_ml: linea.codigoML,
+    nombre: linea.nombre, qty_factura: linea.cantidad, qty_recibida: 0,
+    qty_etiquetada: 0, qty_ubicada: 0, estado: "PENDIENTE" as const,
+    requiere_etiqueta: linea.requiereEtiqueta, costo_unitario: linea.costo,
+    notas: "", operario_conteo: "", operario_etiquetado: "", operario_ubicacion: "",
+  }]);
+}
+
 // ==================== FORMAT HELPERS ====================
 export function fmtDate(iso: string) { try { return new Date(iso).toLocaleDateString("es-CL"); } catch { return iso; } }
 export function fmtTime(iso: string) { try { return new Date(iso).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" }); } catch { return iso; } }

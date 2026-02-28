@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
-import { initStore, isStoreReady, getRecepcionesActivas, getRecepcionLineas, contarLinea, etiquetarLinea, ubicarLinea, actualizarRecepcion, activePositions, findPosition, fmtDate, fmtTime } from "@/lib/store";
+import { initStore, isStoreReady, getRecepcionesActivas, getRecepcionesParaOperario, getRecepcionLineas, contarLinea, etiquetarLinea, ubicarLinea, actualizarRecepcion, activePositions, findPosition, fmtDate, fmtTime } from "@/lib/store";
 import type { DBRecepcion, DBRecepcionLinea } from "@/lib/store";
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -26,13 +26,13 @@ export default function RecepcionesOperador() {
     if (saved) setOperario(saved);
   }, []);
 
-  const loadRecs = async () => {
+  const loadRecs = useCallback(async () => {
     setLoading(true);
-    setRecs(await getRecepcionesActivas());
+    setRecs(operario ? await getRecepcionesParaOperario(operario) : await getRecepcionesActivas());
     setLoading(false);
-  };
+  }, [operario]);
 
-  useEffect(() => { if (mounted) loadRecs(); }, [mounted]);
+  useEffect(() => { if (mounted && operario) loadRecs(); }, [mounted, operario, loadRecs]);
 
   const openRec = async (rec: DBRecepcion) => {
     setSelRec(rec);

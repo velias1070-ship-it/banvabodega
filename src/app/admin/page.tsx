@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking } from "@/lib/store";
-import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, ComposicionVenta, DBPickingSession, PickingLinea } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking } from "@/lib/store";
+import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import Link from "next/link";
 import SheetSync from "@/components/SheetSync";
 
@@ -122,14 +122,36 @@ export default function AdminPage() {
 }
 
 // ==================== ADMIN RECEPCIONES ====================
-const ESTADO_COLORS_A: Record<string, string> = { CREADA: "var(--amber)", EN_PROCESO: "var(--blue)", COMPLETADA: "var(--green)", CERRADA: "var(--txt3)" };
+const ESTADO_COLORS_A: Record<string, string> = {
+  CREADA: "var(--amber)", EN_PROCESO: "var(--blue)", COMPLETADA: "var(--green)",
+  CERRADA: "var(--txt3)", ANULADA: "var(--red)", PAUSADA: "#8b5cf6",
+};
+const ESTADO_LABELS_A: Record<string, string> = {
+  CREADA: "Nueva", EN_PROCESO: "En proceso", COMPLETADA: "Completada",
+  CERRADA: "Cerrada", ANULADA: "Anulada", PAUSADA: "Pausada",
+};
+
+type RecFilter = "activas"|"pausadas"|"completadas"|"anuladas"|"todas";
 
 function AdminRecepciones({ refresh }: { refresh: () => void }) {
   const [recs, setRecs] = useState<DBRecepcion[]>([]);
   const [loading, setLoading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
+  const [filter, setFilter] = useState<RecFilter>("activas");
   const [selRec, setSelRec] = useState<DBRecepcion|null>(null);
   const [lineas, setLineas] = useState<DBRecepcionLinea[]>([]);
+  const [operarios, setOperarios] = useState<DBOperario[]>([]);
+
+  // Edit state
+  const [editing, setEditing] = useState(false);
+  const [editFolio, setEditFolio] = useState("");
+  const [editProv, setEditProv] = useState("");
+  const [editNotas, setEditNotas] = useState("");
+  const [editAsignados, setEditAsignados] = useState<string[]>([]);
+
+  // Anular dialog
+  const [showAnular, setShowAnular] = useState(false);
+  const [anularMotivo, setAnularMotivo] = useState("");
 
   // Create form
   const [newFolio, setNewFolio] = useState("");
@@ -138,82 +160,287 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   const [newSku, setNewSku] = useState("");
   const [newQty, setNewQty] = useState(1);
 
-  const loadRecs = async () => { setLoading(true); setRecs(await getRecepciones()); setLoading(false); };
+  // Add line to existing
+  const [addSku, setAddSku] = useState("");
+  const [addQty, setAddQty] = useState(1);
+
+  const loadRecs = async () => { setLoading(true); setRecs(await getRecepciones()); setOperarios(await getOperarios()); setLoading(false); };
   useEffect(() => { loadRecs(); }, []);
+
+  const counts: Record<RecFilter, number> = {
+    activas: recs.filter(r=>["CREADA","EN_PROCESO"].includes(r.estado)).length,
+    pausadas: recs.filter(r=>r.estado==="PAUSADA").length,
+    completadas: recs.filter(r=>["COMPLETADA","CERRADA"].includes(r.estado)).length,
+    anuladas: recs.filter(r=>r.estado==="ANULADA").length,
+    todas: recs.length,
+  };
+
+  const filteredRecs = recs.filter(r => {
+    if (filter==="activas") return ["CREADA","EN_PROCESO"].includes(r.estado);
+    if (filter==="pausadas") return r.estado==="PAUSADA";
+    if (filter==="completadas") return ["COMPLETADA","CERRADA"].includes(r.estado);
+    if (filter==="anuladas") return r.estado==="ANULADA";
+    return true;
+  });
 
   const openRec = async (rec: DBRecepcion) => {
     setSelRec(rec);
     setLineas(await getRecepcionLineas(rec.id!));
+    const meta = parseRecepcionMeta(rec.notas || "");
+    setEditFolio(rec.folio); setEditProv(rec.proveedor);
+    setEditNotas(meta.notas); setEditAsignados(meta.asignados);
+    setEditing(false); setShowAnular(false);
+  };
+
+  const refreshDetail = async () => {
+    if (!selRec) return;
+    const updatedRecs = await getRecepciones();
+    setRecs(updatedRecs);
+    const updated = updatedRecs.find(r => r.id === selRec.id);
+    if (updated) { setSelRec(updated); const m = parseRecepcionMeta(updated.notas||""); setEditNotas(m.notas); setEditAsignados(m.asignados); }
+    setLineas(await getRecepcionLineas(selRec.id!));
+  };
+
+  // ---- Status actions ----
+  const doAnular = async () => {
+    if (!selRec) return; setLoading(true);
+    await anularRecepcion(selRec.id!, anularMotivo);
+    setShowAnular(false); setAnularMotivo("");
+    await loadRecs(); setSelRec(null); setLoading(false);
+  };
+  const doPausar = async () => { if (!selRec) return; setLoading(true); await pausarRecepcion(selRec.id!); await loadRecs(); setSelRec(null); setLoading(false); };
+  const doReactivar = async () => { if (!selRec) return; setLoading(true); await reactivarRecepcion(selRec.id!); await loadRecs(); setSelRec(null); setLoading(false); };
+  const doCerrar = async () => { if (!selRec) return; setLoading(true); await cerrarRecepcion(selRec.id!); await loadRecs(); setSelRec(null); setLoading(false); };
+
+  // ---- Edit save ----
+  const doSaveEdit = async () => {
+    if (!selRec) return; setLoading(true);
+    const meta: RecepcionMeta = { notas: editNotas, asignados: editAsignados };
+    await actualizarRecepcion(selRec.id!, { folio: editFolio, proveedor: editProv, notas: encodeRecepcionMeta(meta) });
+    setEditing(false); await refreshDetail(); setLoading(false);
+  };
+
+  // ---- Line actions ----
+  const doResetLinea = async (lineaId: string) => {
+    if (!confirm("Resetear esta línea a PENDIENTE? Se perderán conteos y ubicaciones.")) return;
+    await actualizarLineaRecepcion(lineaId, { estado: "PENDIENTE", qty_recibida: 0, qty_etiquetada: 0, qty_ubicada: 0, operario_conteo: "", operario_etiquetado: "", operario_ubicacion: "" });
+    setLineas(await getRecepcionLineas(selRec!.id!));
+  };
+  const doDeleteLinea = async (lineaId: string) => {
+    if (!confirm("Eliminar esta línea de la recepción?")) return;
+    await eliminarLineaRecepcion(lineaId);
+    setLineas(await getRecepcionLineas(selRec!.id!));
+  };
+  const doUpdateLineQty = async (lineaId: string, val: string) => {
+    const n = parseInt(val); if (isNaN(n) || n < 0) return;
+    await actualizarLineaRecepcion(lineaId, { qty_factura: n });
+    setLineas(await getRecepcionLineas(selRec!.id!));
+  };
+  const doAddLinea = async () => {
+    if (!addSku || !selRec) return;
+    const prod = getStore().products[addSku.toUpperCase()];
+    await agregarLineaRecepcion(selRec.id!, {
+      sku: addSku.toUpperCase(), nombre: prod?.name || addSku, codigoML: prod?.mlCode || "",
+      cantidad: addQty, costo: prod?.cost || 0, requiereEtiqueta: prod?.requiresLabel !== false,
+    });
+    setAddSku(""); setAddQty(1);
+    setLineas(await getRecepcionLineas(selRec.id!));
+  };
+
+  // Toggle operator assignment
+  const toggleOp = (nombre: string) => {
+    setEditAsignados(prev => prev.includes(nombre) ? prev.filter(n=>n!==nombre) : [...prev, nombre]);
   };
 
   const addLinea = () => {
     if (!newSku) return;
-    const s = getStore();
-    const prod = s.products[newSku.toUpperCase()];
+    const prod = getStore().products[newSku.toUpperCase()];
     setNewLineas(l => [...l, {
       sku: newSku.toUpperCase(), nombre: prod?.name || newSku, codigoML: prod?.mlCode || "",
       cantidad: newQty, costo: prod?.cost || 0, requiereEtiqueta: prod?.requiresLabel !== false,
     }]);
     setNewSku(""); setNewQty(1);
   };
-
   const doCreate = async () => {
     if (!newFolio || !newProv || newLineas.length === 0) return;
     setLoading(true);
     await crearRecepcion(newFolio, newProv, "", newLineas);
     setNewFolio(""); setNewProv(""); setNewLineas([]); setShowCreate(false);
-    await loadRecs();
-    setLoading(false);
+    await loadRecs(); setLoading(false);
   };
 
-  // Detail view
+  // ==================== DETAIL VIEW ====================
   if (selRec) {
     const total = lineas.length;
     const ubicadas = lineas.filter(l => l.estado === "UBICADA").length;
     const progress = total > 0 ? Math.round((ubicadas / total) * 100) : 0;
+    const meta = parseRecepcionMeta(selRec.notas || "");
+    const isEditable = !["ANULADA","CERRADA"].includes(selRec.estado);
+    const addSuggestions = addSku.length >= 2 ? findProduct(addSku).slice(0, 5) : [];
 
     return (
       <div>
         <button onClick={() => { setSelRec(null); loadRecs(); }} style={{marginBottom:12,padding:"6px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--txt2)",fontSize:12,fontWeight:600,border:"1px solid var(--bg4)"}}>
-          ← Volver
+          ← Volver a lista
         </button>
+
+        {/* Header card */}
         <div className="card">
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
             <div>
               <div className="card-title">{selRec.proveedor} — Folio {selRec.folio}</div>
-              <div style={{fontSize:11,color:"var(--txt3)"}}>{fmtDate(selRec.created_at||"")} · {fmtTime(selRec.created_at||"")}</div>
+              <div style={{fontSize:11,color:"var(--txt3)"}}>{fmtDate(selRec.created_at||"")} · {fmtTime(selRec.created_at||"")} · Creado por: {selRec.created_by}</div>
+              {meta.asignados.length > 0 && (
+                <div style={{fontSize:11,color:"var(--cyan)",marginTop:4}}>Asignado a: <strong>{meta.asignados.join(", ")}</strong></div>
+              )}
+              {meta.motivo_anulacion && selRec.estado === "ANULADA" && (
+                <div style={{fontSize:11,color:"var(--red)",marginTop:4}}>Motivo anulación: {meta.motivo_anulacion}</div>
+              )}
             </div>
-            <span style={{padding:"4px 12px",borderRadius:6,background:ESTADO_COLORS_A[selRec.estado],color:"#fff",fontSize:11,fontWeight:700}}>{selRec.estado}</span>
+            <span style={{padding:"4px 12px",borderRadius:6,background:ESTADO_COLORS_A[selRec.estado],color:"#fff",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>
+              {ESTADO_LABELS_A[selRec.estado]||selRec.estado}
+            </span>
           </div>
-          <div style={{marginTop:10,background:"var(--bg3)",borderRadius:6,height:8,overflow:"hidden"}}>
-            <div style={{width:`${progress}%`,height:"100%",background:"var(--green)",borderRadius:6}}/>
-          </div>
-          <div style={{fontSize:11,color:"var(--txt3)",marginTop:4}}>{ubicadas}/{total} completadas</div>
+          {selRec.estado !== "ANULADA" && (
+            <>
+              <div style={{marginTop:10,background:"var(--bg3)",borderRadius:6,height:8,overflow:"hidden"}}>
+                <div style={{width:`${progress}%`,height:"100%",background:progress===100?"var(--green)":"var(--blue)",borderRadius:6}}/>
+              </div>
+              <div style={{fontSize:11,color:"var(--txt3)",marginTop:4}}>{ubicadas}/{total} líneas completadas</div>
+            </>
+          )}
         </div>
+
+        {/* Action bar */}
+        <div style={{display:"flex",gap:6,marginTop:12,flexWrap:"wrap"}}>
+          {isEditable && <button onClick={()=>setEditing(!editing)} style={{padding:"8px 14px",borderRadius:6,background:editing?"var(--cyan)":"var(--bg3)",color:editing?"#000":"var(--cyan)",fontSize:11,fontWeight:700,border:"1px solid var(--bg4)"}}>
+            {editing ? "Cancelar edición" : "Editar"}
+          </button>}
+          {["CREADA","EN_PROCESO"].includes(selRec.estado) && <button onClick={doPausar} style={{padding:"8px 14px",borderRadius:6,background:"var(--bg3)",color:"#8b5cf6",fontSize:11,fontWeight:700,border:"1px solid var(--bg4)"}}>Pausar</button>}
+          {selRec.estado === "PAUSADA" && <button onClick={doReactivar} style={{padding:"8px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--green)",fontSize:11,fontWeight:700,border:"1px solid var(--bg4)"}}>Reactivar</button>}
+          {selRec.estado === "ANULADA" && <button onClick={doReactivar} style={{padding:"8px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--green)",fontSize:11,fontWeight:700,border:"1px solid var(--bg4)"}}>Reabrir</button>}
+          {selRec.estado === "COMPLETADA" && <button onClick={doCerrar} style={{padding:"8px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--txt3)",fontSize:11,fontWeight:700,border:"1px solid var(--bg4)"}}>Cerrar</button>}
+          {selRec.estado === "CERRADA" && <button onClick={doReactivar} style={{padding:"8px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--green)",fontSize:11,fontWeight:700,border:"1px solid var(--bg4)"}}>Reabrir</button>}
+          {selRec.estado !== "ANULADA" && <button onClick={()=>setShowAnular(!showAnular)} style={{padding:"8px 14px",borderRadius:6,background:showAnular?"var(--red)":"var(--bg3)",color:showAnular?"#fff":"var(--red)",fontSize:11,fontWeight:700,border:"1px solid var(--bg4)"}}>Anular</button>}
+          <button onClick={refreshDetail} style={{padding:"8px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--cyan)",fontSize:11,fontWeight:700,border:"1px solid var(--bg4)"}}>Actualizar</button>
+        </div>
+
+        {/* Anular dialog */}
+        {showAnular && (
+          <div className="card" style={{marginTop:12,border:"2px solid var(--red)"}}>
+            <div style={{fontSize:13,fontWeight:700,color:"var(--red)",marginBottom:8}}>Anular recepción</div>
+            <div style={{fontSize:12,color:"var(--txt3)",marginBottom:8}}>Esta acción marcará la recepción como anulada. Los operadores ya no la verán.</div>
+            <input className="form-input" value={anularMotivo} onChange={e=>setAnularMotivo(e.target.value)} placeholder="Motivo de anulación (opcional)" style={{marginBottom:8}}/>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={doAnular} disabled={loading} style={{padding:"8px 16px",borderRadius:6,background:"var(--red)",color:"#fff",fontSize:12,fontWeight:700}}>
+                {loading ? "Anulando..." : "Confirmar anulación"}
+              </button>
+              <button onClick={()=>{setShowAnular(false);setAnularMotivo("");}} style={{padding:"8px 16px",borderRadius:6,background:"var(--bg3)",color:"var(--txt2)",fontSize:12,fontWeight:600,border:"1px solid var(--bg4)"}}>Cancelar</button>
+            </div>
+          </div>
+        )}
+
+        {/* Edit panel */}
+        {editing && (
+          <div className="card" style={{marginTop:12,border:"2px solid var(--cyan)"}}>
+            <div style={{fontSize:13,fontWeight:700,color:"var(--cyan)",marginBottom:10}}>Editar recepción</div>
+            <div className="admin-grid-2" style={{marginBottom:10}}>
+              <div>
+                <label style={{fontSize:11,color:"var(--txt3)",fontWeight:600}}>Folio</label>
+                <input className="form-input" value={editFolio} onChange={e=>setEditFolio(e.target.value)} style={{marginTop:4}}/>
+              </div>
+              <div>
+                <label style={{fontSize:11,color:"var(--txt3)",fontWeight:600}}>Proveedor</label>
+                <select className="form-select" value={editProv} onChange={e=>setEditProv(e.target.value)} style={{marginTop:4}}>
+                  <option value="">Seleccionar...</option>
+                  {getProveedores().map(p => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </div>
+            </div>
+            <div style={{marginBottom:10}}>
+              <label style={{fontSize:11,color:"var(--txt3)",fontWeight:600}}>Notas</label>
+              <textarea className="form-input" value={editNotas} onChange={e=>setEditNotas(e.target.value)} rows={2} style={{marginTop:4,resize:"vertical"}}/>
+            </div>
+            <div style={{marginBottom:12}}>
+              <label style={{fontSize:11,color:"var(--txt3)",fontWeight:600,display:"block",marginBottom:6}}>Asignar operarios (vacío = visible para todos)</label>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                {operarios.map(op => (
+                  <button key={op.id} onClick={()=>toggleOp(op.nombre)}
+                    style={{padding:"6px 12px",borderRadius:6,fontSize:11,fontWeight:600,cursor:"pointer",
+                      background:editAsignados.includes(op.nombre)?"var(--cyan)":"var(--bg3)",
+                      color:editAsignados.includes(op.nombre)?"#000":"var(--txt2)",
+                      border:`1px solid ${editAsignados.includes(op.nombre)?"var(--cyan)":"var(--bg4)"}`}}>
+                    {editAsignados.includes(op.nombre)?"✓ ":""}{op.nombre}
+                  </button>
+                ))}
+                {operarios.length === 0 && <span style={{fontSize:11,color:"var(--txt3)"}}>No hay operarios registrados en el sistema</span>}
+              </div>
+            </div>
+            <button onClick={doSaveEdit} disabled={loading} style={{padding:"10px 20px",borderRadius:6,background:"var(--green)",color:"#fff",fontSize:12,fontWeight:700}}>
+              {loading ? "Guardando..." : "Guardar cambios"}
+            </button>
+          </div>
+        )}
+
+        {/* Lines table */}
         <div className="card" style={{marginTop:12}}>
-          <table className="tbl">
-            <thead><tr><th>SKU</th><th>Producto</th><th>ML</th><th style={{textAlign:"right"}}>Factura</th><th style={{textAlign:"right"}}>Recibido</th><th style={{textAlign:"right"}}>Etiq.</th><th style={{textAlign:"right"}}>Ubic.</th><th>Estado</th></tr></thead>
-            <tbody>{lineas.map(l => (
-              <tr key={l.id} style={{background:l.estado==="UBICADA"?"var(--greenBg)":"transparent"}}>
-                <td className="mono" style={{fontSize:11,fontWeight:700}}>{l.sku}</td>
-                <td style={{fontSize:11}}>{l.nombre}</td>
-                <td className="mono" style={{fontSize:10,color:"var(--txt3)"}}>{l.codigo_ml||"—"}</td>
-                <td className="mono" style={{textAlign:"right"}}>{l.qty_factura}</td>
-                <td className="mono" style={{textAlign:"right",color:l.qty_recibida>0?(l.qty_recibida===l.qty_factura?"var(--green)":"var(--amber)"):"var(--txt3)"}}>{l.qty_recibida||"—"}</td>
-                <td className="mono" style={{textAlign:"right"}}>{l.qty_etiquetada||"—"}</td>
-                <td className="mono" style={{textAlign:"right",color:(l.qty_ubicada||0)>0?"var(--green)":"var(--txt3)"}}>{l.qty_ubicada||"—"}</td>
-                <td style={{fontSize:10,fontWeight:700,color:l.estado==="UBICADA"?"var(--green)":l.estado==="PENDIENTE"?"var(--red)":"var(--amber)"}}>{l.estado}</td>
-              </tr>
-            ))}</tbody>
-          </table>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+            <div style={{fontSize:13,fontWeight:700}}>Líneas ({lineas.length})</div>
+          </div>
+          <div style={{overflowX:"auto"}}>
+            <table className="tbl">
+              <thead><tr><th>SKU</th><th>Producto</th><th style={{textAlign:"right"}}>Factura</th><th style={{textAlign:"right"}}>Recibido</th><th style={{textAlign:"right"}}>Etiq.</th><th style={{textAlign:"right"}}>Ubic.</th><th>Estado</th>{isEditable&&<th>Acciones</th>}</tr></thead>
+              <tbody>{lineas.map(l => (
+                <tr key={l.id} style={{background:l.estado==="UBICADA"?"var(--greenBg)":"transparent"}}>
+                  <td className="mono" style={{fontSize:11,fontWeight:700}}>{l.sku}</td>
+                  <td style={{fontSize:11}}>{l.nombre}<br/><span className="mono" style={{fontSize:9,color:"var(--txt3)"}}>{l.codigo_ml||""}</span></td>
+                  <td className="mono" style={{textAlign:"right"}}>{l.qty_factura}</td>
+                  <td className="mono" style={{textAlign:"right",color:l.qty_recibida>0?(l.qty_recibida===l.qty_factura?"var(--green)":"var(--amber)"):"var(--txt3)"}}>{l.qty_recibida||"—"}</td>
+                  <td className="mono" style={{textAlign:"right"}}>{l.qty_etiquetada||"—"}</td>
+                  <td className="mono" style={{textAlign:"right",color:(l.qty_ubicada||0)>0?"var(--green)":"var(--txt3)"}}>{l.qty_ubicada||"—"}</td>
+                  <td><span style={{fontSize:10,fontWeight:700,padding:"2px 6px",borderRadius:4,
+                    background:l.estado==="UBICADA"?"var(--greenBg)":l.estado==="PENDIENTE"?"var(--redBg)":"var(--amberBg)",
+                    color:l.estado==="UBICADA"?"var(--green)":l.estado==="PENDIENTE"?"var(--red)":"var(--amber)"}}>{l.estado}</span></td>
+                  {isEditable&&<td style={{whiteSpace:"nowrap"}}>
+                    <div style={{display:"flex",gap:4}}>
+                      {l.estado !== "PENDIENTE" && <button onClick={()=>doResetLinea(l.id!)} title="Resetear a pendiente" style={{padding:"3px 6px",borderRadius:4,background:"var(--amberBg)",color:"var(--amber)",fontSize:10,fontWeight:700,border:"1px solid var(--amberBd)",cursor:"pointer"}}>Reset</button>}
+                      <button onClick={()=>{const v=prompt("Nueva cantidad factura:",String(l.qty_factura));if(v)doUpdateLineQty(l.id!,v);}} title="Editar cantidad" style={{padding:"3px 6px",borderRadius:4,background:"var(--bg3)",color:"var(--cyan)",fontSize:10,fontWeight:700,border:"1px solid var(--bg4)",cursor:"pointer"}}>Qty</button>
+                      <button onClick={()=>doDeleteLinea(l.id!)} title="Eliminar línea" style={{padding:"3px 6px",borderRadius:4,background:"var(--redBg)",color:"var(--red)",fontSize:10,fontWeight:700,border:"1px solid var(--redBd)",cursor:"pointer"}}>✕</button>
+                    </div>
+                  </td>}
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+          {/* Add line to existing reception */}
+          {isEditable && (
+            <div style={{marginTop:12,padding:"10px 12px",borderRadius:8,background:"var(--bg3)"}}>
+              <div style={{fontSize:11,fontWeight:600,color:"var(--txt3)",marginBottom:6}}>Agregar línea</div>
+              <div style={{display:"flex",gap:6}}>
+                <div style={{flex:1,position:"relative"}}>
+                  <input className="form-input" value={addSku} onChange={e=>setAddSku(e.target.value)} placeholder="SKU o nombre" onKeyDown={e=>e.key==="Enter"&&doAddLinea()} style={{fontSize:12}}/>
+                  {addSuggestions.length > 0 && (
+                    <div style={{position:"absolute",top:"100%",left:0,right:0,background:"var(--bg2)",border:"1px solid var(--bg3)",borderRadius:6,zIndex:10,maxHeight:120,overflow:"auto"}}>
+                      {addSuggestions.map(p => (
+                        <div key={p.sku} onClick={()=>setAddSku(p.sku)} style={{padding:"5px 8px",fontSize:11,cursor:"pointer",borderBottom:"1px solid var(--bg3)"}}>
+                          <strong>{p.sku}</strong> — {p.name}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <input type="number" className="form-input" value={addQty} onChange={e=>setAddQty(parseInt(e.target.value)||1)} style={{width:60,textAlign:"center",fontSize:12}}/>
+                <button onClick={doAddLinea} style={{padding:"6px 12px",borderRadius:6,background:"var(--green)",color:"#fff",fontSize:12,fontWeight:700}}>+</button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     );
   }
 
-  // Create form
+  // ==================== CREATE FORM ====================
   if (showCreate) {
-    const s = getStore();
     const suggestions = newSku.length >= 2 ? findProduct(newSku).slice(0, 5) : [];
     return (
       <div>
@@ -274,14 +501,14 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
     );
   }
 
-  // List view
+  // ==================== LIST VIEW ====================
   return (
     <div>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
         <div className="card-title" style={{margin:0}}>Recepciones</div>
         <div style={{display:"flex",gap:8}}>
           <button onClick={loadRecs} disabled={loading} style={{padding:"6px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--cyan)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
-            {loading?"...":"🔄"}
+            {loading?"...":"Actualizar"}
           </button>
           <button onClick={()=>setShowCreate(true)} style={{padding:"8px 16px",borderRadius:6,background:"var(--green)",color:"#fff",fontSize:12,fontWeight:700}}>
             + Nueva recepción
@@ -289,38 +516,58 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
         </div>
       </div>
 
-      {recs.length === 0 && !loading && (
+      {/* Filter tabs */}
+      <div style={{display:"flex",gap:4,marginBottom:12,flexWrap:"wrap"}}>
+        {(["activas","pausadas","completadas","anuladas","todas"] as RecFilter[]).map(f => (
+          <button key={f} onClick={()=>setFilter(f)}
+            style={{padding:"6px 12px",borderRadius:6,fontSize:11,fontWeight:600,cursor:"pointer",
+              background:filter===f?"var(--cyan)":"var(--bg3)",color:filter===f?"#000":"var(--txt2)",
+              border:`1px solid ${filter===f?"var(--cyan)":"var(--bg4)"}`}}>
+            {f==="activas"?"Activas":f==="pausadas"?"Pausadas":f==="completadas"?"Completadas":f==="anuladas"?"Anuladas":"Todas"}
+            {counts[f]>0&&<span style={{marginLeft:4,opacity:0.7}}>({counts[f]})</span>}
+          </button>
+        ))}
+      </div>
+
+      {filteredRecs.length === 0 && !loading && (
         <div className="card" style={{textAlign:"center",padding:32}}>
-          <div style={{fontSize:13,color:"var(--txt3)"}}>Sin recepciones. Crea una manualmente o desde la app de etiquetas.</div>
+          <div style={{fontSize:13,color:"var(--txt3)"}}>Sin recepciones en esta categoría.</div>
         </div>
       )}
 
       <div className="desktop-only">
         <table className="tbl">
-          <thead><tr><th>Folio</th><th>Proveedor</th><th>Fecha</th><th>Estado</th><th style={{textAlign:"right"}}>Líneas</th><th></th></tr></thead>
-          <tbody>{recs.map(rec => (
-            <tr key={rec.id} onClick={()=>openRec(rec)} style={{cursor:"pointer"}}>
-              <td className="mono" style={{fontWeight:700}}>{rec.folio}</td>
-              <td>{rec.proveedor}</td>
-              <td style={{fontSize:11,color:"var(--txt3)"}}>{fmtDate(rec.created_at||"")} {fmtTime(rec.created_at||"")}</td>
-              <td><span style={{padding:"2px 8px",borderRadius:4,background:ESTADO_COLORS_A[rec.estado],color:"#fff",fontSize:10,fontWeight:700}}>{rec.estado}</span></td>
-              <td style={{textAlign:"right"}}>—</td>
-              <td><button style={{fontSize:10,padding:"4px 8px",borderRadius:4,background:"var(--bg3)",color:"var(--cyan)",border:"1px solid var(--bg4)"}}>Ver →</button></td>
-            </tr>
-          ))}</tbody>
+          <thead><tr><th>Folio</th><th>Proveedor</th><th>Fecha</th><th>Estado</th><th>Operarios</th><th></th></tr></thead>
+          <tbody>{filteredRecs.map(rec => {
+            const m = parseRecepcionMeta(rec.notas||"");
+            return (
+              <tr key={rec.id} onClick={()=>openRec(rec)} style={{cursor:"pointer",opacity:rec.estado==="ANULADA"?0.6:1}}>
+                <td className="mono" style={{fontWeight:700}}>{rec.folio}</td>
+                <td>{rec.proveedor}</td>
+                <td style={{fontSize:11,color:"var(--txt3)"}}>{fmtDate(rec.created_at||"")} {fmtTime(rec.created_at||"")}</td>
+                <td><span style={{padding:"2px 8px",borderRadius:4,background:ESTADO_COLORS_A[rec.estado],color:"#fff",fontSize:10,fontWeight:700}}>{ESTADO_LABELS_A[rec.estado]||rec.estado}</span></td>
+                <td style={{fontSize:11,color:m.asignados.length>0?"var(--cyan)":"var(--txt3)"}}>{m.asignados.length>0?m.asignados.join(", "):"Todos"}</td>
+                <td><button style={{fontSize:10,padding:"4px 8px",borderRadius:4,background:"var(--bg3)",color:"var(--cyan)",border:"1px solid var(--bg4)"}}>Ver</button></td>
+              </tr>
+            );
+          })}</tbody>
         </table>
       </div>
 
       <div className="mobile-only">
-        {recs.map(rec => (
-          <div key={rec.id} onClick={()=>openRec(rec)} style={{padding:12,marginBottom:6,borderRadius:8,background:"var(--bg2)",border:"1px solid var(--bg3)",cursor:"pointer"}}>
-            <div style={{display:"flex",justifyContent:"space-between"}}>
-              <div style={{fontWeight:700,fontSize:13}}>{rec.proveedor}</div>
-              <span style={{padding:"2px 8px",borderRadius:4,background:ESTADO_COLORS_A[rec.estado],color:"#fff",fontSize:10,fontWeight:700}}>{rec.estado}</span>
+        {filteredRecs.map(rec => {
+          const m = parseRecepcionMeta(rec.notas||"");
+          return (
+            <div key={rec.id} onClick={()=>openRec(rec)} style={{padding:12,marginBottom:6,borderRadius:8,background:"var(--bg2)",border:"1px solid var(--bg3)",cursor:"pointer",opacity:rec.estado==="ANULADA"?0.6:1}}>
+              <div style={{display:"flex",justifyContent:"space-between"}}>
+                <div style={{fontWeight:700,fontSize:13}}>{rec.proveedor}</div>
+                <span style={{padding:"2px 8px",borderRadius:4,background:ESTADO_COLORS_A[rec.estado],color:"#fff",fontSize:10,fontWeight:700}}>{ESTADO_LABELS_A[rec.estado]||rec.estado}</span>
+              </div>
+              <div style={{fontSize:11,color:"var(--txt3)"}}>Folio: {rec.folio} · {fmtDate(rec.created_at||"")}</div>
+              {m.asignados.length > 0 && <div style={{fontSize:10,color:"var(--cyan)",marginTop:2}}>Asignado: {m.asignados.join(", ")}</div>}
             </div>
-            <div style={{fontSize:11,color:"var(--txt3)"}}>Folio: {rec.folio} · {fmtDate(rec.created_at||"")}</div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
