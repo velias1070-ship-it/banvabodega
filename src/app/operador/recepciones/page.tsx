@@ -448,7 +448,7 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
               </button>
             ) : (
               <div style={{marginBottom:10}}>
-                <BarcodeScanner onScan={onScanML} active={true} label="Escanear código ML" />
+                <BarcodeScanner onScan={onScanML} active={true} label="Escanear código ML" mode="barcode" />
                 <button onClick={() => setScanning(false)} style={{width:"100%",marginTop:6,padding:8,borderRadius:6,background:"var(--bg3)",color:"var(--txt3)",fontSize:11}}>Cancelar escaneo</button>
               </div>
             )}
@@ -488,7 +488,7 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
               </button>
             ) : (
               <div style={{marginBottom:10}}>
-                <BarcodeScanner onScan={onScanPos} active={true} label="Escanear QR posición" />
+                <BarcodeScanner onScan={onScanPos} active={true} label="Escanear QR posición" mode="qr" />
                 <button onClick={() => setScanningPos(false)} style={{width:"100%",marginTop:6,padding:8,borderRadius:6,background:"var(--bg3)",color:"var(--txt3)",fontSize:11}}>Cancelar escaneo</button>
               </div>
             )}

@@ -380,7 +380,7 @@ function PickFlow({session,linea,compIdx,operario,onDone}:{
           </button>
         ):(
           <div style={{marginBottom:12}}>
-            <BarcodeScanner active={scanActive} onScan={handleScan} label="Escanea etiqueta ML"/>
+            <BarcodeScanner active={scanActive} onScan={handleScan} label="Escanea etiqueta ML" mode="barcode"/>
             <button onClick={()=>setScanActive(false)}
               style={{width:"100%",marginTop:8,padding:10,borderRadius:8,background:"var(--bg3)",color:"#94a3b8",fontSize:12,border:"1px solid var(--bg4)"}}>
               Cancelar
