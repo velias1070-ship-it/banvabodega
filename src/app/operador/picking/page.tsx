@@ -230,10 +230,8 @@ function PickFlow({session,linea,compIdx,operario,onDone}:{
 }) {
   const comp=linea.componentes[compIdx];
   const [phase,setPhase]=useState<"locate"|"scan"|"done">("locate");
-  const [scanActive,setScanActive]=useState(false);
   const [scanResult,setScanResult]=useState<"ok"|"error"|null>(null);
   const [scanCode,setScanCode]=useState("");
-  const [manualCode,setManualCode]=useState("");
   const [saving,setSaving]=useState(false);
 
   const cfg=getMapConfig();
@@ -259,17 +257,10 @@ function PickFlow({session,linea,compIdx,operario,onDone}:{
   },[session,linea,compIdx,operario,onDone]);
 
   const handleScan=useCallback((code:string)=>{
-    setScanActive(false);setScanCode(code);
+    setScanCode(code);
     if(verificarScanPicking(code,comp,linea.skuVenta)){setScanResult("ok");doConfirm();}
-    else setScanResult("error");
+    else{setScanResult("error");if(navigator.vibrate)navigator.vibrate([200,100,200]);}
   },[comp,doConfirm]);
-
-  const handleManual=()=>{
-    if(!manualCode.trim())return;
-    setScanCode(manualCode.trim());
-    if(verificarScanPicking(manualCode.trim(),comp,linea.skuVenta)){setScanResult("ok");doConfirm();}
-    else setScanResult("error");
-  };
 
   if(phase==="done")return(
     <div style={{textAlign:"center",padding:40}}>
@@ -376,12 +367,12 @@ function PickFlow({session,linea,compIdx,operario,onDone}:{
 
         {scanResult==="error"&&(
           <div style={{padding:16,background:"#ef444422",border:"2px solid #ef4444",borderRadius:12,marginBottom:12,textAlign:"center"}}>
-            <div style={{fontSize:32,marginBottom:8}}>❌</div>
-            <div style={{fontSize:16,fontWeight:700,color:"#ef4444"}}>NO COINCIDE</div>
-            <div style={{fontSize:13,color:"#94a3b8",marginTop:4}}>Escaneaste: <strong className="mono">{scanCode}</strong></div>
-            <div style={{fontSize:12,color:"#94a3b8",marginTop:2}}>Esperado: <strong className="mono">{comp.codigoMl||comp.skuOrigen}</strong></div>
+            <div style={{fontSize:32,marginBottom:8}}>&#10060;</div>
+            <div style={{fontSize:16,fontWeight:700,color:"#ef4444"}}>CODIGO INCORRECTO</div>
+            <div style={{fontSize:13,color:"#94a3b8",marginTop:4}}>Escaneaste: <strong style={{fontFamily:"monospace",color:"#ef4444"}}>{scanCode}</strong></div>
+            <div style={{fontSize:12,color:"#94a3b8",marginTop:2}}>Esperado: <strong style={{fontFamily:"monospace",color:"#10b981"}}>{comp.codigoMl||comp.skuOrigen}</strong></div>
             <div style={{fontSize:13,color:"#f59e0b",marginTop:8,fontWeight:600}}>Verifica que tomaste el producto correcto</div>
-            <button onClick={()=>{setScanResult(null);setScanCode("");setManualCode("");}}
+            <button onClick={()=>{setScanResult(null);setScanCode("");}}
               style={{marginTop:12,padding:"10px 24px",borderRadius:8,background:"var(--bg3)",color:"#06b6d4",fontWeight:700,fontSize:13,border:"1px solid var(--bg4)"}}>
               Intentar de nuevo
             </button>
