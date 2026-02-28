@@ -274,7 +274,14 @@ function PickFlow({session,linea,compIdx,operario,onDone}:{
     <div>
       {/* WHAT */}
       <div style={{padding:20,background:"linear-gradient(135deg,#1e1b4b,#312e81)",borderRadius:16,marginBottom:12,border:"2px solid #3b82f644"}}>
-        <div style={{fontSize:11,color:"#94a3b8",fontWeight:600,marginBottom:4}}>PEDIDO {linea.id} · {linea.skuVenta}</div>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+          <div style={{fontSize:11,color:"#94a3b8",fontWeight:600}}>PEDIDO {linea.id} · {linea.skuVenta}</div>
+          {comp.unidades > 1 && (
+            <span style={{fontSize:10,fontWeight:700,padding:"2px 8px",borderRadius:4,background:"#f59e0b22",color:"#f59e0b",border:"1px solid #f59e0b44"}}>
+              PACK x{comp.unidades}
+            </span>
+          )}
+        </div>
         <div style={{fontSize:18,fontWeight:800,color:"#fff",marginBottom:4}}>{comp.nombre}</div>
         <div style={{display:"flex",gap:12,alignItems:"center",marginTop:8}}>
           <div style={{padding:"8px 20px",background:"#3b82f633",borderRadius:10,border:"2px solid #3b82f6"}}>
@@ -283,7 +290,8 @@ function PickFlow({session,linea,compIdx,operario,onDone}:{
           </div>
           <div style={{flex:1}}>
             <div className="mono" style={{fontSize:13,color:"#94a3b8"}}>SKU: {comp.skuOrigen}</div>
-            {comp.codigoMl&&<div className="mono" style={{fontSize:12,color:"#64748b"}}>ML: {comp.codigoMl}</div>}
+            {comp.codigoMl&&<div className="mono" style={{fontSize:12,color:"#64748b"}}>Código ML: {comp.codigoMl}</div>}
+            <div className="mono" style={{fontSize:10,color:"#475569",marginTop:2}}>SKU Venta: {linea.skuVenta}</div>
           </div>
         </div>
       </div>
@@ -370,7 +378,11 @@ function PickFlow({session,linea,compIdx,operario,onDone}:{
             <div style={{fontSize:32,marginBottom:8}}>&#10060;</div>
             <div style={{fontSize:16,fontWeight:700,color:"#ef4444"}}>CODIGO INCORRECTO</div>
             <div style={{fontSize:13,color:"#94a3b8",marginTop:4}}>Escaneaste: <strong style={{fontFamily:"monospace",color:"#ef4444"}}>{scanCode}</strong></div>
-            <div style={{fontSize:12,color:"#94a3b8",marginTop:2}}>Esperado: <strong style={{fontFamily:"monospace",color:"#10b981"}}>{comp.codigoMl||comp.skuOrigen}</strong></div>
+            <div style={{fontSize:12,color:"#94a3b8",marginTop:6}}>
+              Códigos válidos para este producto:
+            </div>
+            {comp.codigoMl && <div style={{fontFamily:"monospace",fontSize:12,color:"#10b981",marginTop:2}}>{comp.codigoMl} ({linea.skuVenta})</div>}
+            <div style={{fontFamily:"monospace",fontSize:11,color:"#64748b",marginTop:2}}>{comp.skuOrigen} (SKU físico)</div>
             <div style={{fontSize:13,color:"#f59e0b",marginTop:8,fontWeight:600}}>Verifica que tomaste el producto correcto</div>
             <button onClick={()=>{setScanResult(null);setScanCode("");}}
               style={{marginTop:12,padding:"10px 24px",borderRadius:8,background:"var(--bg3)",color:"#06b6d4",fontWeight:700,fontSize:13,border:"1px solid var(--bg4)"}}>
