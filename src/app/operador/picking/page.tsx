@@ -368,38 +368,11 @@ function PickFlow({session,linea,compIdx,operario,onDone}:{
       {/* SCAN PHASE */}
       {phase==="scan"&&(<>
         <div style={{padding:16,background:"#06b6d415",border:"2px solid #06b6d444",borderRadius:14,marginBottom:12}}>
-          <div style={{fontSize:15,fontWeight:700,color:"#06b6d4",marginBottom:8}}>📷 Verifica escaneando la etiqueta ML</div>
-          <div style={{fontSize:12,color:"#94a3b8"}}>Escanea el código de barras de la etiqueta MercadoLibre pegada en el producto.</div>
+          <div style={{fontSize:15,fontWeight:700,color:"#06b6d4",marginBottom:8}}>Verifica escaneando la etiqueta ML</div>
+          <div style={{fontSize:12,color:"#94a3b8"}}>Escanea el código de barras Code 128 de la etiqueta MercadoLibre con el lector.</div>
         </div>
 
-        {!scanActive?(
-          <button onClick={()=>{setScanActive(true);setScanResult(null);setScanCode("");}}
-            style={{width:"100%",padding:20,borderRadius:14,background:"var(--bg3)",color:"#06b6d4",fontSize:16,fontWeight:700,
-              border:"2px dashed #06b6d444",cursor:"pointer",marginBottom:12}}>
-            📷 Abrir Cámara
-          </button>
-        ):(
-          <div style={{marginBottom:12}}>
-            <BarcodeScanner active={scanActive} onScan={handleScan} label="Escanea etiqueta ML" mode="barcode"/>
-            <button onClick={()=>setScanActive(false)}
-              style={{width:"100%",marginTop:8,padding:10,borderRadius:8,background:"var(--bg3)",color:"#94a3b8",fontSize:12,border:"1px solid var(--bg4)"}}>
-              Cancelar
-            </button>
-          </div>
-        )}
-
-        <div style={{padding:14,background:"var(--bg2)",borderRadius:10,border:"1px solid var(--bg3)",marginBottom:12}}>
-          <div style={{fontSize:11,color:"#94a3b8",fontWeight:600,marginBottom:6}}>O escribe el código:</div>
-          <div style={{display:"flex",gap:6}}>
-            <input className="form-input mono" value={manualCode} onChange={e=>setManualCode(e.target.value.toUpperCase())}
-              placeholder="Código ML o SKU..." style={{flex:1,fontSize:14,padding:12}}
-              onKeyDown={e=>{if(e.key==="Enter")handleManual();}}/>
-            <button onClick={handleManual}
-              style={{padding:"12px 20px",borderRadius:8,background:"#06b6d4",color:"#000",fontWeight:700,fontSize:13,border:"none"}}>
-              OK
-            </button>
-          </div>
-        </div>
+        <BarcodeScanner active={true} onScan={handleScan} label="Escanea etiqueta ML" mode="barcode" placeholder="Código ML o SKU..."/>
 
         {scanResult==="error"&&(
           <div style={{padding:16,background:"#ef444422",border:"2px solid #ef4444",borderRadius:12,marginBottom:12,textAlign:"center"}}>
