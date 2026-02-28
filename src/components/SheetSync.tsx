@@ -8,11 +8,12 @@ interface SyncStatus {
   updated: number;
   total: number;
   skuVentaCount: number;
+  composicionTotal: number;
   lastSync: string | null;
 }
 
 export default function SheetSync({ onSynced }: { onSynced?: () => void }) {
-  const [status, setStatus] = useState<SyncStatus>({ state: "idle", added: 0, updated: 0, total: 0, skuVentaCount: 0, lastSync: null });
+  const [status, setStatus] = useState<SyncStatus>({ state: "idle", added: 0, updated: 0, total: 0, skuVentaCount: 0, composicionTotal: 0, lastSync: null });
 
   useEffect(() => {
     const skuVentaCount = getSkusVenta().length;
@@ -26,9 +27,8 @@ export default function SheetSync({ onSynced }: { onSynced?: () => void }) {
     setStatus(s => ({ ...s, state: "syncing" }));
     try {
       const result = await syncFromSheet();
-      // Read counts AFTER sync completes (cache is now fresh)
       const skuVentaCount = getSkusVenta().length;
-      setStatus({ state: "done", ...result, skuVentaCount, lastSync: getLastSyncTime() });
+      setStatus({ state: "done", ...result, skuVentaCount, composicionTotal: result.composicionTotal, lastSync: getLastSyncTime() });
       if (onSynced) onSynced();
       setTimeout(() => setStatus(s => s.state === "done" ? { ...s, state: "idle" } : s), 4000);
     } catch {
@@ -46,7 +46,12 @@ export default function SheetSync({ onSynced }: { onSynced?: () => void }) {
             Sincronizado — {status.total} SKU origen
             {status.added > 0 && <span> (+{status.added} nuevos)</span>}
             {status.updated > 0 && <span> ({status.updated} actualizados)</span>}
-            {status.skuVentaCount > 0 && <span style={{ color: "var(--cyan)" }}> · {status.skuVentaCount} SKU venta</span>}
+            {status.skuVentaCount > 0
+              ? <span style={{ color: "var(--cyan)" }}> · {status.skuVentaCount} SKU venta</span>
+              : status.composicionTotal > 0
+                ? <span style={{ color: "var(--amber)" }}> · {status.composicionTotal} composiciones (tabla DB vacía?)</span>
+                : <span style={{ color: "var(--txt3)" }}> · sin SKU venta en CSV</span>
+            }
           </span>
         )}
         {status.state === "error" && <span style={{ color: "var(--red)" }}>Error de sincronización</span>}
