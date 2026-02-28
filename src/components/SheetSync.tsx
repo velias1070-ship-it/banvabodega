@@ -7,14 +7,16 @@ interface SyncStatus {
   added: number;
   updated: number;
   total: number;
+  skuVentaCount: number;
   lastSync: string | null;
 }
 
 export default function SheetSync({ onSynced }: { onSynced?: () => void }) {
-  const [status, setStatus] = useState<SyncStatus>({ state: "idle", added: 0, updated: 0, total: 0, lastSync: null });
+  const [status, setStatus] = useState<SyncStatus>({ state: "idle", added: 0, updated: 0, total: 0, skuVentaCount: 0, lastSync: null });
 
   useEffect(() => {
-    setStatus(s => ({ ...s, lastSync: getLastSyncTime() }));
+    const skuVentaCount = getSkusVenta().length;
+    setStatus(s => ({ ...s, lastSync: getLastSyncTime(), skuVentaCount }));
     if (shouldSync()) {
       doSync();
     }
@@ -24,17 +26,15 @@ export default function SheetSync({ onSynced }: { onSynced?: () => void }) {
     setStatus(s => ({ ...s, state: "syncing" }));
     try {
       const result = await syncFromSheet();
-      const composicionCount = getStore().composicion.length;
-      setStatus({ state: "done", ...result, lastSync: getLastSyncTime() });
+      // Read counts AFTER sync completes (cache is now fresh)
+      const skuVentaCount = getSkusVenta().length;
+      setStatus({ state: "done", ...result, skuVentaCount, lastSync: getLastSyncTime() });
       if (onSynced) onSynced();
       setTimeout(() => setStatus(s => s.state === "done" ? { ...s, state: "idle" } : s), 4000);
     } catch {
       setStatus(s => ({ ...s, state: "error" }));
     }
   };
-
-  const composicionCount = getStore().composicion?.length || 0;
-  const skuVentaCount = getSkusVenta().length;
 
   return (
     <div style={{ padding: "8px 12px", background: "var(--bg2)", borderBottom: "1px solid var(--bg3)", display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11 }}>
@@ -46,14 +46,14 @@ export default function SheetSync({ onSynced }: { onSynced?: () => void }) {
             Sincronizado — {status.total} SKU origen
             {status.added > 0 && <span> (+{status.added} nuevos)</span>}
             {status.updated > 0 && <span> ({status.updated} actualizados)</span>}
-            {skuVentaCount > 0 && <span style={{ color: "var(--cyan)" }}> · {skuVentaCount} SKU venta</span>}
+            {status.skuVentaCount > 0 && <span style={{ color: "var(--cyan)" }}> · {status.skuVentaCount} SKU venta</span>}
           </span>
         )}
         {status.state === "error" && <span style={{ color: "var(--red)" }}>Error de sincronización</span>}
         {status.state === "idle" && status.lastSync && (
           <span style={{ color: "var(--txt3)" }}>
             Diccionario: {status.lastSync}
-            {skuVentaCount > 0 && <span> · {skuVentaCount} SKU venta</span>}
+            {status.skuVentaCount > 0 && <span> · {status.skuVentaCount} SKU venta</span>}
           </span>
         )}
         {status.state === "idle" && !status.lastSync && <span style={{ color: "var(--txt3)" }}>Diccionario: sin sincronizar</span>}
