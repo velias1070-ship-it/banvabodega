@@ -108,6 +108,17 @@ export interface DBOperario {
 }
 
 // ==================== PRODUCTOS ====================
+
+// Strip auto-generated fields (created_at, updated_at) that Supabase rejects on upsert
+function cleanProduct(p: DBProduct): DBProduct {
+  return {
+    sku: p.sku, sku_venta: p.sku_venta, codigo_ml: p.codigo_ml,
+    nombre: p.nombre, categoria: p.categoria, proveedor: p.proveedor,
+    costo: p.costo, precio: p.precio, reorder: p.reorder,
+    requiere_etiqueta: p.requiere_etiqueta, tamano: p.tamano, color: p.color,
+  };
+}
+
 export async function fetchProductos(): Promise<DBProduct[]> {
   const sb = getSupabase(); if (!sb) return [];
   const { data } = await sb.from("productos").select("*").order("sku");
@@ -116,14 +127,14 @@ export async function fetchProductos(): Promise<DBProduct[]> {
 
 export async function upsertProducto(p: DBProduct) {
   const sb = getSupabase(); if (!sb) return;
-  await sb.from("productos").upsert(p, { onConflict: "sku" });
+  await sb.from("productos").upsert(cleanProduct(p), { onConflict: "sku" });
 }
 
 export async function upsertProductos(prods: DBProduct[]) {
   const sb = getSupabase(); if (!sb) return;
   // Batch in chunks of 500
   for (let i = 0; i < prods.length; i += 500) {
-    await sb.from("productos").upsert(prods.slice(i, i + 500), { onConflict: "sku" });
+    await sb.from("productos").upsert(prods.slice(i, i + 500).map(cleanProduct), { onConflict: "sku" });
   }
 }
 
