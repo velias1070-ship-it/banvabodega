@@ -341,7 +341,7 @@ export async function getComponentesPorSkuVenta(skuVenta: string): Promise<DBCom
 }
 
 // ==================== SYNC DICCIONARIO FROM SHEET ====================
-// Sheet columns: SKU Venta | CODIGO ML | Nombre Origen | Proveedor | Sku Origen | Unidades | Tamaño | Color | Categoria
+// Sheet columns: SKU Venta | CODIGO ML | Nombre Origen | Proveedor | Sku Origen | Unidades | Tamaño | Color | Categoria | Largo | Alto | Ancho | Peso (kg) | Costo
 const DICT_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQZxKcXM-OaJ5_B-lEM87PPy9B4675FRFLfpWtL-ZhTqpalZNqODq18XFY2C4txj7fXc5n1jYZSTWrJ/pub?gid=348421726&single=true&output=csv";
 
 function parseCSVLine(line: string): string[] {
@@ -377,7 +377,7 @@ export async function syncDiccionarioFromSheet(): Promise<{
     const rows: Array<{
       skuVenta: string; codigoMl: string; nombreOrigen: string;
       proveedor: string; skuOrigen: string; unidades: number;
-      tamano: string; color: string; categoria: string;
+      tamano: string; color: string; categoria: string; costo: number;
     }> = [];
 
     for (let i = 1; i < lines.length; i++) {
@@ -391,9 +391,10 @@ export async function syncDiccionarioFromSheet(): Promise<{
       const tamano = (cols[6] || "").trim();
       const color = (cols[7] || "").trim();
       const categoria = (cols[8] || "").trim() || "Otros";
+      const costo = parseFloat(cols[13] || "0") || 0;
 
       if (!skuOrigen || !nombreOrigen) continue;
-      rows.push({ skuVenta, codigoMl, nombreOrigen, proveedor, skuOrigen, unidades, tamano, color, categoria });
+      rows.push({ skuVenta, codigoMl, nombreOrigen, proveedor, skuOrigen, unidades, tamano, color, categoria, costo });
     }
 
     // 1) Build unique productos (keyed by SKU Origen = producto físico)
@@ -418,7 +419,7 @@ export async function syncDiccionarioFromSheet(): Promise<{
           nombre: row.nombreOrigen,
           categoria: row.categoria,
           proveedor: row.proveedor,
-          costo: 0,
+          costo: row.costo,
           precio: 0,
           reorder: 20,
           requiere_etiqueta: !!row.codigoMl,
@@ -445,10 +446,10 @@ export async function syncDiccionarioFromSheet(): Promise<{
     productMap.forEach((prod, sku) => {
       const ex = existingMap.get(sku);
       if (ex) {
-        // Update if anything changed (preserve cost/price/reorder set by admin)
+        // Update if anything changed (preserve price/reorder set by admin)
         if (ex.nombre !== prod.nombre || ex.proveedor !== prod.proveedor ||
             ex.categoria !== prod.categoria || ex.tamano !== prod.tamano ||
-            ex.color !== prod.color ||
+            ex.color !== prod.color || ex.costo !== prod.costo ||
             ex.codigo_ml !== prod.codigo_ml || ex.sku_venta !== prod.sku_venta ||
             ex.requiere_etiqueta !== prod.requiere_etiqueta) {
           toUpsert.push({
@@ -456,6 +457,7 @@ export async function syncDiccionarioFromSheet(): Promise<{
             nombre: prod.nombre,
             proveedor: prod.proveedor,
             categoria: prod.categoria,
+            costo: prod.costo,
             tamano: prod.tamano,
             color: prod.color,
             codigo_ml: prod.codigo_ml,
