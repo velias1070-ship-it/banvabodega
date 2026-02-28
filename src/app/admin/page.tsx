@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, ComposicionVenta, DBPickingSession, PickingLinea } from "@/lib/store";
 import Link from "next/link";
 import SheetSync from "@/components/SheetSync";
@@ -412,26 +412,123 @@ function AdminPicking({ refresh }: { refresh: () => void }) {
 }
 
 // ==================== CREATE PICKING SESSION ====================
+// ==================== PRODUCT SEARCH FOR PICKING ====================
+function PickingProductSearch({ onAdd }: { onAdd: (skuVenta: string, qty: number) => void }) {
+  const [q, setQ] = useState("");
+  const [qty, setQty] = useState(1);
+  const [results, setResults] = useState<{ skuVenta: string; codigoMl: string; nombre: string; componentes: { skuVenta: string; codigoMl: string; skuOrigen: string; unidades: number }[] }[]>([]);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (q.length >= 2) {
+      setResults(findSkuVenta(q));
+    } else {
+      setResults([]);
+    }
+  }, [q]);
+
+  const handleAdd = (skuVenta: string) => {
+    onAdd(skuVenta, qty);
+    setQ("");
+    setQty(1);
+    setResults([]);
+    inputRef.current?.focus();
+  };
+
+  return (
+    <div style={{marginBottom:12}}>
+      <div style={{display:"flex",gap:8,marginBottom:8}}>
+        <input ref={inputRef} className="form-input" value={q} onChange={e => setQ(e.target.value)}
+          placeholder="Buscar producto por nombre o SKU..."
+          style={{flex:1,fontSize:13,padding:10}}/>
+        <div style={{display:"flex",alignItems:"center",gap:4,background:"var(--bg3)",borderRadius:8,padding:"0 8px",border:"1px solid var(--bg4)"}}>
+          <button onClick={() => setQty(Math.max(1, qty - 1))}
+            style={{width:24,height:24,borderRadius:4,background:"var(--bg4)",color:"var(--txt2)",fontSize:14,fontWeight:700,border:"none",cursor:"pointer",lineHeight:"22px"}}>−</button>
+          <span className="mono" style={{fontSize:14,fontWeight:700,color:"var(--blue)",minWidth:24,textAlign:"center"}}>{qty}</span>
+          <button onClick={() => setQty(qty + 1)}
+            style={{width:24,height:24,borderRadius:4,background:"var(--bg4)",color:"var(--txt2)",fontSize:14,fontWeight:700,border:"none",cursor:"pointer",lineHeight:"22px"}}>+</button>
+        </div>
+      </div>
+
+      {results.length > 0 && (
+        <div style={{maxHeight:250,overflow:"auto",borderRadius:8,border:"1px solid var(--bg4)",background:"var(--bg)"}}>
+          {results.map(r => (
+            <button key={r.skuVenta} onClick={() => handleAdd(r.skuVenta)}
+              style={{width:"100%",textAlign:"left",padding:"10px 12px",border:"none",borderBottom:"1px solid var(--bg3)",
+                background:"transparent",cursor:"pointer",display:"flex",alignItems:"center",gap:10}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:12,fontWeight:700,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.nombre}</div>
+                <div style={{fontSize:11,color:"var(--txt3)",display:"flex",gap:8}}>
+                  <span className="mono">{r.skuVenta}</span>
+                  {r.componentes.length > 1 && <span>({r.componentes.length} componentes)</span>}
+                </div>
+              </div>
+              <div style={{padding:"4px 10px",borderRadius:6,background:"var(--greenBg)",color:"var(--green)",fontSize:11,fontWeight:700,flexShrink:0}}>
+                + {qty}
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {q.length >= 2 && results.length === 0 && (
+        <div style={{textAlign:"center",padding:12,color:"var(--txt3)",fontSize:12}}>
+          Sin resultados para &quot;{q}&quot;
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CreatePickingSession({ onCreated, onCancel }: { onCreated: () => void; onCancel: () => void }) {
   const [raw, setRaw] = useState("");
   const [fecha, setFecha] = useState(new Date().toISOString().slice(0, 10));
   const [preview, setPreview] = useState<{ lineas: PickingLinea[]; errors: string[] } | null>(null);
   const [saving, setSaving] = useState(false);
+  const [inputMode, setInputMode] = useState<"search" | "text">("search");
+  const [searchOrders, setSearchOrders] = useState<{ skuVenta: string; qty: number; nombre: string }[]>([]);
 
   const parseOrders = () => {
-    const lines = raw.trim().split("\n").filter(l => l.trim());
-    const orders: { skuVenta: string; qty: number }[] = [];
+    let orders: { skuVenta: string; qty: number }[] = [];
 
-    for (const line of lines) {
-      // Flexible parsing: "SKU QTY", "SKU,QTY", "SKU;QTY", "SKU\tQTY", or just "SKU" (qty=1)
-      const parts = line.trim().split(/[\s,;\t]+/);
-      const sku = parts[0]?.trim();
-      const qty = parts.length > 1 ? parseInt(parts[1]) || 1 : 1;
-      if (sku) orders.push({ skuVenta: sku, qty });
+    if (inputMode === "text") {
+      const lines = raw.trim().split("\n").filter(l => l.trim());
+      for (const line of lines) {
+        const parts = line.trim().split(/[\s,;\t]+/);
+        const sku = parts[0]?.trim();
+        const qty = parts.length > 1 ? parseInt(parts[1]) || 1 : 1;
+        if (sku) orders.push({ skuVenta: sku, qty });
+      }
+    } else {
+      orders = searchOrders.map(o => ({ skuVenta: o.skuVenta, qty: o.qty }));
     }
 
     const result = buildPickingLineas(orders);
     setPreview(result);
+  };
+
+  const handleSearchAdd = (skuVenta: string, qty: number) => {
+    // If already in list, increment qty
+    const existing = searchOrders.find(o => o.skuVenta === skuVenta);
+    if (existing) {
+      setSearchOrders(searchOrders.map(o => o.skuVenta === skuVenta ? { ...o, qty: o.qty + qty } : o));
+    } else {
+      const found = findSkuVenta(skuVenta);
+      const nombre = found.find(f => f.skuVenta === skuVenta)?.nombre || skuVenta;
+      setSearchOrders([...searchOrders, { skuVenta, qty, nombre }]);
+    }
+    setPreview(null);
+  };
+
+  const removeSearchOrder = (skuVenta: string) => {
+    setSearchOrders(searchOrders.filter(o => o.skuVenta !== skuVenta));
+    setPreview(null);
+  };
+
+  const updateSearchOrderQty = (skuVenta: string, newQty: number) => {
+    if (newQty < 1) return;
+    setSearchOrders(searchOrders.map(o => o.skuVenta === skuVenta ? { ...o, qty: newQty } : o));
+    setPreview(null);
   };
 
   const doCreate = async () => {
@@ -457,31 +554,87 @@ function CreatePickingSession({ onCreated, onCancel }: { onCreated: () => void; 
             <input type="date" className="form-input" value={fecha} onChange={e => setFecha(e.target.value)} style={{fontSize:14,padding:10}}/>
           </div>
 
-          <div style={{marginBottom:12}}>
-            <label style={{fontSize:12,fontWeight:600,color:"var(--txt3)",display:"block",marginBottom:4}}>
-              Pedidos (SKU Venta + Cantidad, uno por línea)
-            </label>
-            <textarea className="form-input mono" value={raw} onChange={e => setRaw(e.target.value)}
-              placeholder={"TXV23QLAT25BE 1\nSAB180BL-PK2 2\nJUE2PCAM15GR 1"}
-              rows={12} style={{fontSize:12,lineHeight:1.6,resize:"vertical"}}/>
-            <div style={{fontSize:11,color:"var(--txt3)",marginTop:4}}>
-              Formato: <code>SKU_VENTA CANTIDAD</code> — Si no pones cantidad, asume 1.<br/>
-              Separadores válidos: espacio, tab, coma, punto y coma.
-            </div>
+          {/* Mode toggle */}
+          <div style={{display:"flex",gap:4,marginBottom:12,background:"var(--bg3)",borderRadius:8,padding:3}}>
+            <button onClick={() => setInputMode("search")}
+              style={{flex:1,padding:"8px 12px",borderRadius:6,fontSize:12,fontWeight:600,border:"none",cursor:"pointer",
+                background:inputMode==="search"?"var(--blue)":"transparent",
+                color:inputMode==="search"?"#fff":"var(--txt3)"}}>
+              Buscar producto
+            </button>
+            <button onClick={() => setInputMode("text")}
+              style={{flex:1,padding:"8px 12px",borderRadius:6,fontSize:12,fontWeight:600,border:"none",cursor:"pointer",
+                background:inputMode==="text"?"var(--blue)":"transparent",
+                color:inputMode==="text"?"#fff":"var(--txt3)"}}>
+              Pegar texto
+            </button>
           </div>
 
-          <button onClick={parseOrders}
-            style={{width:"100%",padding:12,borderRadius:8,background:"var(--blue)",color:"#fff",fontSize:14,fontWeight:700,border:"none",cursor:"pointer"}}>
-            Vista previa
-          </button>
+          {inputMode === "search" ? (
+            <div>
+              <PickingProductSearch onAdd={handleSearchAdd}/>
+
+              {/* Search orders list */}
+              {searchOrders.length > 0 && (
+                <div style={{marginBottom:12}}>
+                  <div style={{fontSize:12,fontWeight:600,color:"var(--txt3)",marginBottom:6}}>Pedidos agregados ({searchOrders.length}):</div>
+                  <div style={{maxHeight:300,overflow:"auto"}}>
+                    {searchOrders.map(o => (
+                      <div key={o.skuVenta} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",marginBottom:4,
+                        borderRadius:8,background:"var(--bg2)",border:"1px solid var(--bg3)"}}>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontSize:12,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{o.nombre}</div>
+                          <div className="mono" style={{fontSize:11,color:"var(--txt3)"}}>{o.skuVenta}</div>
+                        </div>
+                        <div style={{display:"flex",alignItems:"center",gap:4}}>
+                          <button onClick={() => updateSearchOrderQty(o.skuVenta, o.qty - 1)}
+                            style={{width:22,height:22,borderRadius:4,background:"var(--bg3)",color:"var(--txt2)",fontSize:12,fontWeight:700,border:"1px solid var(--bg4)",cursor:"pointer",lineHeight:"20px"}}>−</button>
+                          <span className="mono" style={{fontSize:13,fontWeight:700,color:"var(--blue)",minWidth:20,textAlign:"center"}}>{o.qty}</span>
+                          <button onClick={() => updateSearchOrderQty(o.skuVenta, o.qty + 1)}
+                            style={{width:22,height:22,borderRadius:4,background:"var(--bg3)",color:"var(--txt2)",fontSize:12,fontWeight:700,border:"1px solid var(--bg4)",cursor:"pointer",lineHeight:"20px"}}>+</button>
+                        </div>
+                        <button onClick={() => removeSearchOrder(o.skuVenta)}
+                          style={{width:22,height:22,borderRadius:4,background:"var(--redBg)",color:"var(--red)",fontSize:12,fontWeight:700,border:"none",cursor:"pointer",lineHeight:"20px"}}>×</button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <button onClick={parseOrders} disabled={searchOrders.length === 0}
+                style={{width:"100%",padding:12,borderRadius:8,background:"var(--blue)",color:"#fff",fontSize:14,fontWeight:700,border:"none",cursor:"pointer",opacity:searchOrders.length===0?0.4:1}}>
+                Vista previa
+              </button>
+            </div>
+          ) : (
+            <div>
+              <div style={{marginBottom:12}}>
+                <label style={{fontSize:12,fontWeight:600,color:"var(--txt3)",display:"block",marginBottom:4}}>
+                  Pedidos (SKU Venta + Cantidad, uno por línea)
+                </label>
+                <textarea className="form-input mono" value={raw} onChange={e => setRaw(e.target.value)}
+                  placeholder={"TXV23QLAT25BE 1\nSAB180BL-PK2 2\nJUE2PCAM15GR 1"}
+                  rows={12} style={{fontSize:12,lineHeight:1.6,resize:"vertical"}}/>
+                <div style={{fontSize:11,color:"var(--txt3)",marginTop:4}}>
+                  Formato: <code>SKU_VENTA CANTIDAD</code> — Si no pones cantidad, asume 1.<br/>
+                  Separadores válidos: espacio, tab, coma, punto y coma.
+                </div>
+              </div>
+
+              <button onClick={parseOrders}
+                style={{width:"100%",padding:12,borderRadius:8,background:"var(--blue)",color:"#fff",fontSize:14,fontWeight:700,border:"none",cursor:"pointer"}}>
+                Vista previa
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Right: Preview */}
         <div>
           {!preview && (
             <div style={{textAlign:"center",padding:40,color:"var(--txt3)"}}>
-              <div style={{fontSize:32,marginBottom:8}}>👈</div>
-              <div style={{fontSize:13}}>Pega los pedidos y haz clic en &quot;Vista previa&quot;</div>
+              <div style={{fontSize:32,marginBottom:8}}>{inputMode === "search" ? "🔍" : "👈"}</div>
+              <div style={{fontSize:13}}>{inputMode === "search" ? "Busca productos y agrégalos a la lista" : "Pega los pedidos y haz clic en \"Vista previa\""}</div>
             </div>
           )}
 
@@ -521,7 +674,7 @@ function CreatePickingSession({ onCreated, onCancel }: { onCreated: () => void; 
                         <span>
                           <strong style={{color:"var(--green)"}}>{comp.posicion}</strong>
                           {" · "}{comp.unidades} uds
-                          {comp.stockDisponible < comp.unidades && <span style={{color:"var(--red)"}}> ⚠️ bajo stock</span>}
+                          {comp.stockDisponible < comp.unidades && <span style={{color:"var(--red)"}}> bajo stock</span>}
                         </span>
                       </div>
                     ))}
@@ -548,6 +701,7 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
   const [session, setSession] = useState<DBPickingSession>(initialSession);
   const [editing, setEditing] = useState(false);
   const [addRaw, setAddRaw] = useState("");
+  const [addMode, setAddMode] = useState<"search" | "text">("search");
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState("");
 
@@ -671,15 +825,63 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
       {editing && (
         <div style={{padding:16,background:"var(--bg2)",borderRadius:10,border:"2px solid var(--cyan)33",marginBottom:16}}>
           <div style={{fontSize:14,fontWeight:700,color:"var(--cyan)",marginBottom:8}}>➕ Agregar pedidos</div>
-          <textarea className="form-input mono" value={addRaw} onChange={e => setAddRaw(e.target.value)}
-            placeholder={"TXV23QLAT25BE 1\nSAB180BL-PK2 2"} rows={4}
-            style={{fontSize:12,lineHeight:1.6,resize:"vertical",marginBottom:8}}/>
-          <div style={{display:"flex",gap:8}}>
-            <button onClick={addLines} disabled={saving || !addRaw.trim()}
-              style={{padding:"8px 18px",borderRadius:8,background:"var(--green)",color:"#fff",fontSize:12,fontWeight:700,border:"none",cursor:"pointer",opacity:(!addRaw.trim()||saving)?0.4:1}}>
-              {saving ? "Guardando..." : "Agregar"}
+
+          {/* Mode toggle */}
+          <div style={{display:"flex",gap:4,marginBottom:12,background:"var(--bg3)",borderRadius:8,padding:3}}>
+            <button onClick={() => setAddMode("search")}
+              style={{flex:1,padding:"6px 10px",borderRadius:6,fontSize:11,fontWeight:600,border:"none",cursor:"pointer",
+                background:addMode==="search"?"var(--blue)":"transparent",
+                color:addMode==="search"?"#fff":"var(--txt3)"}}>
+              Buscar producto
+            </button>
+            <button onClick={() => setAddMode("text")}
+              style={{flex:1,padding:"6px 10px",borderRadius:6,fontSize:11,fontWeight:600,border:"none",cursor:"pointer",
+                background:addMode==="text"?"var(--blue)":"transparent",
+                color:addMode==="text"?"#fff":"var(--txt3)"}}>
+              Pegar texto
             </button>
           </div>
+
+          {addMode === "search" ? (
+            <PickingProductSearch onAdd={(skuVenta, qty) => {
+              const found = findSkuVenta(skuVenta);
+              const nombre = found.find(f => f.skuVenta === skuVenta)?.nombre || skuVenta;
+              // Add directly via addLines logic
+              const result = buildPickingLineas([{ skuVenta, qty }]);
+              if (result.lineas.length === 0) {
+                showToast("Producto no encontrado en diccionario");
+                return;
+              }
+              // Re-number
+              const maxNum = session.lineas.reduce((max, l) => {
+                const n = parseInt(l.id.replace("P", "")) || 0;
+                return Math.max(max, n);
+              }, 0);
+              const newLineas = result.lineas.map((l, i) => ({ ...l, id: `P${String(maxNum + i + 1).padStart(3, "0")}` }));
+              const allLineas = [...session.lineas, ...newLineas];
+              setSaving(true);
+              actualizarPicking(session.id!, { lineas: allLineas, estado: "ABIERTA" }).then(() => {
+                setSession({ ...session, lineas: allLineas, estado: "ABIERTA" });
+                setSaving(false);
+                showToast(`+ ${qty}× ${nombre}`);
+                if (result.errors.length > 0) {
+                  alert("Advertencias:\n" + result.errors.join("\n"));
+                }
+              });
+            }}/>
+          ) : (
+            <>
+              <textarea className="form-input mono" value={addRaw} onChange={e => setAddRaw(e.target.value)}
+                placeholder={"TXV23QLAT25BE 1\nSAB180BL-PK2 2"} rows={4}
+                style={{fontSize:12,lineHeight:1.6,resize:"vertical",marginBottom:8}}/>
+              <div style={{display:"flex",gap:8}}>
+                <button onClick={addLines} disabled={saving || !addRaw.trim()}
+                  style={{padding:"8px 18px",borderRadius:8,background:"var(--green)",color:"#fff",fontSize:12,fontWeight:700,border:"none",cursor:"pointer",opacity:(!addRaw.trim()||saving)?0.4:1}}>
+                  {saving ? "Guardando..." : "Agregar"}
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
 

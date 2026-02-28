@@ -413,6 +413,90 @@ export function getSkusVenta(): { skuVenta: string; codigoMl: string; componente
   }));
 }
 
+// Buscar SKUs de venta por nombre o código (para agregar pedidos fácilmente)
+export function findSkuVenta(query: string): { skuVenta: string; codigoMl: string; nombre: string; componentes: ComposicionVenta[] }[] {
+  const raw = query.trim();
+  if (!raw) return [];
+
+  const normalize = (s: string) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const words = normalize(raw).split(/\s+/).filter(w => w.length > 0);
+  if (words.length === 0) return [];
+
+  const allSkusVenta = getSkusVenta();
+  const scored: { item: { skuVenta: string; codigoMl: string; nombre: string; componentes: ComposicionVenta[] }; score: number }[] = [];
+
+  for (const sv of allSkusVenta) {
+    // Build a descriptive name from components
+    const compNames = sv.componentes.map(c => {
+      const prod = _cache.products[c.skuOrigen];
+      return prod?.name || c.skuOrigen;
+    });
+    const nombre = compNames.join(" + ");
+
+    const skuN = normalize(sv.skuVenta);
+    const mlN = normalize(sv.codigoMl || "");
+    const nameN = normalize(nombre);
+    const haystack = `${skuN} ${mlN} ${nameN}`;
+
+    let score = 0;
+    let allMatch = true;
+
+    for (const w of words) {
+      if (skuN === w) { score += 100; continue; }
+      if (skuN.startsWith(w)) { score += 50; continue; }
+      if (skuN.includes(w)) { score += 30; continue; }
+      if (mlN && mlN.includes(w)) { score += 40; continue; }
+      if (nameN.includes(w)) { score += 20; continue; }
+      if (haystack.includes(w)) { score += 10; continue; }
+      allMatch = false;
+      break;
+    }
+
+    if (allMatch && score > 0) {
+      scored.push({ item: { ...sv, nombre }, score });
+    }
+  }
+
+  // Also search products that might be sold directly (not in composicion_venta)
+  for (const p of Object.values(_cache.products)) {
+    // Skip if already covered by composicion_venta
+    if (allSkusVenta.some(sv => sv.skuVenta === p.sku)) continue;
+
+    const skuN = normalize(p.sku);
+    const nameN = normalize(p.name);
+    const mlN = normalize(p.mlCode || "");
+    const haystack = `${skuN} ${nameN} ${mlN}`;
+
+    let score = 0;
+    let allMatch = true;
+
+    for (const w of words) {
+      if (skuN === w) { score += 100; continue; }
+      if (skuN.startsWith(w)) { score += 50; continue; }
+      if (skuN.includes(w)) { score += 30; continue; }
+      if (mlN && mlN.includes(w)) { score += 40; continue; }
+      if (nameN.includes(w)) { score += 20; continue; }
+      if (haystack.includes(w)) { score += 10; continue; }
+      allMatch = false;
+      break;
+    }
+
+    if (allMatch && score > 0) {
+      scored.push({
+        item: {
+          skuVenta: p.sku,
+          codigoMl: p.mlCode || "",
+          nombre: p.name,
+          componentes: [{ skuVenta: p.sku, codigoMl: p.mlCode || "", skuOrigen: p.sku, unidades: 1 }],
+        },
+        score,
+      });
+    }
+  }
+
+  return scored.sort((a, b) => b.score - a.score).slice(0, 20).map(x => x.item);
+}
+
 // ==================== ASYNC MUTATIONS ====================
 
 // Record movement + update stock (writes to Supabase + cache)
