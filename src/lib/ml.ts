@@ -84,6 +84,40 @@ interface StockResponse {
   version: number;
 }
 
+/** Shipment detail from /shipments/$ID (old API) */
+interface MLShipmentDetail {
+  id: number;
+  status: string;
+  substatus?: string;
+  logistic_type?: string;
+  sender_id?: number;
+  receiver_id?: number;
+  site_id?: string;
+  // From /marketplace/shipments with x-format-new: true
+  logistic?: {
+    direction?: string;
+    mode?: string;
+    type?: string; // "self_service" = Flex
+  };
+  origin?: {
+    type?: string; // "selling_address" | "seller_warehouse"
+    sender_id?: number;
+    shipping_address?: {
+      address_line?: string;
+      city?: { name?: string };
+      state?: { name?: string };
+    };
+  };
+  destination?: {
+    shipping_address?: {
+      address_line?: string;
+      city?: { name?: string };
+      state?: { name?: string };
+    };
+    receiver_name?: string;
+  };
+}
+
 // ==================== TOKEN MANAGEMENT ====================
 
 export async function getMLConfig(): Promise<MLConfig | null> {
@@ -198,12 +232,12 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string): 
 /**
  * Make authenticated GET request to ML API
  */
-export async function mlGet<T = unknown>(path: string): Promise<T | null> {
+export async function mlGet<T = unknown>(path: string, extraHeaders?: Record<string, string>): Promise<T | null> {
   const token = await ensureValidToken();
   if (!token) return null;
 
   const resp = await fetch(`${ML_API}${path}`, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${token}`, ...extraHeaders },
   });
 
   if (!resp.ok) {
@@ -288,6 +322,54 @@ export async function mlDelete(path: string): Promise<boolean> {
   return true;
 }
 
+// ==================== SHIPMENT VERIFICATION ====================
+
+/**
+ * Get shipment details to determine the real logistic type.
+ * Tries /shipments/$ID first (returns logistic_type at top level),
+ * then enriches with /marketplace/shipments/$ID (x-format-new: true) for origin info.
+ * Returns the logistic type and origin warehouse info.
+ */
+export async function getShipmentFlexInfo(shippingId: number): Promise<{
+  logistic_type: string;
+  origin_type: string | null;
+  origin_address: string | null;
+  is_flex: boolean;
+  raw: MLShipmentDetail | null;
+}> {
+  const fallback = { logistic_type: "unknown", origin_type: null, origin_address: null, is_flex: false, raw: null };
+
+  // First try the old endpoint for logistic_type
+  const shipment = await mlGet<MLShipmentDetail>(`/shipments/${shippingId}`);
+  if (!shipment) return fallback;
+
+  let logisticType = shipment.logistic_type || "unknown";
+
+  // Also try the marketplace endpoint with x-format-new for richer data (origin, logistic.type)
+  const mktShipment = await mlGet<MLShipmentDetail>(
+    `/shipments/${shippingId}`,
+    { "x-format-new": "true" }
+  );
+
+  if (mktShipment?.logistic?.type) {
+    logisticType = mktShipment.logistic.type;
+  }
+
+  const originType = mktShipment?.origin?.type || null;
+  const originAddr = mktShipment?.origin?.shipping_address;
+  const originAddress = originAddr
+    ? [originAddr.address_line, originAddr.city?.name, originAddr.state?.name].filter(Boolean).join(", ")
+    : null;
+
+  return {
+    logistic_type: logisticType,
+    origin_type: originType,
+    origin_address: originAddress,
+    is_flex: logisticType === "self_service",
+    raw: mktShipment || shipment,
+  };
+}
+
 // ==================== CUTOFF LOGIC ====================
 
 /**
@@ -337,13 +419,30 @@ export function calcFechaArmado(fechaVenta: string | Date, horaCorteVL: number, 
 
 /**
  * Process a single ML order: validate it's Flex, extract items, upsert to DB.
+ * If logistic_type is not available from the order, verifies via shipment endpoint.
  * Returns number of items upserted.
  */
 export async function processOrder(order: MLOrder, config: MLConfig): Promise<number> {
-  // Only process Flex (self_service) orders
-  if (order.shipping?.logistic_type !== "self_service") return 0;
   // Only process paid orders
   if (order.status !== "paid") return 0;
+
+  // Check logistic type: trust it if explicitly set, verify via shipment if missing
+  let isFlex = order.shipping?.logistic_type === "self_service";
+
+  if (!isFlex && order.shipping?.id) {
+    // logistic_type missing or different — verify via shipment endpoint
+    const lt = order.shipping?.logistic_type;
+    if (!lt || lt === "unknown" || lt === "") {
+      console.log(`[ML] Order ${order.id}: logistic_type="${lt || "null"}", checking shipment ${order.shipping.id}...`);
+      const shipInfo = await getShipmentFlexInfo(order.shipping.id);
+      isFlex = shipInfo.is_flex;
+      if (isFlex) {
+        console.log(`[ML] Order ${order.id}: confirmed Flex via shipment (origin: ${shipInfo.origin_type}, ${shipInfo.origin_address})`);
+      }
+    }
+  }
+
+  if (!isFlex) return 0;
 
   const sb = getServerSupabase();
   if (!sb) return 0;
@@ -447,9 +546,10 @@ export async function syncHistoricalOrders(days: number = 7): Promise<{ total: n
     totalOrders = result.paging.total;
 
     for (const order of result.results) {
-      if (order.shipping?.logistic_type === "self_service") {
+      // processOrder now verifies via shipment endpoint when logistic_type is missing
+      const count = await processOrder(order, config);
+      if (count > 0) {
         flexFound++;
-        const count = await processOrder(order, config);
         newOrders += count;
       } else {
         nonFlexSkipped++;
@@ -478,7 +578,7 @@ export async function diagnoseMlConnection(): Promise<{
   recent_orders_total: number;
   recent_orders_flex: number;
   recent_orders_other: number;
-  sample_orders: Array<{ id: number; date: string; logistic_type: string; status: string; items: number }>;
+  sample_orders: Array<{ id: number; date: string; logistic_type: string; status: string; items: number; shipping_id: number; origin_type: string | null; origin_address: string | null }>;
   shipment_sample: unknown | null;
   errors: string[];
 }> {
@@ -492,7 +592,7 @@ export async function diagnoseMlConnection(): Promise<{
     recent_orders_total: 0,
     recent_orders_flex: 0,
     recent_orders_other: 0,
-    sample_orders: [] as Array<{ id: number; date: string; logistic_type: string; status: string; items: number }>,
+    sample_orders: [] as Array<{ id: number; date: string; logistic_type: string; status: string; items: number; shipping_id: number; origin_type: string | null; origin_address: string | null }>,
     shipment_sample: null as unknown | null,
     errors,
   };
@@ -559,8 +659,25 @@ export async function diagnoseMlConnection(): Promise<{
     if (ordersResp) {
       result.recent_orders_total = ordersResp.paging.total;
 
+      // For each sample order, verify logistic type via shipment endpoint
       for (const order of ordersResp.results) {
-        const lt = order.shipping?.logistic_type || "unknown";
+        let lt = order.shipping?.logistic_type || "unknown";
+        let originType: string | null = null;
+        let originAddress: string | null = null;
+
+        // For sample orders (first 10), verify via shipment endpoint
+        if (result.sample_orders.length < 10 && order.shipping?.id) {
+          const shipInfo = await getShipmentFlexInfo(order.shipping.id);
+          lt = shipInfo.logistic_type;
+          originType = shipInfo.origin_type;
+          originAddress = shipInfo.origin_address;
+
+          // Save first shipment as sample
+          if (!result.shipment_sample && shipInfo.raw) {
+            result.shipment_sample = shipInfo.raw;
+          }
+        }
+
         if (lt === "self_service") {
           result.recent_orders_flex++;
         } else {
@@ -575,20 +692,16 @@ export async function diagnoseMlConnection(): Promise<{
             logistic_type: lt,
             status: order.status,
             items: order.order_items?.length || 0,
+            shipping_id: order.shipping?.id || 0,
+            origin_type: originType,
+            origin_address: originAddress,
           });
         }
       }
 
-      // 6. For first Flex order found, get shipment details to show warehouse info
-      const firstFlex = ordersResp.results.find(o => o.shipping?.logistic_type === "self_service");
-      if (firstFlex?.shipping?.id) {
-        const shipment = await mlGet<unknown>(`/shipments/${firstFlex.shipping.id}`);
-        result.shipment_sample = shipment;
-      }
-
       if (result.recent_orders_flex === 0 && result.recent_orders_total > 0) {
         const types = Array.from(new Set(ordersResp.results.map(o => o.shipping?.logistic_type || "N/A")));
-        errors.push(`Se encontraron ${result.recent_orders_total} órdenes pero NINGUNA es Flex (self_service). Tipos encontrados: ${types.join(", ")}`);
+        errors.push(`Se encontraron ${result.recent_orders_total} órdenes pero NINGUNA es Flex (self_service) según /orders/search. Tipos en orders: ${types.join(", ")}. Verificamos via /shipments para confirmar.`);
       }
     } else {
       errors.push("No se pudo consultar /orders/search — verificar permisos de la app ML");
