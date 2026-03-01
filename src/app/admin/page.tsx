@@ -3589,6 +3589,7 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
     pendiente: pedidos.filter(p => p.estado === "PENDIENTE").length,
     en_picking: pedidos.filter(p => p.estado === "EN_PICKING").length,
     despachado: pedidos.filter(p => p.estado === "DESPACHADO").length,
+    atrasado: pedidos.filter(p => p.estado !== "DESPACHADO" && p.fecha_armado < fecha).length,
   };
 
   const doSync = async () => {
@@ -3782,15 +3783,16 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
               <div style={{fontSize:11,fontWeight:700,color:"var(--txt3)",marginBottom:4}}>Muestra de órdenes:</div>
               <div style={{overflowX:"auto"}}>
                 <table className="tbl" style={{fontSize:11}}>
-                  <thead><tr><th>Order ID</th><th>Fecha</th><th>Tipo envío</th><th>Origen</th><th>Dirección origen</th><th>Estado</th><th>Items</th></tr></thead>
+                  <thead><tr><th>Order ID</th><th>Fecha venta</th><th>Tipo envío</th><th>Despachar antes de</th><th>Origen</th><th>Dirección</th><th>Estado</th><th>Items</th></tr></thead>
                   <tbody>
                     {(diagResult.sample_orders as Array<Record<string, unknown>>).map((o: Record<string, unknown>) => (
                       <tr key={String(o.id)} style={{background: o.logistic_type === "self_service" ? "#10b98115" : "transparent"}}>
                         <td className="mono">{String(o.id)}</td>
                         <td className="mono">{new Date(o.date as string).toLocaleString("es-CL", {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}</td>
                         <td><span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:3,background: o.logistic_type === "self_service" ? "#10b98122" : "#f59e0b22",color: o.logistic_type === "self_service" ? "#10b981" : "#f59e0b"}}>{String(o.logistic_type)}</span></td>
+                        <td className="mono" style={{fontSize:10,fontWeight:700,color: o.handling_limit_date ? "var(--cyan)" : "var(--txt3)"}}>{o.handling_limit_date ? String(o.handling_limit_date) : "—"}</td>
                         <td style={{fontSize:10}}>{o.origin_type ? String(o.origin_type) : "—"}</td>
-                        <td style={{fontSize:10,maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{o.origin_address ? String(o.origin_address) : "—"}</td>
+                        <td style={{fontSize:10,maxWidth:150,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{o.origin_address ? String(o.origin_address) : "—"}</td>
                         <td>{String(o.status)}</td>
                         <td style={{textAlign:"right"}}>{String(o.items)}</td>
                       </tr>
@@ -3840,10 +3842,11 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
       )}
 
       {/* Stats */}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:0}}>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8,marginBottom:0}}>
         {[
           { label: "Total", value: counts.total, color: "#3b82f6" },
           { label: "Pendientes", value: counts.pendiente, color: "#f59e0b" },
+          { label: "Atrasados", value: counts.atrasado, color: "#ef4444" },
           { label: "En picking", value: counts.en_picking, color: "#a855f7" },
           { label: "Despachados", value: counts.despachado, color: "#10b981" },
         ].map(st => (
@@ -3878,7 +3881,8 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
           <table className="tbl" style={{fontSize:12}}>
             <thead>
               <tr>
-                <th>Hora</th>
+                <th>Despachar</th>
+                <th>Hora venta</th>
                 <th>Order ID</th>
                 <th>SKU Venta</th>
                 <th>Producto</th>
@@ -3890,10 +3894,14 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
             <tbody>
               {pedidos.map(p => {
                 const estadoColors: Record<string, string> = { PENDIENTE: "#f59e0b", EN_PICKING: "#a855f7", DESPACHADO: "#10b981" };
-                const color = estadoColors[p.estado] || "#94a3b8";
+                const isOverdue = p.estado !== "DESPACHADO" && p.fecha_armado < fecha;
+                const color = isOverdue ? "#ef4444" : (estadoColors[p.estado] || "#94a3b8");
                 const hora = p.fecha_venta ? new Date(p.fecha_venta).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" }) : "—";
                 return (
-                  <tr key={p.id} style={{background: p.estado === "DESPACHADO" ? "#10b98108" : p.estado === "EN_PICKING" ? "#a855f708" : "transparent"}}>
+                  <tr key={p.id} style={{background: isOverdue ? "#ef444410" : p.estado === "DESPACHADO" ? "#10b98108" : p.estado === "EN_PICKING" ? "#a855f708" : "transparent"}}>
+                    <td className="mono" style={{fontSize:11,fontWeight:700,color: isOverdue ? "#ef4444" : "var(--txt3)"}}>
+                      {p.fecha_armado}{isOverdue ? " !" : ""}
+                    </td>
                     <td style={{fontSize:11,color:"var(--txt3)"}}>{hora}</td>
                     <td className="mono" style={{fontSize:11}}>{p.order_id}</td>
                     <td className="mono" style={{fontWeight:700,fontSize:11}}>{p.sku_venta}</td>
@@ -3902,7 +3910,7 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
                     <td style={{fontSize:11,color:"var(--txt3)"}}>{p.buyer_nickname}</td>
                     <td>
                       <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:3,background:`${color}22`,color,border:`1px solid ${color}44`}}>
-                        {p.estado}
+                        {isOverdue ? "ATRASADO" : p.estado}
                       </span>
                     </td>
                   </tr>

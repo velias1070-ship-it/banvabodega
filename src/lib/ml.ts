@@ -84,7 +84,7 @@ interface StockResponse {
   version: number;
 }
 
-/** Shipment detail from /shipments/$ID (old API) */
+/** Shipment detail from /shipments/$ID */
 interface MLShipmentDetail {
   id: number;
   status: string;
@@ -93,7 +93,7 @@ interface MLShipmentDetail {
   sender_id?: number;
   receiver_id?: number;
   site_id?: string;
-  // From /marketplace/shipments with x-format-new: true
+  // From /shipments with x-format-new: true
   logistic?: {
     direction?: string;
     mode?: string;
@@ -115,6 +115,17 @@ interface MLShipmentDetail {
       state?: { name?: string };
     };
     receiver_name?: string;
+  };
+  lead_time?: {
+    estimated_handling_limit?: {
+      date?: string; // "2026-03-02T00:00:00.000-03:00" — deadline to dispatch
+    };
+    estimated_delivery_time?: {
+      date?: string; // promised delivery to buyer
+    };
+    buffering?: {
+      date?: string; // when label becomes available
+    };
   };
 }
 
@@ -330,43 +341,56 @@ export async function mlDelete(path: string): Promise<boolean> {
  * then enriches with /marketplace/shipments/$ID (x-format-new: true) for origin info.
  * Returns the logistic type and origin warehouse info.
  */
-export async function getShipmentFlexInfo(shippingId: number): Promise<{
+export interface ShipmentFlexInfo {
   logistic_type: string;
   origin_type: string | null;
   origin_address: string | null;
   is_flex: boolean;
+  handling_limit_date: string | null; // YYYY-MM-DD — deadline to dispatch
+  delivery_date: string | null;       // YYYY-MM-DD — promised to buyer
+  shipment_status: string | null;
   raw: MLShipmentDetail | null;
-}> {
-  const fallback = { logistic_type: "unknown", origin_type: null, origin_address: null, is_flex: false, raw: null };
+}
 
-  // First try the old endpoint for logistic_type
-  const shipment = await mlGet<MLShipmentDetail>(`/shipments/${shippingId}`);
-  if (!shipment) return fallback;
+export async function getShipmentFlexInfo(shippingId: number): Promise<ShipmentFlexInfo> {
+  const fallback: ShipmentFlexInfo = { logistic_type: "unknown", origin_type: null, origin_address: null, is_flex: false, handling_limit_date: null, delivery_date: null, shipment_status: null, raw: null };
 
-  let logisticType = shipment.logistic_type || "unknown";
-
-  // Also try the marketplace endpoint with x-format-new for richer data (origin, logistic.type)
-  const mktShipment = await mlGet<MLShipmentDetail>(
+  // Use x-format-new: true for richer data (logistic.type, origin, lead_time)
+  const shipment = await mlGet<MLShipmentDetail>(
     `/shipments/${shippingId}`,
     { "x-format-new": "true" }
   );
+  if (!shipment) return fallback;
 
-  if (mktShipment?.logistic?.type) {
-    logisticType = mktShipment.logistic.type;
-  }
+  // Determine logistic type: prefer logistic.type (new format), fallback to logistic_type (old)
+  const logisticType = shipment.logistic?.type || shipment.logistic_type || "unknown";
 
-  const originType = mktShipment?.origin?.type || null;
-  const originAddr = mktShipment?.origin?.shipping_address;
+  const originType = shipment.origin?.type || null;
+  const originAddr = shipment.origin?.shipping_address;
   const originAddress = originAddr
     ? [originAddr.address_line, originAddr.city?.name, originAddr.state?.name].filter(Boolean).join(", ")
     : null;
+
+  // Extract handling limit date (YYYY-MM-DD)
+  let handlingLimitDate: string | null = null;
+  if (shipment.lead_time?.estimated_handling_limit?.date) {
+    handlingLimitDate = shipment.lead_time.estimated_handling_limit.date.slice(0, 10);
+  }
+
+  let deliveryDate: string | null = null;
+  if (shipment.lead_time?.estimated_delivery_time?.date) {
+    deliveryDate = shipment.lead_time.estimated_delivery_time.date.slice(0, 10);
+  }
 
   return {
     logistic_type: logisticType,
     origin_type: originType,
     origin_address: originAddress,
     is_flex: logisticType === "self_service",
-    raw: mktShipment || shipment,
+    handling_limit_date: handlingLimitDate,
+    delivery_date: deliveryDate,
+    shipment_status: shipment.status || null,
+    raw: shipment,
   };
 }
 
@@ -418,36 +442,42 @@ export function calcFechaArmado(fechaVenta: string | Date, horaCorteVL: number, 
 // ==================== ORDER PROCESSING ====================
 
 /**
- * Process a single ML order: validate it's Flex, extract items, upsert to DB.
- * If logistic_type is not available from the order, verifies via shipment endpoint.
+ * Process a single ML order: verify it's Flex via shipment endpoint,
+ * get estimated_handling_limit as fecha_armado, extract items, upsert to DB.
+ * Always fetches shipment details for accurate logistic type + handling deadline.
  * Returns number of items upserted.
  */
 export async function processOrder(order: MLOrder, config: MLConfig): Promise<number> {
   // Only process paid orders
   if (order.status !== "paid") return 0;
+  if (!order.shipping?.id) return 0;
 
-  // Check logistic type: trust it if explicitly set, verify via shipment if missing
-  let isFlex = order.shipping?.logistic_type === "self_service";
-
-  if (!isFlex && order.shipping?.id) {
-    // logistic_type missing or different — verify via shipment endpoint
-    const lt = order.shipping?.logistic_type;
-    if (!lt || lt === "unknown" || lt === "") {
-      console.log(`[ML] Order ${order.id}: logistic_type="${lt || "null"}", checking shipment ${order.shipping.id}...`);
-      const shipInfo = await getShipmentFlexInfo(order.shipping.id);
-      isFlex = shipInfo.is_flex;
-      if (isFlex) {
-        console.log(`[ML] Order ${order.id}: confirmed Flex via shipment (origin: ${shipInfo.origin_type}, ${shipInfo.origin_address})`);
-      }
-    }
+  // Quick skip: if logistic_type is explicitly non-flex (fulfillment, etc.), skip without API call
+  const orderLt = order.shipping?.logistic_type;
+  if (orderLt && orderLt !== "self_service" && orderLt !== "" && orderLt !== "unknown") {
+    return 0;
   }
 
-  if (!isFlex) return 0;
+  // Always fetch shipment details to get: real logistic type + estimated_handling_limit
+  const shipInfo = await getShipmentFlexInfo(order.shipping.id);
+
+  if (!shipInfo.is_flex) {
+    if (!orderLt || orderLt === "" || orderLt === "unknown") {
+      console.log(`[ML] Order ${order.id}: shipment ${order.shipping.id} → logistic_type="${shipInfo.logistic_type}" (not Flex), skipping`);
+    }
+    return 0;
+  }
+
+  console.log(`[ML] Order ${order.id}: Flex confirmed, handling_limit=${shipInfo.handling_limit_date}, origin=${shipInfo.origin_type}`);
 
   const sb = getServerSupabase();
   if (!sb) return 0;
 
-  const fechaArmado = calcFechaArmado(order.date_created, config.hora_corte_lv, config.hora_corte_sab);
+  // Use estimated_handling_limit from ML as fecha_armado (real dispatch deadline)
+  // Fallback to calcFechaArmado only if ML doesn't provide it
+  const fechaArmado = shipInfo.handling_limit_date
+    || calcFechaArmado(order.date_created, config.hora_corte_lv, config.hora_corte_sab);
+
   let count = 0;
 
   for (const item of order.order_items) {
@@ -578,7 +608,7 @@ export async function diagnoseMlConnection(): Promise<{
   recent_orders_total: number;
   recent_orders_flex: number;
   recent_orders_other: number;
-  sample_orders: Array<{ id: number; date: string; logistic_type: string; status: string; items: number; shipping_id: number; origin_type: string | null; origin_address: string | null }>;
+  sample_orders: Array<{ id: number; date: string; logistic_type: string; status: string; items: number; shipping_id: number; origin_type: string | null; origin_address: string | null; handling_limit_date: string | null }>;
   shipment_sample: unknown | null;
   errors: string[];
 }> {
@@ -592,7 +622,7 @@ export async function diagnoseMlConnection(): Promise<{
     recent_orders_total: 0,
     recent_orders_flex: 0,
     recent_orders_other: 0,
-    sample_orders: [] as Array<{ id: number; date: string; logistic_type: string; status: string; items: number; shipping_id: number; origin_type: string | null; origin_address: string | null }>,
+    sample_orders: [] as Array<{ id: number; date: string; logistic_type: string; status: string; items: number; shipping_id: number; origin_type: string | null; origin_address: string | null; handling_limit_date: string | null }>,
     shipment_sample: null as unknown | null,
     errors,
   };
@@ -664,6 +694,7 @@ export async function diagnoseMlConnection(): Promise<{
         let lt = order.shipping?.logistic_type || "unknown";
         let originType: string | null = null;
         let originAddress: string | null = null;
+        let handlingLimitDate: string | null = null;
 
         // For sample orders (first 10), verify via shipment endpoint
         if (result.sample_orders.length < 10 && order.shipping?.id) {
@@ -671,6 +702,7 @@ export async function diagnoseMlConnection(): Promise<{
           lt = shipInfo.logistic_type;
           originType = shipInfo.origin_type;
           originAddress = shipInfo.origin_address;
+          handlingLimitDate = shipInfo.handling_limit_date;
 
           // Save first shipment as sample
           if (!result.shipment_sample && shipInfo.raw) {
@@ -695,6 +727,7 @@ export async function diagnoseMlConnection(): Promise<{
             shipping_id: order.shipping?.id || 0,
             origin_type: originType,
             origin_address: originAddress,
+            handling_limit_date: handlingLimitDate,
           });
         }
       }

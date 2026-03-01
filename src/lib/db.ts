@@ -751,10 +751,16 @@ export interface DBPedidoFlex {
   created_at?: string;
 }
 
+/**
+ * Fetch pedidos for a given date.
+ * Shows: all pending/picking orders with handling_limit <= fecha (including overdue)
+ *      + dispatched orders for that exact date.
+ */
 export async function fetchPedidosFlex(fecha: string): Promise<DBPedidoFlex[]> {
   const sb = getSupabase(); if (!sb) return [];
   const { data } = await sb.from("pedidos_flex").select("*")
-    .eq("fecha_armado", fecha)
+    .or(`and(fecha_armado.lte.${fecha},estado.neq.DESPACHADO),and(fecha_armado.eq.${fecha},estado.eq.DESPACHADO)`)
+    .order("fecha_armado", { ascending: true })
     .order("fecha_venta", { ascending: true });
   return (data || []) as DBPedidoFlex[];
 }
