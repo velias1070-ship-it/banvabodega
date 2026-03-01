@@ -84,7 +84,7 @@ interface StockResponse {
   version: number;
 }
 
-/** Shipment detail from /shipments/$ID (old API) */
+/** Shipment detail from /shipments/$ID */
 interface MLShipmentDetail {
   id: number;
   status: string;
@@ -93,7 +93,7 @@ interface MLShipmentDetail {
   sender_id?: number;
   receiver_id?: number;
   site_id?: string;
-  // From /marketplace/shipments with x-format-new: true
+  // From /shipments with x-format-new: true
   logistic?: {
     direction?: string;
     mode?: string;
@@ -115,6 +115,17 @@ interface MLShipmentDetail {
       state?: { name?: string };
     };
     receiver_name?: string;
+  };
+  lead_time?: {
+    estimated_handling_limit?: {
+      date?: string; // "2026-03-02T00:00:00.000-03:00" — deadline to dispatch
+    };
+    estimated_delivery_time?: {
+      date?: string; // promised delivery to buyer
+    };
+    buffering?: {
+      date?: string; // when label becomes available
+    };
   };
 }
 
@@ -330,43 +341,56 @@ export async function mlDelete(path: string): Promise<boolean> {
  * then enriches with /marketplace/shipments/$ID (x-format-new: true) for origin info.
  * Returns the logistic type and origin warehouse info.
  */
-export async function getShipmentFlexInfo(shippingId: number): Promise<{
+export interface ShipmentFlexInfo {
   logistic_type: string;
   origin_type: string | null;
   origin_address: string | null;
   is_flex: boolean;
+  handling_limit_date: string | null; // YYYY-MM-DD — deadline to dispatch
+  delivery_date: string | null;       // YYYY-MM-DD — promised to buyer
+  shipment_status: string | null;
   raw: MLShipmentDetail | null;
-}> {
-  const fallback = { logistic_type: "unknown", origin_type: null, origin_address: null, is_flex: false, raw: null };
+}
 
-  // First try the old endpoint for logistic_type
-  const shipment = await mlGet<MLShipmentDetail>(`/shipments/${shippingId}`);
-  if (!shipment) return fallback;
+export async function getShipmentFlexInfo(shippingId: number): Promise<ShipmentFlexInfo> {
+  const fallback: ShipmentFlexInfo = { logistic_type: "unknown", origin_type: null, origin_address: null, is_flex: false, handling_limit_date: null, delivery_date: null, shipment_status: null, raw: null };
 
-  let logisticType = shipment.logistic_type || "unknown";
-
-  // Also try the marketplace endpoint with x-format-new for richer data (origin, logistic.type)
-  const mktShipment = await mlGet<MLShipmentDetail>(
+  // Use x-format-new: true for richer data (logistic.type, origin, lead_time)
+  const shipment = await mlGet<MLShipmentDetail>(
     `/shipments/${shippingId}`,
     { "x-format-new": "true" }
   );
+  if (!shipment) return fallback;
 
-  if (mktShipment?.logistic?.type) {
-    logisticType = mktShipment.logistic.type;
-  }
+  // Determine logistic type: prefer logistic.type (new format), fallback to logistic_type (old)
+  const logisticType = shipment.logistic?.type || shipment.logistic_type || "unknown";
 
-  const originType = mktShipment?.origin?.type || null;
-  const originAddr = mktShipment?.origin?.shipping_address;
+  const originType = shipment.origin?.type || null;
+  const originAddr = shipment.origin?.shipping_address;
   const originAddress = originAddr
     ? [originAddr.address_line, originAddr.city?.name, originAddr.state?.name].filter(Boolean).join(", ")
     : null;
+
+  // Extract handling limit date (YYYY-MM-DD)
+  let handlingLimitDate: string | null = null;
+  if (shipment.lead_time?.estimated_handling_limit?.date) {
+    handlingLimitDate = shipment.lead_time.estimated_handling_limit.date.slice(0, 10);
+  }
+
+  let deliveryDate: string | null = null;
+  if (shipment.lead_time?.estimated_delivery_time?.date) {
+    deliveryDate = shipment.lead_time.estimated_delivery_time.date.slice(0, 10);
+  }
 
   return {
     logistic_type: logisticType,
     origin_type: originType,
     origin_address: originAddress,
     is_flex: logisticType === "self_service",
-    raw: mktShipment || shipment,
+    handling_limit_date: handlingLimitDate,
+    delivery_date: deliveryDate,
+    shipment_status: shipment.status || null,
+    raw: shipment,
   };
 }
 
@@ -415,72 +439,127 @@ export function calcFechaArmado(fechaVenta: string | Date, horaCorteVL: number, 
   return armadoDate.toISOString().slice(0, 10);
 }
 
-// ==================== ORDER PROCESSING ====================
+// ==================== SHIPMENT-CENTRIC ORDER PROCESSING ====================
 
 /**
- * Process a single ML order: validate it's Flex, extract items, upsert to DB.
- * If logistic_type is not available from the order, verifies via shipment endpoint.
- * Returns number of items upserted.
+ * Process a single shipment: fetch details, verify it's not fulfillment,
+ * get handling_limit + items, upsert to ml_shipments + ml_shipment_items.
+ * Handles packs (multiple orders sharing one shipment).
+ * Returns item count and the shipment info (for callers that need it).
  */
-export async function processOrder(order: MLOrder, config: MLConfig): Promise<number> {
-  // Only process paid orders
-  if (order.status !== "paid") return 0;
+export async function processShipment(shipmentId: number, orderIds: number[]): Promise<{ items: number; shipInfo: ShipmentFlexInfo }> {
+  const sb = getServerSupabase();
+  if (!sb) return { items: 0, shipInfo: { logistic_type: "unknown", origin_type: null, origin_address: null, is_flex: false, handling_limit_date: null, delivery_date: null, shipment_status: null, raw: null } };
 
-  // Check logistic type: trust it if explicitly set, verify via shipment if missing
-  let isFlex = order.shipping?.logistic_type === "self_service";
+  // 1. Fetch shipment details (logistic type, handling_limit, origin, destination)
+  const shipInfo = await getShipmentFlexInfo(shipmentId);
 
-  if (!isFlex && order.shipping?.id) {
-    // logistic_type missing or different — verify via shipment endpoint
-    const lt = order.shipping?.logistic_type;
-    if (!lt || lt === "unknown" || lt === "") {
-      console.log(`[ML] Order ${order.id}: logistic_type="${lt || "null"}", checking shipment ${order.shipping.id}...`);
-      const shipInfo = await getShipmentFlexInfo(order.shipping.id);
-      isFlex = shipInfo.is_flex;
-      if (isFlex) {
-        console.log(`[ML] Order ${order.id}: confirmed Flex via shipment (origin: ${shipInfo.origin_type}, ${shipInfo.origin_address})`);
+  // Skip fulfillment (ML handles it) and unknown
+  if (shipInfo.logistic_type === "fulfillment" || shipInfo.logistic_type === "unknown") {
+    return { items: 0, shipInfo };
+  }
+
+  // 2. Upsert ml_shipments
+  const shipmentRow = {
+    shipment_id: shipmentId,
+    order_ids: orderIds,
+    status: shipInfo.raw?.status || "unknown",
+    substatus: shipInfo.raw?.substatus || null,
+    logistic_type: shipInfo.logistic_type,
+    handling_limit: shipInfo.raw?.lead_time?.estimated_handling_limit?.date || null,
+    buffering_date: shipInfo.raw?.lead_time?.buffering?.date || null,
+    delivery_date: shipInfo.raw?.lead_time?.estimated_delivery_time?.date || null,
+    origin_type: shipInfo.origin_type,
+    receiver_name: shipInfo.raw?.destination?.receiver_name || null,
+    destination_city: shipInfo.raw?.destination?.shipping_address?.city?.name || null,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { error: shipErr } = await sb.from("ml_shipments").upsert(shipmentRow, {
+    onConflict: "shipment_id",
+  });
+  if (shipErr) {
+    console.error(`[ML] Upsert ml_shipments error for ${shipmentId}:`, shipErr.message);
+    return { items: 0, shipInfo };
+  }
+
+  // 3. For each order, fetch order details and upsert items
+  let totalItems = 0;
+  for (const orderId of orderIds) {
+    const order = await mlGet<MLOrder>(`/orders/${orderId}`);
+    if (!order || !order.order_items) continue;
+
+    for (const item of order.order_items) {
+      const itemRow = {
+        shipment_id: shipmentId,
+        order_id: orderId,
+        item_id: item.item.id,
+        title: item.item.title,
+        seller_sku: (item.item.seller_sku || `ML-${item.item.id}`).toUpperCase(),
+        variation_id: item.item.variation_id || null,
+        quantity: item.quantity,
+      };
+
+      const { error: itemErr } = await sb.from("ml_shipment_items").upsert(itemRow, {
+        onConflict: "shipment_id,order_id,item_id",
+      });
+      if (itemErr) {
+        console.error(`[ML] Upsert ml_shipment_items error:`, itemErr.message);
+      } else {
+        totalItems++;
       }
     }
   }
 
-  if (!isFlex) return 0;
+  const ltLabel = shipInfo.logistic_type === "self_service" ? "Flex"
+    : shipInfo.logistic_type === "cross_docking" ? "Colecta"
+    : shipInfo.logistic_type === "xd_drop_off" ? "Drop-off"
+    : shipInfo.logistic_type;
+  console.log(`[ML] Shipment ${shipmentId}: ${ltLabel}, ${totalItems} items, handling_limit=${shipInfo.handling_limit_date}`);
 
-  const sb = getServerSupabase();
-  if (!sb) return 0;
+  return { items: totalItems, shipInfo };
+}
 
-  const fechaArmado = calcFechaArmado(order.date_created, config.hora_corte_lv, config.hora_corte_sab);
-  let count = 0;
+/**
+ * Process a single ML order: extract shipment_id, delegate to processShipment.
+ * Also upserts to legacy pedidos_flex for backward compat.
+ */
+export async function processOrder(order: MLOrder, config: MLConfig): Promise<number> {
+  if (order.status !== "paid") return 0;
+  if (!order.shipping?.id) return 0;
 
-  for (const item of order.order_items) {
-    const skuVenta = item.item.seller_sku || `ML-${item.item.id}`;
-    const pedido: Omit<PedidoFlex, "id" | "created_at"> = {
-      order_id: order.id,
-      fecha_venta: order.date_created,
-      fecha_armado: fechaArmado,
-      estado: "PENDIENTE",
-      sku_venta: skuVenta.toUpperCase(),
-      nombre_producto: item.item.title,
-      cantidad: item.quantity,
-      shipping_id: order.shipping.id,
-      pack_id: order.pack_id,
-      buyer_nickname: order.buyer?.nickname || "",
-      raw_data: order,
-      picking_session_id: null,
-      etiqueta_url: null,
-    };
+  // Process via new shipment-centric system (returns shipInfo to avoid redundant API call)
+  const { items: shipmentItems, shipInfo } = await processShipment(order.shipping.id, [order.id]);
 
-    // Upsert by order_id + sku_venta (a cart can have multiple items)
-    const { error } = await sb.from("pedidos_flex").upsert(pedido, {
-      onConflict: "order_id,sku_venta",
-    });
+  // Also upsert to legacy pedidos_flex for backward compat
+  if (shipInfo.logistic_type !== "fulfillment" && shipInfo.logistic_type !== "unknown") {
+    const sb = getServerSupabase();
+    if (sb) {
+      const fechaArmado = shipInfo.handling_limit_date
+        || calcFechaArmado(order.date_created, config.hora_corte_lv, config.hora_corte_sab);
 
-    if (error) {
-      console.error("[ML] Upsert pedido error:", error.message);
-    } else {
-      count++;
+      for (const item of order.order_items) {
+        const skuVenta = item.item.seller_sku || `ML-${item.item.id}`;
+        await sb.from("pedidos_flex").upsert({
+          order_id: order.id,
+          fecha_venta: order.date_created,
+          fecha_armado: fechaArmado,
+          estado: "PENDIENTE",
+          sku_venta: skuVenta.toUpperCase(),
+          nombre_producto: item.item.title,
+          cantidad: item.quantity,
+          shipping_id: order.shipping.id,
+          pack_id: order.pack_id,
+          buyer_nickname: order.buyer?.nickname || "",
+          raw_data: order,
+          picking_session_id: null,
+          etiqueta_url: null,
+        }, { onConflict: "order_id,sku_venta" });
+      }
     }
   }
 
-  return count;
+  return shipmentItems;
 }
 
 /**
@@ -497,6 +576,65 @@ export async function fetchAndProcessOrder(orderId: number): Promise<number> {
 }
 
 /**
+ * Collect orders from search results, deduplicate by shipment_id,
+ * and process each shipment once (handling packs correctly).
+ */
+async function processOrderBatch(orders: MLOrder[], config: MLConfig): Promise<{ processed: number; skipped: number; items: number }> {
+  // Group orders by shipment_id (packs share the same shipment)
+  const shipmentMap = new Map<number, number[]>(); // shipment_id → [order_id, ...]
+  for (const order of orders) {
+    if (order.status !== "paid" || !order.shipping?.id) continue;
+    const sid = order.shipping.id;
+    const existing = shipmentMap.get(sid) || [];
+    if (!existing.includes(order.id)) existing.push(order.id);
+    shipmentMap.set(sid, existing);
+  }
+
+  let processed = 0;
+  let skipped = 0;
+  let items = 0;
+
+  // Process each shipment and collect shipInfo for legacy compat
+  const shipInfoCache = new Map<number, ShipmentFlexInfo>();
+  const entries = Array.from(shipmentMap.entries());
+  for (const entry of entries) {
+    const result = await processShipment(entry[0], entry[1]);
+    shipInfoCache.set(entry[0], result.shipInfo);
+    if (result.items > 0) {
+      processed++;
+      items += result.items;
+    } else {
+      skipped++;
+    }
+  }
+
+  // Also process via legacy path for backward compat (reusing cached shipInfo)
+  const sb = getServerSupabase();
+  if (sb) {
+    for (const order of orders) {
+      if (order.status !== "paid" || !order.shipping?.id) continue;
+      const shipInfo = shipInfoCache.get(order.shipping.id);
+      if (shipInfo && shipInfo.logistic_type !== "fulfillment" && shipInfo.logistic_type !== "unknown") {
+        const fechaArmado = shipInfo.handling_limit_date
+          || calcFechaArmado(order.date_created, config.hora_corte_lv, config.hora_corte_sab);
+        for (const item of order.order_items) {
+          const skuVenta = item.item.seller_sku || `ML-${item.item.id}`;
+          await sb.from("pedidos_flex").upsert({
+            order_id: order.id, fecha_venta: order.date_created, fecha_armado: fechaArmado,
+            estado: "PENDIENTE", sku_venta: skuVenta.toUpperCase(), nombre_producto: item.item.title,
+            cantidad: item.quantity, shipping_id: order.shipping.id, pack_id: order.pack_id,
+            buyer_nickname: order.buyer?.nickname || "", raw_data: order,
+            picking_session_id: null, etiqueta_url: null,
+          }, { onConflict: "order_id,sku_venta" });
+        }
+      }
+    }
+  }
+
+  return { processed, skipped, items };
+}
+
+/**
  * Sync recent orders via search API (polling backup)
  */
 export async function syncRecentOrders(): Promise<{ total: number; new_orders: number }> {
@@ -509,30 +647,25 @@ export async function syncRecentOrders(): Promise<{ total: number; new_orders: n
   const result = await mlGet<{ results: MLOrder[]; paging: { total: number } }>(searchUrl);
   if (!result) return { total: 0, new_orders: 0 };
 
-  let newOrders = 0;
-  for (const order of result.results) {
-    const count = await processOrder(order, config);
-    newOrders += count;
-  }
-
-  return { total: result.paging.total, new_orders: newOrders };
+  const batch = await processOrderBatch(result.results, config);
+  return { total: result.paging.total, new_orders: batch.items };
 }
 
 /**
  * Sync historical orders (past N days) with pagination.
- * Uses /orders/search with pagination (max 50 per page).
+ * Shipment-centric: deduplicates by shipment_id to handle packs.
  */
-export async function syncHistoricalOrders(days: number = 7): Promise<{ total: number; new_orders: number; pages: number; flex_found: number; non_flex_skipped: number }> {
+export async function syncHistoricalOrders(days: number = 7): Promise<{ total: number; new_orders: number; pages: number; shipments_processed: number; shipments_skipped: number }> {
   const config = await getMLConfig();
-  if (!config || !config.seller_id) return { total: 0, new_orders: 0, pages: 0, flex_found: 0, non_flex_skipped: 0 };
+  if (!config || !config.seller_id) return { total: 0, new_orders: 0, pages: 0, shipments_processed: 0, shipments_skipped: 0 };
 
   const dateFrom = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
   const baseUrl = `/orders/search?seller=${config.seller_id}&order.status=paid&sort=date_desc&order.date_created.from=${dateFrom}&limit=50`;
 
   let totalOrders = 0;
-  let newOrders = 0;
-  let flexFound = 0;
-  let nonFlexSkipped = 0;
+  let totalItems = 0;
+  let totalProcessed = 0;
+  let totalSkipped = 0;
   let pages = 0;
   let offset = 0;
   let hasMore = true;
@@ -545,24 +678,17 @@ export async function syncHistoricalOrders(days: number = 7): Promise<{ total: n
     pages++;
     totalOrders = result.paging.total;
 
-    for (const order of result.results) {
-      // processOrder now verifies via shipment endpoint when logistic_type is missing
-      const count = await processOrder(order, config);
-      if (count > 0) {
-        flexFound++;
-        newOrders += count;
-      } else {
-        nonFlexSkipped++;
-      }
-    }
+    const batch = await processOrderBatch(result.results, config);
+    totalProcessed += batch.processed;
+    totalSkipped += batch.skipped;
+    totalItems += batch.items;
 
     offset += result.results.length;
     hasMore = offset < result.paging.total && result.results.length > 0;
-    // Safety: max 20 pages (1000 orders)
     if (pages >= 20) break;
   }
 
-  return { total: totalOrders, new_orders: newOrders, pages, flex_found: flexFound, non_flex_skipped: nonFlexSkipped };
+  return { total: totalOrders, new_orders: totalItems, pages, shipments_processed: totalProcessed, shipments_skipped: totalSkipped };
 }
 
 /**
@@ -578,7 +704,7 @@ export async function diagnoseMlConnection(): Promise<{
   recent_orders_total: number;
   recent_orders_flex: number;
   recent_orders_other: number;
-  sample_orders: Array<{ id: number; date: string; logistic_type: string; status: string; items: number; shipping_id: number; origin_type: string | null; origin_address: string | null }>;
+  sample_orders: Array<{ id: number; date: string; logistic_type: string; status: string; items: number; shipping_id: number; origin_type: string | null; origin_address: string | null; handling_limit_date: string | null }>;
   shipment_sample: unknown | null;
   errors: string[];
 }> {
@@ -592,7 +718,7 @@ export async function diagnoseMlConnection(): Promise<{
     recent_orders_total: 0,
     recent_orders_flex: 0,
     recent_orders_other: 0,
-    sample_orders: [] as Array<{ id: number; date: string; logistic_type: string; status: string; items: number; shipping_id: number; origin_type: string | null; origin_address: string | null }>,
+    sample_orders: [] as Array<{ id: number; date: string; logistic_type: string; status: string; items: number; shipping_id: number; origin_type: string | null; origin_address: string | null; handling_limit_date: string | null }>,
     shipment_sample: null as unknown | null,
     errors,
   };
@@ -664,6 +790,7 @@ export async function diagnoseMlConnection(): Promise<{
         let lt = order.shipping?.logistic_type || "unknown";
         let originType: string | null = null;
         let originAddress: string | null = null;
+        let handlingLimitDate: string | null = null;
 
         // For sample orders (first 10), verify via shipment endpoint
         if (result.sample_orders.length < 10 && order.shipping?.id) {
@@ -671,6 +798,7 @@ export async function diagnoseMlConnection(): Promise<{
           lt = shipInfo.logistic_type;
           originType = shipInfo.origin_type;
           originAddress = shipInfo.origin_address;
+          handlingLimitDate = shipInfo.handling_limit_date;
 
           // Save first shipment as sample
           if (!result.shipment_sample && shipInfo.raw) {
@@ -695,6 +823,7 @@ export async function diagnoseMlConnection(): Promise<{
             shipping_id: order.shipping?.id || 0,
             origin_type: originType,
             origin_address: originAddress,
+            handling_limit_date: handlingLimitDate,
           });
         }
       }

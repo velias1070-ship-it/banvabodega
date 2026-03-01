@@ -63,14 +63,14 @@ export async function POST(req: NextRequest) {
     try {
       console.log(`[ML Sync] Starting historical sync (${days} days)...`);
       const result = await syncHistoricalOrders(days);
-      console.log(`[ML Sync] Historical done: ${result.total} total, ${result.flex_found} flex, ${result.new_orders} new`);
+      console.log(`[ML Sync] Historical done: ${result.total} total, ${result.shipments_processed} shipments, ${result.new_orders} items`);
 
       return NextResponse.json({
         status: "ok",
         total_orders: result.total,
         new_items: result.new_orders,
-        flex_found: result.flex_found,
-        non_flex_skipped: result.non_flex_skipped,
+        shipments_processed: result.shipments_processed,
+        shipments_skipped: result.shipments_skipped,
         pages: result.pages,
         days,
         timestamp: new Date().toISOString(),

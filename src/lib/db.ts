@@ -751,10 +751,16 @@ export interface DBPedidoFlex {
   created_at?: string;
 }
 
+/**
+ * Fetch pedidos for a given date.
+ * Shows: all pending/picking orders with handling_limit <= fecha (including overdue)
+ *      + dispatched orders for that exact date.
+ */
 export async function fetchPedidosFlex(fecha: string): Promise<DBPedidoFlex[]> {
   const sb = getSupabase(); if (!sb) return [];
   const { data } = await sb.from("pedidos_flex").select("*")
-    .eq("fecha_armado", fecha)
+    .or(`and(fecha_armado.lte.${fecha},estado.neq.DESPACHADO),and(fecha_armado.eq.${fecha},estado.eq.DESPACHADO)`)
+    .order("fecha_armado", { ascending: true })
     .order("fecha_venta", { ascending: true });
   return (data || []) as DBPedidoFlex[];
 }
@@ -786,6 +792,107 @@ export async function updatePedidosFlexByPickingSession(sessionId: string, estad
   const sb = getSupabase(); if (!sb) return false;
   const { error } = await sb.from("pedidos_flex").update({ estado }).eq("picking_session_id", sessionId);
   return !error;
+}
+
+// ==================== ML SHIPMENTS (new shipment-centric model) ====================
+
+export interface DBMLShipment {
+  shipment_id: number;
+  order_ids: number[];
+  status: string;
+  substatus: string | null;
+  logistic_type: string;
+  handling_limit: string | null; // ISO timestamp
+  buffering_date: string | null;
+  delivery_date: string | null;
+  origin_type: string | null;
+  receiver_name: string | null;
+  destination_city: string | null;
+  updated_at: string;
+}
+
+export interface DBMLShipmentItem {
+  id?: number;
+  shipment_id: number;
+  order_id: number;
+  item_id: string;
+  title: string;
+  seller_sku: string;
+  variation_id: number | null;
+  quantity: number;
+}
+
+export interface ShipmentWithItems extends DBMLShipment {
+  items: DBMLShipmentItem[];
+}
+
+/**
+ * Fetch shipments that need to be prepared for a given date.
+ * Logic:
+ *   - logistic_type != 'fulfillment'
+ *   - status in ready_to_ship/pending (not shipped/delivered/cancelled)
+ *   - handling_limit::date <= fecha (includes overdue)
+ * Returns shipments with their items, ordered by urgency.
+ */
+export async function fetchShipmentsToArm(fecha: string): Promise<ShipmentWithItems[]> {
+  const sb = getSupabase(); if (!sb) return [];
+
+  // Fetch shipments with handling_limit up to end of selected day
+  const endOfDay = `${fecha}T23:59:59`;
+  const { data: shipments } = await sb.from("ml_shipments").select("*")
+    .neq("logistic_type", "fulfillment")
+    .in("status", ["ready_to_ship", "pending"])
+    .lte("handling_limit", endOfDay)
+    .order("handling_limit", { ascending: true });
+
+  if (!shipments || shipments.length === 0) return [];
+
+  // Fetch all items for these shipments
+  const shipmentIds = (shipments as DBMLShipment[]).map(s => s.shipment_id);
+  const { data: items } = await sb.from("ml_shipment_items").select("*")
+    .in("shipment_id", shipmentIds);
+
+  const itemsByShipment = new Map<number, DBMLShipmentItem[]>();
+  for (const item of (items || []) as DBMLShipmentItem[]) {
+    const arr = itemsByShipment.get(item.shipment_id) || [];
+    arr.push(item);
+    itemsByShipment.set(item.shipment_id, arr);
+  }
+
+  return (shipments as DBMLShipment[]).map(s => ({
+    ...s,
+    items: itemsByShipment.get(s.shipment_id) || [],
+  }));
+}
+
+/**
+ * Fetch all shipments (no date filter, for "Ver todos" mode).
+ */
+export async function fetchAllShipments(limit = 100): Promise<ShipmentWithItems[]> {
+  const sb = getSupabase(); if (!sb) return [];
+
+  const { data: shipments } = await sb.from("ml_shipments").select("*")
+    .neq("logistic_type", "fulfillment")
+    .order("updated_at", { ascending: false })
+    .limit(limit);
+
+  if (!shipments || shipments.length === 0) return [];
+
+  const shipmentIds = (shipments as DBMLShipment[]).map(s => s.shipment_id);
+  const { data: items } = await sb.from("ml_shipment_items").select("*")
+    .in("shipment_id", shipmentIds);
+
+  const itemsByShipment = new Map<number, DBMLShipmentItem[]>();
+  for (const item of (items || []) as DBMLShipmentItem[]) {
+    const arr = itemsByShipment.get(item.shipment_id) || [];
+    arr.push(item);
+    itemsByShipment.set(item.shipment_id, arr);
+  }
+
+  return (shipments as DBMLShipment[]).map(s => ({
+    ...s,
+    items: itemsByShipment.get(s.shipment_id) || [],
+  }));
 }
 
 // ==================== ML CONFIG (client-side read for admin UI) ====================

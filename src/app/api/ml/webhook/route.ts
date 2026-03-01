@@ -1,36 +1,76 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fetchAndProcessOrder } from "@/lib/ml";
+import { fetchAndProcessOrder, processShipment, mlGet, MLOrder } from "@/lib/ml";
 
 /**
  * MercadoLibre webhook endpoint.
- * ML sends POST notifications when orders are created/updated.
+ * Handles both orders_v2 and shipments topic notifications.
  * Must respond 200 quickly — ML retries on failure.
  */
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-
-    // ML sends notifications with topic and resource
     const { topic, resource } = body;
 
-    // Only process order notifications
-    if (topic !== "orders_v2" && topic !== "orders") {
-      return NextResponse.json({ status: "ignored", topic });
+    // Handle order notifications
+    if (topic === "orders_v2" || topic === "orders") {
+      const match = resource?.match(/\/orders\/(\d+)/);
+      if (!match) {
+        return NextResponse.json({ status: "ignored", reason: "no_order_id" });
+      }
+
+      const orderId = parseInt(match[1]);
+      console.log(`[ML Webhook] Processing order ${orderId}`);
+
+      // Fetch order to get shipment_id
+      const order = await mlGet<MLOrder>(`/orders/${orderId}`);
+      if (order?.shipping?.id) {
+        // Process via shipment-centric path
+        const orderIds = [orderId];
+        // If pack, fetch pack to get all order IDs sharing this shipment
+        if (order.pack_id) {
+          const pack = await mlGet<{ orders?: Array<{ id: number }> }>(`/packs/${order.pack_id}`);
+          if (pack?.orders) {
+            for (const po of pack.orders) {
+              if (!orderIds.includes(po.id)) orderIds.push(po.id);
+            }
+          }
+        }
+
+        const result = await processShipment(order.shipping.id, orderIds);
+        console.log(`[ML Webhook] Shipment ${order.shipping.id}: ${result.items} items processed`);
+      }
+
+      // Also process via legacy path
+      const count = await fetchAndProcessOrder(orderId);
+      console.log(`[ML Webhook] Order ${orderId}: ${count} legacy items processed`);
+
+      return NextResponse.json({ status: "ok", order_id: orderId });
     }
 
-    // Extract order ID from resource path: /orders/123456789
-    const match = resource?.match(/\/orders\/(\d+)/);
-    if (!match) {
-      return NextResponse.json({ status: "ignored", reason: "no_order_id" });
+    // Handle shipment notifications
+    if (topic === "shipments") {
+      const match = resource?.match(/\/shipments\/(\d+)/);
+      if (!match) {
+        return NextResponse.json({ status: "ignored", reason: "no_shipment_id" });
+      }
+
+      const shipmentId = parseInt(match[1]);
+      console.log(`[ML Webhook] Processing shipment ${shipmentId}`);
+
+      // Fetch shipment items to get order IDs
+      const shipItems = await mlGet<Array<{ order_id: number }>>(`/shipments/${shipmentId}/items`);
+      const orderIds = shipItems ? Array.from(new Set(shipItems.map(i => i.order_id))) : [];
+
+      if (orderIds.length > 0) {
+        const result = await processShipment(shipmentId, orderIds);
+        console.log(`[ML Webhook] Shipment ${shipmentId}: ${result.items} items processed`);
+        return NextResponse.json({ status: "ok", shipment_id: shipmentId, items: result.items });
+      }
+
+      return NextResponse.json({ status: "ok", shipment_id: shipmentId, items: 0 });
     }
 
-    const orderId = parseInt(match[1]);
-    console.log(`[ML Webhook] Processing order ${orderId}`);
-
-    const count = await fetchAndProcessOrder(orderId);
-    console.log(`[ML Webhook] Order ${orderId}: ${count} items processed`);
-
-    return NextResponse.json({ status: "ok", order_id: orderId, items: count });
+    return NextResponse.json({ status: "ignored", topic });
   } catch (err) {
     console.error("[ML Webhook] Error:", err);
     // Return 200 anyway to prevent ML from retrying indefinitely
