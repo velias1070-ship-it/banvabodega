@@ -3941,37 +3941,19 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
         </div>
       )}
 
-      {/* Stats — shipment-centric */}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:0}}>
-        {[
-          { label: "Envíos", value: shipCounts.total, sub: `${shipCounts.totalItems} items`, color: "#3b82f6" },
-          { label: "Flex", value: shipCounts.flex, sub: "self_service", color: "#10b981" },
-          { label: "Colecta", value: shipCounts.colecta, sub: "cross_docking", color: "#f59e0b" },
-          { label: "Drop-off", value: shipCounts.dropoff, sub: "drop_off", color: "#a855f7" },
-        ].map(st => (
-          <div key={st.label} className="card" style={{textAlign:"center",padding:12}}>
-            <div style={{fontSize:24,fontWeight:800,color:st.color}}>{st.value}</div>
-            <div style={{fontSize:10,color:"var(--txt3)"}}>{st.label}</div>
-            <div style={{fontSize:9,color:"var(--txt3)",marginTop:2}}>{st.sub}</div>
-          </div>
-        ))}
-      </div>
-      {/* Substatus summary */}
+      {/* Summary: what the operator needs to know */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:0}}>
-        <div className="card" style={{textAlign:"center",padding:12}}>
-          <div style={{fontSize:24,fontWeight:800,color:"#f59e0b"}}>{shipCounts.readyToPrint}</div>
-          <div style={{fontSize:10,color:"var(--txt3)"}}>Etiquetas por imprimir</div>
-          <div style={{fontSize:9,color:"var(--txt3)",marginTop:2}}>ready_to_print</div>
+        <div className="card" style={{textAlign:"center",padding:14}}>
+          <div style={{fontSize:28,fontWeight:800,color:"#f59e0b"}}>{shipCounts.readyToPrint}</div>
+          <div style={{fontSize:12,fontWeight:600,color:"var(--txt2)"}}>Etiquetas por imprimir</div>
         </div>
-        <div className="card" style={{textAlign:"center",padding:12}}>
-          <div style={{fontSize:24,fontWeight:800,color:"#10b981"}}>{shipCounts.printed}</div>
-          <div style={{fontSize:10,color:"var(--txt3)"}}>Listas para despachar</div>
-          <div style={{fontSize:9,color:"var(--txt3)",marginTop:2}}>printed</div>
+        <div className="card" style={{textAlign:"center",padding:14}}>
+          <div style={{fontSize:28,fontWeight:800,color:"#10b981"}}>{shipCounts.printed}</div>
+          <div style={{fontSize:12,fontWeight:600,color:"var(--txt2)"}}>Listas para despachar</div>
         </div>
-        <div className="card" style={{textAlign:"center",padding:12}}>
-          <div style={{fontSize:24,fontWeight:800,color:"#ef4444"}}>{shipCounts.atrasado}</div>
-          <div style={{fontSize:10,color:"var(--txt3)"}}>Atrasados</div>
-          <div style={{fontSize:9,color:"var(--txt3)",marginTop:2}}>handling vencido</div>
+        <div className="card" style={{textAlign:"center",padding:14,border: shipCounts.atrasado > 0 ? "2px solid #ef4444" : undefined}}>
+          <div style={{fontSize:28,fontWeight:800,color:"#ef4444"}}>{shipCounts.atrasado}</div>
+          <div style={{fontSize:12,fontWeight:600,color:"var(--txt2)"}}>Atrasados</div>
         </div>
       </div>
 
@@ -3979,7 +3961,7 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
       <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
         <button onClick={() => setUseNewView(!useNewView)}
           style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"var(--txt2)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
-          {useNewView ? "Vista envíos" : "Vista legacy"}
+          {useNewView ? "Vista operador" : "Vista legacy"}
         </button>
         {counts.pendiente > 0 && (
           <button onClick={doCreatePicking} disabled={creating}
@@ -3993,21 +3975,29 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
       {loading ? (
         <div className="card" style={{textAlign:"center",padding:40,color:"var(--txt3)"}}>Cargando...</div>
       ) : useNewView && shipments.length > 0 ? (
-        /* ===== NEW SHIPMENT VIEW — grouped by day ===== */
+        /* ===== OPERATOR VIEW — grouped by day, then by logistic type ===== */
         <div style={{display:"flex",flexDirection:"column",gap:12}}>
           {dayGroups.map(dayGroup => {
             const readyToPrint = dayGroup.shipments.filter(s => s.substatus === "ready_to_print").length;
             const printed = dayGroup.shipments.filter(s => s.substatus === "printed").length;
             const isOverdueGroup = dayGroup.dateKey === "atrasados";
-            // Group this day's shipments by logistic type
+            // Instruction text parts
+            const LOGISTIC_ACTIONS: Record<string, string> = {
+              self_service: "darle el paquete a tu conductor",
+              cross_docking: "tenerlo listo para recolección de ML",
+              xd_drop_off: "llevarlo a la agencia",
+              drop_off: "llevarlo al correo",
+            };
+            const whenText = isOverdueGroup ? "ATRASADO" : dayGroup.label.toLowerCase();
+            // Group by logistic type
             const logisticTypes = ["self_service", "cross_docking", "xd_drop_off", "drop_off"];
             const ltGroups = logisticTypes.map(lt => ({
               lt,
               label: LOGISTIC_LABELS[lt] || lt,
               color: LOGISTIC_COLORS[lt] || "#94a3b8",
+              action: LOGISTIC_ACTIONS[lt] || "preparar",
               ships: dayGroup.shipments.filter(s => s.logistic_type === lt),
             })).filter(g => g.ships.length > 0);
-            const otherShips = dayGroup.shipments.filter(s => !logisticTypes.includes(s.logistic_type));
 
             return (
               <div key={dayGroup.dateKey} className="card" style={{padding:0,overflow:"hidden",border: isOverdueGroup ? "2px solid #ef4444" : undefined}}>
@@ -4018,7 +4008,7 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
                     {dayGroup.dateKey !== "atrasados" && dayGroup.dateKey !== "sin_fecha" && (
                       <span className="mono" style={{fontSize:11,color:"var(--txt3)"}}>{dayGroup.dateKey}</span>
                     )}
-                    <span style={{fontSize:11,color:"var(--txt3)",fontWeight:600}}>{dayGroup.shipments.length} envíos</span>
+                    <span style={{fontSize:12,color:"var(--txt3)",fontWeight:600}}>{dayGroup.shipments.length} paquetes</span>
                   </div>
                   <div style={{display:"flex",gap:12,fontSize:11}}>
                     {readyToPrint > 0 && (
@@ -4038,61 +4028,38 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
                 <div style={{padding:"8px 12px"}}>
                   {ltGroups.map(ltg => (
                     <div key={ltg.lt} style={{marginBottom:8}}>
-                      <div style={{display:"flex",alignItems:"center",gap:8,margin:"8px 0 4px",padding:"0 4px"}}>
-                        <span style={{fontSize:11,fontWeight:800,color:ltg.color}}>{ltg.label}</span>
-                        <span style={{fontSize:10,color:"var(--txt3)"}}>({ltg.ships.length})</span>
+                      {/* Instruction message */}
+                      <div style={{display:"flex",alignItems:"center",gap:8,margin:"8px 0 6px",padding:"6px 10px",background:`${ltg.color}0d`,borderRadius:6}}>
+                        <span style={{fontSize:12,fontWeight:700,color:ltg.color}}>{ltg.label}</span>
+                        <span style={{fontSize:11,color:"var(--txt2)"}}>
+                          — Tienes que <strong>{ltg.action}</strong> {isOverdueGroup ? <span style={{color:"#ef4444",fontWeight:800}}>ATRASADO</span> : <strong>{whenText}</strong>}
+                        </span>
+                        <span style={{fontSize:10,color:"var(--txt3)",marginLeft:"auto"}}>({ltg.ships.length})</span>
                       </div>
-                      {ltg.ships.map(ship => {
-                        const hlDate = ship.handling_limit ? ship.handling_limit.slice(0, 10) : null;
-                        const substatusLabel = ship.substatus === "ready_to_print" ? "Por imprimir"
-                          : ship.substatus === "printed" ? "Impresa"
-                          : ship.substatus || "—";
-                        const substatusColor = ship.substatus === "ready_to_print" ? "#f59e0b"
-                          : ship.substatus === "printed" ? "#10b981"
-                          : "#94a3b8";
-                        return (
-                          <div key={ship.shipment_id} className="card" style={{padding:10,marginBottom:4,borderLeft:`3px solid ${isOverdueGroup ? "#ef4444" : ltg.color}`}}>
-                            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
-                              <div style={{display:"flex",alignItems:"center",gap:8}}>
-                                <span className="mono" style={{fontSize:11,fontWeight:700}}>#{ship.shipment_id}</span>
-                                {isOverdueGroup && <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:3,background:"#ef444422",color:"#ef4444",border:"1px solid #ef444444"}}>ATRASADO</span>}
-                                <span style={{fontSize:9,fontWeight:600,padding:"2px 6px",borderRadius:3,background:`${substatusColor}22`,color:substatusColor}}>{substatusLabel}</span>
-                              </div>
-                              <div style={{display:"flex",alignItems:"center",gap:8,fontSize:10,color:"var(--txt3)"}}>
-                                {ship.receiver_name && <span>{ship.receiver_name}</span>}
-                                {ship.destination_city && <span>· {ship.destination_city}</span>}
-                              </div>
-                            </div>
-                            <div style={{display:"flex",gap:16,fontSize:10,color:"var(--txt3)",marginBottom:4}}>
-                              <span>Despachar: <strong style={{color: isOverdueGroup ? "#ef4444" : "var(--cyan)"}}>{hlDate || "—"}</strong></span>
-                              {ship.delivery_date && <span>Entrega: <strong>{ship.delivery_date.slice(0, 10)}</strong></span>}
-                              {ship.store_id && <span>Tienda: <strong>{ship.store_id}</strong></span>}
-                            </div>
-                            {/* Items */}
-                            <div style={{borderTop:"1px solid var(--bg4)",paddingTop:4}}>
-                              {ship.items.map((item, idx) => (
-                                <div key={idx} style={{display:"flex",alignItems:"center",gap:8,padding:"2px 0",fontSize:11}}>
-                                  <span className="mono" style={{fontWeight:700,minWidth:100}}>{item.seller_sku}</span>
-                                  <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:"var(--txt2)"}}>{item.title}</span>
-                                  <span className="mono" style={{fontWeight:700}}>x{item.quantity}</span>
-                                </div>
-                              ))}
-                            </div>
+                      {ltg.ships.map(ship => (
+                        <div key={ship.shipment_id} style={{padding:"8px 10px",marginBottom:2,borderLeft:`3px solid ${isOverdueGroup ? "#ef4444" : ltg.color}`,background:"var(--bg2)",borderRadius:"0 6px 6px 0"}}>
+                          {/* Substatus badge + receiver */}
+                          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                            <span style={{fontSize:9,fontWeight:700,padding:"2px 8px",borderRadius:3,
+                              background: ship.substatus === "ready_to_print" ? "#f59e0b22" : ship.substatus === "printed" ? "#10b98122" : "#94a3b822",
+                              color: ship.substatus === "ready_to_print" ? "#f59e0b" : ship.substatus === "printed" ? "#10b981" : "#94a3b8",
+                            }}>
+                              {ship.substatus === "ready_to_print" ? "IMPRIMIR ETIQUETA" : ship.substatus === "printed" ? "LISTA" : ship.substatus || "—"}
+                            </span>
+                            <span style={{fontSize:10,color:"var(--txt3)"}}>{ship.receiver_name || ""}{ship.destination_city ? ` · ${ship.destination_city}` : ""}</span>
                           </div>
-                        );
-                      })}
-                    </div>
-                  ))}
-                  {otherShips.length > 0 && (
-                    <div style={{marginBottom:8}}>
-                      <div style={{fontSize:11,fontWeight:800,color:"var(--txt3)",margin:"8px 0 4px",padding:"0 4px"}}>Otros ({otherShips.length})</div>
-                      {otherShips.map(ship => (
-                        <div key={ship.shipment_id} className="card" style={{padding:8,marginBottom:4,fontSize:11}}>
-                          <span className="mono">#{ship.shipment_id}</span> — {ship.logistic_type} — {ship.items.length} items
+                          {/* Items — the main thing the operator cares about */}
+                          {ship.items.map((item, idx) => (
+                            <div key={idx} style={{display:"flex",alignItems:"center",gap:8,padding:"3px 0",fontSize:12}}>
+                              <span className="mono" style={{fontWeight:800,minWidth:110,color:"var(--cyan)"}}>{item.seller_sku}</span>
+                              <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:"var(--txt1)"}}>{item.title}</span>
+                              <span className="mono" style={{fontWeight:800,fontSize:13,color:"var(--txt1)"}}>x{item.quantity}</span>
+                            </div>
+                          ))}
                         </div>
                       ))}
                     </div>
-                  )}
+                  ))}
                 </div>
               </div>
             );
