@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
-import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, fetchAllPedidosFlex, fetchPedidosFlexByEstado, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments } from "@/lib/db";
+import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, fetchAllPedidosFlex, fetchPedidosFlexByEstado, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds } from "@/lib/db";
 import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap, ShipmentWithItems } from "@/lib/db";
 import { getOAuthUrl } from "@/lib/ml";
 import Link from "next/link";
@@ -3556,19 +3556,23 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
   const [mlConfig, setMlConfig] = useState<DBMLConfig | null>(null);
   const [configForm, setConfigForm] = useState({ client_id: "", client_secret: "", seller_id: "", hora_corte_lv: 13, hora_corte_sab: 12 });
   const [useNewView, setUseNewView] = useState(true); // toggle between new shipment view and legacy
+  const [storeFilter, setStoreFilter] = useState<number | null>(null); // store_id filter
+  const [storeOptions, setStoreOptions] = useState<{ store_id: number; count: number }[]>([]);
 
   const loadPedidos = useCallback(async () => {
     setLoading(true);
-    // Load new shipment-centric data
+    // Load new shipment-centric data (all pending, grouped by day in UI)
     try {
-      const sData = verTodos ? await fetchAllShipments(200) : await fetchShipmentsToArm(fecha);
+      const sData = verTodos ? await fetchAllShipments(200, storeFilter) : await fetchShipmentsToArm(fecha, storeFilter);
       setShipments(sData);
     } catch { setShipments([]); }
+    // Load store options for filter dropdown
+    try { const stores = await fetchStoreIds(); setStoreOptions(stores); } catch { /* ignore */ }
     // Also load legacy pedidos_flex as fallback
     const data = verTodos ? await fetchAllPedidosFlex(200) : await fetchPedidosFlex(fecha);
     setPedidos(data);
     setLoading(false);
-  }, [fecha, verTodos]);
+  }, [fecha, verTodos, storeFilter]);
 
   const loadConfig = useCallback(async () => {
     const cfg = await fetchMLConfig();
@@ -3596,13 +3600,79 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
   const LOGISTIC_LABELS: Record<string, string> = {
     self_service: "Flex", cross_docking: "Colecta", xd_drop_off: "Drop-off", drop_off: "Correo",
   };
+  const LOGISTIC_COLORS: Record<string, string> = {
+    self_service: "#10b981", cross_docking: "#f59e0b", xd_drop_off: "#a855f7", drop_off: "#6366f1",
+  };
+
+  // Group shipments by day based on handling_limit date
+  const groupShipmentsByDay = (ships: ShipmentWithItems[]) => {
+    const groups: Record<string, ShipmentWithItems[]> = {};
+    for (const s of ships) {
+      const hlDate = s.handling_limit ? s.handling_limit.slice(0, 10) : "sin_fecha";
+      if (!groups[hlDate]) groups[hlDate] = [];
+      groups[hlDate].push(s);
+    }
+    // Sort dates ascending
+    const sortedKeys = Object.keys(groups).sort((a, b) => {
+      if (a === "sin_fecha") return 1;
+      if (b === "sin_fecha") return -1;
+      return a.localeCompare(b);
+    });
+    return sortedKeys.map(dateKey => ({ dateKey, shipments: groups[dateKey] }));
+  };
+
+  const dayLabel = (dateKey: string) => {
+    if (dateKey === "sin_fecha") return "Sin fecha";
+    if (dateKey < today) return "Atrasados";
+    if (dateKey === today) return "Hoy";
+    const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrowStr = tomorrow.toISOString().slice(0, 10);
+    if (dateKey === tomorrowStr) return "Mañana";
+    const dayAfter = new Date(); dayAfter.setDate(dayAfter.getDate() + 2);
+    if (dateKey === dayAfter.toISOString().slice(0, 10)) return "Pasado";
+    // Show weekday name for further days
+    const d = new Date(dateKey + "T12:00:00");
+    return d.toLocaleDateString("es-CL", { weekday: "long", day: "numeric", month: "short" });
+  };
+
+  const dayColor = (dateKey: string) => {
+    if (dateKey === "sin_fecha") return "#94a3b8";
+    if (dateKey < today) return "#ef4444";
+    if (dateKey === today) return "#3b82f6";
+    return "#10b981";
+  };
+
+  // Merge overdue days into single "Atrasados" group
+  const dayGroups = (() => {
+    const raw = groupShipmentsByDay(shipments);
+    const overdue: ShipmentWithItems[] = [];
+    const rest: { dateKey: string; shipments: ShipmentWithItems[] }[] = [];
+    for (const g of raw) {
+      if (g.dateKey !== "sin_fecha" && g.dateKey < today) {
+        overdue.push(...g.shipments);
+      } else {
+        rest.push(g);
+      }
+    }
+    const result: { dateKey: string; label: string; color: string; shipments: ShipmentWithItems[] }[] = [];
+    if (overdue.length > 0) {
+      result.push({ dateKey: "atrasados", label: "Atrasados", color: "#ef4444", shipments: overdue });
+    }
+    for (const g of rest) {
+      result.push({ dateKey: g.dateKey, label: dayLabel(g.dateKey), color: dayColor(g.dateKey), shipments: g.shipments });
+    }
+    return result;
+  })();
+
   const shipCounts = {
     total: shipments.length,
     flex: shipments.filter(s => s.logistic_type === "self_service").length,
     colecta: shipments.filter(s => s.logistic_type === "cross_docking").length,
     dropoff: shipments.filter(s => ["xd_drop_off", "drop_off"].includes(s.logistic_type)).length,
-    atrasado: shipments.filter(s => s.handling_limit && s.handling_limit.slice(0, 10) < fecha).length,
+    atrasado: shipments.filter(s => s.handling_limit && s.handling_limit.slice(0, 10) < today).length,
     totalItems: shipments.reduce((acc, s) => acc + s.items.reduce((a2, i) => a2 + i.quantity, 0), 0),
+    readyToPrint: shipments.filter(s => s.substatus === "ready_to_print").length,
+    printed: shipments.filter(s => s.substatus === "printed").length,
   };
   // Legacy counts as fallback
   const counts = {
@@ -3610,7 +3680,7 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
     pendiente: pedidos.filter(p => p.estado === "PENDIENTE").length,
     en_picking: pedidos.filter(p => p.estado === "EN_PICKING").length,
     despachado: pedidos.filter(p => p.estado === "DESPACHADO").length,
-    atrasado: pedidos.filter(p => p.estado !== "DESPACHADO" && p.fecha_armado < fecha).length,
+    atrasado: pedidos.filter(p => p.estado !== "DESPACHADO" && p.fecha_armado < today).length,
   };
 
   const doSync = async () => {
@@ -3757,14 +3827,23 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
           </button>
         </div>
 
-        {/* Date picker */}
-        <div style={{display:"flex",alignItems:"center",gap:8,marginTop:8}}>
+        {/* Filters: date + store */}
+        <div style={{display:"flex",alignItems:"center",gap:8,marginTop:8,flexWrap:"wrap"}}>
           <input type="date" value={fecha} onChange={e => { setFecha(e.target.value); setVerTodos(false); }}
             className="form-input mono" style={{fontSize:13,padding:8,width:160}} disabled={verTodos}/>
           <button onClick={() => { setFecha(today); setVerTodos(false); }} style={{padding:"6px 12px",borderRadius:6,background: !verTodos ? "var(--bg3)" : "var(--bg2)",color:"var(--txt2)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>Hoy</button>
           <button onClick={() => setVerTodos(!verTodos)} style={{padding:"6px 12px",borderRadius:6,background: verTodos ? "var(--cyan)" : "var(--bg3)",color: verTodos ? "#fff" : "var(--txt2)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
             {verTodos ? "● Ver todos" : "Ver todos"}
           </button>
+          {storeOptions.length > 1 && (
+            <select value={storeFilter ?? ""} onChange={e => setStoreFilter(e.target.value ? Number(e.target.value) : null)}
+              className="form-input mono" style={{fontSize:12,padding:"6px 8px",width:180}}>
+              <option value="">Todas las tiendas</option>
+              {storeOptions.map(s => (
+                <option key={s.store_id} value={s.store_id}>Tienda {s.store_id} ({s.count})</option>
+              ))}
+            </select>
+          )}
         </div>
 
         {/* Status indicator */}
@@ -3863,13 +3942,12 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
       )}
 
       {/* Stats — shipment-centric */}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8,marginBottom:0}}>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:0}}>
         {[
           { label: "Envíos", value: shipCounts.total, sub: `${shipCounts.totalItems} items`, color: "#3b82f6" },
           { label: "Flex", value: shipCounts.flex, sub: "self_service", color: "#10b981" },
           { label: "Colecta", value: shipCounts.colecta, sub: "cross_docking", color: "#f59e0b" },
           { label: "Drop-off", value: shipCounts.dropoff, sub: "drop_off", color: "#a855f7" },
-          { label: "Atrasados", value: shipCounts.atrasado, sub: "handling vencido", color: "#ef4444" },
         ].map(st => (
           <div key={st.label} className="card" style={{textAlign:"center",padding:12}}>
             <div style={{fontSize:24,fontWeight:800,color:st.color}}>{st.value}</div>
@@ -3877,6 +3955,24 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
             <div style={{fontSize:9,color:"var(--txt3)",marginTop:2}}>{st.sub}</div>
           </div>
         ))}
+      </div>
+      {/* Substatus summary */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:0}}>
+        <div className="card" style={{textAlign:"center",padding:12}}>
+          <div style={{fontSize:24,fontWeight:800,color:"#f59e0b"}}>{shipCounts.readyToPrint}</div>
+          <div style={{fontSize:10,color:"var(--txt3)"}}>Etiquetas por imprimir</div>
+          <div style={{fontSize:9,color:"var(--txt3)",marginTop:2}}>ready_to_print</div>
+        </div>
+        <div className="card" style={{textAlign:"center",padding:12}}>
+          <div style={{fontSize:24,fontWeight:800,color:"#10b981"}}>{shipCounts.printed}</div>
+          <div style={{fontSize:10,color:"var(--txt3)"}}>Listas para despachar</div>
+          <div style={{fontSize:9,color:"var(--txt3)",marginTop:2}}>printed</div>
+        </div>
+        <div className="card" style={{textAlign:"center",padding:12}}>
+          <div style={{fontSize:24,fontWeight:800,color:"#ef4444"}}>{shipCounts.atrasado}</div>
+          <div style={{fontSize:10,color:"var(--txt3)"}}>Atrasados</div>
+          <div style={{fontSize:9,color:"var(--txt3)",marginTop:2}}>handling vencido</div>
+        </div>
       </div>
 
       {/* View toggle + Create picking */}
@@ -3897,69 +3993,110 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
       {loading ? (
         <div className="card" style={{textAlign:"center",padding:40,color:"var(--txt3)"}}>Cargando...</div>
       ) : useNewView && shipments.length > 0 ? (
-        /* ===== NEW SHIPMENT VIEW ===== */
-        <div>
-          {/* Group by logistic type */}
-          {(["self_service", "cross_docking", "xd_drop_off", "drop_off"] as const).map(lt => {
-            const group = shipments.filter(s => s.logistic_type === lt);
-            if (group.length === 0) return null;
-            const ltColor: Record<string, string> = { self_service: "#10b981", cross_docking: "#f59e0b", xd_drop_off: "#a855f7", drop_off: "#6366f1" };
-            const ltLabel = LOGISTIC_LABELS[lt] || lt;
+        /* ===== NEW SHIPMENT VIEW — grouped by day ===== */
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
+          {dayGroups.map(dayGroup => {
+            const readyToPrint = dayGroup.shipments.filter(s => s.substatus === "ready_to_print").length;
+            const printed = dayGroup.shipments.filter(s => s.substatus === "printed").length;
+            const isOverdueGroup = dayGroup.dateKey === "atrasados";
+            // Group this day's shipments by logistic type
+            const logisticTypes = ["self_service", "cross_docking", "xd_drop_off", "drop_off"];
+            const ltGroups = logisticTypes.map(lt => ({
+              lt,
+              label: LOGISTIC_LABELS[lt] || lt,
+              color: LOGISTIC_COLORS[lt] || "#94a3b8",
+              ships: dayGroup.shipments.filter(s => s.logistic_type === lt),
+            })).filter(g => g.ships.length > 0);
+            const otherShips = dayGroup.shipments.filter(s => !logisticTypes.includes(s.logistic_type));
+
             return (
-              <div key={lt}>
-                <div style={{display:"flex",alignItems:"center",gap:8,margin:"12px 0 6px",padding:"0 4px"}}>
-                  <span style={{fontSize:12,fontWeight:800,color:ltColor[lt] || "#94a3b8"}}>{ltLabel}</span>
-                  <span style={{fontSize:10,color:"var(--txt3)"}}>({group.length} envíos)</span>
+              <div key={dayGroup.dateKey} className="card" style={{padding:0,overflow:"hidden",border: isOverdueGroup ? "2px solid #ef4444" : undefined}}>
+                {/* Day header */}
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 16px",background:`${dayGroup.color}11`,borderBottom:"1px solid var(--bg4)"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:10}}>
+                    <span style={{fontSize:16,fontWeight:800,color:dayGroup.color}}>{dayGroup.label}</span>
+                    {dayGroup.dateKey !== "atrasados" && dayGroup.dateKey !== "sin_fecha" && (
+                      <span className="mono" style={{fontSize:11,color:"var(--txt3)"}}>{dayGroup.dateKey}</span>
+                    )}
+                    <span style={{fontSize:11,color:"var(--txt3)",fontWeight:600}}>{dayGroup.shipments.length} envíos</span>
+                  </div>
+                  <div style={{display:"flex",gap:12,fontSize:11}}>
+                    {readyToPrint > 0 && (
+                      <span style={{padding:"3px 8px",borderRadius:4,background:"#f59e0b22",color:"#f59e0b",fontWeight:700}}>
+                        Etiquetas por imprimir: {readyToPrint}
+                      </span>
+                    )}
+                    {printed > 0 && (
+                      <span style={{padding:"3px 8px",borderRadius:4,background:"#10b98122",color:"#10b981",fontWeight:700}}>
+                        Listas para despachar: {printed}
+                      </span>
+                    )}
+                  </div>
                 </div>
-                {group.map(ship => {
-                  const hlDate = ship.handling_limit ? ship.handling_limit.slice(0, 10) : null;
-                  const isOverdue = hlDate ? hlDate < fecha : false;
-                  const urgColor = isOverdue ? "#ef4444" : (ltColor[lt] || "#94a3b8");
-                  return (
-                    <div key={ship.shipment_id} className="card" style={{padding:12,marginBottom:6,borderLeft:`3px solid ${urgColor}`}}>
-                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
-                        <div style={{display:"flex",alignItems:"center",gap:8}}>
-                          <span className="mono" style={{fontSize:11,fontWeight:700}}>#{ship.shipment_id}</span>
-                          {isOverdue && <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:3,background:"#ef444422",color:"#ef4444",border:"1px solid #ef444444"}}>ATRASADO</span>}
-                          <span style={{fontSize:9,fontWeight:600,padding:"2px 6px",borderRadius:3,background:`${urgColor}22`,color:urgColor}}>{ship.status}/{ship.substatus || "—"}</span>
-                        </div>
-                        <div style={{display:"flex",alignItems:"center",gap:8,fontSize:10,color:"var(--txt3)"}}>
-                          {ship.receiver_name && <span>{ship.receiver_name}</span>}
-                          {ship.destination_city && <span>· {ship.destination_city}</span>}
-                        </div>
+
+                {/* Logistic type subgroups */}
+                <div style={{padding:"8px 12px"}}>
+                  {ltGroups.map(ltg => (
+                    <div key={ltg.lt} style={{marginBottom:8}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8,margin:"8px 0 4px",padding:"0 4px"}}>
+                        <span style={{fontSize:11,fontWeight:800,color:ltg.color}}>{ltg.label}</span>
+                        <span style={{fontSize:10,color:"var(--txt3)"}}>({ltg.ships.length})</span>
                       </div>
-                      <div style={{display:"flex",gap:16,fontSize:10,color:"var(--txt3)",marginBottom:6}}>
-                        <span>Despachar: <strong style={{color: isOverdue ? "#ef4444" : "var(--cyan)"}}>{hlDate || "—"}</strong></span>
-                        {ship.delivery_date && <span>Entrega: <strong>{ship.delivery_date.slice(0, 10)}</strong></span>}
-                        <span>Origen: {ship.origin_type || "—"}</span>
-                      </div>
-                      {/* Items */}
-                      <div style={{borderTop:"1px solid var(--bg4)",paddingTop:6}}>
-                        {ship.items.map((item, idx) => (
-                          <div key={idx} style={{display:"flex",alignItems:"center",gap:8,padding:"3px 0",fontSize:11}}>
-                            <span className="mono" style={{fontWeight:700,minWidth:100}}>{item.seller_sku}</span>
-                            <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:"var(--txt2)"}}>{item.title}</span>
-                            <span className="mono" style={{fontWeight:700}}>x{item.quantity}</span>
+                      {ltg.ships.map(ship => {
+                        const hlDate = ship.handling_limit ? ship.handling_limit.slice(0, 10) : null;
+                        const substatusLabel = ship.substatus === "ready_to_print" ? "Por imprimir"
+                          : ship.substatus === "printed" ? "Impresa"
+                          : ship.substatus || "—";
+                        const substatusColor = ship.substatus === "ready_to_print" ? "#f59e0b"
+                          : ship.substatus === "printed" ? "#10b981"
+                          : "#94a3b8";
+                        return (
+                          <div key={ship.shipment_id} className="card" style={{padding:10,marginBottom:4,borderLeft:`3px solid ${isOverdueGroup ? "#ef4444" : ltg.color}`}}>
+                            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                                <span className="mono" style={{fontSize:11,fontWeight:700}}>#{ship.shipment_id}</span>
+                                {isOverdueGroup && <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:3,background:"#ef444422",color:"#ef4444",border:"1px solid #ef444444"}}>ATRASADO</span>}
+                                <span style={{fontSize:9,fontWeight:600,padding:"2px 6px",borderRadius:3,background:`${substatusColor}22`,color:substatusColor}}>{substatusLabel}</span>
+                              </div>
+                              <div style={{display:"flex",alignItems:"center",gap:8,fontSize:10,color:"var(--txt3)"}}>
+                                {ship.receiver_name && <span>{ship.receiver_name}</span>}
+                                {ship.destination_city && <span>· {ship.destination_city}</span>}
+                              </div>
+                            </div>
+                            <div style={{display:"flex",gap:16,fontSize:10,color:"var(--txt3)",marginBottom:4}}>
+                              <span>Despachar: <strong style={{color: isOverdueGroup ? "#ef4444" : "var(--cyan)"}}>{hlDate || "—"}</strong></span>
+                              {ship.delivery_date && <span>Entrega: <strong>{ship.delivery_date.slice(0, 10)}</strong></span>}
+                              {ship.store_id && <span>Tienda: <strong>{ship.store_id}</strong></span>}
+                            </div>
+                            {/* Items */}
+                            <div style={{borderTop:"1px solid var(--bg4)",paddingTop:4}}>
+                              {ship.items.map((item, idx) => (
+                                <div key={idx} style={{display:"flex",alignItems:"center",gap:8,padding:"2px 0",fontSize:11}}>
+                                  <span className="mono" style={{fontWeight:700,minWidth:100}}>{item.seller_sku}</span>
+                                  <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:"var(--txt2)"}}>{item.title}</span>
+                                  <span className="mono" style={{fontWeight:700}}>x{item.quantity}</span>
+                                </div>
+                              ))}
+                            </div>
                           </div>
-                        ))}
-                      </div>
+                        );
+                      })}
                     </div>
-                  );
-                })}
+                  ))}
+                  {otherShips.length > 0 && (
+                    <div style={{marginBottom:8}}>
+                      <div style={{fontSize:11,fontWeight:800,color:"var(--txt3)",margin:"8px 0 4px",padding:"0 4px"}}>Otros ({otherShips.length})</div>
+                      {otherShips.map(ship => (
+                        <div key={ship.shipment_id} className="card" style={{padding:8,marginBottom:4,fontSize:11}}>
+                          <span className="mono">#{ship.shipment_id}</span> — {ship.logistic_type} — {ship.items.length} items
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             );
           })}
-          {/* Shipments with unknown/other logistic types */}
-          {shipments.filter(s => !["self_service","cross_docking","xd_drop_off","drop_off"].includes(s.logistic_type)).length > 0 && (
-            <div>
-              <div style={{fontSize:12,fontWeight:800,color:"var(--txt3)",margin:"12px 0 6px",padding:"0 4px"}}>Otros</div>
-              {shipments.filter(s => !["self_service","cross_docking","xd_drop_off","drop_off"].includes(s.logistic_type)).map(ship => (
-                <div key={ship.shipment_id} className="card" style={{padding:8,marginBottom:4,fontSize:11}}>
-                  <span className="mono">#{ship.shipment_id}</span> — {ship.logistic_type} — {ship.items.length} items
-                </div>
-              ))}
-            </div>
-          )}
         </div>
       ) : shipments.length === 0 && pedidos.length === 0 ? (
         <div className="card" style={{textAlign:"center",padding:40,color:"var(--txt3)"}}>

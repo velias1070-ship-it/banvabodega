@@ -103,6 +103,7 @@ interface MLShipmentDetail {
     type?: string; // "selling_address" | "seller_warehouse"
     sender_id?: number;
     shipping_address?: {
+      id?: number; // store/warehouse id — maps to store_id filter
       address_line?: string;
       city?: { name?: string };
       state?: { name?: string };
@@ -345,6 +346,7 @@ export interface ShipmentFlexInfo {
   logistic_type: string;
   origin_type: string | null;
   origin_address: string | null;
+  store_id: number | null;            // origin shipping_address.id — bodega/tienda
   is_flex: boolean;
   handling_limit_date: string | null; // YYYY-MM-DD — deadline to dispatch
   delivery_date: string | null;       // YYYY-MM-DD — promised to buyer
@@ -353,7 +355,7 @@ export interface ShipmentFlexInfo {
 }
 
 export async function getShipmentFlexInfo(shippingId: number): Promise<ShipmentFlexInfo> {
-  const fallback: ShipmentFlexInfo = { logistic_type: "unknown", origin_type: null, origin_address: null, is_flex: false, handling_limit_date: null, delivery_date: null, shipment_status: null, raw: null };
+  const fallback: ShipmentFlexInfo = { logistic_type: "unknown", origin_type: null, origin_address: null, store_id: null, is_flex: false, handling_limit_date: null, delivery_date: null, shipment_status: null, raw: null };
 
   // Use x-format-new: true for richer data (logistic.type, origin, lead_time)
   const shipment = await mlGet<MLShipmentDetail>(
@@ -370,6 +372,7 @@ export async function getShipmentFlexInfo(shippingId: number): Promise<ShipmentF
   const originAddress = originAddr
     ? [originAddr.address_line, originAddr.city?.name, originAddr.state?.name].filter(Boolean).join(", ")
     : null;
+  const storeId = originAddr?.id || null;
 
   // Extract handling limit date (YYYY-MM-DD)
   let handlingLimitDate: string | null = null;
@@ -386,6 +389,7 @@ export async function getShipmentFlexInfo(shippingId: number): Promise<ShipmentF
     logistic_type: logisticType,
     origin_type: originType,
     origin_address: originAddress,
+    store_id: storeId,
     is_flex: logisticType === "self_service",
     handling_limit_date: handlingLimitDate,
     delivery_date: deliveryDate,
@@ -449,7 +453,7 @@ export function calcFechaArmado(fechaVenta: string | Date, horaCorteVL: number, 
  */
 export async function processShipment(shipmentId: number, orderIds: number[]): Promise<{ items: number; shipInfo: ShipmentFlexInfo }> {
   const sb = getServerSupabase();
-  if (!sb) return { items: 0, shipInfo: { logistic_type: "unknown", origin_type: null, origin_address: null, is_flex: false, handling_limit_date: null, delivery_date: null, shipment_status: null, raw: null } };
+  if (!sb) return { items: 0, shipInfo: { logistic_type: "unknown", origin_type: null, origin_address: null, store_id: null, is_flex: false, handling_limit_date: null, delivery_date: null, shipment_status: null, raw: null } };
 
   // 1. Fetch shipment details (logistic type, handling_limit, origin, destination)
   const shipInfo = await getShipmentFlexInfo(shipmentId);
@@ -470,6 +474,7 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
     buffering_date: shipInfo.raw?.lead_time?.buffering?.date || null,
     delivery_date: shipInfo.raw?.lead_time?.estimated_delivery_time?.date || null,
     origin_type: shipInfo.origin_type,
+    store_id: shipInfo.store_id,
     receiver_name: shipInfo.raw?.destination?.receiver_name || null,
     destination_city: shipInfo.raw?.destination?.shipping_address?.city?.name || null,
     updated_at: new Date().toISOString(),

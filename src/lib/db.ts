@@ -806,6 +806,7 @@ export interface DBMLShipment {
   buffering_date: string | null;
   delivery_date: string | null;
   origin_type: string | null;
+  store_id: number | null;       // origin shipping_address.id — bodega/tienda
   receiver_name: string | null;
   destination_city: string | null;
   updated_at: string;
@@ -827,23 +828,27 @@ export interface ShipmentWithItems extends DBMLShipment {
 }
 
 /**
- * Fetch shipments that need to be prepared for a given date.
+ * Fetch all pending shipments (for multi-day grouped view).
  * Logic:
  *   - logistic_type != 'fulfillment'
  *   - status in ready_to_ship/pending (not shipped/delivered/cancelled)
- *   - handling_limit::date <= fecha (includes overdue)
- * Returns shipments with their items, ordered by urgency.
+ * Returns shipments with their items, ordered by handling_limit ascending.
+ * Optional storeId filter for multi-store setups.
  */
-export async function fetchShipmentsToArm(fecha: string): Promise<ShipmentWithItems[]> {
+export async function fetchShipmentsToArm(fecha: string, storeId?: number | null): Promise<ShipmentWithItems[]> {
   const sb = getSupabase(); if (!sb) return [];
 
-  // Fetch shipments with handling_limit up to end of selected day
-  const endOfDay = `${fecha}T23:59:59`;
-  const { data: shipments } = await sb.from("ml_shipments").select("*")
+  // Fetch all pending/ready shipments (no date ceiling — UI groups by day)
+  let query = sb.from("ml_shipments").select("*")
     .neq("logistic_type", "fulfillment")
     .in("status", ["ready_to_ship", "pending"])
-    .lte("handling_limit", endOfDay)
     .order("handling_limit", { ascending: true });
+
+  if (storeId) {
+    query = query.eq("store_id", storeId);
+  }
+
+  const { data: shipments } = await query;
 
   if (!shipments || shipments.length === 0) return [];
 
@@ -868,13 +873,19 @@ export async function fetchShipmentsToArm(fecha: string): Promise<ShipmentWithIt
 /**
  * Fetch all shipments (no date filter, for "Ver todos" mode).
  */
-export async function fetchAllShipments(limit = 100): Promise<ShipmentWithItems[]> {
+export async function fetchAllShipments(limit = 100, storeId?: number | null): Promise<ShipmentWithItems[]> {
   const sb = getSupabase(); if (!sb) return [];
 
-  const { data: shipments } = await sb.from("ml_shipments").select("*")
+  let query = sb.from("ml_shipments").select("*")
     .neq("logistic_type", "fulfillment")
     .order("updated_at", { ascending: false })
     .limit(limit);
+
+  if (storeId) {
+    query = query.eq("store_id", storeId);
+  }
+
+  const { data: shipments } = await query;
 
   if (!shipments || shipments.length === 0) return [];
 
@@ -893,6 +904,22 @@ export async function fetchAllShipments(limit = 100): Promise<ShipmentWithItems[
     ...s,
     items: itemsByShipment.get(s.shipment_id) || [],
   }));
+}
+
+/**
+ * Fetch distinct store_ids from ml_shipments for the store filter dropdown.
+ */
+export async function fetchStoreIds(): Promise<{ store_id: number; count: number }[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("ml_shipments").select("store_id")
+    .neq("logistic_type", "fulfillment")
+    .not("store_id", "is", null);
+  if (!data) return [];
+  const counts = new Map<number, number>();
+  for (const row of data as { store_id: number }[]) {
+    counts.set(row.store_id, (counts.get(row.store_id) || 0) + 1);
+  }
+  return Array.from(counts.entries()).map(([store_id, count]) => ({ store_id, count }));
 }
 
 // ==================== ML CONFIG (client-side read for admin UI) ====================

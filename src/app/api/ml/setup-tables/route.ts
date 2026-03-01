@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS ml_shipments (
   buffering_date TIMESTAMPTZ,
   delivery_date TIMESTAMPTZ,
   origin_type TEXT,
+  store_id BIGINT,
   receiver_name TEXT,
   destination_city TEXT,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -69,6 +70,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_shipments_handling ON ml_shipments(handling_li
 CREATE INDEX IF NOT EXISTS idx_ml_shipments_status ON ml_shipments(status);
 CREATE INDEX IF NOT EXISTS idx_ml_shipments_logistic ON ml_shipments(logistic_type);
 CREATE INDEX IF NOT EXISTS idx_ml_shipment_items_shipment ON ml_shipment_items(shipment_id);
+CREATE INDEX IF NOT EXISTS idx_ml_shipments_store ON ml_shipments(store_id);
 
 -- 4. Enable RLS (Row Level Security) — allow all for now via anon key
 ALTER TABLE ml_shipments ENABLE ROW LEVEL SECURITY;
