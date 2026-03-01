@@ -3,8 +3,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
-import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, fetchAllPedidosFlex, fetchPedidosFlexByEstado, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap } from "@/lib/db";
-import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap } from "@/lib/db";
+import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, fetchAllPedidosFlex, fetchPedidosFlexByEstado, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments } from "@/lib/db";
+import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap, ShipmentWithItems } from "@/lib/db";
 import { getOAuthUrl } from "@/lib/ml";
 import Link from "next/link";
 import SheetSync from "@/components/SheetSync";
@@ -3539,24 +3539,32 @@ function parseCSVLine(line: string): string[] {
   return parts;
 }
 
-// ==================== PEDIDOS FLEX (ML) ====================
+// ==================== PEDIDOS ML (Shipment-centric) ====================
 function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
   const today = new Date().toISOString().slice(0, 10);
   const [fecha, setFecha] = useState(today);
   const [verTodos, setVerTodos] = useState(false);
-  const [pedidos, setPedidos] = useState<DBPedidoFlex[]>([]);
+  const [shipments, setShipments] = useState<ShipmentWithItems[]>([]);
+  const [pedidos, setPedidos] = useState<DBPedidoFlex[]>([]); // legacy fallback
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
-  const [syncDays, setSyncDays] = useState(0); // 0 = 2 hours (default)
+  const [syncDays, setSyncDays] = useState(0);
   const [creating, setCreating] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
   const [diagnosing, setDiagnosing] = useState(false);
   const [diagResult, setDiagResult] = useState<Record<string, unknown> | null>(null);
   const [mlConfig, setMlConfig] = useState<DBMLConfig | null>(null);
   const [configForm, setConfigForm] = useState({ client_id: "", client_secret: "", seller_id: "", hora_corte_lv: 13, hora_corte_sab: 12 });
+  const [useNewView, setUseNewView] = useState(true); // toggle between new shipment view and legacy
 
   const loadPedidos = useCallback(async () => {
     setLoading(true);
+    // Load new shipment-centric data
+    try {
+      const sData = verTodos ? await fetchAllShipments(200) : await fetchShipmentsToArm(fecha);
+      setShipments(sData);
+    } catch { setShipments([]); }
+    // Also load legacy pedidos_flex as fallback
     const data = verTodos ? await fetchAllPedidosFlex(200) : await fetchPedidosFlex(fecha);
     setPedidos(data);
     setLoading(false);
@@ -3584,6 +3592,19 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
     return () => clearInterval(iv);
   }, [loadPedidos]);
 
+  // Shipment-centric counts
+  const LOGISTIC_LABELS: Record<string, string> = {
+    self_service: "Flex", cross_docking: "Colecta", xd_drop_off: "Drop-off", drop_off: "Correo",
+  };
+  const shipCounts = {
+    total: shipments.length,
+    flex: shipments.filter(s => s.logistic_type === "self_service").length,
+    colecta: shipments.filter(s => s.logistic_type === "cross_docking").length,
+    dropoff: shipments.filter(s => ["xd_drop_off", "drop_off"].includes(s.logistic_type)).length,
+    atrasado: shipments.filter(s => s.handling_limit && s.handling_limit.slice(0, 10) < fecha).length,
+    totalItems: shipments.reduce((acc, s) => acc + s.items.reduce((a2, i) => a2 + i.quantity, 0), 0),
+  };
+  // Legacy counts as fallback
   const counts = {
     total: pedidos.length,
     pendiente: pedidos.filter(p => p.estado === "PENDIENTE").length,
@@ -3600,7 +3621,7 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
       const data = await resp.json();
       if (data.new_items > 0) await loadPedidos();
       if (syncDays > 0) {
-        alert(`Sync histórico (${syncDays}d): ${data.total_orders || 0} órdenes encontradas, ${data.flex_found || 0} Flex, ${data.new_items || 0} items nuevos. No-Flex omitidos: ${data.non_flex_skipped || 0}`);
+        alert(`Sync histórico (${syncDays}d): ${data.total_orders || 0} órdenes, ${data.shipments_processed || 0} envíos procesados (no-Full), ${data.new_items || 0} items. Omitidos: ${data.shipments_skipped || 0}`);
       } else {
         alert(`Sincronización completa: ${data.new_items || 0} items nuevos de ${data.total_orders || 0} órdenes`);
       }
@@ -3841,42 +3862,114 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
         </div>
       )}
 
-      {/* Stats */}
+      {/* Stats — shipment-centric */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8,marginBottom:0}}>
         {[
-          { label: "Total", value: counts.total, color: "#3b82f6" },
-          { label: "Pendientes", value: counts.pendiente, color: "#f59e0b" },
-          { label: "Atrasados", value: counts.atrasado, color: "#ef4444" },
-          { label: "En picking", value: counts.en_picking, color: "#a855f7" },
-          { label: "Despachados", value: counts.despachado, color: "#10b981" },
+          { label: "Envíos", value: shipCounts.total, sub: `${shipCounts.totalItems} items`, color: "#3b82f6" },
+          { label: "Flex", value: shipCounts.flex, sub: "self_service", color: "#10b981" },
+          { label: "Colecta", value: shipCounts.colecta, sub: "cross_docking", color: "#f59e0b" },
+          { label: "Drop-off", value: shipCounts.dropoff, sub: "drop_off", color: "#a855f7" },
+          { label: "Atrasados", value: shipCounts.atrasado, sub: "handling vencido", color: "#ef4444" },
         ].map(st => (
           <div key={st.label} className="card" style={{textAlign:"center",padding:12}}>
             <div style={{fontSize:24,fontWeight:800,color:st.color}}>{st.value}</div>
             <div style={{fontSize:10,color:"var(--txt3)"}}>{st.label}</div>
+            <div style={{fontSize:9,color:"var(--txt3)",marginTop:2}}>{st.sub}</div>
           </div>
         ))}
       </div>
 
-      {/* Create picking button */}
-      {counts.pendiente > 0 && (
-        <div className="card" style={{border:"2px solid #10b98144"}}>
+      {/* View toggle + Create picking */}
+      <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+        <button onClick={() => setUseNewView(!useNewView)}
+          style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"var(--txt2)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
+          {useNewView ? "Vista envíos" : "Vista legacy"}
+        </button>
+        {counts.pendiente > 0 && (
           <button onClick={doCreatePicking} disabled={creating}
-            style={{width:"100%",padding:14,borderRadius:10,background:"linear-gradient(135deg,#059669,#10b981)",color:"#fff",fontWeight:700,fontSize:14,border:"none",cursor:"pointer"}}>
-            {creating ? "Creando..." : `🏷️ Crear sesión de picking (${counts.pendiente} pedidos)`}
+            style={{padding:"8px 16px",borderRadius:8,background:"linear-gradient(135deg,#059669,#10b981)",color:"#fff",fontWeight:700,fontSize:12,border:"none",cursor:"pointer",flex:1}}>
+            {creating ? "Creando..." : `Crear picking (${counts.pendiente} pendientes)`}
           </button>
-        </div>
-      )}
+        )}
+      </div>
 
-      {/* Pedidos table */}
+      {/* Content */}
       {loading ? (
         <div className="card" style={{textAlign:"center",padding:40,color:"var(--txt3)"}}>Cargando...</div>
-      ) : pedidos.length === 0 ? (
+      ) : useNewView && shipments.length > 0 ? (
+        /* ===== NEW SHIPMENT VIEW ===== */
+        <div>
+          {/* Group by logistic type */}
+          {(["self_service", "cross_docking", "xd_drop_off", "drop_off"] as const).map(lt => {
+            const group = shipments.filter(s => s.logistic_type === lt);
+            if (group.length === 0) return null;
+            const ltColor: Record<string, string> = { self_service: "#10b981", cross_docking: "#f59e0b", xd_drop_off: "#a855f7", drop_off: "#6366f1" };
+            const ltLabel = LOGISTIC_LABELS[lt] || lt;
+            return (
+              <div key={lt}>
+                <div style={{display:"flex",alignItems:"center",gap:8,margin:"12px 0 6px",padding:"0 4px"}}>
+                  <span style={{fontSize:12,fontWeight:800,color:ltColor[lt] || "#94a3b8"}}>{ltLabel}</span>
+                  <span style={{fontSize:10,color:"var(--txt3)"}}>({group.length} envíos)</span>
+                </div>
+                {group.map(ship => {
+                  const hlDate = ship.handling_limit ? ship.handling_limit.slice(0, 10) : null;
+                  const isOverdue = hlDate ? hlDate < fecha : false;
+                  const urgColor = isOverdue ? "#ef4444" : (ltColor[lt] || "#94a3b8");
+                  return (
+                    <div key={ship.shipment_id} className="card" style={{padding:12,marginBottom:6,borderLeft:`3px solid ${urgColor}`}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                        <div style={{display:"flex",alignItems:"center",gap:8}}>
+                          <span className="mono" style={{fontSize:11,fontWeight:700}}>#{ship.shipment_id}</span>
+                          {isOverdue && <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:3,background:"#ef444422",color:"#ef4444",border:"1px solid #ef444444"}}>ATRASADO</span>}
+                          <span style={{fontSize:9,fontWeight:600,padding:"2px 6px",borderRadius:3,background:`${urgColor}22`,color:urgColor}}>{ship.status}/{ship.substatus || "—"}</span>
+                        </div>
+                        <div style={{display:"flex",alignItems:"center",gap:8,fontSize:10,color:"var(--txt3)"}}>
+                          {ship.receiver_name && <span>{ship.receiver_name}</span>}
+                          {ship.destination_city && <span>· {ship.destination_city}</span>}
+                        </div>
+                      </div>
+                      <div style={{display:"flex",gap:16,fontSize:10,color:"var(--txt3)",marginBottom:6}}>
+                        <span>Despachar: <strong style={{color: isOverdue ? "#ef4444" : "var(--cyan)"}}>{hlDate || "—"}</strong></span>
+                        {ship.delivery_date && <span>Entrega: <strong>{ship.delivery_date.slice(0, 10)}</strong></span>}
+                        <span>Origen: {ship.origin_type || "—"}</span>
+                      </div>
+                      {/* Items */}
+                      <div style={{borderTop:"1px solid var(--bg4)",paddingTop:6}}>
+                        {ship.items.map((item, idx) => (
+                          <div key={idx} style={{display:"flex",alignItems:"center",gap:8,padding:"3px 0",fontSize:11}}>
+                            <span className="mono" style={{fontWeight:700,minWidth:100}}>{item.seller_sku}</span>
+                            <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:"var(--txt2)"}}>{item.title}</span>
+                            <span className="mono" style={{fontWeight:700}}>x{item.quantity}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
+          {/* Shipments with unknown/other logistic types */}
+          {shipments.filter(s => !["self_service","cross_docking","xd_drop_off","drop_off"].includes(s.logistic_type)).length > 0 && (
+            <div>
+              <div style={{fontSize:12,fontWeight:800,color:"var(--txt3)",margin:"12px 0 6px",padding:"0 4px"}}>Otros</div>
+              {shipments.filter(s => !["self_service","cross_docking","xd_drop_off","drop_off"].includes(s.logistic_type)).map(ship => (
+                <div key={ship.shipment_id} className="card" style={{padding:8,marginBottom:4,fontSize:11}}>
+                  <span className="mono">#{ship.shipment_id}</span> — {ship.logistic_type} — {ship.items.length} items
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : shipments.length === 0 && pedidos.length === 0 ? (
         <div className="card" style={{textAlign:"center",padding:40,color:"var(--txt3)"}}>
-          <div style={{fontSize:40,marginBottom:12}}>🛒</div>
-          <div style={{fontSize:16,fontWeight:700}}>Sin pedidos {verTodos ? "en el sistema" : `para ${fecha}`}</div>
-          <div style={{fontSize:12,marginTop:4}}>Usa "Diagnosticar" para verificar la conexión, o "Sincronizar" con rango de días para traer pedidos históricos</div>
+          <div style={{fontSize:40,marginBottom:12}}>📦</div>
+          <div style={{fontSize:16,fontWeight:700}}>Sin envíos {verTodos ? "en el sistema" : `para ${fecha}`}</div>
+          <div style={{fontSize:12,marginTop:4}}>Usa "Diagnosticar" para verificar la conexión. Luego "Sincronizar" con rango de días para traer envíos.</div>
+          <div style={{fontSize:11,marginTop:8,color:"var(--txt3)"}}>Si es la primera vez, ejecuta primero la migración SQL para crear las tablas ml_shipments.</div>
         </div>
       ) : (
+        /* ===== LEGACY TABLE VIEW ===== */
         <div className="card" style={{padding:0,overflow:"hidden"}}>
           <table className="tbl" style={{fontSize:12}}>
             <thead>
@@ -3899,20 +3992,14 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
                 const hora = p.fecha_venta ? new Date(p.fecha_venta).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" }) : "—";
                 return (
                   <tr key={p.id} style={{background: isOverdue ? "#ef444410" : p.estado === "DESPACHADO" ? "#10b98108" : p.estado === "EN_PICKING" ? "#a855f708" : "transparent"}}>
-                    <td className="mono" style={{fontSize:11,fontWeight:700,color: isOverdue ? "#ef4444" : "var(--txt3)"}}>
-                      {p.fecha_armado}{isOverdue ? " !" : ""}
-                    </td>
+                    <td className="mono" style={{fontSize:11,fontWeight:700,color: isOverdue ? "#ef4444" : "var(--txt3)"}}>{p.fecha_armado}{isOverdue ? " !" : ""}</td>
                     <td style={{fontSize:11,color:"var(--txt3)"}}>{hora}</td>
                     <td className="mono" style={{fontSize:11}}>{p.order_id}</td>
                     <td className="mono" style={{fontWeight:700,fontSize:11}}>{p.sku_venta}</td>
                     <td style={{fontSize:11,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.nombre_producto}</td>
                     <td className="mono" style={{textAlign:"right",fontWeight:700}}>{p.cantidad}</td>
                     <td style={{fontSize:11,color:"var(--txt3)"}}>{p.buyer_nickname}</td>
-                    <td>
-                      <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:3,background:`${color}22`,color,border:`1px solid ${color}44`}}>
-                        {isOverdue ? "ATRASADO" : p.estado}
-                      </span>
-                    </td>
+                    <td><span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:3,background:`${color}22`,color,border:`1px solid ${color}44`}}>{isOverdue ? "ATRASADO" : p.estado}</span></td>
                   </tr>
                 );
               })}

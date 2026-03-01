@@ -439,78 +439,127 @@ export function calcFechaArmado(fechaVenta: string | Date, horaCorteVL: number, 
   return armadoDate.toISOString().slice(0, 10);
 }
 
-// ==================== ORDER PROCESSING ====================
+// ==================== SHIPMENT-CENTRIC ORDER PROCESSING ====================
 
 /**
- * Process a single ML order: verify it's Flex via shipment endpoint,
- * get estimated_handling_limit as fecha_armado, extract items, upsert to DB.
- * Always fetches shipment details for accurate logistic type + handling deadline.
- * Returns number of items upserted.
+ * Process a single shipment: fetch details, verify it's not fulfillment,
+ * get handling_limit + items, upsert to ml_shipments + ml_shipment_items.
+ * Handles packs (multiple orders sharing one shipment).
+ * Returns item count and the shipment info (for callers that need it).
+ */
+export async function processShipment(shipmentId: number, orderIds: number[]): Promise<{ items: number; shipInfo: ShipmentFlexInfo }> {
+  const sb = getServerSupabase();
+  if (!sb) return { items: 0, shipInfo: { logistic_type: "unknown", origin_type: null, origin_address: null, is_flex: false, handling_limit_date: null, delivery_date: null, shipment_status: null, raw: null } };
+
+  // 1. Fetch shipment details (logistic type, handling_limit, origin, destination)
+  const shipInfo = await getShipmentFlexInfo(shipmentId);
+
+  // Skip fulfillment (ML handles it) and unknown
+  if (shipInfo.logistic_type === "fulfillment" || shipInfo.logistic_type === "unknown") {
+    return { items: 0, shipInfo };
+  }
+
+  // 2. Upsert ml_shipments
+  const shipmentRow = {
+    shipment_id: shipmentId,
+    order_ids: orderIds,
+    status: shipInfo.raw?.status || "unknown",
+    substatus: shipInfo.raw?.substatus || null,
+    logistic_type: shipInfo.logistic_type,
+    handling_limit: shipInfo.raw?.lead_time?.estimated_handling_limit?.date || null,
+    buffering_date: shipInfo.raw?.lead_time?.buffering?.date || null,
+    delivery_date: shipInfo.raw?.lead_time?.estimated_delivery_time?.date || null,
+    origin_type: shipInfo.origin_type,
+    receiver_name: shipInfo.raw?.destination?.receiver_name || null,
+    destination_city: shipInfo.raw?.destination?.shipping_address?.city?.name || null,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { error: shipErr } = await sb.from("ml_shipments").upsert(shipmentRow, {
+    onConflict: "shipment_id",
+  });
+  if (shipErr) {
+    console.error(`[ML] Upsert ml_shipments error for ${shipmentId}:`, shipErr.message);
+    return { items: 0, shipInfo };
+  }
+
+  // 3. For each order, fetch order details and upsert items
+  let totalItems = 0;
+  for (const orderId of orderIds) {
+    const order = await mlGet<MLOrder>(`/orders/${orderId}`);
+    if (!order || !order.order_items) continue;
+
+    for (const item of order.order_items) {
+      const itemRow = {
+        shipment_id: shipmentId,
+        order_id: orderId,
+        item_id: item.item.id,
+        title: item.item.title,
+        seller_sku: (item.item.seller_sku || `ML-${item.item.id}`).toUpperCase(),
+        variation_id: item.item.variation_id || null,
+        quantity: item.quantity,
+      };
+
+      const { error: itemErr } = await sb.from("ml_shipment_items").upsert(itemRow, {
+        onConflict: "shipment_id,order_id,item_id",
+      });
+      if (itemErr) {
+        console.error(`[ML] Upsert ml_shipment_items error:`, itemErr.message);
+      } else {
+        totalItems++;
+      }
+    }
+  }
+
+  const ltLabel = shipInfo.logistic_type === "self_service" ? "Flex"
+    : shipInfo.logistic_type === "cross_docking" ? "Colecta"
+    : shipInfo.logistic_type === "xd_drop_off" ? "Drop-off"
+    : shipInfo.logistic_type;
+  console.log(`[ML] Shipment ${shipmentId}: ${ltLabel}, ${totalItems} items, handling_limit=${shipInfo.handling_limit_date}`);
+
+  return { items: totalItems, shipInfo };
+}
+
+/**
+ * Process a single ML order: extract shipment_id, delegate to processShipment.
+ * Also upserts to legacy pedidos_flex for backward compat.
  */
 export async function processOrder(order: MLOrder, config: MLConfig): Promise<number> {
-  // Only process paid orders
   if (order.status !== "paid") return 0;
   if (!order.shipping?.id) return 0;
 
-  // Quick skip: if logistic_type is explicitly non-flex (fulfillment, etc.), skip without API call
-  const orderLt = order.shipping?.logistic_type;
-  if (orderLt && orderLt !== "self_service" && orderLt !== "" && orderLt !== "unknown") {
-    return 0;
-  }
+  // Process via new shipment-centric system (returns shipInfo to avoid redundant API call)
+  const { items: shipmentItems, shipInfo } = await processShipment(order.shipping.id, [order.id]);
 
-  // Always fetch shipment details to get: real logistic type + estimated_handling_limit
-  const shipInfo = await getShipmentFlexInfo(order.shipping.id);
+  // Also upsert to legacy pedidos_flex for backward compat
+  if (shipInfo.logistic_type !== "fulfillment" && shipInfo.logistic_type !== "unknown") {
+    const sb = getServerSupabase();
+    if (sb) {
+      const fechaArmado = shipInfo.handling_limit_date
+        || calcFechaArmado(order.date_created, config.hora_corte_lv, config.hora_corte_sab);
 
-  if (!shipInfo.is_flex) {
-    if (!orderLt || orderLt === "" || orderLt === "unknown") {
-      console.log(`[ML] Order ${order.id}: shipment ${order.shipping.id} → logistic_type="${shipInfo.logistic_type}" (not Flex), skipping`);
-    }
-    return 0;
-  }
-
-  console.log(`[ML] Order ${order.id}: Flex confirmed, handling_limit=${shipInfo.handling_limit_date}, origin=${shipInfo.origin_type}`);
-
-  const sb = getServerSupabase();
-  if (!sb) return 0;
-
-  // Use estimated_handling_limit from ML as fecha_armado (real dispatch deadline)
-  // Fallback to calcFechaArmado only if ML doesn't provide it
-  const fechaArmado = shipInfo.handling_limit_date
-    || calcFechaArmado(order.date_created, config.hora_corte_lv, config.hora_corte_sab);
-
-  let count = 0;
-
-  for (const item of order.order_items) {
-    const skuVenta = item.item.seller_sku || `ML-${item.item.id}`;
-    const pedido: Omit<PedidoFlex, "id" | "created_at"> = {
-      order_id: order.id,
-      fecha_venta: order.date_created,
-      fecha_armado: fechaArmado,
-      estado: "PENDIENTE",
-      sku_venta: skuVenta.toUpperCase(),
-      nombre_producto: item.item.title,
-      cantidad: item.quantity,
-      shipping_id: order.shipping.id,
-      pack_id: order.pack_id,
-      buyer_nickname: order.buyer?.nickname || "",
-      raw_data: order,
-      picking_session_id: null,
-      etiqueta_url: null,
-    };
-
-    // Upsert by order_id + sku_venta (a cart can have multiple items)
-    const { error } = await sb.from("pedidos_flex").upsert(pedido, {
-      onConflict: "order_id,sku_venta",
-    });
-
-    if (error) {
-      console.error("[ML] Upsert pedido error:", error.message);
-    } else {
-      count++;
+      for (const item of order.order_items) {
+        const skuVenta = item.item.seller_sku || `ML-${item.item.id}`;
+        await sb.from("pedidos_flex").upsert({
+          order_id: order.id,
+          fecha_venta: order.date_created,
+          fecha_armado: fechaArmado,
+          estado: "PENDIENTE",
+          sku_venta: skuVenta.toUpperCase(),
+          nombre_producto: item.item.title,
+          cantidad: item.quantity,
+          shipping_id: order.shipping.id,
+          pack_id: order.pack_id,
+          buyer_nickname: order.buyer?.nickname || "",
+          raw_data: order,
+          picking_session_id: null,
+          etiqueta_url: null,
+        }, { onConflict: "order_id,sku_venta" });
+      }
     }
   }
 
-  return count;
+  return shipmentItems;
 }
 
 /**
@@ -527,6 +576,65 @@ export async function fetchAndProcessOrder(orderId: number): Promise<number> {
 }
 
 /**
+ * Collect orders from search results, deduplicate by shipment_id,
+ * and process each shipment once (handling packs correctly).
+ */
+async function processOrderBatch(orders: MLOrder[], config: MLConfig): Promise<{ processed: number; skipped: number; items: number }> {
+  // Group orders by shipment_id (packs share the same shipment)
+  const shipmentMap = new Map<number, number[]>(); // shipment_id → [order_id, ...]
+  for (const order of orders) {
+    if (order.status !== "paid" || !order.shipping?.id) continue;
+    const sid = order.shipping.id;
+    const existing = shipmentMap.get(sid) || [];
+    if (!existing.includes(order.id)) existing.push(order.id);
+    shipmentMap.set(sid, existing);
+  }
+
+  let processed = 0;
+  let skipped = 0;
+  let items = 0;
+
+  // Process each shipment and collect shipInfo for legacy compat
+  const shipInfoCache = new Map<number, ShipmentFlexInfo>();
+  const entries = Array.from(shipmentMap.entries());
+  for (const entry of entries) {
+    const result = await processShipment(entry[0], entry[1]);
+    shipInfoCache.set(entry[0], result.shipInfo);
+    if (result.items > 0) {
+      processed++;
+      items += result.items;
+    } else {
+      skipped++;
+    }
+  }
+
+  // Also process via legacy path for backward compat (reusing cached shipInfo)
+  const sb = getServerSupabase();
+  if (sb) {
+    for (const order of orders) {
+      if (order.status !== "paid" || !order.shipping?.id) continue;
+      const shipInfo = shipInfoCache.get(order.shipping.id);
+      if (shipInfo && shipInfo.logistic_type !== "fulfillment" && shipInfo.logistic_type !== "unknown") {
+        const fechaArmado = shipInfo.handling_limit_date
+          || calcFechaArmado(order.date_created, config.hora_corte_lv, config.hora_corte_sab);
+        for (const item of order.order_items) {
+          const skuVenta = item.item.seller_sku || `ML-${item.item.id}`;
+          await sb.from("pedidos_flex").upsert({
+            order_id: order.id, fecha_venta: order.date_created, fecha_armado: fechaArmado,
+            estado: "PENDIENTE", sku_venta: skuVenta.toUpperCase(), nombre_producto: item.item.title,
+            cantidad: item.quantity, shipping_id: order.shipping.id, pack_id: order.pack_id,
+            buyer_nickname: order.buyer?.nickname || "", raw_data: order,
+            picking_session_id: null, etiqueta_url: null,
+          }, { onConflict: "order_id,sku_venta" });
+        }
+      }
+    }
+  }
+
+  return { processed, skipped, items };
+}
+
+/**
  * Sync recent orders via search API (polling backup)
  */
 export async function syncRecentOrders(): Promise<{ total: number; new_orders: number }> {
@@ -539,30 +647,25 @@ export async function syncRecentOrders(): Promise<{ total: number; new_orders: n
   const result = await mlGet<{ results: MLOrder[]; paging: { total: number } }>(searchUrl);
   if (!result) return { total: 0, new_orders: 0 };
 
-  let newOrders = 0;
-  for (const order of result.results) {
-    const count = await processOrder(order, config);
-    newOrders += count;
-  }
-
-  return { total: result.paging.total, new_orders: newOrders };
+  const batch = await processOrderBatch(result.results, config);
+  return { total: result.paging.total, new_orders: batch.items };
 }
 
 /**
  * Sync historical orders (past N days) with pagination.
- * Uses /orders/search with pagination (max 50 per page).
+ * Shipment-centric: deduplicates by shipment_id to handle packs.
  */
-export async function syncHistoricalOrders(days: number = 7): Promise<{ total: number; new_orders: number; pages: number; flex_found: number; non_flex_skipped: number }> {
+export async function syncHistoricalOrders(days: number = 7): Promise<{ total: number; new_orders: number; pages: number; shipments_processed: number; shipments_skipped: number }> {
   const config = await getMLConfig();
-  if (!config || !config.seller_id) return { total: 0, new_orders: 0, pages: 0, flex_found: 0, non_flex_skipped: 0 };
+  if (!config || !config.seller_id) return { total: 0, new_orders: 0, pages: 0, shipments_processed: 0, shipments_skipped: 0 };
 
   const dateFrom = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
   const baseUrl = `/orders/search?seller=${config.seller_id}&order.status=paid&sort=date_desc&order.date_created.from=${dateFrom}&limit=50`;
 
   let totalOrders = 0;
-  let newOrders = 0;
-  let flexFound = 0;
-  let nonFlexSkipped = 0;
+  let totalItems = 0;
+  let totalProcessed = 0;
+  let totalSkipped = 0;
   let pages = 0;
   let offset = 0;
   let hasMore = true;
@@ -575,24 +678,17 @@ export async function syncHistoricalOrders(days: number = 7): Promise<{ total: n
     pages++;
     totalOrders = result.paging.total;
 
-    for (const order of result.results) {
-      // processOrder now verifies via shipment endpoint when logistic_type is missing
-      const count = await processOrder(order, config);
-      if (count > 0) {
-        flexFound++;
-        newOrders += count;
-      } else {
-        nonFlexSkipped++;
-      }
-    }
+    const batch = await processOrderBatch(result.results, config);
+    totalProcessed += batch.processed;
+    totalSkipped += batch.skipped;
+    totalItems += batch.items;
 
     offset += result.results.length;
     hasMore = offset < result.paging.total && result.results.length > 0;
-    // Safety: max 20 pages (1000 orders)
     if (pages >= 20) break;
   }
 
-  return { total: totalOrders, new_orders: newOrders, pages, flex_found: flexFound, non_flex_skipped: nonFlexSkipped };
+  return { total: totalOrders, new_orders: totalItems, pages, shipments_processed: totalProcessed, shipments_skipped: totalSkipped };
 }
 
 /**
