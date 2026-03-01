@@ -731,3 +731,126 @@ export async function deleteConteo(id: string): Promise<boolean> {
   return !error;
 }
 
+// ==================== PEDIDOS FLEX (ML Integration) ====================
+
+export interface DBPedidoFlex {
+  id?: string;
+  order_id: number;
+  fecha_venta: string;
+  fecha_armado: string;
+  estado: "PENDIENTE" | "EN_PICKING" | "DESPACHADO";
+  sku_venta: string;
+  nombre_producto: string;
+  cantidad: number;
+  shipping_id: number;
+  pack_id: number | null;
+  buyer_nickname: string;
+  raw_data: unknown;
+  picking_session_id: string | null;
+  etiqueta_url: string | null;
+  created_at?: string;
+}
+
+export async function fetchPedidosFlex(fecha: string): Promise<DBPedidoFlex[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("pedidos_flex").select("*")
+    .eq("fecha_armado", fecha)
+    .order("fecha_venta", { ascending: true });
+  return (data || []) as DBPedidoFlex[];
+}
+
+export async function fetchPedidosFlexByEstado(fecha: string, estado: string): Promise<DBPedidoFlex[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("pedidos_flex").select("*")
+    .eq("fecha_armado", fecha)
+    .eq("estado", estado)
+    .order("fecha_venta", { ascending: true });
+  return (data || []) as DBPedidoFlex[];
+}
+
+export async function updatePedidosFlex(ids: string[], updates: Partial<DBPedidoFlex>): Promise<boolean> {
+  const sb = getSupabase(); if (!sb) return false;
+  const { error } = await sb.from("pedidos_flex").update(updates).in("id", ids);
+  return !error;
+}
+
+export async function updatePedidosFlexByPickingSession(sessionId: string, estado: string): Promise<boolean> {
+  const sb = getSupabase(); if (!sb) return false;
+  const { error } = await sb.from("pedidos_flex").update({ estado }).eq("picking_session_id", sessionId);
+  return !error;
+}
+
+// ==================== ML CONFIG (client-side read for admin UI) ====================
+
+export interface DBMLConfig {
+  id: string;
+  seller_id: string;
+  client_id: string;
+  client_secret: string;
+  access_token: string;
+  refresh_token: string;
+  token_expires_at: string;
+  webhook_secret: string | null;
+  hora_corte_lv: number;
+  hora_corte_sab: number;
+  updated_at: string;
+}
+
+export async function fetchMLConfig(): Promise<DBMLConfig | null> {
+  const sb = getSupabase(); if (!sb) return null;
+  const { data } = await sb.from("ml_config").select("*").eq("id", "main").single();
+  return data as DBMLConfig | null;
+}
+
+export async function upsertMLConfig(config: Partial<DBMLConfig>): Promise<boolean> {
+  const sb = getSupabase(); if (!sb) return false;
+  const { error } = await sb.from("ml_config").upsert(
+    { id: "main", ...config, updated_at: new Date().toISOString() },
+    { onConflict: "id" }
+  );
+  return !error;
+}
+
+// ==================== ML ITEMS MAP (Stock sync Phase 2) ====================
+
+export interface DBMLItemMap {
+  id?: string;
+  sku: string;
+  item_id: string;
+  variation_id: number | null;
+  activo: boolean;
+  ultimo_sync: string | null;
+  ultimo_stock_enviado: number | null;
+}
+
+export async function fetchMLItemsMap(): Promise<DBMLItemMap[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("ml_items_map").select("*").eq("activo", true).order("sku");
+  return (data || []) as DBMLItemMap[];
+}
+
+export async function upsertMLItemMap(item: DBMLItemMap): Promise<boolean> {
+  const sb = getSupabase(); if (!sb) return false;
+  const { error } = await sb.from("ml_items_map").upsert(item, { onConflict: "sku,item_id" });
+  return !error;
+}
+
+// ==================== STOCK SYNC QUEUE ====================
+
+export async function getStockSyncQueue(): Promise<string[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("stock_sync_queue").select("sku").order("created_at");
+  return (data || []).map((d: { sku: string }) => d.sku);
+}
+
+export async function addToStockSyncQueue(skus: string[]): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  const rows = skus.map(sku => ({ sku, created_at: new Date().toISOString() }));
+  await sb.from("stock_sync_queue").upsert(rows, { onConflict: "sku" });
+}
+
+export async function clearStockSyncQueue(skus: string[]): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("stock_sync_queue").delete().in("sku", skus);
+}
+

@@ -1,0 +1,12 @@
+{
+  "crons": [
+    {
+      "path": "/api/ml/sync",
+      "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/api/ml/stock-sync",
+      "schedule": "*/5 * * * *"
+    }
+  ]
+}

@@ -519,6 +519,8 @@ export async function recordMovementAsync(m: Omit<Movement, "id">): Promise<Move
       sku: m.sku, posicion_id: m.pos, cantidad: actualQty,
       operario: m.who, nota: m.note,
     });
+    // Queue SKU for ML stock sync (fire & forget)
+    db.addToStockSyncQueue([m.sku]).catch(() => {});
   }
   return mov;
 }
@@ -558,6 +560,8 @@ export function recordMovement(m: Omit<Movement, "id">): Movement {
       sku: m.sku, posicion_id: m.pos, cantidad: actualQty,
       operario: m.who, nota: m.note,
     }).catch(console.error);
+    // Queue SKU for ML stock sync
+    db.addToStockSyncQueue([m.sku]).catch(() => {});
   }
   return mov;
 }
@@ -1022,6 +1026,11 @@ export async function pickearComponente(
     estado: allDone ? "COMPLETADA" : "EN_PROCESO",
     ...(allDone ? { completed_at: new Date().toISOString() } : {}),
   });
+
+  // When picking is fully completed, mark linked pedidos_flex as DESPACHADO
+  if (allDone && sessionId) {
+    db.updatePedidosFlexByPickingSession(sessionId, "DESPACHADO").catch(console.error);
+  }
 
   return true;
 }

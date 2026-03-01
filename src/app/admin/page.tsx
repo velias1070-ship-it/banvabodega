@@ -2,8 +2,9 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
-import { fetchConteos, createConteo, updateConteo, deleteConteo } from "@/lib/db";
-import type { DBConteo, ConteoLinea } from "@/lib/db";
+import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, fetchPedidosFlexByEstado, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap } from "@/lib/db";
+import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap } from "@/lib/db";
+import { getOAuthUrl } from "@/lib/ml";
 import Link from "next/link";
 import SheetSync from "@/components/SheetSync";
 
@@ -53,7 +54,7 @@ function LoginGate({ onLogin }: { onLogin: (pin: string) => boolean }) {
 }
 
 export default function AdminPage() {
-  const [tab, setTab] = useState<"dash"|"rec"|"picking"|"etiquetas"|"conteos"|"ops"|"inv"|"mov"|"prod"|"pos"|"stock_load"|"config">("dash");
+  const [tab, setTab] = useState<"dash"|"rec"|"picking"|"etiquetas"|"conteos"|"pedidos"|"ops"|"inv"|"mov"|"prod"|"pos"|"stock_load"|"config">("dash");
   const [,setTick] = useState(0);
   const r = useCallback(()=>setTick(t=>t+1),[]);
   const [mounted, setMounted] = useState(false);
@@ -85,7 +86,7 @@ export default function AdminPage() {
       <SheetSync onSynced={r}/>
       <div className="admin-layout">
         <nav className="admin-sidebar">
-          {([["dash","Dashboard","📊"],["rec","Recepciones","📦"],["picking","Picking Flex","🏷️"],["etiquetas","Etiquetas","🖨️"],["conteos","Conteo Cíclico","📋"],["ops","Operaciones","⚡"],["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["pos","Posiciones","📍"],["stock_load","Carga Stock","📥"],["config","Configuración","⚙️"]] as const).map(([key,label,icon])=>(
+          {([["dash","Dashboard","📊"],["rec","Recepciones","📦"],["picking","Picking Flex","🏷️"],["pedidos","Pedidos ML","🛒"],["etiquetas","Etiquetas","🖨️"],["conteos","Conteo Cíclico","📋"],["ops","Operaciones","⚡"],["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["pos","Posiciones","📍"],["stock_load","Carga Stock","📥"],["config","Configuración","⚙️"]] as const).map(([key,label,icon])=>(
             <button key={key} className={`sidebar-btn ${tab===key?"active":""}`} onClick={()=>setTab(key as any)}>
               <span className="sidebar-icon">{icon}</span>
               <span className="sidebar-label">{label}</span>
@@ -100,7 +101,7 @@ export default function AdminPage() {
         <main className="admin-main">
           {/* Mobile tabs fallback */}
           <div className="admin-mobile-tabs">
-            {([["dash","Dashboard"],["rec","Recepción"],["picking","Picking"],["etiquetas","Etiquetas"],["conteos","Conteos"],["ops","Ops"],["inv","Inventario"],["mov","Movim."],["prod","Productos"],["pos","Posiciones"],["stock_load","Carga"],["config","Config"]] as const).map(([key,label])=>(
+            {([["dash","Dashboard"],["rec","Recepción"],["picking","Picking"],["pedidos","Pedidos ML"],["etiquetas","Etiquetas"],["conteos","Conteos"],["ops","Ops"],["inv","Inventario"],["mov","Movim."],["prod","Productos"],["pos","Posiciones"],["stock_load","Carga"],["config","Config"]] as const).map(([key,label])=>(
               <button key={key} className={`tab ${tab===key?"active-cyan":""}`} onClick={()=>setTab(key as any)}>{label}</button>
             ))}
           </div>
@@ -110,6 +111,7 @@ export default function AdminPage() {
             {tab==="picking"&&<AdminPicking refresh={r}/>}
             {tab==="etiquetas"&&<AdminEtiquetas/>}
             {tab==="conteos"&&<AdminConteos refresh={r}/>}
+            {tab==="pedidos"&&<AdminPedidosFlex refresh={r}/>}
             {tab==="ops"&&<Operaciones refresh={r}/>}
             {tab==="inv"&&<Inventario/>}
             {tab==="mov"&&<Movimientos/>}
@@ -3534,6 +3536,280 @@ function parseCSVLine(line: string): string[] {
   }
   parts.push(current);
   return parts;
+}
+
+// ==================== PEDIDOS FLEX (ML) ====================
+function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const [fecha, setFecha] = useState(today);
+  const [pedidos, setPedidos] = useState<DBPedidoFlex[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [showConfig, setShowConfig] = useState(false);
+  const [mlConfig, setMlConfig] = useState<DBMLConfig | null>(null);
+  const [configForm, setConfigForm] = useState({ client_id: "", client_secret: "", seller_id: "", hora_corte_lv: 13, hora_corte_sab: 12 });
+
+  const loadPedidos = useCallback(async () => {
+    setLoading(true);
+    const data = await fetchPedidosFlex(fecha);
+    setPedidos(data);
+    setLoading(false);
+  }, [fecha]);
+
+  const loadConfig = useCallback(async () => {
+    const cfg = await fetchMLConfig();
+    setMlConfig(cfg);
+    if (cfg) {
+      setConfigForm({
+        client_id: cfg.client_id || "",
+        client_secret: cfg.client_secret || "",
+        seller_id: cfg.seller_id || "",
+        hora_corte_lv: cfg.hora_corte_lv || 13,
+        hora_corte_sab: cfg.hora_corte_sab || 12,
+      });
+    }
+  }, []);
+
+  useEffect(() => { loadPedidos(); loadConfig(); }, [loadPedidos, loadConfig]);
+
+  // Auto-refresh every 30 seconds
+  useEffect(() => {
+    const iv = setInterval(loadPedidos, 30_000);
+    return () => clearInterval(iv);
+  }, [loadPedidos]);
+
+  const counts = {
+    total: pedidos.length,
+    pendiente: pedidos.filter(p => p.estado === "PENDIENTE").length,
+    en_picking: pedidos.filter(p => p.estado === "EN_PICKING").length,
+    despachado: pedidos.filter(p => p.estado === "DESPACHADO").length,
+  };
+
+  const doSync = async () => {
+    setSyncing(true);
+    try {
+      const resp = await fetch("/api/ml/sync", { method: "POST" });
+      const data = await resp.json();
+      if (data.new_items > 0) await loadPedidos();
+      alert(`Sincronización completa: ${data.new_items || 0} items nuevos de ${data.total_orders || 0} órdenes`);
+    } catch (err) {
+      alert("Error de sincronización: " + String(err));
+    }
+    setSyncing(false);
+  };
+
+  const doCreatePicking = async () => {
+    const pendientes = pedidos.filter(p => p.estado === "PENDIENTE");
+    if (pendientes.length === 0) { alert("No hay pedidos pendientes"); return; }
+
+    setCreating(true);
+    try {
+      // Group by SKU venta and sum quantities
+      const skuMap = new Map<string, number>();
+      for (const p of pendientes) {
+        skuMap.set(p.sku_venta, (skuMap.get(p.sku_venta) || 0) + p.cantidad);
+      }
+
+      const items = Array.from(skuMap.entries()).map(([sku, qty]) => ({ skuVenta: sku, qty }));
+      const { lineas, errors } = buildPickingLineas(items);
+
+      if (lineas.length === 0) {
+        alert("No se pudieron armar líneas de picking. Verifica que los SKU Venta estén en el diccionario.");
+        setCreating(false);
+        return;
+      }
+
+      if (errors.length > 0) {
+        const proceed = confirm(`Advertencias:\n${errors.join("\n")}\n\n¿Crear picking de todas formas?`);
+        if (!proceed) { setCreating(false); return; }
+      }
+
+      const sessionId = await crearPickingSession(fecha, lineas);
+
+      if (sessionId) {
+        // Mark pedidos as EN_PICKING and link to session
+        const ids = pendientes.map(p => p.id!).filter(Boolean);
+        await updatePedidosFlex(ids, { estado: "EN_PICKING", picking_session_id: sessionId });
+        await loadPedidos();
+        alert(`Sesión de picking creada con ${lineas.length} líneas`);
+      }
+    } catch (err) {
+      alert("Error creando picking: " + String(err));
+    }
+    setCreating(false);
+  };
+
+  const doSaveConfig = async () => {
+    await upsertMLConfig({
+      client_id: configForm.client_id,
+      client_secret: configForm.client_secret,
+      seller_id: configForm.seller_id,
+      hora_corte_lv: configForm.hora_corte_lv,
+      hora_corte_sab: configForm.hora_corte_sab,
+    });
+    await loadConfig();
+    alert("Configuración guardada");
+  };
+
+  const doDownloadLabels = async () => {
+    const shippingIds = Array.from(new Set(pedidos.filter(p => p.estado !== "DESPACHADO").map(p => p.shipping_id)));
+    if (shippingIds.length === 0) { alert("Sin envíos para descargar etiquetas"); return; }
+
+    try {
+      const resp = await fetch("/api/ml/labels", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shipping_ids: shippingIds }),
+      });
+      if (!resp.ok) { alert("Error descargando etiquetas"); return; }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `etiquetas-${fecha}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert("Error: " + String(err));
+    }
+  };
+
+  const tokenValid = mlConfig?.token_expires_at && new Date(mlConfig.token_expires_at) > new Date();
+  const authUrl = mlConfig?.client_id ? getOAuthUrl(mlConfig.client_id, `${typeof window !== "undefined" ? window.location.origin : ""}/api/ml/auth`) : "";
+
+  return (
+    <div>
+      {/* Header */}
+      <div className="card">
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+          <div className="card-title">🛒 Pedidos MercadoLibre Flex</div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+            <button onClick={() => setShowConfig(!showConfig)} style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"var(--txt2)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
+              ⚙️ Config ML
+            </button>
+            <button onClick={doSync} disabled={syncing} style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"var(--cyan)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
+              {syncing ? "Sincronizando..." : "🔄 Sincronizar"}
+            </button>
+            <button onClick={doDownloadLabels} style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"#a855f7",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
+              📄 Etiquetas
+            </button>
+          </div>
+        </div>
+
+        {/* Date picker */}
+        <div style={{display:"flex",alignItems:"center",gap:8,marginTop:12}}>
+          <input type="date" value={fecha} onChange={e => setFecha(e.target.value)}
+            className="form-input mono" style={{fontSize:13,padding:8,width:160}}/>
+          <button onClick={() => setFecha(today)} style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"var(--txt2)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>Hoy</button>
+        </div>
+
+        {/* Status indicator */}
+        <div style={{display:"flex",alignItems:"center",gap:8,marginTop:8,fontSize:11}}>
+          <span style={{color: tokenValid ? "var(--green)" : "var(--red)", fontWeight:700}}>
+            {tokenValid ? "● Token ML válido" : "● Token ML vencido/no configurado"}
+          </span>
+          {mlConfig?.updated_at && <span style={{color:"var(--txt3)"}}>· Última actualización: {new Date(mlConfig.updated_at).toLocaleString("es-CL")}</span>}
+        </div>
+      </div>
+
+      {/* ML Config panel */}
+      {showConfig && (
+        <div className="card" style={{border:"2px solid var(--cyan)"}}>
+          <div className="card-title">Configuración MercadoLibre</div>
+          <div className="admin-form-grid">
+            <div className="form-group"><label className="form-label">Client ID</label><input className="form-input mono" value={configForm.client_id} onChange={e => setConfigForm({...configForm, client_id: e.target.value})} placeholder="App ID de ML"/></div>
+            <div className="form-group"><label className="form-label">Client Secret</label><input className="form-input mono" type="password" value={configForm.client_secret} onChange={e => setConfigForm({...configForm, client_secret: e.target.value})} placeholder="Secret key"/></div>
+            <div className="form-group"><label className="form-label">Seller ID</label><input className="form-input mono" value={configForm.seller_id} onChange={e => setConfigForm({...configForm, seller_id: e.target.value})} placeholder="Se autocompleta al vincular"/></div>
+            <div className="form-group"><label className="form-label">Corte L-V (hora)</label><input type="number" className="form-input mono" value={configForm.hora_corte_lv} onChange={e => setConfigForm({...configForm, hora_corte_lv: parseInt(e.target.value) || 13})} min={0} max={23}/></div>
+            <div className="form-group"><label className="form-label">Corte Sábado (hora)</label><input type="number" className="form-input mono" value={configForm.hora_corte_sab} onChange={e => setConfigForm({...configForm, hora_corte_sab: parseInt(e.target.value) || 12})} min={0} max={23}/></div>
+          </div>
+          <div style={{display:"flex",gap:8,marginTop:12}}>
+            <button onClick={doSaveConfig} style={{padding:"8px 16px",borderRadius:8,background:"var(--green)",color:"#fff",fontWeight:700,fontSize:13}}>Guardar Config</button>
+            {configForm.client_id && (
+              <a href={authUrl} style={{padding:"8px 16px",borderRadius:8,background:"#3483fa",color:"#fff",fontWeight:700,fontSize:13,textDecoration:"none",display:"inline-flex",alignItems:"center"}}>
+                🔗 Vincular cuenta ML
+              </a>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Stats */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:0}}>
+        {[
+          { label: "Total", value: counts.total, color: "#3b82f6" },
+          { label: "Pendientes", value: counts.pendiente, color: "#f59e0b" },
+          { label: "En picking", value: counts.en_picking, color: "#a855f7" },
+          { label: "Despachados", value: counts.despachado, color: "#10b981" },
+        ].map(st => (
+          <div key={st.label} className="card" style={{textAlign:"center",padding:12}}>
+            <div style={{fontSize:24,fontWeight:800,color:st.color}}>{st.value}</div>
+            <div style={{fontSize:10,color:"var(--txt3)"}}>{st.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Create picking button */}
+      {counts.pendiente > 0 && (
+        <div className="card" style={{border:"2px solid #10b98144"}}>
+          <button onClick={doCreatePicking} disabled={creating}
+            style={{width:"100%",padding:14,borderRadius:10,background:"linear-gradient(135deg,#059669,#10b981)",color:"#fff",fontWeight:700,fontSize:14,border:"none",cursor:"pointer"}}>
+            {creating ? "Creando..." : `🏷️ Crear sesión de picking (${counts.pendiente} pedidos)`}
+          </button>
+        </div>
+      )}
+
+      {/* Pedidos table */}
+      {loading ? (
+        <div className="card" style={{textAlign:"center",padding:40,color:"var(--txt3)"}}>Cargando...</div>
+      ) : pedidos.length === 0 ? (
+        <div className="card" style={{textAlign:"center",padding:40,color:"var(--txt3)"}}>
+          <div style={{fontSize:40,marginBottom:12}}>🛒</div>
+          <div style={{fontSize:16,fontWeight:700}}>Sin pedidos para {fecha}</div>
+          <div style={{fontSize:12,marginTop:4}}>Los pedidos llegarán automáticamente vía webhook</div>
+        </div>
+      ) : (
+        <div className="card" style={{padding:0,overflow:"hidden"}}>
+          <table className="tbl" style={{fontSize:12}}>
+            <thead>
+              <tr>
+                <th>Hora</th>
+                <th>Order ID</th>
+                <th>SKU Venta</th>
+                <th>Producto</th>
+                <th style={{textAlign:"right"}}>Cant.</th>
+                <th>Comprador</th>
+                <th>Estado</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pedidos.map(p => {
+                const estadoColors: Record<string, string> = { PENDIENTE: "#f59e0b", EN_PICKING: "#a855f7", DESPACHADO: "#10b981" };
+                const color = estadoColors[p.estado] || "#94a3b8";
+                const hora = p.fecha_venta ? new Date(p.fecha_venta).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" }) : "—";
+                return (
+                  <tr key={p.id} style={{background: p.estado === "DESPACHADO" ? "#10b98108" : p.estado === "EN_PICKING" ? "#a855f708" : "transparent"}}>
+                    <td style={{fontSize:11,color:"var(--txt3)"}}>{hora}</td>
+                    <td className="mono" style={{fontSize:11}}>{p.order_id}</td>
+                    <td className="mono" style={{fontWeight:700,fontSize:11}}>{p.sku_venta}</td>
+                    <td style={{fontSize:11,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.nombre_producto}</td>
+                    <td className="mono" style={{textAlign:"right",fontWeight:700}}>{p.cantidad}</td>
+                    <td style={{fontSize:11,color:"var(--txt3)"}}>{p.buyer_nickname}</td>
+                    <td>
+                      <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:3,background:`${color}22`,color,border:`1px solid ${color}44`}}>
+                        {p.estado}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ==================== CONTEO CÍCLICO ====================
