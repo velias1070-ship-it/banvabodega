@@ -828,20 +828,20 @@ export interface ShipmentWithItems extends DBMLShipment {
 }
 
 /**
- * Fetch all pending shipments (for multi-day grouped view).
- * Logic:
- *   - logistic_type != 'fulfillment'
- *   - status in ready_to_ship/pending (not shipped/delivered/cancelled)
- * Returns shipments with their items, ordered by handling_limit ascending.
- * Optional storeId filter for multi-store setups.
+ * Fetch shipments the operator needs to prepare.
+ * Query: logistic_type != fulfillment, status = ready_to_ship,
+ *        substatus IN (ready_to_print, printed), handling_limit <= today.
+ * Ordered by handling_limit ASC (overdue first).
  */
 export async function fetchShipmentsToArm(fecha: string, storeId?: number | null): Promise<ShipmentWithItems[]> {
   const sb = getSupabase(); if (!sb) return [];
 
-  // Fetch all pending/ready shipments (no date ceiling — UI groups by day)
+  const endOfDay = `${fecha}T23:59:59`;
   let query = sb.from("ml_shipments").select("*")
     .neq("logistic_type", "fulfillment")
-    .in("status", ["ready_to_ship", "pending"])
+    .eq("status", "ready_to_ship")
+    .in("substatus", ["ready_to_print", "printed"])
+    .lte("handling_limit", endOfDay)
     .order("handling_limit", { ascending: true });
 
   if (storeId) {
