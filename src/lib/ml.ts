@@ -419,6 +419,185 @@ export async function syncRecentOrders(): Promise<{ total: number; new_orders: n
   return { total: result.paging.total, new_orders: newOrders };
 }
 
+/**
+ * Sync historical orders (past N days) with pagination.
+ * Uses /orders/search with pagination (max 50 per page).
+ */
+export async function syncHistoricalOrders(days: number = 7): Promise<{ total: number; new_orders: number; pages: number; flex_found: number; non_flex_skipped: number }> {
+  const config = await getMLConfig();
+  if (!config || !config.seller_id) return { total: 0, new_orders: 0, pages: 0, flex_found: 0, non_flex_skipped: 0 };
+
+  const dateFrom = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const baseUrl = `/orders/search?seller=${config.seller_id}&order.status=paid&sort=date_desc&order.date_created.from=${dateFrom}&limit=50`;
+
+  let totalOrders = 0;
+  let newOrders = 0;
+  let flexFound = 0;
+  let nonFlexSkipped = 0;
+  let pages = 0;
+  let offset = 0;
+  let hasMore = true;
+
+  while (hasMore) {
+    const url = `${baseUrl}&offset=${offset}`;
+    const result = await mlGet<{ results: MLOrder[]; paging: { total: number; offset: number; limit: number } }>(url);
+    if (!result || !result.results) break;
+
+    pages++;
+    totalOrders = result.paging.total;
+
+    for (const order of result.results) {
+      if (order.shipping?.logistic_type === "self_service") {
+        flexFound++;
+        const count = await processOrder(order, config);
+        newOrders += count;
+      } else {
+        nonFlexSkipped++;
+      }
+    }
+
+    offset += result.results.length;
+    hasMore = offset < result.paging.total && result.results.length > 0;
+    // Safety: max 20 pages (1000 orders)
+    if (pages >= 20) break;
+  }
+
+  return { total: totalOrders, new_orders: newOrders, pages, flex_found: flexFound, non_flex_skipped: nonFlexSkipped };
+}
+
+/**
+ * Diagnose ML connection: token, seller info, subscriptions, recent orders.
+ * Returns detailed diagnostic info.
+ */
+export async function diagnoseMlConnection(): Promise<{
+  token_status: "valid" | "expired" | "missing" | "refresh_failed";
+  token_expires_at: string | null;
+  seller_id: string | null;
+  seller_nickname: string | null;
+  flex_subscription: { active: boolean; service_id: number | null } | null;
+  recent_orders_total: number;
+  recent_orders_flex: number;
+  recent_orders_other: number;
+  sample_orders: Array<{ id: number; date: string; logistic_type: string; status: string; items: number }>;
+  shipment_sample: unknown | null;
+  errors: string[];
+}> {
+  const errors: string[] = [];
+  const result = {
+    token_status: "missing" as "valid" | "expired" | "missing" | "refresh_failed",
+    token_expires_at: null as string | null,
+    seller_id: null as string | null,
+    seller_nickname: null as string | null,
+    flex_subscription: null as { active: boolean; service_id: number | null } | null,
+    recent_orders_total: 0,
+    recent_orders_flex: 0,
+    recent_orders_other: 0,
+    sample_orders: [] as Array<{ id: number; date: string; logistic_type: string; status: string; items: number }>,
+    shipment_sample: null as unknown | null,
+    errors,
+  };
+
+  // 1. Check config exists
+  const config = await getMLConfig();
+  if (!config || !config.access_token) {
+    errors.push("No hay configuración ML o falta access_token");
+    return result;
+  }
+
+  result.seller_id = config.seller_id;
+  result.token_expires_at = config.token_expires_at;
+
+  // 2. Check token validity
+  const token = await ensureValidToken();
+  if (!token) {
+    result.token_status = "refresh_failed";
+    errors.push("Token expirado y no se pudo refrescar. Re-vincular cuenta ML.");
+    return result;
+  }
+
+  const expiresAt = new Date(config.token_expires_at).getTime();
+  result.token_status = Date.now() < expiresAt ? "valid" : "valid"; // just refreshed
+
+  // 3. Verify seller identity
+  const me = await mlGet<{ id: number; nickname: string; site_id: string }>("/users/me");
+  if (me) {
+    result.seller_nickname = me.nickname;
+    if (config.seller_id && String(me.id) !== config.seller_id) {
+      errors.push(`Seller ID mismatch: config=${config.seller_id}, API=${me.id}`);
+    }
+  } else {
+    errors.push("No se pudo obtener /users/me — posible problema de permisos");
+  }
+
+  // 4. Check Flex subscription
+  if (config.seller_id) {
+    const subs = await mlGet<{ subscriptions?: Array<{ service_id: number; status: string }> }>(
+      `/shipping/flex/sites/${SITE_ID}/users/${config.seller_id}/subscriptions/v1`
+    );
+    if (subs?.subscriptions && subs.subscriptions.length > 0) {
+      const activeSub = subs.subscriptions.find(s => s.status === "active");
+      result.flex_subscription = {
+        active: !!activeSub,
+        service_id: activeSub?.service_id || subs.subscriptions[0]?.service_id || null,
+      };
+      if (!activeSub) {
+        errors.push(`Suscripción Flex encontrada pero estado: ${subs.subscriptions[0]?.status} (no active)`);
+      }
+    } else {
+      errors.push("No se encontró suscripción Flex activa para este seller");
+      result.flex_subscription = { active: false, service_id: null };
+    }
+  }
+
+  // 5. Search recent orders (last 7 days) to see what exists
+  if (config.seller_id) {
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const ordersResp = await mlGet<{ results: MLOrder[]; paging: { total: number } }>(
+      `/orders/search?seller=${config.seller_id}&order.status=paid&sort=date_desc&order.date_created.from=${sevenDaysAgo}&limit=50`
+    );
+
+    if (ordersResp) {
+      result.recent_orders_total = ordersResp.paging.total;
+
+      for (const order of ordersResp.results) {
+        const lt = order.shipping?.logistic_type || "unknown";
+        if (lt === "self_service") {
+          result.recent_orders_flex++;
+        } else {
+          result.recent_orders_other++;
+        }
+
+        // Add to sample (max 10)
+        if (result.sample_orders.length < 10) {
+          result.sample_orders.push({
+            id: order.id,
+            date: order.date_created,
+            logistic_type: lt,
+            status: order.status,
+            items: order.order_items?.length || 0,
+          });
+        }
+      }
+
+      // 6. For first Flex order found, get shipment details to show warehouse info
+      const firstFlex = ordersResp.results.find(o => o.shipping?.logistic_type === "self_service");
+      if (firstFlex?.shipping?.id) {
+        const shipment = await mlGet<unknown>(`/shipments/${firstFlex.shipping.id}`);
+        result.shipment_sample = shipment;
+      }
+
+      if (result.recent_orders_flex === 0 && result.recent_orders_total > 0) {
+        const types = Array.from(new Set(ordersResp.results.map(o => o.shipping?.logistic_type || "N/A")));
+        errors.push(`Se encontraron ${result.recent_orders_total} órdenes pero NINGUNA es Flex (self_service). Tipos encontrados: ${types.join(", ")}`);
+      }
+    } else {
+      errors.push("No se pudo consultar /orders/search — verificar permisos de la app ML");
+    }
+  }
+
+  return result;
+}
+
 // ==================== STOCK SYNC — Distributed Stock API ====================
 
 /**

@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
-import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, fetchPedidosFlexByEstado, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap } from "@/lib/db";
+import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, fetchAllPedidosFlex, fetchPedidosFlexByEstado, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap } from "@/lib/db";
 import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap } from "@/lib/db";
 import { getOAuthUrl } from "@/lib/ml";
 import Link from "next/link";
@@ -3543,20 +3543,24 @@ function parseCSVLine(line: string): string[] {
 function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
   const today = new Date().toISOString().slice(0, 10);
   const [fecha, setFecha] = useState(today);
+  const [verTodos, setVerTodos] = useState(false);
   const [pedidos, setPedidos] = useState<DBPedidoFlex[]>([]);
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [syncDays, setSyncDays] = useState(0); // 0 = 2 hours (default)
   const [creating, setCreating] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
+  const [diagnosing, setDiagnosing] = useState(false);
+  const [diagResult, setDiagResult] = useState<Record<string, unknown> | null>(null);
   const [mlConfig, setMlConfig] = useState<DBMLConfig | null>(null);
   const [configForm, setConfigForm] = useState({ client_id: "", client_secret: "", seller_id: "", hora_corte_lv: 13, hora_corte_sab: 12 });
 
   const loadPedidos = useCallback(async () => {
     setLoading(true);
-    const data = await fetchPedidosFlex(fecha);
+    const data = verTodos ? await fetchAllPedidosFlex(200) : await fetchPedidosFlex(fecha);
     setPedidos(data);
     setLoading(false);
-  }, [fecha]);
+  }, [fecha, verTodos]);
 
   const loadConfig = useCallback(async () => {
     const cfg = await fetchMLConfig();
@@ -3590,14 +3594,32 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
   const doSync = async () => {
     setSyncing(true);
     try {
-      const resp = await fetch("/api/ml/sync", { method: "POST" });
+      const body = syncDays > 0 ? { days: syncDays } : {};
+      const resp = await fetch("/api/ml/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const data = await resp.json();
       if (data.new_items > 0) await loadPedidos();
-      alert(`Sincronización completa: ${data.new_items || 0} items nuevos de ${data.total_orders || 0} órdenes`);
+      if (syncDays > 0) {
+        alert(`Sync histórico (${syncDays}d): ${data.total_orders || 0} órdenes encontradas, ${data.flex_found || 0} Flex, ${data.new_items || 0} items nuevos. No-Flex omitidos: ${data.non_flex_skipped || 0}`);
+      } else {
+        alert(`Sincronización completa: ${data.new_items || 0} items nuevos de ${data.total_orders || 0} órdenes`);
+      }
     } catch (err) {
       alert("Error de sincronización: " + String(err));
     }
     setSyncing(false);
+  };
+
+  const doDiagnose = async () => {
+    setDiagnosing(true);
+    setDiagResult(null);
+    try {
+      const resp = await fetch("/api/ml/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "diagnose" }) });
+      const data = await resp.json();
+      setDiagResult(data);
+    } catch (err) {
+      setDiagResult({ error: String(err) });
+    }
+    setDiagnosing(false);
   };
 
   const doCreatePicking = async () => {
@@ -3689,8 +3711,8 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
             <button onClick={() => setShowConfig(!showConfig)} style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"var(--txt2)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
               ⚙️ Config ML
             </button>
-            <button onClick={doSync} disabled={syncing} style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"var(--cyan)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
-              {syncing ? "Sincronizando..." : "🔄 Sincronizar"}
+            <button onClick={doDiagnose} disabled={diagnosing} style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"#f59e0b",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
+              {diagnosing ? "Diagnosticando..." : "🩺 Diagnosticar"}
             </button>
             <button onClick={doDownloadLabels} style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"#a855f7",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
               📄 Etiquetas
@@ -3698,11 +3720,29 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
           </div>
         </div>
 
+        {/* Sync controls */}
+        <div style={{display:"flex",alignItems:"center",gap:8,marginTop:12,flexWrap:"wrap"}}>
+          <select value={syncDays} onChange={e => setSyncDays(parseInt(e.target.value))}
+            className="form-input mono" style={{fontSize:12,padding:"6px 8px",width:130}}>
+            <option value={0}>Últimas 2 hrs</option>
+            <option value={3}>3 días</option>
+            <option value={7}>7 días</option>
+            <option value={14}>14 días</option>
+            <option value={30}>30 días</option>
+          </select>
+          <button onClick={doSync} disabled={syncing} style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"var(--cyan)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
+            {syncing ? "Sincronizando..." : "🔄 Sincronizar"}
+          </button>
+        </div>
+
         {/* Date picker */}
-        <div style={{display:"flex",alignItems:"center",gap:8,marginTop:12}}>
-          <input type="date" value={fecha} onChange={e => setFecha(e.target.value)}
-            className="form-input mono" style={{fontSize:13,padding:8,width:160}}/>
-          <button onClick={() => setFecha(today)} style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"var(--txt2)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>Hoy</button>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginTop:8}}>
+          <input type="date" value={fecha} onChange={e => { setFecha(e.target.value); setVerTodos(false); }}
+            className="form-input mono" style={{fontSize:13,padding:8,width:160}} disabled={verTodos}/>
+          <button onClick={() => { setFecha(today); setVerTodos(false); }} style={{padding:"6px 12px",borderRadius:6,background: !verTodos ? "var(--bg3)" : "var(--bg2)",color:"var(--txt2)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>Hoy</button>
+          <button onClick={() => setVerTodos(!verTodos)} style={{padding:"6px 12px",borderRadius:6,background: verTodos ? "var(--cyan)" : "var(--bg3)",color: verTodos ? "#fff" : "var(--txt2)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
+            {verTodos ? "● Ver todos" : "Ver todos"}
+          </button>
         </div>
 
         {/* Status indicator */}
@@ -3713,6 +3753,67 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
           {mlConfig?.updated_at && <span style={{color:"var(--txt3)"}}>· Última actualización: {new Date(mlConfig.updated_at).toLocaleString("es-CL")}</span>}
         </div>
       </div>
+
+      {/* Diagnostic results */}
+      {diagResult && (
+        <div className="card" style={{border: (diagResult.errors as string[])?.length > 0 ? "2px solid var(--red)" : "2px solid var(--green)"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div className="card-title">🩺 Diagnóstico ML</div>
+            <button onClick={() => setDiagResult(null)} style={{background:"none",border:"none",color:"var(--txt3)",cursor:"pointer",fontSize:16}}>✕</button>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:8,fontSize:12}}>
+            <div><strong>Token:</strong> <span style={{color: diagResult.token_status === "valid" ? "var(--green)" : "var(--red)"}}>{diagResult.token_status === "valid" ? "Válido" : String(diagResult.token_status)}</span></div>
+            <div><strong>Expira:</strong> <span className="mono">{diagResult.token_expires_at ? new Date(diagResult.token_expires_at as string).toLocaleString("es-CL") : "—"}</span></div>
+            <div><strong>Seller ID:</strong> <span className="mono">{String(diagResult.seller_id || "—")}</span></div>
+            <div><strong>Nickname:</strong> <span className="mono">{String(diagResult.seller_nickname || "—")}</span></div>
+            <div><strong>Flex Suscripción:</strong> <span style={{color: (diagResult.flex_subscription as Record<string, unknown>)?.active ? "var(--green)" : "var(--red)"}}>{(diagResult.flex_subscription as Record<string, unknown>)?.active ? "Activa" : "Inactiva/No encontrada"}</span></div>
+            <div><strong>Service ID:</strong> <span className="mono">{String((diagResult.flex_subscription as Record<string, unknown>)?.service_id || "—")}</span></div>
+          </div>
+          <div style={{borderTop:"1px solid var(--bg4)",marginTop:12,paddingTop:12}}>
+            <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>Órdenes últimos 7 días</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,fontSize:12}}>
+              <div><strong>Total:</strong> {String(diagResult.recent_orders_total)}</div>
+              <div><strong>Flex (self_service):</strong> <span style={{color: (diagResult.recent_orders_flex as number) > 0 ? "var(--green)" : "var(--red)", fontWeight:700}}>{String(diagResult.recent_orders_flex)}</span></div>
+              <div><strong>Otros tipos:</strong> {String(diagResult.recent_orders_other)}</div>
+            </div>
+          </div>
+          {(diagResult.sample_orders as Array<Record<string, unknown>>)?.length > 0 && (
+            <div style={{marginTop:8}}>
+              <div style={{fontSize:11,fontWeight:700,color:"var(--txt3)",marginBottom:4}}>Muestra de órdenes:</div>
+              <div style={{overflowX:"auto"}}>
+                <table className="tbl" style={{fontSize:11}}>
+                  <thead><tr><th>Order ID</th><th>Fecha</th><th>Tipo envío</th><th>Estado</th><th>Items</th></tr></thead>
+                  <tbody>
+                    {(diagResult.sample_orders as Array<Record<string, unknown>>).map((o: Record<string, unknown>) => (
+                      <tr key={String(o.id)} style={{background: o.logistic_type === "self_service" ? "#10b98115" : "transparent"}}>
+                        <td className="mono">{String(o.id)}</td>
+                        <td className="mono">{new Date(o.date as string).toLocaleString("es-CL", {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}</td>
+                        <td><span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:3,background: o.logistic_type === "self_service" ? "#10b98122" : "#f59e0b22",color: o.logistic_type === "self_service" ? "#10b981" : "#f59e0b"}}>{String(o.logistic_type)}</span></td>
+                        <td>{String(o.status)}</td>
+                        <td style={{textAlign:"right"}}>{String(o.items)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+          {(diagResult.errors as string[])?.length > 0 && (
+            <div style={{marginTop:12,padding:8,borderRadius:6,background:"#ef444422",border:"1px solid #ef444444"}}>
+              <div style={{fontSize:11,fontWeight:700,color:"var(--red)",marginBottom:4}}>Problemas detectados:</div>
+              {(diagResult.errors as string[]).map((e: string, i: number) => (
+                <div key={i} style={{fontSize:11,color:"var(--red)",marginBottom:2}}>• {e}</div>
+              ))}
+            </div>
+          )}
+          {diagResult.shipment_sample ? (
+            <details style={{marginTop:8}}>
+              <summary style={{fontSize:11,color:"var(--txt3)",cursor:"pointer"}}>Ver detalle envío Flex de ejemplo (shipment raw)</summary>
+              <pre style={{fontSize:10,overflow:"auto",maxHeight:200,background:"var(--bg2)",padding:8,borderRadius:4,marginTop:4}}>{JSON.stringify(diagResult.shipment_sample, null, 2)}</pre>
+            </details>
+          ) : null}
+        </div>
+      )}
 
       {/* ML Config panel */}
       {showConfig && (
@@ -3767,8 +3868,8 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
       ) : pedidos.length === 0 ? (
         <div className="card" style={{textAlign:"center",padding:40,color:"var(--txt3)"}}>
           <div style={{fontSize:40,marginBottom:12}}>🛒</div>
-          <div style={{fontSize:16,fontWeight:700}}>Sin pedidos para {fecha}</div>
-          <div style={{fontSize:12,marginTop:4}}>Los pedidos llegarán automáticamente vía webhook</div>
+          <div style={{fontSize:16,fontWeight:700}}>Sin pedidos {verTodos ? "en el sistema" : `para ${fecha}`}</div>
+          <div style={{fontSize:12,marginTop:4}}>Usa "Diagnosticar" para verificar la conexión, o "Sincronizar" con rango de días para traer pedidos históricos</div>
         </div>
       ) : (
         <div className="card" style={{padding:0,overflow:"hidden"}}>

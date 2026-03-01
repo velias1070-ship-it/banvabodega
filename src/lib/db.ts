@@ -759,6 +759,14 @@ export async function fetchPedidosFlex(fecha: string): Promise<DBPedidoFlex[]> {
   return (data || []) as DBPedidoFlex[];
 }
 
+export async function fetchAllPedidosFlex(limit = 100): Promise<DBPedidoFlex[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("pedidos_flex").select("*")
+    .order("fecha_venta", { ascending: false })
+    .limit(limit);
+  return (data || []) as DBPedidoFlex[];
+}
+
 export async function fetchPedidosFlexByEstado(fecha: string, estado: string): Promise<DBPedidoFlex[]> {
   const sb = getSupabase(); if (!sb) return [];
   const { data } = await sb.from("pedidos_flex").select("*")
