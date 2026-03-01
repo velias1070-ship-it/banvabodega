@@ -644,3 +644,90 @@ export async function deletePickingSession(id: string): Promise<boolean> {
   return !error;
 }
 
+// ==================== CONTEOS CÍCLICOS ====================
+
+export interface ConteoLinea {
+  posicion_id: string;
+  posicion_label: string;
+  sku: string;
+  nombre: string;
+  stock_sistema: number;
+  stock_contado: number;
+  operario: string;
+  timestamp: string;
+  estado: "PENDIENTE" | "CONTADO" | "VERIFICADO" | "AJUSTADO";
+  es_inesperado: boolean;
+}
+
+export interface DBConteo {
+  id?: string;
+  fecha: string;
+  tipo: "por_posicion" | "por_sku";
+  estado: "ABIERTA" | "EN_PROCESO" | "REVISION" | "CERRADA";
+  lineas: ConteoLinea[];
+  posiciones: string[];
+  posiciones_contadas: string[];
+  created_at?: string;
+  created_by: string;
+  closed_at?: string | null;
+  closed_by?: string | null;
+}
+
+export async function createConteo(conteo: Omit<DBConteo, "id" | "created_at">): Promise<string | null> {
+  const sb = getSupabase(); if (!sb) return null;
+  const { data, error } = await sb.from("conteos").insert({
+    fecha: conteo.fecha,
+    tipo: conteo.tipo,
+    estado: conteo.estado,
+    lineas: conteo.lineas as unknown,
+    posiciones: conteo.posiciones,
+    posiciones_contadas: conteo.posiciones_contadas,
+    created_by: conteo.created_by,
+  }).select("id").single();
+  if (error) { console.error("createConteo error:", error); return null; }
+  return data?.id || null;
+}
+
+export async function fetchConteos(): Promise<DBConteo[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("conteos").select("*").order("created_at", { ascending: false });
+  return (data || []).map(d => ({
+    ...d,
+    lineas: (d.lineas || []) as ConteoLinea[],
+    posiciones: (d.posiciones || []) as string[],
+    posiciones_contadas: (d.posiciones_contadas || []) as string[],
+  }));
+}
+
+export async function fetchActiveConteos(): Promise<DBConteo[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("conteos").select("*")
+    .in("estado", ["ABIERTA", "EN_PROCESO"])
+    .order("created_at", { ascending: false });
+  return (data || []).map(d => ({
+    ...d,
+    lineas: (d.lineas || []) as ConteoLinea[],
+    posiciones: (d.posiciones || []) as string[],
+    posiciones_contadas: (d.posiciones_contadas || []) as string[],
+  }));
+}
+
+export async function updateConteo(id: string, updates: Partial<DBConteo>): Promise<boolean> {
+  const sb = getSupabase(); if (!sb) return false;
+  const payload: Record<string, unknown> = {};
+  if (updates.estado !== undefined) payload.estado = updates.estado;
+  if (updates.lineas !== undefined) payload.lineas = updates.lineas as unknown;
+  if (updates.posiciones_contadas !== undefined) payload.posiciones_contadas = updates.posiciones_contadas;
+  if (updates.closed_at !== undefined) payload.closed_at = updates.closed_at;
+  if (updates.closed_by !== undefined) payload.closed_by = updates.closed_by;
+  const { error } = await sb.from("conteos").update(payload).eq("id", id);
+  if (error) { console.error("updateConteo error:", error); return false; }
+  return true;
+}
+
+export async function deleteConteo(id: string): Promise<boolean> {
+  const sb = getSupabase(); if (!sb) return false;
+  const { error } = await sb.from("conteos").delete().eq("id", id);
+  return !error;
+}
+
