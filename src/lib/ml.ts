@@ -1,11 +1,14 @@
 /**
  * MercadoLibre API Integration Library
- * Handles: OAuth tokens, API calls, order processing, stock sync, cutoff logic
+ * Handles: OAuth tokens, API calls, order processing, stock sync (distributed),
+ *          Flex management, cutoff logic, shipping labels.
+ * Site: MLC (Chile)
  */
 import { getServerSupabase } from "./supabase-server";
 
 const ML_API = "https://api.mercadolibre.com";
 const ML_AUTH = "https://auth.mercadolibre.cl"; // Chile
+const SITE_ID = "MLC";
 
 // ==================== TYPES ====================
 
@@ -38,6 +41,47 @@ export interface MLOrder {
   };
   pack_id: number | null;
   buyer: { id: number; nickname: string };
+}
+
+export interface MLItemMap {
+  id?: string;
+  sku: string;
+  item_id: string;
+  variation_id: number | null;
+  user_product_id: string | null;
+  activo: boolean;
+  ultimo_sync: string | null;
+  ultimo_stock_enviado: number | null;
+  stock_version: number | null;
+}
+
+export interface PedidoFlex {
+  id?: string;
+  order_id: number;
+  fecha_venta: string;
+  fecha_armado: string;
+  estado: "PENDIENTE" | "EN_PICKING" | "DESPACHADO";
+  sku_venta: string;
+  nombre_producto: string;
+  cantidad: number;
+  shipping_id: number;
+  pack_id: number | null;
+  buyer_nickname: string;
+  raw_data: unknown;
+  picking_session_id: string | null;
+  etiqueta_url: string | null;
+  created_at?: string;
+}
+
+interface StockLocation {
+  type: "meli_facility" | "selling_address" | "seller_warehouse";
+  quantity: number;
+}
+
+interface StockResponse {
+  user_product_id: string;
+  locations: StockLocation[];
+  version: number;
 }
 
 // ==================== TOKEN MANAGEMENT ====================
@@ -173,22 +217,75 @@ export async function mlGet<T = unknown>(path: string): Promise<T | null> {
 /**
  * Make authenticated PUT request to ML API
  */
-export async function mlPut<T = unknown>(path: string, body: unknown): Promise<T | null> {
+export async function mlPut<T = unknown>(path: string, body: unknown, extraHeaders?: Record<string, string>): Promise<T | null> {
   const token = await ensureValidToken();
   if (!token) return null;
 
   const resp = await fetch(`${ML_API}${path}`, {
     method: "PUT",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      ...extraHeaders,
+    },
     body: JSON.stringify(body),
   });
 
   if (!resp.ok) {
-    console.error(`[ML] PUT ${path} failed:`, resp.status, await resp.text());
+    const errText = await resp.text();
+    console.error(`[ML] PUT ${path} failed:`, resp.status, errText);
+    // Return status info for conflict handling
+    if (resp.status === 409) {
+      throw new Error(`VERSION_CONFLICT: ${errText}`);
+    }
     return null;
   }
 
   return resp.json() as Promise<T>;
+}
+
+/**
+ * Make authenticated POST request to ML API
+ */
+export async function mlPost<T = unknown>(path: string, body?: unknown): Promise<T | null> {
+  const token = await ensureValidToken();
+  if (!token) return null;
+
+  const resp = await fetch(`${ML_API}${path}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  if (!resp.ok) {
+    console.error(`[ML] POST ${path} failed:`, resp.status, await resp.text());
+    return null;
+  }
+
+  return resp.json() as Promise<T>;
+}
+
+/**
+ * Make authenticated DELETE request to ML API
+ */
+export async function mlDelete(path: string): Promise<boolean> {
+  const token = await ensureValidToken();
+  if (!token) return false;
+
+  const resp = await fetch(`${ML_API}${path}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (!resp.ok) {
+    console.error(`[ML] DELETE ${path} failed:`, resp.status, await resp.text());
+    return false;
+  }
+
+  return true;
 }
 
 // ==================== CUTOFF LOGIC ====================
@@ -237,24 +334,6 @@ export function calcFechaArmado(fechaVenta: string | Date, horaCorteVL: number, 
 }
 
 // ==================== ORDER PROCESSING ====================
-
-export interface PedidoFlex {
-  id?: string;
-  order_id: number;
-  fecha_venta: string;
-  fecha_armado: string;
-  estado: "PENDIENTE" | "EN_PICKING" | "DESPACHADO";
-  sku_venta: string;
-  nombre_producto: string;
-  cantidad: number;
-  shipping_id: number;
-  pack_id: number | null;
-  buyer_nickname: string;
-  raw_data: unknown;
-  picking_session_id: string | null;
-  etiqueta_url: string | null;
-  created_at?: string;
-}
 
 /**
  * Process a single ML order: validate it's Flex, extract items, upsert to DB.
@@ -340,20 +419,54 @@ export async function syncRecentOrders(): Promise<{ total: number; new_orders: n
   return { total: result.paging.total, new_orders: newOrders };
 }
 
-// ==================== STOCK SYNC (Phase 2) ====================
+// ==================== STOCK SYNC — Distributed Stock API ====================
 
-export interface MLItemMap {
-  id?: string;
-  sku: string;
-  item_id: string;
-  variation_id: number | null;
-  activo: boolean;
-  ultimo_sync: string | null;
-  ultimo_stock_enviado: number | null;
+/**
+ * Get the user_product_id for an item from ML API.
+ * The user_product_id is needed for the distributed stock endpoints.
+ */
+export async function getItemUserProductId(itemId: string): Promise<string | null> {
+  const item = await mlGet<{ user_product_id?: string }>(`/items/${itemId}?attributes=user_product_id`);
+  return item?.user_product_id || null;
+}
+
+/**
+ * Get current stock from the distributed stock API.
+ * Returns locations with quantities and the version for optimistic concurrency.
+ */
+export async function getDistributedStock(userProductId: string): Promise<StockResponse | null> {
+  const data = await mlGet<StockResponse>(`/user-products/${userProductId}/stock`);
+  if (!data) return null;
+
+  // Extract version from response
+  return {
+    user_product_id: userProductId,
+    locations: data.locations || [],
+    version: data.version || 0,
+  };
+}
+
+/**
+ * Update Flex stock (selling_address) using the distributed stock API.
+ * Requires x-version header for optimistic concurrency.
+ * Returns true on success, throws on version conflict (409).
+ */
+export async function updateFlexStock(
+  userProductId: string,
+  quantity: number,
+  version: number
+): Promise<boolean> {
+  const result = await mlPut(
+    `/user-products/${userProductId}/stock/type/selling_address`,
+    { quantity },
+    { "x-version": String(version) }
+  );
+  return result !== null;
 }
 
 /**
  * Sync stock for a single SKU to all its ML items.
+ * Uses the distributed stock API with versioning.
  * Returns number of successful updates.
  */
 export async function syncStockToML(sku: string, availableQty: number): Promise<number> {
@@ -367,57 +480,214 @@ export async function syncStockToML(sku: string, availableQty: number): Promise<
 
   if (!mappings || mappings.length === 0) return 0;
 
-  // Safety: if stock is 0 but last sent was >10, skip auto-sync (needs manual review)
-  for (const map of mappings) {
+  let synced = 0;
+
+  for (const map of mappings as MLItemMap[]) {
+    // Safety: if stock is 0 but last sent was >10, skip auto-sync (needs manual review)
     if (availableQty === 0 && map.ultimo_stock_enviado && map.ultimo_stock_enviado > 10) {
       console.warn(`[ML Stock] Safety block: ${sku} → 0 (was ${map.ultimo_stock_enviado}). Skipping.`);
       continue;
     }
 
-    let success: unknown;
-    if (map.variation_id) {
-      success = await mlPut(`/items/${map.item_id}/variations/${map.variation_id}`, {
-        available_quantity: availableQty,
-      });
-    } else {
-      success = await mlPut(`/items/${map.item_id}/stock`, {
-        available_quantity: availableQty,
-      });
-    }
+    try {
+      // 1. Resolve user_product_id if we don't have it yet
+      let userProductId = map.user_product_id;
+      if (!userProductId) {
+        userProductId = await getItemUserProductId(map.item_id);
+        if (!userProductId) {
+          console.error(`[ML Stock] Cannot resolve user_product_id for item ${map.item_id}`);
+          continue;
+        }
+        // Save it for future calls
+        await sb.from("ml_items_map").update({ user_product_id: userProductId }).eq("id", map.id);
+      }
 
-    if (success) {
-      await sb.from("ml_items_map").update({
-        ultimo_sync: new Date().toISOString(),
-        ultimo_stock_enviado: availableQty,
-      }).eq("id", map.id);
+      // 2. GET current stock to obtain version
+      const stockData = await getDistributedStock(userProductId);
+      if (!stockData) {
+        console.error(`[ML Stock] Cannot read stock for ${userProductId}`);
+        continue;
+      }
+
+      // 3. PUT with x-version header
+      const success = await updateFlexStock(userProductId, availableQty, stockData.version);
+
+      if (success) {
+        await sb.from("ml_items_map").update({
+          ultimo_sync: new Date().toISOString(),
+          ultimo_stock_enviado: availableQty,
+          stock_version: stockData.version + 1,
+        }).eq("id", map.id);
+        synced++;
+      }
+    } catch (err) {
+      const errMsg = String(err);
+      if (errMsg.includes("VERSION_CONFLICT")) {
+        // 409: version mismatch — retry once with fresh version
+        console.warn(`[ML Stock] Version conflict for ${sku}, retrying...`);
+        try {
+          const userProductId = map.user_product_id!;
+          const freshStock = await getDistributedStock(userProductId);
+          if (freshStock) {
+            const retrySuccess = await updateFlexStock(userProductId, availableQty, freshStock.version);
+            if (retrySuccess) {
+              await sb.from("ml_items_map").update({
+                ultimo_sync: new Date().toISOString(),
+                ultimo_stock_enviado: availableQty,
+                stock_version: freshStock.version + 1,
+              }).eq("id", map.id);
+              synced++;
+            }
+          }
+        } catch (retryErr) {
+          console.error(`[ML Stock] Retry also failed for ${sku}:`, retryErr);
+        }
+      } else {
+        console.error(`[ML Stock] Error syncing ${sku}:`, err);
+      }
     }
   }
 
-  return mappings.length;
+  return synced;
 }
 
-// ==================== SHIPPING LABELS (Phase 3) ====================
+// ==================== FLEX MANAGEMENT ====================
+
+/**
+ * Get Flex subscription info for the seller.
+ * GET /shipping/flex/sites/MLC/users/$USER_ID/subscriptions/v1
+ */
+export async function getFlexSubscription(): Promise<unknown> {
+  const config = await getMLConfig();
+  if (!config?.seller_id) return null;
+  return mlGet(`/shipping/flex/sites/${SITE_ID}/users/${config.seller_id}/subscriptions/v1`);
+}
+
+/**
+ * Get Flex service configuration (delivery zones, capacity, etc.)
+ */
+export async function getFlexConfig(serviceId: string): Promise<unknown> {
+  const config = await getMLConfig();
+  if (!config?.seller_id) return null;
+  return mlGet(`/shipping/flex/sites/${SITE_ID}/users/${config.seller_id}/services/${serviceId}/configuration/delivery/custom/v3`);
+}
+
+/**
+ * Update Flex delivery configuration.
+ * PUT /shipping/flex/sites/MLC/users/$USER_ID/services/$SERVICE_ID/configuration/delivery/custom/v3
+ */
+export async function updateFlexConfig(serviceId: string, configData: unknown): Promise<unknown> {
+  const config = await getMLConfig();
+  if (!config?.seller_id) return null;
+  return mlPut(
+    `/shipping/flex/sites/${SITE_ID}/users/${config.seller_id}/services/${serviceId}/configuration/delivery/custom/v3`,
+    configData
+  );
+}
+
+/**
+ * Get Flex holidays (days when Flex is paused).
+ * GET /flex/sites/MLC/users/$USER_ID/services/$SERVICE_ID/configurations/holidays/v1
+ */
+export async function getFlexHolidays(serviceId: string): Promise<unknown> {
+  const config = await getMLConfig();
+  if (!config?.seller_id) return null;
+  return mlGet(`/flex/sites/${SITE_ID}/users/${config.seller_id}/services/${serviceId}/configurations/holidays/v1`);
+}
+
+/**
+ * Update Flex holidays.
+ * PUT /flex/sites/MLC/users/$USER_ID/services/$SERVICE_ID/configurations/holidays/v1
+ */
+export async function updateFlexHolidays(serviceId: string, holidays: unknown): Promise<unknown> {
+  const config = await getMLConfig();
+  if (!config?.seller_id) return null;
+  return mlPut(
+    `/flex/sites/${SITE_ID}/users/${config.seller_id}/services/${serviceId}/configurations/holidays/v1`,
+    holidays
+  );
+}
+
+/**
+ * Activate an item for Flex shipping.
+ * POST /flex/sites/MLC/items/$ITEM_ID/v2
+ */
+export async function activateFlexItem(itemId: string): Promise<boolean> {
+  const result = await mlPost(`/flex/sites/${SITE_ID}/items/${itemId}/v2`);
+  return result !== null;
+}
+
+/**
+ * Deactivate an item from Flex shipping.
+ * DELETE /flex/sites/MLC/items/$ITEM_ID/v2
+ */
+export async function deactivateFlexItem(itemId: string): Promise<boolean> {
+  return mlDelete(`/flex/sites/${SITE_ID}/items/${itemId}/v2`);
+}
+
+// ==================== SHIPPING LABELS ====================
+
+/**
+ * Get shipment details to verify status before printing labels.
+ * The shipment must be in ready_to_ship/ready_to_print with logistic_type: self_service.
+ */
+export async function getShipmentStatus(shippingId: number): Promise<{
+  id: number;
+  status: string;
+  logistic_type: string;
+  ready: boolean;
+} | null> {
+  const data = await mlGet<{ id: number; status: string; logistic_type: string }>(`/shipments/${shippingId}`);
+  if (!data) return null;
+  return {
+    id: data.id,
+    status: data.status,
+    logistic_type: data.logistic_type,
+    ready: (data.status === "ready_to_ship" || data.status === "ready_to_print") &&
+           data.logistic_type === "self_service",
+  };
+}
 
 /**
  * Download shipping labels PDF for multiple shipment IDs.
- * Returns the PDF as a Blob/ArrayBuffer URL or null.
+ * ML allows up to 50 IDs per request.
  */
 export async function getShippingLabelsPdf(shippingIds: number[]): Promise<ArrayBuffer | null> {
   const token = await ensureValidToken();
   if (!token || shippingIds.length === 0) return null;
 
-  // ML allows up to 50 IDs per request
   const ids = shippingIds.slice(0, 50).join(",");
   const resp = await fetch(`${ML_API}/shipment_labels?shipment_ids=${ids}&response_type=pdf`, {
     headers: { Authorization: `Bearer ${token}` },
   });
 
   if (!resp.ok) {
-    console.error("[ML] Labels download failed:", resp.status);
+    console.error("[ML] Labels PDF download failed:", resp.status);
     return null;
   }
 
   return resp.arrayBuffer();
+}
+
+/**
+ * Download shipping labels in ZPL format (for Zebra thermal printers).
+ * ML allows up to 50 IDs per request.
+ */
+export async function getShippingLabelsZpl(shippingIds: number[]): Promise<string | null> {
+  const token = await ensureValidToken();
+  if (!token || shippingIds.length === 0) return null;
+
+  const ids = shippingIds.slice(0, 50).join(",");
+  const resp = await fetch(`${ML_API}/shipment_labels?shipment_ids=${ids}&response_type=zpl2`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (!resp.ok) {
+    console.error("[ML] Labels ZPL download failed:", resp.status);
+    return null;
+  }
+
+  return resp.text();
 }
 
 // ==================== OAUTH URL ====================
