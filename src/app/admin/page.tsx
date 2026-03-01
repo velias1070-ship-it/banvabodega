@@ -3782,13 +3782,15 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
               <div style={{fontSize:11,fontWeight:700,color:"var(--txt3)",marginBottom:4}}>Muestra de órdenes:</div>
               <div style={{overflowX:"auto"}}>
                 <table className="tbl" style={{fontSize:11}}>
-                  <thead><tr><th>Order ID</th><th>Fecha</th><th>Tipo envío</th><th>Estado</th><th>Items</th></tr></thead>
+                  <thead><tr><th>Order ID</th><th>Fecha</th><th>Tipo envío</th><th>Origen</th><th>Dirección origen</th><th>Estado</th><th>Items</th></tr></thead>
                   <tbody>
                     {(diagResult.sample_orders as Array<Record<string, unknown>>).map((o: Record<string, unknown>) => (
                       <tr key={String(o.id)} style={{background: o.logistic_type === "self_service" ? "#10b98115" : "transparent"}}>
                         <td className="mono">{String(o.id)}</td>
                         <td className="mono">{new Date(o.date as string).toLocaleString("es-CL", {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}</td>
                         <td><span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:3,background: o.logistic_type === "self_service" ? "#10b98122" : "#f59e0b22",color: o.logistic_type === "self_service" ? "#10b981" : "#f59e0b"}}>{String(o.logistic_type)}</span></td>
+                        <td style={{fontSize:10}}>{o.origin_type ? String(o.origin_type) : "—"}</td>
+                        <td style={{fontSize:10,maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{o.origin_address ? String(o.origin_address) : "—"}</td>
                         <td>{String(o.status)}</td>
                         <td style={{textAlign:"right"}}>{String(o.items)}</td>
                       </tr>
