@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { syncRecentOrders } from "@/lib/ml";
+import { syncRecentOrders, syncHistoricalOrders, diagnoseMlConnection } from "@/lib/ml";
 
 const SYNC_SECRET = process.env.ML_SYNC_SECRET || "";
 
@@ -38,7 +38,61 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// Also support POST for manual trigger from admin
+// POST for manual trigger from admin — supports action + days params
 export async function POST(req: NextRequest) {
-  return GET(req);
+  let body: { action?: string; days?: number } = {};
+  try { body = await req.json(); } catch { /* empty body ok */ }
+
+  const action = body.action || "sync";
+
+  // Diagnose connection
+  if (action === "diagnose") {
+    try {
+      console.log("[ML Sync] Running diagnostics...");
+      const diag = await diagnoseMlConnection();
+      return NextResponse.json({ status: "ok", action: "diagnose", ...diag });
+    } catch (err) {
+      console.error("[ML Sync] Diagnose error:", err);
+      return NextResponse.json({ error: String(err) }, { status: 500 });
+    }
+  }
+
+  // Historical sync (with days param)
+  const days = body.days || 0;
+  if (days > 0) {
+    try {
+      console.log(`[ML Sync] Starting historical sync (${days} days)...`);
+      const result = await syncHistoricalOrders(days);
+      console.log(`[ML Sync] Historical done: ${result.total} total, ${result.flex_found} flex, ${result.new_orders} new`);
+
+      return NextResponse.json({
+        status: "ok",
+        total_orders: result.total,
+        new_items: result.new_orders,
+        flex_found: result.flex_found,
+        non_flex_skipped: result.non_flex_skipped,
+        pages: result.pages,
+        days,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error("[ML Sync] Historical sync error:", err);
+      return NextResponse.json({ error: String(err) }, { status: 500 });
+    }
+  }
+
+  // Default: recent sync (2 hours)
+  try {
+    console.log("[ML Sync] Starting recent sync...");
+    const result = await syncRecentOrders();
+    return NextResponse.json({
+      status: "ok",
+      total_orders: result.total,
+      new_items: result.new_orders,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error("[ML Sync] Error:", err);
+    return NextResponse.json({ error: String(err) }, { status: 500 });
+  }
 }
