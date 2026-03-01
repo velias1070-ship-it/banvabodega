@@ -3,13 +3,23 @@ import { getServerSupabase } from "@/lib/supabase-server";
 import { syncStockToML } from "@/lib/ml";
 
 /**
- * Stock sync endpoint — pushes WMS stock to MercadoLibre.
+ * Stock sync endpoint — pushes WMS stock to MercadoLibre using distributed stock API.
+ * Uses PUT /user-products/$UP_ID/stock/type/selling_address with x-version header.
  * Processes the stock_sync_queue: for each pending SKU, calculates
  * available stock (total - committed) and sends to ML.
  */
 export async function POST(req: NextRequest) {
   const sb = getServerSupabase();
   if (!sb) return NextResponse.json({ error: "no_db" }, { status: 500 });
+
+  // Verify authorization
+  const authHeader = req.headers.get("authorization");
+  const isVercelCron = authHeader === `Bearer ${process.env.CRON_SECRET}`;
+  const isLocalDev = process.env.NODE_ENV === "development";
+
+  if (!isVercelCron && !isLocalDev) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
 
   try {
     // 1. Read the sync queue
@@ -38,10 +48,10 @@ export async function POST(req: NextRequest) {
           .in("estado", ["PENDIENTE", "EN_PICKING"]);
         const committed = (pedidos || []).reduce((s: number, p: { cantidad: number }) => s + p.cantidad, 0);
 
-        // 4. Available = total - committed
+        // 4. Available = total - committed (Flex stock at selling_address)
         const available = Math.max(0, totalStock - committed);
 
-        // 5. Send to ML
+        // 5. Send to ML via distributed stock API
         const count = await syncStockToML(sku, available);
         if (count > 0) synced++;
       } catch (err) {
