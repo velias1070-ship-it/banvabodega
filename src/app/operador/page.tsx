@@ -54,6 +54,9 @@ export default function OperadorPage() {
           <Link href="/operador/recepciones">
             <button style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"var(--green)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>📦 Recepción</button>
           </Link>
+          <Link href="/operador/conteos">
+            <button style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"#a855f7",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>📋 Conteos</button>
+          </Link>
         </div>
       </div>
       <SheetSync onSynced={r}/>

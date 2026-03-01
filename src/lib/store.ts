@@ -45,8 +45,8 @@ export interface MapConfig {
   gridW: number; gridH: number; objects: MapObject[];
 }
 
-export type InReason = "compra" | "devolucion" | "ajuste_entrada" | "transferencia_in";
-export type OutReason = "venta_flex" | "envio_full" | "ajuste_salida" | "merma";
+export type InReason = "compra" | "devolucion" | "ajuste_entrada" | "transferencia_in" | "ajuste_conteo";
+export type OutReason = "venta_flex" | "envio_full" | "ajuste_salida" | "merma" | "ajuste_conteo";
 export type MovType = "in" | "out";
 
 export interface Movement {
@@ -72,10 +72,12 @@ export interface StoreData {
 export const IN_REASONS: Record<InReason, string> = {
   compra: "Compra de inventario", devolucion: "Devolución",
   ajuste_entrada: "Ajuste (+)", transferencia_in: "Transferencia entrada",
+  ajuste_conteo: "Ajuste conteo cíclico",
 };
 export const OUT_REASONS: Record<OutReason, string> = {
   venta_flex: "Venta Flex", envio_full: "Envío a ML Full",
   ajuste_salida: "Ajuste (-)", merma: "Merma / Pérdida",
+  ajuste_conteo: "Ajuste conteo cíclico",
 };
 
 // Categorías y proveedores — localStorage para config de UI
@@ -194,6 +196,7 @@ function mapMotivo(motivo: string): InReason | OutReason {
     transferencia_in: "transferencia_in", transferencia_out: "ajuste_salida",
     venta_flex: "venta_flex", envio_full: "envio_full",
     ajuste_salida: "ajuste_salida", merma: "merma", ajuste: "ajuste_entrada",
+    ajuste_conteo: "ajuste_conteo",
   };
   return map[motivo] || "ajuste_entrada";
 }
@@ -516,6 +519,8 @@ export async function recordMovementAsync(m: Omit<Movement, "id">): Promise<Move
       sku: m.sku, posicion_id: m.pos, cantidad: actualQty,
       operario: m.who, nota: m.note,
     });
+    // Queue SKU for ML stock sync (fire & forget)
+    db.addToStockSyncQueue([m.sku]).catch(() => {});
   }
   return mov;
 }
@@ -555,6 +560,8 @@ export function recordMovement(m: Omit<Movement, "id">): Movement {
       sku: m.sku, posicion_id: m.pos, cantidad: actualQty,
       operario: m.who, nota: m.note,
     }).catch(console.error);
+    // Queue SKU for ML stock sync
+    db.addToStockSyncQueue([m.sku]).catch(() => {});
   }
   return mov;
 }
@@ -1019,6 +1026,11 @@ export async function pickearComponente(
     estado: allDone ? "COMPLETADA" : "EN_PROCESO",
     ...(allDone ? { completed_at: new Date().toISOString() } : {}),
   });
+
+  // When picking is fully completed, mark linked pedidos_flex as DESPACHADO
+  if (allDone && sessionId) {
+    db.updatePedidosFlexByPickingSession(sessionId, "DESPACHADO").catch(console.error);
+  }
 
   return true;
 }
