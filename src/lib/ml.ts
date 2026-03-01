@@ -640,12 +640,57 @@ async function processOrderBatch(orders: MLOrder[], config: MLConfig): Promise<{
 }
 
 /**
+ * Refresh status of shipments still marked as ready_to_ship in Supabase.
+ * Queries the ML API for current status and updates the DB.
+ * This cleans up shipments that were shipped/delivered but not updated.
+ */
+async function refreshShipmentStatuses(): Promise<{ checked: number; updated: number }> {
+  const sb = getServerSupabase();
+  if (!sb) return { checked: 0, updated: 0 };
+
+  // Get all shipments still in ready_to_ship
+  const { data: stale } = await sb.from("ml_shipments").select("shipment_id")
+    .eq("status", "ready_to_ship");
+
+  if (!stale || stale.length === 0) return { checked: 0, updated: 0 };
+
+  let updated = 0;
+  for (const row of stale) {
+    const shipment = await mlGet<{ id: number; status: string; substatus?: string }>(
+      `/shipments/${row.shipment_id}`,
+      { "x-format-new": "true" }
+    );
+    if (!shipment) continue;
+
+    // Only update if status actually changed
+    if (shipment.status && shipment.status !== "ready_to_ship") {
+      await sb.from("ml_shipments").update({
+        status: shipment.status,
+        substatus: shipment.substatus || null,
+        updated_at: new Date().toISOString(),
+      }).eq("shipment_id", row.shipment_id);
+      updated++;
+      console.log(`[ML] Shipment ${row.shipment_id}: ready_to_ship → ${shipment.status}`);
+    }
+  }
+
+  return { checked: stale.length, updated };
+}
+
+/**
  * Sync recent orders via search API (polling backup)
  */
 export async function syncRecentOrders(): Promise<{ total: number; new_orders: number }> {
   const config = await getMLConfig();
   if (!config || !config.seller_id) return { total: 0, new_orders: 0 };
 
+  // 1. Refresh status of existing shipments (clean up shipped/delivered)
+  const refresh = await refreshShipmentStatuses();
+  if (refresh.updated > 0) {
+    console.log(`[ML Sync] Refreshed ${refresh.updated}/${refresh.checked} shipment statuses`);
+  }
+
+  // 2. Fetch new orders
   const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
   const searchUrl = `/orders/search?seller=${config.seller_id}&order.status=paid&sort=date_desc&order.date_created.from=${twoHoursAgo}`;
 
@@ -663,6 +708,12 @@ export async function syncRecentOrders(): Promise<{ total: number; new_orders: n
 export async function syncHistoricalOrders(days: number = 7): Promise<{ total: number; new_orders: number; pages: number; shipments_processed: number; shipments_skipped: number }> {
   const config = await getMLConfig();
   if (!config || !config.seller_id) return { total: 0, new_orders: 0, pages: 0, shipments_processed: 0, shipments_skipped: 0 };
+
+  // Refresh status of existing shipments first
+  const refresh = await refreshShipmentStatuses();
+  if (refresh.updated > 0) {
+    console.log(`[ML Sync] Refreshed ${refresh.updated}/${refresh.checked} shipment statuses`);
+  }
 
   const dateFrom = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
   const baseUrl = `/orders/search?seller=${config.seller_id}&order.status=paid&sort=date_desc&order.date_created.from=${dateFrom}&limit=50`;
