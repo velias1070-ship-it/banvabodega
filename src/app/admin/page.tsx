@@ -3561,18 +3561,18 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
 
   const loadPedidos = useCallback(async () => {
     setLoading(true);
-    // Load new shipment-centric data (all pending, grouped by day in UI)
+    // Load shipments: always fetch all ready_to_ship (UI groups by day)
     try {
-      const sData = verTodos ? await fetchAllShipments(200, storeFilter) : await fetchShipmentsToArm(fecha, storeFilter);
+      const sData = await fetchShipmentsToArm(today, storeFilter);
       setShipments(sData);
     } catch { setShipments([]); }
     // Load store options for filter dropdown
     try { const stores = await fetchStoreIds(); setStoreOptions(stores); } catch { /* ignore */ }
-    // Also load legacy pedidos_flex as fallback
+    // Legacy pedidos_flex only as fallback when ml_shipments is empty
     const data = verTodos ? await fetchAllPedidosFlex(200) : await fetchPedidosFlex(fecha);
     setPedidos(data);
     setLoading(false);
-  }, [fecha, verTodos, storeFilter]);
+  }, [fecha, today, verTodos, storeFilter]);
 
   const loadConfig = useCallback(async () => {
     const cfg = await fetchMLConfig();

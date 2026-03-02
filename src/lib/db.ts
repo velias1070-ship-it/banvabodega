@@ -829,19 +829,18 @@ export interface ShipmentWithItems extends DBMLShipment {
 
 /**
  * Fetch shipments the operator needs to prepare.
- * Query: logistic_type != fulfillment, status = ready_to_ship,
- *        substatus IN (ready_to_print, printed), handling_limit <= today.
+ * Query: status = ready_to_ship AND substatus IN (ready_to_print, printed)
+ *        AND logistic_type != fulfillment.
+ * No date filter — UI groups by day (atrasados, hoy, mañana, etc.).
  * Ordered by handling_limit ASC (overdue first).
  */
-export async function fetchShipmentsToArm(fecha: string, storeId?: number | null): Promise<ShipmentWithItems[]> {
+export async function fetchShipmentsToArm(_fecha: string, storeId?: number | null): Promise<ShipmentWithItems[]> {
   const sb = getSupabase(); if (!sb) return [];
 
-  const endOfDay = `${fecha}T23:59:59`;
   let query = sb.from("ml_shipments").select("*")
     .neq("logistic_type", "fulfillment")
     .eq("status", "ready_to_ship")
     .in("substatus", ["ready_to_print", "printed"])
-    .lte("handling_limit", endOfDay)
     .order("handling_limit", { ascending: true });
 
   if (storeId) {
