@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS ml_shipments (
   status TEXT NOT NULL DEFAULT 'unknown',
   substatus TEXT,
   logistic_type TEXT NOT NULL DEFAULT 'unknown',
+  is_flex BOOLEAN NOT NULL DEFAULT FALSE,
   handling_limit TIMESTAMPTZ,
   buffering_date TIMESTAMPTZ,
   delivery_date TIMESTAMPTZ,
@@ -49,6 +50,7 @@ CREATE TABLE IF NOT EXISTS ml_shipments (
   store_id BIGINT,
   receiver_name TEXT,
   destination_city TEXT,
+  is_fraud_risk BOOLEAN NOT NULL DEFAULT FALSE,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

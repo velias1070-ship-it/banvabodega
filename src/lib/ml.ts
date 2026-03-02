@@ -30,6 +30,7 @@ export interface MLOrder {
   id: number;
   date_created: string;
   status: string;
+  tags?: string[];  // includes "fraud_risk_detected" if suspicious
   order_items: Array<{
     item: { id: string; title: string; seller_sku: string | null; variation_id?: number };
     quantity: number;
@@ -96,8 +97,8 @@ interface MLShipmentDetail {
   // From /shipments with x-format-new: true
   logistic?: {
     direction?: string;
-    mode?: string;
-    type?: string; // "self_service" = Flex
+    mode?: string;  // "me2" for Flex
+    type?: string;  // "self_service" = Flex
   };
   origin?: {
     type?: string; // "selling_address" | "seller_warehouse"
@@ -123,9 +124,10 @@ interface MLShipmentDetail {
     };
     estimated_delivery_time?: {
       date?: string; // promised delivery to buyer
+      time_frame?: { from?: string; to?: string }; // delivery window hours
     };
     buffering?: {
-      date?: string; // when label becomes available
+      date?: string; // when label becomes available for printing
     };
   };
 }
@@ -390,7 +392,7 @@ export async function getShipmentFlexInfo(shippingId: number): Promise<ShipmentF
     origin_type: originType,
     origin_address: originAddress,
     store_id: storeId,
-    is_flex: logisticType === "self_service",
+    is_flex: logisticType === "self_service" && shipment.logistic?.mode === "me2",
     handling_limit_date: handlingLimitDate,
     delivery_date: deliveryDate,
     shipment_status: shipment.status || null,
@@ -463,13 +465,25 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
     return { items: 0, shipInfo };
   }
 
-  // 2. Upsert ml_shipments
+  // 2. Check fraud risk on orders
+  let isFraudRisk = false;
+  for (const orderId of orderIds) {
+    const order = await mlGet<MLOrder>(`/orders/${orderId}`);
+    if (order?.tags?.includes("fraud_risk_detected")) {
+      isFraudRisk = true;
+      console.warn(`[ML] Order ${orderId} has fraud_risk_detected tag!`);
+      break;
+    }
+  }
+
+  // 3. Upsert ml_shipments
   const shipmentRow = {
     shipment_id: shipmentId,
     order_ids: orderIds,
     status: shipInfo.raw?.status || "unknown",
     substatus: shipInfo.raw?.substatus || null,
     logistic_type: shipInfo.logistic_type,
+    is_flex: shipInfo.is_flex,
     handling_limit: shipInfo.raw?.lead_time?.estimated_handling_limit?.date || null,
     buffering_date: shipInfo.raw?.lead_time?.buffering?.date || null,
     delivery_date: shipInfo.raw?.lead_time?.estimated_delivery_time?.date || null,
@@ -477,6 +491,7 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
     store_id: shipInfo.store_id,
     receiver_name: shipInfo.raw?.destination?.receiver_name || null,
     destination_city: shipInfo.raw?.destination?.shipping_address?.city?.name || null,
+    is_fraud_risk: isFraudRisk,
     updated_at: new Date().toISOString(),
   };
 
@@ -488,7 +503,7 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
     return { items: 0, shipInfo };
   }
 
-  // 3. For each order, fetch order details and upsert items
+  // 4. For each order, fetch order details and upsert items
   let totalItems = 0;
   for (const orderId of orderIds) {
     const order = await mlGet<MLOrder>(`/orders/${orderId}`);
@@ -649,28 +664,32 @@ async function refreshShipmentStatuses(): Promise<{ checked: number; updated: nu
   if (!sb) return { checked: 0, updated: 0 };
 
   // Get all shipments still in ready_to_ship
-  const { data: stale } = await sb.from("ml_shipments").select("shipment_id")
+  const { data: stale } = await sb.from("ml_shipments").select("shipment_id,substatus")
     .eq("status", "ready_to_ship");
 
   if (!stale || stale.length === 0) return { checked: 0, updated: 0 };
 
   let updated = 0;
-  for (const row of stale) {
+  for (const row of stale as { shipment_id: number; substatus?: string }[]) {
     const shipment = await mlGet<{ id: number; status: string; substatus?: string }>(
       `/shipments/${row.shipment_id}`,
       { "x-format-new": "true" }
     );
     if (!shipment) continue;
 
-    // Only update if status actually changed
-    if (shipment.status && shipment.status !== "ready_to_ship") {
+    // Update if status changed OR substatus changed (e.g. ready_to_print → printed)
+    const statusChanged = shipment.status && shipment.status !== "ready_to_ship";
+    const substatusChanged = shipment.substatus && shipment.substatus !== row.substatus;
+    if (statusChanged || substatusChanged) {
       await sb.from("ml_shipments").update({
         status: shipment.status,
         substatus: shipment.substatus || null,
         updated_at: new Date().toISOString(),
       }).eq("shipment_id", row.shipment_id);
       updated++;
-      console.log(`[ML] Shipment ${row.shipment_id}: ready_to_ship → ${shipment.status}`);
+      if (statusChanged) {
+        console.log(`[ML] Shipment ${row.shipment_id}: ready_to_ship → ${shipment.status}`);
+      }
     }
   }
 
@@ -1105,23 +1124,34 @@ export async function deactivateFlexItem(itemId: string): Promise<boolean> {
 // ==================== SHIPPING LABELS ====================
 
 /**
- * Get shipment details to verify status before printing labels.
- * The shipment must be in ready_to_ship/ready_to_print with logistic_type: self_service.
+ * Get shipment live status from ML API.
+ * Used for: label printing validation, verify-before-picking.
+ * ready = can print label. ok_to_pick = safe to prepare.
  */
 export async function getShipmentStatus(shippingId: number): Promise<{
   id: number;
   status: string;
+  substatus: string | null;
   logistic_type: string;
-  ready: boolean;
+  ready: boolean;    // can print label
+  ok_to_pick: boolean; // safe to prepare (not cancelled/fraud)
+  cancelled: boolean;
 } | null> {
-  const data = await mlGet<{ id: number; status: string; logistic_type: string }>(`/shipments/${shippingId}`);
-  if (!data) return null;
+  const shipment = await mlGet<MLShipmentDetail>(
+    `/shipments/${shippingId}`,
+    { "x-format-new": "true" }
+  );
+  if (!shipment) return null;
+  const logisticType = shipment.logistic?.type || shipment.logistic_type || "unknown";
+  const isCancelled = shipment.status === "cancelled";
   return {
-    id: data.id,
-    status: data.status,
-    logistic_type: data.logistic_type,
-    ready: (data.status === "ready_to_ship" || data.status === "ready_to_print") &&
-           data.logistic_type === "self_service",
+    id: shipment.id,
+    status: shipment.status,
+    substatus: shipment.substatus || null,
+    logistic_type: logisticType,
+    ready: shipment.status === "ready_to_ship",
+    ok_to_pick: shipment.status === "ready_to_ship" && !isCancelled,
+    cancelled: isCancelled,
   };
 }
 

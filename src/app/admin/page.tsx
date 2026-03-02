@@ -3768,14 +3768,18 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
   };
 
   const doDownloadLabels = async () => {
-    const shippingIds = Array.from(new Set(pedidos.filter(p => p.estado !== "DESPACHADO").map(p => p.shipping_id)));
+    // Use shipment IDs from ready_to_print shipments (prefer new model)
+    const readyToPrintShips = shipments.filter(s => s.substatus === "ready_to_print" && !s.is_fraud_risk);
+    const shippingIds = readyToPrintShips.length > 0
+      ? readyToPrintShips.map(s => s.shipment_id)
+      : Array.from(new Set(pedidos.filter(p => p.estado !== "DESPACHADO").map(p => p.shipping_id)));
     if (shippingIds.length === 0) { alert("Sin envíos para descargar etiquetas"); return; }
 
     try {
       const resp = await fetch("/api/ml/labels", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ shipping_ids: shippingIds }),
+        body: JSON.stringify({ shipping_ids: shippingIds, skip_validation: true }),
       });
       if (!resp.ok) { alert("Error descargando etiquetas"); return; }
       const blob = await resp.blob();
@@ -3787,6 +3791,57 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
       URL.revokeObjectURL(url);
     } catch (err) {
       alert("Error: " + String(err));
+    }
+  };
+
+  // Print label for a single shipment
+  const doPrintLabel = async (shipmentId: number) => {
+    try {
+      const resp = await fetch("/api/ml/labels", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shipping_ids: [shipmentId], skip_validation: true }),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        alert(err.message || "Error descargando etiqueta");
+        return;
+      }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `etiqueta-${shipmentId}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert("Error: " + String(err));
+    }
+  };
+
+  // Verify shipment status live before picking
+  const doVerifyShipment = async (shipmentId: number): Promise<boolean> => {
+    try {
+      const resp = await fetch("/api/ml/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shipment_id: shipmentId }),
+      });
+      const data = await resp.json();
+      if (data.cancelled) {
+        alert(`Envío #${shipmentId} fue CANCELADO. No preparar.`);
+        await loadPedidos(); // refresh to remove from list
+        return false;
+      }
+      if (!data.ok_to_pick) {
+        alert(`Envío #${shipmentId} ya no está en ready_to_ship (status: ${data.status}). No preparar.`);
+        await loadPedidos();
+        return false;
+      }
+      return true;
+    } catch {
+      alert("No se pudo verificar. Revisa la conexión.");
+      return false;
     }
   };
 
@@ -4037,15 +4092,37 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
                         <span style={{fontSize:10,color:"var(--txt3)",marginLeft:"auto"}}>({ltg.ships.length})</span>
                       </div>
                       {ltg.ships.map(ship => (
-                        <div key={ship.shipment_id} style={{padding:"8px 10px",marginBottom:2,borderLeft:`3px solid ${isOverdueGroup ? "#ef4444" : ltg.color}`,background:"var(--bg2)",borderRadius:"0 6px 6px 0"}}>
-                          {/* Substatus badge + receiver */}
+                        <div key={ship.shipment_id} style={{padding:"8px 10px",marginBottom:2,borderLeft:`3px solid ${ship.is_fraud_risk ? "#dc2626" : isOverdueGroup ? "#ef4444" : ltg.color}`,background: ship.is_fraud_risk ? "#dc262610" : "var(--bg2)",borderRadius:"0 6px 6px 0"}}>
+                          {/* Fraud warning */}
+                          {ship.is_fraud_risk && (
+                            <div style={{padding:"4px 8px",marginBottom:4,borderRadius:4,background:"#dc262622",color:"#dc2626",fontSize:11,fontWeight:800}}>
+                              RIESGO DE FRAUDE — NO PREPARAR ESTE PEDIDO
+                            </div>
+                          )}
+                          {/* Actions + status */}
                           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
-                            <span style={{fontSize:9,fontWeight:700,padding:"2px 8px",borderRadius:3,
-                              background: ship.substatus === "ready_to_print" ? "#f59e0b22" : ship.substatus === "printed" ? "#10b98122" : "#94a3b822",
-                              color: ship.substatus === "ready_to_print" ? "#f59e0b" : ship.substatus === "printed" ? "#10b981" : "#94a3b8",
-                            }}>
-                              {ship.substatus === "ready_to_print" ? "IMPRIMIR ETIQUETA" : ship.substatus === "printed" ? "LISTA" : ship.substatus || "—"}
-                            </span>
+                            <div style={{display:"flex",alignItems:"center",gap:6}}>
+                              {ship.substatus === "ready_to_print" ? (
+                                <button onClick={() => doPrintLabel(ship.shipment_id)}
+                                  disabled={ship.is_fraud_risk}
+                                  style={{fontSize:10,fontWeight:700,padding:"3px 10px",borderRadius:4,border:"none",cursor: ship.is_fraud_risk ? "not-allowed" : "pointer",
+                                    background:"#f59e0b",color:"#fff"}}>
+                                  IMPRIMIR ETIQUETA
+                                </button>
+                              ) : ship.substatus === "printed" ? (
+                                <span style={{fontSize:9,fontWeight:700,padding:"2px 8px",borderRadius:3,background:"#10b98122",color:"#10b981"}}>
+                                  LISTA PARA DESPACHAR
+                                </span>
+                              ) : (
+                                <span style={{fontSize:9,fontWeight:700,padding:"2px 8px",borderRadius:3,background:"#94a3b822",color:"#94a3b8"}}>
+                                  {ship.substatus || "—"}
+                                </span>
+                              )}
+                              <button onClick={async () => { const ok = await doVerifyShipment(ship.shipment_id); if (ok) alert("Verificado: listo para armar"); }}
+                                style={{fontSize:9,fontWeight:600,padding:"2px 8px",borderRadius:3,border:"1px solid var(--bg4)",background:"var(--bg3)",color:"var(--txt3)",cursor:"pointer"}}>
+                                Verificar
+                              </button>
+                            </div>
                             <span style={{fontSize:10,color:"var(--txt3)"}}>{ship.receiver_name || ""}{ship.destination_city ? ` · ${ship.destination_city}` : ""}</span>
                           </div>
                           {/* Items — the main thing the operator cares about */}
