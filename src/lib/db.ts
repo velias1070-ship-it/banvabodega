@@ -802,6 +802,7 @@ export interface DBMLShipment {
   status: string;
   substatus: string | null;
   logistic_type: string;
+  is_flex: boolean;
   handling_limit: string | null; // ISO timestamp
   buffering_date: string | null;
   delivery_date: string | null;
@@ -809,6 +810,7 @@ export interface DBMLShipment {
   store_id: number | null;       // origin shipping_address.id — bodega/tienda
   receiver_name: string | null;
   destination_city: string | null;
+  is_fraud_risk: boolean;
   updated_at: string;
 }
 
