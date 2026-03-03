@@ -1,6 +1,6 @@
 "use client";
 import { useState, useCallback, useEffect, useRef } from "react";
-import { getStore, findProduct, findPosition, activePositions, skuTotal, skuPositions, posContents, recordMovement, IN_REASONS, OUT_REASONS, initStore, refreshStore, isSupabaseConfigured, getMapConfig } from "@/lib/store";
+import { getStore, findProduct, findPosition, activePositions, skuTotal, skuPositions, posContents, recordMovement, IN_REASONS, OUT_REASONS, initStore, refreshStore, isSupabaseConfigured, getMapConfig, getVentasPorSkuOrigen } from "@/lib/store";
 import type { Product, InReason, OutReason } from "@/lib/store";
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -138,19 +138,28 @@ function ProductSearch({ onSelect, placeholder }: { onSelect: (p: Product) => vo
       {open && results.length > 0 && (
         <div style={{position:"absolute",top:"100%",left:0,right:0,zIndex:100,background:"var(--bg2)",border:"1px solid var(--bg4)",
           borderRadius:"0 0 12px 12px",maxHeight:280,overflow:"auto",boxShadow:"0 8px 24px rgba(0,0,0,0.5)"}}>
-          {results.map(p => (
-            <div key={p.sku} onClick={()=>select(p)} style={{padding:"12px 14px",borderBottom:"1px solid var(--bg3)",cursor:"pointer"}}
-              onMouseEnter={e=>(e.currentTarget.style.background="var(--bg3)")}
-              onMouseLeave={e=>(e.currentTarget.style.background="transparent")}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                <div style={{flex:1,minWidth:0}}>
-                  <div className="mono" style={{fontWeight:700,fontSize:14}}>{p.sku}</div>
-                  <div style={{fontSize:12,color:"var(--txt2)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</div>
+          {results.map(p => {
+            const ventas = getVentasPorSkuOrigen(p.sku);
+            const packInfo = ventas.filter(v => v.unidades > 1);
+            return (
+              <div key={p.sku} onClick={()=>select(p)} style={{padding:"12px 14px",borderBottom:"1px solid var(--bg3)",cursor:"pointer"}}
+                onMouseEnter={e=>(e.currentTarget.style.background="var(--bg3)")}
+                onMouseLeave={e=>(e.currentTarget.style.background="transparent")}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div className="mono" style={{fontWeight:700,fontSize:14}}>{p.sku}</div>
+                    <div style={{fontSize:12,color:"var(--txt2)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</div>
+                    {packInfo.length > 0 && (
+                      <div style={{fontSize:10,color:"#f59e0b",fontWeight:600,marginTop:2}}>
+                        {packInfo.map(v => `${v.skuVenta} = pack de ${v.unidades}`).join(" · ")}
+                      </div>
+                    )}
+                  </div>
+                  <div className="mono" style={{fontSize:14,fontWeight:700,color:"#3b82f6",marginLeft:12}}>{skuTotal(p.sku)}</div>
                 </div>
-                <div className="mono" style={{fontSize:14,fontWeight:700,color:"#3b82f6",marginLeft:12}}>{skuTotal(p.sku)}</div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
       {open && results.length === 0 && q.length >= 2 && (
@@ -282,6 +291,11 @@ function Ingreso({ refresh }: { refresh: () => void }) {
         <div className="card">
           <SelTag color="#10b981" label="Posición" value={`${pos} — ${posLabel}`}/>
           <SelTag color="#3b82f6" label="Producto" value={`${product.sku} — ${product.name}`}/>
+          {(() => { const pv = getVentasPorSkuOrigen(product.sku).filter(v => v.unidades > 1); return pv.length > 0 ? (
+            <div style={{fontSize:11,color:"#f59e0b",fontWeight:600,background:"#f59e0b11",padding:"6px 10px",borderRadius:8,marginTop:4}}>
+              ⚠️ {pv.map(v => `${v.skuVenta} = pack de ${v.unidades}`).join(" · ")}
+            </div>
+          ) : null; })()}
           <div style={{fontSize:15,fontWeight:700,marginBottom:10,marginTop:12}}>¿Cuántos?</div>
           <QtyPicker qty={qty} setQty={setQty}/>
           <div style={{marginTop:12}}>
@@ -371,6 +385,11 @@ function Salida({ refresh }: { refresh: () => void }) {
       {step === 2 && product && (
         <div className="card">
           <SelTag color="#f59e0b" label="Producto" value={`${product.sku} — ${product.name}`}/>
+          {(() => { const pv = getVentasPorSkuOrigen(product.sku).filter(v => v.unidades > 1); return pv.length > 0 ? (
+            <div style={{fontSize:11,color:"#f59e0b",fontWeight:600,background:"#f59e0b11",padding:"6px 10px",borderRadius:8,marginTop:4}}>
+              ⚠️ {pv.map(v => `${v.skuVenta} = pack de ${v.unidades}`).join(" · ")}
+            </div>
+          ) : null; })()}
           <SelTag color="#06b6d4" label="Desde" value={`${selectedPos} — ${selectedPosLabel} (${maxQty} disp.)`}/>
           <div style={{fontSize:15,fontWeight:700,marginBottom:10,marginTop:12}}>¿Cuántos sacas?</div>
           <QtyPicker qty={qty} setQty={setQty} max={maxQty}/>
