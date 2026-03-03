@@ -140,7 +140,7 @@ function ProductSearch({ onSelect, placeholder }: { onSelect: (p: Product) => vo
           borderRadius:"0 0 12px 12px",maxHeight:280,overflow:"auto",boxShadow:"0 8px 24px rgba(0,0,0,0.5)"}}>
           {results.map(p => {
             const ventas = getVentasPorSkuOrigen(p.sku);
-            const packInfo = ventas.filter(v => v.unidades > 1);
+            const showVentas = ventas.length > 1 || ventas.some(v => v.unidades > 1);
             return (
               <div key={p.sku} onClick={()=>select(p)} style={{padding:"12px 14px",borderBottom:"1px solid var(--bg3)",cursor:"pointer"}}
                 onMouseEnter={e=>(e.currentTarget.style.background="var(--bg3)")}
@@ -149,9 +149,9 @@ function ProductSearch({ onSelect, placeholder }: { onSelect: (p: Product) => vo
                   <div style={{flex:1,minWidth:0}}>
                     <div className="mono" style={{fontWeight:700,fontSize:14}}>{p.sku}</div>
                     <div style={{fontSize:12,color:"var(--txt2)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</div>
-                    {packInfo.length > 0 && (
+                    {showVentas && (
                       <div style={{fontSize:10,color:"#f59e0b",fontWeight:600,marginTop:2}}>
-                        {packInfo.map(v => `${v.skuVenta} = pack de ${v.unidades}`).join(" · ")}
+                        📦 ML: {ventas.map(v => `${v.skuVenta} → ${v.unidades} ud${v.unidades>1?"s":""}/venta`).join(" · ")}
                       </div>
                     )}
                   </div>
@@ -291,9 +291,9 @@ function Ingreso({ refresh }: { refresh: () => void }) {
         <div className="card">
           <SelTag color="#10b981" label="Posición" value={`${pos} — ${posLabel}`}/>
           <SelTag color="#3b82f6" label="Producto" value={`${product.sku} — ${product.name}`}/>
-          {(() => { const pv = getVentasPorSkuOrigen(product.sku).filter(v => v.unidades > 1); return pv.length > 0 ? (
+          {(() => { const vv = getVentasPorSkuOrigen(product.sku); const show = vv.length > 1 || vv.some(v => v.unidades > 1); return show ? (
             <div style={{fontSize:11,color:"#f59e0b",fontWeight:600,background:"#f59e0b11",padding:"6px 10px",borderRadius:8,marginTop:4}}>
-              ⚠️ {pv.map(v => `${v.skuVenta} = pack de ${v.unidades}`).join(" · ")}
+              📦 Stock en uds. individuales · ML: {vv.map(v => `${v.skuVenta} → ${v.unidades} ud${v.unidades>1?"s":""}/venta`).join(" · ")}
             </div>
           ) : null; })()}
           <div style={{fontSize:15,fontWeight:700,marginBottom:10,marginTop:12}}>¿Cuántos?</div>
@@ -385,9 +385,9 @@ function Salida({ refresh }: { refresh: () => void }) {
       {step === 2 && product && (
         <div className="card">
           <SelTag color="#f59e0b" label="Producto" value={`${product.sku} — ${product.name}`}/>
-          {(() => { const pv = getVentasPorSkuOrigen(product.sku).filter(v => v.unidades > 1); return pv.length > 0 ? (
+          {(() => { const vv = getVentasPorSkuOrigen(product.sku); const show = vv.length > 1 || vv.some(v => v.unidades > 1); return show ? (
             <div style={{fontSize:11,color:"#f59e0b",fontWeight:600,background:"#f59e0b11",padding:"6px 10px",borderRadius:8,marginTop:4}}>
-              ⚠️ {pv.map(v => `${v.skuVenta} = pack de ${v.unidades}`).join(" · ")}
+              📦 Stock en uds. individuales · ML: {vv.map(v => `${v.skuVenta} → ${v.unidades} ud${v.unidades>1?"s":""}/venta`).join(" · ")}
             </div>
           ) : null; })()}
           <SelTag color="#06b6d4" label="Desde" value={`${selectedPos} — ${selectedPosLabel} (${maxQty} disp.)`}/>
