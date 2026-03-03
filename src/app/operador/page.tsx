@@ -290,24 +290,11 @@ function Ingreso({ refresh }: { refresh: () => void }) {
         </div>
       )}
 
-      {step === 2 && product && (() => {
-        const vv = getVentasPorSkuOrigen(product.sku);
-        const hasPacks = vv.length > 1 || vv.some(v => v.unidades > 1);
-        return (
+      {step === 2 && product && (
         <div className="card">
           <SelTag color="#10b981" label="Posición" value={`${pos} — ${posLabel}`}/>
           <SelTag color="#3b82f6" label="Producto" value={`${product.sku} — ${product.name}`}/>
-          {hasPacks && (
-            <div style={{fontSize:12,color:"#f59e0b",fontWeight:700,background:"#f59e0b18",padding:"8px 10px",borderRadius:8,marginTop:4,border:"1px solid #f59e0b33"}}>
-              <div>📦 Contás UNIDADES INDIVIDUALES, no packs</div>
-              <div style={{fontSize:10,fontWeight:600,marginTop:4,color:"#f59e0bcc"}}>
-                En ML: {vv.map(v => `${v.skuVenta} = ${v.unidades} ud${v.unidades>1?"s":""}/venta`).join(" · ")}
-              </div>
-            </div>
-          )}
-          <div style={{fontSize:15,fontWeight:700,marginBottom:10,marginTop:12}}>
-            {hasPacks ? "¿Cuántas UNIDADES INDIVIDUALES guardas?" : "¿Cuántos?"}
-          </div>
+          <div style={{fontSize:15,fontWeight:700,marginBottom:10,marginTop:12}}>¿Cuántas unidades?</div>
           <QtyPicker qty={qty} setQty={setQty}/>
           <div style={{marginTop:12}}>
             <div style={{fontSize:12,fontWeight:600,color:"#94a3b8",marginBottom:6}}>Motivo:</div>
@@ -322,12 +309,11 @@ function Ingreso({ refresh }: { refresh: () => void }) {
           <input className="form-input" value={note} onChange={e=>setNote(e.target.value)} placeholder="Nota (opcional)..." style={{marginTop:10,fontSize:13}}/>
           <button onClick={doConfirm}
             style={{marginTop:16,width:"100%",padding:16,borderRadius:12,fontWeight:700,fontSize:16,color:"#fff",background:"linear-gradient(135deg,#059669,#10b981)"}}>
-            {hasPacks ? `CONFIRMAR +${qty} ud${qty>1?"s":""} individual${qty>1?"es":""} de ${product.sku}` : `CONFIRMAR +${qty} × ${product.sku}`}
+            CONFIRMAR +{qty} × {product.sku}
           </button>
           <CancelBtn onClick={()=>setStep(1)} label="Volver"/>
         </div>
-        );
-      })()}
+      )}
     </div>
   );
 }
@@ -343,24 +329,43 @@ function Salida({ refresh }: { refresh: () => void }) {
   const [reason, setReason] = useState<OutReason>("envio_full");
   const [note, setNote] = useState("");
   const [step, setStep] = useState(0);
+  const [unitMultiplier, setUnitMultiplier] = useState(1);
+
+  const goToPositions = (p: Product, mult: number) => {
+    const positions = skuPositions(p.sku);
+    if (positions.length === 1) {
+      setSelectedPos(positions[0].pos); setSelectedPosLabel(positions[0].label);
+      setMaxQty(positions[0].qty); setQty(1); setStep(3);
+    } else { setStep(2); }
+  };
 
   const selectProduct = (p: Product) => {
     setProduct(p);
     const positions = skuPositions(p.sku);
     if (positions.length === 0) { show(p.sku + " sin stock", "err"); return; }
-    if (positions.length === 1) { setSelectedPos(positions[0].pos); setSelectedPosLabel(positions[0].label); setMaxQty(positions[0].qty); setStep(2); }
-    else setStep(1);
+    const vv = getVentasPorSkuOrigen(p.sku);
+    if (vv.some(v => v.unidades > 1)) {
+      setStep(1); // ask pack or unit
+    } else {
+      setUnitMultiplier(1);
+      goToPositions(p, 1);
+    }
+  };
+
+  const selectMode = (mult: number) => {
+    setUnitMultiplier(mult);
+    goToPositions(product!, mult);
   };
 
   const doConfirm = () => {
     if (!product || !selectedPos || qty < 1) return;
-    const take = Math.min(qty, maxQty);
-    recordMovement({ ts: new Date().toISOString(), type: "out", reason, sku: product.sku, pos: selectedPos, qty: take, who: "Operador", note });
-    show(`-${take} ${product.sku} de ${selectedPosLabel}`);
+    const realQty = Math.min(qty * unitMultiplier, maxQty);
+    recordMovement({ ts: new Date().toISOString(), type: "out", reason, sku: product.sku, pos: selectedPos, qty: realQty, who: "Operador", note });
+    show(`-${realQty} ${product.sku} de ${selectedPosLabel}`);
     reset(); refresh();
   };
 
-  const reset = () => { setStep(0); setProduct(null); setSelectedPos(""); setSelectedPosLabel(""); setQty(1); setNote(""); };
+  const reset = () => { setStep(0); setProduct(null); setSelectedPos(""); setSelectedPosLabel(""); setQty(1); setNote(""); setUnitMultiplier(1); };
 
   return (
     <div>
@@ -372,48 +377,72 @@ function Salida({ refresh }: { refresh: () => void }) {
         </div>
       )}
 
-      {step === 1 && product && (
+      {step === 1 && product && (() => {
+        const vv = getVentasPorSkuOrigen(product.sku);
+        return (
         <div className="card">
           <SelTag color="#f59e0b" label="Producto" value={`${product.sku} — ${product.name}`}/>
+          <div style={{fontSize:15,fontWeight:700,marginBottom:12,marginTop:8}}>📦 ¿Es pack o por unidad?</div>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {vv.filter(v => v.unidades > 1).map(v => (
+              <button key={v.skuVenta} onClick={() => selectMode(v.unidades)}
+                style={{width:"100%",padding:"16px",borderRadius:12,background:"#f59e0b18",border:"2px solid #f59e0b55",cursor:"pointer",textAlign:"left"}}>
+                <div style={{fontWeight:700,fontSize:15,color:"#f59e0b"}}>📦 Pack de {v.unidades}</div>
+                <div style={{fontSize:12,color:"#94a3b8",marginTop:2}}>SKU venta: {v.skuVenta} — Resta {v.unidades} uds del stock por cada pack</div>
+              </button>
+            ))}
+            <button onClick={() => selectMode(1)}
+              style={{width:"100%",padding:"16px",borderRadius:12,background:"var(--bg2)",border:"2px solid var(--bg4)",cursor:"pointer",textAlign:"left"}}>
+              <div style={{fontWeight:700,fontSize:15,color:"#3b82f6"}}>1️⃣ Por unidad</div>
+              <div style={{fontSize:12,color:"#94a3b8",marginTop:2}}>Resta 1 ud del stock por cada unidad</div>
+            </button>
+          </div>
+          <CancelBtn onClick={reset}/>
+        </div>
+        );
+      })()}
+
+      {step === 2 && product && (
+        <div className="card">
+          <SelTag color="#f59e0b" label="Producto" value={`${product.sku} — ${product.name}`}/>
+          {unitMultiplier > 1 && <SelTag color="#f59e0b" label="Modo" value={`Pack de ${unitMultiplier}`}/>}
           <div style={{fontSize:15,fontWeight:700,marginBottom:10,marginTop:8}}>¿De dónde sacas?</div>
-          <div style={{fontSize:12,color:"#94a3b8",marginBottom:8}}>Stock total: <strong style={{color:"#3b82f6"}}>{skuTotal(product.sku)}</strong></div>
+          <div style={{fontSize:12,color:"#94a3b8",marginBottom:8}}>Stock total: <strong style={{color:"#3b82f6"}}>{skuTotal(product.sku)} uds</strong></div>
           {skuPositions(product.sku).map(sp => (
-            <button key={sp.pos} onClick={()=>{setSelectedPos(sp.pos);setSelectedPosLabel(sp.label);setMaxQty(sp.qty);setQty(1);setStep(2);}}
+            <button key={sp.pos} onClick={()=>{setSelectedPos(sp.pos);setSelectedPosLabel(sp.label);setMaxQty(sp.qty);setQty(1);setStep(3);}}
               style={{width:"100%",padding:"14px 16px",marginBottom:6,borderRadius:10,background:"var(--bg2)",border:"1px solid var(--bg4)",
                 display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}}>
               <div><span className="mono" style={{fontWeight:700,fontSize:16,color:"#10b981"}}>{sp.pos}</span><span style={{fontSize:12,color:"#94a3b8",marginLeft:8}}>{sp.label}</span></div>
-              <div className="mono" style={{fontWeight:700,fontSize:18,color:"#3b82f6"}}>{sp.qty}</div>
+              <div className="mono" style={{fontWeight:700,fontSize:18,color:"#3b82f6"}}>{sp.qty} <span style={{fontSize:11,fontWeight:600}}>uds</span></div>
             </button>
           ))}
           <div style={{marginTop:8,fontSize:11,color:"#06b6d4",fontWeight:600,marginBottom:4}}>🗺️ Posiciones en mapa:</div>
           <OperatorMiniMap selectedPos="" onSelectPos={(id)=>{
             const sp = skuPositions(product.sku).find(x=>x.pos===id);
-            if(sp){setSelectedPos(sp.pos);setSelectedPosLabel(sp.label);setMaxQty(sp.qty);setQty(1);setStep(2);}
+            if(sp){setSelectedPos(sp.pos);setSelectedPosLabel(sp.label);setMaxQty(sp.qty);setQty(1);setStep(3);}
           }} highlightPositions={new Set(skuPositions(product.sku).map(x=>x.pos))}/>
-          <CancelBtn onClick={reset}/>
+          <CancelBtn onClick={()=>{ const vv = getVentasPorSkuOrigen(product.sku); vv.some(v=>v.unidades>1) ? setStep(1) : reset(); }}/>
         </div>
       )}
 
-      {step === 2 && product && (() => {
-        const vv = getVentasPorSkuOrigen(product.sku);
-        const hasPacks = vv.length > 1 || vv.some(v => v.unidades > 1);
-        const outQty = Math.min(qty, maxQty);
+      {step === 3 && product && (() => {
+        const maxPick = unitMultiplier > 1 ? Math.floor(maxQty / unitMultiplier) : maxQty;
+        const safeQty = Math.min(qty, maxPick || 1);
+        const realUnits = safeQty * unitMultiplier;
         return (
         <div className="card">
           <SelTag color="#f59e0b" label="Producto" value={`${product.sku} — ${product.name}`}/>
-          {hasPacks && (
-            <div style={{fontSize:12,color:"#f59e0b",fontWeight:700,background:"#f59e0b18",padding:"8px 10px",borderRadius:8,marginTop:4,border:"1px solid #f59e0b33"}}>
-              <div>📦 Contás UNIDADES INDIVIDUALES, no packs</div>
-              <div style={{fontSize:10,fontWeight:600,marginTop:4,color:"#f59e0bcc"}}>
-                En ML: {vv.map(v => `${v.skuVenta} = ${v.unidades} ud${v.unidades>1?"s":""}/venta`).join(" · ")}
-              </div>
+          {unitMultiplier > 1 && <SelTag color="#f59e0b" label="Modo" value={`Pack de ${unitMultiplier}`}/>}
+          <SelTag color="#06b6d4" label="Desde" value={`${selectedPos} — ${selectedPosLabel} (${maxQty} uds disp.)`}/>
+          <div style={{fontSize:15,fontWeight:700,marginBottom:10,marginTop:12}}>
+            {unitMultiplier > 1 ? `¿Cuántos packs sacas?` : "¿Cuántos sacas?"}
+          </div>
+          <QtyPicker qty={qty} setQty={setQty} max={maxPick || 1}/>
+          {unitMultiplier > 1 && (
+            <div style={{fontSize:13,color:"#f59e0b",fontWeight:700,marginTop:6,textAlign:"center"}}>
+              {safeQty} pack{safeQty>1?"s":""} = {realUnits} unidad{realUnits>1?"es":""} del stock
             </div>
           )}
-          <SelTag color="#06b6d4" label="Desde" value={`${selectedPos} — ${selectedPosLabel} (${maxQty} disp.)`}/>
-          <div style={{fontSize:15,fontWeight:700,marginBottom:10,marginTop:12}}>
-            {hasPacks ? "¿Cuántas UNIDADES INDIVIDUALES sacas?" : "¿Cuántos sacas?"}
-          </div>
-          <QtyPicker qty={qty} setQty={setQty} max={maxQty}/>
           <div style={{marginTop:12}}>
             <div style={{fontSize:12,fontWeight:600,color:"#94a3b8",marginBottom:6}}>Motivo:</div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
@@ -427,9 +456,11 @@ function Salida({ refresh }: { refresh: () => void }) {
           <input className="form-input" value={note} onChange={e=>setNote(e.target.value)} placeholder="Nota: # orden, ref envío..." style={{marginTop:10,fontSize:13}}/>
           <button onClick={doConfirm}
             style={{marginTop:16,width:"100%",padding:16,borderRadius:12,fontWeight:700,fontSize:16,color:"#fff",background:"linear-gradient(135deg,#dc2626,#ef4444)"}}>
-            {hasPacks ? `CONFIRMAR SALIDA −${outQty} ud${outQty>1?"s":""} individual${outQty>1?"es":""} de ${product.sku}` : `CONFIRMAR SALIDA −${outQty} × ${product.sku}`}
+            {unitMultiplier > 1
+              ? `CONFIRMAR SALIDA: ${safeQty} pack${safeQty>1?"s":""} (−${realUnits} uds) de ${product.sku}`
+              : `CONFIRMAR SALIDA −${safeQty} × ${product.sku}`}
           </button>
-          <CancelBtn onClick={()=>{skuPositions(product.sku).length>1?setStep(1):reset();}} label="Volver"/>
+          <CancelBtn onClick={()=>{skuPositions(product.sku).length>1?setStep(2):( getVentasPorSkuOrigen(product.sku).some(v=>v.unidades>1)?setStep(1):reset() );}} label="Volver"/>
         </div>
         );
       })()}
