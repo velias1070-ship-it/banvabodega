@@ -4125,14 +4125,34 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
                             </div>
                             <span style={{fontSize:10,color:"var(--txt3)"}}>{ship.receiver_name || ""}{ship.destination_city ? ` · ${ship.destination_city}` : ""}</span>
                           </div>
-                          {/* Items — the main thing the operator cares about */}
-                          {ship.items.map((item, idx) => (
-                            <div key={idx} style={{display:"flex",alignItems:"center",gap:8,padding:"3px 0",fontSize:12}}>
-                              <span className="mono" style={{fontWeight:800,minWidth:110,color:"var(--cyan)"}}>{item.seller_sku}</span>
-                              <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:"var(--txt1)"}}>{item.title}</span>
-                              <span className="mono" style={{fontWeight:800,fontSize:13,color:"var(--txt1)"}}>x{item.quantity}</span>
-                            </div>
-                          ))}
+                          {/* Items — resolved against composicion_venta for real pick quantities */}
+                          {ship.items.map((item, idx) => {
+                            const comps = getComponentesPorSkuVenta(item.seller_sku);
+                            if (comps.length > 0) {
+                              // Pack/combo: show each physical component with real units
+                              return comps.map((comp, ci) => {
+                                const totalUnits = comp.unidades * item.quantity;
+                                const isMultiUnit = comp.unidades > 1;
+                                return (
+                                  <div key={`${idx}-${ci}`} style={{display:"flex",alignItems:"center",gap:8,padding:"3px 0",fontSize:12}}>
+                                    <span className="mono" style={{fontWeight:800,minWidth:110,color:"var(--cyan)"}}>{comp.skuOrigen}</span>
+                                    <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:"var(--txt1)"}}>{item.title}</span>
+                                    <span className="mono" style={{fontWeight:800,fontSize:13,color: isMultiUnit ? "#f59e0b" : "var(--txt1)"}}>
+                                      x{totalUnits}{isMultiUnit ? ` (${comp.unidades}x${item.quantity})` : ""}
+                                    </span>
+                                  </div>
+                                );
+                              });
+                            }
+                            // Simple product: no composicion entry, show as-is
+                            return (
+                              <div key={idx} style={{display:"flex",alignItems:"center",gap:8,padding:"3px 0",fontSize:12}}>
+                                <span className="mono" style={{fontWeight:800,minWidth:110,color:"var(--cyan)"}}>{item.seller_sku}</span>
+                                <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:"var(--txt1)"}}>{item.title}</span>
+                                <span className="mono" style={{fontWeight:800,fontSize:13,color:"var(--txt1)"}}>x{item.quantity}</span>
+                              </div>
+                            );
+                          })}
                         </div>
                       ))}
                     </div>
