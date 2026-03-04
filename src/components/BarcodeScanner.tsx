@@ -10,31 +10,45 @@ interface Props {
   label?: string;
   mode?: ScanMode;
   placeholder?: string;
+  /** Kept for API compatibility */
   autoRefocus?: boolean;
 }
 
-// Unique ID counter for scanner elements
-let scannerIdCounter = 0;
+// Singleton SDK instance
+let sdkInstance: any = null;
+let sdkInitPromise: Promise<any> | null = null;
 
-// ==================== CAMERA BARCODE/QR SCANNER ====================
+async function getScanbotSDK() {
+  if (sdkInstance) return sdkInstance;
+  if (sdkInitPromise) return sdkInitPromise;
+
+  sdkInitPromise = (async () => {
+    const ScanbotSDK = (await import("scanbot-web-sdk/ui")).default;
+    sdkInstance = ScanbotSDK;
+    await ScanbotSDK.initialize({
+      licenseKey: "",
+      enginePath: "/wasm/",
+    });
+    return ScanbotSDK;
+  })();
+
+  return sdkInitPromise;
+}
+
+// ==================== SCANBOT CAMERA BARCODE/QR SCANNER ====================
 export default function BarcodeScanner({
   onScan,
   active,
   label,
   mode = "auto",
-  placeholder,
-  autoRefocus = true,
 }: Props) {
   const onScanRef = useRef(onScan);
-  const scannerRef = useRef<any>(null);
-  const containerIdRef = useRef(`html5-qr-scanner-${++scannerIdCounter}`);
   const lastCode = useRef("");
   const lastTime = useRef(0);
 
   const [lastScanned, setLastScanned] = useState("");
   const [flash, setFlash] = useState(false);
-  const [error, setError] = useState("");
-  const [cameraActive, setCameraActive] = useState(false);
+  const [scanning, setScanning] = useState(false);
   const [manualMode, setManualMode] = useState(false);
   const [manualValue, setManualValue] = useState("");
   const manualInputRef = useRef<HTMLInputElement>(null);
@@ -61,117 +75,74 @@ export default function BarcodeScanner({
     onScanRef.current(trimmed);
   }, []);
 
-  // Start/stop camera scanner
-  useEffect(() => {
-    if (!active || manualMode) {
-      // Stop scanner if running
-      if (scannerRef.current) {
-        try {
-          if (scannerRef.current.isScanning) {
-            scannerRef.current.stop().then(() => {
-              scannerRef.current.clear();
-            }).catch(() => {});
-          }
-        } catch {}
-        scannerRef.current = null;
-        setCameraActive(false);
+  const startScanning = useCallback(async () => {
+    try {
+      setScanning(true);
+      const ScanbotSDK = await getScanbotSDK();
+      const config = new ScanbotSDK.UI.Config.BarcodeScannerScreenConfiguration();
+
+      // Theme colors matching the app
+      config.palette.sbColorPrimary = "#3b82f6";
+      config.palette.sbColorOnPrimary = "#ffffff";
+      config.palette.sbColorPositive = "#10b981";
+
+      // Single scan mode — scan one code and return
+      const useCase = new ScanbotSDK.UI.Config.SingleScanningMode();
+      useCase.confirmationSheetEnabled = false;
+      config.useCase = useCase;
+
+      // Configure barcode formats based on mode
+      if (mode === "qr") {
+        config.scannerConfiguration.barcodeFormats = ["QR_CODE"];
+        config.userGuidance.title.text = "Apuntá al código QR";
+        config.viewFinder.aspectRatio = { width: 1, height: 1 };
+      } else if (mode === "barcode") {
+        config.scannerConfiguration.barcodeFormats = [
+          "CODE_128", "CODE_39", "CODE_93",
+          "EAN_13", "EAN_8",
+          "UPC_A", "UPC_E",
+          "CODABAR", "ITF",
+          "DATABAR", "DATABAR_EXPANDED",
+        ];
+        config.userGuidance.title.text = "Apuntá al código de barras";
+        config.viewFinder.aspectRatio = { width: 5, height: 1 };
+      } else {
+        config.userGuidance.title.text = "Apuntá al código";
       }
-      return;
+
+      // Spanish localization for top bar
+      config.topBar.mode = "SOLID";
+
+      // Sound & vibration
+      config.sound.successBeepEnabled = true;
+      config.vibration.enabled = true;
+
+      // Launch scanner
+      const result = await ScanbotSDK.UI.createBarcodeScanner(config);
+
+      if (result && result.items && result.items.length > 0) {
+        handleCodeScanned(result.items[0].barcode.text);
+      }
+    } catch (err) {
+      console.error("Scanbot error:", err);
+    } finally {
+      setScanning(false);
     }
+  }, [mode, handleCodeScanned]);
 
-    let cancelled = false;
-
-    const startScanner = async () => {
-      try {
-        const { Html5Qrcode, Html5QrcodeSupportedFormats } = await import("html5-qrcode");
-
-        if (cancelled) return;
-
-        // Determine which formats to scan based on mode
-        let formatsToSupport: number[] | undefined;
-        if (mode === "qr") {
-          formatsToSupport = [Html5QrcodeSupportedFormats.QR_CODE];
-        } else if (mode === "barcode") {
-          formatsToSupport = [
-            Html5QrcodeSupportedFormats.CODE_128,
-            Html5QrcodeSupportedFormats.CODE_39,
-            Html5QrcodeSupportedFormats.EAN_13,
-            Html5QrcodeSupportedFormats.EAN_8,
-            Html5QrcodeSupportedFormats.UPC_A,
-            Html5QrcodeSupportedFormats.UPC_E,
-            Html5QrcodeSupportedFormats.CODABAR,
-            Html5QrcodeSupportedFormats.ITF,
-          ];
-        }
-        // mode === "auto" → undefined → all formats
-
-        const scanner = new Html5Qrcode(containerIdRef.current, { verbose: false });
-        scannerRef.current = scanner;
-
-        const qrbox = mode === "qr"
-          ? { width: 220, height: 220 }
-          : { width: 280, height: 120 };
-
-        await scanner.start(
-          { facingMode: "environment" },
-          {
-            fps: 10,
-            qrbox,
-            aspectRatio: 1.0,
-            disableFlip: false,
-            ...(formatsToSupport ? { formatsToSupport } : {}),
-          },
-          (decodedText) => {
-            if (!cancelled) handleCodeScanned(decodedText);
-          },
-          () => {} // ignore per-frame errors
-        );
-
-        if (!cancelled) {
-          setCameraActive(true);
-          setError("");
-        }
-      } catch (err: any) {
-        if (!cancelled) {
-          const msg = err?.message || String(err);
-          if (msg.includes("Permission") || msg.includes("NotAllowed")) {
-            setError("Permiso de cámara denegado. Habilitá el acceso en ajustes del navegador.");
-          } else if (msg.includes("NotFound") || msg.includes("Requested device not found")) {
-            setError("No se encontró cámara en este dispositivo.");
-          } else {
-            setError("No se pudo abrir la cámara. Usá el modo manual.");
-          }
-          setCameraActive(false);
-        }
-      }
-    };
-
-    // Small delay to ensure DOM element exists
-    const timer = setTimeout(startScanner, 100);
-
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-      if (scannerRef.current) {
-        try {
-          if (scannerRef.current.isScanning) {
-            scannerRef.current.stop().then(() => {
-              scannerRef.current?.clear();
-            }).catch(() => {});
-          }
-        } catch {}
-        scannerRef.current = null;
-        setCameraActive(false);
-      }
-    };
-  }, [active, manualMode, mode, handleCodeScanned]);
-
-  // Focus manual input when switching to manual mode
+  // Focus manual input
   useEffect(() => {
     if (manualMode && manualInputRef.current) {
       manualInputRef.current.focus();
     }
   }, [manualMode]);
+
+  // Pre-load SDK when component becomes active
+  useEffect(() => {
+    if (active && !manualMode) {
+      getScanbotSDK().catch(() => {});
+    }
+  }, [active, manualMode]);
 
   if (!active) return null;
 
@@ -179,6 +150,7 @@ export default function BarcodeScanner({
   const isQr = mode === "qr";
   const accentColor = isBarcode ? "#f59e0b" : isQr ? "#10b981" : "#3b82f6";
   const modeLabel = isBarcode ? "código de barras" : isQr ? "código QR" : "código";
+  const modeIcon = isBarcode ? "⊟" : "⊞";
 
   return (
     <div style={{
@@ -202,69 +174,40 @@ export default function BarcodeScanner({
           alignItems: "center",
           gap: 8,
         }}>
-          <span style={{ fontSize: 16 }}>{isBarcode ? "⊟" : "⊞"}</span>
+          <span style={{ fontSize: 16 }}>{modeIcon}</span>
           {label}
         </div>
       )}
 
-      {/* Camera scanner area */}
+      {/* Camera scan button */}
       {!manualMode && (
-        <div style={{ position: "relative" }}>
-          <div
-            id={containerIdRef.current}
+        <div style={{ padding: 16, display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+          <button
+            onClick={startScanning}
+            disabled={scanning}
             style={{
               width: "100%",
-              minHeight: 250,
-              background: "#000",
-            }}
-          />
-
-          {/* Scanning indicator overlay */}
-          {cameraActive && (
-            <div style={{
-              position: "absolute",
-              bottom: 8,
-              left: "50%",
-              transform: "translateX(-50%)",
-              background: "rgba(0,0,0,0.7)",
+              padding: "20px 16px",
+              borderRadius: 12,
+              border: `2px solid ${accentColor}`,
+              background: `${accentColor}15`,
               color: accentColor,
-              padding: "4px 12px",
-              borderRadius: 20,
-              fontSize: 11,
+              fontSize: 16,
               fontWeight: 700,
+              cursor: scanning ? "wait" : "pointer",
               display: "flex",
               alignItems: "center",
-              gap: 6,
-            }}>
-              <span style={{
-                width: 6, height: 6, borderRadius: "50%",
-                background: accentColor,
-                animation: "pulse 1.5s ease-in-out infinite",
-              }} />
-              Apuntá al {modeLabel}
-              <style>{`@keyframes pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }`}</style>
-            </div>
-          )}
-
-          {/* Error message */}
-          {error && (
-            <div style={{
-              position: "absolute",
-              top: "50%",
-              left: "50%",
-              transform: "translate(-50%, -50%)",
-              background: "rgba(0,0,0,0.85)",
-              color: "#ef4444",
-              padding: "16px 20px",
-              borderRadius: 12,
-              fontSize: 13,
-              fontWeight: 600,
-              textAlign: "center",
-              maxWidth: "85%",
-            }}>
-              {error}
-            </div>
-          )}
+              justifyContent: "center",
+              gap: 10,
+              opacity: scanning ? 0.6 : 1,
+            }}
+          >
+            <span style={{ fontSize: 24 }}>📷</span>
+            {scanning ? "Abriendo cámara..." : `Escanear ${modeLabel}`}
+          </button>
+          <div style={{ fontSize: 11, color: `${accentColor}88`, textAlign: "center" }}>
+            Toca el botón para abrir la cámara y escanear
+          </div>
         </div>
       )}
 
@@ -287,7 +230,7 @@ export default function BarcodeScanner({
                 setManualValue("");
               }
             }}
-            placeholder={placeholder || `Escribí o pegá el ${modeLabel}...`}
+            placeholder={`Escribí o pegá el ${modeLabel}...`}
             style={{
               width: "100%",
               padding: "14px 16px",
