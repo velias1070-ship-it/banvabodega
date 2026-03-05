@@ -1075,8 +1075,12 @@ export async function reactivarRecepcion(id: string) {
   await db.updateRecepcion(id, { estado: "CREADA" });
 }
 
-export async function cerrarRecepcion(id: string) {
+export async function cerrarRecepcion(id: string): Promise<{ ok: boolean; pendientes?: number }> {
+  const discs = await db.fetchDiscrepancias(id);
+  const pendientes = discs.filter(d => d.estado === "PENDIENTE").length;
+  if (pendientes > 0) return { ok: false, pendientes };
   await db.updateRecepcion(id, { estado: "CERRADA" });
+  return { ok: true };
 }
 
 export async function asignarOperariosRecepcion(id: string, operarios: string[], currentNotas: string) {
@@ -1122,6 +1126,62 @@ export async function agregarLineaRecepcion(recepcionId: string, linea: { sku: s
     requiere_etiqueta: linea.requiereEtiqueta, costo_unitario: linea.costo,
     notas: "", operario_conteo: "", operario_etiquetado: "", operario_ubicacion: "",
   }]);
+}
+
+// ==================== DISCREPANCIAS DE COSTO ====================
+
+export async function detectarDiscrepancias(recepcionId: string, lineas: db.DBRecepcionLinea[]): Promise<db.DBDiscrepanciaCosto[]> {
+  const existentes = await db.fetchDiscrepancias(recepcionId);
+  if (existentes.length > 0) return existentes;
+
+  const nuevas: Omit<db.DBDiscrepanciaCosto, "id" | "created_at">[] = [];
+  for (const l of lineas) {
+    const prod = _cache.products[l.sku];
+    const costoDic = prod?.cost || 0;
+    const costoFact = l.costo_unitario || 0;
+    if (costoDic === 0 && costoFact === 0) continue;
+    if (Math.abs(costoDic - costoFact) < 1) continue;
+    const diff = costoFact - costoDic;
+    const pct = costoDic > 0 ? Math.round((diff / costoDic) * 1000) / 10 : 100;
+    nuevas.push({
+      recepcion_id: recepcionId, linea_id: l.id!, sku: l.sku,
+      costo_diccionario: costoDic, costo_factura: costoFact,
+      diferencia: diff, porcentaje: pct, estado: costoDic === 0 ? "PENDIENTE" : "PENDIENTE",
+    });
+  }
+  if (nuevas.length > 0) await db.insertDiscrepancias(nuevas);
+  return db.fetchDiscrepancias(recepcionId);
+}
+
+export async function getDiscrepancias(recepcionId: string): Promise<db.DBDiscrepanciaCosto[]> {
+  return db.fetchDiscrepancias(recepcionId);
+}
+
+export async function aprobarNuevoCosto(discId: string, sku: string, nuevoCosto: number) {
+  await db.updateDiscrepancia(discId, {
+    estado: "APROBADO", resuelto_por: "admin", resuelto_at: new Date().toISOString(),
+  });
+  await db.updateProductoCosto(sku, nuevoCosto);
+  if (_cache.products[sku]) _cache.products[sku].cost = nuevoCosto;
+  // Try to update Google Sheet (non-blocking, best effort)
+  try {
+    await fetch("/api/sheet/update-cost", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sku, nuevoCosto }),
+    });
+  } catch {}
+}
+
+export async function rechazarNuevoCosto(discId: string, notas?: string) {
+  await db.updateDiscrepancia(discId, {
+    estado: "RECHAZADO", resuelto_por: "admin", resuelto_at: new Date().toISOString(),
+    notas: notas || "Rechazado - error de proveedor",
+  });
+}
+
+export function tieneDiscrepanciasPendientes(discs: db.DBDiscrepanciaCosto[]): boolean {
+  return discs.some(d => d.estado === "PENDIENTE");
 }
 
 // ==================== FORMAT HELPERS ====================

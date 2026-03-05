@@ -112,6 +112,22 @@ export interface DBOperario {
   rol: "operario" | "admin";
 }
 
+export interface DBDiscrepanciaCosto {
+  id?: string;
+  recepcion_id: string;
+  linea_id: string;
+  sku: string;
+  costo_diccionario: number;
+  costo_factura: number;
+  diferencia: number;
+  porcentaje: number;
+  estado: "PENDIENTE" | "APROBADO" | "RECHAZADO";
+  resuelto_por?: string;
+  resuelto_at?: string;
+  notas?: string;
+  created_at?: string;
+}
+
 // ==================== PRODUCTOS ====================
 
 // Strip auto-generated fields (created_at, updated_at) that Supabase rejects on upsert
@@ -260,6 +276,36 @@ export async function updateRecepcionLinea(id: string, fields: Partial<DBRecepci
 export async function deleteRecepcionLinea(id: string) {
   const sb = getSupabase(); if (!sb) return;
   await sb.from("recepcion_lineas").delete().eq("id", id);
+}
+
+// ==================== DISCREPANCIAS DE COSTO ====================
+export async function fetchDiscrepancias(recepcionId: string): Promise<DBDiscrepanciaCosto[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  try {
+    const { data } = await sb.from("discrepancias_costo").select("*")
+      .eq("recepcion_id", recepcionId).order("created_at");
+    return data || [];
+  } catch { return []; }
+}
+
+export async function insertDiscrepancias(discs: Omit<DBDiscrepanciaCosto, "id" | "created_at">[]) {
+  const sb = getSupabase(); if (!sb) return;
+  if (discs.length === 0) return;
+  try {
+    await sb.from("discrepancias_costo").insert(discs);
+  } catch {}
+}
+
+export async function updateDiscrepancia(id: string, fields: Partial<DBDiscrepanciaCosto>) {
+  const sb = getSupabase(); if (!sb) return;
+  try {
+    await sb.from("discrepancias_costo").update(fields).eq("id", id);
+  } catch {}
+}
+
+export async function updateProductoCosto(sku: string, nuevoCosto: number) {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("productos").update({ costo: nuevoCosto }).eq("sku", sku);
 }
 
 // Fetch ALL lines from multiple receptions at once
