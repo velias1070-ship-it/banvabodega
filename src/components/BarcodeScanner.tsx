@@ -35,6 +35,15 @@ async function getScanbotSDK() {
   return sdkInitPromise;
 }
 
+// Force-release any camera streams held by the browser
+function releaseAllCameraStreams() {
+  try {
+    // Remove any lingering Scanbot overlay elements
+    document.querySelectorAll('[class*="scanbot"], [id*="scanbot"]').forEach(el => el.remove());
+  } catch (_) {}
+}
+
+
 // ==================== SCANBOT CAMERA BARCODE/QR SCANNER ====================
 export default function BarcodeScanner({
   onScan,
@@ -45,6 +54,7 @@ export default function BarcodeScanner({
   const onScanRef = useRef(onScan);
   const lastCode = useRef("");
   const lastTime = useRef(0);
+  const mountedRef = useRef(true);
 
   const [lastScanned, setLastScanned] = useState("");
   const [flash, setFlash] = useState(false);
@@ -54,6 +64,15 @@ export default function BarcodeScanner({
   const manualInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { onScanRef.current = onScan; }, [onScan]);
+
+  // Cleanup on unmount: release camera streams and remove stale overlays
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      releaseAllCameraStreams();
+    };
+  }, []);
 
   const DEDUP_MS = 800;
 
@@ -77,8 +96,14 @@ export default function BarcodeScanner({
 
   const startScanning = useCallback(async () => {
     try {
+      // Clean up any stale overlays from previous sessions
+      releaseAllCameraStreams();
+
       setScanning(true);
       const ScanbotSDK = await getScanbotSDK();
+
+      if (!mountedRef.current) return;
+
       const config = new ScanbotSDK.UI.Config.BarcodeScannerScreenConfiguration();
 
       // Theme colors matching the app
@@ -120,13 +145,17 @@ export default function BarcodeScanner({
       // Launch scanner
       const result = await ScanbotSDK.UI.createBarcodeScanner(config);
 
+      if (!mountedRef.current) return;
+
       if (result && result.items && result.items.length > 0) {
         handleCodeScanned(result.items[0].barcode.text);
       }
     } catch (err) {
       console.error("Scanbot error:", err);
+      // If camera failed, clean up stale state so next attempt works
+      releaseAllCameraStreams();
     } finally {
-      setScanning(false);
+      if (mountedRef.current) setScanning(false);
     }
   }, [mode, handleCodeScanned]);
 
