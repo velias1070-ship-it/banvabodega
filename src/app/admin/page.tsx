@@ -1,8 +1,9 @@
 "use client";
 /* v3.1 — conteos + pedidos ML + cron fix */
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
+import type { DBDiscrepanciaCosto } from "@/lib/db";
 import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, fetchAllPedidosFlex, fetchPedidosFlexByEstado, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds } from "@/lib/db";
 import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap, ShipmentWithItems } from "@/lib/db";
 import { getOAuthUrl } from "@/lib/ml";
@@ -154,6 +155,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   const [selRec, setSelRec] = useState<DBRecepcion|null>(null);
   const [lineas, setLineas] = useState<DBRecepcionLinea[]>([]);
   const [operarios, setOperarios] = useState<DBOperario[]>([]);
+  const [discrepancias, setDiscrepancias] = useState<DBDiscrepanciaCosto[]>([]);
 
   // Day view state
   const [dayLineas, setDayLineas] = useState<DBRecepcionLinea[]>([]);
@@ -221,7 +223,10 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
 
   const openRec = async (rec: DBRecepcion) => {
     setSelRec(rec);
-    setLineas(await getRecepcionLineas(rec.id!));
+    const recLineas = await getRecepcionLineas(rec.id!);
+    setLineas(recLineas);
+    const discs = await detectarDiscrepancias(rec.id!, recLineas);
+    setDiscrepancias(discs);
     const meta = parseRecepcionMeta(rec.notas || "");
     setEditFolio(rec.folio); setEditProv(rec.proveedor);
     setEditNotas(meta.notas); setEditAsignados(meta.asignados);
@@ -236,6 +241,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
     const updated = updatedRecs.find(r => r.id === selRec.id);
     if (updated) { setSelRec(updated); const m = parseRecepcionMeta(updated.notas||""); setEditNotas(m.notas); setEditAsignados(m.asignados); }
     setLineas(await getRecepcionLineas(selRec.id!));
+    setDiscrepancias(await getDiscrepancias(selRec.id!));
   };
 
   // ---- Status actions ----
@@ -247,7 +253,15 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   };
   const doPausar = async () => { if (!selRec) return; setLoading(true); await pausarRecepcion(selRec.id!); await loadRecs(); setSelRec(null); setLoading(false); };
   const doReactivar = async () => { if (!selRec) return; setLoading(true); await reactivarRecepcion(selRec.id!); await loadRecs(); setSelRec(null); setLoading(false); };
-  const doCerrar = async () => { if (!selRec) return; setLoading(true); await cerrarRecepcion(selRec.id!); await loadRecs(); setSelRec(null); setLoading(false); };
+  const doCerrar = async () => {
+    if (!selRec) return; setLoading(true);
+    const result = await cerrarRecepcion(selRec.id!);
+    if (!result.ok) {
+      alert(`No se puede cerrar: hay ${result.pendientes} discrepancia(s) de costo sin resolver. Resuelve todas antes de cerrar.`);
+      setLoading(false); return;
+    }
+    await loadRecs(); setSelRec(null); setLoading(false);
+  };
 
   // ---- Edit save ----
   const doSaveEdit = async () => {
@@ -255,6 +269,23 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
     const meta: RecepcionMeta = { notas: editNotas, asignados: editAsignados };
     await actualizarRecepcion(selRec.id!, { folio: editFolio, proveedor: editProv, notas: encodeRecepcionMeta(meta), costo_neto: editCostoNeto, iva: editIva, costo_bruto: editCostoBruto });
     setEditing(false); await refreshDetail(); setLoading(false);
+  };
+
+  // ---- Discrepancy actions ----
+  const doAprobar = async (disc: DBDiscrepanciaCosto) => {
+    if (!confirm(`Aprobar nuevo costo para ${disc.sku}?\nDiccionario: ${fmtMoney(disc.costo_diccionario)} → Factura: ${fmtMoney(disc.costo_factura)}\nEl diccionario se actualizará con el nuevo costo.`)) return;
+    setLoading(true);
+    await aprobarNuevoCosto(disc.id!, disc.sku, disc.costo_factura);
+    await refreshDetail();
+    setLoading(false);
+  };
+  const doRechazar = async (disc: DBDiscrepanciaCosto) => {
+    const nota = prompt("Motivo del rechazo (error proveedor, etc):", "Error de proveedor - reclamar");
+    if (nota === null) return;
+    setLoading(true);
+    await rechazarNuevoCosto(disc.id!, nota);
+    await refreshDetail();
+    setLoading(false);
   };
 
   // ---- Line actions ----
@@ -472,6 +503,71 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
           </div>
         )}
 
+        {/* Discrepancy panel */}
+        {discrepancias.length > 0 && (
+          <div className="card" style={{marginTop:12,border: tieneDiscrepanciasPendientes(discrepancias) ? "2px solid var(--amber)" : "1px solid var(--bg4)"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <div style={{fontSize:13,fontWeight:700,color: tieneDiscrepanciasPendientes(discrepancias) ? "var(--amber)" : "var(--green)"}}>
+                Discrepancias de costo ({discrepancias.filter(d=>d.estado==="PENDIENTE").length} pendientes)
+              </div>
+              {tieneDiscrepanciasPendientes(discrepancias) && (
+                <span style={{fontSize:10,padding:"3px 8px",borderRadius:4,background:"var(--amberBg)",color:"var(--amber)",fontWeight:700,border:"1px solid var(--amberBd)"}}>
+                  Resolver antes de cerrar
+                </span>
+              )}
+            </div>
+            <div style={{overflowX:"auto"}}>
+              <table className="tbl">
+                <thead><tr>
+                  <th>SKU</th>
+                  <th style={{textAlign:"right"}}>Diccionario</th>
+                  <th style={{textAlign:"right"}}>Factura</th>
+                  <th style={{textAlign:"right"}}>Diferencia</th>
+                  <th>Estado</th>
+                  <th>Acciones</th>
+                </tr></thead>
+                <tbody>{discrepancias.map(d => (
+                  <tr key={d.id} style={{background: d.estado==="PENDIENTE" ? "var(--amberBg)" : d.estado==="APROBADO" ? "var(--greenBg)" : "var(--redBg)"}}>
+                    <td className="mono" style={{fontSize:11,fontWeight:700}}>{d.sku}</td>
+                    <td className="mono" style={{textAlign:"right",fontSize:12}}>{d.costo_diccionario > 0 ? fmtMoney(d.costo_diccionario) : <span style={{color:"var(--txt3)",fontSize:10}}>Sin costo</span>}</td>
+                    <td className="mono" style={{textAlign:"right",fontSize:12,fontWeight:700}}>{fmtMoney(d.costo_factura)}</td>
+                    <td className="mono" style={{textAlign:"right",fontSize:12,fontWeight:700,color:d.diferencia>0?"var(--red)":"var(--green)"}}>
+                      {d.diferencia > 0 ? "+" : ""}{fmtMoney(d.diferencia)} ({d.porcentaje > 0 ? "+" : ""}{d.porcentaje}%)
+                    </td>
+                    <td>
+                      <span style={{fontSize:10,fontWeight:700,padding:"2px 6px",borderRadius:4,
+                        background: d.estado==="PENDIENTE" ? "var(--amberBg)" : d.estado==="APROBADO" ? "var(--greenBg)" : "var(--redBg)",
+                        color: d.estado==="PENDIENTE" ? "var(--amber)" : d.estado==="APROBADO" ? "var(--green)" : "var(--red)",
+                        border: `1px solid ${d.estado==="PENDIENTE" ? "var(--amberBd)" : d.estado==="APROBADO" ? "var(--greenBd,var(--green))" : "var(--redBd,var(--red))"}`}}>
+                        {d.estado}
+                      </span>
+                      {d.notas && <div style={{fontSize:9,color:"var(--txt3)",marginTop:2}}>{d.notas}</div>}
+                    </td>
+                    <td style={{whiteSpace:"nowrap"}}>
+                      {d.estado === "PENDIENTE" ? (
+                        <div style={{display:"flex",gap:4}}>
+                          <button onClick={()=>doAprobar(d)} disabled={loading}
+                            style={{padding:"4px 8px",borderRadius:4,background:"var(--green)",color:"#fff",fontSize:10,fontWeight:700,cursor:"pointer",border:"none"}}
+                            title="Aprobar: actualizar diccionario con nuevo costo">
+                            Aprobar
+                          </button>
+                          <button onClick={()=>doRechazar(d)} disabled={loading}
+                            style={{padding:"4px 8px",borderRadius:4,background:"var(--red)",color:"#fff",fontSize:10,fontWeight:700,cursor:"pointer",border:"none"}}
+                            title="Rechazar: error del proveedor, reclamar">
+                            Rechazar
+                          </button>
+                        </div>
+                      ) : (
+                        <span style={{fontSize:10,color:"var(--txt3)"}}>{d.resuelto_at ? fmtDate(d.resuelto_at) : ""}</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
         {/* Lines table */}
         <div className="card" style={{marginTop:12}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
@@ -482,9 +578,10 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
               <thead><tr><th>SKU</th><th>Producto</th><th style={{textAlign:"right"}}>Factura</th><th style={{textAlign:"right"}}>Recibido</th><th style={{textAlign:"right"}}>Etiq.</th><th style={{textAlign:"right"}}>Ubic.</th><th style={{textAlign:"right"}}>C.Unit</th><th style={{textAlign:"right"}}>Subtotal</th><th>Estado</th>{isEditable&&<th>Acciones</th>}</tr></thead>
               <tbody>{lineas.map(l => {
                 const lockInfo = isLineaBloqueada(l, "__admin__");
+                const disc = discrepancias.find(d => d.linea_id === l.id && d.estado === "PENDIENTE");
                 return (
-                <tr key={l.id} style={{background:l.estado==="UBICADA"?"var(--greenBg)":"transparent"}}>
-                  <td className="mono" style={{fontSize:11,fontWeight:700}}>{l.sku}</td>
+                <tr key={l.id} style={{background: disc ? "var(--amberBg)" : l.estado==="UBICADA"?"var(--greenBg)":"transparent"}}>
+                  <td className="mono" style={{fontSize:11,fontWeight:700}}>{disc && <span title="Discrepancia de costo pendiente" style={{color:"var(--amber)",marginRight:4}}>!</span>}{l.sku}</td>
                   <td style={{fontSize:11}}>{l.nombre}<br/><span className="mono" style={{fontSize:9,color:"var(--txt3)"}}>{l.codigo_ml||""}</span>
                     {lockInfo.blocked && <span style={{fontSize:10,color:"var(--amber)",fontWeight:600,display:"block"}}>🔒 {lockInfo.by}</span>}
                   </td>
