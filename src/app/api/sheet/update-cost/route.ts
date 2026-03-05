@@ -102,10 +102,14 @@ export async function GET() {
 }
 
 // POST: update cost in sheet
+// Body: { sku, nuevoCosto, filas?: { skuVenta: string, unidades: number }[] }
+// filas contains all composicion_venta rows for this SKU origen so we can update each row:
+//   row with unidades=1 → cost = nuevoCosto
+//   row with unidades=2 → cost = nuevoCosto * 2
 export async function POST(req: NextRequest) {
   const cfg = getConfig();
   try {
-    const { sku, nuevoCosto } = await req.json();
+    const { sku, nuevoCosto, filas } = await req.json();
     if (!sku || nuevoCosto === undefined) {
       return NextResponse.json({ error: "sku and nuevoCosto required" }, { status: 400 });
     }
@@ -127,8 +131,8 @@ export async function POST(req: NextRequest) {
     const token = await getAccessToken(cfg.saEmail, cfg.privateKey);
     const sheetRef = cfg.sheetName.includes(" ") ? `'${cfg.sheetName}'` : cfg.sheetName;
 
-    // Find the row with this SKU (column E = SKU Origen)
-    const readUrl = `https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values/${encodeURIComponent(`${sheetRef}!E:E`)}`;
+    // Read columns A (SKU Venta), E (SKU Origen), and F (Unidades) to find all rows for this SKU
+    const readUrl = `https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values/${encodeURIComponent(`${sheetRef}!A:F`)}`;
     const readRes = await fetch(readUrl, {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -139,32 +143,47 @@ export async function POST(req: NextRequest) {
     }
 
     const values: string[][] = readData.values || [];
-    const rowIndex = values.findIndex((row: string[]) => (row[0] || "").toUpperCase() === sku.toUpperCase());
-    if (rowIndex === -1) {
+
+    // Find ALL rows matching this SKU origen (column E, index 4)
+    const matchingRows: { rowIndex: number; skuVenta: string; unidades: number }[] = [];
+    for (let i = 0; i < values.length; i++) {
+      const row = values[i];
+      if ((row[4] || "").toUpperCase() === sku.toUpperCase()) {
+        const unidades = parseInt(row[5] || "1") || 1;
+        matchingRows.push({ rowIndex: i, skuVenta: (row[0] || "").toUpperCase(), unidades });
+      }
+    }
+
+    if (matchingRows.length === 0) {
       return NextResponse.json({
         error: `SKU ${sku} not found in sheet column E`,
         total_rows: values.length,
-        sample_skus: values.slice(1, 6).map(r => r[0]),
+        sample_skus: values.slice(1, 6).map(r => r[4]),
         updated_db_only: true,
       }, { status: 200 });
     }
 
-    // Update the cost cell
-    const cellRange = `${sheetRef}!${cfg.costColumn}${rowIndex + 1}`;
-    const updateUrl = `https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values/${encodeURIComponent(cellRange)}?valueInputOption=RAW`;
-    const updateRes = await fetch(updateUrl, {
-      method: "PUT",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ range: cellRange, values: [[nuevoCosto]] }),
-    });
-
-    if (!updateRes.ok) {
-      const err = await updateRes.text();
-      return NextResponse.json({ error: "Sheet write failed", detail: err, updated_db_only: true }, { status: 200 });
+    // Update each matching row: cost = nuevoCosto * unidades
+    const updates: { row: number; cell: string; cost: number; unidades: number; ok: boolean }[] = [];
+    for (const match of matchingRows) {
+      const costForRow = nuevoCosto * match.unidades;
+      const cellRange = `${sheetRef}!${cfg.costColumn}${match.rowIndex + 1}`;
+      const updateUrl = `https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values/${encodeURIComponent(cellRange)}?valueInputOption=RAW`;
+      const updateRes = await fetch(updateUrl, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ range: cellRange, values: [[costForRow]] }),
+      });
+      updates.push({
+        row: match.rowIndex + 1,
+        cell: cellRange,
+        cost: costForRow,
+        unidades: match.unidades,
+        ok: updateRes.ok,
+      });
     }
 
-    const writeResult = await updateRes.json();
-    return NextResponse.json({ ok: true, row: rowIndex + 1, cell: cellRange, updatedCells: writeResult.updatedCells });
+    return NextResponse.json({ ok: true, sku, nuevoCostoUnitario: nuevoCosto, rows_updated: updates });
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : "Unknown error";
     return NextResponse.json({ error: message, updated_db_only: true }, { status: 500 });
