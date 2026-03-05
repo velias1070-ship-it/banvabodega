@@ -171,6 +171,10 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   const [editIva, setEditIva] = useState(0);
   const [editCostoBruto, setEditCostoBruto] = useState(0);
 
+  // Inline line editing
+  const [editLineaId, setEditLineaId] = useState<string|null>(null);
+  const [editLineaData, setEditLineaData] = useState<{qty_factura:number;qty_recibida:number;qty_etiquetada:number;qty_ubicada:number;costo_unitario:number;nombre:string;sku:string;estado:string}>({qty_factura:0,qty_recibida:0,qty_etiquetada:0,qty_ubicada:0,costo_unitario:0,nombre:"",sku:"",estado:"PENDIENTE"});
+
   // Anular dialog
   const [showAnular, setShowAnular] = useState(false);
   const [anularMotivo, setAnularMotivo] = useState("");
@@ -309,6 +313,27 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
     const n = parseInt(val); if (isNaN(n) || n < 0) return;
     await actualizarLineaRecepcion(lineaId, { qty_factura: n });
     setLineas(await getRecepcionLineas(selRec!.id!));
+  };
+  const startEditLinea = (l: DBRecepcionLinea) => {
+    setEditLineaId(l.id!);
+    setEditLineaData({ qty_factura: l.qty_factura, qty_recibida: l.qty_recibida||0, qty_etiquetada: l.qty_etiquetada||0, qty_ubicada: l.qty_ubicada||0, costo_unitario: l.costo_unitario||0, nombre: l.nombre, sku: l.sku, estado: l.estado });
+  };
+  const saveEditLinea = async () => {
+    if (!editLineaId) return;
+    setLoading(true);
+    await actualizarLineaRecepcion(editLineaId, {
+      qty_factura: editLineaData.qty_factura,
+      qty_recibida: editLineaData.qty_recibida,
+      qty_etiquetada: editLineaData.qty_etiquetada,
+      qty_ubicada: editLineaData.qty_ubicada,
+      costo_unitario: editLineaData.costo_unitario,
+      nombre: editLineaData.nombre,
+      sku: editLineaData.sku,
+      estado: editLineaData.estado as DBRecepcionLinea["estado"],
+    });
+    setEditLineaId(null);
+    setLineas(await getRecepcionLineas(selRec!.id!));
+    setLoading(false);
   };
   const doAddLinea = async () => {
     if (!addSku || !selRec) return;
@@ -606,12 +631,40 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
               <tbody>{lineas.map(l => {
                 const lockInfo = isLineaBloqueada(l, "__admin__");
                 const disc = discrepancias.find(d => d.linea_id === l.id && d.estado === "PENDIENTE");
+                const isEd = editLineaId === l.id;
+                const inputStyle = {width:58,textAlign:"right" as const,padding:"3px 6px",borderRadius:4,border:"1px solid var(--cyan)",background:"var(--bg)",color:"var(--txt1)",fontSize:11,fontFamily:"inherit"};
+                if (isEd) return (
+                <tr key={l.id} style={{background:"var(--cyanBg, rgba(0,200,255,0.06))"}}>
+                  <td className="mono" style={{fontSize:11,fontWeight:700}}>
+                    <input style={{...inputStyle,width:90,textAlign:"left"}} value={editLineaData.sku} onChange={e=>setEditLineaData(d=>({...d,sku:e.target.value}))}/>
+                  </td>
+                  <td style={{fontSize:11}}>
+                    <input style={{...inputStyle,width:"100%",textAlign:"left"}} value={editLineaData.nombre} onChange={e=>setEditLineaData(d=>({...d,nombre:e.target.value}))}/>
+                  </td>
+                  <td><input type="number" style={inputStyle} value={editLineaData.qty_factura} onChange={e=>setEditLineaData(d=>({...d,qty_factura:parseInt(e.target.value)||0}))}/></td>
+                  <td><input type="number" style={inputStyle} value={editLineaData.qty_recibida} onChange={e=>setEditLineaData(d=>({...d,qty_recibida:parseInt(e.target.value)||0}))}/></td>
+                  <td><input type="number" style={inputStyle} value={editLineaData.qty_etiquetada} onChange={e=>setEditLineaData(d=>({...d,qty_etiquetada:parseInt(e.target.value)||0}))}/></td>
+                  <td><input type="number" style={inputStyle} value={editLineaData.qty_ubicada} onChange={e=>setEditLineaData(d=>({...d,qty_ubicada:parseInt(e.target.value)||0}))}/></td>
+                  <td><input type="number" step="0.01" style={inputStyle} value={editLineaData.costo_unitario} onChange={e=>setEditLineaData(d=>({...d,costo_unitario:parseFloat(e.target.value)||0}))}/></td>
+                  <td className="mono" style={{textAlign:"right",fontSize:11,fontWeight:700}}>{editLineaData.costo_unitario?fmtMoney(editLineaData.costo_unitario*editLineaData.qty_factura):"—"}</td>
+                  <td>
+                    <select style={{padding:"3px 4px",borderRadius:4,border:"1px solid var(--cyan)",background:"var(--bg)",color:"var(--txt1)",fontSize:10,fontWeight:700}} value={editLineaData.estado} onChange={e=>setEditLineaData(d=>({...d,estado:e.target.value}))}>
+                      {["PENDIENTE","CONTADA","EN_ETIQUETADO","ETIQUETADA","UBICADA"].map(s=><option key={s} value={s}>{s}</option>)}
+                    </select>
+                  </td>
+                  {isEditable&&<td style={{whiteSpace:"nowrap"}}>
+                    <div style={{display:"flex",gap:4}}>
+                      <button onClick={saveEditLinea} disabled={loading} style={{padding:"3px 8px",borderRadius:4,background:"var(--green)",color:"#fff",fontSize:10,fontWeight:700,border:"none",cursor:"pointer"}}>Guardar</button>
+                      <button onClick={()=>setEditLineaId(null)} style={{padding:"3px 8px",borderRadius:4,background:"var(--bg3)",color:"var(--txt3)",fontSize:10,fontWeight:700,border:"1px solid var(--bg4)",cursor:"pointer"}}>Cancelar</button>
+                    </div>
+                  </td>}
+                </tr>
+                );
                 return (
                 <tr key={l.id} style={{background: disc ? "var(--amberBg)" : l.estado==="UBICADA"?"var(--greenBg)":"transparent"}}>
                   <td className="mono" style={{fontSize:11,fontWeight:700}}>{disc && <span title="Discrepancia de costo pendiente" style={{color:"var(--amber)",marginRight:4}}>!</span>}{l.sku}</td>
                   <td style={{fontSize:11}}>{l.nombre}<br/><span className="mono" style={{fontSize:9,color:"var(--txt3)"}}>{l.codigo_ml||""}</span>
                     {lockInfo.blocked && <span style={{fontSize:10,color:"var(--amber)",fontWeight:600,display:"block"}}>🔒 {lockInfo.by}</span>}
-                    {/* Etiqueta info from labeling app */}
                     {l.etiqueta_impresa != null && (() => {
                       const ventas = getVentasPorSkuOrigen(l.sku);
                       const cantVariantes = new Set(ventas.map(v => v.skuVenta)).size;
@@ -647,7 +700,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                     <div style={{display:"flex",gap:4}}>
                       {lockInfo.blocked && <button onClick={async()=>{await desbloquearLinea(l.id!);await refreshDetail();}} title="Desbloquear" style={{padding:"3px 6px",borderRadius:4,background:"var(--amberBg)",color:"var(--amber)",fontSize:10,fontWeight:700,border:"1px solid var(--amberBd)",cursor:"pointer"}}>🔓</button>}
                       {l.estado !== "PENDIENTE" && <button onClick={()=>doResetLinea(l.id!)} title="Resetear a pendiente" style={{padding:"3px 6px",borderRadius:4,background:"var(--amberBg)",color:"var(--amber)",fontSize:10,fontWeight:700,border:"1px solid var(--amberBd)",cursor:"pointer"}}>Reset</button>}
-                      <button onClick={()=>{const v=prompt("Nueva cantidad factura:",String(l.qty_factura));if(v)doUpdateLineQty(l.id!,v);}} title="Editar cantidad" style={{padding:"3px 6px",borderRadius:4,background:"var(--bg3)",color:"var(--cyan)",fontSize:10,fontWeight:700,border:"1px solid var(--bg4)",cursor:"pointer"}}>Qty</button>
+                      <button onClick={()=>startEditLinea(l)} title="Editar linea" style={{padding:"3px 6px",borderRadius:4,background:"var(--bg3)",color:"var(--cyan)",fontSize:10,fontWeight:700,border:"1px solid var(--bg4)",cursor:"pointer"}}>Editar</button>
                       <button onClick={()=>doDeleteLinea(l.id!)} title="Eliminar linea" style={{padding:"3px 6px",borderRadius:4,background:"var(--redBg)",color:"var(--red)",fontSize:10,fontWeight:700,border:"1px solid var(--redBd)",cursor:"pointer"}}>✕</button>
                     </div>
                   </td>}
