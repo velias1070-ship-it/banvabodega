@@ -275,7 +275,13 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   const doAprobar = async (disc: DBDiscrepanciaCosto) => {
     if (!confirm(`Aprobar nuevo costo para ${disc.sku}?\nDiccionario: ${fmtMoney(disc.costo_diccionario)} → Factura: ${fmtMoney(disc.costo_factura)}\nEl diccionario se actualizará con el nuevo costo.`)) return;
     setLoading(true);
-    await aprobarNuevoCosto(disc.id!, disc.sku, disc.costo_factura);
+    const result = await aprobarNuevoCosto(disc.id!, disc.sku, disc.costo_factura);
+    const sr = result.sheetResult;
+    if (sr?.ok) {
+      alert(`Costo aprobado y actualizado.\nDB: OK\nGoogle Sheet: fila ${sr.row}, celda ${sr.cell}`);
+    } else {
+      alert(`Costo aprobado en DB.\nGoogle Sheet: ${sr?.error || JSON.stringify(sr)}\n\nRevisa /api/sheet/update-cost en el navegador para diagnosticar.`);
+    }
     await refreshDetail();
     setLoading(false);
   };
