@@ -278,7 +278,7 @@ export async function bloquearLinea(lineaId: string, operario: string): Promise<
     const { data, error } = await sb.from("recepcion_lineas")
       .update({ bloqueado_por: operario, bloqueado_hasta: hasta })
       .eq("id", lineaId)
-      .or(`bloqueado_por.is.null,bloqueado_por.eq.${operario},bloqueado_hasta.lt.${ahora}`)
+      .or(`bloqueado_por.is.null,bloqueado_por.eq."${operario}",bloqueado_hasta.lt."${ahora}"`)
       .select("id");
     if (error) return true; // columns may not exist yet
     return !!data && data.length > 0;
