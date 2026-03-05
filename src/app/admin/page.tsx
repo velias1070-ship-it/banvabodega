@@ -2634,6 +2634,65 @@ function Inventario() {
   const conStock = ventasConStock.filter(v => v.disponible > 0).length;
   const sinStock = totalPublicaciones - conStock;
 
+  const [exporting, setExporting] = useState(false);
+
+  const doExportInventario = async () => {
+    setExporting(true);
+    try {
+      const s = getStore();
+      // Fetch active recepciones to calculate pending qty per SKU
+      const recepciones = await getRecepciones();
+      const activas = recepciones.filter(r => !["COMPLETADA","CERRADA","ANULADA"].includes(r.estado));
+      const recIds = activas.map(r => r.id!).filter(Boolean);
+      let allLineas: DBRecepcionLinea[] = [];
+      if (recIds.length > 0) {
+        allLineas = await getLineasDeRecepciones(recIds);
+      }
+      // Pending per SKU = sum of (qty_factura - qty_ubicada) for lines not fully ubicada
+      const pendientePorSku: Record<string, number> = {};
+      for (const l of allLineas) {
+        if (l.estado === "UBICADA") continue;
+        const pending = l.qty_factura - (l.qty_ubicada || 0);
+        if (pending > 0) {
+          pendientePorSku[l.sku] = (pendientePorSku[l.sku] || 0) + pending;
+        }
+      }
+
+      // Build unified SKU set: all with stock + all with pending
+      const allSkuSet = new Set([
+        ...Object.keys(s.stock).filter(sku => skuTotal(sku) > 0),
+        ...Object.keys(pendientePorSku),
+      ]);
+      const skus = Array.from(allSkuSet).sort();
+
+      const rows: string[] = [];
+      rows.push(["sku_origen","nombre","stock_actual","pendiente_recepcion","stock_proyectado"].join(","));
+      for (const sku of skus) {
+        const prod = s.products[sku];
+        const stockActual = skuTotal(sku);
+        const pendiente = pendientePorSku[sku] || 0;
+        rows.push([
+          csvEscape(sku),
+          csvEscape(prod?.name || ""),
+          String(stockActual),
+          String(pendiente),
+          String(stockActual + pendiente),
+        ].join(","));
+      }
+
+      const csv = rows.join("\n");
+      const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `banva_inventario_proyectado_${new Date().toISOString().slice(0,10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <div>
       <div className="card">
@@ -2641,12 +2700,16 @@ function Inventario() {
           <div style={{display:"flex",gap:4}}>
             <button onClick={()=>setViewMode("fisico")} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
               background:viewMode==="fisico"?"var(--cyanBg)":"var(--bg3)",color:viewMode==="fisico"?"var(--cyan)":"var(--txt3)",
-              border:viewMode==="fisico"?"1px solid var(--cyan)":"1px solid var(--bg4)"}}>📦 Stock Físico</button>
+              border:viewMode==="fisico"?"1px solid var(--cyan)":"1px solid var(--bg4)"}}>📦 Stock Fisico</button>
             <button onClick={()=>setViewMode("ml")} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
               background:viewMode==="ml"?"var(--amberBg)":"var(--bg3)",color:viewMode==="ml"?"var(--amber)":"var(--txt3)",
               border:viewMode==="ml"?"1px solid var(--amber)":"1px solid var(--bg4)"}}>🛒 Publicaciones ML</button>
           </div>
-          <input className="form-input mono" value={q} onChange={e=>setQ(e.target.value)} placeholder={viewMode==="fisico"?"Filtrar SKU, nombre, proveedor...":"Filtrar código ML, SKU venta, nombre..."} style={{fontSize:13,flex:1}}/>
+          <button onClick={doExportInventario} disabled={exporting} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
+            background:"var(--bg3)",color:"var(--green)",border:"1px solid var(--bg4)",cursor:exporting?"wait":"pointer",opacity:exporting?0.6:1}}>
+            {exporting ? "Exportando..." : "Exportar Inventario"}
+          </button>
+          <input className="form-input mono" value={q} onChange={e=>setQ(e.target.value)} placeholder={viewMode==="fisico"?"Filtrar SKU, nombre, proveedor...":"Filtrar codigo ML, SKU venta, nombre..."} style={{fontSize:13,flex:1}}/>
           <div style={{textAlign:"right",whiteSpace:"nowrap"}}>
             {viewMode === "fisico" ? (
               <>
