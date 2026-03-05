@@ -816,13 +816,23 @@ export async function etiquetarLinea(lineaId: string, qtyEtiquetada: number, ope
 
 // Ubicar línea: operario pone en posición → stock entra al WMS
 export async function ubicarLinea(lineaId: string, sku: string, posicionId: string, qty: number, operario: string, recepcionId: string) {
-  // Update stock
+  // Update stock + movimiento FIRST — if these fail, do NOT update the line
   if (isConfigured()) {
-    await db.updateStock(sku, posicionId, qty);
-    await db.insertMovimiento({
-      tipo: "entrada", motivo: "recepcion", sku, posicion_id: posicionId,
-      cantidad: qty, recepcion_id: recepcionId, operario, nota: "Recepción - ubicación en bodega",
-    });
+    try {
+      await db.updateStock(sku, posicionId, qty);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new Error(`Error al registrar stock de ${sku}: ${msg}. La linea NO fue marcada como ubicada.`);
+    }
+    try {
+      await db.insertMovimiento({
+        tipo: "entrada", motivo: "recepcion", sku, posicion_id: posicionId,
+        cantidad: qty, recepcion_id: recepcionId, operario, nota: "Recepción - ubicación en bodega",
+      });
+    } catch (e: unknown) {
+      // Stock already updated — log but don't block (movimiento is secondary)
+      console.error("Movimiento insert failed (stock was updated):", e);
+    }
   }
 
   // Update cache
@@ -836,24 +846,16 @@ export async function ubicarLinea(lineaId: string, sku: string, posicionId: stri
   const newQtyUbicada = (linea.qty_ubicada || 0) + qty;
   const qtyTotal = (linea.qty_recibida ?? linea.qty_factura) ?? 0;
 
-  // Determine next state:
-  // - If all received units are located AND we've received >= factura → UBICADA (done)
-  // - If all received units are located BUT we haven't reached factura → PENDIENTE (next box)
-  // - Otherwise stay in current state (partial ubicación within this pass)
   const allLocated = newQtyUbicada >= qtyTotal && qtyTotal > 0;
   const allReceived = qtyTotal >= (linea.qty_factura || 0);
   let nextEstado = linea.estado;
   const extraFields: Partial<db.DBRecepcionLinea> = {};
 
   if (allLocated && allReceived) {
-    // Fully done — all factura qty received and located
     nextEstado = "UBICADA";
     extraFields.ts_ubicacion = new Date().toISOString();
   } else if (allLocated && !allReceived) {
-    // This pass done, but more boxes pending — reset for next box
     nextEstado = "PENDIENTE";
-    // Reset per-pass counters: etiquetada stays accumulated, ubicada stays accumulated
-    // The operator will count the next box fresh
   }
 
   await db.updateRecepcionLinea(lineaId, {
