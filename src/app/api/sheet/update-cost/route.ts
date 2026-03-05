@@ -70,7 +70,8 @@ export async function POST(req: NextRequest) {
     const token = await getAccessToken();
 
     // First, find the row with this SKU (column E = SKU Origen, index 4)
-    const readUrl = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${SHEET_NAME}!E:E`;
+    const sheetRef = SHEET_NAME.includes(" ") ? `'${SHEET_NAME}'` : SHEET_NAME;
+    const readUrl = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(`${sheetRef}!E:E`)}`;
     const readRes = await fetch(readUrl, {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -83,8 +84,8 @@ export async function POST(req: NextRequest) {
     }
 
     // Update the cost cell (column N = row number)
-    const cellRange = `${SHEET_NAME}!${COST_COLUMN}${rowIndex + 1}`;
-    const updateUrl = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${cellRange}?valueInputOption=RAW`;
+    const cellRange = `${sheetRef}!${COST_COLUMN}${rowIndex + 1}`;
+    const updateUrl = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(cellRange)}?valueInputOption=RAW`;
     const updateRes = await fetch(updateUrl, {
       method: "PUT",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
