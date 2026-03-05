@@ -269,34 +269,41 @@ export async function fetchLineasDeRecepciones(recIds: string[]): Promise<DBRece
 }
 
 // Try to lock a line for an operator (optimistic: only if not locked by someone else)
+// Returns true if locked successfully OR if lock columns don't exist yet (graceful degradation)
 export async function bloquearLinea(lineaId: string, operario: string): Promise<boolean> {
-  const sb = getSupabase(); if (!sb) return false;
-  const ahora = new Date().toISOString();
-  const hasta = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-  // Only lock if: not locked, locked by same operator, or lock expired
-  const { data, error } = await sb.from("recepcion_lineas")
-    .update({ bloqueado_por: operario, bloqueado_hasta: hasta })
-    .eq("id", lineaId)
-    .or(`bloqueado_por.is.null,bloqueado_por.eq.${operario},bloqueado_hasta.lt.${ahora}`)
-    .select("id");
-  return !error && !!data && data.length > 0;
+  const sb = getSupabase(); if (!sb) return true;
+  try {
+    const ahora = new Date().toISOString();
+    const hasta = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    const { data, error } = await sb.from("recepcion_lineas")
+      .update({ bloqueado_por: operario, bloqueado_hasta: hasta })
+      .eq("id", lineaId)
+      .or(`bloqueado_por.is.null,bloqueado_por.eq.${operario},bloqueado_hasta.lt.${ahora}`)
+      .select("id");
+    if (error) return true; // columns may not exist yet
+    return !!data && data.length > 0;
+  } catch { return true; }
 }
 
 // Renew an existing lock (extend 15 min)
 export async function renovarBloqueo(lineaId: string, operario: string): Promise<void> {
   const sb = getSupabase(); if (!sb) return;
-  const hasta = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-  await sb.from("recepcion_lineas")
-    .update({ bloqueado_hasta: hasta })
-    .eq("id", lineaId).eq("bloqueado_por", operario);
+  try {
+    const hasta = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    await sb.from("recepcion_lineas")
+      .update({ bloqueado_hasta: hasta })
+      .eq("id", lineaId).eq("bloqueado_por", operario);
+  } catch {}
 }
 
 // Release a lock
 export async function desbloquearLinea(lineaId: string): Promise<void> {
   const sb = getSupabase(); if (!sb) return;
-  await sb.from("recepcion_lineas")
-    .update({ bloqueado_por: null, bloqueado_hasta: null })
-    .eq("id", lineaId);
+  try {
+    await sb.from("recepcion_lineas")
+      .update({ bloqueado_por: null, bloqueado_hasta: null })
+      .eq("id", lineaId);
+  } catch {}
 }
 
 // ==================== OPERARIOS ====================

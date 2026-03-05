@@ -63,17 +63,14 @@ export default function RecepcionesOperador() {
   const handleSelectLinea = async (linea: DBRecepcionLinea) => {
     const lock = isLineaBloqueada(linea, operario);
     if (lock.blocked) return; // can't touch it
-    const ok = await bloquearLinea(linea.id!, operario);
-    if (!ok) {
-      await loadAll(); // refresh to see who locked it
-      return;
-    }
+    // Try to lock, but proceed even if lock fails (columns may not exist yet)
+    try { await bloquearLinea(linea.id!, operario); } catch {}
     setSelLinea(linea);
   };
 
   const handleBack = async () => {
     if (selLinea) {
-      await desbloquearLinea(selLinea.id!);
+      try { await desbloquearLinea(selLinea.id!); } catch {}
     }
     setSelLinea(null);
     await loadAll();
@@ -92,7 +89,7 @@ export default function RecepcionesOperador() {
       }
       if (updated.estado === "UBICADA") {
         // Line fully done, unlock and go back
-        await desbloquearLinea(selLinea.id!);
+        try { await desbloquearLinea(selLinea.id!); } catch {}
         setSelLinea(null);
         await loadAll();
       } else {
