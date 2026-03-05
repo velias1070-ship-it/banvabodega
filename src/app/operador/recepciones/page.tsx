@@ -302,6 +302,8 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
     await refreshLinea();
     setSaving(false);
     setEtiqQty(0);
+    setScanResult(null);
+    setScanCode("");
   };
 
   // Get ALL packs/ventas this physical product participates in
@@ -528,20 +530,28 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
               );
             })()}
 
-            {/* Mark quantity as labeled */}
-            <div style={{fontSize:12,fontWeight:600,color:"var(--txt2)",marginBottom:6}}>¿Cuántas etiquetaste en esta tanda?</div>
-            <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap"}}>
-              {[1, 3, 6, 10, 12, qtyTotal - (linea.qty_etiquetada||0)].filter((v, i, a) => v > 0 && v <= (qtyTotal - (linea.qty_etiquetada||0)) && a.indexOf(v) === i).map(n => (
-                <button key={n} onClick={() => setEtiqQty(n)}
-                  style={{padding:"8px 14px",borderRadius:6,background:etiqQty===n?"var(--blue)":"var(--bg3)",color:etiqQty===n?"#fff":"var(--txt2)",fontSize:12,fontWeight:700,border:"1px solid var(--bg4)",minWidth:44}}>
-                  {n === (qtyTotal-(linea.qty_etiquetada||0)) ? `Todo (${n})` : n}
-                </button>
-              ))}
+            {/* Mark quantity as labeled — only enabled after scanning a valid code */}
+            {scanResult !== "ok" && (
+              <div style={{padding:"10px 14px",background:"var(--amberBg)",border:"1px solid var(--amberBd)",borderRadius:8,marginBottom:10,textAlign:"center"}}>
+                <div style={{fontSize:12,fontWeight:700,color:"var(--amber)"}}>⚠️ Escaneá o ingresá el código ML para continuar</div>
+                <div style={{fontSize:11,color:"var(--txt3)",marginTop:2}}>No se puede registrar etiquetado sin verificar el código</div>
+              </div>
+            )}
+            <div style={{opacity:scanResult==="ok"?1:0.4,pointerEvents:scanResult==="ok"?"auto":"none"}}>
+              <div style={{fontSize:12,fontWeight:600,color:"var(--txt2)",marginBottom:6}}>¿Cuántas etiquetaste en esta tanda?</div>
+              <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap"}}>
+                {[1, 3, 6, 10, 12, qtyTotal - (linea.qty_etiquetada||0)].filter((v, i, a) => v > 0 && v <= (qtyTotal - (linea.qty_etiquetada||0)) && a.indexOf(v) === i).map(n => (
+                  <button key={n} onClick={() => setEtiqQty(n)}
+                    style={{padding:"8px 14px",borderRadius:6,background:etiqQty===n?"var(--blue)":"var(--bg3)",color:etiqQty===n?"#fff":"var(--txt2)",fontSize:12,fontWeight:700,border:"1px solid var(--bg4)",minWidth:44}}>
+                    {n === (qtyTotal-(linea.qty_etiquetada||0)) ? `Todo (${n})` : n}
+                  </button>
+                ))}
+              </div>
+              <button onClick={() => etiqQty > 0 && doEtiquetar(etiqQty)} disabled={saving || etiqQty <= 0}
+                style={{width:"100%",padding:14,borderRadius:10,background:(etiqQty>0&&!saving)?"var(--green)":"var(--bg3)",color:(etiqQty>0&&!saving)?"#fff":"var(--txt3)",fontSize:14,fontWeight:700}}>
+                {saving ? "Guardando..." : etiqQty > 0 ? `Registrar ${etiqQty} etiquetadas` : "Selecciona cantidad"}
+              </button>
             </div>
-            <button onClick={() => etiqQty > 0 && doEtiquetar(etiqQty)} disabled={saving || etiqQty <= 0}
-              style={{width:"100%",padding:14,borderRadius:10,background:(etiqQty>0&&!saving)?"var(--green)":"var(--bg3)",color:(etiqQty>0&&!saving)?"#fff":"var(--txt3)",fontSize:14,fontWeight:700}}>
-              {saving ? "Guardando..." : etiqQty > 0 ? `Registrar ${etiqQty} etiquetadas` : "Selecciona cantidad"}
-            </button>
           </div>
         )}
 
