@@ -226,6 +226,12 @@ export async function fetchMovimientos(limit = 200): Promise<DBMovimiento[]> {
   return data || [];
 }
 
+export async function fetchMovimientosByRecepcion(recepcionId: string): Promise<DBMovimiento[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("movimientos").select("*").eq("recepcion_id", recepcionId);
+  return data || [];
+}
+
 export async function insertMovimiento(m: Omit<DBMovimiento, "id" | "created_at">) {
   const sb = getSupabase(); if (!sb) return;
   const { error } = await sb.from("movimientos").insert(m);

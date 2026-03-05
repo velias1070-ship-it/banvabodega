@@ -866,6 +866,161 @@ export async function ubicarLinea(lineaId: string, sku: string, posicionId: stri
   });
 }
 
+// ==================== AUDIT & REPAIR ====================
+export interface AuditResult {
+  linea_id: string;
+  sku: string;
+  nombre: string;
+  qty_ubicada: number;
+  estado: string;
+  movimientos_encontrados: number;
+  stock_actual: number;
+  problema: string;
+  reparado: boolean;
+  detalle: string;
+}
+
+export async function auditarRecepcion(recepcionId: string): Promise<AuditResult[]> {
+  const lineas = await db.fetchRecepcionLineas(recepcionId);
+  const movimientos = await db.fetchMovimientosByRecepcion(recepcionId);
+  const stockAll = await db.fetchStock();
+  const productos = await db.fetchProductos();
+  const productoSet = new Set(productos.map(p => p.sku));
+
+  const results: AuditResult[] = [];
+
+  for (const l of lineas) {
+    // Only audit lines that claim to have ubicada qty
+    if ((l.qty_ubicada || 0) === 0) continue;
+
+    const movsLinea = movimientos.filter(m => m.sku === l.sku && m.tipo === "entrada" && m.motivo === "recepcion");
+    const totalMovido = movsLinea.reduce((sum, m) => sum + m.cantidad, 0);
+    const stockLinea = stockAll.filter(s => s.sku === l.sku).reduce((sum, s) => sum + s.cantidad, 0);
+    const existeProducto = productoSet.has(l.sku);
+
+    let problema = "";
+    if (!existeProducto) {
+      problema = "SKU no existe en tabla productos (FK violation)";
+    } else if (totalMovido === 0) {
+      problema = "Sin movimientos de entrada registrados";
+    } else if (totalMovido < l.qty_ubicada) {
+      problema = `Movimientos parciales: ${totalMovido} de ${l.qty_ubicada}`;
+    } else if (stockLinea === 0 && l.qty_ubicada > 0) {
+      problema = "Movimientos OK pero stock es 0";
+    }
+
+    if (problema) {
+      results.push({
+        linea_id: l.id!,
+        sku: l.sku,
+        nombre: l.nombre,
+        qty_ubicada: l.qty_ubicada || 0,
+        estado: l.estado,
+        movimientos_encontrados: totalMovido,
+        stock_actual: stockLinea,
+        problema,
+        reparado: false,
+        detalle: "",
+      });
+    }
+  }
+
+  return results;
+}
+
+export async function repararRecepcion(recepcionId: string, posicionDestino: string): Promise<AuditResult[]> {
+  const lineas = await db.fetchRecepcionLineas(recepcionId);
+  const movimientos = await db.fetchMovimientosByRecepcion(recepcionId);
+  const stockAll = await db.fetchStock();
+  const productos = await db.fetchProductos();
+  const productoSet = new Set(productos.map(p => p.sku));
+
+  const results: AuditResult[] = [];
+
+  for (const l of lineas) {
+    if ((l.qty_ubicada || 0) === 0) continue;
+
+    const movsLinea = movimientos.filter(m => m.sku === l.sku && m.tipo === "entrada" && m.motivo === "recepcion");
+    const totalMovido = movsLinea.reduce((sum, m) => sum + m.cantidad, 0);
+    const stockLinea = stockAll.filter(s => s.sku === l.sku).reduce((sum, s) => sum + s.cantidad, 0);
+    const existeProducto = productoSet.has(l.sku);
+
+    const faltante = (l.qty_ubicada || 0) - totalMovido;
+
+    if (faltante <= 0 && stockLinea > 0) continue; // OK
+
+    const result: AuditResult = {
+      linea_id: l.id!,
+      sku: l.sku,
+      nombre: l.nombre,
+      qty_ubicada: l.qty_ubicada || 0,
+      estado: l.estado,
+      movimientos_encontrados: totalMovido,
+      stock_actual: stockLinea,
+      problema: "",
+      reparado: false,
+      detalle: "",
+    };
+
+    // Step 1: Create product if missing
+    if (!existeProducto) {
+      try {
+        await db.upsertProducto({ sku: l.sku, sku_venta: "", codigo_ml: l.codigo_ml || "", nombre: l.nombre, categoria: "Otros", proveedor: "Otro", costo: l.costo_unitario || 0, precio: 0, reorder: 20, requiere_etiqueta: true, tamano: "", color: "" });
+        result.detalle += `Producto ${l.sku} creado. `;
+      } catch (e: unknown) {
+        result.problema = `No se pudo crear producto: ${e instanceof Error ? e.message : e}`;
+        results.push(result);
+        continue;
+      }
+    }
+
+    // Step 2: Register missing stock
+    if (faltante > 0) {
+      try {
+        await db.updateStock(l.sku, posicionDestino, faltante);
+        result.detalle += `Stock +${faltante} en ${posicionDestino}. `;
+      } catch (e: unknown) {
+        result.problema = `Error stock: ${e instanceof Error ? e.message : e}`;
+        results.push(result);
+        continue;
+      }
+
+      // Step 3: Register missing movimiento
+      try {
+        await db.insertMovimiento({
+          tipo: "entrada", motivo: "recepcion", sku: l.sku, posicion_id: posicionDestino,
+          cantidad: faltante, recepcion_id: recepcionId,
+          operario: l.operario_ubicacion || "admin-reparacion",
+          nota: `Reparacion automatica — faltaban ${faltante} uds sin registrar`,
+        });
+        result.detalle += `Movimiento +${faltante} registrado. `;
+      } catch (e: unknown) {
+        result.detalle += `Movimiento falló (stock sí se registró): ${e instanceof Error ? e.message : e}. `;
+      }
+    } else if (stockLinea === 0 && totalMovido > 0) {
+      // Movements exist but stock is 0 — re-register stock
+      try {
+        await db.updateStock(l.sku, posicionDestino, l.qty_ubicada || 0);
+        result.detalle += `Stock re-registrado +${l.qty_ubicada} en ${posicionDestino}. `;
+      } catch (e: unknown) {
+        result.problema = `Error re-stock: ${e instanceof Error ? e.message : e}`;
+        results.push(result);
+        continue;
+      }
+    }
+
+    // Update cache
+    if (!_cache.stock[l.sku]) _cache.stock[l.sku] = {};
+    _cache.stock[l.sku][posicionDestino] = (_cache.stock[l.sku][posicionDestino] || 0) + faltante;
+
+    result.reparado = true;
+    if (!result.problema) result.problema = faltante > 0 ? `Faltaban ${faltante} uds sin registrar` : "Stock en 0 con movimientos OK";
+    results.push(result);
+  }
+
+  return results;
+}
+
 // Upload factura image
 export async function uploadFacturaImage(base64: string, folio: string): Promise<string> {
   return db.uploadFacturaImage(base64, folio);

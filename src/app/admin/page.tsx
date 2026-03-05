@@ -1,7 +1,8 @@
 "use client";
 /* v3.1 — conteos + pedidos ML + cron fix */
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion } from "@/lib/store";
+import type { AuditResult } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto } from "@/lib/db";
 import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, fetchAllPedidosFlex, fetchPedidosFlexByEstado, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds } from "@/lib/db";
@@ -175,6 +176,12 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   const [editLineaId, setEditLineaId] = useState<string|null>(null);
   const [editLineaData, setEditLineaData] = useState<{qty_factura:number;qty_recibida:number;qty_etiquetada:number;qty_ubicada:number;costo_unitario:number;nombre:string;sku:string;estado:string}>({qty_factura:0,qty_recibida:0,qty_etiquetada:0,qty_ubicada:0,costo_unitario:0,nombre:"",sku:"",estado:"PENDIENTE"});
 
+  // Audit & repair
+  const [auditResults, setAuditResults] = useState<AuditResult[]|null>(null);
+  const [auditing, setAuditing] = useState(false);
+  const [repairing, setRepairing] = useState(false);
+  const [repairPos, setRepairPos] = useState("SIN_ASIGNAR");
+
   // Anular dialog
   const [showAnular, setShowAnular] = useState(false);
   const [anularMotivo, setAnularMotivo] = useState("");
@@ -235,7 +242,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
     setEditFolio(rec.folio); setEditProv(rec.proveedor);
     setEditNotas(meta.notas); setEditAsignados(meta.asignados);
     setEditCostoNeto(rec.costo_neto || 0); setEditIva(rec.iva || 0); setEditCostoBruto(rec.costo_bruto || 0);
-    setEditing(false); setShowAnular(false);
+    setEditing(false); setShowAnular(false); setAuditResults(null); setEditLineaId(null);
   };
 
   const refreshDetail = async () => {
@@ -471,7 +478,66 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
           {selRec.estado === "CERRADA" && <button onClick={doReactivar} style={{padding:"8px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--green)",fontSize:11,fontWeight:700,border:"1px solid var(--bg4)"}}>Reabrir</button>}
           {selRec.estado !== "ANULADA" && <button onClick={()=>setShowAnular(!showAnular)} style={{padding:"8px 14px",borderRadius:6,background:showAnular?"var(--red)":"var(--bg3)",color:showAnular?"#fff":"var(--red)",fontSize:11,fontWeight:700,border:"1px solid var(--bg4)"}}>Anular</button>}
           <button onClick={refreshDetail} style={{padding:"8px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--cyan)",fontSize:11,fontWeight:700,border:"1px solid var(--bg4)"}}>Actualizar</button>
+          <button disabled={auditing} onClick={async()=>{
+            setAuditing(true); setAuditResults(null);
+            try { const r = await auditarRecepcion(selRec.id!); setAuditResults(r); }
+            finally { setAuditing(false); }
+          }} style={{padding:"8px 14px",borderRadius:6,background:"var(--amberBg)",color:"var(--amber)",fontSize:11,fontWeight:700,border:"1px solid var(--amberBd)"}}>
+            {auditing ? "Auditando..." : "Auditar inventario"}
+          </button>
         </div>
+
+        {/* Audit results */}
+        {auditResults !== null && (
+          <div className="card" style={{marginTop:12,border:"2px solid var(--amber)"}}>
+            <div style={{fontSize:13,fontWeight:700,color:"var(--amber)",marginBottom:8}}>
+              Resultado de auditoria — {auditResults.length === 0 ? "Todo OK" : `${auditResults.length} problemas encontrados`}
+            </div>
+            {auditResults.length === 0 ? (
+              <div style={{padding:12,textAlign:"center",color:"var(--green)",fontWeight:600}}>
+                Todas las lineas UBICADAS tienen stock y movimientos correctos.
+              </div>
+            ) : (
+              <>
+                <div style={{overflowX:"auto"}}>
+                  <table className="tbl">
+                    <thead><tr><th>SKU</th><th>Producto</th><th style={{textAlign:"right"}}>Ubicado</th><th style={{textAlign:"right"}}>Movimientos</th><th style={{textAlign:"right"}}>Stock actual</th><th>Problema</th><th>Estado</th></tr></thead>
+                    <tbody>{auditResults.map(r => (
+                      <tr key={r.linea_id} style={{background: r.reparado ? "var(--greenBg)" : "var(--redBg)"}}>
+                        <td className="mono" style={{fontSize:11,fontWeight:700}}>{r.sku}</td>
+                        <td style={{fontSize:11}}>{r.nombre}</td>
+                        <td className="mono" style={{textAlign:"right"}}>{r.qty_ubicada}</td>
+                        <td className="mono" style={{textAlign:"right",color:r.movimientos_encontrados===0?"var(--red)":"var(--txt1)"}}>{r.movimientos_encontrados}</td>
+                        <td className="mono" style={{textAlign:"right",color:r.stock_actual===0?"var(--red)":"var(--txt1)"}}>{r.stock_actual}</td>
+                        <td style={{fontSize:10,color:"var(--red)",fontWeight:600}}>{r.problema}</td>
+                        <td>{r.reparado ? <span style={{fontSize:10,fontWeight:700,color:"var(--green)"}}>REPARADO: {r.detalle}</span> : <span style={{fontSize:10,color:"var(--txt3)"}}>{r.estado}</span>}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+                {!auditResults.some(r => r.reparado) && (
+                  <div style={{marginTop:12,padding:12,borderRadius:8,background:"var(--bg3)",display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                    <span style={{fontSize:11,fontWeight:600}}>Reparar: registrar stock faltante en</span>
+                    <select className="form-select" value={repairPos} onChange={e=>setRepairPos(e.target.value)} style={{fontSize:11,padding:"4px 8px"}}>
+                      {activePositions().map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+                    </select>
+                    <button disabled={repairing} onClick={async()=>{
+                      if (!confirm(`Esto registrara el stock faltante en posicion "${repairPos}" y creara los movimientos. Continuar?`)) return;
+                      setRepairing(true);
+                      try {
+                        const r = await repararRecepcion(selRec.id!, repairPos);
+                        setAuditResults(r);
+                        await refreshDetail();
+                      } finally { setRepairing(false); }
+                    }} style={{padding:"8px 16px",borderRadius:6,background:"var(--green)",color:"#fff",fontSize:11,fontWeight:700,border:"none",cursor:"pointer"}}>
+                      {repairing ? "Reparando..." : "Reparar ahora"}
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
 
         {/* Anular dialog */}
         {showAnular && (
