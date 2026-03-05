@@ -159,14 +159,20 @@ function RecepcionDetalle({ rec, lineas, operario, onBack, onSelectLinea, onRefr
   rec: DBRecepcion; lineas: DBRecepcionLinea[]; operario: string;
   onBack: () => void; onSelectLinea: (l: DBRecepcionLinea) => void; onRefresh: () => void;
 }) {
+  const [busqueda, setBusqueda] = useState("");
   const total = lineas.length;
   const ubicadas = lineas.filter(l => l.estado === "UBICADA").length;
   const progress = total > 0 ? Math.round((ubicadas / total) * 100) : 0;
 
+  const q = busqueda.trim().toLowerCase();
+  const lineasFiltradas = q
+    ? lineas.filter(l => l.sku.toLowerCase().includes(q) || (l.nombre || "").toLowerCase().includes(q) || (l.codigo_ml || "").toLowerCase().includes(q))
+    : lineas;
+
   // Group by estado
-  const pendientes = lineas.filter(l => l.estado === "PENDIENTE");
-  const enProceso = lineas.filter(l => ["CONTADA", "EN_ETIQUETADO", "ETIQUETADA"].includes(l.estado));
-  const completadas = lineas.filter(l => l.estado === "UBICADA");
+  const pendientes = lineasFiltradas.filter(l => l.estado === "PENDIENTE");
+  const enProceso = lineasFiltradas.filter(l => ["CONTADA", "EN_ETIQUETADO", "ETIQUETADA"].includes(l.estado));
+  const completadas = lineasFiltradas.filter(l => l.estado === "UBICADA");
 
   return (
     <div className="app">
@@ -190,6 +196,29 @@ function RecepcionDetalle({ rec, lineas, operario, onBack, onSelectLinea, onRefr
             <span style={{fontWeight:700,color:progress===100?"var(--green)":"var(--blue)"}}>{progress}%</span>
           </div>
         </div>
+
+        {/* Search bar */}
+        <div style={{position:"relative",marginBottom:12}}>
+          <input
+            type="text"
+            value={busqueda}
+            onChange={e => setBusqueda(e.target.value)}
+            placeholder="Buscar por SKU, nombre o codigo ML..."
+            style={{width:"100%",padding:"10px 14px 10px 36px",borderRadius:8,background:"var(--bg2)",border:"1px solid var(--bg3)",color:"var(--txt1)",fontSize:13,outline:"none"}}
+          />
+          <span style={{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",fontSize:16,color:"var(--txt3)",pointerEvents:"none"}}>🔍</span>
+          {busqueda && (
+            <button onClick={() => setBusqueda("")}
+              style={{position:"absolute",right:8,top:"50%",transform:"translateY(-50%)",background:"var(--bg3)",border:"1px solid var(--bg4)",borderRadius:4,color:"var(--txt3)",fontSize:11,padding:"2px 8px",cursor:"pointer"}}>
+              ✕
+            </button>
+          )}
+        </div>
+        {q && (
+          <div style={{fontSize:11,color:"var(--txt3)",marginBottom:8,textAlign:"center"}}>
+            {lineasFiltradas.length} resultado{lineasFiltradas.length !== 1 ? "s" : ""} de {total} lineas
+          </div>
+        )}
 
         {/* Pending - action required */}
         {pendientes.length > 0 && (
