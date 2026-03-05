@@ -165,6 +165,9 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   const [editProv, setEditProv] = useState("");
   const [editNotas, setEditNotas] = useState("");
   const [editAsignados, setEditAsignados] = useState<string[]>([]);
+  const [editCostoNeto, setEditCostoNeto] = useState(0);
+  const [editIva, setEditIva] = useState(0);
+  const [editCostoBruto, setEditCostoBruto] = useState(0);
 
   // Anular dialog
   const [showAnular, setShowAnular] = useState(false);
@@ -176,6 +179,9 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   const [newLineas, setNewLineas] = useState<{sku:string;nombre:string;codigoML:string;cantidad:number;costo:number;requiereEtiqueta:boolean}[]>([]);
   const [newSku, setNewSku] = useState("");
   const [newQty, setNewQty] = useState(1);
+  const [newCostoNeto, setNewCostoNeto] = useState(0);
+  const [newIva, setNewIva] = useState(0);
+  const [newCostoBruto, setNewCostoBruto] = useState(0);
 
   // Add line to existing
   const [addSku, setAddSku] = useState("");
@@ -219,6 +225,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
     const meta = parseRecepcionMeta(rec.notas || "");
     setEditFolio(rec.folio); setEditProv(rec.proveedor);
     setEditNotas(meta.notas); setEditAsignados(meta.asignados);
+    setEditCostoNeto(rec.costo_neto || 0); setEditIva(rec.iva || 0); setEditCostoBruto(rec.costo_bruto || 0);
     setEditing(false); setShowAnular(false);
   };
 
@@ -246,7 +253,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   const doSaveEdit = async () => {
     if (!selRec) return; setLoading(true);
     const meta: RecepcionMeta = { notas: editNotas, asignados: editAsignados };
-    await actualizarRecepcion(selRec.id!, { folio: editFolio, proveedor: editProv, notas: encodeRecepcionMeta(meta) });
+    await actualizarRecepcion(selRec.id!, { folio: editFolio, proveedor: editProv, notas: encodeRecepcionMeta(meta), costo_neto: editCostoNeto, iva: editIva, costo_bruto: editCostoBruto });
     setEditing(false); await refreshDetail(); setLoading(false);
   };
 
@@ -294,8 +301,8 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   const doCreate = async () => {
     if (!newFolio || !newProv || newLineas.length === 0) return;
     setLoading(true);
-    await crearRecepcion(newFolio, newProv, "", newLineas);
-    setNewFolio(""); setNewProv(""); setNewLineas([]); setShowCreate(false);
+    await crearRecepcion(newFolio, newProv, "", newLineas, { costo_neto: newCostoNeto || 0, iva: newIva || 0, costo_bruto: newCostoBruto || 0 });
+    setNewFolio(""); setNewProv(""); setNewLineas([]); setNewCostoNeto(0); setNewIva(0); setNewCostoBruto(0); setShowCreate(false);
     await loadRecs(); setLoading(false);
   };
 
@@ -339,6 +346,39 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
               <div style={{fontSize:11,color:"var(--txt3)",marginTop:4}}>{ubicadas}/{total} líneas completadas</div>
             </>
           )}
+          {/* Cost summary */}
+          {(() => {
+            const costoCalculado = lineas.reduce((sum, l) => sum + (l.costo_unitario || 0) * l.qty_factura, 0);
+            const hasCostosFactura = (selRec.costo_neto || 0) > 0 || (selRec.costo_bruto || 0) > 0;
+            return (costoCalculado > 0 || hasCostosFactura) ? (
+              <div style={{marginTop:10,padding:"10px 12px",borderRadius:8,background:"var(--bg3)",border:"1px solid var(--bg4)"}}>
+                <div style={{fontSize:11,fontWeight:700,color:"var(--txt2)",marginBottom:6}}>Costos</div>
+                <div style={{display:"grid",gridTemplateColumns:hasCostosFactura?"1fr 1fr":"1fr",gap:8,fontSize:12}}>
+                  {hasCostosFactura && (
+                    <div>
+                      <div style={{fontSize:10,color:"var(--txt3)",marginBottom:4,fontWeight:600}}>Factura</div>
+                      <div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"var(--txt3)"}}>Neto:</span><strong>{fmtMoney(selRec.costo_neto || 0)}</strong></div>
+                      <div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"var(--txt3)"}}>IVA:</span><strong>{fmtMoney(selRec.iva || 0)}</strong></div>
+                      <div style={{display:"flex",justifyContent:"space-between",borderTop:"1px solid var(--bg4)",paddingTop:4,marginTop:4}}><span style={{color:"var(--txt3)"}}>Bruto:</span><strong style={{color:"var(--cyan)"}}>{fmtMoney(selRec.costo_bruto || 0)}</strong></div>
+                    </div>
+                  )}
+                  {costoCalculado > 0 && (
+                    <div>
+                      <div style={{fontSize:10,color:"var(--txt3)",marginBottom:4,fontWeight:600}}>Calculado (lineas)</div>
+                      <div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"var(--txt3)"}}>Neto:</span><strong>{fmtMoney(costoCalculado)}</strong></div>
+                      <div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"var(--txt3)"}}>IVA (19%):</span><strong>{fmtMoney(Math.round(costoCalculado * 0.19))}</strong></div>
+                      <div style={{display:"flex",justifyContent:"space-between",borderTop:"1px solid var(--bg4)",paddingTop:4,marginTop:4}}><span style={{color:"var(--txt3)"}}>Bruto:</span><strong style={{color:"var(--cyan)"}}>{fmtMoney(Math.round(costoCalculado * 1.19))}</strong></div>
+                    </div>
+                  )}
+                </div>
+                {hasCostosFactura && costoCalculado > 0 && Math.abs((selRec.costo_neto || 0) - costoCalculado) > 1 && (
+                  <div style={{marginTop:6,padding:"4px 8px",borderRadius:4,background:"var(--amberBg)",border:"1px solid var(--amberBd)",fontSize:10,color:"var(--amber)",fontWeight:600,textAlign:"center"}}>
+                    Diferencia neto: {fmtMoney(Math.abs((selRec.costo_neto || 0) - costoCalculado))}
+                  </div>
+                )}
+              </div>
+            ) : null;
+          })()}
         </div>
 
         {/* Action bar */}
@@ -406,6 +446,26 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                 {operarios.length === 0 && <span style={{fontSize:11,color:"var(--txt3)"}}>No hay operarios registrados en el sistema</span>}
               </div>
             </div>
+            <div style={{marginBottom:12}}>
+              <label style={{fontSize:11,color:"var(--txt3)",fontWeight:600,display:"block",marginBottom:6}}>Costos de factura</label>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
+                <div>
+                  <label style={{fontSize:10,color:"var(--txt3)"}}>Neto</label>
+                  <input type="number" className="form-input" value={editCostoNeto||""} onChange={e=>{const v=parseFloat(e.target.value)||0;setEditCostoNeto(v);setEditIva(Math.round(v*0.19));setEditCostoBruto(Math.round(v*1.19));}}
+                    placeholder="$0" style={{marginTop:2,fontSize:12}}/>
+                </div>
+                <div>
+                  <label style={{fontSize:10,color:"var(--txt3)"}}>IVA (19%)</label>
+                  <input type="number" className="form-input" value={editIva||""} onChange={e=>setEditIva(parseFloat(e.target.value)||0)}
+                    placeholder="$0" style={{marginTop:2,fontSize:12}}/>
+                </div>
+                <div>
+                  <label style={{fontSize:10,color:"var(--txt3)"}}>Bruto</label>
+                  <input type="number" className="form-input" value={editCostoBruto||""} onChange={e=>{const v=parseFloat(e.target.value)||0;setEditCostoBruto(v);setEditCostoNeto(Math.round(v/1.19));setEditIva(Math.round(v-v/1.19));}}
+                    placeholder="$0" style={{marginTop:2,fontSize:12}}/>
+                </div>
+              </div>
+            </div>
             <button onClick={doSaveEdit} disabled={loading} style={{padding:"10px 20px",borderRadius:6,background:"var(--green)",color:"#fff",fontSize:12,fontWeight:700}}>
               {loading ? "Guardando..." : "Guardar cambios"}
             </button>
@@ -419,7 +479,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
           </div>
           <div style={{overflowX:"auto"}}>
             <table className="tbl">
-              <thead><tr><th>SKU</th><th>Producto</th><th style={{textAlign:"right"}}>Factura</th><th style={{textAlign:"right"}}>Recibido</th><th style={{textAlign:"right"}}>Etiq.</th><th style={{textAlign:"right"}}>Ubic.</th><th>Estado</th>{isEditable&&<th>Acciones</th>}</tr></thead>
+              <thead><tr><th>SKU</th><th>Producto</th><th style={{textAlign:"right"}}>Factura</th><th style={{textAlign:"right"}}>Recibido</th><th style={{textAlign:"right"}}>Etiq.</th><th style={{textAlign:"right"}}>Ubic.</th><th style={{textAlign:"right"}}>C.Unit</th><th style={{textAlign:"right"}}>Subtotal</th><th>Estado</th>{isEditable&&<th>Acciones</th>}</tr></thead>
               <tbody>{lineas.map(l => {
                 const lockInfo = isLineaBloqueada(l, "__admin__");
                 return (
@@ -432,6 +492,8 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                   <td className="mono" style={{textAlign:"right",color:l.qty_recibida>0?(l.qty_recibida===l.qty_factura?"var(--green)":"var(--amber)"):"var(--txt3)"}}>{l.qty_recibida||"—"}</td>
                   <td className="mono" style={{textAlign:"right"}}>{l.qty_etiquetada||"—"}</td>
                   <td className="mono" style={{textAlign:"right",color:(l.qty_ubicada||0)>0?"var(--green)":"var(--txt3)"}}>{l.qty_ubicada||"—"}</td>
+                  <td className="mono" style={{textAlign:"right",fontSize:11,color:l.costo_unitario?"var(--txt2)":"var(--txt3)"}}>{l.costo_unitario?fmtMoney(l.costo_unitario):"—"}</td>
+                  <td className="mono" style={{textAlign:"right",fontSize:11,fontWeight:700,color:l.costo_unitario?"var(--txt1)":"var(--txt3)"}}>{l.costo_unitario?fmtMoney(l.costo_unitario*l.qty_factura):"—"}</td>
                   <td><span style={{fontSize:10,fontWeight:700,padding:"2px 6px",borderRadius:4,
                     background:l.estado==="UBICADA"?"var(--greenBg)":l.estado==="PENDIENTE"?"var(--redBg)":"var(--amberBg)",
                     color:l.estado==="UBICADA"?"var(--green)":l.estado==="PENDIENTE"?"var(--red)":"var(--amber)"}}>{l.estado}</span></td>
@@ -494,6 +556,26 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                 <option value="">Seleccionar...</option>
                 {getProveedores().map(p => <option key={p} value={p}>{p}</option>)}
               </select>
+            </div>
+          </div>
+          <div style={{marginTop:16}}>
+            <label style={{fontSize:11,color:"var(--txt3)",fontWeight:600,display:"block",marginBottom:6}}>Costos de factura</label>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
+              <div>
+                <label style={{fontSize:10,color:"var(--txt3)"}}>Neto</label>
+                <input type="number" className="form-input" value={newCostoNeto||""} onChange={e=>{const v=parseFloat(e.target.value)||0;setNewCostoNeto(v);setNewIva(Math.round(v*0.19));setNewCostoBruto(Math.round(v*1.19));}}
+                  placeholder="$0" style={{marginTop:2,fontSize:12}}/>
+              </div>
+              <div>
+                <label style={{fontSize:10,color:"var(--txt3)"}}>IVA (19%)</label>
+                <input type="number" className="form-input" value={newIva||""} onChange={e=>setNewIva(parseFloat(e.target.value)||0)}
+                  placeholder="$0" style={{marginTop:2,fontSize:12}}/>
+              </div>
+              <div>
+                <label style={{fontSize:10,color:"var(--txt3)"}}>Bruto</label>
+                <input type="number" className="form-input" value={newCostoBruto||""} onChange={e=>{const v=parseFloat(e.target.value)||0;setNewCostoBruto(v);setNewCostoNeto(Math.round(v/1.19));setNewIva(Math.round(v-v/1.19));}}
+                  placeholder="$0" style={{marginTop:2,fontSize:12}}/>
+              </div>
             </div>
           </div>
           <div style={{marginTop:16}}>

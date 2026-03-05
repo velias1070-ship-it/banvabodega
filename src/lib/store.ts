@@ -764,10 +764,11 @@ export async function getRecepciones() { return db.fetchRecepciones(); }
 export async function getRecepcionesActivas() { return db.fetchRecepcionesActivas(); }
 export async function getRecepcionLineas(recId: string) { return db.fetchRecepcionLineas(recId); }
 
-export async function crearRecepcion(folio: string, proveedor: string, imagenUrl: string, lineas: { sku: string; codigoML: string; nombre: string; cantidad: number; costo: number; requiereEtiqueta: boolean }[]): Promise<string | null> {
+export async function crearRecepcion(folio: string, proveedor: string, imagenUrl: string, lineas: { sku: string; codigoML: string; nombre: string; cantidad: number; costo: number; requiereEtiqueta: boolean }[], costos?: { costo_neto?: number; iva?: number; costo_bruto?: number }): Promise<string | null> {
   const id = await db.insertRecepcion({
     folio, proveedor, imagen_url: imagenUrl, estado: "CREADA",
     notas: "", created_by: "admin",
+    ...(costos || {}),
   });
   if (!id) return null;
 

@@ -68,6 +68,9 @@ export interface DBRecepcion {
   created_at?: string;
   created_by: string;
   completed_at?: string;
+  costo_neto?: number;
+  iva?: number;
+  costo_bruto?: number;
 }
 
 export interface DBRecepcionLinea {
