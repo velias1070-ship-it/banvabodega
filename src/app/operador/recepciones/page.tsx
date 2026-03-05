@@ -92,6 +92,11 @@ export default function RecepcionesOperador() {
         try { await desbloquearLinea(selLinea.id!); } catch {}
         setSelLinea(null);
         await loadAll();
+      } else if (updated.estado === "PENDIENTE" && (updated.qty_recibida || 0) > 0) {
+        // Pass complete but more boxes pending — unlock and go back to list
+        try { await desbloquearLinea(selLinea.id!); } catch {}
+        setSelLinea(null);
+        await loadAll();
       } else {
         setSelLinea(updated);
       }
@@ -254,11 +259,14 @@ function LineaCard({ linea: l, operario, onTap }: { linea: DBRecepcionLinea; ope
           {lock.blocked && <span style={{fontSize:10,color:"var(--amber)",fontWeight:600}}>{lock.by}</span>}
         </div>
         <div style={{fontSize:11,color:"var(--txt3)",marginTop:2}}>{l.nombre}</div>
-        {l.estado !== "PENDIENTE" && (
+        {(l.estado !== "PENDIENTE" || (l.qty_recibida || 0) > 0) && (
           <div style={{fontSize:10,color:"var(--txt3)",marginTop:2}}>
-            Recibido: {l.qty_recibida}/{l.qty_factura}
-            {l.requiere_etiqueta && <span> · Etiq: {l.qty_etiquetada}</span>}
-            <span> · Ubic: {l.qty_ubicada}</span>
+            Recibido: <span style={{color:(l.qty_recibida||0)>0?((l.qty_recibida||0)>=l.qty_factura?"var(--green)":"var(--amber)"):"var(--txt3)"}}>{l.qty_recibida||0}/{l.qty_factura}</span>
+            {l.requiere_etiqueta && <span> · Etiq: {l.qty_etiquetada||0}</span>}
+            <span> · Ubic: {l.qty_ubicada||0}</span>
+            {l.estado === "PENDIENTE" && (l.qty_recibida || 0) > 0 && (
+              <span style={{color:"var(--cyan)",fontWeight:600}}> · Esperando caja</span>
+            )}
           </div>
         )}
       </div>
@@ -299,13 +307,16 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, onBack, onS
     if (updated) { setLinea(updated); setStep(determineStep(updated)); }
   };
 
-  // ---- PASO 1: CONTAR ----
-  const [qtyReal, setQtyReal] = useState(linea.qty_factura);
+  // ---- PASO 1: CONTAR (por caja, acumulativo) ----
+  const prevRecibida = linea.qty_recibida || 0;
+  const faltanPorRecibir = Math.max(0, linea.qty_factura - prevRecibida);
+  const [qtyCaja, setQtyCaja] = useState(faltanPorRecibir);
 
   const doContar = async () => {
     setSaving(true);
-    await contarLinea(linea.id!, qtyReal, operario);
-    showToast(`Conteo registrado: ${qtyReal} unidades`);
+    await contarLinea(linea.id!, qtyCaja, operario, recepcionId);
+    const nuevoTotal = prevRecibida + qtyCaja;
+    showToast(`Caja: ${qtyCaja} uds — Total recibido: ${nuevoTotal}/${linea.qty_factura}`);
     await refreshLinea();
     setSaving(false);
     onStepComplete();
@@ -413,7 +424,8 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, onBack, onS
           <div style={{fontSize:11,color:"var(--txt3)",marginTop:2}}>
             {linea.codigo_ml && <span>ML: <strong>{linea.codigo_ml}</strong> · </span>}
             Factura: <strong>{linea.qty_factura}</strong>
-            {linea.qty_recibida > 0 && <span> · Recibido: <strong style={{color:linea.qty_recibida===linea.qty_factura?"var(--green)":"var(--amber)"}}>{linea.qty_recibida}</strong></span>}
+            {(linea.qty_recibida || 0) > 0 && <span> · Recibido: <strong style={{color:(linea.qty_recibida||0)>=linea.qty_factura?"var(--green)":"var(--amber)"}}>{linea.qty_recibida}</strong></span>}
+            {(linea.qty_ubicada || 0) > 0 && <span> · Ubicado: <strong>{linea.qty_ubicada}</strong></span>}
           </div>
           {/* Progress bar */}
           <div style={{display:"flex",gap:4,marginTop:8}}>
@@ -435,32 +447,36 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, onBack, onS
           </div>
         )}
 
-        {/* PASO 1: CONTAR */}
+        {/* PASO 1: CONTAR (por caja) */}
         {step === "contar" && !isComplete && (
           <div style={{padding:"16px",borderRadius:10,background:"var(--bg2)",border:"2px solid var(--amber)"}}>
-            <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>Paso 1 — Conteo</div>
-            <div style={{fontSize:12,color:"var(--txt3)",marginBottom:12}}>
-              La factura dice <strong style={{color:"var(--txt1)"}}>{linea.qty_factura} unidades</strong>. ¿Cuantas recibiste realmente?
-            </div>
-            <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:12,marginBottom:12}}>
-              <button onClick={() => setQtyReal(q => Math.max(0, q - 1))} style={{width:44,height:44,borderRadius:8,background:"var(--bg3)",fontSize:20,fontWeight:700,border:"1px solid var(--bg4)"}}>−</button>
-              <input type="number" value={qtyReal} onChange={e => setQtyReal(Math.max(0, parseInt(e.target.value) || 0))}
-                style={{width:80,textAlign:"center",fontSize:28,fontWeight:700,padding:10,borderRadius:8,background:"var(--bg1)",border:"2px solid var(--bg4)",color:"var(--txt1)"}} />
-              <button onClick={() => setQtyReal(q => q + 1)} style={{width:44,height:44,borderRadius:8,background:"var(--bg3)",fontSize:20,fontWeight:700,border:"1px solid var(--bg4)"}}>+</button>
-            </div>
-            {qtyReal !== linea.qty_factura && (
-              <div style={{textAlign:"center",marginBottom:8,padding:"6px 12px",borderRadius:6,
-                background:qtyReal < linea.qty_factura ? "var(--amberBg)" : "var(--redBg)",
-                color:qtyReal < linea.qty_factura ? "var(--amber)" : "var(--red)",
-                fontSize:12,fontWeight:700}}>
-                {qtyReal < linea.qty_factura
-                  ? `⚠️ Faltan ${linea.qty_factura - qtyReal} unidades`
-                  : `⚠️ Sobran ${qtyReal - linea.qty_factura} unidades`}
+            <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>Paso 1 — Conteo {prevRecibida > 0 ? "(siguiente caja)" : ""}</div>
+            {prevRecibida > 0 && (
+              <div style={{marginBottom:8,padding:"6px 12px",borderRadius:6,background:"var(--bg3)",fontSize:12,fontWeight:700,textAlign:"center"}}>
+                Ya procesadas: <span style={{color:"var(--cyan)"}}>{prevRecibida}</span> / {linea.qty_factura} — Faltan: <span style={{color:"var(--amber)"}}>{faltanPorRecibir}</span>
               </div>
             )}
-            <button onClick={doContar} disabled={saving}
-              style={{width:"100%",padding:14,borderRadius:10,background:saving?"var(--bg3)":"var(--green)",color:saving?"var(--txt3)":"#fff",fontSize:14,fontWeight:700}}>
-              {saving ? "Guardando..." : `Confirmar: ${qtyReal} unidades recibidas`}
+            <div style={{fontSize:12,color:"var(--txt3)",marginBottom:12}}>
+              {prevRecibida > 0
+                ? <>¿Cuantas unidades hay en <strong style={{color:"var(--txt1)"}}>esta caja</strong>?</>
+                : <>La factura dice <strong style={{color:"var(--txt1)"}}>{linea.qty_factura} unidades</strong>. ¿Cuantas hay en esta caja?</>
+              }
+            </div>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:12,marginBottom:12}}>
+              <button onClick={() => setQtyCaja(q => Math.max(0, q - 1))} style={{width:44,height:44,borderRadius:8,background:"var(--bg3)",fontSize:20,fontWeight:700,border:"1px solid var(--bg4)"}}>−</button>
+              <input type="number" value={qtyCaja} onChange={e => setQtyCaja(Math.max(0, parseInt(e.target.value) || 0))}
+                style={{width:80,textAlign:"center",fontSize:28,fontWeight:700,padding:10,borderRadius:8,background:"var(--bg1)",border:"2px solid var(--bg4)",color:"var(--txt1)"}} />
+              <button onClick={() => setQtyCaja(q => q + 1)} style={{width:44,height:44,borderRadius:8,background:"var(--bg3)",fontSize:20,fontWeight:700,border:"1px solid var(--bg4)"}}>+</button>
+            </div>
+            {prevRecibida + qtyCaja > linea.qty_factura && (
+              <div style={{textAlign:"center",marginBottom:8,padding:"6px 12px",borderRadius:6,
+                background:"var(--amberBg)",color:"var(--amber)",fontSize:12,fontWeight:700}}>
+                ⚠️ Total seria {prevRecibida + qtyCaja} — sobran {prevRecibida + qtyCaja - linea.qty_factura} vs factura
+              </div>
+            )}
+            <button onClick={doContar} disabled={saving || qtyCaja <= 0}
+              style={{width:"100%",padding:14,borderRadius:10,background:saving||qtyCaja<=0?"var(--bg3)":"var(--green)",color:saving||qtyCaja<=0?"var(--txt3)":"#fff",fontSize:14,fontWeight:700}}>
+              {saving ? "Guardando..." : `Confirmar: ${qtyCaja} uds en esta caja`}
             </button>
           </div>
         )}
