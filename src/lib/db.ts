@@ -90,6 +90,8 @@ export interface DBRecepcionLinea {
   ts_conteo?: string;
   ts_etiquetado?: string;
   ts_ubicacion?: string;
+  bloqueado_por?: string | null;
+  bloqueado_hasta?: string | null;
 }
 
 export interface DBMapConfig {
@@ -255,6 +257,46 @@ export async function updateRecepcionLinea(id: string, fields: Partial<DBRecepci
 export async function deleteRecepcionLinea(id: string) {
   const sb = getSupabase(); if (!sb) return;
   await sb.from("recepcion_lineas").delete().eq("id", id);
+}
+
+// Fetch ALL lines from multiple receptions at once
+export async function fetchLineasDeRecepciones(recIds: string[]): Promise<DBRecepcionLinea[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  if (recIds.length === 0) return [];
+  const { data } = await sb.from("recepcion_lineas").select("*")
+    .in("recepcion_id", recIds).order("sku");
+  return data || [];
+}
+
+// Try to lock a line for an operator (optimistic: only if not locked by someone else)
+export async function bloquearLinea(lineaId: string, operario: string): Promise<boolean> {
+  const sb = getSupabase(); if (!sb) return false;
+  const ahora = new Date().toISOString();
+  const hasta = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+  // Only lock if: not locked, locked by same operator, or lock expired
+  const { data, error } = await sb.from("recepcion_lineas")
+    .update({ bloqueado_por: operario, bloqueado_hasta: hasta })
+    .eq("id", lineaId)
+    .or(`bloqueado_por.is.null,bloqueado_por.eq.${operario},bloqueado_hasta.lt.${ahora}`)
+    .select("id");
+  return !error && !!data && data.length > 0;
+}
+
+// Renew an existing lock (extend 15 min)
+export async function renovarBloqueo(lineaId: string, operario: string): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  const hasta = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+  await sb.from("recepcion_lineas")
+    .update({ bloqueado_hasta: hasta })
+    .eq("id", lineaId).eq("bloqueado_por", operario);
+}
+
+// Release a lock
+export async function desbloquearLinea(lineaId: string): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("recepcion_lineas")
+    .update({ bloqueado_por: null, bloqueado_hasta: null })
+    .eq("id", lineaId);
 }
 
 // ==================== OPERARIOS ====================

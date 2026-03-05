@@ -43,6 +43,13 @@ function releaseAllCameraStreams() {
   } catch (_) {}
 }
 
+// Reset SDK so it re-initializes fresh (needed after iOS Safari suspends the page)
+function resetScanbotSDK() {
+  sdkInstance = null;
+  sdkInitPromise = null;
+  releaseAllCameraStreams();
+}
+
 
 // ==================== SCANBOT CAMERA BARCODE/QR SCANNER ====================
 export default function BarcodeScanner({
@@ -72,6 +79,28 @@ export default function BarcodeScanner({
       mountedRef.current = false;
       releaseAllCameraStreams();
     };
+  }, []);
+
+  // When returning from background (e.g. switching apps on iOS Safari),
+  // reset the SDK so the camera can be re-acquired fresh
+  useEffect(() => {
+    let hiddenAt = 0;
+    const BACKGROUND_THRESHOLD_MS = 3000;
+
+    const handleVisibility = () => {
+      if (document.visibilityState === "hidden") {
+        hiddenAt = Date.now();
+      } else if (document.visibilityState === "visible" && hiddenAt > 0) {
+        const elapsed = Date.now() - hiddenAt;
+        if (elapsed > BACKGROUND_THRESHOLD_MS) {
+          resetScanbotSDK();
+        }
+        hiddenAt = 0;
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => document.removeEventListener("visibilitychange", handleVisibility);
   }, []);
 
   const DEDUP_MS = 800;

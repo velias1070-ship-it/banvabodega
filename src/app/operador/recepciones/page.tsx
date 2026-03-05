@@ -1,24 +1,25 @@
 "use client";
-import { useState, useEffect, useCallback } from "react";
-import { initStore, isStoreReady, getRecepcionesActivas, getRecepcionesParaOperario, getRecepcionLineas, contarLinea, etiquetarLinea, ubicarLinea, actualizarRecepcion, activePositions, findPosition, fmtDate, fmtTime, getVentasPorSkuOrigen } from "@/lib/store";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { initStore, isStoreReady, getRecepcionesParaOperario, getLineasDeRecepciones, getRecepcionLineas, contarLinea, etiquetarLinea, ubicarLinea, actualizarRecepcion, activePositions, findPosition, bloquearLinea, desbloquearLinea, renovarBloqueo, isLineaBloqueada, getVentasPorSkuOrigen } from "@/lib/store";
 import type { DBRecepcion, DBRecepcionLinea, ComposicionVenta } from "@/lib/store";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 const BarcodeScanner = dynamic(() => import("@/components/BarcodeScanner"), { ssr: false });
 
-const ESTADO_ICON: Record<string, string> = { PENDIENTE: "🔴", CONTADA: "🟡", EN_ETIQUETADO: "🔵", ETIQUETADA: "🟢", UBICADA: "✅" };
+const ESTADO_ICON: Record<string, string> = { PENDIENTE: "\u{1F534}", CONTADA: "\u{1F7E1}", EN_ETIQUETADO: "\u{1F535}", ETIQUETADA: "\u{1F7E2}", UBICADA: "\u2705" };
 const ESTADO_LABEL: Record<string, string> = { PENDIENTE: "Pendiente", CONTADA: "Contada", EN_ETIQUETADO: "Etiquetando", ETIQUETADA: "Etiquetada", UBICADA: "Ubicada" };
+const POLL_INTERVAL = 15_000;
 
 export default function RecepcionesOperador() {
   const [mounted, setMounted] = useState(false);
   const [loading, setLoading] = useState(true);
   const [operario, setOperario] = useState("");
 
-  // Navigation state
+  // Unified line list
   const [recs, setRecs] = useState<DBRecepcion[]>([]);
-  const [selRec, setSelRec] = useState<DBRecepcion | null>(null);
-  const [lineas, setLineas] = useState<DBRecepcionLinea[]>([]);
+  const [allLineas, setAllLineas] = useState<DBRecepcionLinea[]>([]);
   const [selLinea, setSelLinea] = useState<DBRecepcionLinea | null>(null);
+  const [busqueda, setBusqueda] = useState("");
 
   useEffect(() => {
     initStore().then(() => { setMounted(true); setLoading(false); });
@@ -26,36 +27,78 @@ export default function RecepcionesOperador() {
     if (saved) setOperario(saved);
   }, []);
 
-  const loadRecs = useCallback(async () => {
-    setLoading(true);
-    setRecs(operario ? await getRecepcionesParaOperario(operario) : await getRecepcionesActivas());
-    setLoading(false);
+  const loadAll = useCallback(async () => {
+    if (!operario) return;
+    const activeRecs = await getRecepcionesParaOperario(operario);
+    setRecs(activeRecs);
+    const recIds = activeRecs.map(r => r.id!).filter(Boolean);
+    if (recIds.length > 0) {
+      const lineas = await getLineasDeRecepciones(recIds);
+      setAllLineas(lineas);
+    } else {
+      setAllLineas([]);
+    }
+    // Mark any CREADA recs as EN_PROCESO
+    for (const r of activeRecs) {
+      if (r.estado === "CREADA") {
+        actualizarRecepcion(r.id!, { estado: "EN_PROCESO" });
+      }
+    }
   }, [operario]);
 
-  useEffect(() => { if (mounted && operario) loadRecs(); }, [mounted, operario, loadRecs]);
+  useEffect(() => { if (mounted && operario) { setLoading(true); loadAll().finally(() => setLoading(false)); } }, [mounted, operario, loadAll]);
 
-  const openRec = async (rec: DBRecepcion) => {
-    setSelRec(rec);
-    setLineas(await getRecepcionLineas(rec.id!));
-    // Mark as EN_PROCESO if was CREADA
-    if (rec.estado === "CREADA") {
-      await actualizarRecepcion(rec.id!, { estado: "EN_PROCESO" });
-    }
-  };
-
-  const refreshLineas = async () => {
-    if (!selRec) return;
-    const updated = await getRecepcionLineas(selRec.id!);
-    setLineas(updated);
-    // Check if all are UBICADA → mark reception COMPLETADA
-    if (updated.length > 0 && updated.every(l => l.estado === "UBICADA")) {
-      await actualizarRecepcion(selRec.id!, { estado: "COMPLETADA", completed_at: new Date().toISOString() });
-    }
-  };
+  // Polling
+  useEffect(() => {
+    if (!mounted || !operario || selLinea) return;
+    const interval = setInterval(loadAll, POLL_INTERVAL);
+    return () => clearInterval(interval);
+  }, [mounted, operario, selLinea, loadAll]);
 
   const saveOperario = (name: string) => {
     setOperario(name);
     localStorage.setItem("banva_operario", name);
+  };
+
+  const handleSelectLinea = async (linea: DBRecepcionLinea) => {
+    const lock = isLineaBloqueada(linea, operario);
+    if (lock.blocked) return; // can't touch it
+    const ok = await bloquearLinea(linea.id!, operario);
+    if (!ok) {
+      await loadAll(); // refresh to see who locked it
+      return;
+    }
+    setSelLinea(linea);
+  };
+
+  const handleBack = async () => {
+    if (selLinea) {
+      await desbloquearLinea(selLinea.id!);
+    }
+    setSelLinea(null);
+    await loadAll();
+  };
+
+  const handleStepComplete = async () => {
+    // After completing a step, refresh the line but keep working on it
+    if (!selLinea) return;
+    // Refresh this line's data
+    const lineas = await getRecepcionLineas(selLinea.recepcion_id);
+    const updated = lineas.find(l => l.id === selLinea.id);
+    if (updated) {
+      // Check if all lines of this reception are UBICADA
+      if (lineas.every(l => l.estado === "UBICADA")) {
+        await actualizarRecepcion(selLinea.recepcion_id, { estado: "COMPLETADA", completed_at: new Date().toISOString() });
+      }
+      if (updated.estado === "UBICADA") {
+        // Line fully done, unlock and go back
+        await desbloquearLinea(selLinea.id!);
+        setSelLinea(null);
+        await loadAll();
+      } else {
+        setSelLinea(updated);
+      }
+    }
   };
 
   if (!mounted || loading) return (
@@ -64,28 +107,33 @@ export default function RecepcionesOperador() {
     </div>
   );
 
-  // Ask for operator name if not set
   if (!operario) return <OperarioLogin onLogin={saveOperario} />;
 
   // Processing a specific line
-  if (selLinea && selRec) return (
-    <ProcesarLinea
-      linea={selLinea} recepcion={selRec} operario={operario}
-      onBack={async () => { setSelLinea(null); await refreshLineas(); }}
-    />
-  );
+  if (selLinea) {
+    const rec = recs.find(r => r.id === selLinea.recepcion_id);
+    return (
+      <ProcesarLinea
+        linea={selLinea} recepcionId={selLinea.recepcion_id} operario={operario}
+        onBack={handleBack}
+        onStepComplete={handleStepComplete}
+      />
+    );
+  }
 
-  // Viewing a specific reception
-  if (selRec) return (
-    <RecepcionDetalle
-      rec={selRec} lineas={lineas} operario={operario}
-      onBack={() => { setSelRec(null); loadRecs(); }}
-      onSelectLinea={setSelLinea}
-      onRefresh={refreshLineas}
-    />
-  );
+  // Unified line list
+  const q = busqueda.trim().toLowerCase();
+  const lineasFiltradas = q
+    ? allLineas.filter(l => l.sku.toLowerCase().includes(q) || (l.nombre || "").toLowerCase().includes(q) || (l.codigo_ml || "").toLowerCase().includes(q))
+    : allLineas;
 
-  // List of active receptions
+  const pendientes = lineasFiltradas.filter(l => l.estado === "PENDIENTE");
+  const enProceso = lineasFiltradas.filter(l => ["CONTADA", "EN_ETIQUETADO", "ETIQUETADA"].includes(l.estado));
+  const completadas = lineasFiltradas.filter(l => l.estado === "UBICADA");
+  const totalLineas = allLineas.length;
+  const totalUbicadas = allLineas.filter(l => l.estado === "UBICADA").length;
+  const progress = totalLineas > 0 ? Math.round((totalUbicadas / totalLineas) * 100) : 0;
+
   return (
     <div className="app">
       <div className="topbar">
@@ -98,35 +146,68 @@ export default function RecepcionesOperador() {
         </div>
       </div>
       <div style={{padding:12}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-          <span style={{fontSize:13,fontWeight:700}}>Recepciones activas</span>
-          <button onClick={loadRecs} style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"var(--cyan)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>🔄 Actualizar</button>
+        {/* Global progress */}
+        <div style={{padding:"14px 16px",borderRadius:10,background:"var(--bg2)",border:"1px solid var(--bg3)",marginBottom:12}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+            <span style={{fontSize:13,fontWeight:700}}>Progreso del dia</span>
+            <button onClick={() => { setLoading(true); loadAll().finally(() => setLoading(false)); }}
+              style={{padding:"4px 10px",borderRadius:6,background:"var(--bg3)",color:"var(--cyan)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
+              🔄
+            </button>
+          </div>
+          <div style={{background:"var(--bg3)",borderRadius:6,height:10,overflow:"hidden"}}>
+            <div style={{width:`${progress}%`,height:"100%",background:progress===100?"var(--green)":"var(--blue)",borderRadius:6,transition:"width 0.3s"}}/>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",marginTop:6,fontSize:11}}>
+            <span style={{color:"var(--txt3)"}}>{totalUbicadas}/{totalLineas} lineas completadas</span>
+            <span style={{fontWeight:700,color:progress===100?"var(--green)":"var(--blue)"}}>{progress}%</span>
+          </div>
         </div>
 
-        {recs.length === 0 && (
+        {/* Search */}
+        <div style={{position:"relative",marginBottom:12}}>
+          <input type="text" value={busqueda} onChange={e => setBusqueda(e.target.value)}
+            placeholder="Buscar por SKU, nombre o codigo ML..."
+            style={{width:"100%",padding:"10px 14px 10px 36px",borderRadius:8,background:"var(--bg2)",border:"1px solid var(--bg3)",color:"var(--txt1)",fontSize:13,outline:"none"}} />
+          <span style={{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",fontSize:16,color:"var(--txt3)",pointerEvents:"none"}}>🔍</span>
+          {busqueda && (
+            <button onClick={() => setBusqueda("")}
+              style={{position:"absolute",right:8,top:"50%",transform:"translateY(-50%)",background:"var(--bg3)",border:"1px solid var(--bg4)",borderRadius:4,color:"var(--txt3)",fontSize:11,padding:"2px 8px",cursor:"pointer"}}>✕</button>
+          )}
+        </div>
+        {q && <div style={{fontSize:11,color:"var(--txt3)",marginBottom:8,textAlign:"center"}}>{lineasFiltradas.length} resultado{lineasFiltradas.length !== 1 ? "s" : ""} de {totalLineas} lineas</div>}
+
+        {totalLineas === 0 && (
           <div style={{textAlign:"center",padding:32,color:"var(--txt3)"}}>
             <div style={{fontSize:32,marginBottom:8}}>📦</div>
-            <div style={{fontSize:13}}>Sin recepciones pendientes</div>
-            <div style={{fontSize:11,marginTop:4}}>El admin o la app de etiquetas crearán nuevas recepciones</div>
+            <div style={{fontSize:13}}>Sin lineas pendientes</div>
+            <div style={{fontSize:11,marginTop:4}}>El admin creara nuevas recepciones</div>
           </div>
         )}
 
-        {recs.map(rec => (
-          <div key={rec.id} onClick={() => openRec(rec)}
-            style={{padding:"14px 16px",marginBottom:8,borderRadius:10,background:"var(--bg2)",border:"1px solid var(--bg3)",cursor:"pointer"}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-              <div>
-                <div style={{fontSize:14,fontWeight:700}}>{rec.proveedor}</div>
-                <div style={{fontSize:11,color:"var(--txt3)"}}>Folio {rec.folio} · {fmtDate(rec.created_at || "")}</div>
-              </div>
-              <span style={{padding:"4px 10px",borderRadius:6,fontSize:10,fontWeight:700,
-                background:rec.estado==="CREADA"?"var(--amberBg)":"var(--blueBg)",
-                color:rec.estado==="CREADA"?"var(--amber)":"var(--blue)",
-                border:`1px solid ${rec.estado==="CREADA"?"var(--amberBd)":"var(--blueBd)"}`
-              }}>{rec.estado === "CREADA" ? "NUEVA" : "EN PROCESO"}</span>
-            </div>
+        {/* Pending */}
+        {pendientes.length > 0 && (
+          <div style={{marginBottom:16}}>
+            <div style={{fontSize:12,fontWeight:700,color:"var(--red)",marginBottom:6}}>🔴 Pendientes de conteo ({pendientes.length})</div>
+            {pendientes.map(l => <LineaCard key={l.id} linea={l} operario={operario} onTap={() => handleSelectLinea(l)} />)}
           </div>
-        ))}
+        )}
+
+        {/* In progress */}
+        {enProceso.length > 0 && (
+          <div style={{marginBottom:16}}>
+            <div style={{fontSize:12,fontWeight:700,color:"var(--amber)",marginBottom:6}}>🟡 En proceso ({enProceso.length})</div>
+            {enProceso.map(l => <LineaCard key={l.id} linea={l} operario={operario} onTap={() => handleSelectLinea(l)} />)}
+          </div>
+        )}
+
+        {/* Completed */}
+        {completadas.length > 0 && (
+          <div>
+            <div style={{fontSize:12,fontWeight:700,color:"var(--green)",marginBottom:6}}>✅ Completadas ({completadas.length})</div>
+            {completadas.map(l => <LineaCard key={l.id} linea={l} operario={operario} onTap={() => handleSelectLinea(l)} />)}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -140,7 +221,7 @@ function OperarioLogin({ onLogin }: { onLogin: (name: string) => void }) {
       <div style={{width:"100%",maxWidth:340,textAlign:"center"}}>
         <div style={{fontSize:11,fontWeight:700,letterSpacing:"0.12em",color:"var(--cyan)",textTransform:"uppercase",marginBottom:6}}>BANVA BODEGA</div>
         <div style={{fontSize:22,fontWeight:800,marginBottom:4}}>Recepciones</div>
-        <div style={{fontSize:13,color:"var(--txt3)",marginBottom:24}}>¿Quién eres?</div>
+        <div style={{fontSize:13,color:"var(--txt3)",marginBottom:24}}>¿Quien eres?</div>
         <input className="form-input" value={name} onChange={e => setName(e.target.value)}
           onKeyDown={e => e.key === "Enter" && name.trim() && onLogin(name.trim())}
           placeholder="Tu nombre" autoFocus style={{fontSize:16,textAlign:"center",padding:14,marginBottom:12}} />
@@ -154,121 +235,26 @@ function OperarioLogin({ onLogin }: { onLogin: (name: string) => void }) {
   );
 }
 
-// ==================== RECEPCION DETALLE ====================
-function RecepcionDetalle({ rec, lineas, operario, onBack, onSelectLinea, onRefresh }: {
-  rec: DBRecepcion; lineas: DBRecepcionLinea[]; operario: string;
-  onBack: () => void; onSelectLinea: (l: DBRecepcionLinea) => void; onRefresh: () => void;
-}) {
-  const [busqueda, setBusqueda] = useState("");
-  const total = lineas.length;
-  const ubicadas = lineas.filter(l => l.estado === "UBICADA").length;
-  const progress = total > 0 ? Math.round((ubicadas / total) * 100) : 0;
-
-  const q = busqueda.trim().toLowerCase();
-  const lineasFiltradas = q
-    ? lineas.filter(l => l.sku.toLowerCase().includes(q) || (l.nombre || "").toLowerCase().includes(q) || (l.codigo_ml || "").toLowerCase().includes(q))
-    : lineas;
-
-  // Group by estado
-  const pendientes = lineasFiltradas.filter(l => l.estado === "PENDIENTE");
-  const enProceso = lineasFiltradas.filter(l => ["CONTADA", "EN_ETIQUETADO", "ETIQUETADA"].includes(l.estado));
-  const completadas = lineasFiltradas.filter(l => l.estado === "UBICADA");
-
-  return (
-    <div className="app">
-      <div className="topbar">
-        <button className="back-btn" onClick={onBack}>&#8592;</button>
-        <h1>{rec.proveedor}</h1>
-        <button onClick={onRefresh} style={{padding:"6px 10px",borderRadius:6,background:"var(--bg3)",color:"var(--cyan)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>🔄</button>
-      </div>
-      <div style={{padding:12}}>
-        {/* Header card */}
-        <div style={{padding:"14px 16px",borderRadius:10,background:"var(--bg2)",border:"1px solid var(--bg3)",marginBottom:12}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-            <span style={{fontSize:12,color:"var(--txt3)"}}>Folio <strong style={{color:"var(--txt1)"}}>{rec.folio}</strong></span>
-            <span style={{fontSize:11,color:"var(--txt3)"}}>{fmtDate(rec.created_at || "")}</span>
-          </div>
-          <div style={{background:"var(--bg3)",borderRadius:6,height:10,overflow:"hidden"}}>
-            <div style={{width:`${progress}%`,height:"100%",background:progress===100?"var(--green)":"var(--blue)",borderRadius:6,transition:"width 0.3s"}}/>
-          </div>
-          <div style={{display:"flex",justifyContent:"space-between",marginTop:6,fontSize:11}}>
-            <span style={{color:"var(--txt3)"}}>{ubicadas}/{total} completadas</span>
-            <span style={{fontWeight:700,color:progress===100?"var(--green)":"var(--blue)"}}>{progress}%</span>
-          </div>
-        </div>
-
-        {/* Search bar */}
-        <div style={{position:"relative",marginBottom:12}}>
-          <input
-            type="text"
-            value={busqueda}
-            onChange={e => setBusqueda(e.target.value)}
-            placeholder="Buscar por SKU, nombre o codigo ML..."
-            style={{width:"100%",padding:"10px 14px 10px 36px",borderRadius:8,background:"var(--bg2)",border:"1px solid var(--bg3)",color:"var(--txt1)",fontSize:13,outline:"none"}}
-          />
-          <span style={{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",fontSize:16,color:"var(--txt3)",pointerEvents:"none"}}>🔍</span>
-          {busqueda && (
-            <button onClick={() => setBusqueda("")}
-              style={{position:"absolute",right:8,top:"50%",transform:"translateY(-50%)",background:"var(--bg3)",border:"1px solid var(--bg4)",borderRadius:4,color:"var(--txt3)",fontSize:11,padding:"2px 8px",cursor:"pointer"}}>
-              ✕
-            </button>
-          )}
-        </div>
-        {q && (
-          <div style={{fontSize:11,color:"var(--txt3)",marginBottom:8,textAlign:"center"}}>
-            {lineasFiltradas.length} resultado{lineasFiltradas.length !== 1 ? "s" : ""} de {total} lineas
-          </div>
-        )}
-
-        {/* Pending - action required */}
-        {pendientes.length > 0 && (
-          <div style={{marginBottom:16}}>
-            <div style={{fontSize:12,fontWeight:700,color:"var(--red)",marginBottom:6}}>
-              🔴 Pendientes de conteo ({pendientes.length})
-            </div>
-            {pendientes.map(l => (
-              <LineaCard key={l.id} linea={l} onTap={() => onSelectLinea(l)} />
-            ))}
-          </div>
-        )}
-
-        {/* In progress */}
-        {enProceso.length > 0 && (
-          <div style={{marginBottom:16}}>
-            <div style={{fontSize:12,fontWeight:700,color:"var(--amber)",marginBottom:6}}>
-              🟡 En proceso ({enProceso.length})
-            </div>
-            {enProceso.map(l => (
-              <LineaCard key={l.id} linea={l} onTap={() => onSelectLinea(l)} />
-            ))}
-          </div>
-        )}
-
-        {/* Completed */}
-        {completadas.length > 0 && (
-          <div>
-            <div style={{fontSize:12,fontWeight:700,color:"var(--green)",marginBottom:6}}>
-              ✅ Completadas ({completadas.length})
-            </div>
-            {completadas.map(l => (
-              <LineaCard key={l.id} linea={l} onTap={() => onSelectLinea(l)} />
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function LineaCard({ linea: l, onTap }: { linea: DBRecepcionLinea; onTap: () => void }) {
+// ==================== LINEA CARD (with lock display) ====================
+function LineaCard({ linea: l, operario, onTap }: { linea: DBRecepcionLinea; operario: string; onTap: () => void }) {
   const icon = ESTADO_ICON[l.estado] || "⚪";
+  const lock = isLineaBloqueada(l, operario);
+
   return (
-    <div onClick={onTap}
-      style={{padding:"12px 14px",marginBottom:6,borderRadius:8,background:"var(--bg2)",border:"1px solid var(--bg3)",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+    <div onClick={lock.blocked ? undefined : onTap}
+      style={{
+        padding:"12px 14px",marginBottom:6,borderRadius:8,
+        background: lock.blocked ? "var(--bg3)" : "var(--bg2)",
+        border: `1px solid ${lock.blocked ? "var(--bg4)" : "var(--bg3)"}`,
+        cursor: lock.blocked ? "not-allowed" : "pointer",
+        opacity: lock.blocked ? 0.6 : 1,
+        display:"flex",justifyContent:"space-between",alignItems:"center",
+      }}>
       <div style={{flex:1}}>
         <div style={{display:"flex",alignItems:"center",gap:6}}>
-          <span>{icon}</span>
+          <span>{lock.blocked ? "🔒" : icon}</span>
           <span className="mono" style={{fontWeight:700,fontSize:13}}>{l.sku}</span>
+          {lock.blocked && <span style={{fontSize:10,color:"var(--amber)",fontWeight:600}}>{lock.by}</span>}
         </div>
         <div style={{fontSize:11,color:"var(--txt3)",marginTop:2}}>{l.nombre}</div>
         {l.estado !== "PENDIENTE" && (
@@ -280,7 +266,7 @@ function LineaCard({ linea: l, onTap }: { linea: DBRecepcionLinea; onTap: () => 
         )}
       </div>
       <div style={{textAlign:"right"}}>
-        <div className="mono" style={{fontWeight:700,fontSize:16,color:"var(--blue)"}}>{l.qty_factura}</div>
+        <div className="mono" style={{fontWeight:700,fontSize:16,color:lock.blocked?"var(--txt3)":"var(--blue)"}}>{l.qty_factura}</div>
         <div style={{fontSize:9,color:"var(--txt3)"}}>factura</div>
       </div>
     </div>
@@ -288,19 +274,30 @@ function LineaCard({ linea: l, onTap }: { linea: DBRecepcionLinea; onTap: () => 
 }
 
 // ==================== PROCESAR LINEA ====================
-function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
-  linea: DBRecepcionLinea; recepcion: DBRecepcion; operario: string; onBack: () => void;
+function ProcesarLinea({ linea: initialLinea, recepcionId, operario, onBack, onStepComplete }: {
+  linea: DBRecepcionLinea; recepcionId: string; operario: string; onBack: () => void; onStepComplete: () => void;
 }) {
   const [linea, setLinea] = useState(initialLinea);
   const [step, setStep] = useState<"contar" | "etiquetar" | "ubicar">(determineStep(initialLinea));
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState("");
   const positions = activePositions().filter(p => p.id !== "SIN_ASIGNAR");
+  const renewalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(""), 2500); };
 
+  // Auto-renew lock every 5 minutes while working on this line
+  useEffect(() => {
+    renewalRef.current = setInterval(() => {
+      renovarBloqueo(linea.id!, operario);
+    }, 5 * 60 * 1000);
+    return () => {
+      if (renewalRef.current) clearInterval(renewalRef.current);
+    };
+  }, [linea.id, operario]);
+
   const refreshLinea = async () => {
-    const lineas = await getRecepcionLineas(recepcion.id!);
+    const lineas = await getRecepcionLineas(recepcionId);
     const updated = lineas.find(l => l.id === linea.id);
     if (updated) { setLinea(updated); setStep(determineStep(updated)); }
   };
@@ -314,6 +311,7 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
     showToast(`Conteo registrado: ${qtyReal} unidades`);
     await refreshLinea();
     setSaving(false);
+    onStepComplete();
   };
 
   // ---- PASO 2: ETIQUETAR ----
@@ -333,12 +331,14 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
     setEtiqQty(0);
     setScanResult(null);
     setScanCode("");
+    // Renew lock after each labeling action
+    renovarBloqueo(linea.id!, operario);
+    onStepComplete();
   };
 
   // Get ALL packs/ventas this physical product participates in
   const packsForSku: ComposicionVenta[] = getVentasPorSkuOrigen(linea.sku);
   const allValidMlCodes = packsForSku.map(p => p.codigoMl).filter(Boolean);
-  // Also include the line's own codigo_ml if set
   if (linea.codigo_ml && !allValidMlCodes.includes(linea.codigo_ml)) {
     allValidMlCodes.push(linea.codigo_ml);
   }
@@ -346,11 +346,8 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
   const onScanML = (code: string) => {
     const trimmed = code.trim().toUpperCase();
     setScanCode(trimmed);
-
-    // Check against ALL valid ML codes for this physical product
     const isValid = allValidMlCodes.some(ml => ml.toUpperCase() === trimmed)
-      || trimmed === linea.sku.toUpperCase(); // also accept the SKU itself
-
+      || trimmed === linea.sku.toUpperCase();
     if (!isValid) {
       setScanResult("error");
       if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
@@ -374,11 +371,12 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
   const doUbicar = async () => {
     if (!ubicarPos || ubicarQty <= 0) return;
     setSaving(true);
-    await ubicarLinea(linea.id!, linea.sku, ubicarPos, ubicarQty, operario, recepcion.id!);
+    await ubicarLinea(linea.id!, linea.sku, ubicarPos, ubicarQty, operario, recepcionId);
     showToast(`${ubicarQty} uds ubicadas en ${ubicarPos}`);
     await refreshLinea();
     setSaving(false);
     setUbicarPos("");
+    onStepComplete();
   };
 
   const onScanPos = (code: string) => {
@@ -386,9 +384,9 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
     const pos = findPosition(code);
     if (pos) {
       setUbicarPos(pos.id);
-      showToast(`Posición: ${pos.label}`);
+      showToast(`Posicion: ${pos.label}`);
     } else {
-      showToast(`⚠️ Posición no encontrada: ${code}`);
+      showToast(`⚠️ Posicion no encontrada: ${code}`);
     }
   };
 
@@ -424,7 +422,7 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
           <div style={{display:"flex",gap:4,marginTop:8}}>
             <StepPill label="Conteo" active={step==="contar"} done={["CONTADA","EN_ETIQUETADO","ETIQUETADA","UBICADA"].includes(linea.estado)} />
             {linea.requiere_etiqueta && <StepPill label="Etiquetado" active={step==="etiquetar"} done={["ETIQUETADA","UBICADA"].includes(linea.estado)} />}
-            <StepPill label="Ubicación" active={step==="ubicar"} done={linea.estado==="UBICADA"} />
+            <StepPill label="Ubicacion" active={step==="ubicar"} done={linea.estado==="UBICADA"} />
           </div>
         </div>
 
@@ -432,12 +430,10 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
         {isComplete && (
           <div style={{textAlign:"center",padding:24}}>
             <div style={{fontSize:48,marginBottom:8}}>✅</div>
-            <div style={{fontSize:18,fontWeight:700,color:"var(--green)"}}>Línea completada</div>
-            <div style={{fontSize:12,color:"var(--txt3)",marginTop:4}}>
-              {linea.qty_ubicada} unidades ubicadas
-            </div>
+            <div style={{fontSize:18,fontWeight:700,color:"var(--green)"}}>Linea completada</div>
+            <div style={{fontSize:12,color:"var(--txt3)",marginTop:4}}>{linea.qty_ubicada} unidades ubicadas</div>
             <button onClick={onBack} style={{marginTop:16,padding:"12px 24px",borderRadius:8,background:"var(--bg3)",color:"var(--cyan)",fontSize:13,fontWeight:700,border:"1px solid var(--bg4)"}}>
-              ← Volver a recepción
+              ← Volver
             </button>
           </div>
         )}
@@ -447,7 +443,7 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
           <div style={{padding:"16px",borderRadius:10,background:"var(--bg2)",border:"2px solid var(--amber)"}}>
             <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>Paso 1 — Conteo</div>
             <div style={{fontSize:12,color:"var(--txt3)",marginBottom:12}}>
-              La factura dice <strong style={{color:"var(--txt1)"}}>{linea.qty_factura} unidades</strong>. ¿Cuántas recibiste realmente?
+              La factura dice <strong style={{color:"var(--txt1)"}}>{linea.qty_factura} unidades</strong>. ¿Cuantas recibiste realmente?
             </div>
             <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:12,marginBottom:12}}>
               <button onClick={() => setQtyReal(q => Math.max(0, q - 1))} style={{width:44,height:44,borderRadius:8,background:"var(--bg3)",fontSize:20,fontWeight:700,border:"1px solid var(--bg4)"}}>−</button>
@@ -477,7 +473,6 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
           <div style={{padding:"16px",borderRadius:10,background:"var(--bg2)",border:"2px solid var(--blue)"}}>
             <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>Paso 2 — Etiquetado</div>
 
-            {/* Show ALL associated ML codes / packs for this product */}
             {packsForSku.length > 1 ? (
               <div style={{marginBottom:10}}>
                 <div style={{fontSize:12,color:"var(--txt3)",marginBottom:6}}>
@@ -495,13 +490,11 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
                     <span style={{fontSize:10,color:"var(--txt3)",flex:1,textAlign:"right"}}>{pack.skuVenta}</span>
                   </div>
                 ))}
-                <div style={{fontSize:11,color:"var(--txt3)",marginTop:4}}>
-                  Cualquiera de estos códigos es válido al escanear
-                </div>
+                <div style={{fontSize:11,color:"var(--txt3)",marginTop:4}}>Cualquiera de estos codigos es valido al escanear</div>
               </div>
             ) : (
               <div style={{fontSize:12,color:"var(--txt3)",marginBottom:4}}>
-                Etiqueta cada unidad con código ML: <strong style={{color:"var(--cyan)"}}>{linea.codigo_ml || packsForSku[0]?.codigoMl || "—"}</strong>
+                Etiqueta cada unidad con codigo ML: <strong style={{color:"var(--cyan)"}}>{linea.codigo_ml || packsForSku[0]?.codigoMl || "—"}</strong>
                 {packsForSku.length === 1 && packsForSku[0].unidades > 1 && (
                   <span style={{color:"var(--amber)",fontWeight:700}}> (Pack x{packsForSku[0].unidades})</span>
                 )}
@@ -518,17 +511,15 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
             </div>
 
             {/* Scan to verify */}
-            <BarcodeScanner onScan={onScanML} active={true} label="Verificar código ML" mode="barcode"
-              placeholder={allValidMlCodes.length === 1 ? `Esperado: ${allValidMlCodes[0]}` : "Escanea cualquier código ML válido..."} />
+            <BarcodeScanner onScan={onScanML} active={true} label="Verificar codigo ML" mode="barcode"
+              placeholder={allValidMlCodes.length === 1 ? `Esperado: ${allValidMlCodes[0]}` : "Escanea cualquier codigo ML valido..."} />
 
             {scanResult === "error" && (
               <div style={{padding:14,background:"#ef444422",border:"2px solid #ef4444",borderRadius:12,marginBottom:12,textAlign:"center"}}>
                 <div style={{fontSize:28,marginBottom:6}}>&#10060;</div>
                 <div style={{fontSize:15,fontWeight:700,color:"#ef4444"}}>CODIGO INCORRECTO</div>
                 <div style={{fontSize:13,color:"#94a3b8",marginTop:6}}>Escaneaste: <strong style={{fontFamily:"monospace",color:"#ef4444"}}>{scanCode}</strong></div>
-                <div style={{fontSize:12,color:"#94a3b8",marginTop:4}}>
-                  Códigos válidos para <strong>{linea.sku}</strong>:
-                </div>
+                <div style={{fontSize:12,color:"#94a3b8",marginTop:4}}>Codigos validos para <strong>{linea.sku}</strong>:</div>
                 {allValidMlCodes.map((ml, i) => {
                   const pack = packsForSku.find(p => p.codigoMl === ml);
                   return (
@@ -559,15 +550,14 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
               );
             })()}
 
-            {/* Mark quantity as labeled — only enabled after scanning a valid code */}
             {scanResult !== "ok" && (
               <div style={{padding:"10px 14px",background:"var(--amberBg)",border:"1px solid var(--amberBd)",borderRadius:8,marginBottom:10,textAlign:"center"}}>
-                <div style={{fontSize:12,fontWeight:700,color:"var(--amber)"}}>⚠️ Escaneá o ingresá el código ML para continuar</div>
-                <div style={{fontSize:11,color:"var(--txt3)",marginTop:2}}>No se puede registrar etiquetado sin verificar el código</div>
+                <div style={{fontSize:12,fontWeight:700,color:"var(--amber)"}}>⚠️ Escaneá o ingresá el codigo ML para continuar</div>
+                <div style={{fontSize:11,color:"var(--txt3)",marginTop:2}}>No se puede registrar etiquetado sin verificar el codigo</div>
               </div>
             )}
             <div style={{opacity:scanResult==="ok"?1:0.4,pointerEvents:scanResult==="ok"?"auto":"none"}}>
-              <div style={{fontSize:12,fontWeight:600,color:"var(--txt2)",marginBottom:6}}>¿Cuántas etiquetaste en esta tanda?</div>
+              <div style={{fontSize:12,fontWeight:600,color:"var(--txt2)",marginBottom:6}}>¿Cuantas etiquetaste en esta tanda?</div>
               <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap"}}>
                 {[1, 3, 6, 10, 12, qtyTotal - (linea.qty_etiquetada||0)].filter((v, i, a) => v > 0 && v <= (qtyTotal - (linea.qty_etiquetada||0)) && a.indexOf(v) === i).map(n => (
                   <button key={n} onClick={() => setEtiqQty(n)}
@@ -594,14 +584,12 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
               <strong style={{color:"var(--txt1)"}}>{qtyPendienteUbicar} unidades</strong> listas para ubicar
             </div>
 
-            {/* Scan position QR */}
-            <BarcodeScanner onScan={onScanPos} active={true} label="Escanear QR de posición" mode="qr" />
+            <BarcodeScanner onScan={onScanPos} active={true} label="Escanear QR de posicion" mode="qr" />
 
-            {/* Or select manually */}
             <div style={{fontSize:11,textAlign:"center",color:"var(--txt3)",marginBottom:6}}>o selecciona manualmente</div>
             <select className="form-select" value={ubicarPos} onChange={e => setUbicarPos(e.target.value)}
               style={{width:"100%",padding:10,fontSize:13,marginBottom:10}}>
-              <option value="">— Seleccionar posición —</option>
+              <option value="">— Seleccionar posicion —</option>
               {positions.map(p => <option key={p.id} value={p.id}>{p.id} — {p.label}</option>)}
             </select>
 
@@ -616,12 +604,12 @@ function ProcesarLinea({ linea: initialLinea, recepcion, operario, onBack }: {
                 </div>
                 {ubicarQty < qtyPendienteUbicar && (
                   <div style={{textAlign:"center",fontSize:11,color:"var(--amber)",marginBottom:8}}>
-                    Quedarán {qtyPendienteUbicar - ubicarQty} unidades sin ubicar (puedes dividir en otra posición)
+                    Quedaran {qtyPendienteUbicar - ubicarQty} unidades sin ubicar (puedes dividir en otra posicion)
                   </div>
                 )}
                 <button onClick={doUbicar} disabled={saving}
                   style={{width:"100%",padding:14,borderRadius:10,background:saving?"var(--bg3)":"var(--green)",color:saving?"var(--txt3)":"#fff",fontSize:14,fontWeight:700}}>
-                  {saving ? "Guardando..." : `Ubicar ${ubicarQty} uds en posición ${ubicarPos}`}
+                  {saving ? "Guardando..." : `Ubicar ${ubicarQty} uds en posicion ${ubicarPos}`}
                 </button>
               </>
             )}
@@ -651,5 +639,5 @@ function determineStep(l: DBRecepcionLinea): "contar" | "etiquetar" | "ubicar" {
     return l.requiere_etiqueta ? "etiquetar" : "ubicar";
   }
   if (l.estado === "ETIQUETADA") return "ubicar";
-  return "ubicar"; // UBICADA - show completed
+  return "ubicar";
 }

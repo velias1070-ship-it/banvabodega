@@ -1,7 +1,7 @@
 "use client";
 /* v3.1 — conteos + pedidos ML + cron fix */
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, fetchAllPedidosFlex, fetchPedidosFlexByEstado, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds } from "@/lib/db";
 import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap, ShipmentWithItems } from "@/lib/db";
@@ -138,8 +138,15 @@ const ESTADO_LABELS_A: Record<string, string> = {
 };
 
 type RecFilter = "activas"|"pausadas"|"completadas"|"anuladas"|"todas";
+type RecView = "dia"|"facturas";
+
+const LINEA_ESTADO_COLORS: Record<string, string> = {
+  PENDIENTE: "var(--red)", CONTADA: "var(--amber)", EN_ETIQUETADO: "var(--blue)",
+  ETIQUETADA: "var(--green)", UBICADA: "var(--green)",
+};
 
 function AdminRecepciones({ refresh }: { refresh: () => void }) {
+  const [view, setView] = useState<RecView>("dia");
   const [recs, setRecs] = useState<DBRecepcion[]>([]);
   const [loading, setLoading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
@@ -147,6 +154,10 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   const [selRec, setSelRec] = useState<DBRecepcion|null>(null);
   const [lineas, setLineas] = useState<DBRecepcionLinea[]>([]);
   const [operarios, setOperarios] = useState<DBOperario[]>([]);
+
+  // Day view state
+  const [dayLineas, setDayLineas] = useState<DBRecepcionLinea[]>([]);
+  const [dayFilter, setDayFilter] = useState<"todas"|"pendientes"|"diferencia">("todas");
 
   // Edit state
   const [editing, setEditing] = useState(false);
@@ -170,7 +181,20 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   const [addSku, setAddSku] = useState("");
   const [addQty, setAddQty] = useState(1);
 
-  const loadRecs = async () => { setLoading(true); setRecs(await getRecepciones()); setOperarios(await getOperarios()); setLoading(false); };
+  const loadRecs = async () => {
+    setLoading(true);
+    const [allRecs, ops] = await Promise.all([getRecepciones(), getOperarios()]);
+    setRecs(allRecs);
+    setOperarios(ops);
+    // Load day view lines from active receptions
+    const activeIds = allRecs.filter(r => ["CREADA","EN_PROCESO"].includes(r.estado)).map(r => r.id!).filter(Boolean);
+    if (activeIds.length > 0) {
+      setDayLineas(await getLineasDeRecepciones(activeIds));
+    } else {
+      setDayLineas([]);
+    }
+    setLoading(false);
+  };
   useEffect(() => { loadRecs(); }, []);
 
   const counts: Record<RecFilter, number> = {
@@ -396,10 +420,14 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
           <div style={{overflowX:"auto"}}>
             <table className="tbl">
               <thead><tr><th>SKU</th><th>Producto</th><th style={{textAlign:"right"}}>Factura</th><th style={{textAlign:"right"}}>Recibido</th><th style={{textAlign:"right"}}>Etiq.</th><th style={{textAlign:"right"}}>Ubic.</th><th>Estado</th>{isEditable&&<th>Acciones</th>}</tr></thead>
-              <tbody>{lineas.map(l => (
+              <tbody>{lineas.map(l => {
+                const lockInfo = isLineaBloqueada(l, "__admin__");
+                return (
                 <tr key={l.id} style={{background:l.estado==="UBICADA"?"var(--greenBg)":"transparent"}}>
                   <td className="mono" style={{fontSize:11,fontWeight:700}}>{l.sku}</td>
-                  <td style={{fontSize:11}}>{l.nombre}<br/><span className="mono" style={{fontSize:9,color:"var(--txt3)"}}>{l.codigo_ml||""}</span></td>
+                  <td style={{fontSize:11}}>{l.nombre}<br/><span className="mono" style={{fontSize:9,color:"var(--txt3)"}}>{l.codigo_ml||""}</span>
+                    {lockInfo.blocked && <span style={{fontSize:10,color:"var(--amber)",fontWeight:600,display:"block"}}>🔒 {lockInfo.by}</span>}
+                  </td>
                   <td className="mono" style={{textAlign:"right"}}>{l.qty_factura}</td>
                   <td className="mono" style={{textAlign:"right",color:l.qty_recibida>0?(l.qty_recibida===l.qty_factura?"var(--green)":"var(--amber)"):"var(--txt3)"}}>{l.qty_recibida||"—"}</td>
                   <td className="mono" style={{textAlign:"right"}}>{l.qty_etiquetada||"—"}</td>
@@ -409,13 +437,15 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                     color:l.estado==="UBICADA"?"var(--green)":l.estado==="PENDIENTE"?"var(--red)":"var(--amber)"}}>{l.estado}</span></td>
                   {isEditable&&<td style={{whiteSpace:"nowrap"}}>
                     <div style={{display:"flex",gap:4}}>
+                      {lockInfo.blocked && <button onClick={async()=>{await desbloquearLinea(l.id!);await refreshDetail();}} title="Desbloquear" style={{padding:"3px 6px",borderRadius:4,background:"var(--amberBg)",color:"var(--amber)",fontSize:10,fontWeight:700,border:"1px solid var(--amberBd)",cursor:"pointer"}}>🔓</button>}
                       {l.estado !== "PENDIENTE" && <button onClick={()=>doResetLinea(l.id!)} title="Resetear a pendiente" style={{padding:"3px 6px",borderRadius:4,background:"var(--amberBg)",color:"var(--amber)",fontSize:10,fontWeight:700,border:"1px solid var(--amberBd)",cursor:"pointer"}}>Reset</button>}
                       <button onClick={()=>{const v=prompt("Nueva cantidad factura:",String(l.qty_factura));if(v)doUpdateLineQty(l.id!,v);}} title="Editar cantidad" style={{padding:"3px 6px",borderRadius:4,background:"var(--bg3)",color:"var(--cyan)",fontSize:10,fontWeight:700,border:"1px solid var(--bg4)",cursor:"pointer"}}>Qty</button>
-                      <button onClick={()=>doDeleteLinea(l.id!)} title="Eliminar línea" style={{padding:"3px 6px",borderRadius:4,background:"var(--redBg)",color:"var(--red)",fontSize:10,fontWeight:700,border:"1px solid var(--redBd)",cursor:"pointer"}}>✕</button>
+                      <button onClick={()=>doDeleteLinea(l.id!)} title="Eliminar linea" style={{padding:"3px 6px",borderRadius:4,background:"var(--redBg)",color:"var(--red)",fontSize:10,fontWeight:700,border:"1px solid var(--redBd)",cursor:"pointer"}}>✕</button>
                     </div>
                   </td>}
                 </tr>
-              ))}</tbody>
+                );
+              })}</tbody>
             </table>
           </div>
           {/* Add line to existing reception */}
@@ -508,6 +538,22 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   }
 
   // ==================== LIST VIEW ====================
+  // Day view data
+  const dayTotal = dayLineas.length;
+  const dayUbicadas = dayLineas.filter(l => l.estado === "UBICADA").length;
+  const dayProgress = dayTotal > 0 ? Math.round((dayUbicadas / dayTotal) * 100) : 0;
+
+  const dayLineasFiltradas = dayFilter === "pendientes"
+    ? dayLineas.filter(l => l.estado !== "UBICADA")
+    : dayFilter === "diferencia"
+    ? dayLineas.filter(l => l.qty_recibida > 0 && l.qty_recibida !== l.qty_factura)
+    : dayLineas;
+
+  const doDesbloquear = async (lineaId: string) => {
+    await desbloquearLinea(lineaId);
+    await loadRecs();
+  };
+
   return (
     <div>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
@@ -517,11 +563,111 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
             {loading?"...":"Actualizar"}
           </button>
           <button onClick={()=>setShowCreate(true)} style={{padding:"8px 16px",borderRadius:6,background:"var(--green)",color:"#fff",fontSize:12,fontWeight:700}}>
-            + Nueva recepción
+            + Nueva recepcion
           </button>
         </div>
       </div>
 
+      {/* View toggle */}
+      <div style={{display:"flex",gap:0,marginBottom:12}}>
+        <button onClick={()=>setView("dia")}
+          style={{padding:"8px 16px",borderRadius:"6px 0 0 6px",fontSize:12,fontWeight:700,cursor:"pointer",
+            background:view==="dia"?"var(--cyan)":"var(--bg3)",color:view==="dia"?"#000":"var(--txt2)",
+            border:`1px solid ${view==="dia"?"var(--cyan)":"var(--bg4)"}`}}>
+          📅 Dia
+        </button>
+        <button onClick={()=>setView("facturas")}
+          style={{padding:"8px 16px",borderRadius:"0 6px 6px 0",fontSize:12,fontWeight:700,cursor:"pointer",
+            background:view==="facturas"?"var(--cyan)":"var(--bg3)",color:view==="facturas"?"#000":"var(--txt2)",
+            border:`1px solid ${view==="facturas"?"var(--cyan)":"var(--bg4)"}`,borderLeft:"none"}}>
+          📄 Facturas
+        </button>
+      </div>
+
+      {/* ==================== DAY VIEW ==================== */}
+      {view === "dia" && (
+        <div>
+          {/* Global progress bar */}
+          <div className="card" style={{marginBottom:12}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+              <span style={{fontSize:14,fontWeight:700}}>Progreso global</span>
+              <span style={{fontSize:13,fontWeight:700,color:dayProgress===100?"var(--green)":"var(--blue)"}}>{dayProgress}%</span>
+            </div>
+            <div style={{background:"var(--bg3)",borderRadius:6,height:12,overflow:"hidden"}}>
+              <div style={{width:`${dayProgress}%`,height:"100%",background:dayProgress===100?"var(--green)":"var(--blue)",borderRadius:6,transition:"width 0.3s"}}/>
+            </div>
+            <div style={{fontSize:12,color:"var(--txt3)",marginTop:6}}>{dayUbicadas}/{dayTotal} lineas completadas</div>
+          </div>
+
+          {/* Day filter */}
+          <div style={{display:"flex",gap:4,marginBottom:12,flexWrap:"wrap"}}>
+            {([["todas","Todas"],["pendientes","Pendientes"],["diferencia","Con diferencia"]] as [string,string][]).map(([key,label]) => (
+              <button key={key} onClick={()=>setDayFilter(key as typeof dayFilter)}
+                style={{padding:"6px 12px",borderRadius:6,fontSize:11,fontWeight:600,cursor:"pointer",
+                  background:dayFilter===key?"var(--cyan)":"var(--bg3)",color:dayFilter===key?"#000":"var(--txt2)",
+                  border:`1px solid ${dayFilter===key?"var(--cyan)":"var(--bg4)"}`}}>
+                {label} ({key==="todas"?dayTotal:key==="pendientes"?dayLineas.filter(l=>l.estado!=="UBICADA").length:dayLineas.filter(l=>l.qty_recibida>0&&l.qty_recibida!==l.qty_factura).length})
+              </button>
+            ))}
+          </div>
+
+          {dayLineasFiltradas.length === 0 && !loading && (
+            <div className="card" style={{textAlign:"center",padding:32}}>
+              <div style={{fontSize:13,color:"var(--txt3)"}}>Sin lineas en esta vista.</div>
+            </div>
+          )}
+
+          {dayLineasFiltradas.length > 0 && (
+            <div style={{overflowX:"auto"}}>
+              <table className="tbl">
+                <thead><tr>
+                  <th>SKU</th><th>Producto</th>
+                  <th style={{textAlign:"right"}}>Factura</th><th style={{textAlign:"right"}}>Recibido</th>
+                  <th style={{textAlign:"right"}}>Etiq.</th><th style={{textAlign:"right"}}>Ubic.</th>
+                  <th>Estado</th><th>Operario</th><th></th>
+                </tr></thead>
+                <tbody>{dayLineasFiltradas.map(l => {
+                  const lock = isLineaBloqueada(l, "__admin__");
+                  const operarioActual = l.bloqueado_por || l.operario_ubicacion || l.operario_etiquetado || l.operario_conteo || "";
+                  return (
+                    <tr key={l.id} style={{background:l.estado==="UBICADA"?"var(--greenBg)":"transparent"}}>
+                      <td className="mono" style={{fontSize:11,fontWeight:700}}>{l.sku}</td>
+                      <td style={{fontSize:11}}>{l.nombre}</td>
+                      <td className="mono" style={{textAlign:"right"}}>{l.qty_factura}</td>
+                      <td className="mono" style={{textAlign:"right",color:l.qty_recibida>0?(l.qty_recibida===l.qty_factura?"var(--green)":"var(--amber)"):"var(--txt3)"}}>{l.qty_recibida||"—"}</td>
+                      <td className="mono" style={{textAlign:"right"}}>{l.qty_etiquetada||"—"}</td>
+                      <td className="mono" style={{textAlign:"right",color:(l.qty_ubicada||0)>0?"var(--green)":"var(--txt3)"}}>{l.qty_ubicada||"—"}</td>
+                      <td><span style={{fontSize:10,fontWeight:700,padding:"2px 6px",borderRadius:4,
+                        background:l.estado==="UBICADA"?"var(--greenBg)":l.estado==="PENDIENTE"?"var(--redBg)":"var(--amberBg)",
+                        color:LINEA_ESTADO_COLORS[l.estado]||"var(--txt3)"}}>{l.estado}</span></td>
+                      <td style={{fontSize:11}}>
+                        {lock.blocked ? (
+                          <span style={{color:"var(--amber)",fontWeight:600}}>🔒 {lock.by}</span>
+                        ) : operarioActual ? (
+                          <span style={{color:"var(--cyan)"}}>{operarioActual}</span>
+                        ) : (
+                          <span style={{color:"var(--txt3)"}}>—</span>
+                        )}
+                      </td>
+                      <td>
+                        {lock.blocked && (
+                          <button onClick={()=>doDesbloquear(l.id!)} title="Desbloquear"
+                            style={{padding:"3px 6px",borderRadius:4,background:"var(--amberBg)",color:"var(--amber)",fontSize:10,fontWeight:700,border:"1px solid var(--amberBd)",cursor:"pointer"}}>
+                            🔓
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}</tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ==================== FACTURAS VIEW (existing) ==================== */}
+      {view === "facturas" && (<>
       {/* Filter tabs */}
       <div style={{display:"flex",gap:4,marginBottom:12,flexWrap:"wrap"}}>
         {(["activas","pausadas","completadas","anuladas","todas"] as RecFilter[]).map(f => (
@@ -537,7 +683,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
 
       {filteredRecs.length === 0 && !loading && (
         <div className="card" style={{textAlign:"center",padding:32}}>
-          <div style={{fontSize:13,color:"var(--txt3)"}}>Sin recepciones en esta categoría.</div>
+          <div style={{fontSize:13,color:"var(--txt3)"}}>Sin recepciones en esta categoria.</div>
         </div>
       )}
 
@@ -575,6 +721,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
           );
         })}
       </div>
+      </>)}
     </div>
   );
 }
