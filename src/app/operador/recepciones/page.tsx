@@ -20,6 +20,7 @@ export default function RecepcionesOperador() {
   const [allLineas, setAllLineas] = useState<DBRecepcionLinea[]>([]);
   const [selLinea, setSelLinea] = useState<DBRecepcionLinea | null>(null);
   const [busqueda, setBusqueda] = useState("");
+  const [lockError, setLockError] = useState("");
 
   useEffect(() => {
     initStore().then(() => { setMounted(true); setLoading(false); });
@@ -61,10 +62,23 @@ export default function RecepcionesOperador() {
   };
 
   const handleSelectLinea = async (linea: DBRecepcionLinea) => {
+    setLockError("");
     const lock = isLineaBloqueada(linea, operario);
-    if (lock.blocked) return; // can't touch it
-    // Try to lock, but proceed even if lock fails (columns may not exist yet)
-    try { await bloquearLinea(linea.id!, operario); } catch {}
+    if (lock.blocked) {
+      setLockError(`${lock.by} esta trabajando en esta linea`);
+      setTimeout(() => setLockError(""), 4000);
+      return;
+    }
+    try {
+      const ok = await bloquearLinea(linea.id!, operario);
+      if (!ok) {
+        // Refresh to get who has the lock
+        await loadAll();
+        setLockError("Otro operario tomo esta linea justo ahora. Intenta otra.");
+        setTimeout(() => setLockError(""), 4000);
+        return;
+      }
+    } catch {}
     setSelLinea(linea);
   };
 
@@ -148,6 +162,11 @@ export default function RecepcionesOperador() {
         </div>
       </div>
       <div style={{padding:12}}>
+        {lockError && (
+          <div style={{padding:"10px 14px",borderRadius:8,background:"#fef2f2",border:"1px solid #fca5a5",color:"#dc2626",fontSize:13,fontWeight:600,marginBottom:10,textAlign:"center"}}>
+            {lockError}
+          </div>
+        )}
         {/* Global progress */}
         <div style={{padding:"14px 16px",borderRadius:10,background:"var(--bg2)",border:"1px solid var(--bg3)",marginBottom:12}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
