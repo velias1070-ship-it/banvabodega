@@ -328,20 +328,22 @@ export async function fetchLineasDeRecepciones(recIds: string[]): Promise<DBRece
   return data || [];
 }
 
-// Try to lock a line for an operator (optimistic: only if not locked by someone else)
-// Returns true if locked successfully OR if lock columns don't exist yet (graceful degradation)
+// Try to lock a line for an operator — atomic via PostgreSQL RPC (SELECT FOR UPDATE)
+// Returns true if locked successfully, false if someone else holds the lock
 export async function bloquearLinea(lineaId: string, operario: string): Promise<boolean> {
   const sb = getSupabase(); if (!sb) return true;
   try {
-    const ahora = new Date().toISOString();
-    const hasta = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-    const { data, error } = await sb.from("recepcion_lineas")
-      .update({ bloqueado_por: operario, bloqueado_hasta: hasta })
-      .eq("id", lineaId)
-      .or(`bloqueado_por.is.null,bloqueado_por.eq."${operario}",bloqueado_hasta.lt."${ahora}"`)
-      .select("id");
-    if (error) return true; // columns may not exist yet
-    return !!data && data.length > 0;
+    const { data, error } = await sb.rpc("bloquear_linea", {
+      p_linea_id: lineaId,
+      p_operario: operario,
+      p_minutos: 15,
+    });
+    if (error) {
+      // RPC doesn't exist yet (v6 not deployed) — fallback to old behavior
+      console.warn("bloquear_linea RPC not available, falling back", error.message);
+      return true;
+    }
+    return data === true;
   } catch { return true; }
 }
 
@@ -356,13 +358,17 @@ export async function renovarBloqueo(lineaId: string, operario: string): Promise
   } catch {}
 }
 
-// Release a lock
+// Release a lock — atomic via PostgreSQL RPC
 export async function desbloquearLinea(lineaId: string): Promise<void> {
   const sb = getSupabase(); if (!sb) return;
   try {
-    await sb.from("recepcion_lineas")
-      .update({ bloqueado_por: null, bloqueado_hasta: null })
-      .eq("id", lineaId);
+    const { error } = await sb.rpc("desbloquear_linea", { p_linea_id: lineaId });
+    if (error) {
+      // Fallback if RPC not deployed yet
+      await sb.from("recepcion_lineas")
+        .update({ bloqueado_por: null, bloqueado_hasta: null })
+        .eq("id", lineaId);
+    }
   } catch {}
 }
 

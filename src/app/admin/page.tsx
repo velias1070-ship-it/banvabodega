@@ -2666,13 +2666,16 @@ function Inventario() {
       const skus = Array.from(allSkuSet).sort();
 
       const rows: string[] = [];
-      rows.push(["sku_origen","nombre","stock_actual","pendiente_recepcion","stock_proyectado"].join(","));
+      rows.push(["sku_origen","sku_venta","nombre","stock_actual","pendiente_recepcion","stock_proyectado"].join(","));
       for (const sku of skus) {
         const prod = s.products[sku];
         const stockActual = skuTotal(sku);
         const pendiente = pendientePorSku[sku] || 0;
+        const ventas = getVentasPorSkuOrigen(sku);
+        const skuVenta = ventas.map(v => v.skuVenta).filter((v, i, a) => a.indexOf(v) === i).join(", ");
         rows.push([
           csvEscape(sku),
+          csvEscape(skuVenta),
           csvEscape(prod?.name || ""),
           String(stockActual),
           String(pendiente),
