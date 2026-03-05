@@ -1157,20 +1157,24 @@ export async function getDiscrepancias(recepcionId: string): Promise<db.DBDiscre
   return db.fetchDiscrepancias(recepcionId);
 }
 
-export async function aprobarNuevoCosto(discId: string, sku: string, nuevoCosto: number) {
+export async function aprobarNuevoCosto(discId: string, sku: string, nuevoCosto: number): Promise<{ dbOk: boolean; sheetResult?: Record<string, unknown> }> {
   await db.updateDiscrepancia(discId, {
     estado: "APROBADO", resuelto_por: "admin", resuelto_at: new Date().toISOString(),
   });
   await db.updateProductoCosto(sku, nuevoCosto);
   if (_cache.products[sku]) _cache.products[sku].cost = nuevoCosto;
-  // Try to update Google Sheet (non-blocking, best effort)
+  // Try to update Google Sheet
   try {
-    await fetch("/api/sheet/update-cost", {
+    const res = await fetch("/api/sheet/update-cost", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sku, nuevoCosto }),
     });
-  } catch {}
+    const data = await res.json();
+    return { dbOk: true, sheetResult: data };
+  } catch (e: unknown) {
+    return { dbOk: true, sheetResult: { error: e instanceof Error ? e.message : "fetch failed" } };
+  }
 }
 
 export async function rechazarNuevoCosto(discId: string, notas?: string) {
