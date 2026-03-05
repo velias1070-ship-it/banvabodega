@@ -385,12 +385,15 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
           )}
           {/* Cost summary */}
           {(() => {
-            const costoCalculado = lineas.reduce((sum, l) => sum + (l.costo_unitario || 0) * l.qty_factura, 0);
+            const costoFacturaCalc = lineas.reduce((sum, l) => sum + (l.costo_unitario || 0) * l.qty_factura, 0);
+            const hayRecibido = lineas.some(l => l.qty_recibida > 0);
+            const costoRecibido = hayRecibido ? lineas.reduce((sum, l) => sum + (l.costo_unitario || 0) * (l.qty_recibida || l.qty_factura), 0) : 0;
             const hasCostosFactura = (selRec.costo_neto || 0) > 0 || (selRec.costo_bruto || 0) > 0;
-            return (costoCalculado > 0 || hasCostosFactura) ? (
+            const diffFactura = hayRecibido && costoRecibido !== costoFacturaCalc ? costoRecibido - costoFacturaCalc : 0;
+            return (costoFacturaCalc > 0 || hasCostosFactura) ? (
               <div style={{marginTop:10,padding:"10px 12px",borderRadius:8,background:"var(--bg3)",border:"1px solid var(--bg4)"}}>
                 <div style={{fontSize:11,fontWeight:700,color:"var(--txt2)",marginBottom:6}}>Costos</div>
-                <div style={{display:"grid",gridTemplateColumns:hasCostosFactura?"1fr 1fr":"1fr",gap:8,fontSize:12}}>
+                <div style={{display:"grid",gridTemplateColumns:hasCostosFactura?(hayRecibido?"1fr 1fr 1fr":"1fr 1fr"):"1fr",gap:8,fontSize:12}}>
                   {hasCostosFactura && (
                     <div>
                       <div style={{fontSize:10,color:"var(--txt3)",marginBottom:4,fontWeight:600}}>Factura</div>
@@ -399,18 +402,31 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                       <div style={{display:"flex",justifyContent:"space-between",borderTop:"1px solid var(--bg4)",paddingTop:4,marginTop:4}}><span style={{color:"var(--txt3)"}}>Bruto:</span><strong style={{color:"var(--cyan)"}}>{fmtMoney(selRec.costo_bruto || 0)}</strong></div>
                     </div>
                   )}
-                  {costoCalculado > 0 && (
+                  {costoFacturaCalc > 0 && (
                     <div>
-                      <div style={{fontSize:10,color:"var(--txt3)",marginBottom:4,fontWeight:600}}>Calculado (lineas)</div>
-                      <div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"var(--txt3)"}}>Neto:</span><strong>{fmtMoney(costoCalculado)}</strong></div>
-                      <div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"var(--txt3)"}}>IVA (19%):</span><strong>{fmtMoney(Math.round(costoCalculado * 0.19))}</strong></div>
-                      <div style={{display:"flex",justifyContent:"space-between",borderTop:"1px solid var(--bg4)",paddingTop:4,marginTop:4}}><span style={{color:"var(--txt3)"}}>Bruto:</span><strong style={{color:"var(--cyan)"}}>{fmtMoney(Math.round(costoCalculado * 1.19))}</strong></div>
+                      <div style={{fontSize:10,color:"var(--txt3)",marginBottom:4,fontWeight:600}}>Calculado (qty factura)</div>
+                      <div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"var(--txt3)"}}>Neto:</span><strong>{fmtMoney(costoFacturaCalc)}</strong></div>
+                      <div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"var(--txt3)"}}>IVA (19%):</span><strong>{fmtMoney(Math.round(costoFacturaCalc * 0.19))}</strong></div>
+                      <div style={{display:"flex",justifyContent:"space-between",borderTop:"1px solid var(--bg4)",paddingTop:4,marginTop:4}}><span style={{color:"var(--txt3)"}}>Bruto:</span><strong style={{color:"var(--cyan)"}}>{fmtMoney(Math.round(costoFacturaCalc * 1.19))}</strong></div>
+                    </div>
+                  )}
+                  {hayRecibido && costoRecibido > 0 && (
+                    <div>
+                      <div style={{fontSize:10,color:diffFactura!==0?"var(--amber)":"var(--green)",marginBottom:4,fontWeight:600}}>Calculado (qty recibida)</div>
+                      <div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"var(--txt3)"}}>Neto:</span><strong>{fmtMoney(costoRecibido)}</strong></div>
+                      <div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"var(--txt3)"}}>IVA (19%):</span><strong>{fmtMoney(Math.round(costoRecibido * 0.19))}</strong></div>
+                      <div style={{display:"flex",justifyContent:"space-between",borderTop:"1px solid var(--bg4)",paddingTop:4,marginTop:4}}><span style={{color:"var(--txt3)"}}>Bruto:</span><strong style={{color:diffFactura!==0?"var(--amber)":"var(--cyan)"}}>{fmtMoney(Math.round(costoRecibido * 1.19))}</strong></div>
                     </div>
                   )}
                 </div>
-                {hasCostosFactura && costoCalculado > 0 && Math.abs((selRec.costo_neto || 0) - costoCalculado) > 1 && (
+                {hasCostosFactura && costoFacturaCalc > 0 && Math.abs((selRec.costo_neto || 0) - costoFacturaCalc) > 1 && (
                   <div style={{marginTop:6,padding:"4px 8px",borderRadius:4,background:"var(--amberBg)",border:"1px solid var(--amberBd)",fontSize:10,color:"var(--amber)",fontWeight:600,textAlign:"center"}}>
-                    Diferencia neto: {fmtMoney(Math.abs((selRec.costo_neto || 0) - costoCalculado))}
+                    Diferencia neto factura vs calc: {fmtMoney(Math.abs((selRec.costo_neto || 0) - costoFacturaCalc))}
+                  </div>
+                )}
+                {hayRecibido && diffFactura !== 0 && (
+                  <div style={{marginTop:4,padding:"4px 8px",borderRadius:4,background:diffFactura>0?"var(--redBg)":"var(--greenBg)",border:`1px solid ${diffFactura>0?"var(--redBd,var(--red))":"var(--greenBd,var(--green))"}`,fontSize:10,color:diffFactura>0?"var(--red)":"var(--green)",fontWeight:600,textAlign:"center"}}>
+                    {diffFactura > 0 ? "Recibiste de más" : "Recibiste de menos"}: {fmtMoney(Math.abs(diffFactura))} neto ({diffFactura > 0 ? "te deben" : "les debes"})
                   </div>
                 )}
               </div>
