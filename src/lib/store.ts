@@ -1137,7 +1137,27 @@ export async function detectarDiscrepancias(recepcionId: string, lineas: db.DBRe
   const nuevas: Omit<db.DBDiscrepanciaCosto, "id" | "created_at">[] = [];
   for (const l of lineas) {
     const prod = _cache.products[l.sku];
-    const costoDic = prod?.cost || 0;
+    // For SKUs with multiple composicion rows (individual + pack), we must use
+    // the unit cost (unidades=1 row), not the pack cost. The _cache.products cost
+    // may be stale or wrong if the first CSV row was a pack.
+    const ventasDelSku = _cache.composicion.filter(c => c.skuOrigen === l.sku);
+    let costoDic = prod?.cost || 0;
+    if (ventasDelSku.length > 1) {
+      // Multiple rows exist — find the one with unidades=1 for the true unit cost
+      const unitaria = ventasDelSku.find(c => c.unidades === 1);
+      if (unitaria && prod) {
+        // The product cost should be the unit cost; if it looks like a pack cost, recalculate
+        // We trust the product cost only if there's a unidades=1 row and the cost makes sense
+        costoDic = prod.cost;
+      } else if (!unitaria && ventasDelSku.length > 0) {
+        // No unidades=1 row; derive unit cost from smallest pack
+        const smallest = ventasDelSku.reduce((a, b) => a.unidades < b.unidades ? a : b);
+        // The product cost might be the pack cost, so divide by smallest unidades
+        if (prod && smallest.unidades > 1) {
+          costoDic = Math.round(prod.cost / smallest.unidades);
+        }
+      }
+    }
     const costoFact = l.costo_unitario || 0;
     if (costoDic === 0 && costoFact === 0) continue;
     if (Math.abs(costoDic - costoFact) < 1) continue;
@@ -1155,6 +1175,12 @@ export async function detectarDiscrepancias(recepcionId: string, lineas: db.DBRe
 
 export async function getDiscrepancias(recepcionId: string): Promise<db.DBDiscrepanciaCosto[]> {
   return db.fetchDiscrepancias(recepcionId);
+}
+
+export async function recalcularDiscrepancias(recepcionId: string, lineas: db.DBRecepcionLinea[]): Promise<db.DBDiscrepanciaCosto[]> {
+  // Delete existing PENDIENTE discrepancies and re-detect
+  await db.deleteDiscrepanciasPendientes(recepcionId);
+  return detectarDiscrepancias(recepcionId, lineas);
 }
 
 export async function aprobarNuevoCosto(discId: string, sku: string, nuevoCosto: number): Promise<{ dbOk: boolean; sheetResult?: Record<string, unknown> }> {

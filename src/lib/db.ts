@@ -306,6 +306,14 @@ export async function updateDiscrepancia(id: string, fields: Partial<DBDiscrepan
   } catch {}
 }
 
+export async function deleteDiscrepanciasPendientes(recepcionId: string) {
+  const sb = getSupabase(); if (!sb) return;
+  try {
+    await sb.from("discrepancias_costo").delete()
+      .eq("recepcion_id", recepcionId).eq("estado", "PENDIENTE");
+  } catch {}
+}
+
 export async function updateProductoCosto(sku: string, nuevoCosto: number) {
   const sb = getSupabase(); if (!sb) return;
   await sb.from("productos").update({ costo: nuevoCosto }).eq("sku", sku);
