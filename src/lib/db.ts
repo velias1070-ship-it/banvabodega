@@ -198,7 +198,8 @@ export async function fetchStock(): Promise<DBStock[]> {
 
 export async function updateStock(sku: string, posicion_id: string, delta: number) {
   const sb = getSupabase(); if (!sb) return;
-  await sb.rpc("update_stock", { p_sku: sku, p_posicion: posicion_id, p_delta: delta });
+  const { error } = await sb.rpc("update_stock", { p_sku: sku, p_posicion: posicion_id, p_delta: delta });
+  if (error) throw new Error(`updateStock failed for ${sku}: ${error.message}`);
 }
 
 export async function setStock(sku: string, posicion_id: string, cantidad: number) {
@@ -225,9 +226,16 @@ export async function fetchMovimientos(limit = 200): Promise<DBMovimiento[]> {
   return data || [];
 }
 
+export async function fetchMovimientosByRecepcion(recepcionId: string): Promise<DBMovimiento[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("movimientos").select("*").eq("recepcion_id", recepcionId);
+  return data || [];
+}
+
 export async function insertMovimiento(m: Omit<DBMovimiento, "id" | "created_at">) {
   const sb = getSupabase(); if (!sb) return;
-  await sb.from("movimientos").insert(m);
+  const { error } = await sb.from("movimientos").insert(m);
+  if (error) throw new Error(`insertMovimiento failed for ${m.sku}: ${error.message}`);
 }
 
 // ==================== RECEPCIONES ====================

@@ -398,12 +398,19 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, onBack, onS
   const doUbicar = async () => {
     if (!ubicarPos || ubicarQty <= 0) return;
     setSaving(true);
-    await ubicarLinea(linea.id!, linea.sku, ubicarPos, ubicarQty, operario, recepcionId);
-    showToast(`${ubicarQty} uds ubicadas en ${ubicarPos}`);
-    await refreshLinea();
-    setSaving(false);
-    setUbicarPos("");
-    onStepComplete();
+    try {
+      await ubicarLinea(linea.id!, linea.sku, ubicarPos, ubicarQty, operario, recepcionId);
+      showToast(`${ubicarQty} uds ubicadas en ${ubicarPos}`);
+      await refreshLinea();
+      setUbicarPos("");
+      onStepComplete();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Error desconocido al ubicar";
+      showToast(`ERROR: ${msg}`);
+      await refreshLinea();
+    } finally {
+      setSaving(false);
+    }
   };
 
   const onScanPos = (code: string) => {

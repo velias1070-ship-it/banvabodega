@@ -1,7 +1,8 @@
 "use client";
 /* v3.1 — conteos + pedidos ML + cron fix */
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion } from "@/lib/store";
+import type { AuditResult } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto } from "@/lib/db";
 import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, fetchAllPedidosFlex, fetchPedidosFlexByEstado, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds } from "@/lib/db";
@@ -171,6 +172,16 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   const [editIva, setEditIva] = useState(0);
   const [editCostoBruto, setEditCostoBruto] = useState(0);
 
+  // Inline line editing
+  const [editLineaId, setEditLineaId] = useState<string|null>(null);
+  const [editLineaData, setEditLineaData] = useState<{qty_factura:number;qty_recibida:number;qty_etiquetada:number;qty_ubicada:number;costo_unitario:number;nombre:string;sku:string;estado:string}>({qty_factura:0,qty_recibida:0,qty_etiquetada:0,qty_ubicada:0,costo_unitario:0,nombre:"",sku:"",estado:"PENDIENTE"});
+
+  // Audit & repair
+  const [auditResults, setAuditResults] = useState<AuditResult[]|null>(null);
+  const [auditing, setAuditing] = useState(false);
+  const [repairing, setRepairing] = useState(false);
+  const [repairPos, setRepairPos] = useState("SIN_ASIGNAR");
+
   // Anular dialog
   const [showAnular, setShowAnular] = useState(false);
   const [anularMotivo, setAnularMotivo] = useState("");
@@ -231,7 +242,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
     setEditFolio(rec.folio); setEditProv(rec.proveedor);
     setEditNotas(meta.notas); setEditAsignados(meta.asignados);
     setEditCostoNeto(rec.costo_neto || 0); setEditIva(rec.iva || 0); setEditCostoBruto(rec.costo_bruto || 0);
-    setEditing(false); setShowAnular(false);
+    setEditing(false); setShowAnular(false); setAuditResults(null); setEditLineaId(null);
   };
 
   const refreshDetail = async () => {
@@ -309,6 +320,27 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
     const n = parseInt(val); if (isNaN(n) || n < 0) return;
     await actualizarLineaRecepcion(lineaId, { qty_factura: n });
     setLineas(await getRecepcionLineas(selRec!.id!));
+  };
+  const startEditLinea = (l: DBRecepcionLinea) => {
+    setEditLineaId(l.id!);
+    setEditLineaData({ qty_factura: l.qty_factura, qty_recibida: l.qty_recibida||0, qty_etiquetada: l.qty_etiquetada||0, qty_ubicada: l.qty_ubicada||0, costo_unitario: l.costo_unitario||0, nombre: l.nombre, sku: l.sku, estado: l.estado });
+  };
+  const saveEditLinea = async () => {
+    if (!editLineaId) return;
+    setLoading(true);
+    await actualizarLineaRecepcion(editLineaId, {
+      qty_factura: editLineaData.qty_factura,
+      qty_recibida: editLineaData.qty_recibida,
+      qty_etiquetada: editLineaData.qty_etiquetada,
+      qty_ubicada: editLineaData.qty_ubicada,
+      costo_unitario: editLineaData.costo_unitario,
+      nombre: editLineaData.nombre,
+      sku: editLineaData.sku,
+      estado: editLineaData.estado as DBRecepcionLinea["estado"],
+    });
+    setEditLineaId(null);
+    setLineas(await getRecepcionLineas(selRec!.id!));
+    setLoading(false);
   };
   const doAddLinea = async () => {
     if (!addSku || !selRec) return;
@@ -446,7 +478,66 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
           {selRec.estado === "CERRADA" && <button onClick={doReactivar} style={{padding:"8px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--green)",fontSize:11,fontWeight:700,border:"1px solid var(--bg4)"}}>Reabrir</button>}
           {selRec.estado !== "ANULADA" && <button onClick={()=>setShowAnular(!showAnular)} style={{padding:"8px 14px",borderRadius:6,background:showAnular?"var(--red)":"var(--bg3)",color:showAnular?"#fff":"var(--red)",fontSize:11,fontWeight:700,border:"1px solid var(--bg4)"}}>Anular</button>}
           <button onClick={refreshDetail} style={{padding:"8px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--cyan)",fontSize:11,fontWeight:700,border:"1px solid var(--bg4)"}}>Actualizar</button>
+          <button disabled={auditing} onClick={async()=>{
+            setAuditing(true); setAuditResults(null);
+            try { const r = await auditarRecepcion(selRec.id!); setAuditResults(r); }
+            finally { setAuditing(false); }
+          }} style={{padding:"8px 14px",borderRadius:6,background:"var(--amberBg)",color:"var(--amber)",fontSize:11,fontWeight:700,border:"1px solid var(--amberBd)"}}>
+            {auditing ? "Auditando..." : "Auditar inventario"}
+          </button>
         </div>
+
+        {/* Audit results */}
+        {auditResults !== null && (
+          <div className="card" style={{marginTop:12,border:"2px solid var(--amber)"}}>
+            <div style={{fontSize:13,fontWeight:700,color:"var(--amber)",marginBottom:8}}>
+              Resultado de auditoria — {auditResults.length === 0 ? "Todo OK" : `${auditResults.length} problemas encontrados`}
+            </div>
+            {auditResults.length === 0 ? (
+              <div style={{padding:12,textAlign:"center",color:"var(--green)",fontWeight:600}}>
+                Todas las lineas UBICADAS tienen stock y movimientos correctos.
+              </div>
+            ) : (
+              <>
+                <div style={{overflowX:"auto"}}>
+                  <table className="tbl">
+                    <thead><tr><th>SKU</th><th>Producto</th><th style={{textAlign:"right"}}>Ubicado</th><th style={{textAlign:"right"}}>Movimientos</th><th style={{textAlign:"right"}}>Stock actual</th><th>Problema</th><th>Estado</th></tr></thead>
+                    <tbody>{auditResults.map(r => (
+                      <tr key={r.linea_id} style={{background: r.reparado ? "var(--greenBg)" : "var(--redBg)"}}>
+                        <td className="mono" style={{fontSize:11,fontWeight:700}}>{r.sku}</td>
+                        <td style={{fontSize:11}}>{r.nombre}</td>
+                        <td className="mono" style={{textAlign:"right"}}>{r.qty_ubicada}</td>
+                        <td className="mono" style={{textAlign:"right",color:r.movimientos_encontrados===0?"var(--red)":"var(--txt1)"}}>{r.movimientos_encontrados}</td>
+                        <td className="mono" style={{textAlign:"right",color:r.stock_actual===0?"var(--red)":"var(--txt1)"}}>{r.stock_actual}</td>
+                        <td style={{fontSize:10,color:"var(--red)",fontWeight:600}}>{r.problema}</td>
+                        <td>{r.reparado ? <span style={{fontSize:10,fontWeight:700,color:"var(--green)"}}>REPARADO: {r.detalle}</span> : <span style={{fontSize:10,color:"var(--txt3)"}}>{r.estado}</span>}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+                {!auditResults.some(r => r.reparado) && (
+                  <div style={{marginTop:12,padding:12,borderRadius:8,background:"var(--bg3)",display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                    <span style={{fontSize:11,fontWeight:600}}>Reparar: registrar stock faltante en</span>
+                    <select className="form-select" value={repairPos} onChange={e=>setRepairPos(e.target.value)} style={{fontSize:11,padding:"4px 8px"}}>
+                      {activePositions().map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+                    </select>
+                    <button disabled={repairing} onClick={async()=>{
+                      if (!confirm(`Esto registrara el stock faltante en posicion "${repairPos}" y creara los movimientos. Continuar?`)) return;
+                      setRepairing(true);
+                      try {
+                        const r = await repararRecepcion(selRec.id!, repairPos);
+                        setAuditResults(r);
+                        await refreshDetail();
+                      } finally { setRepairing(false); }
+                    }} style={{padding:"8px 16px",borderRadius:6,background:"var(--green)",color:"#fff",fontSize:11,fontWeight:700,border:"none",cursor:"pointer"}}>
+                      {repairing ? "Reparando..." : "Reparar ahora"}
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
 
         {/* Anular dialog */}
         {showAnular && (
@@ -606,12 +697,40 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
               <tbody>{lineas.map(l => {
                 const lockInfo = isLineaBloqueada(l, "__admin__");
                 const disc = discrepancias.find(d => d.linea_id === l.id && d.estado === "PENDIENTE");
+                const isEd = editLineaId === l.id;
+                const inputStyle = {width:58,textAlign:"right" as const,padding:"3px 6px",borderRadius:4,border:"1px solid var(--cyan)",background:"var(--bg)",color:"var(--txt1)",fontSize:11,fontFamily:"inherit"};
+                if (isEd) return (
+                <tr key={l.id} style={{background:"var(--cyanBg, rgba(0,200,255,0.06))"}}>
+                  <td className="mono" style={{fontSize:11,fontWeight:700}}>
+                    <input style={{...inputStyle,width:90,textAlign:"left"}} value={editLineaData.sku} onChange={e=>setEditLineaData(d=>({...d,sku:e.target.value}))}/>
+                  </td>
+                  <td style={{fontSize:11}}>
+                    <input style={{...inputStyle,width:"100%",textAlign:"left"}} value={editLineaData.nombre} onChange={e=>setEditLineaData(d=>({...d,nombre:e.target.value}))}/>
+                  </td>
+                  <td><input type="number" style={inputStyle} value={editLineaData.qty_factura} onChange={e=>setEditLineaData(d=>({...d,qty_factura:parseInt(e.target.value)||0}))}/></td>
+                  <td><input type="number" style={inputStyle} value={editLineaData.qty_recibida} onChange={e=>setEditLineaData(d=>({...d,qty_recibida:parseInt(e.target.value)||0}))}/></td>
+                  <td><input type="number" style={inputStyle} value={editLineaData.qty_etiquetada} onChange={e=>setEditLineaData(d=>({...d,qty_etiquetada:parseInt(e.target.value)||0}))}/></td>
+                  <td><input type="number" style={inputStyle} value={editLineaData.qty_ubicada} onChange={e=>setEditLineaData(d=>({...d,qty_ubicada:parseInt(e.target.value)||0}))}/></td>
+                  <td><input type="number" step="0.01" style={inputStyle} value={editLineaData.costo_unitario} onChange={e=>setEditLineaData(d=>({...d,costo_unitario:parseFloat(e.target.value)||0}))}/></td>
+                  <td className="mono" style={{textAlign:"right",fontSize:11,fontWeight:700}}>{editLineaData.costo_unitario?fmtMoney(editLineaData.costo_unitario*editLineaData.qty_factura):"—"}</td>
+                  <td>
+                    <select style={{padding:"3px 4px",borderRadius:4,border:"1px solid var(--cyan)",background:"var(--bg)",color:"var(--txt1)",fontSize:10,fontWeight:700}} value={editLineaData.estado} onChange={e=>setEditLineaData(d=>({...d,estado:e.target.value}))}>
+                      {["PENDIENTE","CONTADA","EN_ETIQUETADO","ETIQUETADA","UBICADA"].map(s=><option key={s} value={s}>{s}</option>)}
+                    </select>
+                  </td>
+                  {isEditable&&<td style={{whiteSpace:"nowrap"}}>
+                    <div style={{display:"flex",gap:4}}>
+                      <button onClick={saveEditLinea} disabled={loading} style={{padding:"3px 8px",borderRadius:4,background:"var(--green)",color:"#fff",fontSize:10,fontWeight:700,border:"none",cursor:"pointer"}}>Guardar</button>
+                      <button onClick={()=>setEditLineaId(null)} style={{padding:"3px 8px",borderRadius:4,background:"var(--bg3)",color:"var(--txt3)",fontSize:10,fontWeight:700,border:"1px solid var(--bg4)",cursor:"pointer"}}>Cancelar</button>
+                    </div>
+                  </td>}
+                </tr>
+                );
                 return (
                 <tr key={l.id} style={{background: disc ? "var(--amberBg)" : l.estado==="UBICADA"?"var(--greenBg)":"transparent"}}>
                   <td className="mono" style={{fontSize:11,fontWeight:700}}>{disc && <span title="Discrepancia de costo pendiente" style={{color:"var(--amber)",marginRight:4}}>!</span>}{l.sku}</td>
                   <td style={{fontSize:11}}>{l.nombre}<br/><span className="mono" style={{fontSize:9,color:"var(--txt3)"}}>{l.codigo_ml||""}</span>
                     {lockInfo.blocked && <span style={{fontSize:10,color:"var(--amber)",fontWeight:600,display:"block"}}>🔒 {lockInfo.by}</span>}
-                    {/* Etiqueta info from labeling app */}
                     {l.etiqueta_impresa != null && (() => {
                       const ventas = getVentasPorSkuOrigen(l.sku);
                       const cantVariantes = new Set(ventas.map(v => v.skuVenta)).size;
@@ -647,7 +766,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                     <div style={{display:"flex",gap:4}}>
                       {lockInfo.blocked && <button onClick={async()=>{await desbloquearLinea(l.id!);await refreshDetail();}} title="Desbloquear" style={{padding:"3px 6px",borderRadius:4,background:"var(--amberBg)",color:"var(--amber)",fontSize:10,fontWeight:700,border:"1px solid var(--amberBd)",cursor:"pointer"}}>🔓</button>}
                       {l.estado !== "PENDIENTE" && <button onClick={()=>doResetLinea(l.id!)} title="Resetear a pendiente" style={{padding:"3px 6px",borderRadius:4,background:"var(--amberBg)",color:"var(--amber)",fontSize:10,fontWeight:700,border:"1px solid var(--amberBd)",cursor:"pointer"}}>Reset</button>}
-                      <button onClick={()=>{const v=prompt("Nueva cantidad factura:",String(l.qty_factura));if(v)doUpdateLineQty(l.id!,v);}} title="Editar cantidad" style={{padding:"3px 6px",borderRadius:4,background:"var(--bg3)",color:"var(--cyan)",fontSize:10,fontWeight:700,border:"1px solid var(--bg4)",cursor:"pointer"}}>Qty</button>
+                      <button onClick={()=>startEditLinea(l)} title="Editar linea" style={{padding:"3px 6px",borderRadius:4,background:"var(--bg3)",color:"var(--cyan)",fontSize:10,fontWeight:700,border:"1px solid var(--bg4)",cursor:"pointer"}}>Editar</button>
                       <button onClick={()=>doDeleteLinea(l.id!)} title="Eliminar linea" style={{padding:"3px 6px",borderRadius:4,background:"var(--redBg)",color:"var(--red)",fontSize:10,fontWeight:700,border:"1px solid var(--redBd)",cursor:"pointer"}}>✕</button>
                     </div>
                   </td>}
