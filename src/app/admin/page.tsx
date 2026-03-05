@@ -731,24 +731,63 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                   <td className="mono" style={{fontSize:11,fontWeight:700}}>{disc && <span title="Discrepancia de costo pendiente" style={{color:"var(--amber)",marginRight:4}}>!</span>}{l.sku}</td>
                   <td style={{fontSize:11}}>{l.nombre}<br/><span className="mono" style={{fontSize:9,color:"var(--txt3)"}}>{l.codigo_ml||""}</span>
                     {lockInfo.blocked && <span style={{fontSize:10,color:"var(--amber)",fontWeight:600,display:"block"}}>🔒 {lockInfo.by}</span>}
-                    {l.etiqueta_impresa != null && (() => {
+                    {/* SKU venta selector + etiquetado toggle */}
+                    {(() => {
                       const ventas = getVentasPorSkuOrigen(l.sku);
-                      const cantVariantes = new Set(ventas.map(v => v.skuVenta)).size;
+                      const uniqueVentas = ventas.filter((v, i, a) => a.findIndex(x => x.skuVenta === v.skuVenta) === i);
                       const skuVentaInfo = l.sku_venta ? ventas.find(v => v.skuVenta === l.sku_venta) : null;
                       const esPack = skuVentaInfo ? skuVentaInfo.unidades > 1 : false;
                       return (
                         <div style={{marginTop:4,display:"flex",flexWrap:"wrap",gap:4,alignItems:"center"}}>
-                          {l.etiqueta_impresa ? (
-                            <span style={{fontSize:10,fontWeight:700,padding:"2px 8px",borderRadius:4,background:"var(--greenBg)",color:"var(--green)"}}>
-                              ✅ {l.sku_venta || "Etiquetado"}{skuVentaInfo ? ` [${skuVentaInfo.codigoMl}]` : ""}
-                            </span>
+                          {/* SKU venta dropdown */}
+                          {uniqueVentas.length > 0 && (
+                            <select
+                              value={l.sku_venta || ""}
+                              onChange={async(e)=>{
+                                const val = e.target.value;
+                                const info = ventas.find(v => v.skuVenta === val);
+                                await actualizarLineaRecepcion(l.id!, {
+                                  sku_venta: val || undefined,
+                                  requiere_etiqueta: !!val,
+                                } as Partial<DBRecepcionLinea>);
+                                setLineas(await getRecepcionLineas(selRec!.id!));
+                              }}
+                              style={{fontSize:10,padding:"2px 6px",borderRadius:4,border:"1px solid var(--bg4)",background:"var(--bg)",color:"var(--txt1)",fontWeight:600,maxWidth:160}}>
+                              <option value="">Sin SKU venta (sin etiqueta)</option>
+                              {uniqueVentas.map(v => (
+                                <option key={v.skuVenta} value={v.skuVenta}>
+                                  {v.skuVenta} [{v.codigoMl}]{v.unidades > 1 ? ` x${v.unidades}` : ""}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                          {/* Etiquetado badge */}
+                          {l.requiere_etiqueta ? (
+                            l.sku_venta ? (
+                              <span style={{fontSize:10,fontWeight:700,padding:"2px 8px",borderRadius:4,background:l.etiqueta_impresa?"var(--greenBg)":"var(--amberBg)",color:l.etiqueta_impresa?"var(--green)":"var(--amber)"}}>
+                                {l.etiqueta_impresa ? "✅" : "⏳"} {l.sku_venta}
+                              </span>
+                            ) : (
+                              <span style={{fontSize:10,fontWeight:600,padding:"2px 6px",borderRadius:4,background:"var(--amberBg)",color:"var(--amber)"}}>
+                                Requiere etiqueta
+                              </span>
+                            )
                           ) : (
-                            <span style={{fontSize:10,fontWeight:700,padding:"2px 8px",borderRadius:4,background:"var(--redBg)",color:"var(--red)"}}>
-                              ⚠ SIN ETIQUETA
+                            <span style={{fontSize:10,fontWeight:600,padding:"2px 6px",borderRadius:4,background:"var(--bg3)",color:"var(--txt3)"}}>
+                              Sin etiqueta
                             </span>
                           )}
                           {esPack && <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:4,background:"var(--cyanBg,var(--bg3))",color:"var(--cyan)"}}>📦 PACK x{skuVentaInfo!.unidades}</span>}
-                          {(l.tiene_variantes || cantVariantes > 1) && <span style={{fontSize:9,fontWeight:600,padding:"2px 6px",borderRadius:4,background:"var(--amberBg)",color:"var(--amber)"}}>{cantVariantes} publicaciones ML</span>}
+                          {uniqueVentas.length > 1 && <span style={{fontSize:9,fontWeight:600,padding:"2px 6px",borderRadius:4,background:"var(--amberBg)",color:"var(--amber)"}}>{uniqueVentas.length} publicaciones</span>}
+                          {/* Toggle etiquetado when no ventas exist */}
+                          {uniqueVentas.length === 0 && isEditable && (
+                            <button onClick={async()=>{
+                              await actualizarLineaRecepcion(l.id!, { requiere_etiqueta: !l.requiere_etiqueta } as Partial<DBRecepcionLinea>);
+                              setLineas(await getRecepcionLineas(selRec!.id!));
+                            }} style={{fontSize:9,padding:"2px 6px",borderRadius:4,background:"var(--bg3)",color:"var(--cyan)",border:"1px solid var(--bg4)",cursor:"pointer",fontWeight:600}}>
+                              {l.requiere_etiqueta ? "Quitar etiquetado" : "Agregar etiquetado"}
+                            </button>
+                          )}
                         </div>
                       );
                     })()}
