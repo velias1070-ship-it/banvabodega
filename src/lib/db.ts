@@ -524,6 +524,7 @@ export async function syncDiccionarioFromSheet(): Promise<{
       if (row.codigoMl) codigosMlByOrigen.get(row.skuOrigen)!.add(row.codigoMl);
 
       if (!productMap.has(row.skuOrigen)) {
+        // Use unit cost (unidades=1 row). If first row is a pack, cost will be corrected below.
         productMap.set(row.skuOrigen, {
           sku: row.skuOrigen,
           sku_venta: row.skuVenta, // will be overwritten below with all ventas
@@ -531,13 +532,16 @@ export async function syncDiccionarioFromSheet(): Promise<{
           nombre: row.nombreOrigen,
           categoria: row.categoria,
           proveedor: row.proveedor,
-          costo: row.costo,
+          costo: row.unidades === 1 ? row.costo : (row.unidades > 0 ? Math.round(row.costo / row.unidades) : row.costo),
           precio: 0,
           reorder: 20,
           requiere_etiqueta: !!row.codigoMl,
           tamano: row.tamano,
           color: row.color,
         });
+      } else if (row.unidades === 1) {
+        // If we already created the product from a pack row, override with the unit cost
+        productMap.get(row.skuOrigen)!.costo = row.costo;
       }
     }
 

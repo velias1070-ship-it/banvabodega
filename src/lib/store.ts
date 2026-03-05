@@ -1161,14 +1161,21 @@ export async function aprobarNuevoCosto(discId: string, sku: string, nuevoCosto:
   await db.updateDiscrepancia(discId, {
     estado: "APROBADO", resuelto_por: "admin", resuelto_at: new Date().toISOString(),
   });
+  // Update the unit cost in productos table
   await db.updateProductoCosto(sku, nuevoCosto);
   if (_cache.products[sku]) _cache.products[sku].cost = nuevoCosto;
-  // Try to update Google Sheet
+
+  // Build list of all SKU venta rows that use this SKU origen, with their unidades
+  // So the Sheet API can update each row: cost = nuevoCosto * unidades
+  const ventasDelSku = _cache.composicion.filter(c => c.skuOrigen === sku);
+  const filas = ventasDelSku.map(v => ({ skuVenta: v.skuVenta, unidades: v.unidades }));
+
+  // Try to update Google Sheet (all rows for this SKU origen)
   try {
     const res = await fetch("/api/sheet/update-cost", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sku, nuevoCosto }),
+      body: JSON.stringify({ sku, nuevoCosto, filas }),
     });
     const data = await res.json();
     return { dbOk: true, sheetResult: data };
