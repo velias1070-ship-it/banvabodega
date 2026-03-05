@@ -866,6 +866,44 @@ export async function ubicarLinea(lineaId: string, sku: string, posicionId: stri
   });
 }
 
+// ==================== ADMIN LINE ADJUSTMENT ====================
+// When admin edits qty_ubicada, adjust stock + create adjustment movement
+export async function ajustarLineaAdmin(
+  lineaId: string,
+  recepcionId: string,
+  sku: string,
+  oldQtyUbicada: number,
+  newQtyUbicada: number,
+) {
+  const delta = newQtyUbicada - oldQtyUbicada;
+  if (delta === 0) return;
+
+  // Find the position used in the original movements for this SKU+recepcion
+  const movimientos = await db.fetchMovimientosByRecepcion(recepcionId);
+  const movsLinea = movimientos.filter(m => m.sku === sku && m.tipo === "entrada" && m.motivo === "recepcion");
+  // Use the last known position, or SIN_ASIGNAR as fallback
+  const posicion = movsLinea.length > 0 ? movsLinea[movsLinea.length - 1].posicion_id : "SIN_ASIGNAR";
+
+  // Adjust stock
+  await db.updateStock(sku, posicion, delta);
+
+  // Create adjustment movement
+  await db.insertMovimiento({
+    tipo: delta > 0 ? "entrada" : "salida",
+    motivo: "recepcion",
+    sku,
+    posicion_id: posicion,
+    cantidad: Math.abs(delta),
+    recepcion_id: recepcionId,
+    operario: "admin",
+    nota: `Ajuste admin: ${oldQtyUbicada} → ${newQtyUbicada} (${delta > 0 ? "+" : ""}${delta})`,
+  });
+
+  // Update cache
+  if (!_cache.stock[sku]) _cache.stock[sku] = {};
+  _cache.stock[sku][posicion] = (_cache.stock[sku][posicion] || 0) + delta;
+}
+
 // ==================== AUDIT & REPAIR ====================
 export interface AuditResult {
   linea_id: string;
