@@ -1,7 +1,7 @@
 "use client";
 /* v3.1 — conteos + pedidos ML + cron fix */
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin } from "@/lib/store";
 import type { AuditResult } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto } from "@/lib/db";
@@ -326,18 +326,29 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
     setEditLineaData({ qty_factura: l.qty_factura, qty_recibida: l.qty_recibida||0, qty_etiquetada: l.qty_etiquetada||0, qty_ubicada: l.qty_ubicada||0, costo_unitario: l.costo_unitario||0, nombre: l.nombre, sku: l.sku, estado: l.estado });
   };
   const saveEditLinea = async () => {
-    if (!editLineaId) return;
+    if (!editLineaId || !selRec) return;
     setLoading(true);
-    await actualizarLineaRecepcion(editLineaId, {
-      qty_factura: editLineaData.qty_factura,
-      qty_recibida: editLineaData.qty_recibida,
-      qty_etiquetada: editLineaData.qty_etiquetada,
-      qty_ubicada: editLineaData.qty_ubicada,
-      costo_unitario: editLineaData.costo_unitario,
-      nombre: editLineaData.nombre,
-      sku: editLineaData.sku,
-      estado: editLineaData.estado as DBRecepcionLinea["estado"],
-    });
+    try {
+      // Check if qty_ubicada changed — adjust stock + movement
+      const originalLinea = lineas.find(l => l.id === editLineaId);
+      const oldQtyUbicada = originalLinea?.qty_ubicada || 0;
+      const newQtyUbicada = editLineaData.qty_ubicada;
+      if (oldQtyUbicada !== newQtyUbicada) {
+        await ajustarLineaAdmin(editLineaId, selRec.id!, editLineaData.sku, oldQtyUbicada, newQtyUbicada);
+      }
+      await actualizarLineaRecepcion(editLineaId, {
+        qty_factura: editLineaData.qty_factura,
+        qty_recibida: editLineaData.qty_recibida,
+        qty_etiquetada: editLineaData.qty_etiquetada,
+        qty_ubicada: editLineaData.qty_ubicada,
+        costo_unitario: editLineaData.costo_unitario,
+        nombre: editLineaData.nombre,
+        sku: editLineaData.sku,
+        estado: editLineaData.estado as DBRecepcionLinea["estado"],
+      });
+    } catch (e: unknown) {
+      alert(`Error al guardar: ${e instanceof Error ? e.message : e}`);
+    }
     setEditLineaId(null);
     setLineas(await getRecepcionLineas(selRec!.id!));
     setLoading(false);
