@@ -95,6 +95,9 @@ export interface DBRecepcionLinea {
   ts_ubicacion?: string;
   bloqueado_por?: string | null;
   bloqueado_hasta?: string | null;
+  etiqueta_impresa?: boolean;
+  tiene_variantes?: boolean;
+  sku_venta?: string;
 }
 
 export interface DBMapConfig {
