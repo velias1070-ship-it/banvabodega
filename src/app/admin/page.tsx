@@ -590,6 +590,28 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                   <td className="mono" style={{fontSize:11,fontWeight:700}}>{disc && <span title="Discrepancia de costo pendiente" style={{color:"var(--amber)",marginRight:4}}>!</span>}{l.sku}</td>
                   <td style={{fontSize:11}}>{l.nombre}<br/><span className="mono" style={{fontSize:9,color:"var(--txt3)"}}>{l.codigo_ml||""}</span>
                     {lockInfo.blocked && <span style={{fontSize:10,color:"var(--amber)",fontWeight:600,display:"block"}}>🔒 {lockInfo.by}</span>}
+                    {/* Etiqueta info from labeling app */}
+                    {l.etiqueta_impresa != null && (() => {
+                      const ventas = getVentasPorSkuOrigen(l.sku);
+                      const cantVariantes = new Set(ventas.map(v => v.skuVenta)).size;
+                      const skuVentaInfo = l.sku_venta ? ventas.find(v => v.skuVenta === l.sku_venta) : null;
+                      const esPack = skuVentaInfo ? skuVentaInfo.unidades > 1 : false;
+                      return (
+                        <div style={{marginTop:4,display:"flex",flexWrap:"wrap",gap:4,alignItems:"center"}}>
+                          {l.etiqueta_impresa ? (
+                            <span style={{fontSize:10,fontWeight:700,padding:"2px 8px",borderRadius:4,background:"var(--greenBg)",color:"var(--green)"}}>
+                              ✅ {l.sku_venta || "Etiquetado"}{skuVentaInfo ? ` [${skuVentaInfo.codigoMl}]` : ""}
+                            </span>
+                          ) : (
+                            <span style={{fontSize:10,fontWeight:700,padding:"2px 8px",borderRadius:4,background:"var(--redBg)",color:"var(--red)"}}>
+                              ⚠ SIN ETIQUETA
+                            </span>
+                          )}
+                          {esPack && <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:4,background:"var(--cyanBg,var(--bg3))",color:"var(--cyan)"}}>📦 PACK x{skuVentaInfo!.unidades}</span>}
+                          {(l.tiene_variantes || cantVariantes > 1) && <span style={{fontSize:9,fontWeight:600,padding:"2px 6px",borderRadius:4,background:"var(--amberBg)",color:"var(--amber)"}}>{cantVariantes} publicaciones ML</span>}
+                        </div>
+                      );
+                    })()}
                   </td>
                   <td className="mono" style={{textAlign:"right"}}>{l.qty_factura}</td>
                   <td className="mono" style={{textAlign:"right",color:l.qty_recibida>0?(l.qty_recibida===l.qty_factura?"var(--green)":"var(--amber)"):"var(--txt3)"}}>{l.qty_recibida||"—"}</td>
