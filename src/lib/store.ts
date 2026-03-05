@@ -1097,6 +1097,22 @@ export async function eliminarLineaRecepcion(lineaId: string) {
   await db.deleteRecepcionLinea(lineaId);
 }
 
+// Fetch all lines from multiple receptions (unified view)
+export async function getLineasDeRecepciones(recIds: string[]) { return db.fetchLineasDeRecepciones(recIds); }
+
+// Lock/unlock lines
+export async function bloquearLinea(lineaId: string, operario: string) { return db.bloquearLinea(lineaId, operario); }
+export async function renovarBloqueo(lineaId: string, operario: string) { return db.renovarBloqueo(lineaId, operario); }
+export async function desbloquearLinea(lineaId: string) { return db.desbloquearLinea(lineaId); }
+
+// Check if a line is locked by someone else
+export function isLineaBloqueada(linea: db.DBRecepcionLinea, operario: string): { blocked: boolean; by: string } {
+  if (!linea.bloqueado_por) return { blocked: false, by: "" };
+  if (linea.bloqueado_por === operario) return { blocked: false, by: "" };
+  if (linea.bloqueado_hasta && new Date(linea.bloqueado_hasta) < new Date()) return { blocked: false, by: "" };
+  return { blocked: true, by: linea.bloqueado_por };
+}
+
 export async function agregarLineaRecepcion(recepcionId: string, linea: { sku: string; codigoML: string; nombre: string; cantidad: number; costo: number; requiereEtiqueta: boolean }) {
   await db.insertRecepcionLineas([{
     recepcion_id: recepcionId, sku: linea.sku, codigo_ml: linea.codigoML,
