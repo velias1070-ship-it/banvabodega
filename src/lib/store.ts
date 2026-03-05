@@ -791,10 +791,15 @@ export async function actualizarLineaRecepcion(id: string, fields: Partial<db.DB
   await db.updateRecepcionLinea(id, fields);
 }
 
-// Contar línea: operario confirma cantidad real
-export async function contarLinea(lineaId: string, qtyReal: number, operario: string) {
+// Contar línea: operario confirma cantidad de esta caja (acumulativo)
+export async function contarLinea(lineaId: string, qtyCaja: number, operario: string, recepcionId: string) {
+  // Fetch current line to accumulate
+  const lineas = await db.fetchRecepcionLineas(recepcionId);
+  const linea = lineas.find(l => l.id === lineaId);
+  const prevRecibida = linea?.qty_recibida || 0;
+  const newQtyRecibida = prevRecibida + qtyCaja;
   await db.updateRecepcionLinea(lineaId, {
-    qty_recibida: qtyReal, estado: "CONTADA",
+    qty_recibida: newQtyRecibida, estado: "CONTADA",
     operario_conteo: operario, ts_conteo: new Date().toISOString(),
   });
 }
@@ -831,11 +836,31 @@ export async function ubicarLinea(lineaId: string, sku: string, posicionId: stri
   const newQtyUbicada = (linea.qty_ubicada || 0) + qty;
   const qtyTotal = (linea.qty_recibida ?? linea.qty_factura) ?? 0;
 
+  // Determine next state:
+  // - If all received units are located AND we've received >= factura → UBICADA (done)
+  // - If all received units are located BUT we haven't reached factura → PENDIENTE (next box)
+  // - Otherwise stay in current state (partial ubicación within this pass)
+  const allLocated = newQtyUbicada >= qtyTotal && qtyTotal > 0;
+  const allReceived = qtyTotal >= (linea.qty_factura || 0);
+  let nextEstado = linea.estado;
+  const extraFields: Partial<db.DBRecepcionLinea> = {};
+
+  if (allLocated && allReceived) {
+    // Fully done — all factura qty received and located
+    nextEstado = "UBICADA";
+    extraFields.ts_ubicacion = new Date().toISOString();
+  } else if (allLocated && !allReceived) {
+    // This pass done, but more boxes pending — reset for next box
+    nextEstado = "PENDIENTE";
+    // Reset per-pass counters: etiquetada stays accumulated, ubicada stays accumulated
+    // The operator will count the next box fresh
+  }
+
   await db.updateRecepcionLinea(lineaId, {
     qty_ubicada: newQtyUbicada,
-    estado: newQtyUbicada >= qtyTotal && qtyTotal > 0 ? "UBICADA" : linea.estado,
+    estado: nextEstado,
     operario_ubicacion: operario,
-    ...(newQtyUbicada >= qtyTotal && qtyTotal > 0 ? { ts_ubicacion: new Date().toISOString() } : {}),
+    ...extraFields,
   });
 }
 
