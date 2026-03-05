@@ -6,6 +6,7 @@ import Link from "next/link";
 export default function QRCodesPage() {
   const [mounted, setMounted] = useState(false);
   const [filterType, setFilterType] = useState("all");
+  const [selectedPos, setSelectedPos] = useState("");
   const [qrSize, setQrSize] = useState(200);
   const [generating, setGenerating] = useState(false);
   const [qrImages, setQrImages] = useState<Record<string,string>>({});
@@ -13,7 +14,8 @@ export default function QRCodesPage() {
   useEffect(() => { initStore().then(() => setMounted(true)); }, []);
 
   const positions = activePositions();
-  const filtered = filterType === "all" ? positions : positions.filter(p => p.type === filterType);
+  const filteredByType = filterType === "all" ? positions : positions.filter(p => p.type === filterType);
+  const filtered = selectedPos ? filteredByType.filter(p => p.id === selectedPos) : filteredByType;
 
   const generateQRs = async () => {
     setGenerating(true);
@@ -29,26 +31,29 @@ export default function QRCodesPage() {
     setGenerating(false);
   };
 
+  // Label size: 10cm wide x 15cm tall, one QR per page
   const handlePrint = () => {
     const w = window.open("", "_blank");
     if (!w) return;
+    const posesToPrint = filtered.filter(p => qrImages[p.id]);
     w.document.write(`<!DOCTYPE html><html><head><title>QR Posiciones BANVA</title>
       <style>
-        body{font-family:Arial,sans-serif;margin:0;padding:20px}
-        .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:15px}
-        .qr-card{border:3px solid #000;border-radius:8px;padding:16px;text-align:center;page-break-inside:avoid}
-        .qr-card img{width:${qrSize}px;height:${qrSize}px}
-        .pos-id{font-size:48px;font-weight:900;font-family:monospace;margin-bottom:8px;letter-spacing:3px}
-        .pos-label{font-size:14px;color:#666;margin-top:6px}
-        @media print{.no-print{display:none}.qr-card{border:3px solid #000}}
+        @page{size:10cm 15cm;margin:0}
+        *{box-sizing:border-box;margin:0;padding:0}
+        body{font-family:Arial,sans-serif;margin:0;padding:0}
+        .qr-page{width:10cm;height:15cm;display:flex;flex-direction:column;align-items:center;justify-content:center;page-break-after:always;padding:0.5cm;border:1px dashed #ccc}
+        .qr-page:last-child{page-break-after:auto}
+        .qr-page img{width:7cm;height:7cm}
+        .pos-id{font-size:56px;font-weight:900;font-family:monospace;letter-spacing:4px;margin-bottom:12px}
+        .pos-label{font-size:16px;color:#666;margin-top:10px}
+        .banva-tag{font-size:10px;color:#999;margin-top:8px;letter-spacing:2px}
+        @media print{.no-print{display:none}.qr-page{border:none}}
       </style></head><body>`);
-    w.document.write('<button class="no-print" onclick="window.print()" style="padding:12px 24px;font-size:16px;margin-bottom:20px;cursor:pointer;font-weight:bold">IMPRIMIR</button>');
-    w.document.write('<div class="grid">');
-    for (const pos of filtered) {
-      if (!qrImages[pos.id]) continue;
-      w.document.write(`<div class="qr-card"><div class="pos-id">${pos.id}</div><img src="${qrImages[pos.id]}"/><div class="pos-label">${pos.label}</div></div>`);
+    w.document.write('<div class="no-print" style="padding:16px;text-align:center;border-bottom:1px solid #ccc;margin-bottom:8px"><button onclick="window.print()" style="padding:12px 24px;font-size:16px;cursor:pointer;font-weight:bold;border-radius:8px;background:#059669;color:#fff;border:none">IMPRIMIR ' + posesToPrint.length + ' ETIQUETA' + (posesToPrint.length !== 1 ? 'S' : '') + '</button><div style="font-size:12px;color:#666;margin-top:6px">Cada etiqueta: 10cm x 15cm — una por hoja</div></div>');
+    for (const pos of posesToPrint) {
+      w.document.write(`<div class="qr-page"><div class="pos-id">${pos.id}</div><img src="${qrImages[pos.id]}"/><div class="pos-label">${pos.label}</div><div class="banva-tag">BANVA BODEGA</div></div>`);
     }
-    w.document.write('</div></body></html>');
+    w.document.write('</body></html>');
     w.document.close();
   };
 
@@ -66,22 +71,25 @@ export default function QRCodesPage() {
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
             <div className="form-group">
               <label className="form-label">Tipo</label>
-              <select className="form-select" value={filterType} onChange={e=>setFilterType(e.target.value)}>
+              <select className="form-select" value={filterType} onChange={e=>{setFilterType(e.target.value);setSelectedPos("");setQrImages({});}}>
                 <option value="all">Todas ({positions.length})</option>
                 <option value="pallet">Pallets ({positions.filter(p=>p.type==="pallet").length})</option>
                 <option value="shelf">Estantes ({positions.filter(p=>p.type==="shelf").length})</option>
               </select>
             </div>
             <div className="form-group">
-              <label className="form-label">Tamano QR</label>
-              <select className="form-select" value={qrSize} onChange={e=>setQrSize(Number(e.target.value))}>
-                <option value={150}>Pequeno</option>
-                <option value={200}>Mediano</option>
-                <option value={300}>Grande</option>
+              <label className="form-label">Posicion</label>
+              <select className="form-select" value={selectedPos} onChange={e=>{setSelectedPos(e.target.value);setQrImages({});}}>
+                <option value="">Todas ({filteredByType.length})</option>
+                {filteredByType.map(p => <option key={p.id} value={p.id}>{p.id} — {p.label}</option>)}
               </select>
             </div>
           </div>
-          <button className="btn-primary" onClick={generateQRs} disabled={generating}>{generating ? "Generando..." : "Generar QR Codes"}</button>
+          <div style={{fontSize:11,color:"var(--txt3)",marginBottom:10,textAlign:"center"}}>
+            Etiquetas de 10cm x 15cm — un QR por hoja
+            {selectedPos && <span style={{color:"var(--cyan)",fontWeight:700}}> — Solo: {selectedPos}</span>}
+          </div>
+          <button className="btn-primary" onClick={generateQRs} disabled={generating}>{generating ? "Generando..." : `Generar QR${filtered.length === 1 ? "" : "s"} (${filtered.length})`}</button>
         </div>
 
         {Object.keys(qrImages).length > 0 && <>
