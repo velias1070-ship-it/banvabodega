@@ -803,15 +803,37 @@ export async function crearRecepcion(folio: string, proveedor: string, imagenUrl
   });
   if (!id) return null;
 
-  const dbLineas = lineas.map(l => ({
-    recepcion_id: id, sku: l.sku, codigo_ml: l.codigoML,
-    nombre: l.nombre, qty_factura: l.cantidad, qty_recibida: 0,
-    qty_etiquetada: 0, qty_ubicada: 0, estado: "PENDIENTE" as const,
-    requiere_etiqueta: l.requiereEtiqueta, costo_unitario: l.costo,
-    notas: "", operario_conteo: "", operario_etiquetado: "", operario_ubicacion: "",
-  }));
+  const dbLineas = lineas.map(l => {
+    // Auto-asignar sku_venta desde composicion_venta
+    const autoFormato = _resolverFormatoVenta(l.sku);
+    return {
+      recepcion_id: id, sku: l.sku, codigo_ml: l.codigoML,
+      nombre: l.nombre, qty_factura: l.cantidad, qty_recibida: 0,
+      qty_etiquetada: 0, qty_ubicada: 0, estado: "PENDIENTE" as const,
+      requiere_etiqueta: autoFormato ? true : l.requiereEtiqueta,
+      costo_unitario: l.costo,
+      sku_venta: autoFormato || undefined,
+      notas: "", operario_conteo: "", operario_etiquetado: "", operario_ubicacion: "",
+    };
+  });
   await db.insertRecepcionLineas(dbLineas);
   return id;
+}
+
+// Resuelve automáticamente el formato de venta para un SKU origen.
+// Si tiene exactamente 1 composicion individual (unidades=1), retorna ese sku_venta.
+// Si tiene exactamente 1 composicion (cualquier tipo), retorna ese sku_venta.
+// Si tiene múltiples, retorna null (el admin debe elegir).
+function _resolverFormatoVenta(sku: string): string | null {
+  const ventas = getVentasPorSkuOrigen(sku);
+  if (ventas.length === 0) return null;
+  // Si hay exactamente 1 composicion, asignar directamente
+  const uniqueVentas = ventas.filter((v, i, a) => a.findIndex(x => x.skuVenta === v.skuVenta) === i);
+  if (uniqueVentas.length === 1) return uniqueVentas[0].skuVenta;
+  // Si hay múltiples, buscar la individual (unidades=1) como default
+  const individual = uniqueVentas.find(v => v.unidades === 1);
+  if (individual) return individual.skuVenta;
+  return null;
 }
 
 export async function actualizarRecepcion(id: string, fields: Partial<db.DBRecepcion>) {
@@ -1424,11 +1446,14 @@ export function isLineaBloqueada(linea: db.DBRecepcionLinea, operario: string): 
 }
 
 export async function agregarLineaRecepcion(recepcionId: string, linea: { sku: string; codigoML: string; nombre: string; cantidad: number; costo: number; requiereEtiqueta: boolean }) {
+  const autoFormato = _resolverFormatoVenta(linea.sku);
   await db.insertRecepcionLineas([{
     recepcion_id: recepcionId, sku: linea.sku, codigo_ml: linea.codigoML,
     nombre: linea.nombre, qty_factura: linea.cantidad, qty_recibida: 0,
     qty_etiquetada: 0, qty_ubicada: 0, estado: "PENDIENTE" as const,
-    requiere_etiqueta: linea.requiereEtiqueta, costo_unitario: linea.costo,
+    requiere_etiqueta: autoFormato ? true : linea.requiereEtiqueta,
+    costo_unitario: linea.costo,
+    sku_venta: autoFormato || undefined,
     notas: "", operario_conteo: "", operario_etiquetado: "", operario_ubicacion: "",
   }]);
 }

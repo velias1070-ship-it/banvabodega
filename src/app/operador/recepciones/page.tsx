@@ -388,7 +388,8 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, folio, prov
   // ---- PASO 3: UBICAR ----
   const [ubicarQty, setUbicarQty] = useState(0);
   const [ubicarPos, setUbicarPos] = useState("");
-  const [ubicarSkuVenta, setUbicarSkuVenta] = useState<string>("__SIN_ETIQUETAR__");
+  // Auto-seleccionar formato desde la línea de recepción (viene de factura)
+  const [ubicarSkuVenta, setUbicarSkuVenta] = useState<string>(linea.sku_venta || "__SIN_ETIQUETAR__");
   const [scanningPos, setScanningPos] = useState(false);
 
   // Build options for sku_venta format selection
@@ -400,6 +401,8 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, folio, prov
     const qtyTotal = linea.qty_recibida ?? linea.qty_factura;
     const remaining = qtyTotal - (linea.qty_ubicada || 0);
     setUbicarQty(Math.max(0, remaining));
+    // Sincronizar formato cuando cambia la línea
+    if (linea.sku_venta) setUbicarSkuVenta(linea.sku_venta);
   }, [linea]);
 
   const doUbicar = async () => {
@@ -633,9 +636,12 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, folio, prov
               <strong style={{color:"var(--txt1)"}}>{qtyPendienteUbicar} unidades</strong> listas para ubicar
             </div>
 
-            {/* Formato de venta */}
+            {/* Formato de venta - auto-asignado desde recepción */}
             <div style={{marginBottom:12}}>
-              <div style={{fontSize:12,fontWeight:600,color:"var(--txt2)",marginBottom:6}}>Formato de venta de estas unidades:</div>
+              <div style={{fontSize:12,fontWeight:600,color:"var(--txt2)",marginBottom:6}}>
+                Formato de venta de estas unidades:
+                {linea.sku_venta && <span style={{fontSize:10,color:"var(--green)",marginLeft:6}}>(asignado en recepcion)</span>}
+              </div>
               <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
                 <button onClick={() => setUbicarSkuVenta("__SIN_ETIQUETAR__")}
                   style={{padding:"8px 12px",borderRadius:6,fontSize:11,fontWeight:700,
