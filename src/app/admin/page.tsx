@@ -4007,42 +4007,46 @@ function ExportImportCSV({ refresh }: { refresh: () => void }) {
   const doExport = () => {
     const s = getStore();
     const rows: string[] = [];
-    rows.push(["sku_origen","nombre","unidades","codigo_ml","sku_venta","stock","posicion"].join(","));
+    rows.push(["sku_origen","nombre","sku_venta","etiquetado","unidades_pack","stock","posicion"].join(","));
 
-    // Get all stock entries grouped by (sku, pos)
-    for (const [sku, posMap] of Object.entries(s.stock)) {
+    for (const [sku, svMap] of Object.entries(s.stockDetalle)) {
       const prod = s.products[sku];
+      const name = prod?.name || "";
       const ventas = getVentasPorSkuOrigen(sku);
-      
-      for (const [pos, qty] of Object.entries(posMap)) {
-        if (qty <= 0) continue;
-        const name = prod?.name || "";
-        
-        if (ventas.length > 0) {
-          // One row per venta mapping × position
-          for (const v of ventas) {
-            rows.push([
-              csvEscape(sku),
-              csvEscape(name),
-              String(v.unidades),
-              csvEscape(v.codigoMl),
-              csvEscape(v.skuVenta),
-              String(qty),
-              csvEscape(pos),
-            ].join(","));
-          }
-        } else {
-          // No venta mapping — still export stock
+
+      for (const [skuVenta, posMap] of Object.entries(svMap)) {
+        for (const [pos, qty] of Object.entries(posMap)) {
+          if (qty <= 0) continue;
+          const isSinEtiquetar = skuVenta === SIN_ETIQUETAR;
+          const venta = ventas.find(v => v.skuVenta === skuVenta);
           rows.push([
             csvEscape(sku),
             csvEscape(name),
-            "",
-            "",
-            "",
+            csvEscape(isSinEtiquetar ? "" : skuVenta),
+            isSinEtiquetar ? "Sin etiquetar" : "Etiquetado",
+            venta ? String(venta.unidades) : "",
             String(qty),
             csvEscape(pos),
           ].join(","));
         }
+      }
+    }
+
+    // SKUs in stock but not in stockDetalle (fallback)
+    for (const [sku, posMap] of Object.entries(s.stock)) {
+      if (s.stockDetalle[sku]) continue;
+      const prod = s.products[sku];
+      for (const [pos, qty] of Object.entries(posMap)) {
+        if (qty <= 0) continue;
+        rows.push([
+          csvEscape(sku),
+          csvEscape(prod?.name || ""),
+          "",
+          "Sin etiquetar",
+          "",
+          String(qty),
+          csvEscape(pos),
+        ].join(","));
       }
     }
 
