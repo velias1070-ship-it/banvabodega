@@ -1,8 +1,8 @@
 "use client";
 /* v3.1 — conteos + pedidos ML + cron fix */
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin } from "@/lib/store";
-import type { AuditResult } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty } from "@/lib/store";
+import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto } from "@/lib/db";
 import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, fetchAllPedidosFlex, fetchPedidosFlexByEstado, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds } from "@/lib/db";
@@ -157,6 +157,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   const [lineas, setLineas] = useState<DBRecepcionLinea[]>([]);
   const [operarios, setOperarios] = useState<DBOperario[]>([]);
   const [discrepancias, setDiscrepancias] = useState<DBDiscrepanciaCosto[]>([]);
+  const [discrepanciasQty, setDiscrepanciasQty] = useState<DBDiscrepanciaQty[]>([]);
 
   // Day view state
   const [dayLineas, setDayLineas] = useState<DBRecepcionLinea[]>([]);
@@ -236,8 +237,12 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
     setSelRec(rec);
     const recLineas = await getRecepcionLineas(rec.id!);
     setLineas(recLineas);
-    const discs = await detectarDiscrepancias(rec.id!, recLineas);
+    const [discs, discsQty] = await Promise.all([
+      detectarDiscrepancias(rec.id!, recLineas),
+      detectarDiscrepanciasQty(rec.id!, recLineas),
+    ]);
     setDiscrepancias(discs);
+    setDiscrepanciasQty(discsQty);
     const meta = parseRecepcionMeta(rec.notas || "");
     setEditFolio(rec.folio); setEditProv(rec.proveedor);
     setEditNotas(meta.notas); setEditAsignados(meta.asignados);
@@ -252,7 +257,12 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
     const updated = updatedRecs.find(r => r.id === selRec.id);
     if (updated) { setSelRec(updated); const m = parseRecepcionMeta(updated.notas||""); setEditNotas(m.notas); setEditAsignados(m.asignados); }
     setLineas(await getRecepcionLineas(selRec.id!));
-    setDiscrepancias(await getDiscrepancias(selRec.id!));
+    const [dc, dq] = await Promise.all([
+      getDiscrepancias(selRec.id!),
+      getDiscrepanciasQty(selRec.id!),
+    ]);
+    setDiscrepancias(dc);
+    setDiscrepanciasQty(dq);
   };
 
   // ---- Status actions ----
@@ -268,7 +278,10 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
     if (!selRec) return; setLoading(true);
     const result = await cerrarRecepcion(selRec.id!);
     if (!result.ok) {
-      alert(`No se puede cerrar: hay ${result.pendientes} discrepancia(s) de costo sin resolver. Resuelve todas antes de cerrar.`);
+      const msgs: string[] = [];
+      if (result.pendientes) msgs.push(`${result.pendientes} discrepancia(s) de costo`);
+      if (result.pendientesQty) msgs.push(`${result.pendientesQty} discrepancia(s) de cantidad`);
+      alert(`No se puede cerrar: hay ${msgs.join(" y ")} sin resolver. Resuelve todas antes de cerrar.`);
       setLoading(false); return;
     }
     await loadRecs(); setSelRec(null); setLoading(false);
@@ -697,6 +710,108 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
           </div>
         )}
 
+        {/* Quantity discrepancy panel */}
+        {discrepanciasQty.length > 0 && (
+          <div className="card" style={{marginTop:12,border: tieneDiscrepanciasQtyPendientes(discrepanciasQty) ? "2px solid var(--amber)" : "1px solid var(--bg4)"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <div style={{fontSize:13,fontWeight:700,color: tieneDiscrepanciasQtyPendientes(discrepanciasQty) ? "var(--amber)" : "var(--green)"}}>
+                Discrepancias de cantidad ({discrepanciasQty.filter(d=>d.estado==="PENDIENTE").length} pendientes)
+              </div>
+              <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                {tieneDiscrepanciasQtyPendientes(discrepanciasQty) && (
+                  <span style={{fontSize:10,padding:"3px 8px",borderRadius:4,background:"var(--amberBg)",color:"var(--amber)",fontWeight:700,border:"1px solid var(--amberBd)"}}>
+                    Resolver antes de cerrar
+                  </span>
+                )}
+                <button onClick={async()=>{if(!selRec)return;const d=await recalcularDiscrepanciasQty(selRec.id!,lineas);setDiscrepanciasQty(d);}} style={{fontSize:10,padding:"3px 8px",borderRadius:4,background:"var(--bg3)",color:"var(--cyan)",fontWeight:700,border:"1px solid var(--bg4)",cursor:"pointer"}} title="Recalcular discrepancias de cantidad">
+                  Recalcular
+                </button>
+              </div>
+            </div>
+            <div style={{overflowX:"auto"}}>
+              <table className="tbl">
+                <thead><tr>
+                  <th>SKU</th>
+                  <th>Tipo</th>
+                  <th style={{textAlign:"right"}}>Factura</th>
+                  <th style={{textAlign:"right"}}>Recibido</th>
+                  <th style={{textAlign:"right"}}>Diferencia</th>
+                  <th>Estado</th>
+                  <th>Resolución</th>
+                </tr></thead>
+                <tbody>{discrepanciasQty.map(d => {
+                  const tipoLabel: Record<string,string> = { FALTANTE: "Faltante", SOBRANTE: "Sobrante", SKU_ERRONEO: "SKU erróneo", NO_EN_FACTURA: "No en factura" };
+                  const tipoColor: Record<string,string> = { FALTANTE: "var(--red)", SOBRANTE: "var(--amber)", SKU_ERRONEO: "var(--red)", NO_EN_FACTURA: "var(--cyan)" };
+                  const estadoLabel: Record<string,string> = { PENDIENTE: "Pendiente", ACEPTADO: "Aceptado", RECLAMADO: "Reclamado", NOTA_CREDITO: "Nota crédito", DEVOLUCION: "Devolución" };
+                  const estadoColor: Record<string,string> = { PENDIENTE: "var(--amber)", ACEPTADO: "var(--green)", RECLAMADO: "var(--blue,var(--cyan))", NOTA_CREDITO: "var(--cyan)", DEVOLUCION: "var(--red)" };
+                  return (
+                  <tr key={d.id} style={{background: d.estado==="PENDIENTE" ? "var(--amberBg)" : "transparent"}}>
+                    <td className="mono" style={{fontSize:11,fontWeight:700}}>{d.sku}</td>
+                    <td>
+                      <span style={{fontSize:10,fontWeight:700,padding:"2px 6px",borderRadius:4,color:tipoColor[d.tipo]||"var(--txt2)"}}>
+                        {tipoLabel[d.tipo]||d.tipo}
+                      </span>
+                    </td>
+                    <td className="mono" style={{textAlign:"right",fontSize:12}}>{d.qty_factura}</td>
+                    <td className="mono" style={{textAlign:"right",fontSize:12,fontWeight:700}}>{d.qty_recibida}</td>
+                    <td className="mono" style={{textAlign:"right",fontSize:12,fontWeight:700,color:d.diferencia>0?"var(--amber)":"var(--red)"}}>
+                      {d.diferencia > 0 ? "+" : ""}{d.diferencia}
+                    </td>
+                    <td>
+                      <span style={{fontSize:10,fontWeight:700,padding:"2px 6px",borderRadius:4,color:estadoColor[d.estado]||"var(--txt2)"}}>
+                        {estadoLabel[d.estado]||d.estado}
+                      </span>
+                      {d.notas && <div style={{fontSize:9,color:"var(--txt3)",marginTop:2}}>{d.notas}</div>}
+                    </td>
+                    <td style={{whiteSpace:"nowrap"}}>
+                      {d.estado === "PENDIENTE" ? (
+                        <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                          {getResolucionesQty(d.tipo).map(r => (
+                            <button key={r.valor} onClick={async()=>{
+                              const nota = prompt(`${r.label} — Notas (opcional):`, "");
+                              if (nota === null) return;
+                              setLoading(true);
+                              await resolverDiscrepanciaQty(d.id!, r.valor, nota);
+                              await refreshDetail();
+                              setLoading(false);
+                            }} disabled={loading}
+                              style={{padding:"4px 8px",borderRadius:4,background:r.valor==="ACEPTADO"?"var(--green)":r.valor==="DEVOLUCION"?"var(--red)":"var(--cyan)",color:"#fff",fontSize:10,fontWeight:700,cursor:"pointer",border:"none"}}>
+                              {r.label}
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <span style={{fontSize:10,color:"var(--txt3)"}}>{d.resuelto_at ? fmtDate(d.resuelto_at) : ""}{d.resuelto_por ? ` · ${d.resuelto_por}` : ""}</span>
+                      )}
+                    </td>
+                  </tr>
+                  );
+                })}</tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Manual qty discrepancy: SKU erróneo */}
+        {isEditable && (
+          <div style={{marginTop:8,display:"flex",gap:6,alignItems:"center"}}>
+            <button onClick={async()=>{
+              const sku = prompt("SKU del producto erróneo recibido:");
+              if (!sku) return;
+              const qf = parseInt(prompt("Cantidad en factura (del SKU original):","0")||"0");
+              const qr = parseInt(prompt("Cantidad recibida (del SKU erróneo):","0")||"0");
+              const nota = prompt("Notas (qué SKU debería haber llegado, etc):","") || "";
+              if (!selRec) return;
+              setLoading(true);
+              await crearDiscrepanciaQtyManual(selRec.id!, sku, "SKU_ERRONEO", qf, qr, nota);
+              setDiscrepanciasQty(await getDiscrepanciasQty(selRec.id!));
+              setLoading(false);
+            }} style={{fontSize:10,padding:"5px 10px",borderRadius:6,background:"var(--bg3)",color:"var(--amber)",fontWeight:700,border:"1px solid var(--amberBd)",cursor:"pointer"}}>
+              + Reportar SKU erróneo
+            </button>
+          </div>
+        )}
+
         {/* Lines table */}
         <div className="card" style={{marginTop:12}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
@@ -708,6 +823,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
               <tbody>{lineas.map(l => {
                 const lockInfo = isLineaBloqueada(l, "__admin__");
                 const disc = discrepancias.find(d => d.linea_id === l.id && d.estado === "PENDIENTE");
+                const discQty = discrepanciasQty.find(d => d.linea_id === l.id && d.estado === "PENDIENTE");
                 const isEd = editLineaId === l.id;
                 const inputStyle = {width:58,textAlign:"right" as const,padding:"3px 6px",borderRadius:4,border:"1px solid var(--cyan)",background:"var(--bg)",color:"var(--txt1)",fontSize:11,fontFamily:"inherit"};
                 if (isEd) return (
@@ -738,8 +854,8 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                 </tr>
                 );
                 return (
-                <tr key={l.id} style={{background: disc ? "var(--amberBg)" : l.estado==="UBICADA"?"var(--greenBg)":"transparent"}}>
-                  <td className="mono" style={{fontSize:11,fontWeight:700}}>{disc && <span title="Discrepancia de costo pendiente" style={{color:"var(--amber)",marginRight:4}}>!</span>}{l.sku}</td>
+                <tr key={l.id} style={{background: (disc||discQty) ? "var(--amberBg)" : l.estado==="UBICADA"?"var(--greenBg)":"transparent"}}>
+                  <td className="mono" style={{fontSize:11,fontWeight:700}}>{disc && <span title="Discrepancia de costo pendiente" style={{color:"var(--amber)",marginRight:4}}>$</span>}{discQty && <span title={`Discrepancia de cantidad: ${discQty.tipo}`} style={{color:"var(--red)",marginRight:4}}>#</span>}{l.sku}</td>
                   <td style={{fontSize:11}}>{l.nombre}<br/><span className="mono" style={{fontSize:9,color:"var(--txt3)"}}>{l.codigo_ml||""}</span>
                     {lockInfo.blocked && <span style={{fontSize:10,color:"var(--amber)",fontWeight:600,display:"block"}}>🔒 {lockInfo.by}</span>}
                     {/* SKU venta selector + etiquetado toggle */}
