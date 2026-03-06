@@ -15,7 +15,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS stock_sku_skuventa_posicion_idx ON stock(sku, 
 -- 4. Índice para búsquedas por sku_venta
 CREATE INDEX IF NOT EXISTS idx_stock_sku_venta ON stock(sku_venta) WHERE sku_venta IS NOT NULL;
 
--- 5. Actualizar función update_stock para soportar sku_venta
+-- 5. ELIMINAR la función vieja update_stock(3 params) antes de crear la nueva(4 params)
+-- PostgreSQL trata funciones con distinta aridad como funciones separadas (overloading).
+-- Si no dropeamos la vieja, quedan las dos y llamar con 3 args es ambiguo.
+DROP FUNCTION IF EXISTS update_stock(text, text, integer);
+
+-- 6. Crear función update_stock con soporte para sku_venta
 CREATE OR REPLACE FUNCTION update_stock(p_sku text, p_posicion text, p_delta integer, p_sku_venta text DEFAULT NULL)
 RETURNS void AS $$
 BEGIN
@@ -35,7 +40,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- 6. Actualizar función stock_total (suma todo independiente de sku_venta)
+-- 7. Actualizar función stock_total (suma todo independiente de sku_venta)
 CREATE OR REPLACE FUNCTION stock_total(p_sku text)
 RETURNS integer AS $$
   SELECT COALESCE(SUM(cantidad), 0)::integer FROM stock WHERE sku = p_sku;
