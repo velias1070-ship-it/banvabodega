@@ -131,6 +131,7 @@ export default function RecepcionesOperador() {
     return (
       <ProcesarLinea
         linea={selLinea} recepcionId={selLinea.recepcion_id} operario={operario}
+        folio={rec?.folio || ""} proveedor={rec?.proveedor || ""}
         onBack={handleBack}
         onStepComplete={handleStepComplete}
       />
@@ -298,8 +299,8 @@ function LineaCard({ linea: l, operario, onTap }: { linea: DBRecepcionLinea; ope
 }
 
 // ==================== PROCESAR LINEA ====================
-function ProcesarLinea({ linea: initialLinea, recepcionId, operario, onBack, onStepComplete }: {
-  linea: DBRecepcionLinea; recepcionId: string; operario: string; onBack: () => void; onStepComplete: () => void;
+function ProcesarLinea({ linea: initialLinea, recepcionId, operario, folio, proveedor, onBack, onStepComplete }: {
+  linea: DBRecepcionLinea; recepcionId: string; operario: string; folio: string; proveedor: string; onBack: () => void; onStepComplete: () => void;
 }) {
   const [linea, setLinea] = useState(initialLinea);
   const [step, setStep] = useState<"contar" | "etiquetar" | "ubicar">(determineStep(initialLinea));
@@ -387,7 +388,13 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, onBack, onS
   // ---- PASO 3: UBICAR ----
   const [ubicarQty, setUbicarQty] = useState(0);
   const [ubicarPos, setUbicarPos] = useState("");
+  const [ubicarSkuVenta, setUbicarSkuVenta] = useState<string>("__SIN_ETIQUETAR__");
   const [scanningPos, setScanningPos] = useState(false);
+
+  // Build options for sku_venta format selection
+  const formatosVenta = packsForSku.length > 0
+    ? packsForSku.map(p => ({ skuVenta: p.skuVenta, codigoMl: p.codigoMl, unidades: p.unidades }))
+    : (linea.sku_venta ? [{ skuVenta: linea.sku_venta, codigoMl: linea.codigo_ml, unidades: 1 }] : []);
 
   useEffect(() => {
     const qtyTotal = linea.qty_recibida ?? linea.qty_factura;
@@ -399,7 +406,10 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, onBack, onS
     if (!ubicarPos || ubicarQty <= 0) return;
     setSaving(true);
     try {
-      await ubicarLinea(linea.id!, linea.sku, ubicarPos, ubicarQty, operario, recepcionId);
+      const skuVentaVal = ubicarSkuVenta === "__SIN_ETIQUETAR__" ? null : ubicarSkuVenta;
+      await ubicarLinea(linea.id!, linea.sku, ubicarPos, ubicarQty, operario, recepcionId, {
+        skuVenta: skuVentaVal, folio, proveedor,
+      });
       showToast(`${ubicarQty} uds ubicadas en ${ubicarPos}`);
       await refreshLinea();
       setUbicarPos("");
@@ -621,6 +631,29 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, onBack, onS
             </div>
             <div style={{fontSize:12,color:"var(--txt3)",marginBottom:12}}>
               <strong style={{color:"var(--txt1)"}}>{qtyPendienteUbicar} unidades</strong> listas para ubicar
+            </div>
+
+            {/* Formato de venta */}
+            <div style={{marginBottom:12}}>
+              <div style={{fontSize:12,fontWeight:600,color:"var(--txt2)",marginBottom:6}}>Formato de venta de estas unidades:</div>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                <button onClick={() => setUbicarSkuVenta("__SIN_ETIQUETAR__")}
+                  style={{padding:"8px 12px",borderRadius:6,fontSize:11,fontWeight:700,
+                    background:ubicarSkuVenta==="__SIN_ETIQUETAR__"?"var(--amberBg)":"var(--bg3)",
+                    color:ubicarSkuVenta==="__SIN_ETIQUETAR__"?"var(--amber)":"var(--txt3)",
+                    border:ubicarSkuVenta==="__SIN_ETIQUETAR__"?"1px solid var(--amber)":"1px solid var(--bg4)"}}>
+                  Sin etiquetar
+                </button>
+                {formatosVenta.map(f => (
+                  <button key={f.skuVenta} onClick={() => setUbicarSkuVenta(f.skuVenta)}
+                    style={{padding:"8px 12px",borderRadius:6,fontSize:11,fontWeight:700,
+                      background:ubicarSkuVenta===f.skuVenta?"var(--cyanBg)":"var(--bg3)",
+                      color:ubicarSkuVenta===f.skuVenta?"var(--cyan)":"var(--txt3)",
+                      border:ubicarSkuVenta===f.skuVenta?"1px solid var(--cyan)":"1px solid var(--bg4)"}}>
+                    {f.skuVenta} {f.unidades > 1 ? `(x${f.unidades})` : "(individual)"}
+                  </button>
+                ))}
+              </div>
             </div>
 
             <BarcodeScanner onScan={onScanPos} active={true} label="Escanear QR de posicion" mode="qr" />

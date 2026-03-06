@@ -41,6 +41,7 @@ export interface DBPosition {
 export interface DBStock {
   id?: string;
   sku: string;
+  sku_venta: string | null;
   posicion_id: string;
   cantidad: number;
 }
@@ -215,20 +216,23 @@ export async function fetchStock(): Promise<DBStock[]> {
   return data || [];
 }
 
-export async function updateStock(sku: string, posicion_id: string, delta: number) {
+export async function updateStock(sku: string, posicion_id: string, delta: number, sku_venta?: string | null) {
   const sb = getSupabase(); if (!sb) return;
-  const { error } = await sb.rpc("update_stock", { p_sku: sku, p_posicion: posicion_id, p_delta: delta });
+  const { error } = await sb.rpc("update_stock", { p_sku: sku, p_posicion: posicion_id, p_delta: delta, p_sku_venta: sku_venta ?? null });
   if (error) throw new Error(`updateStock failed for ${sku}: ${error.message}`);
 }
 
-export async function setStock(sku: string, posicion_id: string, cantidad: number) {
+export async function setStock(sku: string, posicion_id: string, cantidad: number, sku_venta?: string | null) {
   const sb = getSupabase(); if (!sb) return;
+  const sv = sku_venta ?? null;
   if (cantidad <= 0) {
-    await sb.from("stock").delete().eq("sku", sku).eq("posicion_id", posicion_id);
+    let q = sb.from("stock").delete().eq("sku", sku).eq("posicion_id", posicion_id);
+    if (sv) q = q.eq("sku_venta", sv); else q = q.is("sku_venta", null);
+    await q;
   } else {
     await sb.from("stock").upsert(
-      { sku, posicion_id, cantidad, updated_at: new Date().toISOString() },
-      { onConflict: "sku,posicion_id" }
+      { sku, sku_venta: sv, posicion_id, cantidad, updated_at: new Date().toISOString() },
+      { onConflict: "sku,sku_venta_key,posicion_id" }
     );
   }
 }
