@@ -22,7 +22,10 @@ CREATE TABLE IF NOT EXISTS discrepancias_costo (
 );
 
 ALTER TABLE discrepancias_costo ENABLE ROW LEVEL SECURITY;
-CREATE POLICY IF NOT EXISTS "discrepancias_costo_all" ON discrepancias_costo FOR ALL USING (true) WITH CHECK (true);
+DO $$ BEGIN
+  CREATE POLICY "discrepancias_costo_all" ON discrepancias_costo FOR ALL USING (true) WITH CHECK (true);
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 -- 2. Tabla discrepancias_qty — resolución de diferencias de cantidad
 CREATE TABLE IF NOT EXISTS discrepancias_qty (
@@ -45,4 +48,7 @@ CREATE INDEX IF NOT EXISTS idx_disc_qty_recepcion ON discrepancias_qty(recepcion
 CREATE INDEX IF NOT EXISTS idx_disc_qty_estado ON discrepancias_qty(estado);
 
 ALTER TABLE discrepancias_qty ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "discrepancias_qty_all" ON discrepancias_qty FOR ALL USING (true) WITH CHECK (true);
+DO $$ BEGIN
+  CREATE POLICY "discrepancias_qty_all" ON discrepancias_qty FOR ALL USING (true) WITH CHECK (true);
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
