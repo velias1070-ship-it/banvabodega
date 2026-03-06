@@ -4266,7 +4266,7 @@ function ExportImportCSV({ refresh }: { refresh: () => void }) {
             </button>
           </div>
           <div style={{marginTop:8,fontSize:10,color:"var(--txt3)",lineHeight:1.5}}>
-            <strong>Completo:</strong> sku_origen, nombre, unidades, codigo_ml, sku_venta, stock, posicion<br/>
+            <strong>Completo:</strong> sku_origen, nombre, sku_venta, etiquetado, unidades_pack, stock, posicion<br/>
             <strong>Simple:</strong> sku_origen, nombre, stock, posicion
           </div>
         </div>
