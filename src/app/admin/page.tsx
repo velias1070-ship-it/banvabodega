@@ -1,7 +1,7 @@
 "use client";
 /* v3.1 — conteos + pedidos ML + cron fix */
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty } from "@/lib/store";
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto } from "@/lib/db";
@@ -2887,13 +2887,20 @@ function Inventario() {
   const [viewMode, setViewMode] = useState<"fisico"|"ml">("fisico");
   const s = getStore();
 
-  // Physical stock view
+  // Physical stock view (also search by sku_venta via composicion)
   const allSkus = Object.keys(s.stock).filter(sku => {
     if (skuTotal(sku) === 0) return false;
     if (!q) return true;
     const ql = q.toLowerCase();
     const prod = s.products[sku];
-    return sku.toLowerCase().includes(ql)||prod?.name.toLowerCase().includes(ql)||prod?.cat?.toLowerCase().includes(ql)||prod?.prov?.toLowerCase().includes(ql);
+    if (sku.toLowerCase().includes(ql)||prod?.name.toLowerCase().includes(ql)||prod?.cat?.toLowerCase().includes(ql)||prod?.prov?.toLowerCase().includes(ql)) return true;
+    // Search by sku_venta (composicion)
+    const ventas = getVentasPorSkuOrigen(sku);
+    if (ventas.some(v => v.skuVenta.toLowerCase().includes(ql) || v.codigoMl.toLowerCase().includes(ql))) return true;
+    // Search in stockDetalle sku_venta keys
+    const detalle = skuStockDetalle(sku);
+    if (detalle.some(d => d.skuVenta !== SIN_ETIQUETAR && d.skuVenta.toLowerCase().includes(ql))) return true;
+    return false;
   }).sort((a,b)=>skuTotal(b)-skuTotal(a));
   const grandTotal = allSkus.reduce((s,sku)=>s+skuTotal(sku),0);
 
@@ -3123,6 +3130,23 @@ function Inventario() {
                         <td className="mono" style={{textAlign:"right",fontSize:11}}>{prod?fmtMoney(prod.cost*total):"-"}</td>
                       </tr>,
                       isOpen && <tr key={sku+"-detail"}><td colSpan={7} style={{background:"var(--bg3)",padding:16}}>
+                        {/* Detalle por formato de venta */}
+                        {(()=>{const detalle=skuStockDetalle(sku);return detalle.length>0&&(
+                          <div style={{marginBottom:16}}>
+                            <div style={{fontSize:12,fontWeight:700,marginBottom:8}}>Detalle por formato de venta — {sku}</div>
+                            <table className="tbl"><thead><tr><th>Formato</th><th>Posicion</th><th style={{textAlign:"right"}}>Cantidad</th></tr></thead>
+                              <tbody>{detalle.map((d,i)=>(
+                                <tr key={i}>
+                                  <td className="mono" style={{fontSize:11,fontWeight:700,color:d.skuVenta===SIN_ETIQUETAR?"var(--amber)":"var(--cyan)"}}>
+                                    {d.skuVenta===SIN_ETIQUETAR?"Sin etiquetar":d.skuVenta}
+                                  </td>
+                                  <td className="mono" style={{fontSize:11}}>{d.pos} — {d.label}</td>
+                                  <td className="mono" style={{textAlign:"right",fontWeight:700,color:"var(--blue)"}}>{d.qty}</td>
+                                </tr>
+                              ))}</tbody>
+                            </table>
+                          </div>
+                        );})()}
                         <div style={{fontSize:12,fontWeight:700,marginBottom:8}}>Historial de movimientos — {sku}</div>
                         <table className="tbl"><thead><tr><th>Fecha</th><th>Tipo</th><th>Motivo</th><th>Pos</th><th>Quien</th><th>Nota</th><th style={{textAlign:"right"}}>Qty</th></tr></thead>
                           <tbody>{s.movements.filter(m=>m.sku===sku).slice(0,20).map(m=>(
@@ -3165,6 +3189,20 @@ function Inventario() {
                     <div key={sp.pos} className="mini-row"><span className="mono" style={{fontWeight:700,color:"var(--green)",minWidth:50,fontSize:13}}>{sp.pos}</span><span style={{flex:1,fontSize:10,color:"var(--txt3)"}}>{sp.label}</span><span className="mono" style={{fontWeight:700,fontSize:13}}>{sp.qty}</span></div>
                   ))}</div>
                   {isOpen&&<div style={{marginTop:10,borderTop:"1px solid var(--bg4)",paddingTop:10}}>
+                    {(()=>{const detalle=skuStockDetalle(sku);return detalle.length>0&&(
+                      <div style={{marginBottom:10}}>
+                        <div style={{fontSize:11,fontWeight:700,color:"var(--txt2)",marginBottom:6}}>Por formato de venta</div>
+                        {detalle.map((d,i)=>(
+                          <div key={i} className="mini-row" style={{alignItems:"center"}}>
+                            <span className="mono" style={{fontWeight:700,fontSize:11,color:d.skuVenta===SIN_ETIQUETAR?"var(--amber)":"var(--cyan)",minWidth:80}}>
+                              {d.skuVenta===SIN_ETIQUETAR?"Sin etiquetar":d.skuVenta}
+                            </span>
+                            <span className="mono" style={{flex:1,fontSize:10,color:"var(--txt3)"}}>{d.pos}</span>
+                            <span className="mono" style={{fontWeight:700,fontSize:12,color:"var(--blue)"}}>{d.qty}</span>
+                          </div>
+                        ))}
+                      </div>
+                    );})()}
                     <div style={{fontSize:11,fontWeight:700,color:"var(--txt2)",marginBottom:6}}>Historial ({movs.length})</div>
                     {movs.slice(0,15).map(m=>(
                       <div key={m.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"4px 0",fontSize:11}}>

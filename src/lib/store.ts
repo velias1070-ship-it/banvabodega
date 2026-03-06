@@ -58,10 +58,15 @@ export interface Movement {
 
 export type StockMap = Record<string, Record<string, number>>;
 
+// Stock detallado: sku → sku_venta (o "__SIN_ETIQUETAR__") → posicion → qty
+export type StockDetalleMap = Record<string, Record<string, Record<string, number>>>;
+export const SIN_ETIQUETAR = "__SIN_ETIQUETAR__";
+
 export interface StoreData {
   products: Record<string, Product>;
   positions: Position[];
   stock: StockMap;
+  stockDetalle: StockDetalleMap;
   movements: Movement[];
   movCounter: number;
   mapConfig?: MapConfig;
@@ -103,7 +108,7 @@ export function saveProveedores(provs: string[]) {
 
 // ==================== CACHE ====================
 let _cache: StoreData = {
-  products: {}, positions: [], stock: {}, movements: [], movCounter: 0, composicion: [],
+  products: {}, positions: [], stock: {}, stockDetalle: {}, movements: [], movCounter: 0, composicion: [],
 };
 let _initialized = false;
 let _loading = false;
@@ -141,11 +146,17 @@ export async function initStore(): Promise<void> {
       active: p.activa, mx: p.mx, my: p.my, mw: p.mw, mh: p.mh, color: p.color,
     }));
 
-    // Stock → StockMap
+    // Stock → StockMap (agregado por sku) + StockDetalleMap (por sku+sku_venta)
     const stock: StockMap = {};
+    const stockDetalle: StockDetalleMap = {};
     for (const s of stocks) {
       if (!stock[s.sku]) stock[s.sku] = {};
-      stock[s.sku][s.posicion_id] = s.cantidad;
+      stock[s.sku][s.posicion_id] = (stock[s.sku][s.posicion_id] || 0) + s.cantidad;
+      // Detalle por sku_venta
+      const sv = s.sku_venta || SIN_ETIQUETAR;
+      if (!stockDetalle[s.sku]) stockDetalle[s.sku] = {};
+      if (!stockDetalle[s.sku][sv]) stockDetalle[s.sku][sv] = {};
+      stockDetalle[s.sku][sv][s.posicion_id] = s.cantidad;
     }
 
     // Movements
@@ -170,7 +181,7 @@ export async function initStore(): Promise<void> {
       skuOrigen: c.sku_origen, unidades: c.unidades,
     }));
 
-    _cache = { products, positions, stock, movements, movCounter: movements.length, mapConfig, composicion };
+    _cache = { products, positions, stock, stockDetalle, movements, movCounter: movements.length, mapConfig, composicion };
     _initialized = true;
   } catch (err) {
     console.error("initStore error:", err);
@@ -262,7 +273,7 @@ async function flushToSupabase() {
 
 export function resetStore() {
   if (_flushTimer) { clearTimeout(_flushTimer); _flushTimer = null; }
-  _cache = { products: {}, positions: [], stock: {}, movements: [], movCounter: 0, composicion: [] };
+  _cache = { products: {}, positions: [], stock: {}, stockDetalle: {}, movements: [], movCounter: 0, composicion: [] };
   _initialized = false;
 }
 
@@ -283,6 +294,21 @@ export function skuPositions(sku: string): { pos: string; label: string; qty: nu
       return { pos: posId, label: p ? p.label : `Pos ${posId}`, qty };
     })
     .sort((a, b) => b.qty - a.qty);
+}
+
+// Detalle de stock por sku_venta para un SKU origen
+export function skuStockDetalle(sku: string): { skuVenta: string; pos: string; label: string; qty: number }[] {
+  const detail = _cache.stockDetalle[sku];
+  if (!detail) return [];
+  const result: { skuVenta: string; pos: string; label: string; qty: number }[] = [];
+  for (const [sv, posMap] of Object.entries(detail)) {
+    for (const [posId, qty] of Object.entries(posMap)) {
+      if (qty <= 0) continue;
+      const p = _cache.positions.find(p => p.id === posId);
+      result.push({ skuVenta: sv, pos: posId, label: p ? p.label : `Pos ${posId}`, qty });
+    }
+  }
+  return result.sort((a, b) => a.skuVenta.localeCompare(b.skuVenta) || b.qty - a.qty);
 }
 
 export function posContents(posId: string): { sku: string; name: string; qty: number }[] {
@@ -709,9 +735,14 @@ export async function importStockFromSheet(): Promise<{ imported: number; skippe
   // Refresh stock cache
   const stocks = await db.fetchStock();
   _cache.stock = {};
+  _cache.stockDetalle = {};
   for (const s of stocks) {
     if (!_cache.stock[s.sku]) _cache.stock[s.sku] = {};
-    _cache.stock[s.sku][s.posicion_id] = s.cantidad;
+    _cache.stock[s.sku][s.posicion_id] = (_cache.stock[s.sku][s.posicion_id] || 0) + s.cantidad;
+    const sv = s.sku_venta || SIN_ETIQUETAR;
+    if (!_cache.stockDetalle[s.sku]) _cache.stockDetalle[s.sku] = {};
+    if (!_cache.stockDetalle[s.sku][sv]) _cache.stockDetalle[s.sku][sv] = {};
+    _cache.stockDetalle[s.sku][sv][s.posicion_id] = s.cantidad;
   }
   return { ...result, skipped: 0 };
 }
@@ -815,11 +846,20 @@ export async function etiquetarLinea(lineaId: string, qtyEtiquetada: number, ope
 }
 
 // Ubicar línea: operario pone en posición → stock entra al WMS
-export async function ubicarLinea(lineaId: string, sku: string, posicionId: string, qty: number, operario: string, recepcionId: string) {
+export async function ubicarLinea(lineaId: string, sku: string, posicionId: string, qty: number, operario: string, recepcionId: string, opts?: { skuVenta?: string | null; folio?: string; proveedor?: string }) {
+  const skuVenta = opts?.skuVenta ?? null;
+  // Build nota with invoice info
+  let nota = "Recepción - ubicación en bodega";
+  if (opts?.folio) {
+    nota = `Recepción - Factura #${opts.folio}`;
+    if (opts?.proveedor) nota += ` - ${opts.proveedor}`;
+  }
+  if (skuVenta) nota += ` [${skuVenta}]`;
+
   // Update stock + movimiento FIRST — if these fail, do NOT update the line
   if (isConfigured()) {
     try {
-      await db.updateStock(sku, posicionId, qty);
+      await db.updateStock(sku, posicionId, qty, skuVenta);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       throw new Error(`Error al registrar stock de ${sku}: ${msg}. La linea NO fue marcada como ubicada.`);
@@ -827,7 +867,7 @@ export async function ubicarLinea(lineaId: string, sku: string, posicionId: stri
     try {
       await db.insertMovimiento({
         tipo: "entrada", motivo: "recepcion", sku, posicion_id: posicionId,
-        cantidad: qty, recepcion_id: recepcionId, operario, nota: "Recepción - ubicación en bodega",
+        cantidad: qty, recepcion_id: recepcionId, operario, nota,
       });
     } catch (e: unknown) {
       // Stock already updated — log but don't block (movimiento is secondary)
@@ -835,9 +875,14 @@ export async function ubicarLinea(lineaId: string, sku: string, posicionId: stri
     }
   }
 
-  // Update cache
+  // Update cache (aggregated)
   if (!_cache.stock[sku]) _cache.stock[sku] = {};
   _cache.stock[sku][posicionId] = (_cache.stock[sku][posicionId] || 0) + qty;
+  // Update detailed cache
+  const sv = skuVenta || SIN_ETIQUETAR;
+  if (!_cache.stockDetalle[sku]) _cache.stockDetalle[sku] = {};
+  if (!_cache.stockDetalle[sku][sv]) _cache.stockDetalle[sku][sv] = {};
+  _cache.stockDetalle[sku][sv][posicionId] = (_cache.stockDetalle[sku][sv][posicionId] || 0) + qty;
 
   // Fetch current line to calculate new qty_ubicada (read closest to write to minimize race window)
   const lineas = await db.fetchRecepcionLineas(recepcionId);
