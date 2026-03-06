@@ -2972,29 +2972,89 @@ function Inventario() {
         }
       }
 
-      // Build unified SKU set: all with stock + all with pending
-      const allSkuSet = new Set([
-        ...Object.keys(s.stock).filter(sku => skuTotal(sku) > 0),
-        ...Object.keys(pendientePorSku),
-      ]);
-      const skus = Array.from(allSkuSet).sort();
-
       const rows: string[] = [];
-      rows.push(["sku_origen","sku_venta","nombre","stock_actual","pendiente_recepcion","stock_proyectado"].join(","));
-      for (const sku of skus) {
+      rows.push(["sku_origen","nombre","sku_venta","etiquetado","unidades_pack","stock","posicion","pendiente_recepcion","stock_proyectado"].join(","));
+
+      // Detailed rows from stockDetalle: one row per sku_origen + sku_venta + posicion
+      const skusExported = new Set<string>();
+      for (const [sku, svMap] of Object.entries(s.stockDetalle)) {
         const prod = s.products[sku];
-        const stockActual = skuTotal(sku);
-        const pendiente = pendientePorSku[sku] || 0;
+        const name = prod?.name || "";
         const ventas = getVentasPorSkuOrigen(sku);
-        const skuVenta = ventas.map(v => v.skuVenta).filter((v, i, a) => a.indexOf(v) === i).join(", ");
-        rows.push([
-          csvEscape(sku),
-          csvEscape(skuVenta),
-          csvEscape(prod?.name || ""),
-          String(stockActual),
-          String(pendiente),
-          String(stockActual + pendiente),
-        ].join(","));
+        skusExported.add(sku);
+
+        for (const [skuVenta, posMap] of Object.entries(svMap)) {
+          for (const [pos, qty] of Object.entries(posMap)) {
+            if (qty <= 0) continue;
+            const isSinEtiquetar = skuVenta === SIN_ETIQUETAR;
+            const venta = ventas.find(v => v.skuVenta === skuVenta);
+            rows.push([
+              csvEscape(sku),
+              csvEscape(name),
+              csvEscape(isSinEtiquetar ? "" : skuVenta),
+              isSinEtiquetar ? "Sin etiquetar" : "Etiquetado",
+              venta ? String(venta.unidades) : "",
+              String(qty),
+              csvEscape(pos),
+              "",
+              "",
+            ].join(","));
+          }
+        }
+      }
+
+      // SKUs in stock but not in stockDetalle (fallback)
+      for (const [sku, posMap] of Object.entries(s.stock)) {
+        if (s.stockDetalle[sku]) continue;
+        const prod = s.products[sku];
+        skusExported.add(sku);
+        for (const [pos, qty] of Object.entries(posMap)) {
+          if (qty <= 0) continue;
+          rows.push([
+            csvEscape(sku),
+            csvEscape(prod?.name || ""),
+            "",
+            "Sin etiquetar",
+            "",
+            String(qty),
+            csvEscape(pos),
+            "",
+            "",
+          ].join(","));
+        }
+      }
+
+      // SKUs with pending reception but no current stock
+      for (const [sku, pendiente] of Object.entries(pendientePorSku)) {
+        if (skusExported.has(sku)) {
+          // Add pending as a summary row for this SKU
+          const prod = s.products[sku];
+          rows.push([
+            csvEscape(sku),
+            csvEscape(prod?.name || ""),
+            "",
+            "",
+            "",
+            "0",
+            "",
+            String(pendiente),
+            String(pendiente),
+          ].join(","));
+        } else {
+          // SKU only has pending, no stock at all
+          const prod = s.products[sku];
+          rows.push([
+            csvEscape(sku),
+            csvEscape(prod?.name || ""),
+            "",
+            "",
+            "",
+            "0",
+            "",
+            String(pendiente),
+            String(pendiente),
+          ].join(","));
+        }
       }
 
       const csv = rows.join("\n");
