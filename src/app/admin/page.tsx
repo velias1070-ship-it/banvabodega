@@ -1,7 +1,7 @@
 "use client";
 /* v3.1 — conteos + pedidos ML + cron fix */
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato } from "@/lib/store";
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto } from "@/lib/db";
@@ -2885,6 +2885,8 @@ function Inventario() {
   const [q, setQ] = useState("");
   const [expanded, setExpanded] = useState<string|null>(null);
   const [viewMode, setViewMode] = useState<"fisico"|"ml">("fisico");
+  const [,setTick] = useState(0);
+  const refresh = useCallback(() => setTick(t => t + 1), []);
   const s = getStore();
 
   // Physical stock view (also search by sku_venta via composicion)
@@ -3195,6 +3197,7 @@ function Inventario() {
                             </table>
                           </div>
                         );})()}
+                        <ReasignarFormatoPanel sku={sku} onDone={refresh} />
                         <div style={{fontSize:12,fontWeight:700,marginBottom:8}}>Historial de movimientos — {sku}</div>
                         <table className="tbl"><thead><tr><th>Fecha</th><th>Tipo</th><th>Motivo</th><th>Pos</th><th>Quien</th><th>Nota</th><th style={{textAlign:"right"}}>Qty</th></tr></thead>
                           <tbody>{s.movements.filter(m=>m.sku===sku).slice(0,20).map(m=>(
@@ -3251,6 +3254,7 @@ function Inventario() {
                         ))}
                       </div>
                     );})()}
+                    <ReasignarFormatoPanel sku={sku} onDone={refresh} />
                     <div style={{fontSize:11,fontWeight:700,color:"var(--txt2)",marginBottom:6}}>Historial ({movs.length})</div>
                     {movs.slice(0,15).map(m=>(
                       <div key={m.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"4px 0",fontSize:11}}>
@@ -3265,6 +3269,73 @@ function Inventario() {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+// ==================== REASIGNAR FORMATO INLINE ====================
+function ReasignarFormatoPanel({ sku, onDone }: { sku: string; onDone: () => void }) {
+  const formatos = getVentasPorSkuOrigen(sku);
+  const detalle = skuStockDetalle(sku);
+  const sinEtiquetar = detalle.filter(d => d.skuVenta === SIN_ETIQUETAR && d.qty > 0);
+
+  const [selFormato, setSelFormato] = useState<Record<string, string>>({});
+  const [selQty, setSelQty] = useState<Record<string, number>>({});
+  const [saving, setSaving] = useState(false);
+
+  if (formatos.length === 0 || sinEtiquetar.length === 0) return null;
+
+  const doReasignar = async (posId: string, maxQty: number) => {
+    const formato = selFormato[posId];
+    const qty = selQty[posId] || maxQty;
+    if (!formato || qty <= 0) return;
+    setSaving(true);
+    try {
+      await reasignarFormato(sku, posId, qty, formato);
+      onDone();
+    } catch (e: unknown) {
+      alert("Error: " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{marginBottom:16,padding:12,borderRadius:8,background:"var(--amberBg)",border:"1px solid var(--amberBd)"}}>
+      <div style={{fontSize:12,fontWeight:700,color:"var(--amber)",marginBottom:8}}>
+        Reasignar stock sin etiquetar → formato de venta
+      </div>
+      {sinEtiquetar.map(d => (
+        <div key={d.pos} style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:8,padding:8,borderRadius:6,background:"var(--bg2)"}}>
+          <div style={{minWidth:60}}>
+            <div className="mono" style={{fontSize:11,fontWeight:700}}>{d.pos}</div>
+            <div style={{fontSize:10,color:"var(--txt3)"}}>{d.label}</div>
+            <div className="mono" style={{fontSize:12,fontWeight:700,color:"var(--amber)"}}>{d.qty} uds</div>
+          </div>
+          <select value={selFormato[d.pos] || ""} onChange={e => setSelFormato(p => ({...p, [d.pos]: e.target.value}))}
+            style={{flex:1,padding:6,borderRadius:4,fontSize:11,background:"var(--bg3)",color:"var(--txt)",border:"1px solid var(--bg4)",minWidth:120}}>
+            <option value="">— Seleccionar formato —</option>
+            {formatos.map(f => (
+              <option key={f.skuVenta} value={f.skuVenta}>{f.skuVenta} {f.unidades > 1 ? `(x${f.unidades})` : "(individual)"}</option>
+            ))}
+          </select>
+          <div style={{display:"flex",alignItems:"center",gap:4}}>
+            <button onClick={() => setSelQty(p => ({...p, [d.pos]: Math.max(1, (p[d.pos] ?? d.qty) - 1)}))}
+              style={{width:24,height:24,borderRadius:4,background:"var(--bg3)",fontSize:14,fontWeight:700,border:"1px solid var(--bg4)",color:"var(--txt)"}}>−</button>
+            <input type="number" value={selQty[d.pos] ?? d.qty}
+              onChange={e => setSelQty(p => ({...p, [d.pos]: Math.max(1, Math.min(d.qty, parseInt(e.target.value) || 0))}))}
+              style={{width:50,textAlign:"center",fontSize:12,fontWeight:700,padding:4,borderRadius:4,background:"var(--bg3)",border:"1px solid var(--bg4)",color:"var(--txt)"}} />
+            <button onClick={() => setSelQty(p => ({...p, [d.pos]: Math.min(d.qty, (p[d.pos] ?? d.qty) + 1)}))}
+              style={{width:24,height:24,borderRadius:4,background:"var(--bg3)",fontSize:14,fontWeight:700,border:"1px solid var(--bg4)",color:"var(--txt)"}}>+</button>
+          </div>
+          <button onClick={() => doReasignar(d.pos, selQty[d.pos] ?? d.qty)} disabled={saving || !selFormato[d.pos]}
+            style={{padding:"6px 12px",borderRadius:6,fontSize:11,fontWeight:700,
+              background:selFormato[d.pos]?"var(--green)":"var(--bg3)",color:selFormato[d.pos]?"#fff":"var(--txt3)",
+              border:"none",cursor:selFormato[d.pos]?"pointer":"not-allowed",opacity:saving?0.5:1}}>
+            {saving ? "..." : "Asignar"}
+          </button>
+        </div>
+      ))}
     </div>
   );
 }
