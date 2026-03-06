@@ -911,6 +911,42 @@ export async function ubicarLinea(lineaId: string, sku: string, posicionId: stri
   });
 }
 
+// ==================== REASIGNAR FORMATO DE VENTA ====================
+// Mueve stock de sku_venta=NULL (sin etiquetar) a un sku_venta específico
+export async function reasignarFormato(
+  sku: string,
+  posicionId: string,
+  qty: number,
+  nuevoSkuVenta: string,
+) {
+  if (qty <= 0) return;
+  if (!isConfigured()) throw new Error("Supabase no configurado");
+
+  // Decrementar stock sin etiquetar
+  await db.updateStock(sku, posicionId, -qty, null);
+  // Incrementar stock con nuevo sku_venta
+  await db.updateStock(sku, posicionId, qty, nuevoSkuVenta);
+
+  // Registrar movimiento de reasignación
+  await db.insertMovimiento({
+    tipo: "entrada", motivo: "ajuste_entrada", sku,
+    posicion_id: posicionId, cantidad: 0,
+    operario: "admin",
+    nota: `Reasignación formato: Sin etiquetar → ${nuevoSkuVenta} (${qty} uds)`,
+  });
+
+  // Actualizar cache
+  const sinEt = SIN_ETIQUETAR;
+  if (_cache.stockDetalle[sku]?.[sinEt]?.[posicionId]) {
+    _cache.stockDetalle[sku][sinEt][posicionId] = Math.max(0, _cache.stockDetalle[sku][sinEt][posicionId] - qty);
+    if (_cache.stockDetalle[sku][sinEt][posicionId] <= 0) delete _cache.stockDetalle[sku][sinEt][posicionId];
+  }
+  if (!_cache.stockDetalle[sku]) _cache.stockDetalle[sku] = {};
+  if (!_cache.stockDetalle[sku][nuevoSkuVenta]) _cache.stockDetalle[sku][nuevoSkuVenta] = {};
+  _cache.stockDetalle[sku][nuevoSkuVenta][posicionId] = (_cache.stockDetalle[sku][nuevoSkuVenta][posicionId] || 0) + qty;
+  // stock agregado no cambia (misma posición, mismo SKU, solo cambia sku_venta)
+}
+
 // ==================== ADMIN LINE ADJUSTMENT ====================
 // When admin edits qty_ubicada, adjust stock + create adjustment movement
 export async function ajustarLineaAdmin(
