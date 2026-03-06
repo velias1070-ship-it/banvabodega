@@ -2927,6 +2927,26 @@ function Inventario() {
   const sinStock = totalPublicaciones - conStock;
 
   const [exporting, setExporting] = useState(false);
+  const [reclasificando, setReclasificando] = useState(false);
+  const [reclasResult, setReclasResult] = useState<{reclasificados:number;detalles:Array<{sku:string;posicion:string;skuVenta:string;qty:number;metodo:string}>}|null>(null);
+
+  const doReclasificar = async () => {
+    if (!window.confirm("Esto reclasificará el stock 'Sin etiquetar' usando los datos de recepción y composiciones de venta. ¿Continuar?")) return;
+    setReclasificando(true);
+    setReclasResult(null);
+    try {
+      const res = await fetch("/api/reclasificar-stock", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Error desconocido");
+      setReclasResult({ reclasificados: data.reclasificados, detalles: data.detalles || [] });
+      // Refresh store to reflect changes
+      await initStore();
+    } catch (e: unknown) {
+      alert("Error al reclasificar: " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setReclasificando(false);
+    }
+  };
 
   const doExportInventario = async () => {
     setExporting(true);
@@ -3004,6 +3024,10 @@ function Inventario() {
             background:"var(--bg3)",color:"var(--green)",border:"1px solid var(--bg4)",cursor:exporting?"wait":"pointer",opacity:exporting?0.6:1}}>
             {exporting ? "Exportando..." : "Exportar Inventario"}
           </button>
+          <button onClick={doReclasificar} disabled={reclasificando} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
+            background:reclasificando?"var(--bg3)":"var(--amberBg)",color:reclasificando?"var(--txt3)":"var(--amber)",border:"1px solid var(--amberBd)",cursor:reclasificando?"wait":"pointer",opacity:reclasificando?0.6:1}}>
+            {reclasificando ? "Reclasificando..." : "Reclasificar formatos"}
+          </button>
           <input className="form-input mono" value={q} onChange={e=>setQ(e.target.value)} placeholder={viewMode==="fisico"?"Filtrar SKU, nombre, proveedor...":"Filtrar codigo ML, SKU venta, nombre..."} style={{fontSize:13,flex:1}}/>
           <div style={{textAlign:"right",whiteSpace:"nowrap"}}>
             {viewMode === "fisico" ? (
@@ -3020,6 +3044,30 @@ function Inventario() {
           </div>
         </div>
       </div>
+
+      {reclasResult && (
+        <div className="card" style={{background:"var(--bg2)",border:"1px solid var(--amberBd)"}}>
+          <div style={{fontSize:12,fontWeight:700,color:"var(--amber)",marginBottom:8}}>
+            Reclasificación completada — {reclasResult.reclasificados} registros actualizados
+          </div>
+          {reclasResult.detalles.length > 0 ? (
+            <table className="tbl"><thead><tr><th>SKU</th><th>Posicion</th><th>Formato asignado</th><th style={{textAlign:"right"}}>Qty</th><th>Metodo</th></tr></thead>
+              <tbody>{reclasResult.detalles.map((d,i) => (
+                <tr key={i}>
+                  <td className="mono" style={{fontSize:11}}>{d.sku}</td>
+                  <td className="mono" style={{fontSize:11}}>{d.posicion}</td>
+                  <td className="mono" style={{fontSize:11,fontWeight:700,color:"var(--cyan)"}}>{d.skuVenta}</td>
+                  <td className="mono" style={{textAlign:"right",fontWeight:700}}>{d.qty}</td>
+                  <td style={{fontSize:10,color:"var(--txt3)"}}>{d.metodo === "movimiento" ? "Por movimiento" : "Por composicion"}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          ) : (
+            <div style={{fontSize:11,color:"var(--txt3)"}}>No se encontraron registros para reclasificar (todo el stock ya tiene formato asignado o no hay datos de recepción)</div>
+          )}
+          <button onClick={() => setReclasResult(null)} style={{marginTop:8,padding:"4px 12px",borderRadius:4,fontSize:10,background:"var(--bg3)",color:"var(--txt3)",border:"1px solid var(--bg4)"}}>Cerrar</button>
+        </div>
+      )}
 
       {viewMode === "ml" ? (
         /* ===== ML PUBLICATIONS VIEW ===== */
