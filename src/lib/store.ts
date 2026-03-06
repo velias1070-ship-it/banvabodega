@@ -1295,10 +1295,14 @@ export async function reactivarRecepcion(id: string) {
   await db.updateRecepcion(id, { estado: "CREADA" });
 }
 
-export async function cerrarRecepcion(id: string): Promise<{ ok: boolean; pendientes?: number }> {
-  const discs = await db.fetchDiscrepancias(id);
+export async function cerrarRecepcion(id: string): Promise<{ ok: boolean; pendientes?: number; pendientesQty?: number }> {
+  const [discs, discsQty] = await Promise.all([
+    db.fetchDiscrepancias(id),
+    db.fetchDiscrepanciasQty(id),
+  ]);
   const pendientes = discs.filter(d => d.estado === "PENDIENTE").length;
-  if (pendientes > 0) return { ok: false, pendientes };
+  const pendientesQty = discsQty.filter(d => d.estado === "PENDIENTE").length;
+  if (pendientes > 0 || pendientesQty > 0) return { ok: false, pendientes, pendientesQty };
   await db.updateRecepcion(id, { estado: "CERRADA" });
   return { ok: true };
 }
@@ -1438,6 +1442,111 @@ export async function rechazarNuevoCosto(discId: string, notas?: string) {
 }
 
 export function tieneDiscrepanciasPendientes(discs: db.DBDiscrepanciaCosto[]): boolean {
+  return discs.some(d => d.estado === "PENDIENTE");
+}
+
+// ==================== DISCREPANCIAS DE CANTIDAD ====================
+
+export type { DBDiscrepanciaQty, DiscrepanciaQtyTipo, DiscrepanciaQtyEstado } from "./db";
+
+const DISC_QTY_RESOLUCIONES: Record<db.DiscrepanciaQtyTipo, { valor: db.DiscrepanciaQtyEstado; label: string }[]> = {
+  FALTANTE: [
+    { valor: "ACEPTADO", label: "Aceptar faltante" },
+    { valor: "RECLAMADO", label: "Reclamar al proveedor" },
+    { valor: "NOTA_CREDITO", label: "Solicitar nota de crédito" },
+  ],
+  SOBRANTE: [
+    { valor: "ACEPTADO", label: "Aceptar sobrante" },
+    { valor: "DEVOLUCION", label: "Devolver al proveedor" },
+  ],
+  SKU_ERRONEO: [
+    { valor: "ACEPTADO", label: "Aceptar como sustituto" },
+    { valor: "DEVOLUCION", label: "Devolver al proveedor" },
+  ],
+  NO_EN_FACTURA: [
+    { valor: "ACEPTADO", label: "Aceptar producto extra" },
+    { valor: "DEVOLUCION", label: "Devolver al proveedor" },
+  ],
+};
+
+export function getResolucionesQty(tipo: db.DiscrepanciaQtyTipo) {
+  return DISC_QTY_RESOLUCIONES[tipo] || [];
+}
+
+export async function detectarDiscrepanciasQty(recepcionId: string, lineas: db.DBRecepcionLinea[]): Promise<db.DBDiscrepanciaQty[]> {
+  const existentes = await db.fetchDiscrepanciasQty(recepcionId);
+  if (existentes.length > 0) return existentes;
+
+  const nuevas: Omit<db.DBDiscrepanciaQty, "id" | "created_at">[] = [];
+  for (const l of lineas) {
+    const qf = l.qty_factura || 0;
+    const qr = l.qty_recibida || 0;
+
+    // No discrepancy if both are 0 or line hasn't been counted yet
+    if (qr === 0 && l.estado === "PENDIENTE") continue;
+
+    if (qf === 0 && qr > 0) {
+      // Producto no estaba en factura
+      nuevas.push({
+        recepcion_id: recepcionId, linea_id: l.id, sku: l.sku,
+        tipo: "NO_EN_FACTURA", qty_factura: qf, qty_recibida: qr,
+        diferencia: qr, estado: "PENDIENTE",
+      });
+    } else if (qr < qf) {
+      nuevas.push({
+        recepcion_id: recepcionId, linea_id: l.id, sku: l.sku,
+        tipo: "FALTANTE", qty_factura: qf, qty_recibida: qr,
+        diferencia: qr - qf, estado: "PENDIENTE",
+      });
+    } else if (qr > qf) {
+      nuevas.push({
+        recepcion_id: recepcionId, linea_id: l.id, sku: l.sku,
+        tipo: "SOBRANTE", qty_factura: qf, qty_recibida: qr,
+        diferencia: qr - qf, estado: "PENDIENTE",
+      });
+    }
+    // qr === qf → no discrepancy
+  }
+
+  if (nuevas.length > 0) await db.insertDiscrepanciasQty(nuevas);
+  return db.fetchDiscrepanciasQty(recepcionId);
+}
+
+export async function getDiscrepanciasQty(recepcionId: string): Promise<db.DBDiscrepanciaQty[]> {
+  return db.fetchDiscrepanciasQty(recepcionId);
+}
+
+export async function recalcularDiscrepanciasQty(recepcionId: string, lineas: db.DBRecepcionLinea[]): Promise<db.DBDiscrepanciaQty[]> {
+  await db.deleteDiscrepanciasQtyPendientes(recepcionId);
+  return detectarDiscrepanciasQty(recepcionId, lineas);
+}
+
+export async function resolverDiscrepanciaQty(discId: string, estado: db.DiscrepanciaQtyEstado, notas?: string) {
+  await db.updateDiscrepanciaQty(discId, {
+    estado,
+    resuelto_por: "admin",
+    resuelto_at: new Date().toISOString(),
+    notas: notas || "",
+  });
+}
+
+export async function crearDiscrepanciaQtyManual(
+  recepcionId: string,
+  sku: string,
+  tipo: db.DiscrepanciaQtyTipo,
+  qtyFactura: number,
+  qtyRecibida: number,
+  notas: string,
+): Promise<void> {
+  await db.insertDiscrepanciasQty([{
+    recepcion_id: recepcionId, sku,
+    tipo, qty_factura: qtyFactura, qty_recibida: qtyRecibida,
+    diferencia: qtyRecibida - qtyFactura, estado: "PENDIENTE",
+    notas,
+  }]);
+}
+
+export function tieneDiscrepanciasQtyPendientes(discs: db.DBDiscrepanciaQty[]): boolean {
   return discs.some(d => d.estado === "PENDIENTE");
 }
 

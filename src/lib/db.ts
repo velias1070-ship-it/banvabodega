@@ -131,6 +131,25 @@ export interface DBDiscrepanciaCosto {
   created_at?: string;
 }
 
+export type DiscrepanciaQtyTipo = "FALTANTE" | "SOBRANTE" | "SKU_ERRONEO" | "NO_EN_FACTURA";
+export type DiscrepanciaQtyEstado = "PENDIENTE" | "ACEPTADO" | "RECLAMADO" | "NOTA_CREDITO" | "DEVOLUCION";
+
+export interface DBDiscrepanciaQty {
+  id?: string;
+  recepcion_id: string;
+  linea_id?: string;
+  sku: string;
+  tipo: DiscrepanciaQtyTipo;
+  qty_factura: number;
+  qty_recibida: number;
+  diferencia: number;
+  estado: DiscrepanciaQtyEstado;
+  resuelto_por?: string;
+  resuelto_at?: string;
+  notas?: string;
+  created_at?: string;
+}
+
 // ==================== PRODUCTOS ====================
 
 // Strip auto-generated fields (created_at, updated_at) that Supabase rejects on upsert
@@ -325,6 +344,40 @@ export async function deleteDiscrepanciasPendientes(recepcionId: string) {
 export async function updateProductoCosto(sku: string, nuevoCosto: number) {
   const sb = getSupabase(); if (!sb) return;
   await sb.from("productos").update({ costo: nuevoCosto }).eq("sku", sku);
+}
+
+// ==================== DISCREPANCIAS DE CANTIDAD ====================
+
+export async function fetchDiscrepanciasQty(recepcionId: string): Promise<DBDiscrepanciaQty[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  try {
+    const { data } = await sb.from("discrepancias_qty").select("*")
+      .eq("recepcion_id", recepcionId).order("created_at");
+    return data || [];
+  } catch { return []; }
+}
+
+export async function insertDiscrepanciasQty(discs: Omit<DBDiscrepanciaQty, "id" | "created_at">[]) {
+  const sb = getSupabase(); if (!sb) return;
+  if (discs.length === 0) return;
+  try {
+    await sb.from("discrepancias_qty").insert(discs);
+  } catch {}
+}
+
+export async function updateDiscrepanciaQty(id: string, fields: Partial<DBDiscrepanciaQty>) {
+  const sb = getSupabase(); if (!sb) return;
+  try {
+    await sb.from("discrepancias_qty").update(fields).eq("id", id);
+  } catch {}
+}
+
+export async function deleteDiscrepanciasQtyPendientes(recepcionId: string) {
+  const sb = getSupabase(); if (!sb) return;
+  try {
+    await sb.from("discrepancias_qty").delete()
+      .eq("recepcion_id", recepcionId).eq("estado", "PENDIENTE");
+  } catch {}
 }
 
 // Fetch ALL lines from multiple receptions at once
