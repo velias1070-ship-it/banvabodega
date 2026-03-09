@@ -1,5 +1,5 @@
 "use client";
-import { useState, useMemo, useEffect, useCallback } from "react";
+import React, { useState, useMemo, useEffect, useCallback } from "react";
 import * as XLSX from "xlsx";
 import { skuTotal, skuPositions, getStore, getComponentesPorSkuVenta, getVentasPorSkuOrigen } from "@/lib/store";
 import type { ComposicionVenta } from "@/lib/store";
@@ -43,6 +43,12 @@ interface SkuVentaRow {
   margenFull: number | null;
   costoProducto: number | null;
   sinCosto: boolean;
+  // Campos stock compartido
+  skuOrigenPrincipal: string;
+  esCompartido: boolean;
+  formatosCompartidos: number;
+  otrosFormatos: string[];
+  stockBodegaFisico: number; // stock físico real del SKU Origen
 }
 
 interface SkuOrigenRow {
@@ -55,6 +61,12 @@ interface SkuOrigenRow {
   pedirProveedor: number;
   stockFullEquiv: number;
   accion: Accion;
+  // Campos stock compartido
+  velFullFisica: number;
+  velFlexFisica: number;
+  coberturaFisicaDias: number;
+  skusVentaAsociados: { skuVenta: string; unidades: number; nombre: string; velSemanal: number; stockFull: number }[];
+  esCompartido: boolean;
   // Campos proveedor (se llenan cuando se carga lista de precios)
   stockProveedor?: number;
   innerPack?: number;
@@ -333,6 +345,22 @@ function calcularReposicion(
 
   const { cobObjetivo, puntoReorden, cobMaxima } = config;
 
+  // 3.5. Construir mapa SKU Origen → SKU Ventas asociados (detección automática de compartidos)
+  const origenToVentasMap = new Map<string, { skuVenta: string; unidades: number }[]>();
+  for (const sv of Array.from(allSkusVenta)) {
+    const comps = getComponentesPorSkuVenta(sv);
+    if (comps.length > 0) {
+      for (const c of comps) {
+        if (!origenToVentasMap.has(c.skuOrigen)) origenToVentasMap.set(c.skuOrigen, []);
+        origenToVentasMap.get(c.skuOrigen)!.push({ skuVenta: sv, unidades: c.unidades });
+      }
+    } else {
+      // SKU simple: SKU Venta = SKU Origen
+      if (!origenToVentasMap.has(sv)) origenToVentasMap.set(sv, []);
+      origenToVentasMap.get(sv)!.push({ skuVenta: sv, unidades: 1 });
+    }
+  }
+
   // 4. Calcular filas por SKU Venta
   const ventaRows: SkuVentaRow[] = [];
   // Para acumular demanda física por SKU Origen
@@ -340,6 +368,8 @@ function calcularReposicion(
   const stockFullPorOrigen = new Map<string, number>();
   // Nombres por SKU Origen
   const nombreOrigen = new Map<string, string>();
+  // Mapa temporal para info de SKU Venta (para asociar a SKU Origen después)
+  const ventaInfoMap = new Map<string, { nombre: string; velTotal: number; stockFull: number }>();
 
   const allSkusVentaArr = Array.from(allSkusVenta);
   for (let _i = 0; _i < allSkusVentaArr.length; _i++) {
@@ -366,13 +396,24 @@ function calcularReposicion(
     // Stock bodega: necesitamos mapear SKU Venta → SKU Origen
     const componentes = getComponentesPorSkuVenta(skuVenta);
     let stockBodega = 0;
+    let skuOrigenPrincipal = skuVenta;
+    let stockBodegaFisico = 0;
     if (componentes.length > 0) {
       // Para packs/combos, el stock de bodega es el mínimo de (stock_origen / unidades)
       stockBodega = Math.min(...componentes.map(c => Math.floor(skuTotal(c.skuOrigen) / c.unidades)));
+      skuOrigenPrincipal = componentes.length === 1 ? componentes[0].skuOrigen : componentes[0].skuOrigen;
+      stockBodegaFisico = componentes.length === 1 ? skuTotal(componentes[0].skuOrigen) : skuTotal(componentes[0].skuOrigen);
     } else {
       // SKU simple: SKU Venta = SKU Origen
       stockBodega = skuTotal(skuVenta);
+      stockBodegaFisico = stockBodega;
     }
+
+    // Detección de stock compartido
+    const asociados = origenToVentasMap.get(skuOrigenPrincipal) || [];
+    const esCompartido = asociados.length > 1;
+    const formatosCompartidos = asociados.length;
+    const otrosFormatos = asociados.filter(a => a.skuVenta !== skuVenta).map(a => a.skuVenta);
 
     const stockTotal = stockFull + stockBodega;
 
@@ -436,7 +477,10 @@ function calcularReposicion(
       pedir: sinStockProv.has(skuVenta) ? 0 : pedirVenta,
       accion,
       margenFlex, margenFull, costoProducto, sinCosto,
+      skuOrigenPrincipal, esCompartido, formatosCompartidos, otrosFormatos, stockBodegaFisico,
     });
+    // Guardar info para asociar a SKU Origen después
+    ventaInfoMap.set(skuVenta, { nombre, velTotal, stockFull });
 
     // Acumular demanda física por SKU Origen
     if (componentes.length > 0) {
@@ -468,38 +512,96 @@ function calcularReposicion(
     }
   }
 
-  // 5. Filas por SKU Origen
+  // 5. Filas por SKU Origen (Nivel 2 — decisiones de compra y stock bodega)
   const origenRows: SkuOrigenRow[] = [];
   const origenEntries = Array.from(demandaFisicaPorOrigen.entries());
   for (let _j = 0; _j < origenEntries.length; _j++) {
     const [skuOrigen, dem] = origenEntries[_j];
     const stockBodega = skuTotal(skuOrigen);
     const stockFullEquiv = stockFullPorOrigen.get(skuOrigen) || 0;
+    const stockFisicoTotal = stockBodega + stockFullEquiv;
     const targetFisico = dem.velTotal * cobObjetivo / 7;
-    const pedirProveedor = Math.max(0, Math.ceil(targetFisico - (stockFullEquiv + stockBodega)));
+    // Pedido a proveedor: SIEMPRE a nivel SKU Origen (nunca sumando pedidos individuales de SKU Venta)
+    const pedirProveedor = Math.max(0, Math.ceil(targetFisico - stockFisicoTotal));
+    const coberturaFisicaDias = dem.velTotal > 0 ? (stockFisicoTotal / dem.velTotal) * 7 : 999;
 
     let accion: Accion;
     if (dem.velTotal === 0) accion = "SIN VENTA";
     else {
-      const cobTotal = dem.velTotal > 0 ? ((stockFullEquiv + stockBodega) / dem.velTotal) * 7 : 999;
       if (stockBodega === 0 && stockFullEquiv === 0) accion = "AGOTADO PEDIR";
-      else if (cobTotal < puntoReorden) accion = "URGENTE";
-      else if (cobTotal < 30) accion = "PLANIFICAR";
-      else if (cobTotal <= cobMaxima) accion = "OK";
+      else if (coberturaFisicaDias < puntoReorden) accion = "URGENTE";
+      else if (coberturaFisicaDias < 30) accion = "PLANIFICAR";
+      else if (coberturaFisicaDias <= cobMaxima) accion = "OK";
       else accion = "EXCESO";
     }
+
+    // Construir lista de SKU Venta asociados
+    const asociados = origenToVentasMap.get(skuOrigen) || [];
+    const skusVentaAsociados = asociados.map(a => {
+      const info = ventaInfoMap.get(a.skuVenta);
+      return {
+        skuVenta: a.skuVenta,
+        unidades: a.unidades,
+        nombre: info?.nombre || a.skuVenta,
+        velSemanal: info?.velTotal || 0,
+        stockFull: info?.stockFull || 0,
+      };
+    });
 
     origenRows.push({
       skuOrigen,
       nombre: nombreOrigen.get(skuOrigen) || skuOrigen,
       velTotalFisica: dem.velTotal,
+      velFullFisica: dem.velFull,
+      velFlexFisica: dem.velFlex,
       stockBodega,
       demandaFisicaTotal: dem.velTotal,
       targetFisico: Math.ceil(targetFisico),
       pedirProveedor: sinStockProv.has(skuOrigen) ? 0 : pedirProveedor,
       stockFullEquiv: Math.round(stockFullEquiv),
+      coberturaFisicaDias: Math.round(coberturaFisicaDias),
+      skusVentaAsociados,
+      esCompartido: asociados.length > 1,
       accion,
     });
+  }
+
+  // 5.5. Validación cruzada de envío a Full: verificar que el total de uds físicas
+  // que se quiere enviar (de todos los formatos de un mismo SKU Origen) no supere el stock de bodega.
+  // Si supera, priorizar por urgencia de cobertura Full.
+  const envioFisicoPorOrigen = new Map<string, { skuVenta: string; unidadesFisicas: number; cobFull: number }[]>();
+  for (const vr of ventaRows) {
+    if (vr.mandarFull <= 0) continue;
+    const comps = getComponentesPorSkuVenta(vr.skuVenta);
+    const efectivos = comps.length > 0 ? comps : [{ skuOrigen: vr.skuVenta, unidades: 1, skuVenta: vr.skuVenta, codigoMl: "" }];
+    for (const c of efectivos) {
+      if (!envioFisicoPorOrigen.has(c.skuOrigen)) envioFisicoPorOrigen.set(c.skuOrigen, []);
+      envioFisicoPorOrigen.get(c.skuOrigen)!.push({
+        skuVenta: vr.skuVenta,
+        unidadesFisicas: vr.mandarFull * c.unidades,
+        cobFull: vr.cobFull,
+      });
+    }
+  }
+  // Ajustar mandarFull cuando el stock no alcanza para todos los formatos
+  for (const [skuOrigen, envios] of Array.from(envioFisicoPorOrigen.entries())) {
+    const stockBod = skuTotal(skuOrigen);
+    const totalFisico = envios.reduce((s, e) => s + e.unidadesFisicas, 0);
+    if (totalFisico <= stockBod) continue;
+    // Priorizar por menor cobertura Full (más urgente primero)
+    envios.sort((a, b) => a.cobFull - b.cobFull);
+    let restante = stockBod;
+    for (const e of envios) {
+      const asignado = Math.min(e.unidadesFisicas, restante);
+      restante -= asignado;
+      // Actualizar el mandarFull de la fila correspondiente
+      const fila = ventaRows.find(r => r.skuVenta === e.skuVenta);
+      if (fila) {
+        const comps = getComponentesPorSkuVenta(e.skuVenta);
+        const unidadesPack = comps.length > 0 ? comps.find(c => c.skuOrigen === skuOrigen)?.unidades || 1 : 1;
+        fila.mandarFull = Math.floor(asignado / unidadesPack);
+      }
+    }
   }
 
   // 6. Cruce con datos de proveedor
@@ -589,6 +691,8 @@ export default function AdminReposicion() {
   const [showPedidoProv, setShowPedidoProv] = useState(true);
   const [expandedEnvio, setExpandedEnvio] = useState<Set<string>>(new Set());
   const [vistaOrigen, setVistaOrigen] = useState(false);
+  const [expandedOrigenGroup, setExpandedOrigenGroup] = useState<Set<string>>(new Set());
+  const [expandedOrigenRow, setExpandedOrigenRow] = useState<Set<string>>(new Set());
   const [fileNameOrdenes, setFileNameOrdenes] = useState("");
   const [fileNameVelocidad, setFileNameVelocidad] = useState("");
   const [proveedor, setProveedor] = useState<ProveedorRaw[] | null>(null);
@@ -805,6 +909,73 @@ export default function AdminReposicion() {
         };
       });
   }, [resultado, proveedor]);
+
+  // Alertas de stock compartido en envío a Full
+  const alertasEnvioCompartido = useMemo(() => {
+    if (!resultado) return new Map<string, { skuOrigen: string; totalFisico: number; stockBodega: number; formatos: { skuVenta: string; uds: number }[]; priorizado: string }>();
+    const alertas = new Map<string, { skuOrigen: string; totalFisico: number; stockBodega: number; formatos: { skuVenta: string; uds: number }[]; priorizado: string }>();
+    // Agrupar envíos por SKU Origen
+    const enviosPorOrigen = new Map<string, { skuVenta: string; udsFisicas: number; cobFull: number }[]>();
+    for (const d of envioDetalles) {
+      for (const c of d.componentes) {
+        if (!enviosPorOrigen.has(c.skuOrigen)) enviosPorOrigen.set(c.skuOrigen, []);
+        enviosPorOrigen.get(c.skuOrigen)!.push({ skuVenta: d.skuVenta, udsFisicas: c.unidadesFisicas, cobFull: d.cobFull });
+      }
+    }
+    for (const [skuOrigen, envios] of Array.from(enviosPorOrigen.entries())) {
+      if (envios.length < 2) continue;
+      const totalFisico = envios.reduce((s, e) => s + e.udsFisicas, 0);
+      const stockBod = skuTotal(skuOrigen);
+      if (totalFisico > stockBod) {
+        const priorizado = envios.sort((a, b) => a.cobFull - b.cobFull)[0].skuVenta;
+        for (const e of envios) {
+          alertas.set(e.skuVenta, {
+            skuOrigen,
+            totalFisico,
+            stockBodega: stockBod,
+            formatos: envios.map(x => ({ skuVenta: x.skuVenta, uds: x.udsFisicas })),
+            priorizado,
+          });
+        }
+      }
+    }
+    return alertas;
+  }, [envioDetalles, resultado]);
+
+  // Agrupación visual: agrupar filasVenta por SKU Origen cuando hay compartidos
+  const filasVentaAgrupadas = useMemo(() => {
+    if (!filasVenta.length) return [];
+    // Construir grupos: filas que comparten SKU Origen van juntas
+    const grupos = new Map<string, SkuVentaRow[]>();
+    const orden: string[] = [];
+    for (const r of filasVenta) {
+      const key = r.esCompartido ? r.skuOrigenPrincipal : `_solo_${r.skuVenta}`;
+      if (!grupos.has(key)) { grupos.set(key, []); orden.push(key); }
+      grupos.get(key)!.push(r);
+    }
+    return orden.map(key => ({
+      key,
+      esGrupo: key.startsWith("_solo_") ? false : (grupos.get(key)!.length > 1),
+      skuOrigen: key.startsWith("_solo_") ? "" : key,
+      filas: grupos.get(key)!,
+    }));
+  }, [filasVenta]);
+
+  const toggleOrigenGroup = useCallback((key: string) => {
+    setExpandedOrigenGroup(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const toggleOrigenRow = useCallback((sku: string) => {
+    setExpandedOrigenRow(prev => {
+      const next = new Set(prev);
+      if (next.has(sku)) next.delete(sku); else next.add(sku);
+      return next;
+    });
+  }, []);
 
   const handleSort = (col: string) => {
     if (sortCol === col) setSortAsc(!sortAsc);
@@ -1056,7 +1227,7 @@ export default function AdminReposicion() {
             </span>
           </div>
 
-          {/* Tabla SKU Venta */}
+          {/* Tabla SKU Venta — con agrupación visual por SKU Origen compartido */}
           {!vistaOrigen && (
             <div style={{ overflowX:"auto", marginBottom:20 }}>
               <table className="tbl" style={{ minWidth:1300 }}>
@@ -1068,7 +1239,7 @@ export default function AdminReposicion() {
                     <th style={thStyle("velFull")} onClick={() => handleSort("velFull")}>V.Full</th>
                     <th style={thStyle("velFlex")} onClick={() => handleSort("velFlex")}>V.Flex</th>
                     <th style={thStyle("stockFull")} onClick={() => handleSort("stockFull")}>St.Full</th>
-                    <th style={thStyle("stockBodega")} onClick={() => handleSort("stockBodega")}>St.Bodega</th>
+                    <th style={thStyle("stockBodega")} onClick={() => handleSort("stockBodega")}>St.Bod (compartido)</th>
                     <th style={thStyle("stockTotal")} onClick={() => handleSort("stockTotal")}>St.Total</th>
                     <th style={thStyle("cobFull")} onClick={() => handleSort("cobFull")}>Cob Full</th>
                     <th style={thStyle("cobBodega")} onClick={() => handleSort("cobBodega")}>Cob Bod</th>
@@ -1082,77 +1253,191 @@ export default function AdminReposicion() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filasVenta.map(r => (
-                    <tr key={r.skuVenta}>
-                      <td className="mono" style={{ fontSize:11, fontWeight:600 }}>{r.skuVenta}</td>
-                      <td style={{ maxWidth:180, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", fontSize:11 }} title={r.nombre}>{r.nombre}</td>
-                      <td className="mono" style={{ textAlign:"right" }}>{fmtNum(r.velTotal)}</td>
-                      <td className="mono" style={{ textAlign:"right" }}>{fmtNum(r.velFull)}</td>
-                      <td className="mono" style={{ textAlign:"right" }}>{fmtNum(r.velFlex)}</td>
-                      <td className="mono" style={{ textAlign:"right" }}>{r.stockFull}</td>
-                      <td className="mono" style={{ textAlign:"right" }}>{r.stockBodega}</td>
-                      <td className="mono" style={{ textAlign:"right", fontWeight:600 }}>{r.stockTotal}</td>
-                      <td className="mono" style={{ textAlign:"right", color: r.cobFull < config.puntoReorden ? "var(--red)" : r.cobFull > config.cobMaxima ? "var(--amber)" : undefined }}>{fmtNum(r.cobFull, 0)}</td>
-                      <td className="mono" style={{ textAlign:"right" }}>{fmtNum(r.cobBodega, 0)}</td>
-                      <td className="mono" style={{ textAlign:"right" }}>{fmtNum(r.cobTotal, 0)}</td>
-                      <td className="mono" style={{ textAlign:"right", fontSize:11, color: r.sinCosto ? "var(--txt3)" : r.margenFlex !== null ? (r.margenFlex >= 0 ? "var(--green)" : "var(--red)") : "var(--txt3)" }}>
-                        {r.sinCosto ? <span title="Sin costo en diccionario">⚠️</span> : r.margenFlex !== null ? `$${r.margenFlex.toLocaleString()}` : "-"}
-                      </td>
-                      <td className="mono" style={{ textAlign:"right", fontSize:11, color: r.sinCosto ? "var(--txt3)" : r.margenFull !== null ? (r.margenFull >= 0 ? "var(--green)" : "var(--red)") : "var(--txt3)" }}>
-                        {r.sinCosto ? <span title="Sin costo en diccionario">⚠️</span> : r.margenFull !== null ? `$${r.margenFull.toLocaleString()}` : "-"}
-                      </td>
-                      <td className="mono" style={{ textAlign:"right", fontWeight:600, color: r.mandarFull > 0 ? "var(--blue)" : undefined }}>{r.mandarFull > 0 ? r.mandarFull : "-"}</td>
-                      <td className="mono" style={{ textAlign:"right", fontWeight:600, color: r.pedir > 0 ? "var(--amber)" : undefined }}>
-                        {sinStockProv.has(r.skuVenta) ? <span title="Sin stock proveedor" style={{ color:"var(--red)" }}>⚠ 0</span> : r.pedir > 0 ? r.pedir : "-"}
-                      </td>
-                      <td>{badge(r.accion)}</td>
-                      <td style={{ textAlign:"center" }}>
-                        <input type="checkbox" checked={sinStockProv.has(r.skuVenta)} onChange={() => toggleSinStock(r.skuVenta)}
-                          style={{ accentColor:"var(--red)", cursor:"pointer" }} />
-                      </td>
-                    </tr>
+                  {filasVentaAgrupadas.map(grupo => (
+                    <React.Fragment key={grupo.key}>
+                      {/* Fila cabecera de grupo si hay SKU Origen compartido */}
+                      {grupo.esGrupo && (
+                        <tr style={{ background:"var(--bg3)", cursor:"pointer" }} onClick={() => toggleOrigenGroup(grupo.key)}>
+                          <td colSpan={17} style={{ padding:"6px 12px", fontSize:11, fontWeight:700, color:"var(--cyan)", borderLeft:"3px solid var(--cyan)" }}>
+                            <span style={{ transform: expandedOrigenGroup.has(grupo.key) ? "rotate(90deg)" : "rotate(0)", transition:"transform 0.2s", display:"inline-block", marginRight:6, fontSize:9 }}>▶</span>
+                            SKU Origen: {grupo.skuOrigen} — {skuTotal(grupo.skuOrigen)} uds en bodega — Demanda total: {fmtNum(grupo.filas.reduce((s, r) => s + r.velTotal * (getComponentesPorSkuVenta(r.skuVenta).find(c => c.skuOrigen === grupo.skuOrigen)?.unidades || 1), 0))}/sem — {grupo.filas.length} formatos de venta
+                          </td>
+                        </tr>
+                      )}
+                      {grupo.filas.map(r => (
+                        <tr key={r.skuVenta} style={grupo.esGrupo ? { borderLeft:"3px solid var(--cyan)" } : undefined}>
+                          <td className="mono" style={{ fontSize:11, fontWeight:600 }}>
+                            {r.esCompartido && <span title={`Comparte stock con: ${r.otrosFormatos.join(", ")}`} style={{ color:"var(--cyan)", marginRight:4, cursor:"help" }}>🔗</span>}
+                            {r.skuVenta}
+                          </td>
+                          <td style={{ maxWidth:180, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", fontSize:11 }} title={r.nombre}>{r.nombre}</td>
+                          <td className="mono" style={{ textAlign:"right" }}>{fmtNum(r.velTotal)}</td>
+                          <td className="mono" style={{ textAlign:"right" }}>{fmtNum(r.velFull)}</td>
+                          <td className="mono" style={{ textAlign:"right" }}>{fmtNum(r.velFlex)}</td>
+                          <td className="mono" style={{ textAlign:"right" }}>{r.stockFull}</td>
+                          <td className="mono" style={{ textAlign:"right" }}>
+                            {r.esCompartido ? (
+                              <span title={`Stock físico de ${r.skuOrigenPrincipal}: ${r.stockBodegaFisico} uds en bodega. Compartido con: ${r.otrosFormatos.join(", ")}`} style={{ cursor:"help" }}>
+                                {r.stockBodega} <span style={{ color:"var(--cyan)", fontSize:9 }}>({r.formatosCompartidos}f)</span>
+                              </span>
+                            ) : (
+                              r.stockBodega
+                            )}
+                          </td>
+                          <td className="mono" style={{ textAlign:"right", fontWeight:600 }}>{r.stockTotal}</td>
+                          <td className="mono" style={{ textAlign:"right", color: r.cobFull < config.puntoReorden ? "var(--red)" : r.cobFull > config.cobMaxima ? "var(--amber)" : undefined }}>{fmtNum(r.cobFull, 0)}</td>
+                          <td className="mono" style={{ textAlign:"right" }}>{fmtNum(r.cobBodega, 0)}</td>
+                          <td className="mono" style={{ textAlign:"right" }}>{fmtNum(r.cobTotal, 0)}</td>
+                          <td className="mono" style={{ textAlign:"right", fontSize:11, color: r.sinCosto ? "var(--txt3)" : r.margenFlex !== null ? (r.margenFlex >= 0 ? "var(--green)" : "var(--red)") : "var(--txt3)" }}>
+                            {r.sinCosto ? <span title="Sin costo en diccionario">⚠️</span> : r.margenFlex !== null ? `$${r.margenFlex.toLocaleString()}` : "-"}
+                          </td>
+                          <td className="mono" style={{ textAlign:"right", fontSize:11, color: r.sinCosto ? "var(--txt3)" : r.margenFull !== null ? (r.margenFull >= 0 ? "var(--green)" : "var(--red)") : "var(--txt3)" }}>
+                            {r.sinCosto ? <span title="Sin costo en diccionario">⚠️</span> : r.margenFull !== null ? `$${r.margenFull.toLocaleString()}` : "-"}
+                          </td>
+                          <td className="mono" style={{ textAlign:"right", fontWeight:600, color: r.mandarFull > 0 ? "var(--blue)" : undefined }}>
+                            {r.mandarFull > 0 ? r.mandarFull : "-"}
+                            {r.esCompartido && alertasEnvioCompartido.has(r.skuVenta) && (
+                              <span title="Stock compartido insuficiente para todos los formatos" style={{ color:"var(--red)", marginLeft:2, fontSize:9 }}>⚠</span>
+                            )}
+                          </td>
+                          <td className="mono" style={{ textAlign:"right", fontWeight:600, color: r.pedir > 0 ? "var(--amber)" : undefined }}>
+                            {sinStockProv.has(r.skuVenta) ? <span title="Sin stock proveedor" style={{ color:"var(--red)" }}>⚠ 0</span> : r.pedir > 0 ? r.pedir : "-"}
+                          </td>
+                          <td>{badge(r.accion)}</td>
+                          <td style={{ textAlign:"center" }}>
+                            <input type="checkbox" checked={sinStockProv.has(r.skuVenta)} onChange={() => toggleSinStock(r.skuVenta)}
+                              style={{ accentColor:"var(--red)", cursor:"pointer" }} />
+                          </td>
+                        </tr>
+                      ))}
+                      {/* Resumen del grupo expandido */}
+                      {grupo.esGrupo && expandedOrigenGroup.has(grupo.key) && (() => {
+                        const stockBod = skuTotal(grupo.skuOrigen);
+                        const demTotal = grupo.filas.reduce((s, r) => s + r.velTotal * (getComponentesPorSkuVenta(r.skuVenta).find(c => c.skuOrigen === grupo.skuOrigen)?.unidades || 1), 0);
+                        const stockFullTotal = grupo.filas.reduce((s, r) => s + r.stockFull * (getComponentesPorSkuVenta(r.skuVenta).find(c => c.skuOrigen === grupo.skuOrigen)?.unidades || 1), 0);
+                        const cobFisica = demTotal > 0 ? ((stockBod + stockFullTotal) / demTotal) * 7 : 999;
+                        const pedirOrigen = resultado?.origenRows.find(o => o.skuOrigen === grupo.skuOrigen);
+                        return (
+                          <tr style={{ background:"var(--bg)", borderLeft:"3px solid var(--cyan)" }}>
+                            <td colSpan={17} style={{ padding:"8px 16px", fontSize:11 }}>
+                              <div style={{ display:"flex", gap:24, flexWrap:"wrap", alignItems:"center" }}>
+                                <span>Cobertura total (físico): <span className="mono" style={{ fontWeight:700 }}>{fmtNum(cobFisica, 0)} días</span></span>
+                                <span>Stock Full (equiv): <span className="mono" style={{ fontWeight:600 }}>{Math.round(stockFullTotal)} uds</span></span>
+                                {pedirOrigen && pedirOrigen.pedirProveedor > 0 && (
+                                  <span>Pedir al proveedor: <span className="mono" style={{ fontWeight:700, color:"var(--amber)" }}>{pedirOrigen.pedirProveedor} uds físicas</span></span>
+                                )}
+                                <span style={{ padding:"2px 8px", borderRadius:4, fontSize:10, fontWeight:700,
+                                  background: cobFisica < 14 ? "var(--redBg)" : cobFisica < 30 ? "var(--amberBg)" : "var(--greenBg)",
+                                  color: cobFisica < 14 ? "var(--red)" : cobFisica < 30 ? "var(--amber)" : "var(--green)",
+                                }}>
+                                  {cobFisica < 14 ? "URGENTE" : cobFisica < 30 ? "PLANIFICAR" : "OK"}
+                                </span>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })()}
+                    </React.Fragment>
                   ))}
                 </tbody>
               </table>
             </div>
           )}
 
-          {/* Tabla SKU Origen */}
+          {/* Tabla SKU Origen — Nivel 2: decisiones de compra y stock bodega */}
           {vistaOrigen && (
             <div style={{ overflowX:"auto", marginBottom:20 }}>
-              <table className="tbl" style={{ minWidth:900 }}>
+              <table className="tbl" style={{ minWidth:1100 }}>
                 <thead>
                   <tr>
                     <th style={thStyle("skuOrigen")} onClick={() => handleSort("skuOrigen")}>SKU Origen</th>
                     <th style={thStyle("nombre")} onClick={() => handleSort("nombre")}>Nombre</th>
-                    <th style={thStyle("velTotalFisica")} onClick={() => handleSort("velTotalFisica")}>Vel Física/sem</th>
+                    <th style={thStyle("velTotalFisica")} onClick={() => handleSort("velTotalFisica")}>Dem. Física/sem</th>
                     <th style={thStyle("stockBodega")} onClick={() => handleSort("stockBodega")}>St.Bodega</th>
                     <th style={thStyle("stockFullEquiv")} onClick={() => handleSort("stockFullEquiv")}>St.Full (equiv)</th>
+                    <th style={{ ...thStyle("stockTotal"), cursor:"default" }}>St.Total</th>
+                    <th style={thStyle("coberturaFisicaDias")} onClick={() => handleSort("coberturaFisicaDias")}>Cob. (días)</th>
                     <th style={thStyle("targetFisico")} onClick={() => handleSort("targetFisico")}>Target</th>
                     <th style={thStyle("pedirProveedor")} onClick={() => handleSort("pedirProveedor")}>Pedir Prov.</th>
+                    <th>Formatos</th>
                     <th style={thStyle("accion")} onClick={() => handleSort("accion")}>Acción</th>
                     <th>Sin Stock</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {filasOrigen.map(r => (
-                    <tr key={r.skuOrigen}>
-                      <td className="mono" style={{ fontSize:11, fontWeight:600 }}>{r.skuOrigen}</td>
-                      <td style={{ maxWidth:200, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", fontSize:11 }} title={r.nombre}>{r.nombre}</td>
-                      <td className="mono" style={{ textAlign:"right" }}>{fmtNum(r.velTotalFisica)}</td>
-                      <td className="mono" style={{ textAlign:"right" }}>{r.stockBodega}</td>
-                      <td className="mono" style={{ textAlign:"right" }}>{r.stockFullEquiv}</td>
-                      <td className="mono" style={{ textAlign:"right" }}>{r.targetFisico}</td>
-                      <td className="mono" style={{ textAlign:"right", fontWeight:600, color: r.pedirProveedor > 0 ? "var(--amber)" : undefined }}>
-                        {sinStockProv.has(r.skuOrigen) ? <span title="Sin stock proveedor" style={{ color:"var(--red)" }}>⚠ 0</span> : r.pedirProveedor > 0 ? r.pedirProveedor : "-"}
-                      </td>
-                      <td>{badge(r.accion)}</td>
-                      <td style={{ textAlign:"center" }}>
-                        <input type="checkbox" checked={sinStockProv.has(r.skuOrigen)} onChange={() => toggleSinStock(r.skuOrigen)}
-                          style={{ accentColor:"var(--red)", cursor:"pointer" }} />
-                      </td>
-                    </tr>
-                  ))}
+                  {filasOrigen.map(r => {
+                    const isExpanded = expandedOrigenRow.has(r.skuOrigen);
+                    const stockTotal = r.stockBodega + r.stockFullEquiv;
+                    return (
+                      <React.Fragment key={r.skuOrigen}>
+                        <tr>
+                          <td className="mono" style={{ fontSize:11, fontWeight:600 }}>
+                            {r.esCompartido && <span style={{ color:"var(--cyan)", marginRight:4 }}>🔗</span>}
+                            {r.skuOrigen}
+                          </td>
+                          <td style={{ maxWidth:200, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", fontSize:11 }} title={r.nombre}>{r.nombre}</td>
+                          <td className="mono" style={{ textAlign:"right" }}>{fmtNum(r.velTotalFisica)}</td>
+                          <td className="mono" style={{ textAlign:"right" }}>{r.stockBodega}</td>
+                          <td className="mono" style={{ textAlign:"right" }}>{r.stockFullEquiv}</td>
+                          <td className="mono" style={{ textAlign:"right", fontWeight:600 }}>{stockTotal}</td>
+                          <td className="mono" style={{ textAlign:"right", color: r.coberturaFisicaDias < config.puntoReorden ? "var(--red)" : r.coberturaFisicaDias > config.cobMaxima ? "var(--amber)" : undefined }}>
+                            {fmtNum(r.coberturaFisicaDias, 0)}
+                          </td>
+                          <td className="mono" style={{ textAlign:"right" }}>{r.targetFisico}</td>
+                          <td className="mono" style={{ textAlign:"right", fontWeight:600, color: r.pedirProveedor > 0 ? "var(--amber)" : undefined }}>
+                            {sinStockProv.has(r.skuOrigen) ? <span title="Sin stock proveedor" style={{ color:"var(--red)" }}>⚠ 0</span> : r.pedirProveedor > 0 ? r.pedirProveedor : "-"}
+                          </td>
+                          <td style={{ textAlign:"center" }}>
+                            {r.skusVentaAsociados.length > 0 && (
+                              <button onClick={() => toggleOrigenRow(r.skuOrigen)} style={{ background:"none", border:"1px solid var(--bg4)", borderRadius:4, padding:"2px 8px", fontSize:10, color:"var(--cyan)", cursor:"pointer", fontWeight:600 }}>
+                                {r.skusVentaAsociados.length} {r.esCompartido ? "comp." : "fmt"}
+                                <span style={{ transform: isExpanded ? "rotate(90deg)" : "rotate(0)", transition:"transform 0.2s", display:"inline-block", marginLeft:4, fontSize:8 }}>▶</span>
+                              </button>
+                            )}
+                          </td>
+                          <td>{badge(r.accion)}</td>
+                          <td style={{ textAlign:"center" }}>
+                            <input type="checkbox" checked={sinStockProv.has(r.skuOrigen)} onChange={() => toggleSinStock(r.skuOrigen)}
+                              style={{ accentColor:"var(--red)", cursor:"pointer" }} />
+                          </td>
+                        </tr>
+                        {/* Formatos de venta asociados (expandible) */}
+                        {isExpanded && (
+                          <tr>
+                            <td colSpan={12} style={{ padding:"8px 16px", background:"var(--bg)", borderLeft:"3px solid var(--cyan)" }}>
+                              <div style={{ fontSize:11, fontWeight:600, marginBottom:6, color:"var(--cyan)" }}>Formatos de venta asociados:</div>
+                              <table style={{ width:"100%", fontSize:11, borderCollapse:"collapse" }}>
+                                <thead>
+                                  <tr style={{ borderBottom:"1px solid var(--bg4)" }}>
+                                    <th style={{ textAlign:"left", padding:"2px 8px", fontSize:10, color:"var(--txt3)" }}>SKU Venta</th>
+                                    <th style={{ textAlign:"left", padding:"2px 8px", fontSize:10, color:"var(--txt3)" }}>Nombre</th>
+                                    <th style={{ textAlign:"right", padding:"2px 8px", fontSize:10, color:"var(--txt3)" }}>Uds/pack</th>
+                                    <th style={{ textAlign:"right", padding:"2px 8px", fontSize:10, color:"var(--txt3)" }}>Vel/sem</th>
+                                    <th style={{ textAlign:"right", padding:"2px 8px", fontSize:10, color:"var(--txt3)" }}>Dem. física/sem</th>
+                                    <th style={{ textAlign:"right", padding:"2px 8px", fontSize:10, color:"var(--txt3)" }}>St.Full</th>
+                                    <th style={{ textAlign:"right", padding:"2px 8px", fontSize:10, color:"var(--txt3)" }}>St.Full (equiv uds)</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {r.skusVentaAsociados.map(a => (
+                                    <tr key={a.skuVenta} style={{ borderBottom:"1px solid var(--bg3)" }}>
+                                      <td className="mono" style={{ padding:"2px 8px", fontWeight:600 }}>{a.skuVenta}</td>
+                                      <td style={{ padding:"2px 8px", maxWidth:200, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{a.nombre}</td>
+                                      <td className="mono" style={{ textAlign:"right", padding:"2px 8px" }}>{a.unidades}</td>
+                                      <td className="mono" style={{ textAlign:"right", padding:"2px 8px" }}>{fmtNum(a.velSemanal)}</td>
+                                      <td className="mono" style={{ textAlign:"right", padding:"2px 8px", fontWeight:600 }}>{fmtNum(a.velSemanal * a.unidades)}</td>
+                                      <td className="mono" style={{ textAlign:"right", padding:"2px 8px" }}>{a.stockFull}</td>
+                                      <td className="mono" style={{ textAlign:"right", padding:"2px 8px" }}>{a.stockFull * a.unidades}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -1190,6 +1475,21 @@ export default function AdminReposicion() {
                         <span style={{ padding:"2px 8px", borderRadius:4, fontSize:9, fontWeight:700, background:"var(--bg3)", color:tipoColor, border:`1px solid ${tipoColor}40`, minWidth:50, textAlign:"center" }}>{tipoBadge}</span>
                         <span style={{ fontSize:11, color:estadoColor, minWidth:120, textAlign:"right", whiteSpace:"nowrap" }}>{estadoIcon} {estadoLabel}</span>
                       </button>
+
+                      {/* Alerta stock compartido */}
+                      {alertasEnvioCompartido.has(d.skuVenta) && (() => {
+                        const alerta = alertasEnvioCompartido.get(d.skuVenta)!;
+                        return (
+                          <div style={{ padding:"8px 14px", background:"var(--amberBg)", borderTop:"1px solid var(--amberBd)", fontSize:11, color:"var(--amber)" }}>
+                            ⚠️ Stock insuficiente para abastecer todos los formatos de <span className="mono" style={{ fontWeight:700 }}>{alerta.skuOrigen}</span>.
+                            Total requerido: {alerta.totalFisico} uds — Bodega: {alerta.stockBodega} uds.
+                            Se priorizó <span className="mono" style={{ fontWeight:700 }}>{alerta.priorizado}</span> (menor cobertura Full).
+                            {alerta.formatos.map(f => (
+                              <span key={f.skuVenta} style={{ marginLeft:8 }}>{f.skuVenta}: {f.uds} uds</span>
+                            ))}
+                          </div>
+                        );
+                      })()}
 
                       {/* Fila abierta — detalle */}
                       {isExpanded && (
