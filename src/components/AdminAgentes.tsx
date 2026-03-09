@@ -141,9 +141,13 @@ export default function AdminAgentes() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
+  // Resultado último run
+  const [lastRunResult, setLastRunResult] = useState<{ agente: string; resumen: string | null; insights_generados: number; insights_guardados: number; costo_usd: number; error?: string } | null>(null);
+
   // Ejecutar agente
   const ejecutarAgente = async (agente: string) => {
     setRunningAgent(agente);
+    setLastRunResult(null);
     try {
       const res = await fetch("/api/agents/run", {
         method: "POST",
@@ -152,15 +156,27 @@ export default function AdminAgentes() {
       });
       const data = await res.json();
       if (data.error) {
-        alert(`Error: ${data.error}`);
+        setLastRunResult({ agente, resumen: null, insights_generados: 0, insights_guardados: 0, costo_usd: 0, error: data.error });
       } else if (data.cached) {
-        alert(data.message);
+        setLastRunResult({ agente, resumen: data.message, insights_generados: 0, insights_guardados: 0, costo_usd: 0 });
       } else {
-        alert(`${agente}: ${data.insights_generados} insights generados (${fmtCost(data.costo_usd)} USD)`);
+        setLastRunResult({
+          agente,
+          resumen: data.resumen || null,
+          insights_generados: data.insights_generados,
+          insights_guardados: data.insights_guardados ?? data.insights_generados,
+          costo_usd: data.costo_usd,
+        });
+        // Si se generaron insights, mostrar la pestaña de insights
+        if (data.insights_generados > 0) {
+          setSection("insights");
+          setFiltroAgente(agente);
+          setFiltroEstado("pendientes");
+        }
       }
       await loadData();
     } catch (e) {
-      alert(`Error ejecutando ${agente}: ${e}`);
+      setLastRunResult({ agente, resumen: null, insights_generados: 0, insights_guardados: 0, costo_usd: 0, error: String(e) });
     } finally {
       setRunningAgent(null);
     }
@@ -231,6 +247,42 @@ export default function AdminAgentes() {
           );
         })}
       </div>
+
+      {/* Resultado del último run */}
+      {lastRunResult && (
+        <div className="card" style={{
+          padding: 16, marginBottom: 16,
+          border: lastRunResult.error ? "1px solid var(--redBd)" : "1px solid var(--greenBd)",
+          background: lastRunResult.error ? "var(--redBg)" : "var(--greenBg)",
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div>
+              {lastRunResult.error ? (
+                <div style={{ color: "var(--red)", fontWeight: 700, fontSize: 14 }}>
+                  Error ejecutando {lastRunResult.agente}: {lastRunResult.error}
+                </div>
+              ) : (
+                <>
+                  <div style={{ color: "var(--green)", fontWeight: 700, fontSize: 14 }}>
+                    {AGENT_ICONS[lastRunResult.agente]} {lastRunResult.agente}: {lastRunResult.insights_generados} insights generados ({fmtCost(lastRunResult.costo_usd)} USD)
+                  </div>
+                  {lastRunResult.insights_generados > 0 && lastRunResult.insights_guardados < lastRunResult.insights_generados && (
+                    <div style={{ color: "var(--amber)", fontSize: 12, marginTop: 4 }}>
+                      Advertencia: solo {lastRunResult.insights_guardados} de {lastRunResult.insights_generados} insights se guardaron en la DB
+                    </div>
+                  )}
+                  {lastRunResult.resumen && (
+                    <div style={{ color: "var(--txt2)", fontSize: 13, marginTop: 6, lineHeight: 1.5 }}>
+                      {lastRunResult.resumen}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+            <button onClick={() => setLastRunResult(null)} style={{ background: "none", border: "none", color: "var(--txt3)", fontSize: 16, cursor: "pointer", padding: 4 }}>✕</button>
+          </div>
+        </div>
+      )}
 
       {/* Tabs de sección */}
       <div className="tabs" style={{ marginBottom: 16 }}>

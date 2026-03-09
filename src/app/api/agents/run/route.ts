@@ -141,6 +141,7 @@ export async function POST(req: NextRequest) {
       const insights = parsed.insights || [];
 
       // 9. Guardar insights
+      let savedInsights: unknown[] = [];
       if (insights.length > 0) {
         const expiresAt = agente === "inventario"
           ? new Date(Date.now() + 86400000).toISOString()
@@ -148,7 +149,7 @@ export async function POST(req: NextRequest) {
           ? new Date(Date.now() + 7 * 86400000).toISOString()
           : null;
 
-        await insertAgentInsights(insights.map((ins: InsightRaw) => ({
+        const insertResult = await insertAgentInsights(insights.map((ins: InsightRaw) => ({
           agente,
           run_id: runId,
           tipo: (ins.tipo || "analisis") as "alerta" | "sugerencia" | "analisis" | "resumen",
@@ -160,6 +161,12 @@ export async function POST(req: NextRequest) {
           skus_relacionados: ins.skus || null,
           expires_at: expiresAt,
         })));
+
+        if (!insertResult.ok) {
+          console.error("[agents/run] Error guardando insights:", insertResult.error);
+        } else {
+          savedInsights = insertResult.inserted || [];
+        }
       }
 
       // 10. Guardar snapshot
@@ -187,6 +194,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         run_id: runId,
         insights_generados: insights.length,
+        insights_guardados: savedInsights.length,
+        insights: savedInsights,
         resumen: parsed.resumen || null,
         tokens: { input: tokensInput, output: tokensOutput },
         costo_usd: costoUsd,
