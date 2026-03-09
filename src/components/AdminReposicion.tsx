@@ -1,7 +1,7 @@
 "use client";
 import { useState, useMemo, useEffect, useCallback } from "react";
 import * as XLSX from "xlsx";
-import { skuTotal, getStore, getComponentesPorSkuVenta, getVentasPorSkuOrigen } from "@/lib/store";
+import { skuTotal, skuPositions, getStore, getComponentesPorSkuVenta, getVentasPorSkuOrigen } from "@/lib/store";
 import type { ComposicionVenta } from "@/lib/store";
 
 /* ───── Tipos ───── */
@@ -76,6 +76,38 @@ interface ProveedorRaw {
 }
 
 type ProveedorStatus = "ok" | "sin_stock" | "otro_proveedor";
+
+type EnvioTipo = "simple" | "pack" | "combo";
+type EnvioEstado = "listo" | "armar" | "insuficiente";
+
+interface EnvioComponenteDetalle {
+  skuOrigen: string;
+  nombreOrigen: string;
+  unidadesPorPack: number;
+  unidadesFisicas: number;
+  innerPack: number | null; // null = no hay info de proveedor
+  bultosCompletos: number;
+  sueltas: number;
+  faltanParaBulto: number;
+  sueltasEnPacks: number; // equivalente en SKU Venta
+  posiciones: { pos: string; label: string; qty: number }[];
+  stockTotal: number;
+  alcanza: boolean;
+  maxPacks: number; // máximo de packs armables con stock disponible
+}
+
+interface EnvioFullDetalle {
+  skuVenta: string;
+  nombre: string;
+  mandarFull: number;
+  tipo: EnvioTipo;
+  estado: EnvioEstado;
+  componentes: EnvioComponenteDetalle[];
+  maxPacksGlobal: number; // min de maxPacks de todos los componentes
+  accion: Accion;
+  stockFull: number;
+  cobFull: number;
+}
 
 type Accion = "SIN VENTA" | "MANDAR A FULL" | "AGOTADO PEDIR" | "URGENTE" | "PLANIFICAR" | "OK" | "EXCESO";
 
@@ -555,6 +587,7 @@ export default function AdminReposicion() {
   });
   const [showEnvioFull, setShowEnvioFull] = useState(true);
   const [showPedidoProv, setShowPedidoProv] = useState(true);
+  const [expandedEnvio, setExpandedEnvio] = useState<Set<string>>(new Set());
   const [vistaOrigen, setVistaOrigen] = useState(false);
   const [fileNameOrdenes, setFileNameOrdenes] = useState("");
   const [fileNameVelocidad, setFileNameVelocidad] = useState("");
@@ -683,6 +716,96 @@ export default function AdminReposicion() {
     return { agotados, urgentes, totalMandarFull, totalPedir, exceso, sinStockProvCount };
   }, [resultado]);
 
+  const toggleEnvioExpand = useCallback((sku: string) => {
+    setExpandedEnvio(prev => {
+      const next = new Set(prev);
+      if (next.has(sku)) next.delete(sku); else next.add(sku);
+      return next;
+    });
+  }, []);
+
+  // Detalle de envío a Full
+  const envioDetalles = useMemo((): EnvioFullDetalle[] => {
+    if (!resultado) return [];
+    const store = getStore();
+    // Mapa inner pack por SKU Origen desde archivo proveedor
+    const ipMap = new Map<string, number>();
+    if (proveedor) {
+      for (const p of proveedor) ipMap.set(p.skuOrigen, p.innerPack);
+    }
+
+    return resultado.ventaRows
+      .filter(r => r.mandarFull > 0)
+      .sort((a, b) => ACCION_ORDEN[a.accion] - ACCION_ORDEN[b.accion])
+      .map(r => {
+        const comps = getComponentesPorSkuVenta(r.skuVenta);
+
+        // Determinar tipo
+        let tipo: EnvioTipo;
+        if (comps.length === 0 || (comps.length === 1 && comps[0].unidades === 1)) {
+          tipo = "simple";
+        } else if (comps.length === 1 && comps[0].unidades > 1) {
+          tipo = "pack";
+        } else {
+          tipo = "combo";
+        }
+
+        // Componentes efectivos
+        const efectivos = comps.length > 0 ? comps : [{ skuOrigen: r.skuVenta, skuVenta: r.skuVenta, unidades: 1 }];
+
+        const componentes: EnvioComponenteDetalle[] = efectivos.map(c => {
+          const unidadesFisicas = r.mandarFull * c.unidades;
+          const ip = ipMap.get(c.skuOrigen) ?? null;
+          const bultosCompletos = ip ? Math.floor(unidadesFisicas / ip) : 0;
+          const sueltas = ip ? unidadesFisicas % ip : 0;
+          const faltanParaBulto = ip && sueltas > 0 ? ip - sueltas : 0;
+          const sueltasEnPacks = c.unidades > 0 ? Math.floor(sueltas / c.unidades) : 0;
+
+          const posiciones = skuPositions(c.skuOrigen);
+          const stockTotal = posiciones.reduce((s, p) => s + p.qty, 0);
+          const alcanza = stockTotal >= unidadesFisicas;
+          const maxPacks = c.unidades > 0 ? Math.floor(stockTotal / c.unidades) : 0;
+
+          return {
+            skuOrigen: c.skuOrigen,
+            nombreOrigen: store.products[c.skuOrigen]?.name || c.skuOrigen,
+            unidadesPorPack: c.unidades,
+            unidadesFisicas,
+            innerPack: ip,
+            bultosCompletos,
+            sueltas,
+            faltanParaBulto,
+            sueltasEnPacks,
+            posiciones,
+            stockTotal,
+            alcanza,
+            maxPacks,
+          };
+        });
+
+        const maxPacksGlobal = Math.min(...componentes.map(c => c.maxPacks));
+        const todosAlcanzan = componentes.every(c => c.alcanza);
+
+        let estado: EnvioEstado;
+        if (!todosAlcanzan) estado = "insuficiente";
+        else if (tipo === "simple") estado = "listo";
+        else estado = "armar";
+
+        return {
+          skuVenta: r.skuVenta,
+          nombre: r.nombre,
+          mandarFull: r.mandarFull,
+          tipo,
+          estado,
+          componentes,
+          maxPacksGlobal,
+          accion: r.accion,
+          stockFull: r.stockFull,
+          cobFull: r.cobFull,
+        };
+      });
+  }, [resultado, proveedor]);
+
   const handleSort = (col: string) => {
     if (sortCol === col) setSortAsc(!sortAsc);
     else { setSortCol(col); setSortAsc(col === "accion"); }
@@ -707,15 +830,51 @@ export default function AdminReposicion() {
     );
   };
 
-  // Export envío a Full
+  // Export envío a Full (dos secciones)
   const exportEnvioFull = () => {
-    if (!resultado) return;
-    const rows = resultado.ventaRows.filter(r => r.mandarFull > 0).sort((a, b) => ACCION_ORDEN[a.accion] - ACCION_ORDEN[b.accion]);
-    exportCSV(
-      ["SKU Venta", "Nombre", "Uds a mandar", "Stock Bodega", "Stock Full", "Cob Full (días)"],
-      rows.map(r => [r.skuVenta, r.nombre, String(r.mandarFull), String(r.stockBodega), String(r.stockFull), fmtNum(r.cobFull)]),
-      `envio_full_${new Date().toISOString().slice(0,10)}.csv`,
-    );
+    if (!envioDetalles.length) return;
+
+    // Sección 1 — Para declarar en ML
+    const sec1Headers = ["SKU Venta", "Nombre", "Cantidad uds venta"];
+    const sec1Rows = envioDetalles.map(d => [d.skuVenta, d.nombre, String(d.mandarFull)]);
+
+    // Sección 2 — Para logística
+    const sec2Headers = ["SKU Venta", "SKU Origen", "Nombre Origen", "Tipo", "Uds físicas", "Inner Pack", "Bultos completos", "Uds sueltas", "Posición bodega", "Acción"];
+    const sec2Rows: string[][] = [];
+    for (const d of envioDetalles) {
+      for (const c of d.componentes) {
+        const posStr = c.posiciones.map(p => `${p.label || p.pos}(${p.qty})`).join(", ") || "Sin stock";
+        let accionStr = "Enviar tal cual";
+        if (d.tipo === "pack") accionStr = `Armar pack de ${c.unidadesPorPack}`;
+        else if (d.tipo === "combo") accionStr = `Armar combo`;
+        sec2Rows.push([
+          d.skuVenta, c.skuOrigen, c.nombreOrigen, d.tipo,
+          String(c.unidadesFisicas),
+          c.innerPack != null ? String(c.innerPack) : "",
+          c.innerPack != null ? String(c.bultosCompletos) : "",
+          c.innerPack != null ? String(c.sueltas) : "",
+          posStr, accionStr,
+        ]);
+      }
+    }
+
+    // Combinar ambas secciones separadas por fila vacía
+    const bom = "\uFEFF";
+    const allLines = [
+      "SECCIÓN 1 — DECLARAR EN ML",
+      sec1Headers.join(";"),
+      ...sec1Rows.map(r => r.join(";")),
+      "", // fila vacía separadora
+      "SECCIÓN 2 — INSTRUCCIONES LOGÍSTICA",
+      sec2Headers.join(";"),
+      ...sec2Rows.map(r => r.join(";")),
+    ];
+    const csv = bom + allLines.join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `envio_full_${new Date().toISOString().slice(0,10)}.csv`; a.click();
+    URL.revokeObjectURL(url);
   };
 
   // Export pedido proveedor
@@ -1004,40 +1163,153 @@ export default function AdminReposicion() {
             <button onClick={() => setShowEnvioFull(!showEnvioFull)} style={{ background:"none", border:"none", color:"var(--txt)", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"space-between", width:"100%", padding:0, fontSize:14, fontWeight:600 }}>
               <span>
                 <span style={{ transform: showEnvioFull ? "rotate(90deg)" : "rotate(0)", transition:"transform 0.2s", display:"inline-block", marginRight:8 }}>▶</span>
-                📦 Envío a Full ({resultado.ventaRows.filter(r => r.mandarFull > 0).length} SKUs, {resultado.ventaRows.reduce((s, r) => s + r.mandarFull, 0).toLocaleString()} uds)
+                📦 Envío a Full ({envioDetalles.length} SKUs, {envioDetalles.reduce((s, r) => s + r.mandarFull, 0).toLocaleString()} uds)
               </span>
               <button onClick={(e) => { e.stopPropagation(); exportEnvioFull(); }} style={{ padding:"4px 12px", borderRadius:6, background:"var(--bg3)", border:"1px solid var(--bg4)", color:"var(--cyan)", fontSize:11, fontWeight:600, cursor:"pointer" }}>
                 Exportar CSV
               </button>
             </button>
             {showEnvioFull && (
-              <div style={{ overflowX:"auto", marginTop:12 }}>
-                <table className="tbl">
-                  <thead>
-                    <tr>
-                      <th>SKU Venta</th>
-                      <th>Nombre</th>
-                      <th>Uds a mandar</th>
-                      <th>Stock Bodega</th>
-                      <th>Stock Full</th>
-                      <th>Cob Full</th>
-                      <th>Acción</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {resultado.ventaRows.filter(r => r.mandarFull > 0).sort((a, b) => ACCION_ORDEN[a.accion] - ACCION_ORDEN[b.accion]).map(r => (
-                      <tr key={r.skuVenta}>
-                        <td className="mono" style={{ fontSize:11, fontWeight:600 }}>{r.skuVenta}</td>
-                        <td style={{ fontSize:11 }}>{r.nombre}</td>
-                        <td className="mono" style={{ textAlign:"right", fontWeight:700, color:"var(--blue)" }}>{r.mandarFull}</td>
-                        <td className="mono" style={{ textAlign:"right" }}>{r.stockBodega}</td>
-                        <td className="mono" style={{ textAlign:"right" }}>{r.stockFull}</td>
-                        <td className="mono" style={{ textAlign:"right" }}>{fmtNum(r.cobFull, 0)}d</td>
-                        <td>{badge(r.accion)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div style={{ marginTop:12 }}>
+                {envioDetalles.map(d => {
+                  const isExpanded = expandedEnvio.has(d.skuVenta);
+                  const tipoBadge = d.tipo === "simple" ? "Simple" : d.tipo === "pack" ? "Pack" : "Combo";
+                  const tipoColor = d.tipo === "simple" ? "var(--txt3)" : d.tipo === "pack" ? "var(--cyan)" : "var(--amber)";
+                  const estadoIcon = d.estado === "listo" ? "✅" : d.estado === "armar" ? "⚙️" : "⚠️";
+                  const estadoLabel = d.estado === "listo" ? "Listo" : d.estado === "armar" ? "Armar packs" : "Stock insuficiente";
+                  const estadoColor = d.estado === "insuficiente" ? "var(--red)" : d.estado === "armar" ? "var(--amber)" : "var(--green)";
+
+                  return (
+                    <div key={d.skuVenta} style={{ border:"1px solid var(--bg4)", borderRadius:10, marginBottom:8, overflow:"hidden" }}>
+                      {/* Fila cerrada */}
+                      <button onClick={() => toggleEnvioExpand(d.skuVenta)} style={{ background:"var(--bg2)", border:"none", color:"var(--txt)", cursor:"pointer", display:"flex", alignItems:"center", gap:10, width:"100%", padding:"10px 14px", fontSize:12 }}>
+                        <span style={{ transform: isExpanded ? "rotate(90deg)" : "rotate(0)", transition:"transform 0.2s", display:"inline-block", fontSize:10 }}>▶</span>
+                        <span className="mono" style={{ fontWeight:700, fontSize:11, minWidth:140 }}>{d.skuVenta}</span>
+                        <span style={{ flex:1, textAlign:"left", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", fontSize:11 }}>{d.nombre}</span>
+                        <span className="mono" style={{ fontWeight:700, color:"var(--blue)", minWidth:60, textAlign:"right" }}>{d.mandarFull} uds</span>
+                        <span style={{ padding:"2px 8px", borderRadius:4, fontSize:9, fontWeight:700, background:"var(--bg3)", color:tipoColor, border:`1px solid ${tipoColor}40`, minWidth:50, textAlign:"center" }}>{tipoBadge}</span>
+                        <span style={{ fontSize:11, color:estadoColor, minWidth:120, textAlign:"right", whiteSpace:"nowrap" }}>{estadoIcon} {estadoLabel}</span>
+                      </button>
+
+                      {/* Fila abierta — detalle */}
+                      {isExpanded && (
+                        <div style={{ padding:"12px 16px", background:"var(--bg)", borderTop:"1px solid var(--bg4)", fontSize:12, lineHeight:1.8 }}>
+                          {d.componentes.map((c, ci) => (
+                            <div key={c.skuOrigen} style={{ marginBottom: ci < d.componentes.length - 1 ? 16 : 0 }}>
+                              {/* Desglose físico (packs/combos) */}
+                              {d.tipo !== "simple" && (
+                                <div style={{ marginBottom:8 }}>
+                                  <div style={{ fontWeight:700, color:"var(--cyan)", marginBottom:4 }}>⚙️ DESGLOSE FÍSICO{d.tipo === "combo" ? ` — Componente ${ci + 1}` : ""}</div>
+                                  <div style={{ paddingLeft:16 }}>
+                                    <div>SKU Origen: <span className="mono" style={{ fontWeight:600 }}>{c.skuOrigen}</span></div>
+                                    <div>Nombre: {c.nombreOrigen}</div>
+                                    <div>Unidades por pack: {c.unidadesPorPack}</div>
+                                    <div>Total unidades físicas: <span className="mono" style={{ fontWeight:700 }}>{c.unidadesFisicas}</span> ({d.mandarFull} {d.tipo === "pack" ? "packs" : "combos"} × {c.unidadesPorPack} uds)</div>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Info de bultos (solo si hay inner pack) */}
+                              {c.innerPack !== null && (
+                                <div style={{ marginBottom:8 }}>
+                                  <div style={{ fontWeight:700, color:"var(--amber)", marginBottom:4 }}>📦 BULTOS{d.tipo !== "simple" ? ` ${c.skuOrigen}` : ""} (inner pack = {c.innerPack} uds)</div>
+                                  <div style={{ paddingLeft:16 }}>
+                                    <div>{c.bultosCompletos} bulto{c.bultosCompletos !== 1 ? "s" : ""} completo{c.bultosCompletos !== 1 ? "s" : ""} ({c.bultosCompletos * c.innerPack} uds)</div>
+                                    {c.sueltas > 0 && (
+                                      <>
+                                        <div>{c.sueltas} ud{c.sueltas !== 1 ? "s" : ""} suelta{c.sueltas !== 1 ? "s" : ""}
+                                          {c.unidadesPorPack > 1 && ` (= ${c.sueltasEnPacks} ${d.tipo === "pack" ? "pack" : "combo"}{c.sueltasEnPacks !== 1 ? "s" : ""} de ${d.skuVenta})`}
+                                        </div>
+                                        <div style={{ color:"var(--amber)" }}>⚠️ Faltan {c.faltanParaBulto} uds para completar {c.bultosCompletos + 1}° bulto</div>
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Instrucciones logística (packs/combos) */}
+                              {d.tipo !== "simple" && (
+                                <div style={{ marginBottom:8 }}>
+                                  <div style={{ fontWeight:700, color:"var(--cyan)", marginBottom:4 }}>⚙️ LOGÍSTICA DEBE:</div>
+                                  <div style={{ paddingLeft:16 }}>
+                                    {c.innerPack !== null && c.bultosCompletos > 0 && (
+                                      <div>→ Abrir {c.bultosCompletos} bulto{c.bultosCompletos !== 1 ? "s" : ""} de {c.skuOrigen} ({c.bultosCompletos * c.innerPack} uds)</div>
+                                    )}
+                                    {c.innerPack !== null && c.sueltas > 0 && (
+                                      <div>→ Del {c.bultosCompletos + 1}° bulto tomar solo {c.sueltas} uds{c.innerPack - c.sueltas > 0 ? ` (quedan ${c.innerPack - c.sueltas} en bodega)` : ""}</div>
+                                    )}
+                                    {c.innerPack === null && (
+                                      <div>→ Tomar {c.unidadesFisicas} uds de {c.skuOrigen}</div>
+                                    )}
+                                    {d.tipo === "pack" && (
+                                      <>
+                                        <div>→ Armar {d.mandarFull} packs de a {c.unidadesPorPack} unidades</div>
+                                        <div>→ Etiquetar cada pack como {d.skuVenta}</div>
+                                      </>
+                                    )}
+                                    {d.tipo === "combo" && ci === d.componentes.length - 1 && (
+                                      <>
+                                        <div>→ Armar {d.mandarFull} combos ({d.componentes.map(cc => `${cc.unidadesPorPack} ${cc.skuOrigen}`).join(" + ")} cada uno)</div>
+                                        <div>→ Etiquetar cada combo como {d.skuVenta}</div>
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Producto simple: solo unidades */}
+                              {d.tipo === "simple" && c.innerPack === null && (
+                                <div style={{ marginBottom:8 }}>
+                                  <div style={{ fontWeight:700, color:"var(--blue)", marginBottom:4 }}>📦 ENVIAR</div>
+                                  <div style={{ paddingLeft:16 }}>{c.unidadesFisicas} unidades de {c.skuOrigen}</div>
+                                </div>
+                              )}
+
+                              {/* Ubicaciones en bodega */}
+                              <div style={{ marginBottom:8 }}>
+                                <div style={{ fontWeight:700, color:"var(--green)", marginBottom:4 }}>📍 BUSCAR EN BODEGA:</div>
+                                <div style={{ paddingLeft:16 }}>
+                                  {c.posiciones.length > 0 ? (
+                                    <>
+                                      {c.posiciones.map(p => (
+                                        <div key={p.pos}>→ <span className="mono" style={{ fontWeight:600 }}>{c.skuOrigen}</span>: {p.qty} uds en <span className="mono" style={{ fontWeight:600 }}>{p.label || p.pos}</span></div>
+                                      ))}
+                                      <div>→ Stock total: {c.stockTotal} {c.alcanza ? <span style={{ color:"var(--green)" }}>✅ Alcanza</span> : <span style={{ color:"var(--red)" }}>❌ No alcanza (necesita {c.unidadesFisicas})</span>}</div>
+                                    </>
+                                  ) : (
+                                    <div style={{ color:"var(--red)" }}>→ No se encontró stock de {c.skuOrigen} en bodega</div>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Alerta stock insuficiente */}
+                              {!c.alcanza && (
+                                <div style={{ padding:"8px 12px", background:"var(--redBg)", border:"1px solid var(--redBd)", borderRadius:8, marginTop:4 }}>
+                                  <div style={{ fontWeight:700, color:"var(--red)" }}>⚠️ STOCK INSUFICIENTE:</div>
+                                  <div style={{ paddingLeft:16, color:"var(--red)", fontSize:11 }}>
+                                    <div>→ Necesitas {c.unidadesFisicas} uds de {c.skuOrigen}</div>
+                                    <div>→ Bodega tiene {c.stockTotal} uds</div>
+                                    {c.unidadesPorPack > 1 ? (
+                                      <>
+                                        <div>→ Puedes armar máximo {c.maxPacks} {d.tipo === "pack" ? "packs" : "combos"} de {d.skuVenta} (en vez de {d.mandarFull})</div>
+                                        <div>→ Faltan {c.unidadesFisicas - c.stockTotal} uds físicas ({Math.ceil((c.unidadesFisicas - c.stockTotal) / c.unidadesPorPack)} {d.tipo === "pack" ? "packs" : "combos"})</div>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <div>→ Puedes enviar máximo {c.stockTotal} uds (en vez de {d.mandarFull})</div>
+                                        <div>→ Faltan {c.unidadesFisicas - c.stockTotal} uds</div>
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
