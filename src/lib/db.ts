@@ -1094,6 +1094,51 @@ export async function fetchShipmentsToArm(_fecha: string, storeId?: number | nul
 }
 
 /**
+ * Fetch ALL active shipments for the Flex dispatch view.
+ * Includes: ready_to_ship (ready_to_print, printed), pending (buffered, ready_to_print),
+ * and recently shipped (for reference). Excludes fulfillment.
+ * Ordered by handling_limit ASC.
+ */
+export async function fetchActiveFlexShipments(storeId?: number | null): Promise<ShipmentWithItems[]> {
+  const sb = getSupabase(); if (!sb) return [];
+
+  // Fetch ready_to_ship + pending (not cancelled/delivered)
+  let query = sb.from("ml_shipments").select("*")
+    .neq("logistic_type", "fulfillment")
+    .in("status", ["ready_to_ship", "pending"])
+    .order("handling_limit", { ascending: true, nullsFirst: false });
+
+  if (storeId) {
+    query = query.eq("store_id", storeId);
+  }
+
+  const { data: shipments } = await query;
+  if (!shipments || shipments.length === 0) return [];
+
+  const shipmentIds = (shipments as DBMLShipment[]).map(s => s.shipment_id);
+  // Fetch items in chunks (supabase IN limit)
+  const allItems: DBMLShipmentItem[] = [];
+  for (let i = 0; i < shipmentIds.length; i += 500) {
+    const chunk = shipmentIds.slice(i, i + 500);
+    const { data: items } = await sb.from("ml_shipment_items").select("*")
+      .in("shipment_id", chunk);
+    if (items) allItems.push(...(items as DBMLShipmentItem[]));
+  }
+
+  const itemsByShipment = new Map<number, DBMLShipmentItem[]>();
+  for (const item of allItems) {
+    const arr = itemsByShipment.get(item.shipment_id) || [];
+    arr.push(item);
+    itemsByShipment.set(item.shipment_id, arr);
+  }
+
+  return (shipments as DBMLShipment[]).map(s => ({
+    ...s,
+    items: itemsByShipment.get(s.shipment_id) || [],
+  }));
+}
+
+/**
  * Fetch all shipments (no date filter, for "Ver todos" mode).
  */
 export async function fetchAllShipments(limit = 100, storeId?: number | null): Promise<ShipmentWithItems[]> {
