@@ -1730,6 +1730,7 @@ export default function AdminReposicion() {
                         <th>SKU Venta</th>
                         <th>Nombre</th>
                         <th>Tipo</th>
+                        <th style={{ textAlign:"right" }}>Inner Pack</th>
                         <th style={{ textAlign:"right" }}>Stock Full</th>
                         <th style={{ textAlign:"right" }}>Stock Bodega</th>
                         <th style={{ textAlign:"center" }}>Enviar</th>
@@ -1752,6 +1753,7 @@ export default function AdminReposicion() {
                             <td className="mono" style={{ fontSize:11, fontWeight:700 }}>{d.skuVenta}</td>
                             <td style={{ fontSize:11, maxWidth:200, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{d.nombre}</td>
                             <td><span style={{ fontSize:9, fontWeight:700, padding:"2px 6px", borderRadius:4, color:tipoColor }}>{tipoBadge}</span></td>
+                            <td className="mono" style={{ textAlign:"right", fontSize:11 }}>{d.componentes.length > 0 && d.componentes[0].innerPack !== null ? <span style={{ fontWeight:600 }}>{d.componentes[0].innerPack}</span> : <span style={{ color:"var(--txt3)" }}>—</span>}</td>
                             <td className="mono" style={{ textAlign:"right", fontSize:11 }}>{d.stockFull}</td>
                             <td className="mono" style={{ textAlign:"right", fontSize:11 }}>{stockBodega}{udsPerPack > 1 && <span style={{ fontSize:9, color:"var(--txt3)" }}> ({Math.floor(stockBodega / udsPerPack)}pk)</span>}</td>
                             <td style={{ textAlign:"center" }}>
@@ -1791,6 +1793,7 @@ export default function AdminReposicion() {
                             </td>
                             <td style={{ fontSize:11, maxWidth:200, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{a.nombre}</td>
                             <td><span style={{ fontSize:9, fontWeight:700, padding:"2px 6px", borderRadius:4, color:tipoColor }}>{tipoBadge}</span></td>
+                            <td className="mono" style={{ textAlign:"right", fontSize:11 }}>{mainComp && (() => { const store = getStore(); const ip = store.products[mainComp.skuOrigen]?.innerPack; return ip && ip > 1 ? <span style={{ fontWeight:600 }}>{ip}</span> : <span style={{ color:"var(--txt3)" }}>—</span>; })()}</td>
                             <td className="mono" style={{ textAlign:"right", fontSize:11, color:"var(--txt3)" }}>—</td>
                             <td className="mono" style={{ textAlign:"right", fontSize:11 }}>{stockBodega}</td>
                             <td style={{ textAlign:"center" }}>
@@ -1815,7 +1818,7 @@ export default function AdminReposicion() {
                         <tr key={`rm-${d.skuVenta}`} style={{ opacity:0.4 }}>
                           <td className="mono" style={{ fontSize:11, textDecoration:"line-through" }}>{d.skuVenta}</td>
                           <td style={{ fontSize:11, textDecoration:"line-through" }}>{d.nombre}</td>
-                          <td colSpan={4} style={{ fontSize:11, color:"var(--red)", textAlign:"center" }}>Eliminado del envio</td>
+                          <td colSpan={5} style={{ fontSize:11, color:"var(--red)", textAlign:"center" }}>Eliminado del envio</td>
                           <td colSpan={2}>
                             <button onClick={() => restoreEnvioItem(d.skuVenta)} style={{ padding:"3px 8px", borderRadius:4, background:"var(--bg3)", color:"var(--cyan)", fontSize:10, fontWeight:700, border:"1px solid var(--bg4)", cursor:"pointer" }}>Restaurar</button>
                           </td>
