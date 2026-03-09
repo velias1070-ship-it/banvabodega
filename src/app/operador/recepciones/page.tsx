@@ -1,7 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { initStore, isStoreReady, getRecepcionesParaOperario, getLineasDeRecepciones, getRecepcionLineas, contarLinea, etiquetarLinea, ubicarLinea, actualizarRecepcion, actualizarLineaRecepcion, activePositions, findPosition, bloquearLinea, desbloquearLinea, renovarBloqueo, isLineaBloqueada, getVentasPorSkuOrigen, findProduct } from "@/lib/store";
-import type { Product } from "@/lib/store";
+import { initStore, isStoreReady, getRecepcionesParaOperario, getLineasDeRecepciones, getRecepcionLineas, contarLinea, etiquetarLinea, ubicarLinea, actualizarRecepcion, activePositions, findPosition, bloquearLinea, desbloquearLinea, renovarBloqueo, isLineaBloqueada, getVentasPorSkuOrigen } from "@/lib/store";
 import type { DBRecepcion, DBRecepcionLinea, ComposicionVenta } from "@/lib/store";
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -307,61 +306,10 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, folio, prov
   const [step, setStep] = useState<"contar" | "etiquetar" | "ubicar">(determineStep(initialLinea));
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState("");
-  const [errorModal, setErrorModal] = useState<false | "menu" | "conteo" | "sku">(false);
-  const [errorQty, setErrorQty] = useState(0);
-  const [skuSearch, setSkuSearch] = useState("");
-  const [skuResults, setSkuResults] = useState<Product[]>([]);
-  const [errorSaving, setErrorSaving] = useState(false);
   const positions = activePositions().filter(p => p.id !== "SIN_ASIGNAR");
   const renewalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(""), 2500); };
-
-  const openErrorMenu = () => {
-    setErrorModal("menu");
-    setErrorQty(linea.qty_factura);
-    setSkuSearch("");
-    setSkuResults([]);
-  };
-
-  const doAjusteConteo = async () => {
-    if (errorQty < 0) return;
-    setErrorSaving(true);
-    await actualizarLineaRecepcion(linea.id!, {
-      qty_factura: errorQty,
-      notas: `${linea.notas ? linea.notas + " | " : ""}Ajuste conteo: ${linea.qty_factura} → ${errorQty} (${operario})`,
-    });
-    showToast(`Factura ajustada: ${linea.qty_factura} → ${errorQty}`);
-    await refreshLinea();
-    setErrorSaving(false);
-    setErrorModal(false);
-  };
-
-  const doCambioSku = async (newProduct: Product) => {
-    setErrorSaving(true);
-    const oldSku = linea.sku;
-    await actualizarLineaRecepcion(linea.id!, {
-      sku: newProduct.sku,
-      nombre: newProduct.name,
-      codigo_ml: newProduct.mlCode || "",
-      requiere_etiqueta: newProduct.requiresLabel ?? linea.requiere_etiqueta,
-      notas: `${linea.notas ? linea.notas + " | " : ""}Cambio SKU: ${oldSku} → ${newProduct.sku} (${operario})`,
-    });
-    showToast(`SKU cambiado: ${oldSku} → ${newProduct.sku}`);
-    await refreshLinea();
-    setErrorSaving(false);
-    setErrorModal(false);
-  };
-
-  const handleSkuSearch = (q: string) => {
-    setSkuSearch(q);
-    if (q.trim().length >= 2) {
-      const results = findProduct(q).slice(0, 15);
-      setSkuResults(results);
-    } else {
-      setSkuResults([]);
-    }
-  };
 
   // Auto-renew lock every 5 minutes while working on this line
   useEffect(() => {
@@ -525,130 +473,6 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, folio, prov
             <StepPill label="Ubicacion" active={step==="ubicar"} done={linea.estado==="UBICADA"} />
           </div>
         </div>
-
-        {/* Boton reportar error */}
-        {!isComplete && (
-          <button onClick={openErrorMenu}
-            style={{width:"100%",padding:"10px 14px",borderRadius:8,background:"var(--bg2)",border:"1px solid var(--bg4)",
-              color:"var(--red)",fontSize:12,fontWeight:700,marginBottom:12,display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
-            ⚠️ Reportar error en factura
-          </button>
-        )}
-
-        {/* Modal reportar error */}
-        {errorModal && (
-          <div style={{position:"fixed",inset:0,zIndex:300,background:"rgba(0,0,0,0.7)",display:"flex",alignItems:"center",justifyContent:"center",padding:16}}
-            onClick={() => !errorSaving && setErrorModal(false)}>
-            <div style={{width:"100%",maxWidth:380,background:"var(--bg2)",borderRadius:14,border:"1px solid var(--bg4)",overflow:"hidden"}}
-              onClick={e => e.stopPropagation()}>
-
-              {/* Menu principal */}
-              {errorModal === "menu" && (
-                <div style={{padding:20}}>
-                  <div style={{fontSize:16,fontWeight:800,marginBottom:4,textAlign:"center"}}>Reportar Error</div>
-                  <div style={{fontSize:12,color:"var(--txt3)",textAlign:"center",marginBottom:16}}>
-                    SKU: <strong>{linea.sku}</strong> — {linea.nombre}
-                  </div>
-                  <button onClick={() => { setErrorModal("conteo"); setErrorQty(linea.qty_factura); }}
-                    style={{width:"100%",padding:"16px 14px",borderRadius:10,background:"var(--bg3)",border:"1px solid var(--bg4)",
-                      marginBottom:8,textAlign:"left",cursor:"pointer"}}>
-                    <div style={{fontSize:14,fontWeight:700,color:"var(--amber)"}}>🔢 Diferencia en conteo</div>
-                    <div style={{fontSize:11,color:"var(--txt3)",marginTop:2}}>La cantidad real no coincide con la factura</div>
-                  </button>
-                  <button onClick={() => { setErrorModal("sku"); setSkuSearch(""); setSkuResults([]); }}
-                    style={{width:"100%",padding:"16px 14px",borderRadius:10,background:"var(--bg3)",border:"1px solid var(--bg4)",
-                      marginBottom:8,textAlign:"left",cursor:"pointer"}}>
-                    <div style={{fontSize:14,fontWeight:700,color:"var(--red)"}}>🏷️ SKU incorrecto</div>
-                    <div style={{fontSize:11,color:"var(--txt3)",marginTop:2}}>El producto fisico no corresponde al SKU de la factura</div>
-                  </button>
-                  <button onClick={() => setErrorModal(false)}
-                    style={{width:"100%",padding:12,borderRadius:8,background:"var(--bg3)",color:"var(--txt3)",fontSize:13,fontWeight:600,border:"1px solid var(--bg4)"}}>
-                    Cancelar
-                  </button>
-                </div>
-              )}
-
-              {/* Ajuste de conteo */}
-              {errorModal === "conteo" && (
-                <div style={{padding:20}}>
-                  <div style={{fontSize:14,fontWeight:800,marginBottom:4}}>Ajustar cantidad de factura</div>
-                  <div style={{fontSize:12,color:"var(--txt3)",marginBottom:12}}>
-                    Cantidad actual en factura: <strong style={{color:"var(--amber)"}}>{linea.qty_factura}</strong>
-                  </div>
-                  <div style={{fontSize:12,fontWeight:600,color:"var(--txt2)",marginBottom:8}}>Cantidad correcta:</div>
-                  <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:12,marginBottom:16}}>
-                    <button onClick={() => setErrorQty(q => Math.max(0, q - 1))}
-                      style={{width:48,height:48,borderRadius:10,background:"var(--bg3)",fontSize:22,fontWeight:700,border:"1px solid var(--bg4)"}}>−</button>
-                    <input type="number" inputMode="numeric" value={errorQty} onChange={e => setErrorQty(Math.max(0, parseInt(e.target.value) || 0))}
-                      style={{width:90,textAlign:"center",fontSize:32,fontWeight:700,padding:10,borderRadius:10,background:"var(--bg1)",border:"2px solid var(--bg4)",color:"var(--txt1)"}} />
-                    <button onClick={() => setErrorQty(q => q + 1)}
-                      style={{width:48,height:48,borderRadius:10,background:"var(--bg3)",fontSize:22,fontWeight:700,border:"1px solid var(--bg4)"}}>+</button>
-                  </div>
-                  {errorQty !== linea.qty_factura && (
-                    <div style={{textAlign:"center",marginBottom:12,padding:"8px 12px",borderRadius:8,
-                      background:errorQty > linea.qty_factura ? "var(--greenBg)" : "var(--redBg)",
-                      color:errorQty > linea.qty_factura ? "var(--green)" : "var(--red)",
-                      fontSize:13,fontWeight:700}}>
-                      {errorQty > linea.qty_factura
-                        ? `+${errorQty - linea.qty_factura} unidades mas`
-                        : `${linea.qty_factura - errorQty} unidades menos`}
-                    </div>
-                  )}
-                  <div style={{display:"flex",gap:8}}>
-                    <button onClick={() => setErrorModal("menu")}
-                      style={{flex:1,padding:12,borderRadius:8,background:"var(--bg3)",color:"var(--txt3)",fontSize:13,fontWeight:600,border:"1px solid var(--bg4)"}}>
-                      ← Atras
-                    </button>
-                    <button onClick={doAjusteConteo} disabled={errorSaving || errorQty === linea.qty_factura}
-                      style={{flex:2,padding:12,borderRadius:8,
-                        background:(errorSaving || errorQty === linea.qty_factura) ? "var(--bg3)" : "var(--green)",
-                        color:(errorSaving || errorQty === linea.qty_factura) ? "var(--txt3)" : "#fff",
-                        fontSize:13,fontWeight:700}}>
-                      {errorSaving ? "Guardando..." : "Confirmar ajuste"}
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* Cambio de SKU */}
-              {errorModal === "sku" && (
-                <div style={{padding:20}}>
-                  <div style={{fontSize:14,fontWeight:800,marginBottom:4}}>Cambiar SKU</div>
-                  <div style={{fontSize:12,color:"var(--txt3)",marginBottom:4}}>
-                    SKU actual: <strong style={{color:"var(--red)"}}>{linea.sku}</strong> — {linea.nombre}
-                  </div>
-                  <div style={{fontSize:12,color:"var(--txt3)",marginBottom:12}}>Busca el producto correcto:</div>
-                  <input type="text" value={skuSearch} onChange={e => handleSkuSearch(e.target.value)}
-                    placeholder="Buscar por SKU, nombre o codigo ML..."
-                    autoFocus
-                    style={{width:"100%",padding:"10px 14px",borderRadius:8,background:"var(--bg3)",border:"1px solid var(--bg4)",
-                      color:"var(--txt1)",fontSize:13,marginBottom:8,outline:"none"}} />
-                  <div style={{maxHeight:250,overflowY:"auto",marginBottom:12}}>
-                    {skuSearch.trim().length >= 2 && skuResults.length === 0 && (
-                      <div style={{textAlign:"center",padding:16,color:"var(--txt3)",fontSize:12}}>Sin resultados</div>
-                    )}
-                    {skuResults.map(p => (
-                      <button key={p.sku} onClick={() => !errorSaving && doCambioSku(p)}
-                        disabled={errorSaving}
-                        style={{width:"100%",padding:"10px 12px",borderRadius:8,background:"var(--bg3)",border:"1px solid var(--bg4)",
-                          marginBottom:4,textAlign:"left",cursor:"pointer",opacity:p.sku === linea.sku ? 0.4 : 1}}>
-                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                          <span className="mono" style={{fontWeight:700,fontSize:13,color:"var(--cyan)"}}>{p.sku}</span>
-                          {p.mlCode && <span style={{fontSize:10,color:"var(--txt3)",fontFamily:"monospace"}}>{p.mlCode}</span>}
-                        </div>
-                        <div style={{fontSize:11,color:"var(--txt2)",marginTop:2}}>{p.name}</div>
-                      </button>
-                    ))}
-                  </div>
-                  <button onClick={() => setErrorModal("menu")}
-                    style={{width:"100%",padding:12,borderRadius:8,background:"var(--bg3)",color:"var(--txt3)",fontSize:13,fontWeight:600,border:"1px solid var(--bg4)"}}>
-                    ← Atras
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
 
         {/* COMPLETADA */}
         {isComplete && (
