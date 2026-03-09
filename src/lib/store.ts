@@ -16,6 +16,7 @@ export interface Product {
   requiresLabel?: boolean;
   tamano?: string;
   color?: string;
+  innerPack?: number | null;
 }
 
 export interface ComposicionVenta {
@@ -137,6 +138,7 @@ export async function initStore(): Promise<void> {
         price: p.precio, reorder: p.reorder,
         requiresLabel: p.requiere_etiqueta,
         tamano: p.tamano || "", color: p.color || "",
+        innerPack: p.inner_pack,
       };
     }
 
@@ -253,6 +255,7 @@ async function flushToSupabase() {
       categoria: p.cat, proveedor: p.prov, costo: p.cost, precio: p.price,
       reorder: p.reorder, requiere_etiqueta: p.requiresLabel !== false,
       tamano: p.tamano || "", color: p.color || "",
+      inner_pack: p.innerPack ?? null,
     }));
     if (dbProds.length > 0) await db.upsertProductos(dbProds);
 
@@ -617,6 +620,7 @@ export async function saveProductAsync(p: Product) {
       categoria: p.cat, proveedor: p.prov, costo: p.cost, precio: p.price,
       reorder: p.reorder, requiere_etiqueta: p.requiresLabel !== false,
       tamano: p.tamano || "", color: p.color || "",
+      inner_pack: p.innerPack ?? null,
     });
   }
 }

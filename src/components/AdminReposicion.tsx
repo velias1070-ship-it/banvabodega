@@ -3,6 +3,7 @@ import React, { useState, useMemo, useEffect, useCallback } from "react";
 import * as XLSX from "xlsx";
 import { skuTotal, skuPositions, getStore, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineasFull, crearPickingSession } from "@/lib/store";
 import type { ComposicionVenta } from "@/lib/store";
+import { getSupabase } from "@/lib/supabase";
 
 /* ───── Tipos ───── */
 interface OrdenRaw {
@@ -757,16 +758,36 @@ export default function AdminReposicion() {
     reader.readAsArrayBuffer(file);
   }, []);
 
-  // Parsear archivo de proveedor
+  // Parsear archivo de proveedor y persistir innerPack en DB
   const handleProveedor = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setFileNameProveedor(file.name);
     const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = async (ev) => {
       const data = new Uint8Array(ev.target?.result as ArrayBuffer);
       const wb = XLSX.read(data, { type: "array" });
-      setProveedor(parseProveedor(wb));
+      const provData = parseProveedor(wb);
+      setProveedor(provData);
+
+      // Persistir inner_pack en tabla productos y en cache del store
+      const sb = getSupabase();
+      if (sb && provData.length > 0) {
+        const store = getStore();
+        for (let i = 0; i < provData.length; i += 500) {
+          const batch = provData.slice(i, i + 500);
+          for (const p of batch) {
+            if (p.innerPack > 1) {
+              // Actualizar en DB
+              await sb.from("productos").update({ inner_pack: p.innerPack }).eq("sku", p.skuOrigen);
+              // Actualizar cache del store
+              if (store.products[p.skuOrigen]) {
+                store.products[p.skuOrigen].innerPack = p.innerPack;
+              }
+            }
+          }
+        }
+      }
     };
     reader.readAsArrayBuffer(file);
   }, []);
@@ -850,8 +871,15 @@ export default function AdminReposicion() {
   const envioDetalles = useMemo((): EnvioFullDetalle[] => {
     if (!resultado) return [];
     const store = getStore();
-    // Mapa inner pack por SKU Origen desde archivo proveedor
+    // Mapa inner pack por SKU Origen: primero desde DB (persistido), luego override con archivo proveedor
     const ipMap = new Map<string, number>();
+    // Fallback: usar inner_pack guardado en productos (persistido de uploads anteriores)
+    for (const [sku, prod] of Object.entries(store.products)) {
+      if (prod.innerPack && prod.innerPack > 1) {
+        ipMap.set(sku, prod.innerPack);
+      }
+    }
+    // Override con archivo proveedor si está cargado
     if (proveedor) {
       for (const p of proveedor) ipMap.set(p.skuOrigen, p.innerPack);
     }
@@ -910,18 +938,25 @@ export default function AdminReposicion() {
             let direccion: "arriba" | "abajo";
             let razon: string;
 
-            if (udsFisicasArriba > stockBodPrincipal) {
+            if (opcionAbajo === 0 && r.mandarFull > 0 && udsFisicasArriba <= stockBodPrincipal) {
+              // Caso especial: redondear abajo = no enviar nada, pero el sistema calculó que hay que enviar
+              // y hay stock suficiente → forzar arriba (enviar al menos 1 bulto completo)
+              direccion = "arriba";
+              razon = `Redondear abajo = 0 uds (no enviar nada). Enviar 1 bulto completo (${opcionArriba} uds). Cobertura Full: ${Math.round(cobArriba)}d.`;
+            } else if (udsFisicasArriba > stockBodPrincipal) {
               // Stock insuficiente para redondear arriba → fuerza abajo
               direccion = "abajo";
               razon = `Stock bodega insuficiente para bulto completo (${stockBodPrincipal} uds disponibles). Enviar ${opcionAbajo} uds.`;
-            } else if (cobArriba > config.cobMaxima) {
-              // Redondear arriba supera 60d de cobertura → abajo
+            } else if (cobArriba > config.cobMaxima && opcionAbajo > 0) {
+              // Redondear arriba supera 60d de cobertura → abajo (solo si abajo > 0)
               direccion = "abajo";
               razon = `Con ${opcionArriba} uds Full queda en ${Math.round(cobArriba)}d (supera ${config.cobMaxima}d máximo). Enviar ${opcionAbajo} uds.`;
-            } else if (cobAbajo < config.puntoReorden) {
-              // Redondear abajo deja < 14d → arriba obligatorio
+            } else if (cobAbajo < config.puntoReorden || opcionAbajo === 0) {
+              // Redondear abajo deja < 14d o sería 0 → arriba obligatorio
               direccion = "arriba";
-              razon = `Con ${opcionAbajo} uds Full queda en ${Math.round(cobAbajo)}d (bajo mínimo ${config.puntoReorden}d). Con ${opcionArriba} queda en ${Math.round(cobArriba)}d.`;
+              razon = opcionAbajo === 0
+                ? `Redondear abajo = 0 uds. Enviar 1 bulto completo (${opcionArriba} uds). Cobertura Full: ${Math.round(cobArriba)}d.`
+                : `Con ${opcionAbajo} uds Full queda en ${Math.round(cobAbajo)}d (bajo mínimo ${config.puntoReorden}d). Con ${opcionArriba} queda en ${Math.round(cobArriba)}d.`;
             } else if ((cobArriba - cobAbajo) < 7) {
               // Diferencia < 7 días → abajo (poca relevancia)
               direccion = "abajo";
