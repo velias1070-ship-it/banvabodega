@@ -4711,19 +4711,17 @@ function parseCSVLine(line: string): string[] {
 function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
   const today = new Date().toISOString().slice(0, 10);
   const [fecha, setFecha] = useState(today);
-  const [verTodos, setVerTodos] = useState(false);
   const [shipments, setShipments] = useState<ShipmentWithItems[]>([]);
-  const [pedidos, setPedidos] = useState<DBPedidoFlex[]>([]); // legacy fallback
+  const [pedidos, setPedidos] = useState<DBPedidoFlex[]>([]); // legacy (debug only)
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncDays, setSyncDays] = useState(0);
-  const [creating, setCreating] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
   const [diagnosing, setDiagnosing] = useState(false);
   const [diagResult, setDiagResult] = useState<Record<string, unknown> | null>(null);
   const [mlConfig, setMlConfig] = useState<DBMLConfig | null>(null);
   const [configForm, setConfigForm] = useState({ client_id: "", client_secret: "", seller_id: "", hora_corte_lv: 13, hora_corte_sab: 12 });
-  const [useNewView, setUseNewView] = useState(true); // toggle between new shipment view and legacy
+  const [showLegacy, setShowLegacy] = useState(false); // hidden legacy table (debug only)
   const [storeFilter, setStoreFilter] = useState<number | null>(null); // store_id filter
   const [storeOptions, setStoreOptions] = useState<{ store_id: number; count: number }[]>([]);
 
@@ -4736,11 +4734,10 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
     } catch { setShipments([]); }
     // Load store options for filter dropdown
     try { const stores = await fetchStoreIds(); setStoreOptions(stores); } catch { /* ignore */ }
-    // Legacy pedidos_flex only as fallback when ml_shipments is empty
-    const data = verTodos ? await fetchAllPedidosFlex(200) : await fetchPedidosFlex(fecha);
-    setPedidos(data);
+    // Legacy pedidos_flex (debug only)
+    try { const data = await fetchPedidosFlex(fecha); setPedidos(data); } catch { setPedidos([]); }
     setLoading(false);
-  }, [fecha, today, verTodos, storeFilter]);
+  }, [fecha, today, storeFilter]);
 
   const loadConfig = useCallback(async () => {
     const cfg = await fetchMLConfig();
@@ -4775,6 +4772,13 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
   // ===== FLEX DISPATCH CLASSIFICATION =====
   type FlexDispatchCategory = "DESPACHAR_HOY" | "DESPACHAR_MANANA" | "BUFFERED" | "YA_IMPRESO" | "ATRASADO";
 
+  // Helper: extract YYYY-MM-DD in Chile timezone for proper date comparison
+  const toChileDateStr = (d: Date): string => {
+    const parts = d.toLocaleDateString("en-CA", { timeZone: "America/Santiago" }); // en-CA = YYYY-MM-DD
+    return parts; // "2026-03-09"
+  };
+  const todayChile = toChileDateStr(new Date());
+
   const classifyShipment = (s: ShipmentWithItems): FlexDispatchCategory => {
     // Buffered — ML hasn't released the label yet
     if (s.status === "pending" && s.substatus === "buffered") return "BUFFERED";
@@ -4783,18 +4787,16 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
     // Ready to print — classify HOY vs MAÑANA using handling_limit in Chile timezone
     if (s.substatus === "ready_to_print") {
       if (!s.handling_limit) return "DESPACHAR_HOY"; // no date = assume urgent
-      const limitDay = new Date(s.handling_limit).toLocaleDateString("es-CL", { timeZone: "America/Santiago" });
-      const todayDay = new Date().toLocaleDateString("es-CL", { timeZone: "America/Santiago" });
-      if (limitDay < todayDay) return "ATRASADO";
-      if (limitDay === todayDay) return "DESPACHAR_HOY";
+      const limitDay = toChileDateStr(new Date(s.handling_limit));
+      if (limitDay < todayChile) return "ATRASADO";
+      if (limitDay === todayChile) return "DESPACHAR_HOY";
       return "DESPACHAR_MANANA";
     }
     // Pending with ready_to_print (before ready_to_ship)
     if (s.status === "pending" && s.substatus === "ready_to_print") {
       if (!s.handling_limit) return "DESPACHAR_HOY";
-      const limitDay = new Date(s.handling_limit).toLocaleDateString("es-CL", { timeZone: "America/Santiago" });
-      const todayDay = new Date().toLocaleDateString("es-CL", { timeZone: "America/Santiago" });
-      if (limitDay <= todayDay) return "DESPACHAR_HOY";
+      const limitDay = toChileDateStr(new Date(s.handling_limit));
+      if (limitDay <= todayChile) return "DESPACHAR_HOY";
       return "DESPACHAR_MANANA";
     }
     // Other pending states
@@ -4835,14 +4837,8 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
     readyToPrint: shipments.filter(s => s.substatus === "ready_to_print").length,
     printed: shipments.filter(s => s.substatus === "printed").length,
   };
-  // Legacy counts as fallback
-  const counts = {
-    total: pedidos.length,
-    pendiente: pedidos.filter(p => p.estado === "PENDIENTE").length,
-    en_picking: pedidos.filter(p => p.estado === "EN_PICKING").length,
-    despachado: pedidos.filter(p => p.estado === "DESPACHADO").length,
-    atrasado: pedidos.filter(p => p.estado !== "DESPACHADO" && p.fecha_armado < today).length,
-  };
+  // Legacy counts (only for debug)
+  const legacyPendientes = pedidos.filter(p => p.estado === "PENDIENTE").length;
 
   const doSync = async () => {
     setSyncing(true);
@@ -4873,49 +4869,6 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
       setDiagResult({ error: String(err) });
     }
     setDiagnosing(false);
-  };
-
-  const doCreatePicking = async () => {
-    const pendientes = pedidos.filter(p => p.estado === "PENDIENTE");
-    if (pendientes.length === 0) { alert("No hay pedidos pendientes"); return; }
-
-    setCreating(true);
-    try {
-      // Group by SKU venta and sum quantities
-      const skuMap = new Map<string, number>();
-      for (const p of pendientes) {
-        skuMap.set(p.sku_venta, (skuMap.get(p.sku_venta) || 0) + p.cantidad);
-      }
-
-      const items = Array.from(skuMap.entries()).map(([sku, qty]) => ({ skuVenta: sku, qty }));
-      const { lineas, errors } = buildPickingLineas(items);
-
-      if (lineas.length === 0) {
-        alert("No se pudieron armar líneas de picking. Verifica que los SKU Venta estén en el diccionario.");
-        setCreating(false);
-        return;
-      }
-
-      if (errors.length > 0) {
-        const proceed = confirm(`Advertencias:\n${errors.join("\n")}\n\n¿Crear picking de todas formas?`);
-        if (!proceed) { setCreating(false); return; }
-      }
-
-      const sessionId = await crearPickingSession(fecha, lineas);
-
-      if (sessionId) {
-        // Mark pedidos as EN_PICKING and link to session
-        const ids = pendientes.map(p => p.id!).filter(Boolean);
-        await updatePedidosFlex(ids, { estado: "EN_PICKING", picking_session_id: sessionId });
-        await loadPedidos();
-        alert(`Sesión de picking creada con ${lineas.length} líneas`);
-      } else {
-        alert("Error al crear la sesión de picking. Verificar que la tabla picking_sessions tenga las columnas 'tipo' y 'titulo' (ejecutar migración v10).");
-      }
-    } catch (err) {
-      alert("Error creando picking: " + String(err));
-    }
-    setCreating(false);
   };
 
   const doSaveConfig = async () => {
@@ -5054,15 +5007,9 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
           </button>
         </div>
 
-        {/* Filters: date + store */}
-        <div style={{display:"flex",alignItems:"center",gap:8,marginTop:8,flexWrap:"wrap"}}>
-          <input type="date" value={fecha} onChange={e => { setFecha(e.target.value); setVerTodos(false); }}
-            className="form-input mono" style={{fontSize:13,padding:8,width:160}} disabled={verTodos}/>
-          <button onClick={() => { setFecha(today); setVerTodos(false); }} style={{padding:"6px 12px",borderRadius:6,background: !verTodos ? "var(--bg3)" : "var(--bg2)",color:"var(--txt2)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>Hoy</button>
-          <button onClick={() => setVerTodos(!verTodos)} style={{padding:"6px 12px",borderRadius:6,background: verTodos ? "var(--cyan)" : "var(--bg3)",color: verTodos ? "#fff" : "var(--txt2)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
-            {verTodos ? "● Ver todos" : "Ver todos"}
-          </button>
-          {storeOptions.length > 1 && (
+        {/* Store filter */}
+        {storeOptions.length > 1 && (
+          <div style={{display:"flex",alignItems:"center",gap:8,marginTop:8}}>
             <select value={storeFilter ?? ""} onChange={e => setStoreFilter(e.target.value ? Number(e.target.value) : null)}
               className="form-input mono" style={{fontSize:12,padding:"6px 8px",width:180}}>
               <option value="">Todas las tiendas</option>
@@ -5070,8 +5017,8 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
                 <option key={s.store_id} value={s.store_id}>Tienda {s.store_id} ({s.count})</option>
               ))}
             </select>
-          )}
-        </div>
+          </div>
+        )}
 
         {/* Status indicator */}
         <div style={{display:"flex",alignItems:"center",gap:8,marginTop:8,fontSize:11}}>
@@ -5192,24 +5139,10 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
         </div>
       </div>
 
-      {/* View toggle + Create picking */}
-      <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
-        <button onClick={() => setUseNewView(!useNewView)}
-          style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"var(--txt2)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
-          {useNewView ? "Vista operador" : "Vista legacy"}
-        </button>
-        {counts.pendiente > 0 && (
-          <button onClick={doCreatePicking} disabled={creating}
-            style={{padding:"8px 16px",borderRadius:8,background:"linear-gradient(135deg,#059669,#10b981)",color:"#fff",fontWeight:700,fontSize:12,border:"none",cursor:"pointer",flex:1}}>
-            {creating ? "Creando..." : `Crear picking (${counts.pendiente} pendientes)`}
-          </button>
-        )}
-      </div>
-
       {/* Content */}
       {loading ? (
         <div className="card" style={{textAlign:"center",padding:40,color:"var(--txt3)"}}>Cargando...</div>
-      ) : useNewView && shipments.length > 0 ? (
+      ) : shipments.length > 0 ? (
         /* ===== FLEX DISPATCH VIEW — grouped by category (HOY/MAÑANA/BUFFERED/YA_IMPRESO) ===== */
         <div style={{display:"flex",flexDirection:"column",gap:12}}>
           {categoryGroups.map(([category, catShips]) => {
@@ -5346,7 +5279,14 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
                                   </span>
                                 )}
                               </div>
-                              <span style={{fontSize:10,color:"var(--txt3)"}}>{ship.receiver_name || ""}{ship.destination_city ? ` · ${ship.destination_city}` : ""}</span>
+                              <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:2}}>
+                                <span style={{fontSize:10,color:"var(--txt3)"}}>{ship.receiver_name || ""}{ship.destination_city ? ` · ${ship.destination_city}` : ""}</span>
+                                {ship.handling_limit && (
+                                  <span className="mono" style={{fontSize:9,color:"var(--txt3)"}}>
+                                    Deadline: {toChileDateStr(new Date(ship.handling_limit))} {new Date(ship.handling_limit).toLocaleTimeString("es-CL", { timeZone: "America/Santiago", hour: "2-digit", minute: "2-digit" })}
+                                  </span>
+                                )}
+                              </div>
                             </div>
                             {bufferingInfo && (
                               <div style={{fontSize:10,color:"#3b82f6",marginBottom:4}}>{bufferingInfo}</div>
@@ -5387,50 +5327,19 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
             );
           })}
         </div>
-      ) : shipments.length === 0 && pedidos.length === 0 ? (
+      ) : (
         <div className="card" style={{textAlign:"center",padding:40,color:"var(--txt3)"}}>
           <div style={{fontSize:40,marginBottom:12}}>📦</div>
-          <div style={{fontSize:16,fontWeight:700}}>Sin envíos {verTodos ? "en el sistema" : `para ${fecha}`}</div>
+          <div style={{fontSize:16,fontWeight:700}}>Sin envíos activos</div>
           <div style={{fontSize:12,marginTop:4}}>Usa "Diagnosticar" para verificar la conexión. Luego "Sincronizar" con rango de días para traer envíos.</div>
           <div style={{fontSize:11,marginTop:8,color:"var(--txt3)"}}>Si es la primera vez, ejecuta primero la migración SQL para crear las tablas ml_shipments.</div>
-        </div>
-      ) : (
-        /* ===== LEGACY TABLE VIEW ===== */
-        <div className="card" style={{padding:0,overflow:"hidden"}}>
-          <table className="tbl" style={{fontSize:12}}>
-            <thead>
-              <tr>
-                <th>Despachar</th>
-                <th>Hora venta</th>
-                <th>Order ID</th>
-                <th>SKU Venta</th>
-                <th>Producto</th>
-                <th style={{textAlign:"right"}}>Cant.</th>
-                <th>Comprador</th>
-                <th>Estado</th>
-              </tr>
-            </thead>
-            <tbody>
-              {pedidos.map(p => {
-                const estadoColors: Record<string, string> = { PENDIENTE: "#f59e0b", EN_PICKING: "#a855f7", DESPACHADO: "#10b981" };
-                const isOverdue = p.estado !== "DESPACHADO" && p.fecha_armado < fecha;
-                const color = isOverdue ? "#ef4444" : (estadoColors[p.estado] || "#94a3b8");
-                const hora = p.fecha_venta ? new Date(p.fecha_venta).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" }) : "—";
-                return (
-                  <tr key={p.id} style={{background: isOverdue ? "#ef444410" : p.estado === "DESPACHADO" ? "#10b98108" : p.estado === "EN_PICKING" ? "#a855f708" : "transparent"}}>
-                    <td className="mono" style={{fontSize:11,fontWeight:700,color: isOverdue ? "#ef4444" : "var(--txt3)"}}>{p.fecha_armado}{isOverdue ? " !" : ""}</td>
-                    <td style={{fontSize:11,color:"var(--txt3)"}}>{hora}</td>
-                    <td className="mono" style={{fontSize:11}}>{p.order_id}</td>
-                    <td className="mono" style={{fontWeight:700,fontSize:11}}>{p.sku_venta}</td>
-                    <td style={{fontSize:11,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.nombre_producto}</td>
-                    <td className="mono" style={{textAlign:"right",fontWeight:700}}>{p.cantidad}</td>
-                    <td style={{fontSize:11,color:"var(--txt3)"}}>{p.buyer_nickname}</td>
-                    <td><span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:3,background:`${color}22`,color,border:`1px solid ${color}44`}}>{isOverdue ? "ATRASADO" : p.estado}</span></td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          {legacyPendientes > 0 && (
+            <div style={{marginTop:12}}>
+              <button onClick={() => setShowLegacy(!showLegacy)} style={{fontSize:10,color:"var(--txt3)",background:"var(--bg3)",border:"1px solid var(--bg4)",borderRadius:4,padding:"4px 8px",cursor:"pointer"}}>
+                {showLegacy ? "Ocultar" : "Ver"} tabla legacy ({legacyPendientes} pedidos_flex)
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>
