@@ -723,6 +723,7 @@ export default function AdminReposicion() {
   const [envioRemoved, setEnvioRemoved] = useState<Set<string>>(new Set()); // skuVenta removed
   const [envioAdded, setEnvioAdded] = useState<{skuVenta:string;nombre:string;qty:number;tipo:EnvioTipo;componentes:{skuOrigen:string;nombreOrigen:string;unidadesPorPack:number}[]}[]>([]);
   const [addEnvioSearch, setAddEnvioSearch] = useState("");
+  const [envioSaved, setEnvioSaved] = useState(false);
 
   // Persistir sinStockProv en localStorage
   useEffect(() => {
@@ -1237,12 +1238,38 @@ export default function AdminReposicion() {
     setEnvioAdded([]);
     setAddEnvioSearch("");
     setPickingCreado(null);
+    setEnvioSaved(false);
+    // Intentar cargar edición guardada
+    setTimeout(() => cargarEnvioEdit(), 0);
   };
   const exitEnvioEdit = () => {
     setEnvioEditMode(false);
     setEnvioEditable(new Map());
     setEnvioRemoved(new Set());
     setEnvioAdded([]);
+    setEnvioSaved(false);
+  };
+  const guardarEnvioEdit = () => {
+    const payload = {
+      editable: Array.from(envioEditable.entries()),
+      removed: Array.from(envioRemoved),
+      added: envioAdded,
+      timestamp: new Date().toISOString(),
+    };
+    localStorage.setItem("banva_envio_full_edit", JSON.stringify(payload));
+    setEnvioSaved(true);
+    setTimeout(() => setEnvioSaved(false), 2500);
+  };
+  const cargarEnvioEdit = () => {
+    try {
+      const raw = localStorage.getItem("banva_envio_full_edit");
+      if (!raw) return false;
+      const payload = JSON.parse(raw);
+      if (payload.editable) setEnvioEditable(new Map(payload.editable));
+      if (payload.removed) setEnvioRemoved(new Set(payload.removed));
+      if (payload.added) setEnvioAdded(payload.added);
+      return true;
+    } catch { return false; }
   };
   const setEnvioQty = (skuVenta: string, qty: number) => {
     setEnvioEditable(prev => { const next = new Map(prev); next.set(skuVenta, Math.max(0, qty)); return next; });
@@ -1706,6 +1733,9 @@ export default function AdminReposicion() {
                   <>
                     <button onClick={exitEnvioEdit} style={{ padding:"4px 12px", borderRadius:6, background:"var(--bg3)", border:"1px solid var(--bg4)", color:"var(--txt3)", fontSize:11, fontWeight:600, cursor:"pointer" }}>
                       Cancelar
+                    </button>
+                    <button onClick={guardarEnvioEdit} style={{ padding:"4px 12px", borderRadius:6, background: envioSaved ? "var(--greenBg)" : "var(--bg3)", border:`1px solid ${envioSaved ? "var(--greenBd)" : "var(--cyanBd)"}`, color: envioSaved ? "var(--green)" : "var(--cyan)", fontSize:11, fontWeight:600, cursor:"pointer", transition:"all 0.3s" }}>
+                      {envioSaved ? "Guardado!" : "Guardar"}
                     </button>
                     <button onClick={() => crearPickingEnvioFull()} disabled={creandoPicking || !envioFinal.length} style={{ padding:"4px 12px", borderRadius:6, background:"var(--green)", border:"1px solid var(--green)", color:"#fff", fontSize:11, fontWeight:700, cursor: creandoPicking ? "wait" : "pointer" }}>
                       {creandoPicking ? "Creando..." : `Crear picking (${envioFinal.length} SKUs)`}
