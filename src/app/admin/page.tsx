@@ -189,6 +189,14 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   const [showAnular, setShowAnular] = useState(false);
   const [anularMotivo, setAnularMotivo] = useState("");
 
+  // Error report modal
+  const [errorLinea, setErrorLinea] = useState<DBRecepcionLinea|null>(null);
+  const [errorMode, setErrorMode] = useState<"menu"|"conteo"|"sku">("menu");
+  const [errorQty, setErrorQty] = useState(0);
+  const [errorSkuSearch, setErrorSkuSearch] = useState("");
+  const [errorSkuResults, setErrorSkuResults] = useState<Product[]>([]);
+  const [errorSaving, setErrorSaving] = useState(false);
+
   // Create form
   const [newFolio, setNewFolio] = useState("");
   const [newProv, setNewProv] = useState("");
@@ -382,6 +390,48 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   // Toggle operator assignment
   const toggleOp = (nombre: string) => {
     setEditAsignados(prev => prev.includes(nombre) ? prev.filter(n=>n!==nombre) : [...prev, nombre]);
+  };
+
+  // ---- Error report modal helpers ----
+  const openErrorReport = (l: DBRecepcionLinea) => {
+    setErrorLinea(l);
+    setErrorMode("menu");
+    setErrorQty(l.qty_factura);
+    setErrorSkuSearch("");
+    setErrorSkuResults([]);
+  };
+  const closeErrorReport = () => { if (!errorSaving) setErrorLinea(null); };
+  const doErrorAjusteConteo = async () => {
+    if (!errorLinea || errorQty < 0 || !selRec) return;
+    setErrorSaving(true);
+    await actualizarLineaRecepcion(errorLinea.id!, {
+      qty_factura: errorQty,
+      notas: `${errorLinea.notas ? errorLinea.notas + " | " : ""}Ajuste conteo: ${errorLinea.qty_factura} → ${errorQty}`,
+    });
+    setLineas(await getRecepcionLineas(selRec.id!));
+    const [dc, dq] = await Promise.all([detectarDiscrepanciasQty(selRec.id!, await getRecepcionLineas(selRec.id!)), getDiscrepanciasQty(selRec.id!)]);
+    setDiscrepanciasQty(dq);
+    setErrorSaving(false);
+    setErrorLinea(null);
+  };
+  const doErrorCambioSku = async (newProduct: Product) => {
+    if (!errorLinea || !selRec) return;
+    setErrorSaving(true);
+    const oldSku = errorLinea.sku;
+    await actualizarLineaRecepcion(errorLinea.id!, {
+      sku: newProduct.sku,
+      nombre: newProduct.name,
+      codigo_ml: newProduct.mlCode || "",
+      requiere_etiqueta: newProduct.requiresLabel ?? errorLinea.requiere_etiqueta,
+      notas: `${errorLinea.notas ? errorLinea.notas + " | " : ""}Cambio SKU: ${oldSku} → ${newProduct.sku}`,
+    });
+    setLineas(await getRecepcionLineas(selRec.id!));
+    setErrorSaving(false);
+    setErrorLinea(null);
+  };
+  const handleErrorSkuSearch = (q: string) => {
+    setErrorSkuSearch(q);
+    setErrorSkuResults(q.trim().length >= 2 ? findProduct(q).slice(0, 15) : []);
   };
 
   const addLinea = () => {
@@ -794,23 +844,114 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
           </div>
         )}
 
-        {/* Manual qty discrepancy: SKU erróneo */}
-        {isEditable && (
-          <div style={{marginTop:8,display:"flex",gap:6,alignItems:"center"}}>
-            <button onClick={async()=>{
-              const sku = prompt("SKU del producto erróneo recibido:");
-              if (!sku) return;
-              const qf = parseInt(prompt("Cantidad en factura (del SKU original):","0")||"0");
-              const qr = parseInt(prompt("Cantidad recibida (del SKU erróneo):","0")||"0");
-              const nota = prompt("Notas (qué SKU debería haber llegado, etc):","") || "";
-              if (!selRec) return;
-              setLoading(true);
-              await crearDiscrepanciaQtyManual(selRec.id!, sku, "SKU_ERRONEO", qf, qr, nota);
-              setDiscrepanciasQty(await getDiscrepanciasQty(selRec.id!));
-              setLoading(false);
-            }} style={{fontSize:10,padding:"5px 10px",borderRadius:6,background:"var(--bg3)",color:"var(--amber)",fontWeight:700,border:"1px solid var(--amberBd)",cursor:"pointer"}}>
-              + Reportar SKU erróneo
-            </button>
+        {/* Error report modal */}
+        {errorLinea && (
+          <div style={{position:"fixed",inset:0,zIndex:300,background:"rgba(0,0,0,0.6)",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}
+            onClick={closeErrorReport}>
+            <div style={{width:"100%",maxWidth:420,background:"var(--bg2)",borderRadius:14,border:"1px solid var(--bg4)",overflow:"hidden"}}
+              onClick={e=>e.stopPropagation()}>
+
+              {/* Menu */}
+              {errorMode === "menu" && (
+                <div style={{padding:24}}>
+                  <div style={{fontSize:16,fontWeight:800,marginBottom:4,textAlign:"center"}}>Reportar Error</div>
+                  <div style={{fontSize:12,color:"var(--txt3)",textAlign:"center",marginBottom:16}}>
+                    <span className="mono" style={{fontWeight:700}}>{errorLinea.sku}</span> — {errorLinea.nombre}
+                  </div>
+                  <button onClick={()=>{setErrorMode("conteo");setErrorQty(errorLinea.qty_factura);}}
+                    style={{width:"100%",padding:"16px 14px",borderRadius:10,background:"var(--bg3)",border:"1px solid var(--bg4)",marginBottom:8,textAlign:"left",cursor:"pointer"}}>
+                    <div style={{fontSize:14,fontWeight:700,color:"var(--amber)"}}>Diferencia en conteo</div>
+                    <div style={{fontSize:11,color:"var(--txt3)",marginTop:2}}>La cantidad real no coincide con la factura</div>
+                  </button>
+                  <button onClick={()=>{setErrorMode("sku");setErrorSkuSearch("");setErrorSkuResults([]);}}
+                    style={{width:"100%",padding:"16px 14px",borderRadius:10,background:"var(--bg3)",border:"1px solid var(--bg4)",marginBottom:8,textAlign:"left",cursor:"pointer"}}>
+                    <div style={{fontSize:14,fontWeight:700,color:"var(--red)"}}>SKU incorrecto</div>
+                    <div style={{fontSize:11,color:"var(--txt3)",marginTop:2}}>El producto fisico no corresponde al SKU de la factura</div>
+                  </button>
+                  <button onClick={closeErrorReport}
+                    style={{width:"100%",padding:12,borderRadius:8,background:"var(--bg3)",color:"var(--txt3)",fontSize:13,fontWeight:600,border:"1px solid var(--bg4)"}}>
+                    Cancelar
+                  </button>
+                </div>
+              )}
+
+              {/* Ajuste conteo */}
+              {errorMode === "conteo" && (
+                <div style={{padding:24}}>
+                  <div style={{fontSize:14,fontWeight:800,marginBottom:4}}>Ajustar cantidad de factura</div>
+                  <div style={{fontSize:12,color:"var(--txt3)",marginBottom:4}}>
+                    <span className="mono" style={{fontWeight:700}}>{errorLinea.sku}</span> — {errorLinea.nombre}
+                  </div>
+                  <div style={{fontSize:12,color:"var(--txt3)",marginBottom:12}}>
+                    Cantidad actual: <strong style={{color:"var(--amber)"}}>{errorLinea.qty_factura}</strong>
+                  </div>
+                  <div style={{fontSize:12,fontWeight:600,color:"var(--txt2)",marginBottom:8}}>Cantidad correcta:</div>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:12,marginBottom:16}}>
+                    <button onClick={()=>setErrorQty(q=>Math.max(0,q-1))}
+                      style={{width:48,height:48,borderRadius:10,background:"var(--bg3)",fontSize:22,fontWeight:700,border:"1px solid var(--bg4)"}}>−</button>
+                    <input type="number" value={errorQty} onChange={e=>setErrorQty(Math.max(0,parseInt(e.target.value)||0))}
+                      style={{width:90,textAlign:"center",fontSize:32,fontWeight:700,padding:10,borderRadius:10,background:"var(--bg)",border:"2px solid var(--bg4)",color:"var(--txt1)"}} />
+                    <button onClick={()=>setErrorQty(q=>q+1)}
+                      style={{width:48,height:48,borderRadius:10,background:"var(--bg3)",fontSize:22,fontWeight:700,border:"1px solid var(--bg4)"}}>+</button>
+                  </div>
+                  {errorQty !== errorLinea.qty_factura && (
+                    <div style={{textAlign:"center",marginBottom:12,padding:"8px 12px",borderRadius:8,
+                      background:errorQty > errorLinea.qty_factura ? "var(--greenBg)" : "var(--redBg)",
+                      color:errorQty > errorLinea.qty_factura ? "var(--green)" : "var(--red)",
+                      fontSize:13,fontWeight:700}}>
+                      {errorQty > errorLinea.qty_factura
+                        ? `+${errorQty - errorLinea.qty_factura} unidades mas`
+                        : `${errorLinea.qty_factura - errorQty} unidades menos`}
+                    </div>
+                  )}
+                  <div style={{display:"flex",gap:8}}>
+                    <button onClick={()=>setErrorMode("menu")}
+                      style={{flex:1,padding:12,borderRadius:8,background:"var(--bg3)",color:"var(--txt3)",fontSize:13,fontWeight:600,border:"1px solid var(--bg4)"}}>
+                      Atras
+                    </button>
+                    <button onClick={doErrorAjusteConteo} disabled={errorSaving || errorQty === errorLinea.qty_factura}
+                      style={{flex:2,padding:12,borderRadius:8,
+                        background:(errorSaving || errorQty === errorLinea.qty_factura) ? "var(--bg3)" : "var(--green)",
+                        color:(errorSaving || errorQty === errorLinea.qty_factura) ? "var(--txt3)" : "#fff",
+                        fontSize:13,fontWeight:700}}>
+                      {errorSaving ? "Guardando..." : "Confirmar ajuste"}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Cambio SKU */}
+              {errorMode === "sku" && (
+                <div style={{padding:24}}>
+                  <div style={{fontSize:14,fontWeight:800,marginBottom:4}}>Cambiar SKU</div>
+                  <div style={{fontSize:12,color:"var(--txt3)",marginBottom:12}}>
+                    SKU actual: <strong className="mono" style={{color:"var(--red)"}}>{errorLinea.sku}</strong> — {errorLinea.nombre}
+                  </div>
+                  <input type="text" className="form-input" value={errorSkuSearch} onChange={e=>handleErrorSkuSearch(e.target.value)}
+                    placeholder="Buscar por SKU, nombre o codigo ML..." autoFocus style={{marginBottom:8,fontSize:13}} />
+                  <div style={{maxHeight:280,overflowY:"auto",marginBottom:12}}>
+                    {errorSkuSearch.trim().length >= 2 && errorSkuResults.length === 0 && (
+                      <div style={{textAlign:"center",padding:16,color:"var(--txt3)",fontSize:12}}>Sin resultados</div>
+                    )}
+                    {errorSkuResults.map(p => (
+                      <div key={p.sku} onClick={()=>!errorSaving && doErrorCambioSku(p)}
+                        style={{padding:"10px 12px",borderRadius:8,background:"var(--bg3)",border:"1px solid var(--bg4)",
+                          marginBottom:4,cursor:"pointer",opacity:p.sku===errorLinea.sku?0.4:1}}>
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                          <span className="mono" style={{fontWeight:700,fontSize:13,color:"var(--cyan)"}}>{p.sku}</span>
+                          {p.mlCode && <span className="mono" style={{fontSize:10,color:"var(--txt3)"}}>{p.mlCode}</span>}
+                        </div>
+                        <div style={{fontSize:11,color:"var(--txt2)",marginTop:2}}>{p.name}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <button onClick={()=>setErrorMode("menu")}
+                    style={{width:"100%",padding:12,borderRadius:8,background:"var(--bg3)",color:"var(--txt3)",fontSize:13,fontWeight:600,border:"1px solid var(--bg4)"}}>
+                    Atras
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -934,6 +1075,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                     <div style={{display:"flex",gap:4}}>
                       {lockInfo.blocked && <button onClick={async()=>{await desbloquearLinea(l.id!);await refreshDetail();}} title="Desbloquear" style={{padding:"3px 6px",borderRadius:4,background:"var(--amberBg)",color:"var(--amber)",fontSize:10,fontWeight:700,border:"1px solid var(--amberBd)",cursor:"pointer"}}>🔓</button>}
                       {l.estado !== "PENDIENTE" && <button onClick={()=>doResetLinea(l.id!)} title="Resetear a pendiente" style={{padding:"3px 6px",borderRadius:4,background:"var(--amberBg)",color:"var(--amber)",fontSize:10,fontWeight:700,border:"1px solid var(--amberBd)",cursor:"pointer"}}>Reset</button>}
+                      <button onClick={()=>openErrorReport(l)} title="Reportar error (conteo o SKU)" style={{padding:"3px 6px",borderRadius:4,background:"var(--redBg)",color:"var(--red)",fontSize:10,fontWeight:700,border:"1px solid var(--redBd)",cursor:"pointer"}}>Error</button>
                       <button onClick={()=>startEditLinea(l)} title="Editar linea" style={{padding:"3px 6px",borderRadius:4,background:"var(--bg3)",color:"var(--cyan)",fontSize:10,fontWeight:700,border:"1px solid var(--bg4)",cursor:"pointer"}}>Editar</button>
                       <button onClick={()=>doDeleteLinea(l.id!)} title="Eliminar linea" style={{padding:"3px 6px",borderRadius:4,background:"var(--redBg)",color:"var(--red)",fontSize:10,fontWeight:700,border:"1px solid var(--redBd)",cursor:"pointer"}}>✕</button>
                     </div>
