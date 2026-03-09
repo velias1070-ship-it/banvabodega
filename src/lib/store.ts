@@ -1185,6 +1185,109 @@ export async function repararRecepcion(recepcionId: string, posicionDestino: str
   return results;
 }
 
+// ==================== RECONCILIACIÓN DE STOCK ====================
+
+export interface StockDiscrepancia {
+  sku: string;
+  posicion: string;
+  stockActual: number;
+  stockEsperado: number;
+  diferencia: number; // positive = falta stock, negative = sobra stock
+  nombre?: string;
+}
+
+/**
+ * Compara stock actual vs suma neta de movimientos.
+ * Los movimientos son la fuente de verdad.
+ */
+export async function reconciliarStock(): Promise<StockDiscrepancia[]> {
+  const movimientos = await db.fetchAllMovimientos();
+  const stockRows = await db.fetchStock();
+  const productos = await db.fetchProductos();
+  const prodMap = new Map(productos.map(p => [p.sku, p.nombre]));
+
+  // Expected stock per (sku, posicion) from movements
+  const expected: Record<string, number> = {};
+  for (const m of movimientos) {
+    const key = `${m.sku}|${m.posicion_id}`;
+    const delta = m.tipo === "entrada" ? m.cantidad : -m.cantidad;
+    expected[key] = (expected[key] || 0) + delta;
+  }
+
+  // Actual stock per (sku, posicion) — aggregated across sku_venta variants
+  const actual: Record<string, number> = {};
+  for (const s of stockRows) {
+    const key = `${s.sku}|${s.posicion_id}`;
+    actual[key] = (actual[key] || 0) + s.cantidad;
+  }
+
+  const allKeys = Array.from(new Set([...Object.keys(expected), ...Object.keys(actual)]));
+  const discrepancias: StockDiscrepancia[] = [];
+
+  for (const key of allKeys) {
+    const [sku, posicion] = key.split("|");
+    const esp = Math.max(0, expected[key] || 0);
+    const act = actual[key] || 0;
+    if (esp !== act) {
+      discrepancias.push({
+        sku, posicion, stockActual: act, stockEsperado: esp,
+        diferencia: esp - act, nombre: prodMap.get(sku) || sku,
+      });
+    }
+  }
+
+  return discrepancias.sort((a, b) => Math.abs(b.diferencia) - Math.abs(a.diferencia));
+}
+
+/**
+ * Corrige el stock para que coincida con los movimientos.
+ * NO crea movimientos correctivos (para evitar loops).
+ * Usa update_stock RPC con el delta necesario por variante de sku_venta.
+ */
+export async function aplicarReconciliacion(discrepancias: StockDiscrepancia[]): Promise<{ fixed: number; errors: string[] }> {
+  let fixed = 0;
+  const errors: string[] = [];
+  const stockRows = await db.fetchStock();
+
+  for (const d of discrepancias) {
+    try {
+      if (d.diferencia < 0) {
+        // Stock sobra → reducir. Distribuir reducción entre variantes sku_venta
+        const rows = stockRows
+          .filter(s => s.sku === d.sku && s.posicion_id === d.posicion && s.cantidad > 0)
+          .sort((a, b) => {
+            // Reducir primero sin etiquetar, luego los más grandes
+            if (!a.sku_venta && b.sku_venta) return -1;
+            if (a.sku_venta && !b.sku_venta) return 1;
+            return b.cantidad - a.cantidad;
+          });
+
+        let remaining = Math.abs(d.diferencia);
+        for (const row of rows) {
+          if (remaining <= 0) break;
+          const reduce = Math.min(remaining, row.cantidad);
+          await db.updateStock(d.sku, d.posicion, -reduce, row.sku_venta ?? null);
+          remaining -= reduce;
+        }
+      } else {
+        // Stock falta → agregar a variante sin etiquetar
+        await db.updateStock(d.sku, d.posicion, d.diferencia, null);
+      }
+
+      // Update cache
+      if (!_cache.stock[d.sku]) _cache.stock[d.sku] = {};
+      _cache.stock[d.sku][d.posicion] = Math.max(0, (d.stockActual || 0) + d.diferencia);
+      if (_cache.stock[d.sku][d.posicion] === 0) delete _cache.stock[d.sku][d.posicion];
+
+      fixed++;
+    } catch (e) {
+      errors.push(`${d.sku}@${d.posicion}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  return { fixed, errors };
+}
+
 // Upload factura image
 export async function uploadFacturaImage(base64: string, folio: string): Promise<string> {
   return db.uploadFacturaImage(base64, folio);
