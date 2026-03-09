@@ -1173,7 +1173,7 @@ export async function loginOperario(id: string, pin: string) { return db.loginOp
 export async function guardarOperario(o: db.DBOperario) { return db.upsertOperario(o); }
 
 // ==================== PICKING FLEX ====================
-export type { PickingLinea, PickingComponente, DBPickingSession } from "./db";
+export type { PickingLinea, PickingComponente, PickingLineaFull, PickingTipo, DBPickingSession } from "./db";
 
 // Build picking session from pasted orders
 export function buildPickingLineas(orders: { skuVenta: string; qty: number }[]): { lineas: db.PickingLinea[]; errors: string[] } {
@@ -1298,8 +1298,8 @@ export async function getPickingsByDate(fecha: string): Promise<db.DBPickingSess
 }
 
 // Create picking session
-export async function crearPickingSession(fecha: string, lineas: db.PickingLinea[]): Promise<string | null> {
-  return db.createPickingSession({ fecha, estado: "ABIERTA", lineas });
+export async function crearPickingSession(fecha: string, lineas: db.PickingLinea[], tipo?: db.PickingTipo, titulo?: string): Promise<string | null> {
+  return db.createPickingSession({ fecha, estado: "ABIERTA", lineas, tipo: tipo || "flex", titulo });
 }
 
 // Update picking session
@@ -1310,6 +1310,179 @@ export async function actualizarPicking(id: string, updates: Partial<db.DBPickin
 // Delete picking session  
 export async function eliminarPicking(id: string): Promise<boolean> {
   return db.deletePickingSession(id);
+}
+
+// ==================== RUTA INTELIGENTE (SERPENTINA) ====================
+
+interface PosConCoords {
+  id: string;
+  label: string;
+  mx: number;
+  my: number;
+}
+
+/**
+ * Calcula la ruta de picking usando método serpentina:
+ * 1. Agrupar posiciones por pasillo (misma coordenada X o prefijo)
+ * 2. Ordenar pasillos izquierda → derecha (X ascendente)
+ * 3. Alternar dirección Y dentro de cada pasillo (zigzag)
+ * Fallback a orden alfabético si no hay coordenadas.
+ */
+export function calcularRutaPicking(posicionIds: string[]): string[] {
+  if (posicionIds.length === 0) return [];
+
+  const posMap = new Map<string, Position>();
+  for (const p of _cache.positions) posMap.set(p.id, p);
+
+  // Separar posiciones con y sin coordenadas
+  const conCoords: PosConCoords[] = [];
+  const sinCoords: string[] = [];
+
+  for (const pid of posicionIds) {
+    const p = posMap.get(pid);
+    if (p && p.mx !== undefined && p.my !== undefined) {
+      conCoords.push({ id: p.id, label: p.label, mx: p.mx, my: p.my });
+    } else {
+      sinCoords.push(pid);
+    }
+  }
+
+  if (conCoords.length === 0) {
+    // Sin coordenadas: fallback alfabético
+    return [...posicionIds].sort();
+  }
+
+  // Agrupar por pasillo (misma coordenada X)
+  const pasillos = new Map<number, PosConCoords[]>();
+  for (const p of conCoords) {
+    if (!pasillos.has(p.mx)) pasillos.set(p.mx, []);
+    pasillos.get(p.mx)!.push(p);
+  }
+
+  // Ordenar pasillos izquierda → derecha
+  const pasillosOrdenados = Array.from(pasillos.entries()).sort((a, b) => a[0] - b[0]);
+
+  const resultado: string[] = [];
+  let direccionAbajo = true; // primer pasillo: Y ascendente (arriba → abajo)
+
+  for (const [, posiciones] of pasillosOrdenados) {
+    posiciones.sort((a, b) => direccionAbajo ? a.my - b.my : b.my - a.my);
+    for (const p of posiciones) resultado.push(p.id);
+    direccionAbajo = !direccionAbajo; // alternar dirección
+  }
+
+  // Agregar posiciones sin coordenadas al final, ordenadas alfabéticamente
+  sinCoords.sort();
+  resultado.push(...sinCoords);
+
+  return resultado;
+}
+
+/**
+ * Agrupa líneas de picking por posición para que el operador no tenga que
+ * ir dos veces al mismo lugar.
+ */
+export function agruparPorPosicion<T extends { posicion: string }>(lineas: T[]): Map<string, T[]> {
+  const grupos = new Map<string, T[]>();
+  for (const l of lineas) {
+    if (!grupos.has(l.posicion)) grupos.set(l.posicion, []);
+    grupos.get(l.posicion)!.push(l);
+  }
+  return grupos;
+}
+
+/**
+ * Genera líneas de picking para envío a Full desde los datos de Reposición.
+ * Las líneas se generan a nivel SKU Origen con referencia al SKU Venta destino.
+ * Se ordenan por ruta inteligente (serpentina).
+ */
+export function buildPickingLineasFull(
+  envios: {
+    skuVenta: string;
+    nombre: string;
+    mandarFull: number;
+    tipo: "simple" | "pack" | "combo";
+    componentes: {
+      skuOrigen: string;
+      nombreOrigen: string;
+      unidadesPorPack: number;
+      unidadesFisicas: number;
+    }[];
+  }[]
+): { lineas: db.PickingLinea[]; errors: string[] } {
+  const errors: string[] = [];
+  const lineaFull: db.PickingLineaFull[] = [];
+  let idx = 0;
+
+  for (const envio of envios) {
+    for (const comp of envio.componentes) {
+      const positions = skuPositions(comp.skuOrigen);
+      const bestPos = positions.length > 0 ? positions[0] : null;
+
+      // Instrucción de armado
+      let instruccion = "";
+      if (envio.tipo === "pack") {
+        instruccion = `Armar ${envio.mandarFull} packs de ${comp.unidadesPorPack} uds. Etiquetar como ${envio.skuVenta}`;
+      } else if (envio.tipo === "combo") {
+        instruccion = `Armar ${envio.mandarFull} combos. Etiquetar como ${envio.skuVenta}`;
+      } else {
+        instruccion = comp.unidadesFisicas === envio.mandarFull
+          ? `Enviar ${comp.unidadesFisicas} uds tal cual`
+          : `Enviar ${comp.unidadesFisicas} uds para ${envio.skuVenta}`;
+      }
+
+      const prod = _cache.products[comp.skuOrigen];
+      idx++;
+      lineaFull.push({
+        id: `F${String(idx).padStart(3, "0")}`,
+        skuVenta: envio.skuVenta,
+        skuOrigen: comp.skuOrigen,
+        tipo: envio.tipo,
+        unidadesFisicas: comp.unidadesFisicas,
+        unidadesVenta: envio.mandarFull,
+        unidadesPorPack: comp.unidadesPorPack,
+        posicion: bestPos?.pos || "?",
+        posLabel: bestPos?.label || "Sin posición",
+        posicionOrden: 0, // se asigna después
+        instruccionArmado: instruccion,
+        estado: "PENDIENTE",
+        estadoArmado: envio.tipo === "simple" ? "COMPLETADO" : "PENDIENTE",
+        pickedAt: null,
+        operario: null,
+        stockDisponible: bestPos?.qty || 0,
+        codigoMl: prod?.mlCode || "",
+        nombre: comp.nombreOrigen,
+      });
+
+      if (!bestPos || bestPos.qty < comp.unidadesFisicas) {
+        errors.push(`⚠️ ${comp.skuOrigen}: necesitas ${comp.unidadesFisicas}, disponible ${bestPos?.qty || 0} en ${bestPos?.pos || "ninguna posición"}`);
+      }
+    }
+  }
+
+  // Calcular ruta inteligente
+  const posicionesUnicas = Array.from(new Set(lineaFull.map(l => l.posicion).filter(p => p !== "?")));
+  const rutaOrdenada = calcularRutaPicking(posicionesUnicas);
+  const ordenMap = new Map<string, number>();
+  rutaOrdenada.forEach((pos, i) => ordenMap.set(pos, i));
+
+  // Asignar orden y reordenar
+  for (const l of lineaFull) {
+    l.posicionOrden = ordenMap.get(l.posicion) ?? 999;
+  }
+  lineaFull.sort((a, b) => a.posicionOrden - b.posicionOrden || a.skuOrigen.localeCompare(b.skuOrigen));
+
+  // Crear una sola PickingLinea que contiene todas las lineasFull
+  const linea: db.PickingLinea = {
+    id: "FULL",
+    skuVenta: "ENVIO_FULL",
+    qtyPedida: lineaFull.length,
+    estado: "PENDIENTE",
+    componentes: [], // no se usa para envio_full
+    lineasFull: lineaFull,
+  };
+
+  return { lineas: [linea], errors };
 }
 
 // Mark component as picked + decrement stock
@@ -1355,6 +1528,73 @@ export async function pickearComponente(
   if (allDone && sessionId) {
     db.updatePedidosFlexByPickingSession(sessionId, "DESPACHADO").catch(console.error);
   }
+
+  return true;
+}
+
+// Pick a line item in envio_full session + decrement stock
+export async function pickearLineaFull(
+  sessionId: string, lineaFullId: string, operario: string,
+  session: db.DBPickingSession
+): Promise<boolean> {
+  const mainLinea = session.lineas[0];
+  if (!mainLinea?.lineasFull) return false;
+  const lf = mainLinea.lineasFull.find(l => l.id === lineaFullId);
+  if (!lf || lf.estado === "PICKEADO") return false;
+
+  // Decrement stock
+  const pos = lf.posicion;
+  if (pos && pos !== "?") {
+    recordMovement({
+      ts: new Date().toISOString(), type: "out", reason: "envio_full" as OutReason,
+      sku: lf.skuOrigen, pos, qty: lf.unidadesFisicas,
+      who: operario, note: `Envío Full: ${lf.skuVenta} (${lf.unidadesFisicas} uds ${lf.skuOrigen})`,
+    });
+  }
+
+  lf.estado = "PICKEADO";
+  lf.pickedAt = new Date().toISOString();
+  lf.operario = operario;
+
+  // Check if all lines are picked
+  const allPicked = mainLinea.lineasFull.every(l => l.estado === "PICKEADO");
+  if (allPicked) mainLinea.estado = "PICKEADO";
+
+  // Check if also all armado done → session complete
+  const allArmado = mainLinea.lineasFull.every(l => l.estadoArmado === "COMPLETADO");
+  const sessionDone = allPicked && allArmado;
+
+  await db.updatePickingSession(sessionId, {
+    lineas: session.lineas,
+    estado: sessionDone ? "COMPLETADA" : "EN_PROCESO",
+    ...(sessionDone ? { completed_at: new Date().toISOString() } : {}),
+  });
+
+  return true;
+}
+
+// Mark armado line as completed in envio_full session
+export async function marcarArmadoFull(
+  sessionId: string, lineaFullId: string, operario: string,
+  session: db.DBPickingSession
+): Promise<boolean> {
+  const mainLinea = session.lineas[0];
+  if (!mainLinea?.lineasFull) return false;
+  const lf = mainLinea.lineasFull.find(l => l.id === lineaFullId);
+  if (!lf || lf.estadoArmado === "COMPLETADO") return false;
+
+  lf.estadoArmado = "COMPLETADO";
+
+  // Check if session is fully done
+  const allPicked = mainLinea.lineasFull.every(l => l.estado === "PICKEADO");
+  const allArmado = mainLinea.lineasFull.every(l => l.estadoArmado === "COMPLETADO");
+  const sessionDone = allPicked && allArmado;
+
+  await db.updatePickingSession(sessionId, {
+    lineas: session.lineas,
+    estado: sessionDone ? "COMPLETADA" : "EN_PROCESO",
+    ...(sessionDone ? { completed_at: new Date().toISOString() } : {}),
+  });
 
   return true;
 }
