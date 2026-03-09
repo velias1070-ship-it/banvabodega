@@ -16,6 +16,7 @@ export interface DBProduct {
   requiere_etiqueta: boolean;
   tamano: string;
   color: string;
+  inner_pack?: number | null;
 }
 
 export interface DBComposicionVenta {
@@ -160,6 +161,7 @@ function cleanProduct(p: DBProduct): DBProduct {
     nombre: p.nombre, categoria: p.categoria, proveedor: p.proveedor,
     costo: p.costo, precio: p.precio, reorder: p.reorder,
     requiere_etiqueta: p.requiere_etiqueta, tamano: p.tamano, color: p.color,
+    inner_pack: p.inner_pack,
   };
 }
 
