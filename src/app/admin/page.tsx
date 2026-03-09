@@ -90,7 +90,7 @@ export default function AdminPage() {
       <SheetSync onSynced={r}/>
       <div className="admin-layout">
         <nav className="admin-sidebar">
-          {([["dash","Dashboard","📊"],["rec","Recepciones","📦"],["picking","Picking Flex","🏷️"],["pedidos","Pedidos ML","🛒"],["etiquetas","Etiquetas","🖨️"],["conteos","Conteo Cíclico","📋"],["ops","Operaciones","⚡"],["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["stock_load","Carga Stock","📥"],["reposicion","Reposición","🔄"],["config","Configuración","⚙️"]] as const).map(([key,label,icon])=>(
+          {([["dash","Dashboard","📊"],["rec","Recepciones","📦"],["picking","Picking Flex","🏷️"],["pedidos","Pedidos ML","🛒"],["ops","Operaciones","⚡"],["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["reposicion","Reposición","🔄"],["config","Configuración","⚙️"]] as const).map(([key,label,icon])=>(
             <button key={key} className={`sidebar-btn ${tab===key?"active":""}`} onClick={()=>setTab(key as any)}>
               <span className="sidebar-icon">{icon}</span>
               <span className="sidebar-label">{label}</span>
@@ -105,7 +105,7 @@ export default function AdminPage() {
         <main className="admin-main">
           {/* Mobile tabs fallback */}
           <div className="admin-mobile-tabs">
-            {([["dash","Dashboard"],["rec","Recepción"],["picking","Picking"],["pedidos","Pedidos ML"],["etiquetas","Etiquetas"],["conteos","Conteos"],["ops","Ops"],["inv","Inventario"],["mov","Movim."],["prod","Productos"],["stock_load","Carga"],["reposicion","Reposición"],["config","Config"]] as const).map(([key,label])=>(
+            {([["dash","Dashboard"],["rec","Recepción"],["picking","Picking"],["pedidos","Pedidos ML"],["ops","Ops"],["inv","Inventario"],["mov","Movim."],["prod","Productos"],["reposicion","Reposición"],["config","Config"]] as const).map(([key,label])=>(
               <button key={key} className={`tab ${tab===key?"active-cyan":""}`} onClick={()=>setTab(key as any)}>{label}</button>
             ))}
           </div>
@@ -113,14 +113,11 @@ export default function AdminPage() {
             {tab==="dash"&&<Dashboard/>}
             {tab==="rec"&&<AdminRecepciones refresh={r}/>}
             {tab==="picking"&&<AdminPicking refresh={r}/>}
-            {tab==="etiquetas"&&<AdminEtiquetas/>}
-            {tab==="conteos"&&<AdminConteos refresh={r}/>}
             {tab==="pedidos"&&<AdminPedidosFlex refresh={r}/>}
             {tab==="ops"&&<Operaciones refresh={r}/>}
             {tab==="inv"&&<Inventario/>}
             {tab==="mov"&&<Movimientos/>}
             {tab==="prod"&&<Productos refresh={r}/>}
-            {tab==="stock_load"&&<CargaStock refresh={r}/>}
             {tab==="reposicion"&&<AdminReposicion/>}
             {tab==="config"&&<Configuracion refresh={r}/>}
           </div>
@@ -5908,7 +5905,7 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
 
 // ==================== CONFIGURACIÓN ====================
 function Configuracion({ refresh }: { refresh: () => void }) {
-  const [configTab, setConfigTab] = useState<"general"|"posiciones"|"mapa">("general");
+  const [configTab, setConfigTab] = useState<"general"|"posiciones"|"mapa"|"etiquetas"|"carga_stock"|"conteos">("general");
   const [cats, setCats] = useState<string[]>([]);
   const [provs, setProvs] = useState<string[]>([]);
   const [newCat, setNewCat] = useState("");
@@ -6028,12 +6025,15 @@ function Configuracion({ refresh }: { refresh: () => void }) {
   return (
     <div>
       <div style={{display:"flex",gap:8,marginBottom:16}}>
-        {([["general","General","⚙️"],["posiciones","Posiciones","📍"],["mapa","Mapa Bodega","🗺️"]] as const).map(([key,label,icon])=>(
+        {([["general","General","⚙️"],["posiciones","Posiciones","📍"],["mapa","Mapa Bodega","🗺️"],["etiquetas","Etiquetas","🖨️"],["carga_stock","Carga Stock","📥"],["conteos","Conteo Cíclico","📋"]] as const).map(([key,label,icon])=>(
           <button key={key} onClick={()=>setConfigTab(key)} style={{padding:"8px 16px",borderRadius:8,background:configTab===key?"var(--cyan)":"var(--bg3)",color:configTab===key?"#fff":"var(--txt2)",fontWeight:configTab===key?700:500,fontSize:13,border:configTab===key?"none":"1px solid var(--bg4)",cursor:"pointer"}}>{icon} {label}</button>
         ))}
       </div>
 
       {configTab==="posiciones"&&<Posiciones refresh={refresh}/>}
+      {configTab==="etiquetas"&&<AdminEtiquetas/>}
+      {configTab==="carga_stock"&&<CargaStock refresh={refresh}/>}
+      {configTab==="conteos"&&<AdminConteos refresh={refresh}/>}
       {configTab==="mapa"&&(
         <div className="card" style={{textAlign:"center",padding:32}}>
           <div style={{fontSize:48,marginBottom:16}}>🗺️</div>
