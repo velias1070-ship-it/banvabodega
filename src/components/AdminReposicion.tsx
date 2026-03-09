@@ -1334,23 +1334,29 @@ export default function AdminReposicion() {
     setCreandoPicking(true);
     setPickingCreado(null);
 
-    const { lineas, errors } = buildPickingLineasFull(source);
+    try {
+      const { lineas, errors } = buildPickingLineasFull(source);
 
-    if (errors.length > 0) {
-      const continuar = window.confirm(`Advertencias:\n${errors.join("\n")}\n\n¿Crear sesión de picking de todos modos?`);
-      if (!continuar) { setCreandoPicking(false); return; }
-    }
+      if (errors.length > 0) {
+        const continuar = window.confirm(`Advertencias:\n${errors.join("\n")}\n\n¿Crear sesión de picking de todos modos?`);
+        if (!continuar) { setCreandoPicking(false); return; }
+      }
 
-    const fecha = new Date().toISOString().slice(0, 10);
-    const titulo = `Envío a Full — ${fecha}`;
-    const id = await crearPickingSession(fecha, lineas, "envio_full", titulo);
+      const fecha = new Date().toISOString().slice(0, 10);
+      const titulo = `Envío a Full — ${fecha}`;
+      const id = await crearPickingSession(fecha, lineas, "envio_full", titulo);
 
-    setCreandoPicking(false);
-    if (id) {
-      setPickingCreado(id);
-      if (envioEditMode) setEnvioEditMode(false);
-    } else {
-      alert("Error al crear la sesión de picking");
+      if (id) {
+        setPickingCreado(id);
+        if (envioEditMode) setEnvioEditMode(false);
+      } else {
+        alert("Error al crear la sesión de picking. Verificar que la tabla picking_sessions tenga las columnas 'tipo' y 'titulo' (ejecutar migración v10).");
+      }
+    } catch (err) {
+      console.error("crearPickingEnvioFull error:", err);
+      alert("Error inesperado al crear la sesión de picking.");
+    } finally {
+      setCreandoPicking(false);
     }
   }, [envioDetalles, envioFinal, envioEditMode, creandoPicking]);
 

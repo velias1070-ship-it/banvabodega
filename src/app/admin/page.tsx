@@ -1591,9 +1591,13 @@ function CreatePickingSession({ onCreated, onCancel }: { onCreated: () => void; 
   const doCreate = async () => {
     if (!preview || preview.lineas.length === 0) return;
     setSaving(true);
-    await crearPickingSession(fecha, preview.lineas);
+    const id = await crearPickingSession(fecha, preview.lineas);
     setSaving(false);
-    onCreated();
+    if (id) {
+      onCreated();
+    } else {
+      alert("Error al crear la sesión de picking. Verificar que la tabla picking_sessions tenga las columnas 'tipo' y 'titulo' (ejecutar migración v10).");
+    }
   };
 
   return (
@@ -4885,6 +4889,8 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
         await updatePedidosFlex(ids, { estado: "EN_PICKING", picking_session_id: sessionId });
         await loadPedidos();
         alert(`Sesión de picking creada con ${lineas.length} líneas`);
+      } else {
+        alert("Error al crear la sesión de picking. Verificar que la tabla picking_sessions tenga las columnas 'tipo' y 'titulo' (ejecutar migración v10).");
       }
     } catch (err) {
       alert("Error creando picking: " + String(err));
