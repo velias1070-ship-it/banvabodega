@@ -1185,7 +1185,7 @@ export async function loginOperario(id: string, pin: string) { return db.loginOp
 export async function guardarOperario(o: db.DBOperario) { return db.upsertOperario(o); }
 
 // ==================== PICKING FLEX ====================
-export type { PickingLinea, PickingComponente, PickingLineaFull, PickingTipo, DBPickingSession } from "./db";
+export type { PickingLinea, PickingComponente, PickingLineaFullLegacy, PickingTipo, DBPickingSession } from "./db";
 
 // Build picking session from pasted orders
 export function buildPickingLineas(orders: { skuVenta: string; qty: number }[]): { lineas: db.PickingLinea[]; errors: string[] } {
@@ -1405,7 +1405,8 @@ export function agruparPorPosicion<T extends { posicion: string }>(lineas: T[]):
 
 /**
  * Genera líneas de picking para envío a Full desde los datos de Reposición.
- * Las líneas se generan a nivel SKU Origen con referencia al SKU Venta destino.
+ * Cada SKU a pickear genera su propia PickingLinea con componentes[],
+ * usando la misma estructura que Flex para que las vistas funcionen sin bifurcación.
  * Se ordenan por ruta inteligente (serpentina).
  */
 export function buildPickingLineasFull(
@@ -1423,7 +1424,7 @@ export function buildPickingLineasFull(
   }[]
 ): { lineas: db.PickingLinea[]; errors: string[] } {
   const errors: string[] = [];
-  const lineaFull: db.PickingLineaFull[] = [];
+  const lineas: db.PickingLinea[] = [];
   let idx = 0;
 
   for (const envio of envios) {
@@ -1432,38 +1433,42 @@ export function buildPickingLineasFull(
       const bestPos = positions.length > 0 ? positions[0] : null;
 
       // Instrucción de armado
-      let instruccion = "";
+      let instruccion: string | null = null;
       if (envio.tipo === "pack") {
         instruccion = `Armar ${envio.mandarFull} packs de ${comp.unidadesPorPack} uds. Etiquetar como ${envio.skuVenta}`;
       } else if (envio.tipo === "combo") {
         instruccion = `Armar ${envio.mandarFull} combos. Etiquetar como ${envio.skuVenta}`;
-      } else {
-        instruccion = comp.unidadesFisicas === envio.mandarFull
-          ? `Enviar ${comp.unidadesFisicas} uds tal cual`
-          : `Enviar ${comp.unidadesFisicas} uds para ${envio.skuVenta}`;
       }
 
       const prod = _cache.products[comp.skuOrigen];
       idx++;
-      lineaFull.push({
+
+      lineas.push({
         id: `F${String(idx).padStart(3, "0")}`,
         skuVenta: envio.skuVenta,
+        qtyPedida: comp.unidadesFisicas,
+        estado: "PENDIENTE",
+        componentes: [{
+          skuOrigen: comp.skuOrigen,
+          codigoMl: prod?.mlCode || "",
+          nombre: comp.nombreOrigen,
+          unidades: comp.unidadesFisicas,
+          posicion: bestPos?.pos || "?",
+          posLabel: bestPos?.label || "Sin posición",
+          stockDisponible: bestPos?.qty || 0,
+          estado: "PENDIENTE",
+          pickedAt: null,
+          operario: null,
+        }],
+        // Campos Full adicionales
         skuOrigen: comp.skuOrigen,
-        tipo: envio.tipo,
-        unidadesFisicas: comp.unidadesFisicas,
-        unidadesVenta: envio.mandarFull,
+        tipoFull: envio.tipo,
+        qtyFisica: comp.unidadesFisicas,
+        qtyVenta: envio.mandarFull,
         unidadesPorPack: comp.unidadesPorPack,
-        posicion: bestPos?.pos || "?",
-        posLabel: bestPos?.label || "Sin posición",
         posicionOrden: 0, // se asigna después
         instruccionArmado: instruccion,
-        estado: "PENDIENTE",
-        estadoArmado: envio.tipo === "simple" ? "COMPLETADO" : "PENDIENTE",
-        pickedAt: null,
-        operario: null,
-        stockDisponible: bestPos?.qty || 0,
-        codigoMl: prod?.mlCode || "",
-        nombre: comp.nombreOrigen,
+        estadoArmado: envio.tipo === "simple" ? null : "PENDIENTE",
       });
 
       if (!bestPos || bestPos.qty < comp.unidadesFisicas) {
@@ -1473,28 +1478,18 @@ export function buildPickingLineasFull(
   }
 
   // Calcular ruta inteligente
-  const posicionesUnicas = Array.from(new Set(lineaFull.map(l => l.posicion).filter(p => p !== "?")));
-  const rutaOrdenada = calcularRutaPicking(posicionesUnicas);
+  const posicionesUnicas = Array.from(new Set(lineas.map(l => l.componentes[0]?.posicion).filter(p => p && p !== "?")));
+  const rutaOrdenada = calcularRutaPicking(posicionesUnicas as string[]);
   const ordenMap = new Map<string, number>();
   rutaOrdenada.forEach((pos, i) => ordenMap.set(pos, i));
 
   // Asignar orden y reordenar
-  for (const l of lineaFull) {
-    l.posicionOrden = ordenMap.get(l.posicion) ?? 999;
+  for (const l of lineas) {
+    l.posicionOrden = ordenMap.get(l.componentes[0]?.posicion || "") ?? 999;
   }
-  lineaFull.sort((a, b) => a.posicionOrden - b.posicionOrden || a.skuOrigen.localeCompare(b.skuOrigen));
+  lineas.sort((a, b) => (a.posicionOrden ?? 999) - (b.posicionOrden ?? 999) || (a.skuOrigen || "").localeCompare(b.skuOrigen || ""));
 
-  // Crear una sola PickingLinea que contiene todas las lineasFull
-  const linea: db.PickingLinea = {
-    id: "FULL",
-    skuVenta: "ENVIO_FULL",
-    qtyPedida: lineaFull.length,
-    estado: "PENDIENTE",
-    componentes: [], // no se usa para envio_full
-    lineasFull: lineaFull,
-  };
-
-  return { lineas: [linea], errors };
+  return { lineas, errors };
 }
 
 // Mark component as picked + decrement stock
@@ -1544,36 +1539,35 @@ export async function pickearComponente(
   return true;
 }
 
-// Pick a line item in envio_full session + decrement stock
+// Pick a component in envio_full session + decrement stock
+// Uses same structure as Flex: each line has componentes[0]
 export async function pickearLineaFull(
-  sessionId: string, lineaFullId: string, operario: string,
+  sessionId: string, lineaId: string, operario: string,
   session: db.DBPickingSession
 ): Promise<boolean> {
-  const mainLinea = session.lineas[0];
-  if (!mainLinea?.lineasFull) return false;
-  const lf = mainLinea.lineasFull.find(l => l.id === lineaFullId);
-  if (!lf || lf.estado === "PICKEADO") return false;
+  const linea = session.lineas.find(l => l.id === lineaId);
+  if (!linea) return false;
+  const comp = linea.componentes[0];
+  if (!comp || comp.estado === "PICKEADO") return false;
 
   // Decrement stock
-  const pos = lf.posicion;
+  const pos = comp.posicion;
   if (pos && pos !== "?") {
     recordMovement({
       ts: new Date().toISOString(), type: "out", reason: "envio_full" as OutReason,
-      sku: lf.skuOrigen, pos, qty: lf.unidadesFisicas,
-      who: operario, note: `Envío Full: ${lf.skuVenta} (${lf.unidadesFisicas} uds ${lf.skuOrigen})`,
+      sku: comp.skuOrigen, pos, qty: comp.unidades,
+      who: operario, note: `Envío Full: ${linea.skuVenta} (${comp.unidades} uds ${comp.skuOrigen})`,
     });
   }
 
-  lf.estado = "PICKEADO";
-  lf.pickedAt = new Date().toISOString();
-  lf.operario = operario;
+  comp.estado = "PICKEADO";
+  comp.pickedAt = new Date().toISOString();
+  comp.operario = operario;
+  linea.estado = "PICKEADO";
 
-  // Check if all lines are picked
-  const allPicked = mainLinea.lineasFull.every(l => l.estado === "PICKEADO");
-  if (allPicked) mainLinea.estado = "PICKEADO";
-
-  // Check if also all armado done → session complete
-  const allArmado = mainLinea.lineasFull.every(l => l.estadoArmado === "COMPLETADO");
+  // Check if all lines are picked and armado done
+  const allPicked = session.lineas.every(l => l.estado === "PICKEADO");
+  const allArmado = session.lineas.every(l => !l.estadoArmado || l.estadoArmado === "COMPLETADO");
   const sessionDone = allPicked && allArmado;
 
   await db.updatePickingSession(sessionId, {
@@ -1585,21 +1579,19 @@ export async function pickearLineaFull(
   return true;
 }
 
-// Mark armado line as completed in envio_full session
+// Mark armado as completed for a line in envio_full session
 export async function marcarArmadoFull(
-  sessionId: string, lineaFullId: string, operario: string,
+  sessionId: string, lineaId: string, operario: string,
   session: db.DBPickingSession
 ): Promise<boolean> {
-  const mainLinea = session.lineas[0];
-  if (!mainLinea?.lineasFull) return false;
-  const lf = mainLinea.lineasFull.find(l => l.id === lineaFullId);
-  if (!lf || lf.estadoArmado === "COMPLETADO") return false;
+  const linea = session.lineas.find(l => l.id === lineaId);
+  if (!linea || linea.estadoArmado === "COMPLETADO") return false;
 
-  lf.estadoArmado = "COMPLETADO";
+  linea.estadoArmado = "COMPLETADO";
 
   // Check if session is fully done
-  const allPicked = mainLinea.lineasFull.every(l => l.estado === "PICKEADO");
-  const allArmado = mainLinea.lineasFull.every(l => l.estadoArmado === "COMPLETADO");
+  const allPicked = session.lineas.every(l => l.estado === "PICKEADO");
+  const allArmado = session.lineas.every(l => !l.estadoArmado || l.estadoArmado === "COMPLETADO");
   const sessionDone = allPicked && allArmado;
 
   await db.updatePickingSession(sessionId, {

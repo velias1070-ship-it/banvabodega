@@ -1762,6 +1762,7 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState("");
 
+  const isFull = session.tipo === "envio_full";
   const totalComps = session.lineas.reduce((s, l) => s + l.componentes.length, 0);
   const doneComps = session.lineas.reduce((s, l) => s + l.componentes.filter(c => c.estado === "PICKEADO").length, 0);
   const pct = totalComps > 0 ? Math.round((doneComps / totalComps) * 100) : 0;
@@ -1871,8 +1872,11 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
 
       {/* Header */}
       <div style={{padding:16,background:"var(--bg2)",borderRadius:10,border:"1px solid var(--bg3)",marginBottom:16}}>
-        <div style={{fontSize:16,fontWeight:700}}>Picking {session.fecha}</div>
-        <div style={{fontSize:12,color:"var(--txt3)"}}>Estado: <strong>{session.estado}</strong> · {session.lineas.length} pedidos · {doneComps}/{totalComps} items ({pct}%)</div>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <div style={{fontSize:16,fontWeight:700}}>{isFull ? (session.titulo || "Envío a Full") : `Picking ${session.fecha}`}</div>
+          {isFull && <span style={{padding:"2px 6px",borderRadius:4,fontSize:9,fontWeight:800,background:"#3b82f622",color:"#3b82f6",border:"1px solid #3b82f644"}}>FULL</span>}
+        </div>
+        <div style={{fontSize:12,color:"var(--txt3)"}}>Estado: <strong>{session.estado}</strong> · {session.lineas.length} {isFull ? "productos" : "pedidos"} · {doneComps}/{totalComps} items ({pct}%)</div>
         <div style={{marginTop:8,background:"var(--bg3)",borderRadius:4,height:6,overflow:"hidden"}}>
           <div style={{width:`${pct}%`,height:"100%",background:pct===100?"var(--green)":"var(--amber)",borderRadius:4}}/>
         </div>
@@ -1951,6 +1955,7 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
             <th style={{textAlign:"center",padding:"8px 6px",color:"var(--txt3)"}}>Pos</th>
             <th style={{textAlign:"center",padding:"8px 6px",color:"var(--txt3)"}}>Qty</th>
             <th style={{textAlign:"center",padding:"8px 6px",color:"var(--txt3)"}}>Estado</th>
+            {isFull && <th style={{textAlign:"center",padding:"8px 6px",color:"var(--txt3)"}}>Armado</th>}
             <th style={{textAlign:"left",padding:"8px 6px",color:"var(--txt3)"}}>Operario</th>
             {editing && <th style={{textAlign:"center",padding:"8px 6px",color:"var(--txt3)",width:80}}>Acciones</th>}
           </tr>
@@ -1963,8 +1968,13 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
                 {ci === 0 && (
                   <td rowSpan={linea.componentes.length} className="mono" style={{padding:"8px 6px",fontWeight:700,verticalAlign:"top"}}>
                     {linea.skuVenta}
+                    {isFull && linea.tipoFull && linea.tipoFull !== "simple" && (
+                      <span style={{display:"block",fontSize:9,fontWeight:700,color:"var(--amber)",marginTop:2}}>
+                        {linea.tipoFull === "pack" ? `PACK x${linea.unidadesPorPack}` : "COMBO"}
+                      </span>
+                    )}
                     <br/>
-                    {editing && !isPicked ? (
+                    {editing && !isPicked && !isFull ? (
                       <div style={{display:"flex",alignItems:"center",gap:4,marginTop:4}}>
                         <button onClick={() => changeQty(linea.id, linea.qtyPedida - 1)} disabled={linea.qtyPedida <= 1 || saving}
                           style={{width:22,height:22,borderRadius:4,background:"var(--bg3)",color:"var(--txt2)",fontSize:12,fontWeight:700,border:"1px solid var(--bg4)",cursor:"pointer",lineHeight:"20px"}}>−</button>
@@ -1973,7 +1983,7 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
                           style={{width:22,height:22,borderRadius:4,background:"var(--bg3)",color:"var(--txt2)",fontSize:12,fontWeight:700,border:"1px solid var(--bg4)",cursor:"pointer",lineHeight:"20px"}}>+</button>
                       </div>
                     ) : (
-                      <span style={{fontSize:10,color:"var(--txt3)"}}>×{linea.qtyPedida}</span>
+                      <span style={{fontSize:10,color:"var(--txt3)"}}>×{linea.qtyPedida}{isFull && linea.qtyVenta !== undefined && linea.qtyVenta !== linea.qtyPedida ? ` (${linea.qtyVenta} venta)` : ""}</span>
                     )}
                   </td>
                 )}
@@ -1987,6 +1997,19 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
                     {comp.estado === "PICKEADO" ? "✅" : "⏳"}
                   </span>
                 </td>
+                {isFull && ci === 0 && (
+                  <td rowSpan={linea.componentes.length} style={{textAlign:"center",padding:"8px 6px",verticalAlign:"top"}}>
+                    {linea.estadoArmado === null || linea.estadoArmado === undefined ? (
+                      <span style={{fontSize:10,color:"var(--txt3)"}}>—</span>
+                    ) : (
+                      <span style={{padding:"2px 8px",borderRadius:4,fontSize:10,fontWeight:700,
+                        background:linea.estadoArmado==="COMPLETADO"?"var(--greenBg)":"var(--amberBg)",
+                        color:linea.estadoArmado==="COMPLETADO"?"var(--green)":"var(--amber)"}}>
+                        {linea.estadoArmado === "COMPLETADO" ? "✅" : "⏳"}
+                      </span>
+                    )}
+                  </td>
+                )}
                 <td style={{padding:"8px 6px",fontSize:11,color:"var(--txt3)"}}>{comp.operario || "—"}</td>
                 {editing && ci === 0 && (
                   <td rowSpan={linea.componentes.length} style={{textAlign:"center",padding:"8px 6px",verticalAlign:"top"}}>
@@ -2001,6 +2024,12 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
           })}
         </tbody>
       </table>
+
+      {isFull && session.lineas.length > 0 && (
+        <div style={{padding:12,background:"var(--bg2)",borderRadius:8,border:"1px solid var(--bg3)",marginTop:12,fontSize:12,color:"var(--txt3)"}}>
+          <strong>Resumen:</strong> {session.lineas.length} SKUs · {session.lineas.reduce((s, l) => s + (l.qtyFisica || l.qtyPedida), 0)} uds físicas · {new Set(session.lineas.map(l => l.skuVenta)).size} SKUs Venta
+        </div>
+      )}
 
       {session.lineas.length === 0 && (
         <div style={{textAlign:"center",padding:24,color:"var(--txt3)",fontSize:13}}>
