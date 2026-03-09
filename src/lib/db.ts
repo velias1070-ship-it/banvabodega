@@ -263,6 +263,12 @@ export async function insertMovimiento(m: Omit<DBMovimiento, "id" | "created_at"
   if (error) throw new Error(`insertMovimiento failed for ${m.sku}: ${error.message}`);
 }
 
+export async function updateMovimiento(id: string, fields: Partial<DBMovimiento>) {
+  const sb = getSupabase(); if (!sb) return;
+  const { error } = await sb.from("movimientos").update(fields).eq("id", id);
+  if (error) throw new Error(`updateMovimiento failed: ${error.message}`);
+}
+
 // ==================== RECEPCIONES ====================
 export async function fetchRecepciones(): Promise<DBRecepcion[]> {
   const sb = getSupabase(); if (!sb) return [];

@@ -554,6 +554,14 @@ export async function recordMovementAsync(m: Omit<Movement, "id">): Promise<Move
   return mov;
 }
 
+export async function updateMovementNote(id: string, note: string) {
+  const mov = _cache.movements.find(m => m.id === id);
+  if (mov) mov.note = note;
+  if (isConfigured()) {
+    await db.updateMovimiento(id, { nota: note });
+  }
+}
+
 // Backward compat sync wrapper (fires async, returns immediately)
 export function recordMovement(m: Omit<Movement, "id">): Movement {
   const mov: Movement = { ...m, id: uniqueMovId() };

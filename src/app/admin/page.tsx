@@ -1,7 +1,7 @@
 "use client";
 /* v3.1 — conteos + pedidos ML + cron fix */
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote } from "@/lib/store";
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto } from "@/lib/db";
@@ -3550,6 +3550,10 @@ function Movimientos() {
   const [filterSku, setFilterSku] = useState("");
   const [filterDate, setFilterDate] = useState("");
   const [filterReason, setFilterReason] = useState("");
+  const [editNoteId, setEditNoteId] = useState<string|null>(null);
+  const [editNoteVal, setEditNoteVal] = useState("");
+  const [savingNote, setSavingNote] = useState(false);
+  const [,setTick] = useState(0);
   const s = getStore();
 
   let movs = [...s.movements];
@@ -3563,8 +3567,50 @@ function Movimientos() {
 
   const allReasons = [...Object.keys(IN_REASONS), ...Object.keys(OUT_REASONS)];
 
+  const openEditNote = (m: Movement) => { setEditNoteId(m.id); setEditNoteVal(m.note || ""); };
+  const saveNote = async () => {
+    if (!editNoteId) return;
+    setSavingNote(true);
+    await updateMovementNote(editNoteId, editNoteVal);
+    setSavingNote(false);
+    setEditNoteId(null);
+    setTick(t => t + 1);
+  };
+
   return (
     <div>
+      {/* Modal editar nota */}
+      {editNoteId && (() => {
+        const m = movs.find(x => x.id === editNoteId);
+        return (
+          <div style={{position:"fixed",inset:0,zIndex:300,background:"rgba(0,0,0,0.6)",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}
+            onClick={() => !savingNote && setEditNoteId(null)}>
+            <div style={{width:"100%",maxWidth:440,background:"var(--bg2)",borderRadius:14,border:"1px solid var(--bg4)",padding:24}}
+              onClick={e => e.stopPropagation()}>
+              <div style={{fontSize:15,fontWeight:800,marginBottom:8}}>Editar nota</div>
+              {m && (
+                <div style={{fontSize:11,color:"var(--txt3)",marginBottom:12}}>
+                  <span className="mono" style={{fontWeight:700}}>{m.sku}</span> — {m.type === "in" ? "Entrada" : "Salida"} {m.qty} uds — {fmtDate(m.ts)} {fmtTime(m.ts)}
+                </div>
+              )}
+              <textarea className="form-input" value={editNoteVal} onChange={e => setEditNoteVal(e.target.value)}
+                placeholder="Escribe una nota..." rows={3} autoFocus
+                style={{width:"100%",marginBottom:12,resize:"vertical",fontSize:13}} />
+              <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+                <button onClick={() => setEditNoteId(null)} disabled={savingNote}
+                  style={{padding:"8px 16px",borderRadius:6,background:"var(--bg3)",color:"var(--txt3)",fontSize:12,fontWeight:600,border:"1px solid var(--bg4)"}}>
+                  Cancelar
+                </button>
+                <button onClick={saveNote} disabled={savingNote}
+                  style={{padding:"8px 16px",borderRadius:6,background:savingNote?"var(--bg3)":"var(--green)",color:savingNote?"var(--txt3)":"#fff",fontSize:12,fontWeight:700}}>
+                  {savingNote ? "Guardando..." : "Guardar"}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       <div className="card">
         <div className="admin-filter-row">
           <div style={{display:"flex",gap:6}}>
@@ -3606,7 +3652,7 @@ function Movimientos() {
                   <td style={{fontSize:11,color:"var(--txt2)"}}>{prod?.name}</td>
                   <td className="mono">{m.pos}</td>
                   <td style={{fontSize:11}}>{m.who}</td>
-                  <td style={{fontSize:10,color:"var(--cyan)",maxWidth:200,overflow:"hidden",textOverflow:"ellipsis"}}>{m.note}</td>
+                  <td onClick={() => openEditNote(m)} style={{fontSize:10,color:m.note?"var(--cyan)":"var(--txt3)",maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",cursor:"pointer"}} title="Click para editar nota">{m.note || "—"}</td>
                   <td className="mono" style={{textAlign:"right",fontWeight:700,fontSize:14,color:m.type==="in"?"var(--green)":"var(--red)"}}>{m.type==="in"?"+":"-"}{m.qty}</td>
                 </tr>
               );
@@ -3629,7 +3675,7 @@ function Movimientos() {
                   </div>
                   <div className="mono" style={{fontWeight:700,fontSize:13}}>{m.sku} <span style={{fontWeight:400,color:"var(--txt3)"}}>{prod?.name}</span></div>
                   <div style={{fontSize:10,color:"var(--txt3)",marginTop:2}}>Pos {m.pos} | {m.who} | {fmtDate(m.ts)} {fmtTime(m.ts)}</div>
-                  {m.note&&<div style={{fontSize:10,color:"var(--cyan)",marginTop:1}}>{m.note}</div>}
+                  <div onClick={() => openEditNote(m)} style={{fontSize:10,color:m.note?"var(--cyan)":"var(--txt3)",marginTop:1,cursor:"pointer"}}>{m.note || "Agregar nota..."}</div>
                 </div>
                 <div className="mono" style={{fontSize:18,fontWeight:700,color:m.type==="in"?"var(--green)":"var(--red)",whiteSpace:"nowrap"}}>{m.type==="in"?"+":"-"}{m.qty}</div>
               </div>
