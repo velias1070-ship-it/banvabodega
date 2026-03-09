@@ -1,7 +1,7 @@
 "use client";
 import React, { useState, useMemo, useEffect, useCallback } from "react";
 import * as XLSX from "xlsx";
-import { skuTotal, skuPositions, getStore, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineasFull, crearPickingSession } from "@/lib/store";
+import { skuTotal, skuPositions, getStore, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineasFull, crearPickingSession, findSkuVenta } from "@/lib/store";
 import type { ComposicionVenta } from "@/lib/store";
 import { getSupabase } from "@/lib/supabase";
 
@@ -717,6 +717,13 @@ export default function AdminReposicion() {
   const [creandoPicking, setCreandoPicking] = useState(false);
   const [pickingCreado, setPickingCreado] = useState<string | null>(null);
 
+  // Editable envio a full
+  const [envioEditMode, setEnvioEditMode] = useState(false);
+  const [envioEditable, setEnvioEditable] = useState<Map<string, number>>(new Map()); // skuVenta -> qty override
+  const [envioRemoved, setEnvioRemoved] = useState<Set<string>>(new Set()); // skuVenta removed
+  const [envioAdded, setEnvioAdded] = useState<{skuVenta:string;nombre:string;qty:number;tipo:EnvioTipo;componentes:{skuOrigen:string;nombreOrigen:string;unidadesPorPack:number}[]}[]>([]);
+  const [addEnvioSearch, setAddEnvioSearch] = useState("");
+
   // Persistir sinStockProv en localStorage
   useEffect(() => {
     localStorage.setItem("banva_reposicion_sin_stock", JSON.stringify(Array.from(sinStockProv)));
@@ -1222,26 +1229,85 @@ export default function AdminReposicion() {
     }
   };
 
+  // ---- Editable envio helpers ----
+  const enterEnvioEdit = () => {
+    setEnvioEditMode(true);
+    setEnvioEditable(new Map());
+    setEnvioRemoved(new Set());
+    setEnvioAdded([]);
+    setAddEnvioSearch("");
+    setPickingCreado(null);
+  };
+  const exitEnvioEdit = () => {
+    setEnvioEditMode(false);
+    setEnvioEditable(new Map());
+    setEnvioRemoved(new Set());
+    setEnvioAdded([]);
+  };
+  const setEnvioQty = (skuVenta: string, qty: number) => {
+    setEnvioEditable(prev => { const next = new Map(prev); next.set(skuVenta, Math.max(0, qty)); return next; });
+  };
+  const removeEnvioItem = (skuVenta: string) => {
+    // Check if it's an added item
+    const addedIdx = envioAdded.findIndex(a => a.skuVenta === skuVenta);
+    if (addedIdx >= 0) {
+      setEnvioAdded(prev => prev.filter((_, i) => i !== addedIdx));
+    } else {
+      setEnvioRemoved(prev => { const next = new Set(prev); next.add(skuVenta); return next; });
+    }
+    setEnvioEditable(prev => { const next = new Map(prev); next.delete(skuVenta); return next; });
+  };
+  const restoreEnvioItem = (skuVenta: string) => {
+    setEnvioRemoved(prev => { const next = new Set(prev); next.delete(skuVenta); return next; });
+  };
+  const addEnvioItem = (skuVenta: string, nombre: string, comps: ComposicionVenta[]) => {
+    if (envioAdded.some(a => a.skuVenta === skuVenta) || envioDetalles.some(d => d.skuVenta === skuVenta)) return;
+    const efectivos = comps.length > 0 ? comps : [{ skuOrigen: skuVenta, skuVenta, unidades: 1, codigoMl: "" }];
+    const tipo: EnvioTipo = comps.length === 0 || (comps.length === 1 && comps[0].unidades === 1) ? "simple" : comps.length === 1 ? "pack" : "combo";
+    setEnvioAdded(prev => [...prev, {
+      skuVenta, nombre, qty: 1, tipo,
+      componentes: efectivos.map(c => ({ skuOrigen: c.skuOrigen, nombreOrigen: getStore().products[c.skuOrigen]?.name || c.skuOrigen, unidadesPorPack: c.unidades })),
+    }]);
+    setAddEnvioSearch("");
+  };
+  const setAddedQty = (skuVenta: string, qty: number) => {
+    setEnvioAdded(prev => prev.map(a => a.skuVenta === skuVenta ? { ...a, qty: Math.max(0, qty) } : a));
+  };
+
+  // Build final envio list combining original + edits + added - removed
+  const envioFinal = useMemo(() => {
+    const items: { skuVenta: string; nombre: string; mandarFull: number; tipo: EnvioTipo; componentes: { skuOrigen: string; nombreOrigen: string; unidadesPorPack: number; unidadesFisicas: number }[]; fromOriginal: boolean }[] = [];
+    for (const d of envioDetalles) {
+      if (envioRemoved.has(d.skuVenta)) continue;
+      const qty = envioEditable.has(d.skuVenta) ? envioEditable.get(d.skuVenta)! : d.mandarFull;
+      if (qty <= 0) continue;
+      items.push({
+        skuVenta: d.skuVenta, nombre: d.nombre, mandarFull: qty, tipo: d.tipo, fromOriginal: true,
+        componentes: d.componentes.map(c => ({ skuOrigen: c.skuOrigen, nombreOrigen: c.nombreOrigen, unidadesPorPack: c.unidadesPorPack, unidadesFisicas: qty * c.unidadesPorPack })),
+      });
+    }
+    for (const a of envioAdded) {
+      const qty = envioEditable.has(a.skuVenta) ? envioEditable.get(a.skuVenta)! : a.qty;
+      if (qty <= 0) continue;
+      items.push({
+        skuVenta: a.skuVenta, nombre: a.nombre, mandarFull: qty, tipo: a.tipo, fromOriginal: false,
+        componentes: a.componentes.map(c => ({ skuOrigen: c.skuOrigen, nombreOrigen: c.nombreOrigen, unidadesPorPack: c.unidadesPorPack, unidadesFisicas: qty * c.unidadesPorPack })),
+      });
+    }
+    return items;
+  }, [envioDetalles, envioEditable, envioRemoved, envioAdded]);
+
   // Crear sesión de picking desde envío a Full
   const crearPickingEnvioFull = useCallback(async () => {
-    if (!envioDetalles.length || creandoPicking) return;
+    const source = envioEditMode ? envioFinal : envioDetalles.map(d => ({
+      skuVenta: d.skuVenta, nombre: d.nombre, mandarFull: d.mandarFull, tipo: d.tipo,
+      componentes: d.componentes.map(c => ({ skuOrigen: c.skuOrigen, nombreOrigen: c.nombreOrigen, unidadesPorPack: c.unidadesPorPack, unidadesFisicas: c.unidadesFisicas })),
+    }));
+    if (!source.length || creandoPicking) return;
     setCreandoPicking(true);
     setPickingCreado(null);
 
-    const envios = envioDetalles.map(d => ({
-      skuVenta: d.skuVenta,
-      nombre: d.nombre,
-      mandarFull: d.mandarFull,
-      tipo: d.tipo,
-      componentes: d.componentes.map(c => ({
-        skuOrigen: c.skuOrigen,
-        nombreOrigen: c.nombreOrigen,
-        unidadesPorPack: c.unidadesPorPack,
-        unidadesFisicas: c.unidadesFisicas,
-      })),
-    }));
-
-    const { lineas, errors } = buildPickingLineasFull(envios);
+    const { lineas, errors } = buildPickingLineasFull(source);
 
     if (errors.length > 0) {
       const continuar = window.confirm(`Advertencias:\n${errors.join("\n")}\n\n¿Crear sesión de picking de todos modos?`);
@@ -1255,10 +1321,11 @@ export default function AdminReposicion() {
     setCreandoPicking(false);
     if (id) {
       setPickingCreado(id);
+      if (envioEditMode) setEnvioEditMode(false);
     } else {
       alert("Error al crear la sesión de picking");
     }
-  }, [envioDetalles, creandoPicking]);
+  }, [envioDetalles, envioFinal, envioEditMode, creandoPicking]);
 
   return (
     <div>
@@ -1619,15 +1686,32 @@ export default function AdminReposicion() {
             <button onClick={() => setShowEnvioFull(!showEnvioFull)} style={{ background:"none", border:"none", color:"var(--txt)", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"space-between", width:"100%", padding:0, fontSize:14, fontWeight:600 }}>
               <span>
                 <span style={{ transform: showEnvioFull ? "rotate(90deg)" : "rotate(0)", transition:"transform 0.2s", display:"inline-block", marginRight:8 }}>▶</span>
-                📦 Envío a Full ({envioDetalles.length} SKUs, {envioDetalles.reduce((s, r) => s + r.mandarFull, 0).toLocaleString()} uds)
+                📦 Envío a Full ({envioEditMode ? envioFinal.length : envioDetalles.length} SKUs, {(envioEditMode ? envioFinal.reduce((s, r) => s + r.mandarFull, 0) : envioDetalles.reduce((s, r) => s + r.mandarFull, 0)).toLocaleString()} uds)
+                {envioEditMode && <span style={{ marginLeft:8, fontSize:11, color:"var(--amber)", fontWeight:700 }}>— Editando</span>}
               </span>
               <span style={{ display:"flex", gap:6 }} onClick={e => e.stopPropagation()}>
-                <button onClick={() => crearPickingEnvioFull()} disabled={creandoPicking || !envioDetalles.length} style={{ padding:"4px 12px", borderRadius:6, background: pickingCreado ? "var(--greenBg)" : "var(--bg3)", border:`1px solid ${pickingCreado ? "var(--greenBd)" : "var(--bg4)"}`, color: pickingCreado ? "var(--green)" : "var(--green)", fontSize:11, fontWeight:600, cursor: creandoPicking ? "wait" : "pointer", opacity: creandoPicking ? 0.5 : 1 }}>
-                  {creandoPicking ? "Creando..." : pickingCreado ? "✅ Picking creado" : "📋 Crear sesión de picking"}
-                </button>
-                <button onClick={() => exportEnvioFull()} style={{ padding:"4px 12px", borderRadius:6, background:"var(--bg3)", border:"1px solid var(--bg4)", color:"var(--cyan)", fontSize:11, fontWeight:600, cursor:"pointer" }}>
-                  Exportar CSV
-                </button>
+                {!envioEditMode ? (
+                  <>
+                    <button onClick={enterEnvioEdit} disabled={!envioDetalles.length} style={{ padding:"4px 12px", borderRadius:6, background:"var(--bg3)", border:"1px solid var(--bg4)", color:"var(--amber)", fontSize:11, fontWeight:600, cursor:"pointer" }}>
+                      Editar envio
+                    </button>
+                    <button onClick={() => crearPickingEnvioFull()} disabled={creandoPicking || !envioDetalles.length} style={{ padding:"4px 12px", borderRadius:6, background: pickingCreado ? "var(--greenBg)" : "var(--bg3)", border:`1px solid ${pickingCreado ? "var(--greenBd)" : "var(--bg4)"}`, color: pickingCreado ? "var(--green)" : "var(--green)", fontSize:11, fontWeight:600, cursor: creandoPicking ? "wait" : "pointer", opacity: creandoPicking ? 0.5 : 1 }}>
+                      {creandoPicking ? "Creando..." : pickingCreado ? "Picking creado" : "Crear picking"}
+                    </button>
+                    <button onClick={() => exportEnvioFull()} style={{ padding:"4px 12px", borderRadius:6, background:"var(--bg3)", border:"1px solid var(--bg4)", color:"var(--cyan)", fontSize:11, fontWeight:600, cursor:"pointer" }}>
+                      CSV
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button onClick={exitEnvioEdit} style={{ padding:"4px 12px", borderRadius:6, background:"var(--bg3)", border:"1px solid var(--bg4)", color:"var(--txt3)", fontSize:11, fontWeight:600, cursor:"pointer" }}>
+                      Cancelar
+                    </button>
+                    <button onClick={() => crearPickingEnvioFull()} disabled={creandoPicking || !envioFinal.length} style={{ padding:"4px 12px", borderRadius:6, background:"var(--green)", border:"1px solid var(--green)", color:"#fff", fontSize:11, fontWeight:700, cursor: creandoPicking ? "wait" : "pointer" }}>
+                      {creandoPicking ? "Creando..." : `Crear picking (${envioFinal.length} SKUs)`}
+                    </button>
+                  </>
+                )}
               </span>
             </button>
             {pickingCreado && (
@@ -1635,7 +1719,157 @@ export default function AdminReposicion() {
                 Sesión de picking creada exitosamente. Los operadores pueden verla en /operador/picking.
               </div>
             )}
-            {showEnvioFull && (
+
+            {/* ===== EDIT MODE: tabla interactiva ===== */}
+            {showEnvioFull && envioEditMode && (
+              <div style={{ marginTop:12 }}>
+                <div style={{ overflowX:"auto" }}>
+                  <table className="tbl">
+                    <thead>
+                      <tr>
+                        <th>SKU Venta</th>
+                        <th>Nombre</th>
+                        <th>Tipo</th>
+                        <th style={{ textAlign:"right" }}>Stock Full</th>
+                        <th style={{ textAlign:"right" }}>Stock Bodega</th>
+                        <th style={{ textAlign:"center" }}>Enviar</th>
+                        <th style={{ textAlign:"right" }}>Queda Bodega</th>
+                        <th>Acciones</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {/* Original items (active) */}
+                      {envioDetalles.filter(d => !envioRemoved.has(d.skuVenta)).map(d => {
+                        const qty = envioEditable.has(d.skuVenta) ? envioEditable.get(d.skuVenta)! : d.mandarFull;
+                        const stockBodega = d.componentes.length > 0 ? d.componentes[0].stockTotal : 0;
+                        const udsPerPack = d.componentes.length > 0 ? d.componentes[0].unidadesPorPack : 1;
+                        const quedaBodega = stockBodega - (qty * udsPerPack);
+                        const tipoBadge = d.tipo === "simple" ? "Simple" : d.tipo === "pack" ? "Pack" : "Combo";
+                        const tipoColor = d.tipo === "simple" ? "var(--txt3)" : d.tipo === "pack" ? "var(--cyan)" : "var(--amber)";
+                        const changed = envioEditable.has(d.skuVenta) && envioEditable.get(d.skuVenta) !== d.mandarFull;
+                        return (
+                          <tr key={d.skuVenta} style={{ background: changed ? "var(--amberBg)" : "transparent" }}>
+                            <td className="mono" style={{ fontSize:11, fontWeight:700 }}>{d.skuVenta}</td>
+                            <td style={{ fontSize:11, maxWidth:200, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{d.nombre}</td>
+                            <td><span style={{ fontSize:9, fontWeight:700, padding:"2px 6px", borderRadius:4, color:tipoColor }}>{tipoBadge}</span></td>
+                            <td className="mono" style={{ textAlign:"right", fontSize:11 }}>{d.stockFull}</td>
+                            <td className="mono" style={{ textAlign:"right", fontSize:11 }}>{stockBodega}{udsPerPack > 1 && <span style={{ fontSize:9, color:"var(--txt3)" }}> ({Math.floor(stockBodega / udsPerPack)}pk)</span>}</td>
+                            <td style={{ textAlign:"center" }}>
+                              <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>
+                                <button onClick={() => setEnvioQty(d.skuVenta, qty - 1)} style={{ width:26, height:26, borderRadius:4, background:"var(--bg3)", border:"1px solid var(--bg4)", fontSize:14, fontWeight:700, cursor:"pointer", color:"var(--txt)" }}>−</button>
+                                <input type="number" value={qty} onChange={e => setEnvioQty(d.skuVenta, parseInt(e.target.value) || 0)}
+                                  style={{ width:55, textAlign:"center", fontSize:13, fontWeight:700, padding:"3px 4px", borderRadius:4, border: changed ? "2px solid var(--amber)" : "1px solid var(--bg4)", background:"var(--bg)", color:"var(--txt1)" }} />
+                                <button onClick={() => setEnvioQty(d.skuVenta, qty + 1)} style={{ width:26, height:26, borderRadius:4, background:"var(--bg3)", border:"1px solid var(--bg4)", fontSize:14, fontWeight:700, cursor:"pointer", color:"var(--txt)" }}>+</button>
+                              </div>
+                              {changed && <div style={{ fontSize:9, color:"var(--txt3)", marginTop:2 }}>orig: {d.mandarFull}</div>}
+                            </td>
+                            <td className="mono" style={{ textAlign:"right", fontSize:11, fontWeight:700, color: quedaBodega < 0 ? "var(--red)" : quedaBodega === 0 ? "var(--amber)" : "var(--green)" }}>
+                              {quedaBodega}{udsPerPack > 1 && <span style={{ fontSize:9, color:"var(--txt3)" }}> ({Math.floor(quedaBodega / udsPerPack)}pk)</span>}
+                            </td>
+                            <td>
+                              <div style={{ display:"flex", gap:4 }}>
+                                {changed && <button onClick={() => { const m = new Map(envioEditable); m.delete(d.skuVenta); setEnvioEditable(m); }} title="Restaurar original" style={{ padding:"3px 6px", borderRadius:4, background:"var(--bg3)", color:"var(--cyan)", fontSize:10, fontWeight:700, border:"1px solid var(--bg4)", cursor:"pointer" }}>↺</button>}
+                                <button onClick={() => removeEnvioItem(d.skuVenta)} title="Quitar del envio" style={{ padding:"3px 6px", borderRadius:4, background:"var(--redBg)", color:"var(--red)", fontSize:10, fontWeight:700, border:"1px solid var(--redBd)", cursor:"pointer" }}>✕</button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {/* Added items */}
+                      {envioAdded.map(a => {
+                        const qty = envioEditable.has(a.skuVenta) ? envioEditable.get(a.skuVenta)! : a.qty;
+                        const mainComp = a.componentes[0];
+                        const stockBodega = mainComp ? skuTotal(mainComp.skuOrigen) : 0;
+                        const udsPerPack = mainComp?.unidadesPorPack || 1;
+                        const quedaBodega = stockBodega - (qty * udsPerPack);
+                        const tipoBadge = a.tipo === "simple" ? "Simple" : a.tipo === "pack" ? "Pack" : "Combo";
+                        const tipoColor = a.tipo === "simple" ? "var(--txt3)" : a.tipo === "pack" ? "var(--cyan)" : "var(--amber)";
+                        return (
+                          <tr key={`add-${a.skuVenta}`} style={{ background:"var(--greenBg)" }}>
+                            <td className="mono" style={{ fontSize:11, fontWeight:700 }}>
+                              {a.skuVenta} <span style={{ fontSize:9, color:"var(--green)", fontWeight:600 }}>nuevo</span>
+                            </td>
+                            <td style={{ fontSize:11, maxWidth:200, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{a.nombre}</td>
+                            <td><span style={{ fontSize:9, fontWeight:700, padding:"2px 6px", borderRadius:4, color:tipoColor }}>{tipoBadge}</span></td>
+                            <td className="mono" style={{ textAlign:"right", fontSize:11, color:"var(--txt3)" }}>—</td>
+                            <td className="mono" style={{ textAlign:"right", fontSize:11 }}>{stockBodega}</td>
+                            <td style={{ textAlign:"center" }}>
+                              <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>
+                                <button onClick={() => { const isAdded = envioAdded.some(x => x.skuVenta === a.skuVenta); isAdded ? setAddedQty(a.skuVenta, qty - 1) : setEnvioQty(a.skuVenta, qty - 1); }} style={{ width:26, height:26, borderRadius:4, background:"var(--bg3)", border:"1px solid var(--bg4)", fontSize:14, fontWeight:700, cursor:"pointer", color:"var(--txt)" }}>−</button>
+                                <input type="number" value={qty} onChange={e => { const v = parseInt(e.target.value) || 0; const isAdded = envioAdded.some(x => x.skuVenta === a.skuVenta); isAdded ? setAddedQty(a.skuVenta, v) : setEnvioQty(a.skuVenta, v); }}
+                                  style={{ width:55, textAlign:"center", fontSize:13, fontWeight:700, padding:"3px 4px", borderRadius:4, border:"2px solid var(--green)", background:"var(--bg)", color:"var(--txt1)" }} />
+                                <button onClick={() => { const isAdded = envioAdded.some(x => x.skuVenta === a.skuVenta); isAdded ? setAddedQty(a.skuVenta, qty + 1) : setEnvioQty(a.skuVenta, qty + 1); }} style={{ width:26, height:26, borderRadius:4, background:"var(--bg3)", border:"1px solid var(--bg4)", fontSize:14, fontWeight:700, cursor:"pointer", color:"var(--txt)" }}>+</button>
+                              </div>
+                            </td>
+                            <td className="mono" style={{ textAlign:"right", fontSize:11, fontWeight:700, color: quedaBodega < 0 ? "var(--red)" : quedaBodega === 0 ? "var(--amber)" : "var(--green)" }}>
+                              {quedaBodega}
+                            </td>
+                            <td>
+                              <button onClick={() => removeEnvioItem(a.skuVenta)} title="Quitar" style={{ padding:"3px 6px", borderRadius:4, background:"var(--redBg)", color:"var(--red)", fontSize:10, fontWeight:700, border:"1px solid var(--redBd)", cursor:"pointer" }}>✕</button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {/* Removed items (greyed out with restore) */}
+                      {envioDetalles.filter(d => envioRemoved.has(d.skuVenta)).map(d => (
+                        <tr key={`rm-${d.skuVenta}`} style={{ opacity:0.4 }}>
+                          <td className="mono" style={{ fontSize:11, textDecoration:"line-through" }}>{d.skuVenta}</td>
+                          <td style={{ fontSize:11, textDecoration:"line-through" }}>{d.nombre}</td>
+                          <td colSpan={4} style={{ fontSize:11, color:"var(--red)", textAlign:"center" }}>Eliminado del envio</td>
+                          <td colSpan={2}>
+                            <button onClick={() => restoreEnvioItem(d.skuVenta)} style={{ padding:"3px 8px", borderRadius:4, background:"var(--bg3)", color:"var(--cyan)", fontSize:10, fontWeight:700, border:"1px solid var(--bg4)", cursor:"pointer" }}>Restaurar</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Add product */}
+                <div style={{ marginTop:12, padding:"10px 14px", borderRadius:8, background:"var(--bg3)", border:"1px solid var(--bg4)" }}>
+                  <div style={{ fontSize:11, fontWeight:600, color:"var(--txt3)", marginBottom:6 }}>Agregar producto al envio</div>
+                  <div style={{ position:"relative" }}>
+                    <input type="text" className="form-input" value={addEnvioSearch} onChange={e => setAddEnvioSearch(e.target.value)}
+                      placeholder="Buscar por SKU venta, nombre o codigo ML..." style={{ fontSize:12 }} />
+                    {addEnvioSearch.trim().length >= 2 && (() => {
+                      const results = findSkuVenta(addEnvioSearch).filter(r =>
+                        !envioDetalles.some(d => d.skuVenta === r.skuVenta && !envioRemoved.has(d.skuVenta)) &&
+                        !envioAdded.some(a => a.skuVenta === r.skuVenta)
+                      ).slice(0, 8);
+                      return results.length > 0 ? (
+                        <div style={{ position:"absolute", top:"100%", left:0, right:0, background:"var(--bg2)", border:"1px solid var(--bg4)", borderRadius:6, zIndex:10, maxHeight:200, overflowY:"auto" }}>
+                          {results.map(r => {
+                            const stockBod = r.componentes.length > 0 ? skuTotal(r.componentes[0].skuOrigen) : skuTotal(r.skuVenta);
+                            return (
+                              <div key={r.skuVenta} onClick={() => addEnvioItem(r.skuVenta, r.nombre, r.componentes)}
+                                style={{ padding:"8px 12px", cursor:"pointer", borderBottom:"1px solid var(--bg3)", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                                <div>
+                                  <span className="mono" style={{ fontWeight:700, fontSize:12 }}>{r.skuVenta}</span>
+                                  <span style={{ fontSize:11, color:"var(--txt3)", marginLeft:8 }}>{r.nombre}</span>
+                                  {r.componentes.length > 0 && r.componentes[0].unidades > 1 && <span style={{ fontSize:9, color:"var(--cyan)", marginLeft:6 }}>Pack x{r.componentes[0].unidades}</span>}
+                                </div>
+                                <span className="mono" style={{ fontSize:11, color: stockBod > 0 ? "var(--green)" : "var(--red)" }}>{stockBod} bod</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div style={{ position:"absolute", top:"100%", left:0, right:0, background:"var(--bg2)", border:"1px solid var(--bg4)", borderRadius:6, padding:12, textAlign:"center", fontSize:11, color:"var(--txt3)" }}>Sin resultados</div>
+                      );
+                    })()}
+                  </div>
+                </div>
+
+                {/* Summary */}
+                <div style={{ marginTop:10, display:"flex", gap:16, fontSize:11, color:"var(--txt3)", justifyContent:"flex-end" }}>
+                  <span>Total: <strong style={{ color:"var(--txt)" }}>{envioFinal.length}</strong> SKUs</span>
+                  <span>Unidades: <strong style={{ color:"var(--txt)" }}>{envioFinal.reduce((s, r) => s + r.mandarFull, 0).toLocaleString()}</strong></span>
+                </div>
+              </div>
+            )}
+
+            {/* ===== NORMAL VIEW: collapsible detail cards ===== */}
+            {showEnvioFull && !envioEditMode && (
               <div style={{ marginTop:12 }}>
                 {envioDetalles.map(d => {
                   const isExpanded = expandedEnvio.has(d.skuVenta);
