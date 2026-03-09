@@ -1,7 +1,7 @@
 "use client";
 import React, { useState, useMemo, useEffect, useCallback } from "react";
 import * as XLSX from "xlsx";
-import { skuTotal, skuPositions, getStore, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineasFull, crearPickingSession, findSkuVenta } from "@/lib/store";
+import { skuTotal, skuPositions, getStore, getComponentesPorSkuVenta, getVentasPorSkuOrigen, getSkuFisicoPorSkuVenta, buildPickingLineasFull, crearPickingSession, findSkuVenta } from "@/lib/store";
 import type { ComposicionVenta } from "@/lib/store";
 import { getSupabase } from "@/lib/supabase";
 
@@ -372,9 +372,10 @@ function calcularReposicion(
         origenToVentasMap.get(c.skuOrigen)!.push({ skuVenta: sv, unidades: c.unidades });
       }
     } else {
-      // SKU simple: SKU Venta = SKU Origen
-      if (!origenToVentasMap.has(sv)) origenToVentasMap.set(sv, []);
-      origenToVentasMap.get(sv)!.push({ skuVenta: sv, unidades: 1 });
+      // SKU simple: buscar SKU físico real
+      const skuFisico = getSkuFisicoPorSkuVenta(sv) || sv;
+      if (!origenToVentasMap.has(skuFisico)) origenToVentasMap.set(skuFisico, []);
+      origenToVentasMap.get(skuFisico)!.push({ skuVenta: sv, unidades: 1 });
     }
   }
 
@@ -421,8 +422,10 @@ function calcularReposicion(
       skuOrigenPrincipal = componentes.length === 1 ? componentes[0].skuOrigen : componentes[0].skuOrigen;
       stockBodegaFisico = componentes.length === 1 ? skuTotal(componentes[0].skuOrigen) : skuTotal(componentes[0].skuOrigen);
     } else {
-      // SKU simple: SKU Venta = SKU Origen
-      stockBodega = skuTotal(skuVenta);
+      // SKU simple: intentar buscar SKU físico real en productos
+      const skuFisico = getSkuFisicoPorSkuVenta(skuVenta) || skuVenta;
+      skuOrigenPrincipal = skuFisico;
+      stockBodega = skuTotal(skuFisico);
       stockBodegaFisico = stockBodega;
     }
 
@@ -515,17 +518,18 @@ function calcularReposicion(
         stockFullPorOrigen.set(c.skuOrigen, stockFullPorOrigen.get(c.skuOrigen)! + stockFull * c.unidades);
       }
     } else {
-      // SKU simple
-      if (!demandaFisicaPorOrigen.has(skuVenta)) {
-        demandaFisicaPorOrigen.set(skuVenta, { velFull: 0, velFlex: 0, velTotal: 0 });
-        nombreOrigen.set(skuVenta, nombre);
+      // SKU simple: usar SKU físico real
+      const skuFisicoOrigen = getSkuFisicoPorSkuVenta(skuVenta) || skuVenta;
+      if (!demandaFisicaPorOrigen.has(skuFisicoOrigen)) {
+        demandaFisicaPorOrigen.set(skuFisicoOrigen, { velFull: 0, velFlex: 0, velTotal: 0 });
+        nombreOrigen.set(skuFisicoOrigen, nombre);
       }
-      const d = demandaFisicaPorOrigen.get(skuVenta)!;
+      const d = demandaFisicaPorOrigen.get(skuFisicoOrigen)!;
       d.velFull += velFull;
       d.velFlex += velFlex;
       d.velTotal += velTotal;
-      if (!stockFullPorOrigen.has(skuVenta)) stockFullPorOrigen.set(skuVenta, 0);
-      stockFullPorOrigen.set(skuVenta, stockFullPorOrigen.get(skuVenta)! + stockFull);
+      if (!stockFullPorOrigen.has(skuFisicoOrigen)) stockFullPorOrigen.set(skuFisicoOrigen, 0);
+      stockFullPorOrigen.set(skuFisicoOrigen, stockFullPorOrigen.get(skuFisicoOrigen)! + stockFull);
     }
   }
 
