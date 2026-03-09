@@ -55,7 +55,27 @@ interface SkuOrigenRow {
   pedirProveedor: number;
   stockFullEquiv: number;
   accion: Accion;
+  // Campos proveedor (se llenan cuando se carga lista de precios)
+  stockProveedor?: number;
+  innerPack?: number;
+  bultos?: number;
+  pedirReal?: number;
+  costoProveedor?: number;
+  costoTotalLinea?: number;
+  statusProveedor?: ProveedorStatus;
+  alertaCosto?: { costoWMS: number; costoProveedor: number };
+  diasAgotamiento?: number;
 }
+
+interface ProveedorRaw {
+  skuOrigen: string;
+  nombre: string;
+  innerPack: number;
+  precioNeto: number;
+  stock: number;
+}
+
+type ProveedorStatus = "ok" | "sin_stock" | "otro_proveedor";
 
 type Accion = "SIN VENTA" | "MANDAR A FULL" | "AGOTADO PEDIR" | "URGENTE" | "PLANIFICAR" | "OK" | "EXCESO";
 
@@ -174,6 +194,27 @@ function parseVelocidad(wb: XLSX.WorkBook): VelocidadRaw[] {
   return out;
 }
 
+function parseProveedor(wb: XLSX.WorkBook): ProveedorRaw[] {
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  if (!ws) return [];
+  const rows: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1 });
+  if (rows.length < 2) return [];
+  const out: ProveedorRaw[] = [];
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row || !Array.isArray(row)) continue;
+    // Col B (1) = Codigo AX (SKU Origen), Col C (2) = Producto, Col D (3) = Inner Pack, Col E (4) = Precio Banva neto, Col F (5) = Stock
+    const skuOrigen = String(row[1] || "").trim();
+    if (!skuOrigen) continue;
+    const nombre = String(row[2] || "").trim();
+    const innerPack = Math.max(1, Math.round(Number(row[3]) || 1));
+    const precioNeto = Number(row[4]) || 0;
+    const stock = Math.max(0, Math.round(Number(row[5]) || 0));
+    out.push({ skuOrigen, nombre, innerPack, precioNeto, stock });
+  }
+  return out;
+}
+
 /* ───── Costo producto para SKU Venta (con packs) ───── */
 const COSTO_ENVIO_FLEX = 3320;
 
@@ -211,6 +252,7 @@ function calcularReposicion(
   velocidades: VelocidadRaw[],
   config: Config,
   sinStockProv: Set<string>,
+  proveedorData?: ProveedorRaw[],
 ): { ventaRows: SkuVentaRow[]; origenRows: SkuOrigenRow[] } {
   // 1. Últimas 6 semanas desde fecha más reciente
   const fechas = ordenes.map(o => o.fecha.getTime());
@@ -428,6 +470,59 @@ function calcularReposicion(
     });
   }
 
+  // 6. Cruce con datos de proveedor
+  if (proveedorData && proveedorData.length > 0) {
+    const provMap = new Map<string, ProveedorRaw>();
+    for (const p of proveedorData) provMap.set(p.skuOrigen, p);
+
+    const store = getStore();
+    for (const row of origenRows) {
+      const prov = provMap.get(row.skuOrigen);
+      if (!prov) {
+        // SKU no está en la lista del proveedor → otro proveedor
+        row.statusProveedor = "otro_proveedor";
+        continue;
+      }
+
+      row.innerPack = prov.innerPack;
+      row.costoProveedor = prov.precioNeto;
+      row.stockProveedor = prov.stock;
+
+      // Validación de costo: comparar con diccionario WMS
+      const prodWMS = store.products[row.skuOrigen];
+      if (prodWMS?.cost && prov.precioNeto > 0) {
+        const diff = Math.abs(prov.precioNeto - prodWMS.cost) / prodWMS.cost;
+        if (diff > 0.05) {
+          row.alertaCosto = { costoWMS: prodWMS.cost, costoProveedor: prov.precioNeto };
+        }
+      }
+
+      if (prov.stock <= 0) {
+        // Sin stock en proveedor
+        row.statusProveedor = "sin_stock";
+        row.pedirReal = 0;
+        row.bultos = 0;
+        row.costoTotalLinea = 0;
+        // Calcular días hasta agotamiento a velocidad actual
+        if (row.velTotalFisica > 0) {
+          const stockActual = row.stockBodega + row.stockFullEquiv;
+          row.diasAgotamiento = Math.round((stockActual / row.velTotalFisica) * 7);
+        }
+      } else {
+        // Con stock: calcular pedir real redondeado a inner pack
+        row.statusProveedor = "ok";
+        const necesita = row.pedirProveedor;
+        // Si el proveedor tiene menos stock del que necesitamos, limitar
+        const cantidadBase = Math.min(necesita, prov.stock);
+        // Redondear al múltiplo de inner pack hacia arriba
+        const ip = prov.innerPack;
+        row.pedirReal = cantidadBase > 0 ? Math.ceil(cantidadBase / ip) * ip : 0;
+        row.bultos = ip > 0 ? row.pedirReal / ip : 0;
+        row.costoTotalLinea = row.pedirReal * prov.precioNeto;
+      }
+    }
+  }
+
   return { ventaRows, origenRows };
 }
 
@@ -463,6 +558,8 @@ export default function AdminReposicion() {
   const [vistaOrigen, setVistaOrigen] = useState(false);
   const [fileNameOrdenes, setFileNameOrdenes] = useState("");
   const [fileNameVelocidad, setFileNameVelocidad] = useState("");
+  const [proveedor, setProveedor] = useState<ProveedorRaw[] | null>(null);
+  const [fileNameProveedor, setFileNameProveedor] = useState("");
 
   // Persistir sinStockProv en localStorage
   useEffect(() => {
@@ -505,11 +602,25 @@ export default function AdminReposicion() {
     reader.readAsArrayBuffer(file);
   }, []);
 
+  // Parsear archivo de proveedor
+  const handleProveedor = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setFileNameProveedor(file.name);
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const data = new Uint8Array(ev.target?.result as ArrayBuffer);
+      const wb = XLSX.read(data, { type: "array" });
+      setProveedor(parseProveedor(wb));
+    };
+    reader.readAsArrayBuffer(file);
+  }, []);
+
   // Calcular
   const resultado = useMemo(() => {
     if (!velocidades) return null;
-    return calcularReposicion(ordenes || [], velocidades, config, sinStockProv);
-  }, [ordenes, velocidades, config, sinStockProv]);
+    return calcularReposicion(ordenes || [], velocidades, config, sinStockProv, proveedor || undefined);
+  }, [ordenes, velocidades, config, sinStockProv, proveedor]);
 
   // Filtrar y ordenar filas SKU Venta
   const filasVenta = useMemo(() => {
@@ -561,12 +672,15 @@ export default function AdminReposicion() {
   const kpis = useMemo(() => {
     if (!resultado) return null;
     const vr = resultado.ventaRows;
+    const or = resultado.origenRows;
     const agotados = vr.filter(r => r.velTotal > 0 && r.stockFull === 0 && r.velFull > 0).length;
     const urgentes = vr.filter(r => r.accion === "URGENTE").length;
     const totalMandarFull = vr.reduce((s, r) => s + r.mandarFull, 0);
-    const totalPedir = resultado.origenRows.reduce((s, r) => s + r.pedirProveedor, 0);
+    const totalPedir = or.reduce((s, r) => s + r.pedirProveedor, 0);
     const exceso = vr.filter(r => r.accion === "EXCESO").length;
-    return { agotados, urgentes, totalMandarFull, totalPedir, exceso };
+    // SKUs urgentes (pedirProveedor > 0) que el proveedor no tiene stock
+    const sinStockProvCount = or.filter(r => r.statusProveedor === "sin_stock" && r.pedirProveedor > 0).length;
+    return { agotados, urgentes, totalMandarFull, totalPedir, exceso, sinStockProvCount };
   }, [resultado]);
 
   const handleSort = (col: string) => {
@@ -607,15 +721,42 @@ export default function AdminReposicion() {
   // Export pedido proveedor
   const exportPedidoProv = () => {
     if (!resultado) return;
-    const rows = resultado.origenRows.filter(r => r.pedirProveedor > 0).sort((a, b) => b.pedirProveedor - a.pedirProveedor);
-    exportCSV(
-      ["SKU Origen", "Nombre", "Uds a pedir", "Stock Total", "Vel Semanal", "Cob Total (días)"],
-      rows.map(r => {
-        const cobTotal = r.velTotalFisica > 0 ? ((r.stockFullEquiv + r.stockBodega) / r.velTotalFisica) * 7 : 999;
-        return [r.skuOrigen, r.nombre, String(r.pedirProveedor), String(r.stockBodega + r.stockFullEquiv), fmtNum(r.velTotalFisica), fmtNum(cobTotal)];
-      }),
-      `pedido_proveedor_${new Date().toISOString().slice(0,10)}.csv`,
-    );
+    const tieneProveedor = !!proveedor;
+    const rows = resultado.origenRows.filter(r => r.pedirProveedor > 0 || (r.statusProveedor === "sin_stock" && r.velTotalFisica > 0)).sort((a, b) => b.pedirProveedor - a.pedirProveedor);
+
+    if (tieneProveedor) {
+      const headers = ["SKU Origen", "Nombre", "Uds a pedir", "Bultos", "Inner Pack", "Pedir Real", "Costo Unitario", "Costo Total Línea", "Stock Proveedor", "Estado"];
+      const dataRows = rows.map(r => {
+        const estado = r.statusProveedor === "sin_stock" ? "Sin stock" : r.statusProveedor === "otro_proveedor" ? "Otro proveedor" : "OK";
+        return [
+          r.skuOrigen, r.nombre,
+          String(r.pedirProveedor),
+          String(r.bultos ?? ""),
+          String(r.innerPack ?? ""),
+          String(r.pedirReal ?? ""),
+          String(r.costoProveedor ?? ""),
+          String(r.costoTotalLinea ?? ""),
+          String(r.stockProveedor ?? ""),
+          estado,
+        ];
+      });
+      // Fila de totales
+      const totalUds = rows.reduce((s, r) => s + r.pedirProveedor, 0);
+      const totalBultos = rows.reduce((s, r) => s + (r.bultos || 0), 0);
+      const totalPedirReal = rows.reduce((s, r) => s + (r.pedirReal || 0), 0);
+      const totalCosto = rows.reduce((s, r) => s + (r.costoTotalLinea || 0), 0);
+      dataRows.push(["TOTAL", "", String(totalUds), String(totalBultos), "", String(totalPedirReal), "", String(totalCosto), "", ""]);
+      exportCSV(headers, dataRows, `pedido_proveedor_${new Date().toISOString().slice(0,10)}.csv`);
+    } else {
+      exportCSV(
+        ["SKU Origen", "Nombre", "Uds a pedir", "Stock Total", "Vel Semanal", "Cob Total (días)"],
+        rows.map(r => {
+          const cobTotal = r.velTotalFisica > 0 ? ((r.stockFullEquiv + r.stockBodega) / r.velTotalFisica) * 7 : 999;
+          return [r.skuOrigen, r.nombre, String(r.pedirProveedor), String(r.stockBodega + r.stockFullEquiv), fmtNum(r.velTotalFisica), fmtNum(cobTotal)];
+        }),
+        `pedido_proveedor_${new Date().toISOString().slice(0,10)}.csv`,
+      );
+    }
   };
 
   return (
@@ -655,7 +796,7 @@ export default function AdminReposicion() {
       </div>
 
       {/* Upload files */}
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:20 }}>
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:12, marginBottom:20 }}>
         <div className="card" style={{ textAlign:"center", padding:20 }}>
           <div style={{ fontSize:24, marginBottom:8 }}>📋</div>
           <div style={{ fontSize:13, fontWeight:600, marginBottom:4 }}>Archivo de Órdenes</div>
@@ -675,6 +816,16 @@ export default function AdminReposicion() {
             <input type="file" accept=".xlsx,.xls,.csv" onChange={handleVelocidad} style={{ display:"none" }} />
           </label>
           {velocidades && <div style={{ marginTop:8, fontSize:11, color:"var(--green)" }}>{velocidades.length} SKUs cargados</div>}
+        </div>
+        <div className="card" style={{ textAlign:"center", padding:20 }}>
+          <div style={{ fontSize:24, marginBottom:8 }}>🏭</div>
+          <div style={{ fontSize:13, fontWeight:600, marginBottom:4 }}>Lista de Precios Proveedor</div>
+          <div style={{ fontSize:11, color:"var(--txt3)", marginBottom:12 }}>Idetex — Stock y precios</div>
+          <label style={{ display:"inline-block", padding:"8px 20px", borderRadius:8, background:"var(--bg3)", border:"1px solid var(--bg4)", cursor:"pointer", fontSize:12, fontWeight:600, color:"var(--cyan)" }}>
+            {fileNameProveedor || "Seleccionar archivo"}
+            <input type="file" accept=".xlsx,.xls" onChange={handleProveedor} style={{ display:"none" }} />
+          </label>
+          {proveedor && <div style={{ marginTop:8, fontSize:11, color:"var(--green)" }}>{proveedor.length} productos cargados</div>}
         </div>
       </div>
 
@@ -710,6 +861,12 @@ export default function AdminReposicion() {
               <div className="kpi-val mono" style={{ color:"var(--amber)" }}>{kpis.exceso}</div>
               <div className="kpi-label">Exceso (&gt;{config.cobMaxima}d)</div>
             </div>
+            {proveedor && (
+              <div className="kpi" style={{ borderLeft:"3px solid var(--red)" }}>
+                <div className="kpi-val mono" style={{ color:"var(--red)" }}>{kpis.sinStockProvCount}</div>
+                <div className="kpi-label">Sin stock prov.</div>
+              </div>
+            )}
           </div>
 
           {/* Filtros y vista */}
@@ -896,7 +1053,11 @@ export default function AdminReposicion() {
                 Exportar CSV
               </button>
             </button>
-            {showPedidoProv && (
+            {showPedidoProv && (() => {
+              const pedidoRows = resultado.origenRows.filter(r => r.pedirProveedor > 0 || (r.statusProveedor === "sin_stock" && r.velTotalFisica > 0)).sort((a, b) => b.pedirProveedor - a.pedirProveedor);
+              const tieneProveedor = !!proveedor;
+              const totalCostoPedido = tieneProveedor ? pedidoRows.reduce((s, r) => s + (r.costoTotalLinea || 0), 0) : 0;
+              return (
               <div style={{ overflowX:"auto", marginTop:12 }}>
                 <table className="tbl">
                   <thead>
@@ -904,28 +1065,85 @@ export default function AdminReposicion() {
                       <th>SKU Origen</th>
                       <th>Nombre</th>
                       <th>Uds a pedir</th>
+                      {tieneProveedor && <th>Stock Prov.</th>}
+                      {tieneProveedor && <th>Inner Pack</th>}
+                      {tieneProveedor && <th>Bultos</th>}
+                      {tieneProveedor && <th>Pedir Real</th>}
                       <th>Stock Bodega</th>
                       <th>Stock Full (equiv)</th>
                       <th>Vel/sem</th>
+                      {tieneProveedor && <th>Costo Unit.</th>}
+                      {tieneProveedor && <th>Costo Total</th>}
                       <th>Acción</th>
+                      {tieneProveedor && <th>Proveedor</th>}
                     </tr>
                   </thead>
                   <tbody>
-                    {resultado.origenRows.filter(r => r.pedirProveedor > 0).sort((a, b) => b.pedirProveedor - a.pedirProveedor).map(r => (
+                    {pedidoRows.map(r => (
                       <tr key={r.skuOrigen}>
                         <td className="mono" style={{ fontSize:11, fontWeight:600 }}>{r.skuOrigen}</td>
                         <td style={{ fontSize:11 }}>{r.nombre}</td>
-                        <td className="mono" style={{ textAlign:"right", fontWeight:700, color:"var(--amber)" }}>{r.pedirProveedor}</td>
+                        <td className="mono" style={{ textAlign:"right", fontWeight:700, color:"var(--amber)" }}>{r.pedirProveedor > 0 ? r.pedirProveedor : "-"}</td>
+                        {tieneProveedor && (
+                          <td className="mono" style={{ textAlign:"right", color: r.statusProveedor === "sin_stock" ? "var(--red)" : r.statusProveedor === "otro_proveedor" ? "var(--txt3)" : undefined }}>
+                            {r.statusProveedor === "otro_proveedor" ? "-" : r.stockProveedor ?? "-"}
+                          </td>
+                        )}
+                        {tieneProveedor && (
+                          <td className="mono" style={{ textAlign:"right" }}>{r.innerPack ?? "-"}</td>
+                        )}
+                        {tieneProveedor && (
+                          <td className="mono" style={{ textAlign:"right" }}>{r.bultos != null ? r.bultos : "-"}</td>
+                        )}
+                        {tieneProveedor && (
+                          <td className="mono" style={{ textAlign:"right", fontWeight:700, color: r.pedirReal && r.pedirReal > 0 ? "var(--green)" : undefined }}>
+                            {r.statusProveedor === "sin_stock" ? <span style={{ color:"var(--red)" }}>0</span> : r.pedirReal != null ? r.pedirReal : "-"}
+                          </td>
+                        )}
                         <td className="mono" style={{ textAlign:"right" }}>{r.stockBodega}</td>
                         <td className="mono" style={{ textAlign:"right" }}>{r.stockFullEquiv}</td>
                         <td className="mono" style={{ textAlign:"right" }}>{fmtNum(r.velTotalFisica)}</td>
+                        {tieneProveedor && (
+                          <td className="mono" style={{ textAlign:"right", fontSize:11 }}>
+                            {r.costoProveedor != null ? (
+                              <span>
+                                ${r.costoProveedor.toLocaleString()}
+                                {r.alertaCosto && (
+                                  <span title={`WMS: $${r.alertaCosto.costoWMS.toLocaleString()} | Prov: $${r.alertaCosto.costoProveedor.toLocaleString()}`} style={{ color:"var(--red)", marginLeft:4 }}>⚠️</span>
+                                )}
+                              </span>
+                            ) : "-"}
+                          </td>
+                        )}
+                        {tieneProveedor && (
+                          <td className="mono" style={{ textAlign:"right", fontSize:11, fontWeight:600 }}>
+                            {r.costoTotalLinea != null && r.costoTotalLinea > 0 ? `$${r.costoTotalLinea.toLocaleString()}` : "-"}
+                          </td>
+                        )}
                         <td>{badge(r.accion)}</td>
+                        {tieneProveedor && (
+                          <td style={{ fontSize:10, whiteSpace:"nowrap" }}>
+                            {r.statusProveedor === "sin_stock" ? (
+                              <span style={{ color:"var(--red)" }}>⚠️ Sin stock{r.diasAgotamiento != null ? ` (${r.diasAgotamiento}d)` : ""}</span>
+                            ) : r.statusProveedor === "otro_proveedor" ? (
+                              <span style={{ color:"var(--blue)" }}>🔵 Otro prov.</span>
+                            ) : (
+                              <span style={{ color:"var(--green)" }}>✓</span>
+                            )}
+                          </td>
+                        )}
                       </tr>
                     ))}
                   </tbody>
                 </table>
+                {tieneProveedor && totalCostoPedido > 0 && (
+                  <div style={{ display:"flex", justifyContent:"flex-end", marginTop:12, padding:"8px 16px", background:"var(--bg3)", borderRadius:8, border:"1px solid var(--bg4)" }}>
+                    <span style={{ fontSize:13, fontWeight:700 }}>Total pedido: <span className="mono" style={{ color:"var(--amber)", fontSize:15 }}>${totalCostoPedido.toLocaleString()}</span></span>
+                  </div>
+                )}
               </div>
-            )}
+              );
+            })()}
           </div>
         </>
       )}
