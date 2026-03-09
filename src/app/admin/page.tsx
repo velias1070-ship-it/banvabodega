@@ -3704,7 +3704,7 @@ function Productos({ refresh }: { refresh: () => void }) {
   const save=()=>{
     if(!form.sku||!form.name)return;
     const sku=form.sku.toUpperCase();
-    s.products[sku]={sku,name:form.name!,mlCode:form.mlCode||"",cat:form.cat||"Otros",prov:form.prov||"Otro",cost:form.cost||0,price:form.price||0,reorder:form.reorder||20};
+    s.products[sku]={sku,skuVenta:"",name:form.name!,mlCode:form.mlCode||"",cat:form.cat||"Otros",prov:form.prov||"Otro",cost:form.cost||0,price:form.price||0,reorder:form.reorder||20};
     saveStore();setShowAdd(false);setEditSku(null);refresh();
   };
   const remove=(sku:string)=>{

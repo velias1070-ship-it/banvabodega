@@ -6,6 +6,7 @@ export { isConfigured as isSupabaseConfigured } from "./supabase";
 // ==================== TYPES (backward compatible) ====================
 export interface Product {
   sku: string;
+  skuVenta: string;
   name: string;
   mlCode: string;
   cat: string;
@@ -133,7 +134,7 @@ export async function initStore(): Promise<void> {
     const products: Record<string, Product> = {};
     for (const p of prods) {
       products[p.sku] = {
-        sku: p.sku, name: p.nombre, mlCode: p.codigo_ml,
+        sku: p.sku, skuVenta: p.sku_venta || "", name: p.nombre, mlCode: p.codigo_ml,
         cat: p.categoria, prov: p.proveedor, cost: p.costo,
         price: p.precio, reorder: p.reorder,
         requiresLabel: p.requiere_etiqueta,
@@ -421,6 +422,16 @@ export function getVentasPorSkuOrigen(skuOrigen: string): ComposicionVenta[] {
   return _cache.composicion.filter(c => c.skuOrigen === skuOrigen);
 }
 
+// Dado un SKU Venta, busca el SKU físico en la tabla de productos (para productos simples sin composicion_venta)
+export function getSkuFisicoPorSkuVenta(skuVenta: string): string | null {
+  for (const [sku, prod] of Object.entries(_cache.products)) {
+    // Un producto puede tener múltiples skuVenta separados por coma
+    const ventas = prod.skuVenta.split(",").map(s => s.trim()).filter(Boolean);
+    if (ventas.includes(skuVenta)) return sku;
+  }
+  return null;
+}
+
 // Todos los SKUs de venta únicos
 export function getSkusVenta(): { skuVenta: string; codigoMl: string; componentes: ComposicionVenta[] }[] {
   const map = new Map<string, ComposicionVenta[]>();
@@ -698,7 +709,7 @@ export async function syncFromSheet(): Promise<{ added: number; updated: number;
   _cache.products = {};
   for (const p of prods) {
     _cache.products[p.sku] = {
-      sku: p.sku, name: p.nombre, mlCode: p.codigo_ml,
+      sku: p.sku, skuVenta: p.sku_venta || "", name: p.nombre, mlCode: p.codigo_ml,
       cat: p.categoria, prov: p.proveedor, cost: p.costo,
       price: p.precio, reorder: p.reorder,
       requiresLabel: p.requiere_etiqueta,
