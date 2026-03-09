@@ -108,10 +108,24 @@ interface EnvioComponenteDetalle {
   maxPacks: number; // máximo de packs armables con stock disponible
 }
 
+interface RedondeoInfo {
+  original: number;           // cantidad original antes de redondear
+  redondeado: number;         // cantidad final redondeada
+  innerPack: number;
+  direccion: "arriba" | "abajo" | "sin_cambio";
+  opcionAbajo: number;
+  opcionArriba: number;
+  cobAbajo: number;           // cobertura Full con opción abajo
+  cobArriba: number;          // cobertura Full con opción arriba
+  razon: string;
+  stockBodegaDespues: number; // stock bodega después de enviar
+}
+
 interface EnvioFullDetalle {
   skuVenta: string;
   nombre: string;
   mandarFull: number;
+  mandarFullOriginal: number; // antes de redondeo
   tipo: EnvioTipo;
   estado: EnvioEstado;
   componentes: EnvioComponenteDetalle[];
@@ -119,6 +133,8 @@ interface EnvioFullDetalle {
   accion: Accion;
   stockFull: number;
   cobFull: number;
+  velFull: number;
+  redondeo: RedondeoInfo | null; // null si no hubo redondeo o no hay inner pack
 }
 
 type Accion = "SIN VENTA" | "MANDAR A FULL" | "AGOTADO PEDIR" | "URGENTE" | "PLANIFICAR" | "OK" | "EXCESO";
@@ -830,7 +846,7 @@ export default function AdminReposicion() {
     });
   }, []);
 
-  // Detalle de envío a Full
+  // Detalle de envío a Full con redondeo inteligente de inner pack
   const envioDetalles = useMemo((): EnvioFullDetalle[] => {
     if (!resultado) return [];
     const store = getStore();
@@ -859,8 +875,85 @@ export default function AdminReposicion() {
         // Componentes efectivos
         const efectivos = comps.length > 0 ? comps : [{ skuOrigen: r.skuVenta, skuVenta: r.skuVenta, unidades: 1 }];
 
+        // Redondeo inteligente de inner pack para envío a Full
+        // Solo aplica a productos simples o al primer componente de un pack
+        // La cantidad a enviar es a nivel SKU Venta (mandarFull), el inner pack es a nivel SKU Origen
+        let mandarFullRedondeado = r.mandarFull;
+        let redondeo: RedondeoInfo | null = null;
+
+        // Para redondeo, necesitamos el inner pack del componente principal
+        const compPrincipal = efectivos[0];
+        const ipPrincipal = ipMap.get(compPrincipal.skuOrigen) ?? null;
+
+        if (ipPrincipal && ipPrincipal > 1) {
+          // Calcular unidades físicas del componente principal
+          const udsFisicasOriginal = r.mandarFull * compPrincipal.unidades;
+
+          if (udsFisicasOriginal % ipPrincipal !== 0) {
+            // No es múltiplo del inner pack → aplicar redondeo inteligente
+            const opcionAbajoFisicas = Math.floor(udsFisicasOriginal / ipPrincipal) * ipPrincipal;
+            const opcionArribaFisicas = Math.ceil(udsFisicasOriginal / ipPrincipal) * ipPrincipal;
+
+            // Convertir de vuelta a unidades de venta
+            const opcionAbajo = compPrincipal.unidades > 0 ? Math.floor(opcionAbajoFisicas / compPrincipal.unidades) : opcionAbajoFisicas;
+            const opcionArriba = compPrincipal.unidades > 0 ? Math.ceil(opcionArribaFisicas / compPrincipal.unidades) : opcionArribaFisicas;
+
+            // Calcular cobertura Full con cada opción
+            const cobAbajo = r.velFull > 0 ? ((r.stockFull + opcionAbajo) / r.velFull) * 7 : 999;
+            const cobArriba = r.velFull > 0 ? ((r.stockFull + opcionArriba) / r.velFull) * 7 : 999;
+
+            // Stock bodega disponible
+            const stockBodPrincipal = skuPositions(compPrincipal.skuOrigen).reduce((s, p) => s + p.qty, 0);
+            const udsFisicasArriba = opcionArriba * compPrincipal.unidades;
+
+            // Decidir dirección de redondeo
+            let direccion: "arriba" | "abajo";
+            let razon: string;
+
+            if (udsFisicasArriba > stockBodPrincipal) {
+              // Stock insuficiente para redondear arriba → fuerza abajo
+              direccion = "abajo";
+              razon = `Stock bodega insuficiente para bulto completo (${stockBodPrincipal} uds disponibles). Enviar ${opcionAbajo} uds.`;
+            } else if (cobArriba > config.cobMaxima) {
+              // Redondear arriba supera 60d de cobertura → abajo
+              direccion = "abajo";
+              razon = `Con ${opcionArriba} uds Full queda en ${Math.round(cobArriba)}d (supera ${config.cobMaxima}d máximo). Enviar ${opcionAbajo} uds.`;
+            } else if (cobAbajo < config.puntoReorden) {
+              // Redondear abajo deja < 14d → arriba obligatorio
+              direccion = "arriba";
+              razon = `Con ${opcionAbajo} uds Full queda en ${Math.round(cobAbajo)}d (bajo mínimo ${config.puntoReorden}d). Con ${opcionArriba} queda en ${Math.round(cobArriba)}d.`;
+            } else if ((cobArriba - cobAbajo) < 7) {
+              // Diferencia < 7 días → abajo (poca relevancia)
+              direccion = "abajo";
+              razon = `Con ${opcionAbajo} uds Full queda en ${Math.round(cobAbajo)}d (suficiente). No conviene enviar de más.`;
+            } else {
+              // Default: arriba para mejor cobertura
+              direccion = "arriba";
+              razon = `Con ${opcionAbajo} uds Full queda en ${Math.round(cobAbajo)}d. Con ${opcionArriba} queda en ${Math.round(cobArriba)}d (mejor cobertura).`;
+            }
+
+            const cantidadFinal = direccion === "arriba" ? opcionArriba : opcionAbajo;
+            const udsFisicasFinal = cantidadFinal * compPrincipal.unidades;
+
+            redondeo = {
+              original: r.mandarFull,
+              redondeado: cantidadFinal,
+              innerPack: ipPrincipal,
+              direccion,
+              opcionAbajo,
+              opcionArriba,
+              cobAbajo: Math.round(cobAbajo),
+              cobArriba: Math.round(cobArriba),
+              razon,
+              stockBodegaDespues: stockBodPrincipal - udsFisicasFinal,
+            };
+
+            mandarFullRedondeado = cantidadFinal;
+          }
+        }
+
         const componentes: EnvioComponenteDetalle[] = efectivos.map(c => {
-          const unidadesFisicas = r.mandarFull * c.unidades;
+          const unidadesFisicas = mandarFullRedondeado * c.unidades;
           const ip = ipMap.get(c.skuOrigen) ?? null;
           const bultosCompletos = ip ? Math.floor(unidadesFisicas / ip) : 0;
           const sueltas = ip ? unidadesFisicas % ip : 0;
@@ -900,7 +993,8 @@ export default function AdminReposicion() {
         return {
           skuVenta: r.skuVenta,
           nombre: r.nombre,
-          mandarFull: r.mandarFull,
+          mandarFull: mandarFullRedondeado,
+          mandarFullOriginal: r.mandarFull,
           tipo,
           estado,
           componentes,
@@ -908,9 +1002,11 @@ export default function AdminReposicion() {
           accion: r.accion,
           stockFull: r.stockFull,
           cobFull: r.cobFull,
+          velFull: r.velFull,
+          redondeo,
         };
       });
-  }, [resultado, proveedor]);
+  }, [resultado, proveedor, config]);
 
   // Alertas de stock compartido en envío a Full
   const alertasEnvioCompartido = useMemo(() => {
@@ -1521,10 +1617,34 @@ export default function AdminReposicion() {
                         <span style={{ transform: isExpanded ? "rotate(90deg)" : "rotate(0)", transition:"transform 0.2s", display:"inline-block", fontSize:10 }}>▶</span>
                         <span className="mono" style={{ fontWeight:700, fontSize:11, minWidth:140 }}>{d.skuVenta}</span>
                         <span style={{ flex:1, textAlign:"left", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", fontSize:11 }}>{d.nombre}</span>
-                        <span className="mono" style={{ fontWeight:700, color:"var(--blue)", minWidth:60, textAlign:"right" }}>{d.mandarFull} uds</span>
+                        <span className="mono" style={{ fontWeight:700, color:"var(--blue)", minWidth:60, textAlign:"right" }}>
+                          {d.mandarFull} uds
+                          {d.redondeo && d.redondeo.direccion !== "sin_cambio" && (
+                            <span style={{ fontSize:9, marginLeft:4, color: d.redondeo.direccion === "arriba" ? "var(--green)" : "var(--amber)" }}>
+                              {d.redondeo.direccion === "arriba" ? "▲" : "▼"}
+                            </span>
+                          )}
+                        </span>
                         <span style={{ padding:"2px 8px", borderRadius:4, fontSize:9, fontWeight:700, background:"var(--bg3)", color:tipoColor, border:`1px solid ${tipoColor}40`, minWidth:50, textAlign:"center" }}>{tipoBadge}</span>
                         <span style={{ fontSize:11, color:estadoColor, minWidth:120, textAlign:"right", whiteSpace:"nowrap" }}>{estadoIcon} {estadoLabel}</span>
                       </button>
+
+                      {/* Info de redondeo inner pack */}
+                      {d.redondeo && d.redondeo.direccion !== "sin_cambio" && (
+                        <div style={{ padding:"8px 14px", background: d.redondeo.direccion === "arriba" ? "var(--greenBg)" : "var(--amberBg)", borderTop:`1px solid ${d.redondeo.direccion === "arriba" ? "var(--greenBd)" : "var(--amberBd)"}`, fontSize:11 }}>
+                          <div style={{ display:"flex", gap:16, flexWrap:"wrap", alignItems:"center", marginBottom:4 }}>
+                            <span style={{ color:"var(--txt3)" }}>Original: <span className="mono" style={{ fontWeight:600 }}>{d.redondeo.original}</span> uds</span>
+                            <span style={{ color:"var(--txt3)" }}>Inner pack: <span className="mono" style={{ fontWeight:600 }}>{d.redondeo.innerPack}</span></span>
+                            <span style={{ fontWeight:700, color: d.redondeo.direccion === "arriba" ? "var(--green)" : "var(--amber)" }}>
+                              → Enviar: <span className="mono">{d.redondeo.redondeado}</span> uds ({d.componentes[0]?.innerPack ? Math.round(d.redondeo.redondeado * (d.componentes[0]?.unidadesPorPack || 1) / d.redondeo.innerPack) : "?"} bultos) {d.redondeo.direccion === "arriba" ? "▲ redondeado arriba" : "▼ redondeado abajo"}
+                            </span>
+                          </div>
+                          <div style={{ color:"var(--txt2)", fontSize:10 }}>{d.redondeo.razon}</div>
+                          <div style={{ color:"var(--txt3)", fontSize:10, marginTop:2 }}>
+                            Stock bodega: {d.redondeo.stockBodegaDespues + (d.redondeo.redondeado * (d.componentes[0]?.unidadesPorPack || 1))} → quedan {Math.max(0, d.redondeo.stockBodegaDespues)} después de enviar
+                          </div>
+                        </div>
+                      )}
 
                       {/* Alerta stock compartido */}
                       {alertasEnvioCompartido.has(d.skuVenta) && (() => {
