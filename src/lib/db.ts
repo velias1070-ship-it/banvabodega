@@ -758,10 +758,14 @@ export async function importStockFromSheet(): Promise<{ imported: number; totalU
 
 // ==================== PICKING SESSIONS ====================
 
+export type PickingTipo = "flex" | "envio_full" | "reposicion";
+
 export interface DBPickingSession {
   id?: string;
   fecha: string;
   estado: string;
+  tipo?: PickingTipo;
+  titulo?: string;
   lineas: PickingLinea[];
   created_at?: string;
   completed_at?: string | null;
@@ -780,21 +784,47 @@ export interface PickingComponente {
   operario: string | null;
 }
 
+export interface PickingLineaFull {
+  id: string;
+  skuVenta: string;
+  skuOrigen: string;
+  tipo: "simple" | "pack" | "combo";
+  unidadesFisicas: number;
+  unidadesVenta: number;
+  unidadesPorPack: number;
+  posicion: string;
+  posLabel: string;
+  posicionOrden: number;
+  instruccionArmado: string;
+  estado: "PENDIENTE" | "PICKEADO";
+  estadoArmado: "PENDIENTE" | "COMPLETADO";
+  pickedAt: string | null;
+  operario: string | null;
+  stockDisponible: number;
+  codigoMl: string;
+  nombre: string;
+}
+
 export interface PickingLinea {
   id: string;
   skuVenta: string;
   qtyPedida: number;
   estado: "PENDIENTE" | "PICKEADO";
   componentes: PickingComponente[];
+  // Campos adicionales para envio_full
+  lineasFull?: PickingLineaFull[];
 }
 
 export async function createPickingSession(session: Omit<DBPickingSession, "id" | "created_at">): Promise<string | null> {
   const sb = getSupabase(); if (!sb) return null;
-  const { data, error } = await sb.from("picking_sessions").insert({
+  const payload: Record<string, unknown> = {
     fecha: session.fecha,
     estado: session.estado,
     lineas: session.lineas as unknown,
-  }).select("id").single();
+  };
+  if (session.tipo) payload.tipo = session.tipo;
+  if (session.titulo) payload.titulo = session.titulo;
+  const { data, error } = await sb.from("picking_sessions").insert(payload).select("id").single();
   if (error) { console.error("createPickingSession error:", error); return null; }
   return data?.id || null;
 }
@@ -802,13 +832,13 @@ export async function createPickingSession(session: Omit<DBPickingSession, "id" 
 export async function getPickingSessionsByDate(fecha: string): Promise<DBPickingSession[]> {
   const sb = getSupabase(); if (!sb) return [];
   const { data } = await sb.from("picking_sessions").select("*").eq("fecha", fecha).order("created_at", { ascending: false });
-  return (data || []).map(d => ({ ...d, lineas: (d.lineas || []) as PickingLinea[] }));
+  return (data || []).map(d => ({ ...d, lineas: (d.lineas || []) as PickingLinea[], tipo: (d.tipo || "flex") as PickingTipo, titulo: d.titulo || undefined }));
 }
 
 export async function getActivePickingSessions(): Promise<DBPickingSession[]> {
   const sb = getSupabase(); if (!sb) return [];
   const { data } = await sb.from("picking_sessions").select("*").in("estado", ["ABIERTA", "EN_PROCESO"]).order("created_at", { ascending: false });
-  return (data || []).map(d => ({ ...d, lineas: (d.lineas || []) as PickingLinea[] }));
+  return (data || []).map(d => ({ ...d, lineas: (d.lineas || []) as PickingLinea[], tipo: (d.tipo || "flex") as PickingTipo, titulo: d.titulo || undefined }));
 }
 
 export async function updatePickingSession(id: string, updates: Partial<DBPickingSession>): Promise<boolean> {

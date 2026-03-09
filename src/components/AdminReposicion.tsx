@@ -1,7 +1,7 @@
 "use client";
 import React, { useState, useMemo, useEffect, useCallback } from "react";
 import * as XLSX from "xlsx";
-import { skuTotal, skuPositions, getStore, getComponentesPorSkuVenta, getVentasPorSkuOrigen } from "@/lib/store";
+import { skuTotal, skuPositions, getStore, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineasFull, crearPickingSession } from "@/lib/store";
 import type { ComposicionVenta } from "@/lib/store";
 
 /* ───── Tipos ───── */
@@ -697,6 +697,8 @@ export default function AdminReposicion() {
   const [fileNameVelocidad, setFileNameVelocidad] = useState("");
   const [proveedor, setProveedor] = useState<ProveedorRaw[] | null>(null);
   const [fileNameProveedor, setFileNameProveedor] = useState("");
+  const [creandoPicking, setCreandoPicking] = useState(false);
+  const [pickingCreado, setPickingCreado] = useState<string | null>(null);
 
   // Persistir sinStockProv en localStorage
   useEffect(() => {
@@ -1089,6 +1091,44 @@ export default function AdminReposicion() {
     }
   };
 
+  // Crear sesión de picking desde envío a Full
+  const crearPickingEnvioFull = useCallback(async () => {
+    if (!envioDetalles.length || creandoPicking) return;
+    setCreandoPicking(true);
+    setPickingCreado(null);
+
+    const envios = envioDetalles.map(d => ({
+      skuVenta: d.skuVenta,
+      nombre: d.nombre,
+      mandarFull: d.mandarFull,
+      tipo: d.tipo,
+      componentes: d.componentes.map(c => ({
+        skuOrigen: c.skuOrigen,
+        nombreOrigen: c.nombreOrigen,
+        unidadesPorPack: c.unidadesPorPack,
+        unidadesFisicas: c.unidadesFisicas,
+      })),
+    }));
+
+    const { lineas, errors } = buildPickingLineasFull(envios);
+
+    if (errors.length > 0) {
+      const continuar = window.confirm(`Advertencias:\n${errors.join("\n")}\n\n¿Crear sesión de picking de todos modos?`);
+      if (!continuar) { setCreandoPicking(false); return; }
+    }
+
+    const fecha = new Date().toISOString().slice(0, 10);
+    const titulo = `Envío a Full — ${fecha}`;
+    const id = await crearPickingSession(fecha, lineas, "envio_full", titulo);
+
+    setCreandoPicking(false);
+    if (id) {
+      setPickingCreado(id);
+    } else {
+      alert("Error al crear la sesión de picking");
+    }
+  }, [envioDetalles, creandoPicking]);
+
   return (
     <div>
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:16 }}>
@@ -1450,10 +1490,20 @@ export default function AdminReposicion() {
                 <span style={{ transform: showEnvioFull ? "rotate(90deg)" : "rotate(0)", transition:"transform 0.2s", display:"inline-block", marginRight:8 }}>▶</span>
                 📦 Envío a Full ({envioDetalles.length} SKUs, {envioDetalles.reduce((s, r) => s + r.mandarFull, 0).toLocaleString()} uds)
               </span>
-              <button onClick={(e) => { e.stopPropagation(); exportEnvioFull(); }} style={{ padding:"4px 12px", borderRadius:6, background:"var(--bg3)", border:"1px solid var(--bg4)", color:"var(--cyan)", fontSize:11, fontWeight:600, cursor:"pointer" }}>
-                Exportar CSV
-              </button>
+              <span style={{ display:"flex", gap:6 }} onClick={e => e.stopPropagation()}>
+                <button onClick={() => crearPickingEnvioFull()} disabled={creandoPicking || !envioDetalles.length} style={{ padding:"4px 12px", borderRadius:6, background: pickingCreado ? "var(--greenBg)" : "var(--bg3)", border:`1px solid ${pickingCreado ? "var(--greenBd)" : "var(--bg4)"}`, color: pickingCreado ? "var(--green)" : "var(--green)", fontSize:11, fontWeight:600, cursor: creandoPicking ? "wait" : "pointer", opacity: creandoPicking ? 0.5 : 1 }}>
+                  {creandoPicking ? "Creando..." : pickingCreado ? "✅ Picking creado" : "📋 Crear sesión de picking"}
+                </button>
+                <button onClick={() => exportEnvioFull()} style={{ padding:"4px 12px", borderRadius:6, background:"var(--bg3)", border:"1px solid var(--bg4)", color:"var(--cyan)", fontSize:11, fontWeight:600, cursor:"pointer" }}>
+                  Exportar CSV
+                </button>
+              </span>
             </button>
+            {pickingCreado && (
+              <div style={{ padding:"8px 14px", marginTop:8, background:"var(--greenBg)", border:"1px solid var(--greenBd)", borderRadius:8, fontSize:11, color:"var(--green)" }}>
+                Sesión de picking creada exitosamente. Los operadores pueden verla en /operador/picking.
+              </div>
+            )}
             {showEnvioFull && (
               <div style={{ marginTop:12 }}>
                 {envioDetalles.map(d => {
