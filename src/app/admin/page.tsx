@@ -11,6 +11,7 @@ import { getOAuthUrl } from "@/lib/ml";
 import Link from "next/link";
 import SheetSync from "@/components/SheetSync";
 import AdminReposicion from "@/components/AdminReposicion";
+import AdminAgentes from "@/components/AdminAgentes";
 
 const ADMIN_PIN = "1234"; // Change this
 const AUTH_KEY = "banva_admin_auth";
@@ -58,7 +59,7 @@ function LoginGate({ onLogin }: { onLogin: (pin: string) => boolean }) {
 }
 
 export default function AdminPage() {
-  const [tab, setTab] = useState<"dash"|"rec"|"picking"|"etiquetas"|"conteos"|"pedidos"|"ops"|"inv"|"mov"|"prod"|"pos"|"stock_load"|"reposicion"|"config">("dash");
+  const [tab, setTab] = useState<"dash"|"rec"|"picking"|"etiquetas"|"conteos"|"pedidos"|"ops"|"inv"|"mov"|"prod"|"pos"|"stock_load"|"reposicion"|"agentes"|"config">("dash");
   const [,setTick] = useState(0);
   const r = useCallback(()=>setTick(t=>t+1),[]);
   const [mounted, setMounted] = useState(false);
@@ -90,7 +91,7 @@ export default function AdminPage() {
       <SheetSync onSynced={r}/>
       <div className="admin-layout">
         <nav className="admin-sidebar">
-          {([["dash","Dashboard","📊"],["rec","Recepciones","📦"],["picking","Picking Flex","🏷️"],["pedidos","Pedidos ML","🛒"],["ops","Operaciones","⚡"],["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["reposicion","Reposición","🔄"],["config","Configuración","⚙️"]] as const).map(([key,label,icon])=>(
+          {([["dash","Dashboard","📊"],["rec","Recepciones","📦"],["picking","Picking Flex","🏷️"],["pedidos","Pedidos ML","🛒"],["etiquetas","Etiquetas","🖨️"],["conteos","Conteo Cíclico","📋"],["ops","Operaciones","⚡"],["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["pos","Posiciones","📍"],["stock_load","Carga Stock","📥"],["reposicion","Reposición","🔄"],["agentes","Agentes IA","🤖"],["config","Configuración","⚙️"]] as const).map(([key,label,icon])=>(
             <button key={key} className={`sidebar-btn ${tab===key?"active":""}`} onClick={()=>setTab(key as any)}>
               <span className="sidebar-icon">{icon}</span>
               <span className="sidebar-label">{label}</span>
@@ -105,7 +106,7 @@ export default function AdminPage() {
         <main className="admin-main">
           {/* Mobile tabs fallback */}
           <div className="admin-mobile-tabs">
-            {([["dash","Dashboard"],["rec","Recepción"],["picking","Picking"],["pedidos","Pedidos ML"],["ops","Ops"],["inv","Inventario"],["mov","Movim."],["prod","Productos"],["reposicion","Reposición"],["config","Config"]] as const).map(([key,label])=>(
+            {([["dash","Dashboard"],["rec","Recepción"],["picking","Picking"],["pedidos","Pedidos ML"],["etiquetas","Etiquetas"],["conteos","Conteos"],["ops","Ops"],["inv","Inventario"],["mov","Movim."],["prod","Productos"],["pos","Posiciones"],["stock_load","Carga"],["reposicion","Reposición"],["agentes","Agentes IA"],["config","Config"]] as const).map(([key,label])=>(
               <button key={key} className={`tab ${tab===key?"active-cyan":""}`} onClick={()=>setTab(key as any)}>{label}</button>
             ))}
           </div>
@@ -119,6 +120,7 @@ export default function AdminPage() {
             {tab==="mov"&&<Movimientos/>}
             {tab==="prod"&&<Productos refresh={r}/>}
             {tab==="reposicion"&&<AdminReposicion/>}
+            {tab==="agentes"&&<AdminAgentes/>}
             {tab==="config"&&<Configuracion refresh={r}/>}
           </div>
         </main>
