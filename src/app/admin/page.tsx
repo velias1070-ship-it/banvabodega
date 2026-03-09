@@ -1,8 +1,8 @@
 "use client";
 /* v3.1 — conteos + pedidos ML + cron fix */
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote } from "@/lib/store";
-import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote, reconciliarStock, aplicarReconciliacion } from "@/lib/store";
+import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto } from "@/lib/db";
 import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, fetchAllPedidosFlex, fetchPedidosFlexByEstado, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments } from "@/lib/db";
@@ -3107,6 +3107,38 @@ function Inventario() {
   const [reclasificando, setReclasificando] = useState(false);
   const [reclasResult, setReclasResult] = useState<{reclasificados:number;detalles:Array<{sku:string;posicion:string;skuVenta:string;qty:number;metodo:string}>}|null>(null);
 
+  // Reconciliación
+  const [reconOpen, setReconOpen] = useState(false);
+  const [reconLoading, setReconLoading] = useState(false);
+  const [reconDiscrep, setReconDiscrep] = useState<StockDiscrepancia[]|null>(null);
+  const [reconFixing, setReconFixing] = useState(false);
+  const [reconResult, setReconResult] = useState<{fixed:number;errors:string[]}|null>(null);
+
+  const doReconciliar = async () => {
+    setReconLoading(true); setReconDiscrep(null); setReconResult(null);
+    try {
+      const d = await reconciliarStock();
+      setReconDiscrep(d);
+    } catch (e: unknown) {
+      alert("Error al analizar: " + (e instanceof Error ? e.message : String(e)));
+    } finally { setReconLoading(false); }
+  };
+
+  const doAplicarRecon = async () => {
+    if (!reconDiscrep || reconDiscrep.length === 0) return;
+    if (!window.confirm(`Se corregirán ${reconDiscrep.length} discrepancias de stock. Los valores se ajustarán para coincidir con el historial de movimientos.\n\nEsta acción NO crea movimientos correctivos (solo ajusta la tabla de stock).\n\n¿Continuar?`)) return;
+    setReconFixing(true);
+    try {
+      const res = await aplicarReconciliacion(reconDiscrep);
+      setReconResult(res);
+      setReconDiscrep(null);
+      await initStore();
+      refresh();
+    } catch (e: unknown) {
+      alert("Error al aplicar: " + (e instanceof Error ? e.message : String(e)));
+    } finally { setReconFixing(false); }
+  };
+
   const doReclasificar = async () => {
     if (!window.confirm("Esto reclasificará el stock 'Sin etiquetar' usando los datos de recepción y composiciones de venta. ¿Continuar?")) return;
     setReclasificando(true);
@@ -3305,6 +3337,81 @@ function Inventario() {
           <button onClick={() => setReclasResult(null)} style={{marginTop:8,padding:"4px 12px",borderRadius:4,fontSize:10,background:"var(--bg3)",color:"var(--txt3)",border:"1px solid var(--bg4)"}}>Cerrar</button>
         </div>
       )}
+
+      {/* ===== RECONCILIACIÓN DE STOCK ===== */}
+      <div className="card" style={{border: reconOpen ? "1px solid var(--cyanBd)" : "1px solid var(--bg4)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}} onClick={()=>setReconOpen(!reconOpen)}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:16}}>🔍</span>
+            <span style={{fontSize:13,fontWeight:700}}>Reconciliar Stock vs Movimientos</span>
+            <span style={{fontSize:10,color:"var(--txt3)",background:"var(--bg3)",padding:"2px 8px",borderRadius:4}}>
+              Detecta y corrige discrepancias
+            </span>
+          </div>
+          <span style={{fontSize:12,color:"var(--txt3)"}}>{reconOpen ? "▲" : "▼"}</span>
+        </div>
+
+        {reconOpen && (
+          <div style={{marginTop:12}}>
+            <div style={{display:"flex",gap:8,marginBottom:12}}>
+              <button onClick={doReconciliar} disabled={reconLoading} style={{padding:"8px 20px",borderRadius:8,background:reconLoading?"var(--bg3)":"var(--cyan)",color:reconLoading?"var(--txt3)":"#fff",fontSize:12,fontWeight:700,cursor:reconLoading?"wait":"pointer"}}>
+                {reconLoading ? "Analizando..." : "Analizar discrepancias"}
+              </button>
+              {reconDiscrep && reconDiscrep.length > 0 && (
+                <button onClick={doAplicarRecon} disabled={reconFixing} style={{padding:"8px 20px",borderRadius:8,background:reconFixing?"var(--bg3)":"var(--red)",color:reconFixing?"var(--txt3)":"#fff",fontSize:12,fontWeight:700,cursor:reconFixing?"wait":"pointer"}}>
+                  {reconFixing ? "Corrigiendo..." : `Corregir ${reconDiscrep.length} discrepancias`}
+                </button>
+              )}
+            </div>
+
+            {reconDiscrep !== null && reconDiscrep.length === 0 && (
+              <div style={{padding:16,textAlign:"center",color:"var(--green)",fontSize:13,fontWeight:600}}>
+                Todo OK — El stock coincide con los movimientos registrados
+              </div>
+            )}
+
+            {reconDiscrep && reconDiscrep.length > 0 && (
+              <div>
+                <div style={{fontSize:11,color:"var(--amber)",marginBottom:8,fontWeight:600}}>
+                  {reconDiscrep.length} discrepancias encontradas — Stock total erróneo: {reconDiscrep.reduce((s,d)=>s+Math.abs(d.diferencia),0)} uds
+                </div>
+                <div style={{maxHeight:400,overflow:"auto"}}>
+                  <table className="tbl"><thead><tr>
+                    <th>SKU</th><th>Producto</th><th>Posición</th>
+                    <th style={{textAlign:"right"}}>Stock actual</th>
+                    <th style={{textAlign:"right"}}>Según movim.</th>
+                    <th style={{textAlign:"right"}}>Diferencia</th>
+                  </tr></thead>
+                  <tbody>{reconDiscrep.map((d,i)=>(
+                    <tr key={i}>
+                      <td className="mono" style={{fontSize:11,fontWeight:700}}>{d.sku}</td>
+                      <td style={{fontSize:11,color:"var(--txt2)",maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{d.nombre}</td>
+                      <td className="mono" style={{fontSize:11}}>{d.posicion}</td>
+                      <td className="mono" style={{textAlign:"right",fontWeight:700,color:"var(--red)"}}>{d.stockActual}</td>
+                      <td className="mono" style={{textAlign:"right",fontWeight:700,color:"var(--green)"}}>{d.stockEsperado}</td>
+                      <td className="mono" style={{textAlign:"right",fontWeight:700,color:d.diferencia>0?"var(--green)":"var(--red)"}}>{d.diferencia>0?"+":""}{d.diferencia}</td>
+                    </tr>
+                  ))}</tbody></table>
+                </div>
+              </div>
+            )}
+
+            {reconResult && (
+              <div style={{marginTop:12,padding:12,borderRadius:8,background:"var(--greenBg)",border:"1px solid var(--greenBd)"}}>
+                <div style={{fontSize:13,fontWeight:700,color:"var(--green)"}}>
+                  Reconciliación completada — {reconResult.fixed} correcciones aplicadas
+                </div>
+                {reconResult.errors.length > 0 && (
+                  <div style={{marginTop:8}}>
+                    <div style={{fontSize:11,color:"var(--red)",fontWeight:600}}>Errores ({reconResult.errors.length}):</div>
+                    {reconResult.errors.map((e,i) => <div key={i} style={{fontSize:10,color:"var(--red)",fontFamily:"var(--font-mono)"}}>{e}</div>)}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       {viewMode === "ml" ? (
         /* ===== ML PUBLICATIONS VIEW ===== */
