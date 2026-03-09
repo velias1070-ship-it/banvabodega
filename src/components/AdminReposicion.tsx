@@ -766,6 +766,29 @@ export default function AdminReposicion() {
     localStorage.setItem("banva_reposicion_fn_proveedor", fileNameProveedor);
   }, [fileNameOrdenes, fileNameVelocidad, fileNameProveedor]);
 
+  // Pre-cargar ajustes de envío a Full si no hay edición guardada
+  useEffect(() => {
+    if (localStorage.getItem("banva_envio_full_edit")) return;
+    const ajustes: [string, number][] = [
+      ["TXPMMF15PJUNG", 10], ["TXSB144IRK15P", 12], ["TXV23QLRM30OV", 8],
+      ["TXV23QLRM30GR", 12], ["TXMTFIL1315CL", 15], ["TXV23QLAT25BE", 0],
+      ["BOLMATCUERCAF2", 15], ["BOLMATCUERNEG2", 10], ["LITAF400G4PGR", 36],
+      ["LITAF400G4PNG", 16], ["RAPAC50X70AFA", 12], ["9788471510211", 11],
+      ["ALPCMPRCL4060", 10], ["TXSB144ILD15P", 9], ["ALPCMPRBO6012", 10],
+      ["TXTLILL4G4PRS", 24], ["TXSB144ISY15P", 10], ["TXSB144IFX15P", 10],
+      ["TXV23QLAT15GR", 16], ["JSECBQ001P20Z", 4], ["JSAFAB421P20S", 4],
+      ["TXTPBL20200SK", 2], ["TXTLILL4G4PBC", 16], ["TXPMMF15PBALL", 0],
+      ["TXTSQLBC20PTQ", 0], ["TXV23QLAT20BC", 0], ["TXV23QLAT20NG", 8],
+      ["BOLMATCUERNEGX4", 12], ["JSAFAB416P20W", 8], ["TXV23QLRM20BC", 13],
+      ["TEXCCWTILL15P", 18], ["TXV23QLRM30CL", 0], ["TXV24QLBRVE15", 0],
+      ["TXV24QLBRCN15", 7], ["JSAFAB417P20W", 4],
+    ];
+    const removed = ajustes.filter(([, q]) => q === 0).map(([s]) => s);
+    const editable = ajustes.filter(([, q]) => q > 0);
+    const added = [{ skuVenta: "LICAAFVIS5746", nombre: "Almohada Visco Cannon (pack)", qty: 2, tipo: "simple" as EnvioTipo, componentes: [{ skuOrigen: "LICAAFVIS5746", nombreOrigen: "Almohada Visco Cannon (pack)", unidadesPorPack: 1 }] }];
+    localStorage.setItem("banva_envio_full_edit", JSON.stringify({ editable, removed, added, timestamp: new Date().toISOString() }));
+  }, []);
+
   const toggleSinStock = useCallback((sku: string) => {
     setSinStockProv(prev => {
       const next = new Set(prev);
