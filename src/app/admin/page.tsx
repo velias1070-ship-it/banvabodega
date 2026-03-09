@@ -97,7 +97,7 @@ export default function AdminPage() {
             </button>
           ))}
           <div style={{flex:1}}/>
-          <Link href="/conciliacion"><button className="sidebar-btn"><span className="sidebar-icon">🏦</span><span className="sidebar-label">Conciliador</span></button></Link>
+
           <Link href="/admin/qr-codes"><button className="sidebar-btn"><span className="sidebar-icon">🖨️</span><span className="sidebar-label">Imprimir QRs</span></button></Link>
           <button className="sidebar-btn" onClick={()=>{if(confirm("Resetear todos los datos a demo?")){resetStore();window.location.reload();}}}><span className="sidebar-icon">🔄</span><span className="sidebar-label" style={{color:"var(--amber)"}}>Reset Demo</span></button>
         </nav>
@@ -5934,7 +5934,10 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
 
 // ==================== CONFIGURACIÓN ====================
 function Configuracion({ refresh }: { refresh: () => void }) {
-  const [configTab, setConfigTab] = useState<"general"|"posiciones"|"mapa"|"etiquetas"|"carga_stock"|"conteos">("general");
+  const [configTab, setConfigTab] = useState<"general"|"posiciones"|"mapa"|"etiquetas"|"carga_stock"|"conteos"|"conciliador">("general");
+  const [conciliadorPin, setConciliadorPin] = useState("");
+  const [conciliadorAuth, setConciliadorAuth] = useState(false);
+  const CONCILIADOR_PIN = "9461";
   const [cats, setCats] = useState<string[]>([]);
   const [provs, setProvs] = useState<string[]>([]);
   const [newCat, setNewCat] = useState("");
@@ -6054,7 +6057,7 @@ function Configuracion({ refresh }: { refresh: () => void }) {
   return (
     <div>
       <div style={{display:"flex",gap:8,marginBottom:16}}>
-        {([["general","General","⚙️"],["posiciones","Posiciones","📍"],["mapa","Mapa Bodega","🗺️"],["etiquetas","Etiquetas","🖨️"],["carga_stock","Carga Stock","📥"],["conteos","Conteo Cíclico","📋"]] as const).map(([key,label,icon])=>(
+        {([["general","General","⚙️"],["posiciones","Posiciones","📍"],["mapa","Mapa Bodega","🗺️"],["etiquetas","Etiquetas","🖨️"],["carga_stock","Carga Stock","📥"],["conteos","Conteo Cíclico","📋"],["conciliador","Conciliador","🏦"]] as const).map(([key,label,icon])=>(
           <button key={key} onClick={()=>setConfigTab(key)} style={{padding:"8px 16px",borderRadius:8,background:configTab===key?"var(--cyan)":"var(--bg3)",color:configTab===key?"#fff":"var(--txt2)",fontWeight:configTab===key?700:500,fontSize:13,border:configTab===key?"none":"1px solid var(--bg4)",cursor:"pointer"}}>{icon} {label}</button>
         ))}
       </div>
@@ -6063,6 +6066,24 @@ function Configuracion({ refresh }: { refresh: () => void }) {
       {configTab==="etiquetas"&&<AdminEtiquetas/>}
       {configTab==="carga_stock"&&<CargaStock refresh={refresh}/>}
       {configTab==="conteos"&&<AdminConteos refresh={refresh}/>}
+      {configTab==="conciliador"&&(
+        conciliadorAuth ? (
+          <div className="card" style={{textAlign:"center",padding:32}}>
+            <div style={{fontSize:48,marginBottom:16}}>🏦</div>
+            <div style={{fontSize:16,fontWeight:700,marginBottom:8}}>Conciliador</div>
+            <div style={{fontSize:13,color:"var(--txt2)",marginBottom:20}}>Conciliación bancaria y contable</div>
+            <Link href="/conciliacion"><button style={{padding:"12px 32px",borderRadius:10,background:"var(--cyan)",color:"#fff",fontWeight:700,fontSize:14,cursor:"pointer"}}>Abrir Conciliador</button></Link>
+          </div>
+        ) : (
+          <div className="card" style={{maxWidth:360,margin:"40px auto",textAlign:"center",padding:32}}>
+            <div style={{fontSize:48,marginBottom:16}}>🔒</div>
+            <div style={{fontSize:16,fontWeight:700,marginBottom:8}}>Acceso restringido</div>
+            <div style={{fontSize:13,color:"var(--txt2)",marginBottom:20}}>Ingresa el PIN para acceder al Conciliador</div>
+            <input className="form-input" type="password" inputMode="numeric" maxLength={6} value={conciliadorPin} onChange={e=>setConciliadorPin(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&conciliadorPin===CONCILIADOR_PIN)setConciliadorAuth(true);else if(e.key==="Enter")setConciliadorPin("");}} placeholder="PIN" style={{textAlign:"center",fontSize:20,letterSpacing:8,marginBottom:12,fontFamily:"var(--font-mono)"}}/>
+            <button onClick={()=>{if(conciliadorPin===CONCILIADOR_PIN){setConciliadorAuth(true);}else{setConciliadorPin("");alert("PIN incorrecto");}}} style={{width:"100%",padding:"12px",borderRadius:10,background:conciliadorPin.length>=4?"var(--cyan)":"var(--bg3)",color:conciliadorPin.length>=4?"#fff":"var(--txt3)",fontWeight:700,fontSize:14,cursor:"pointer"}}>Ingresar</button>
+          </div>
+        )
+      )}
       {configTab==="mapa"&&(
         <div className="card" style={{textAlign:"center",padding:32}}>
           <div style={{fontSize:48,marginBottom:16}}>🗺️</div>
