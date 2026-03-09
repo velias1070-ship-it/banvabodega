@@ -96,6 +96,7 @@ export default function AdminPage() {
             </button>
           ))}
           <div style={{flex:1}}/>
+          <Link href="/conciliacion"><button className="sidebar-btn"><span className="sidebar-icon">🏦</span><span className="sidebar-label">Conciliador</span></button></Link>
           <Link href="/admin/mapa"><button className="sidebar-btn"><span className="sidebar-icon">🗺️</span><span className="sidebar-label">Mapa Bodega</span></button></Link>
           <Link href="/admin/qr-codes"><button className="sidebar-btn"><span className="sidebar-icon">🖨️</span><span className="sidebar-label">Imprimir QRs</span></button></Link>
           <button className="sidebar-btn" onClick={()=>{if(confirm("Resetear todos los datos a demo?")){resetStore();window.location.reload();}}}><span className="sidebar-icon">🔄</span><span className="sidebar-label" style={{color:"var(--amber)"}}>Reset Demo</span></button>

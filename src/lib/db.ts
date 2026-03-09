@@ -1181,3 +1181,629 @@ export async function clearStockSyncQueue(skus: string[]): Promise<void> {
   await sb.from("stock_sync_queue").delete().in("sku", skus);
 }
 
+// ==================== CONCILIADOR — TIPOS ====================
+
+export interface DBEmpresa {
+  id?: string;
+  rut: string;
+  razon_social: string;
+  created_at?: string;
+}
+
+export interface DBSyncLog {
+  id?: string;
+  empresa_id: string;
+  periodo: string;
+  tipo: "compras" | "ventas" | "mercadopago" | "banco_chile" | "santander_tc";
+  registros: number;
+  synced_at?: string;
+}
+
+export interface DBRcvCompra {
+  id?: string;
+  empresa_id: string;
+  periodo: string;
+  estado: string;
+  tipo_doc: number;
+  nro_doc: string | null;
+  rut_proveedor: string | null;
+  razon_social: string | null;
+  fecha_docto: string | null;
+  monto_exento: number;
+  monto_neto: number;
+  monto_iva: number;
+  monto_total: number;
+  fecha_recepcion: string | null;
+  evento_receptor: string | null;
+  created_at?: string;
+}
+
+export interface DBRcvVenta {
+  id?: string;
+  empresa_id: string;
+  periodo: string;
+  tipo_doc: string;
+  nro: string | null;
+  rut_emisor: string | null;
+  folio: string | null;
+  fecha_docto: string | null;
+  monto_neto: number;
+  monto_exento: number;
+  monto_iva: number;
+  monto_total: number;
+  fecha_recepcion: string | null;
+  evento_receptor: string | null;
+  created_at?: string;
+}
+
+export interface DBMovimientoBanco {
+  id?: string;
+  empresa_id: string;
+  banco: string;
+  cuenta: string | null;
+  fecha: string;
+  descripcion: string | null;
+  monto: number;
+  saldo: number | null;
+  referencia: string | null;
+  origen: "csv" | "api" | "manual" | "scraper_bchile" | "scraper_santander";
+  cuenta_bancaria_id?: string | null;
+  estado_conciliacion?: string;
+  categoria_cuenta_id?: string | null;
+  referencia_unica?: string | null;
+  created_at?: string;
+}
+
+export interface DBConciliacion {
+  id?: string;
+  empresa_id: string;
+  movimiento_banco_id: string | null;
+  rcv_compra_id: string | null;
+  rcv_venta_id: string | null;
+  confianza: number | null;
+  estado: "pendiente" | "confirmado" | "rechazado";
+  tipo_partida: string | null;
+  metodo: string | null;
+  notas: string | null;
+  created_by: string | null;
+  regla_id?: string | null;
+  created_at?: string;
+}
+
+export interface DBAlerta {
+  id?: string;
+  empresa_id: string;
+  tipo: string;
+  titulo: string;
+  descripcion: string | null;
+  referencia_id: string | null;
+  estado: "activa" | "vista" | "resuelta";
+  prioridad: "alta" | "media" | "baja";
+  created_at?: string;
+}
+
+export interface DBPeriodoConciliacion {
+  id?: string;
+  empresa_id: string;
+  periodo: string;
+  saldo_inicial_banco: number | null;
+  saldo_final_banco: number | null;
+  saldo_inicial_libro: number | null;
+  saldo_final_libro: number | null;
+  diferencia: number;
+  estado: "abierto" | "en_proceso" | "cerrado";
+  fecha_cierre: string | null;
+  reporte_url: string | null;
+  created_at?: string;
+}
+
+// ==================== FINANZAS v8 — INTERFACES NUEVAS ====================
+
+export interface DBPlanCuentas {
+  id?: string;
+  codigo: string;
+  nombre: string;
+  tipo: "ingreso" | "costo" | "gasto_operacional" | "gasto_no_op";
+  parent_id: string | null;
+  nivel: number;
+  es_hoja: boolean;
+  activa: boolean;
+  created_at?: string;
+}
+
+export interface DBReglaConciliacion {
+  id?: string;
+  nombre: string;
+  activa: boolean;
+  prioridad: number;
+  condiciones: CondicionRegla[];
+  accion_auto: boolean;
+  confianza_minima: number;
+  categoria_cuenta_id: string | null;
+  stats_matches: number;
+  created_at?: string;
+}
+
+// Estructura de cada condición dentro de una regla
+export interface CondicionRegla {
+  campo: "descripcion" | "monto" | "banco" | "referencia";
+  operador: "contiene" | "no_contiene" | "igual" | "mayor_que" | "menor_que" | "entre";
+  valor: string | number;
+  valor2?: number; // Para operador "entre"
+}
+
+export interface DBConciliacionItem {
+  id?: string;
+  conciliacion_id: string;
+  documento_tipo: "rcv_compra" | "rcv_venta" | "pasarela";
+  documento_id: string;
+  monto_aplicado: number;
+  created_at?: string;
+}
+
+export interface DBPasarelaPago {
+  id?: string;
+  empresa_id: string;
+  pasarela: string;
+  fecha_operacion: string | null;
+  fecha_liquidacion: string | null;
+  referencia_externa: string | null;
+  monto_bruto: number;
+  comision: number;
+  monto_neto: number;
+  estado: string;
+  orden_ml_id: string | null;
+  conciliacion_id: string | null;
+  metadata: Record<string, unknown> | null;
+  created_at?: string;
+}
+
+export interface DBCuentaBancaria {
+  id?: string;
+  empresa_id: string;
+  banco: string;
+  tipo_cuenta: string | null;
+  numero_cuenta: string | null;
+  alias: string | null;
+  saldo_actual: number;
+  moneda: string;
+  activa: boolean;
+  created_at?: string;
+}
+
+export interface DBPresupuesto {
+  id?: string;
+  empresa_id: string;
+  anio: number;
+  mes: number;
+  categoria_cuenta_id: string;
+  monto_presupuestado: number;
+  created_at?: string;
+}
+
+export interface DBCobranzaAccion {
+  id?: string;
+  documento_id: string;
+  tipo_accion: string;
+  fecha: string;
+  destinatario: string | null;
+  contenido: string | null;
+  resultado: string | null;
+  proximo_seguimiento: string | null;
+  created_at?: string;
+}
+
+// ==================== CONCILIADOR — EMPRESAS ====================
+
+export async function fetchEmpresas(): Promise<DBEmpresa[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("empresas").select("*").order("razon_social");
+  return (data || []) as DBEmpresa[];
+}
+
+export async function fetchEmpresaDefault(): Promise<DBEmpresa | null> {
+  const sb = getSupabase(); if (!sb) return null;
+  const { data, error } = await sb.from("empresas").select("*").limit(1);
+  if (error) return null;
+  return data && data.length > 0 ? (data[0] as DBEmpresa) : null;
+}
+
+// ==================== CONCILIADOR — SYNC LOG ====================
+
+export async function fetchSyncLog(empresaId: string): Promise<DBSyncLog[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("sync_log").select("*").eq("empresa_id", empresaId).order("synced_at", { ascending: false });
+  return (data || []) as DBSyncLog[];
+}
+
+// ==================== CONCILIADOR — RCV COMPRAS ====================
+
+export async function fetchRcvCompras(empresaId: string, periodo?: string): Promise<DBRcvCompra[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  let q = sb.from("rcv_compras").select("*").eq("empresa_id", empresaId);
+  if (periodo) q = q.eq("periodo", periodo);
+  const { data } = await q.order("fecha_docto", { ascending: false });
+  return (data || []) as DBRcvCompra[];
+}
+
+export async function upsertRcvCompras(items: DBRcvCompra[]): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  for (let i = 0; i < items.length; i += 500) {
+    await sb.from("rcv_compras").upsert(items.slice(i, i + 500), { onConflict: "empresa_id,periodo,tipo_doc,nro_doc,rut_proveedor" });
+  }
+}
+
+// ==================== CONCILIADOR — RCV VENTAS ====================
+
+export async function fetchRcvVentas(empresaId: string, periodo?: string): Promise<DBRcvVenta[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  let q = sb.from("rcv_ventas").select("*").eq("empresa_id", empresaId);
+  if (periodo) q = q.eq("periodo", periodo);
+  const { data } = await q.order("fecha_docto", { ascending: false });
+  return (data || []) as DBRcvVenta[];
+}
+
+export async function upsertRcvVentas(items: DBRcvVenta[]): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  for (let i = 0; i < items.length; i += 500) {
+    await sb.from("rcv_ventas").upsert(items.slice(i, i + 500), { onConflict: "empresa_id,periodo,tipo_doc,folio" });
+  }
+}
+
+// ==================== CONCILIADOR — MOVIMIENTOS BANCO ====================
+
+export async function fetchMovimientosBanco(empresaId: string, opts?: { banco?: string; desde?: string; hasta?: string }): Promise<DBMovimientoBanco[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  let q = sb.from("movimientos_banco").select("*").eq("empresa_id", empresaId);
+  if (opts?.banco) q = q.eq("banco", opts.banco);
+  if (opts?.desde) q = q.gte("fecha", opts.desde);
+  if (opts?.hasta) q = q.lte("fecha", opts.hasta);
+  const { data } = await q.order("fecha", { ascending: false });
+  return (data || []) as DBMovimientoBanco[];
+}
+
+export async function insertMovimientosBanco(items: DBMovimientoBanco[]): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  for (let i = 0; i < items.length; i += 500) {
+    await sb.from("movimientos_banco").insert(items.slice(i, i + 500));
+  }
+}
+
+export async function deleteMovimientosBancoByIds(ids: string[]): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("movimientos_banco").delete().in("id", ids);
+}
+
+// ==================== CONCILIADOR — CONCILIACIONES ====================
+
+export async function fetchConciliaciones(empresaId: string, periodo?: string): Promise<DBConciliacion[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  let q = sb.from("conciliaciones").select("*").eq("empresa_id", empresaId);
+  if (periodo) {
+    // Filtrar por movimientos del periodo (via join o filtro post-fetch)
+    // Por ahora retorna todas y se filtra en el frontend
+  }
+  const { data } = await q.order("created_at", { ascending: false });
+  return (data || []) as DBConciliacion[];
+}
+
+export async function upsertConciliacion(c: DBConciliacion): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  if (c.id) {
+    await sb.from("conciliaciones").update(c).eq("id", c.id);
+  } else {
+    await sb.from("conciliaciones").insert(c);
+  }
+}
+
+export async function updateConciliacion(id: string, fields: Partial<DBConciliacion>): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("conciliaciones").update(fields).eq("id", id);
+}
+
+// ==================== CONCILIADOR — ALERTAS ====================
+
+export async function fetchAlertas(empresaId: string, estado?: string): Promise<DBAlerta[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  let q = sb.from("alertas").select("*").eq("empresa_id", empresaId);
+  if (estado) q = q.eq("estado", estado);
+  const { data } = await q.order("created_at", { ascending: false });
+  return (data || []) as DBAlerta[];
+}
+
+export async function insertAlerta(a: DBAlerta): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("alertas").insert(a);
+}
+
+export async function updateAlerta(id: string, fields: Partial<DBAlerta>): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("alertas").update(fields).eq("id", id);
+}
+
+// ==================== CONCILIADOR — PERÍODOS ====================
+
+export async function fetchPeriodoConciliacion(empresaId: string, periodo: string): Promise<DBPeriodoConciliacion | null> {
+  const sb = getSupabase(); if (!sb) return null;
+  const { data } = await sb.from("periodos_conciliacion").select("*").eq("empresa_id", empresaId).eq("periodo", periodo).single();
+  return (data as DBPeriodoConciliacion) || null;
+}
+
+export async function upsertPeriodoConciliacion(p: DBPeriodoConciliacion): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("periodos_conciliacion").upsert(p, { onConflict: "empresa_id,periodo" });
+}
+
+// ==================== FINANZAS v8 — PLAN DE CUENTAS ====================
+
+// Obtener todo el plan de cuentas (árbol completo)
+export async function fetchPlanCuentas(): Promise<DBPlanCuentas[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("plan_cuentas").select("*").order("codigo");
+  return (data || []) as DBPlanCuentas[];
+}
+
+// Solo cuentas hoja (para asignar a transacciones)
+export async function fetchPlanCuentasHojas(): Promise<DBPlanCuentas[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("plan_cuentas").select("*").eq("es_hoja", true).eq("activa", true).order("codigo");
+  return (data || []) as DBPlanCuentas[];
+}
+
+export async function upsertPlanCuenta(c: DBPlanCuentas): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  if (c.id) {
+    await sb.from("plan_cuentas").update(c).eq("id", c.id);
+  } else {
+    await sb.from("plan_cuentas").insert(c);
+  }
+}
+
+export async function updatePlanCuenta(id: string, fields: Partial<DBPlanCuentas>): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("plan_cuentas").update(fields).eq("id", id);
+}
+
+// ==================== FINANZAS v8 — REGLAS CONCILIACIÓN ====================
+
+export async function fetchReglasConciliacion(): Promise<DBReglaConciliacion[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("reglas_conciliacion").select("*").order("prioridad");
+  return (data || []) as DBReglaConciliacion[];
+}
+
+export async function upsertRegla(r: DBReglaConciliacion): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  if (r.id) {
+    await sb.from("reglas_conciliacion").update(r).eq("id", r.id);
+  } else {
+    await sb.from("reglas_conciliacion").insert(r);
+  }
+}
+
+export async function deleteRegla(id: string): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("reglas_conciliacion").delete().eq("id", id);
+}
+
+// Incrementar contador de matches de una regla
+export async function incrementReglaMatches(id: string): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  // Fetch actual, incrementar, update
+  const { data } = await sb.from("reglas_conciliacion").select("stats_matches").eq("id", id).limit(1);
+  if (data && data.length > 0) {
+    const current = (data[0] as { stats_matches: number }).stats_matches || 0;
+    await sb.from("reglas_conciliacion").update({ stats_matches: current + 1 }).eq("id", id);
+  }
+}
+
+// ==================== FINANZAS v8 — CONCILIACIÓN ITEMS ====================
+
+export async function fetchConciliacionItems(conciliacionId: string): Promise<DBConciliacionItem[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("conciliacion_items").select("*").eq("conciliacion_id", conciliacionId);
+  return (data || []) as DBConciliacionItem[];
+}
+
+export async function insertConciliacionItems(items: DBConciliacionItem[]): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("conciliacion_items").insert(items);
+}
+
+// ==================== FINANZAS v8 — PASARELAS PAGO ====================
+
+export async function fetchPasarelasPago(empresaId: string, opts?: { periodo?: string }): Promise<DBPasarelaPago[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  let q = sb.from("pasarelas_pago").select("*").eq("empresa_id", empresaId);
+  if (opts?.periodo) {
+    // Filtrar por año-mes de fecha_operacion
+    const y = opts.periodo.slice(0, 4);
+    const m = opts.periodo.slice(4, 6);
+    q = q.gte("fecha_operacion", `${y}-${m}-01`).lte("fecha_operacion", `${y}-${m}-31`);
+  }
+  const { data } = await q.order("fecha_operacion", { ascending: false });
+  return (data || []) as DBPasarelaPago[];
+}
+
+// ==================== FINANZAS v8 — CUENTAS BANCARIAS ====================
+
+export async function fetchCuentasBancarias(empresaId: string): Promise<DBCuentaBancaria[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("cuentas_bancarias").select("*").eq("empresa_id", empresaId).order("banco");
+  return (data || []) as DBCuentaBancaria[];
+}
+
+export async function upsertCuentaBancaria(c: DBCuentaBancaria): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  if (c.id) {
+    await sb.from("cuentas_bancarias").update(c).eq("id", c.id);
+  } else {
+    await sb.from("cuentas_bancarias").insert(c);
+  }
+}
+
+// ==================== FINANZAS v8 — PRESUPUESTO ====================
+
+export async function fetchPresupuesto(empresaId: string, anio: number): Promise<DBPresupuesto[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("presupuesto").select("*").eq("empresa_id", empresaId).eq("anio", anio);
+  return (data || []) as DBPresupuesto[];
+}
+
+export async function upsertPresupuesto(items: DBPresupuesto[]): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  for (let i = 0; i < items.length; i += 500) {
+    await sb.from("presupuesto").upsert(items.slice(i, i + 500), { onConflict: "empresa_id,anio,mes,categoria_cuenta_id" });
+  }
+}
+
+// ==================== FINANZAS v8 — COBRANZA ====================
+
+export async function fetchCobranzaAcciones(documentoId: string): Promise<DBCobranzaAccion[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("cobranza_acciones").select("*").eq("documento_id", documentoId).order("fecha", { ascending: false });
+  return (data || []) as DBCobranzaAccion[];
+}
+
+export async function insertCobranzaAccion(a: DBCobranzaAccion): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("cobranza_acciones").insert(a);
+}
+
+// ==================== FINANZAS v8 — ACTUALIZAR ESTADO CONCILIACIÓN MOV BANCO ====================
+
+export async function updateMovimientoBanco(id: string, fields: Partial<DBMovimientoBanco>): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("movimientos_banco").update(fields).eq("id", id);
+}
+
+// Actualizar categoría de un movimiento banco
+export async function categorizarMovimiento(id: string, categoriaId: string): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("movimientos_banco").update({ categoria_cuenta_id: categoriaId }).eq("id", id);
+}
+
+// Actualizar estado_pago de compra o venta
+export async function updateEstadoPagoCompra(id: string, estado: string): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("rcv_compras").update({ estado_pago: estado }).eq("id", id);
+}
+
+export async function updateEstadoPagoVenta(id: string, estado: string): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("rcv_ventas").update({ estado_pago: estado }).eq("id", id);
+}
+
+// ==================== MP LIQUIDACIÓN DETALLE ====================
+
+export interface DBMpLiquidacionDetalle {
+  id?: string;
+  empresa_id: string;
+  factura_folio: string;
+  fecha_desde: string | null;
+  fecha_hasta: string | null;
+  fecha_operacion: string | null;
+  tipo_documento: string | null;
+  dte: number | null;
+  folio_dte: string | null;
+  venta_id: string | null;
+  descripcion: string | null;
+  cantidad: number;
+  monto: number | null;
+  iva: number | null;
+  sku: string | null;
+  codigo_producto: string | null;
+  folio_asociado: string | null;
+  tipo_devolucion: string | null;
+  created_at?: string;
+}
+
+export async function fetchMpLiquidacion(empresaId: string, folio?: string): Promise<DBMpLiquidacionDetalle[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  let q = sb.from("mp_liquidacion_detalle").select("*").eq("empresa_id", empresaId);
+  if (folio) q = q.eq("factura_folio", folio);
+  const { data } = await q.order("fecha_operacion", { ascending: false });
+  return (data || []) as DBMpLiquidacionDetalle[];
+}
+
+export async function fetchMpLiquidacionFolios(empresaId: string): Promise<string[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("mp_liquidacion_detalle")
+    .select("factura_folio")
+    .eq("empresa_id", empresaId)
+    .order("factura_folio", { ascending: false });
+  // Extraer folios únicos
+  const folios = new Set<string>();
+  (data || []).forEach((r: { factura_folio: string }) => folios.add(r.factura_folio));
+  return Array.from(folios);
+}
+
+export async function insertMpLiquidacion(items: DBMpLiquidacionDetalle[]): Promise<number> {
+  const sb = getSupabase(); if (!sb) return 0;
+  let total = 0;
+  for (let i = 0; i < items.length; i += 500) {
+    const { error } = await sb.from("mp_liquidacion_detalle").insert(items.slice(i, i + 500));
+    if (error) {
+      console.error("Error insert mp_liquidacion_detalle:", error.message);
+    } else {
+      total += Math.min(500, items.length - i);
+    }
+  }
+  return total;
+}
+
+export async function deleteMpLiquidacionByFolio(empresaId: string, folio: string): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("mp_liquidacion_detalle").delete().eq("empresa_id", empresaId).eq("factura_folio", folio);
+}
+
+// ==================== FEEDBACK AGENTES ====================
+
+export interface DBFeedbackAgente {
+  id?: string;
+  empresa_id?: string;
+  agente: string;
+  accion_sugerida: Record<string, unknown> | null;
+  accion_correcta: Record<string, unknown> | null;
+  contexto: Record<string, unknown> | null;
+  created_at?: string;
+}
+
+// Obtener feedback de un agente específico (para aprendizaje)
+export async function fetchFeedbackByAgente(agente: string, limit: number = 50): Promise<DBFeedbackAgente[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("feedback_agentes").select("*")
+    .eq("agente", agente)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  return (data || []) as DBFeedbackAgente[];
+}
+
+// Insertar feedback de acción del usuario
+export async function insertFeedback(f: DBFeedbackAgente): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("feedback_agentes").insert(f);
+}
+
+// ==================== REPORTES — FACTURAS PENDIENTES ====================
+
+// Facturas de venta pendientes de cobro (para flujo proyectado)
+export async function fetchRcvVentasPendientes(empresaId: string): Promise<DBRcvVenta[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("rcv_ventas").select("*")
+    .eq("empresa_id", empresaId)
+    .or("estado_pago.eq.pendiente,estado_pago.is.null")
+    .order("fecha_docto", { ascending: false });
+  return (data || []) as DBRcvVenta[];
+}
+
+// Facturas de compra pendientes de pago (para flujo proyectado)
+export async function fetchRcvComprasPendientes(empresaId: string): Promise<DBRcvCompra[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("rcv_compras").select("*")
+    .eq("empresa_id", empresaId)
+    .or("estado_pago.eq.pendiente,estado_pago.is.null")
+    .order("fecha_docto", { ascending: false });
+  return (data || []) as DBRcvCompra[];
+}
+
