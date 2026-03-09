@@ -690,8 +690,22 @@ function exportCSV(headers: string[], rows: string[][], filename: string) {
 
 /* ───── Componente principal ───── */
 export default function AdminReposicion() {
-  const [ordenes, setOrdenes] = useState<OrdenRaw[] | null>(null);
-  const [velocidades, setVelocidades] = useState<VelocidadRaw[] | null>(null);
+  const [ordenes, setOrdenes] = useState<OrdenRaw[] | null>(() => {
+    try {
+      const saved = localStorage.getItem("banva_reposicion_ordenes");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return parsed.map((o: Record<string, unknown>) => ({ ...o, fecha: new Date(o.fecha as string) }));
+      }
+    } catch { /* ignore */ }
+    return null;
+  });
+  const [velocidades, setVelocidades] = useState<VelocidadRaw[] | null>(() => {
+    try {
+      const saved = localStorage.getItem("banva_reposicion_velocidades");
+      return saved ? JSON.parse(saved) : null;
+    } catch { return null; }
+  });
   const [config, setConfig] = useState<Config>(DEFAULT_CONFIG);
   const [showConfig, setShowConfig] = useState(false);
   const [busqueda, setBusqueda] = useState("");
@@ -710,10 +724,15 @@ export default function AdminReposicion() {
   const [vistaOrigen, setVistaOrigen] = useState(false);
   const [expandedOrigenGroup, setExpandedOrigenGroup] = useState<Set<string>>(new Set());
   const [expandedOrigenRow, setExpandedOrigenRow] = useState<Set<string>>(new Set());
-  const [fileNameOrdenes, setFileNameOrdenes] = useState("");
-  const [fileNameVelocidad, setFileNameVelocidad] = useState("");
-  const [proveedor, setProveedor] = useState<ProveedorRaw[] | null>(null);
-  const [fileNameProveedor, setFileNameProveedor] = useState("");
+  const [fileNameOrdenes, setFileNameOrdenes] = useState(() => localStorage.getItem("banva_reposicion_fn_ordenes") || "");
+  const [fileNameVelocidad, setFileNameVelocidad] = useState(() => localStorage.getItem("banva_reposicion_fn_velocidad") || "");
+  const [proveedor, setProveedor] = useState<ProveedorRaw[] | null>(() => {
+    try {
+      const saved = localStorage.getItem("banva_reposicion_proveedor");
+      return saved ? JSON.parse(saved) : null;
+    } catch { return null; }
+  });
+  const [fileNameProveedor, setFileNameProveedor] = useState(() => localStorage.getItem("banva_reposicion_fn_proveedor") || "");
   const [creandoPicking, setCreandoPicking] = useState(false);
   const [pickingCreado, setPickingCreado] = useState<string | null>(null);
 
@@ -725,10 +744,27 @@ export default function AdminReposicion() {
   const [addEnvioSearch, setAddEnvioSearch] = useState("");
   const [envioSaved, setEnvioSaved] = useState(false);
 
-  // Persistir sinStockProv en localStorage
+  // Persistir datos en localStorage
   useEffect(() => {
     localStorage.setItem("banva_reposicion_sin_stock", JSON.stringify(Array.from(sinStockProv)));
   }, [sinStockProv]);
+  useEffect(() => {
+    if (ordenes) localStorage.setItem("banva_reposicion_ordenes", JSON.stringify(ordenes));
+    else localStorage.removeItem("banva_reposicion_ordenes");
+  }, [ordenes]);
+  useEffect(() => {
+    if (velocidades) localStorage.setItem("banva_reposicion_velocidades", JSON.stringify(velocidades));
+    else localStorage.removeItem("banva_reposicion_velocidades");
+  }, [velocidades]);
+  useEffect(() => {
+    if (proveedor) localStorage.setItem("banva_reposicion_proveedor", JSON.stringify(proveedor));
+    else localStorage.removeItem("banva_reposicion_proveedor");
+  }, [proveedor]);
+  useEffect(() => {
+    localStorage.setItem("banva_reposicion_fn_ordenes", fileNameOrdenes);
+    localStorage.setItem("banva_reposicion_fn_velocidad", fileNameVelocidad);
+    localStorage.setItem("banva_reposicion_fn_proveedor", fileNameProveedor);
+  }, [fileNameOrdenes, fileNameVelocidad, fileNameProveedor]);
 
   const toggleSinStock = useCallback((sku: string) => {
     setSinStockProv(prev => {
