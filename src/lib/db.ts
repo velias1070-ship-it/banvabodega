@@ -792,7 +792,8 @@ export interface PickingComponente {
   operario: string | null;
 }
 
-export interface PickingLineaFull {
+// Legacy type — only used for migrating old envio_full sessions
+export interface PickingLineaFullLegacy {
   id: string;
   skuVenta: string;
   skuOrigen: string;
@@ -819,8 +820,17 @@ export interface PickingLinea {
   qtyPedida: number;
   estado: "PENDIENTE" | "PICKEADO";
   componentes: PickingComponente[];
-  // Campos adicionales para envio_full
-  lineasFull?: PickingLineaFull[];
+  // Campos adicionales para envio_full (opcionales, no rompen Flex)
+  skuOrigen?: string;
+  tipoFull?: "simple" | "pack" | "combo";
+  qtyFisica?: number;
+  qtyVenta?: number;
+  unidadesPorPack?: number;
+  posicionOrden?: number;
+  instruccionArmado?: string | null;
+  estadoArmado?: "PENDIENTE" | "COMPLETADO" | null;
+  // Legacy — solo para migración de sesiones viejas
+  lineasFull?: PickingLineaFullLegacy[];
 }
 
 export async function createPickingSession(session: Omit<DBPickingSession, "id" | "created_at">): Promise<string | null> {
@@ -837,16 +847,64 @@ export async function createPickingSession(session: Omit<DBPickingSession, "id" 
   return data?.id || null;
 }
 
+/**
+ * Migra sesiones envio_full con estructura legacy (una línea con lineasFull[])
+ * al nuevo formato plano (múltiples PickingLinea con componentes[]).
+ * Actualiza en DB si detecta formato viejo.
+ */
+function migrateFullSessionIfNeeded(session: DBPickingSession): DBPickingSession {
+  if (session.tipo !== "envio_full") return session;
+  // Detectar formato viejo: una sola línea con lineasFull
+  if (session.lineas.length === 1 && session.lineas[0]?.lineasFull && session.lineas[0].lineasFull.length > 0) {
+    const oldLineas = session.lineas[0].lineasFull;
+    const newLineas: PickingLinea[] = oldLineas.map(lf => ({
+      id: lf.id,
+      skuVenta: lf.skuVenta,
+      qtyPedida: lf.unidadesFisicas,
+      estado: lf.estado,
+      componentes: [{
+        skuOrigen: lf.skuOrigen,
+        codigoMl: lf.codigoMl || "",
+        nombre: lf.nombre,
+        unidades: lf.unidadesFisicas,
+        posicion: lf.posicion,
+        posLabel: lf.posLabel,
+        stockDisponible: lf.stockDisponible,
+        estado: lf.estado,
+        pickedAt: lf.pickedAt,
+        operario: lf.operario,
+      }],
+      skuOrigen: lf.skuOrigen,
+      tipoFull: lf.tipo,
+      qtyFisica: lf.unidadesFisicas,
+      qtyVenta: lf.unidadesVenta,
+      unidadesPorPack: lf.unidadesPorPack,
+      posicionOrden: lf.posicionOrden,
+      instruccionArmado: lf.instruccionArmado || null,
+      estadoArmado: lf.tipo === "simple" ? null : lf.estadoArmado,
+    }));
+    session.lineas = newLineas;
+    // Persist migrated structure in background (fire-and-forget)
+    const sb = getSupabase();
+    if (sb && session.id) {
+      sb.from("picking_sessions").update({ lineas: newLineas as unknown }).eq("id", session.id).then(() => {
+        console.log(`[Picking] Migrated legacy envio_full session ${session.id} to flat format`);
+      });
+    }
+  }
+  return session;
+}
+
 export async function getPickingSessionsByDate(fecha: string): Promise<DBPickingSession[]> {
   const sb = getSupabase(); if (!sb) return [];
   const { data } = await sb.from("picking_sessions").select("*").eq("fecha", fecha).order("created_at", { ascending: false });
-  return (data || []).map(d => ({ ...d, lineas: (d.lineas || []) as PickingLinea[], tipo: (d.tipo || "flex") as PickingTipo, titulo: d.titulo || undefined }));
+  return (data || []).map(d => migrateFullSessionIfNeeded({ ...d, lineas: (d.lineas || []) as PickingLinea[], tipo: (d.tipo || "flex") as PickingTipo, titulo: d.titulo || undefined }));
 }
 
 export async function getActivePickingSessions(): Promise<DBPickingSession[]> {
   const sb = getSupabase(); if (!sb) return [];
   const { data } = await sb.from("picking_sessions").select("*").in("estado", ["ABIERTA", "EN_PROCESO"]).order("created_at", { ascending: false });
-  return (data || []).map(d => ({ ...d, lineas: (d.lineas || []) as PickingLinea[], tipo: (d.tipo || "flex") as PickingTipo, titulo: d.titulo || undefined }));
+  return (data || []).map(d => migrateFullSessionIfNeeded({ ...d, lineas: (d.lineas || []) as PickingLinea[], tipo: (d.tipo || "flex") as PickingTipo, titulo: d.titulo || undefined }));
 }
 
 export async function updatePickingSession(id: string, updates: Partial<DBPickingSession>): Promise<boolean> {

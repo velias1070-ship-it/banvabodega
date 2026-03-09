@@ -1,7 +1,7 @@
 "use client";
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { initStore, refreshStore, isSupabaseConfigured, getActivePickings, pickearComponente, pickearLineaFull, marcarArmadoFull, verificarScanPicking, activePositions, posContents, getMapConfig, calcularRutaPicking, agruparPorPosicion } from "@/lib/store";
-import type { DBPickingSession, PickingLinea, PickingComponente, PickingLineaFull } from "@/lib/store";
+import type { DBPickingSession, PickingLinea, PickingComponente } from "@/lib/store";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 const BarcodeScanner = dynamic(() => import("@/components/BarcodeScanner"), { ssr: false });
@@ -13,7 +13,6 @@ export default function PickingPage() {
   const [activeSes, setActiveSes] = useState<DBPickingSession | null>(null);
   const [activeLinea, setActiveLinea] = useState<PickingLinea | null>(null);
   const [activeCompIdx, setActiveCompIdx] = useState(-1);
-  const [activeLineaFull, setActiveLineaFull] = useState<PickingLineaFull | null>(null);
   const [screen, setScreen] = useState<"list" | "session" | "pick" | "pickFull">("list");
   const [operario, setOperario] = useState("");
 
@@ -68,7 +67,7 @@ export default function PickingPage() {
   );
 
   const goBack = () => {
-    if (screen==="pick" || screen==="pickFull"){setScreen("session");setActiveLinea(null);setActiveCompIdx(-1);setActiveLineaFull(null);}
+    if (screen==="pick" || screen==="pickFull"){setScreen("session");setActiveLinea(null);setActiveCompIdx(-1);}
     else if(screen==="session"){setScreen("list");setActiveSes(null);loadSessions();}
   };
 
@@ -90,7 +89,7 @@ export default function PickingPage() {
           const fresh=await getActivePickings();const u=fresh.find(s=>s.id===activeSes.id);
           if(u)setActiveSes(u);setSessions(fresh);
         }}/>}
-        {screen==="session"&&activeSes&&isEnvioFull&&<SessionDetailFull session={activeSes} onPickLine={(lf)=>{setActiveLineaFull(lf);setScreen("pickFull");}} operario={operario} onRefresh={async()=>{
+        {screen==="session"&&activeSes&&isEnvioFull&&<SessionDetailFull session={activeSes} onPickLine={(linea)=>{setActiveLinea(linea);setScreen("pickFull");}} operario={operario} onRefresh={async()=>{
           const fresh=await getActivePickings();const u=fresh.find(s=>s.id===activeSes.id);
           if(u)setActiveSes(u);setSessions(fresh);
         }}/>}
@@ -99,10 +98,10 @@ export default function PickingPage() {
           if(u){setActiveSes(u);setSessions(fresh);}
           setScreen("session");setActiveLinea(null);setActiveCompIdx(-1);
         }}/>}
-        {screen==="pickFull"&&activeSes&&activeLineaFull&&<PickFlowFull session={activeSes} lineaFull={activeLineaFull} operario={operario} onDone={async()=>{
+        {screen==="pickFull"&&activeSes&&activeLinea&&<PickFlowFull session={activeSes} linea={activeLinea} operario={operario} onDone={async()=>{
           const fresh=await getActivePickings();const u=fresh.find(s=>s.id===activeSes.id);
           if(u){setActiveSes(u);setSessions(fresh);}
-          setScreen("session");setActiveLineaFull(null);
+          setScreen("session");setActiveLinea(null);
         }}/>}
       </div>
     </div>
@@ -126,16 +125,11 @@ function SessionList({sessions,onSelect,onRefresh}:{sessions:DBPickingSession[];
       )}
       {sessions.map(ses=>{
         const isEnvioFull = ses.tipo === "envio_full";
-        const lineasFull = isEnvioFull ? (ses.lineas[0]?.lineasFull || []) : [];
-        const tc = isEnvioFull ? lineasFull.length : ses.lineas.reduce((s,l)=>s+l.componentes.length,0);
-        const dc = isEnvioFull
-          ? lineasFull.filter(l => l.estado === "PICKEADO").length
-          : ses.lineas.reduce((s,l)=>s+l.componentes.filter(c=>c.estado==="PICKEADO").length,0);
+        const tc = ses.lineas.reduce((s,l)=>s+l.componentes.length,0);
+        const dc = ses.lineas.reduce((s,l)=>s+l.componentes.filter(c=>c.estado==="PICKEADO").length,0);
         const pct=tc>0?Math.round((dc/tc)*100):0;
-        const done = isEnvioFull
-          ? lineasFull.filter(l => l.estado === "PICKEADO").length
-          : ses.lineas.filter(l=>l.estado==="PICKEADO").length;
-        const total = isEnvioFull ? lineasFull.length : ses.lineas.length;
+        const done = ses.lineas.filter(l=>l.estado==="PICKEADO").length;
+        const total = ses.lineas.length;
         const tipoBadge = isEnvioFull ? "FULL" : "FLEX";
         const tipoBadgeColor = isEnvioFull ? "#3b82f6" : "#f59e0b";
         return(
@@ -270,13 +264,13 @@ function SessionDetail({session,onPickComp,onRefresh}:{session:DBPickingSession;
 }
 
 // ==================== SESSION DETAIL FULL (3 fases: Recolección, Armado, Resumen) ====================
-function SessionDetailFull({session,onPickLine,operario,onRefresh}:{session:DBPickingSession;onPickLine:(lf:PickingLineaFull)=>void;operario:string;onRefresh:()=>void}) {
-  const lineasFull = session.lineas[0]?.lineasFull || [];
+function SessionDetailFull({session,onPickLine,operario,onRefresh}:{session:DBPickingSession;onPickLine:(linea:PickingLinea)=>void;operario:string;onRefresh:()=>void}) {
+  const lineas = session.lineas;
   const [fase, setFase] = useState<"recoleccion"|"armado"|"resumen">("recoleccion");
 
-  const allPicked = lineasFull.every(l => l.estado === "PICKEADO");
-  const allArmado = lineasFull.every(l => l.estadoArmado === "COMPLETADO");
-  const needArmado = lineasFull.some(l => l.tipo !== "simple" && l.estadoArmado === "PENDIENTE");
+  const allPicked = lineas.every(l => l.estado === "PICKEADO");
+  const allArmado = lineas.every(l => !l.estadoArmado || l.estadoArmado === "COMPLETADO");
+  const needArmado = lineas.some(l => l.estadoArmado === "PENDIENTE");
 
   // Auto-advance to armado when all picked
   useEffect(() => {
@@ -284,17 +278,23 @@ function SessionDetailFull({session,onPickLine,operario,onRefresh}:{session:DBPi
     if (allPicked && allArmado) setFase("resumen");
   }, [allPicked, allArmado, needArmado, fase]);
 
-  const pickedCount = lineasFull.filter(l => l.estado === "PICKEADO").length;
-  const pctPicked = lineasFull.length > 0 ? Math.round((pickedCount / lineasFull.length) * 100) : 0;
+  const pickedCount = lineas.filter(l => l.estado === "PICKEADO").length;
+  const pctPicked = lineas.length > 0 ? Math.round((pickedCount / lineas.length) * 100) : 0;
 
   // Agrupar por posición y ordenar por ruta
   const gruposPorPosicion = useMemo(() => {
-    const pendientes = lineasFull.filter(l => l.estado === "PENDIENTE");
-    const posiciones = Array.from(new Set(pendientes.map(l => l.posicion)));
+    const pendientes = lineas.filter(l => l.estado === "PENDIENTE");
+    const posiciones = Array.from(new Set(pendientes.map(l => l.componentes[0]?.posicion).filter(Boolean))) as string[];
     const ruta = calcularRutaPicking(posiciones);
-    const grupos = agruparPorPosicion(pendientes);
-    return ruta.map(pos => ({ pos, label: grupos.get(pos)?.[0]?.posLabel || pos, items: grupos.get(pos) || [] })).filter(g => g.items.length > 0);
-  }, [lineasFull]);
+    // Group lines by their component's position
+    const grupos = new Map<string, PickingLinea[]>();
+    for (const l of pendientes) {
+      const pos = l.componentes[0]?.posicion || "?";
+      if (!grupos.has(pos)) grupos.set(pos, []);
+      grupos.get(pos)!.push(l);
+    }
+    return ruta.map(pos => ({ pos, label: grupos.get(pos)?.[0]?.componentes[0]?.posLabel || pos, items: grupos.get(pos) || [] })).filter(g => g.items.length > 0);
+  }, [lineas]);
 
   // Next pending line (by route)
   const nextPending = useMemo(() => {
@@ -308,34 +308,34 @@ function SessionDetailFull({session,onPickLine,operario,onRefresh}:{session:DBPi
 
   // Armado lines: only packs/combos that need armado
   const lineasArmado = useMemo(() => {
-    // Group by skuVenta to show armado instructions per sales SKU
-    const map = new Map<string, PickingLineaFull[]>();
-    for (const l of lineasFull) {
-      if (l.tipo === "simple") continue;
+    const map = new Map<string, PickingLinea[]>();
+    for (const l of lineas) {
+      if (!l.estadoArmado || l.estadoArmado === "COMPLETADO" && !l.tipoFull) continue;
+      if (!l.tipoFull || l.tipoFull === "simple") continue;
       if (!map.has(l.skuVenta)) map.set(l.skuVenta, []);
       map.get(l.skuVenta)!.push(l);
     }
     return Array.from(map.entries()).map(([skuVenta, items]) => ({
       skuVenta,
       items,
-      todoArmado: items.every(i => i.estadoArmado === "COMPLETADO"),
+      todoArmado: items.every(i => !i.estadoArmado || i.estadoArmado === "COMPLETADO"),
     }));
-  }, [lineasFull]);
+  }, [lineas]);
 
   // Resumen: agrupado por SKU Venta
   const resumen = useMemo(() => {
     const map = new Map<string, { skuVenta: string; nombre: string; unidadesVenta: number }>();
-    for (const l of lineasFull) {
+    for (const l of lineas) {
       if (!map.has(l.skuVenta)) map.set(l.skuVenta, { skuVenta: l.skuVenta, nombre: "", unidadesVenta: 0 });
       const r = map.get(l.skuVenta)!;
-      r.nombre = l.nombre;
-      r.unidadesVenta = l.unidadesVenta;
+      r.nombre = l.componentes[0]?.nombre || l.skuVenta;
+      r.unidadesVenta = l.qtyVenta || l.qtyPedida;
     }
     return Array.from(map.values());
-  }, [lineasFull]);
+  }, [lineas]);
 
-  const handleMarcarArmado = useCallback(async (lineaFullId: string) => {
-    await marcarArmadoFull(session.id!, lineaFullId, operario, session);
+  const handleMarcarArmado = useCallback(async (lineaId: string) => {
+    await marcarArmadoFull(session.id!, lineaId, operario, session);
     await onRefresh();
   }, [session, operario, onRefresh]);
 
@@ -347,7 +347,7 @@ function SessionDetailFull({session,onPickLine,operario,onRefresh}:{session:DBPi
           <span style={{fontSize:16,fontWeight:700}}>📦 {session.titulo || "Envío a Full"}</span>
           <span style={{padding:"2px 6px",borderRadius:4,fontSize:9,fontWeight:800,background:"#3b82f622",color:"#3b82f6",border:"1px solid #3b82f644"}}>FULL</span>
         </div>
-        <div style={{fontSize:12,color:"#94a3b8"}}>{pickedCount}/{lineasFull.length} recolectados</div>
+        <div style={{fontSize:12,color:"#94a3b8"}}>{pickedCount}/{lineas.length} recolectados</div>
         <div style={{background:"var(--bg3)",borderRadius:6,height:10,overflow:"hidden",marginTop:8}}>
           <div style={{width:`${pctPicked}%`,height:"100%",background:allPicked?"#10b981":"#3b82f6",borderRadius:6,transition:"width .3s"}}/>
         </div>
@@ -375,7 +375,7 @@ function SessionDetailFull({session,onPickLine,operario,onRefresh}:{session:DBPi
             <button onClick={()=>onPickLine(nextPending)}
               style={{width:"100%",padding:18,marginBottom:12,borderRadius:14,fontWeight:700,fontSize:16,color:"#fff",
                 background:"linear-gradient(135deg,#059669,#10b981)",cursor:"pointer",border:"none",boxShadow:"0 4px 20px #10b98133"}}>
-              ▶ SIGUIENTE: {nextPending.posLabel} — {nextPending.nombre}
+              ▶ SIGUIENTE: {nextPending.componentes[0]?.posLabel} — {nextPending.componentes[0]?.nombre}
             </button>
           )}
 
@@ -407,7 +407,9 @@ function SessionDetailFull({session,onPickLine,operario,onRefresh}:{session:DBPi
                   <div style={{fontSize:11,color:"#94a3b8"}}>{grupo.items.length} producto{grupo.items.length>1?"s":""} a tomar</div>
                 </div>
               </div>
-              {grupo.items.map(item => (
+              {grupo.items.map(item => {
+                const comp = item.componentes[0];
+                return (
                 <div key={item.id} onClick={()=>{if(item.estado!=="PICKEADO")onPickLine(item);}}
                   style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",marginTop:4,borderRadius:8,
                     background:item.estado==="PICKEADO"?"#10b98118":"var(--bg3)",
@@ -416,28 +418,28 @@ function SessionDetailFull({session,onPickLine,operario,onRefresh}:{session:DBPi
                   <div style={{width:36,height:36,borderRadius:8,background:item.estado==="PICKEADO"?"#10b98122":"#3b82f622",
                     display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
                     {item.estado==="PICKEADO"?<span style={{fontSize:18}}>✅</span>:
-                      <span className="mono" style={{fontSize:14,fontWeight:800,color:"#3b82f6"}}>{item.unidadesFisicas}</span>}
+                      <span className="mono" style={{fontSize:14,fontWeight:800,color:"#3b82f6"}}>{comp?.unidades}</span>}
                   </div>
                   <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{item.nombre}</div>
+                    <div style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{comp?.nombre}</div>
                     <div style={{fontSize:11,color:"#94a3b8"}}>
-                      <span className="mono">{item.skuOrigen}</span> · {item.unidadesFisicas} uds
-                      {item.tipo !== "simple" && <span style={{color:"#f59e0b",marginLeft:6}}>→ {item.skuVenta}</span>}
+                      <span className="mono">{comp?.skuOrigen}</span> · {comp?.unidades} uds
+                      {item.tipoFull && item.tipoFull !== "simple" && <span style={{color:"#f59e0b",marginLeft:6}}>→ {item.skuVenta}</span>}
                     </div>
                   </div>
                   {item.estado!=="PICKEADO"&&<span style={{fontSize:18,color:"#3b82f6"}}>→</span>}
                 </div>
-              ))}
+              );})}
             </div>
           ))}
 
           {/* Already picked items */}
-          {lineasFull.filter(l => l.estado === "PICKEADO").length > 0 && (
+          {lineas.filter(l => l.estado === "PICKEADO").length > 0 && (
             <div style={{padding:14,marginTop:8,borderRadius:10,background:"#10b98110",border:"1px solid #10b98133",opacity:0.6}}>
-              <div style={{fontSize:12,fontWeight:700,color:"#10b981",marginBottom:8}}>✅ Ya recolectados ({lineasFull.filter(l => l.estado === "PICKEADO").length})</div>
-              {lineasFull.filter(l => l.estado === "PICKEADO").map(item => (
+              <div style={{fontSize:12,fontWeight:700,color:"#10b981",marginBottom:8}}>✅ Ya recolectados ({lineas.filter(l => l.estado === "PICKEADO").length})</div>
+              {lineas.filter(l => l.estado === "PICKEADO").map(item => (
                 <div key={item.id} style={{fontSize:11,color:"#94a3b8",padding:"2px 0"}}>
-                  <span className="mono">{item.skuOrigen}</span> — {item.unidadesFisicas} uds de {item.posLabel}
+                  <span className="mono">{item.componentes[0]?.skuOrigen}</span> — {item.componentes[0]?.unidades} uds de {item.componentes[0]?.posLabel}
                 </div>
               ))}
             </div>
@@ -479,7 +481,7 @@ function SessionDetailFull({session,onPickLine,operario,onRefresh}:{session:DBPi
                   border:`1px solid ${item.estadoArmado==="COMPLETADO"?"#10b98133":"var(--bg4)"}`}}>
                   <div style={{fontSize:12,fontWeight:600,marginBottom:4}}>{item.instruccionArmado}</div>
                   <div style={{fontSize:11,color:"#94a3b8"}}>
-                    {item.unidadesFisicas} uds de <span className="mono">{item.skuOrigen}</span> → {item.unidadesVenta} {item.tipo === "pack" ? "packs" : "combos"} de <span className="mono">{item.skuVenta}</span>
+                    {item.qtyFisica || item.qtyPedida} uds de <span className="mono">{item.skuOrigen || item.componentes[0]?.skuOrigen}</span> → {item.qtyVenta || item.qtyPedida} {item.tipoFull === "pack" ? "packs" : "combos"} de <span className="mono">{item.skuVenta}</span>
                   </div>
                   {item.estadoArmado !== "COMPLETADO" && (
                     <button onClick={()=>handleMarcarArmado(item.id)}
@@ -716,10 +718,11 @@ function PickFlow({session,linea,compIdx,operario,onDone}:{
   );
 }
 
-// ==================== PICK FLOW FULL (envio_full — con mapa) ====================
-function PickFlowFull({session,lineaFull,operario,onDone}:{
-  session:DBPickingSession;lineaFull:PickingLineaFull;operario:string;onDone:()=>void;
+// ==================== PICK FLOW FULL (envio_full — con mapa, usa PickingLinea unificada) ====================
+function PickFlowFull({session,linea,operario,onDone}:{
+  session:DBPickingSession;linea:PickingLinea;operario:string;onDone:()=>void;
 }) {
+  const comp = linea.componentes[0];
   const [phase,setPhase]=useState<"locate"|"scan"|"done">("locate");
   const [scanResult,setScanResult]=useState<"ok"|"error"|null>(null);
   const [scanCode,setScanCode]=useState("");
@@ -736,33 +739,34 @@ function PickFlowFull({session,lineaFull,operario,onDone}:{
   },[cfg.gridW]);
 
   const mapW=cfg.gridW*cellSize,mapH=cfg.gridH*cellSize;
-  const targetPos=lineaFull.posicion;
+  const targetPos=comp?.posicion || "?";
   const posItems=targetPos?posContents(targetPos):[];
 
   const doConfirm=useCallback(async()=>{
     setSaving(true);
-    await pickearLineaFull(session.id!,lineaFull.id,operario,session);
+    await pickearLineaFull(session.id!,linea.id,operario,session);
     setSaving(false);setPhase("done");
     if(navigator.vibrate)navigator.vibrate([100,50,100]);
     setTimeout(onDone,1200);
-  },[session,lineaFull,operario,onDone]);
+  },[session,linea,operario,onDone]);
 
-  // Verify scan: match against skuOrigen, codigoMl, skuVenta
+  // Verify scan: use the standard verificarScanPicking function
   const handleScan=useCallback((code:string)=>{
     setScanCode(code);
-    const c = code.trim().toUpperCase();
-    const match = c === lineaFull.skuOrigen.toUpperCase()
-      || (lineaFull.codigoMl && lineaFull.codigoMl.toUpperCase().split(",").some(x => x.trim() === c))
-      || c === lineaFull.skuVenta.toUpperCase();
-    if (match) { setScanResult("ok"); doConfirm(); }
-    else { setScanResult("error"); if(navigator.vibrate)navigator.vibrate([200,100,200]); }
-  },[lineaFull,doConfirm]);
+    if (comp && verificarScanPicking(code, comp, linea.skuVenta)) {
+      setScanResult("ok"); doConfirm();
+    } else {
+      setScanResult("error"); if(navigator.vibrate)navigator.vibrate([200,100,200]);
+    }
+  },[comp,linea.skuVenta,doConfirm]);
+
+  if (!comp) return null;
 
   if(phase==="done")return(
     <div style={{textAlign:"center",padding:40}}>
       <div style={{fontSize:64,marginBottom:16}}>✅</div>
       <div style={{fontSize:20,fontWeight:800,color:"#10b981"}}>¡Recolectado!</div>
-      <div style={{fontSize:14,color:"#94a3b8",marginTop:8}}>{lineaFull.unidadesFisicas}× {lineaFull.nombre}</div>
+      <div style={{fontSize:14,color:"#94a3b8",marginTop:8}}>{comp.unidades}× {comp.nombre}</div>
     </div>
   );
 
@@ -771,23 +775,25 @@ function PickFlowFull({session,lineaFull,operario,onDone}:{
       {/* WHAT */}
       <div style={{padding:20,background:"linear-gradient(135deg,#1e1b4b,#312e81)",borderRadius:16,marginBottom:12,border:"2px solid #3b82f644"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
-          <div style={{fontSize:11,color:"#94a3b8",fontWeight:600}}>ENVÍO FULL · {lineaFull.skuVenta}</div>
-          {lineaFull.tipo !== "simple" && (
+          <div style={{fontSize:11,color:"#94a3b8",fontWeight:600}}>ENVÍO FULL · {linea.skuVenta}</div>
+          {linea.tipoFull && linea.tipoFull !== "simple" && (
             <span style={{fontSize:10,fontWeight:700,padding:"2px 8px",borderRadius:4,background:"#f59e0b22",color:"#f59e0b",border:"1px solid #f59e0b44"}}>
-              {lineaFull.tipo === "pack" ? `PACK x${lineaFull.unidadesPorPack}` : "COMBO"}
+              {linea.tipoFull === "pack" ? `PACK x${linea.unidadesPorPack}` : "COMBO"}
             </span>
           )}
         </div>
-        <div style={{fontSize:18,fontWeight:800,color:"#fff",marginBottom:4}}>{lineaFull.nombre}</div>
+        <div style={{fontSize:18,fontWeight:800,color:"#fff",marginBottom:4}}>{comp.nombre}</div>
         <div style={{display:"flex",gap:12,alignItems:"center",marginTop:8}}>
           <div style={{padding:"8px 20px",background:"#3b82f633",borderRadius:10,border:"2px solid #3b82f6"}}>
-            <div style={{fontSize:28,fontWeight:800,color:"#3b82f6",textAlign:"center"}}>{lineaFull.unidadesFisicas}</div>
+            <div style={{fontSize:28,fontWeight:800,color:"#3b82f6",textAlign:"center"}}>{comp.unidades}</div>
             <div style={{fontSize:10,color:"#94a3b8",textAlign:"center"}}>uds</div>
           </div>
           <div style={{flex:1}}>
-            <div className="mono" style={{fontSize:13,color:"#94a3b8"}}>SKU: {lineaFull.skuOrigen}</div>
-            {lineaFull.codigoMl&&<div className="mono" style={{fontSize:12,color:"#64748b"}}>Código ML: {lineaFull.codigoMl}</div>}
-            <div className="mono" style={{fontSize:10,color:"#475569",marginTop:2}}>Destino: {lineaFull.skuVenta} ({lineaFull.unidadesVenta} uds venta)</div>
+            <div className="mono" style={{fontSize:13,color:"#94a3b8"}}>SKU: {comp.skuOrigen}</div>
+            {comp.codigoMl&&<div className="mono" style={{fontSize:12,color:"#64748b"}}>Código ML: {comp.codigoMl}</div>}
+            {linea.qtyVenta !== undefined && linea.qtyVenta !== comp.unidades && (
+              <div className="mono" style={{fontSize:10,color:"#475569",marginTop:2}}>Destino: {linea.skuVenta} ({linea.qtyVenta} uds venta)</div>
+            )}
           </div>
         </div>
       </div>
@@ -802,9 +808,9 @@ function PickFlowFull({session,lineaFull,operario,onDone}:{
               <span className="mono" style={{fontSize:24,fontWeight:800,color:"#10b981"}}>{targetPos}</span>
             </div>
             <div>
-              <div style={{fontSize:16,fontWeight:700}}>{lineaFull.posLabel}</div>
+              <div style={{fontSize:16,fontWeight:700}}>{comp.posLabel}</div>
               <div style={{fontSize:12,color:"#94a3b8"}}>
-                Disponible: <strong style={{color:"#3b82f6"}}>{lineaFull.stockDisponible}</strong> · Tomar: <strong style={{color:"#f59e0b"}}>{lineaFull.unidadesFisicas}</strong>
+                Disponible: <strong style={{color:"#3b82f6"}}>{comp.stockDisponible}</strong> · Tomar: <strong style={{color:"#f59e0b"}}>{comp.unidades}</strong>
               </div>
             </div>
           </div>
@@ -846,7 +852,7 @@ function PickFlowFull({session,lineaFull,operario,onDone}:{
             <div style={{fontSize:11,color:"#94a3b8",fontWeight:600,marginBottom:6}}>En posición {targetPos}:</div>
             {posItems.map(it=>(
               <div key={it.sku} style={{display:"flex",justifyContent:"space-between",padding:"4px 0",fontSize:12,
-                fontWeight:it.sku===lineaFull.skuOrigen?700:400,color:it.sku===lineaFull.skuOrigen?"#fff":"#64748b"}}>
+                fontWeight:it.sku===comp.skuOrigen?700:400,color:it.sku===comp.skuOrigen?"#fff":"#64748b"}}>
                 <span className="mono">{it.sku}</span><span>{it.qty}</span>
               </div>
             ))}
@@ -889,7 +895,7 @@ function PickFlowFull({session,lineaFull,operario,onDone}:{
           </div>
         )}
 
-        <button onClick={async()=>{setSaving(true);await pickearLineaFull(session.id!,lineaFull.id,operario,session);setSaving(false);setPhase("done");setTimeout(onDone,800);}} disabled={saving}
+        <button onClick={async()=>{setSaving(true);await pickearLineaFull(session.id!,linea.id,operario,session);setSaving(false);setPhase("done");setTimeout(onDone,800);}} disabled={saving}
           style={{width:"100%",marginTop:16,padding:10,borderRadius:8,background:"transparent",color:"#64748b",fontSize:11,border:"1px dashed #64748b44"}}>
           Confirmar sin escanear
         </button>
