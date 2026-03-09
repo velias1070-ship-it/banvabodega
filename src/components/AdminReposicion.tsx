@@ -10,6 +10,10 @@ interface OrdenRaw {
   cantidad: number;
   fecha: Date;
   canal: "full" | "flex";
+  subtotal: number;
+  comisionTotal: number;
+  costoEnvio: number;
+  ingresoEnvio: number;
 }
 
 interface VelocidadRaw {
@@ -35,6 +39,10 @@ interface SkuVentaRow {
   mandarFull: number;
   pedir: number;
   accion: Accion;
+  margenFlex: number | null;
+  margenFull: number | null;
+  costoProducto: number | null;
+  sinCosto: boolean;
 }
 
 interface SkuOrigenRow {
@@ -74,21 +82,52 @@ const ACCION_COLOR: Record<Accion, { bg: string; color: string; border: string }
 };
 
 /* ───── Helpers parseo ───── */
+function findColIndex(headers: unknown[], ...patterns: string[]): number {
+  for (let c = 0; c < headers.length; c++) {
+    const h = String(headers[c] || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    for (const p of patterns) {
+      if (h.includes(p)) return c;
+    }
+  }
+  return -1;
+}
+
 function parseOrdenes(wb: XLSX.WorkBook): OrdenRaw[] {
   const ws = wb.Sheets[wb.SheetNames[0]];
   if (!ws) return [];
   const rows: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1 });
+  if (rows.length < 2) return [];
+
+  // Buscar columnas por nombre en header
+  const hdr = rows[0] || [];
+  const colSku = findColIndex(hdr, "sku");
+  const colCantidad = findColIndex(hdr, "cantidad");
+  const colFecha = findColIndex(hdr, "fecha");
+  const colEstado = findColIndex(hdr, "estado");
+  const colLogistica = findColIndex(hdr, "logistic", "tipo logistic");
+  const colSubtotal = findColIndex(hdr, "subtotal");
+  const colComision = findColIndex(hdr, "comision");
+  const colCostoEnvio = findColIndex(hdr, "costo env");
+  const colIngresoEnvio = findColIndex(hdr, "ingreso env");
+
+  // Fallback a posiciones fijas si no se encuentran headers
+  const iSku = colSku >= 0 ? colSku : 5;
+  const iCantidad = colCantidad >= 0 ? colCantidad : 6;
+  const iFecha = colFecha >= 0 ? colFecha : 3;
+  const iEstado = colEstado >= 0 ? colEstado : 11;
+  const iLogistica = colLogistica >= 0 ? colLogistica : 16;
+
   const out: OrdenRaw[] = [];
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
     if (!row || !Array.isArray(row)) continue;
-    const estado = String(row[11] || "").trim();
+    const estado = String(row[iEstado] || "").trim();
     if (estado !== "Pagada") continue;
-    const sku = String(row[5] || "").trim();
+    const sku = String(row[iSku] || "").trim();
     if (!sku) continue;
-    const cantidad = Number(row[6]) || 0;
+    const cantidad = Number(row[iCantidad]) || 0;
     if (cantidad <= 0) continue;
-    const fechaRaw = row[3];
+    const fechaRaw = row[iFecha];
     let fecha: Date;
     if (typeof fechaRaw === "number") {
       fecha = excelDateToJS(fechaRaw);
@@ -96,9 +135,16 @@ function parseOrdenes(wb: XLSX.WorkBook): OrdenRaw[] {
       fecha = new Date(String(fechaRaw));
     }
     if (isNaN(fecha.getTime())) continue;
-    const logistica = String(row[16] || "").trim().toLowerCase();
-    const canal: "full" | "flex" = logistica === "fulfillment" ? "full" : "flex";
-    out.push({ sku, cantidad, fecha, canal });
+    const logistica = String(row[iLogistica] || "").trim().toLowerCase();
+    // fulfillment y xd_drop_off → Full; self_service y otros → Flex
+    const canal: "full" | "flex" = (logistica === "fulfillment" || logistica === "xd_drop_off") ? "full" : "flex";
+
+    const subtotal = colSubtotal >= 0 ? (Number(row[colSubtotal]) || 0) : 0;
+    const comisionTotal = colComision >= 0 ? (Number(row[colComision]) || 0) : 0;
+    const costoEnvio = colCostoEnvio >= 0 ? (Number(row[colCostoEnvio]) || 0) : 0;
+    const ingresoEnvio = colIngresoEnvio >= 0 ? (Number(row[colIngresoEnvio]) || 0) : 0;
+
+    out.push({ sku, cantidad, fecha, canal, subtotal, comisionTotal, costoEnvio, ingresoEnvio });
   }
   return out;
 }
@@ -128,6 +174,37 @@ function parseVelocidad(wb: XLSX.WorkBook): VelocidadRaw[] {
   return out;
 }
 
+/* ───── Costo producto para SKU Venta (con packs) ───── */
+const COSTO_ENVIO_FLEX = 3320;
+
+function calcCostoProductoBruto(skuVenta: string): number | null {
+  const store = getStore();
+  const componentes = getComponentesPorSkuVenta(skuVenta);
+  if (componentes.length > 0) {
+    // Pack/combo: sumar costo de cada componente × unidades
+    let costoNeto = 0;
+    for (const c of componentes) {
+      const prod = store.products[c.skuOrigen];
+      if (!prod || !prod.cost) return null; // sin costo en diccionario
+      costoNeto += prod.cost * c.unidades;
+    }
+    return Math.round(costoNeto * 1.19);
+  } else {
+    // Producto simple
+    const prod = store.products[skuVenta];
+    if (!prod || !prod.cost) return null;
+    return Math.round(prod.cost * 1.19);
+  }
+}
+
+interface FinancialAgg {
+  totalSubtotal: number;
+  totalComision: number;
+  totalCostoEnvio: number;
+  totalIngresoEnvio: number;
+  totalCantidad: number;
+}
+
 /* ───── Lógica de cálculo ───── */
 function calcularReposicion(
   ordenes: OrdenRaw[],
@@ -143,11 +220,27 @@ function calcularReposicion(
 
   // 2. Velocidad por canal desde órdenes (por SKU venta)
   const velOrdenes = new Map<string, { full: number; flex: number }>();
+  // Financials por SKU y canal
+  const financials = new Map<string, { flex: FinancialAgg; full: FinancialAgg }>();
   for (const o of recientes) {
     if (!velOrdenes.has(o.sku)) velOrdenes.set(o.sku, { full: 0, flex: 0 });
     const v = velOrdenes.get(o.sku)!;
     if (o.canal === "full") v.full += o.cantidad;
     else v.flex += o.cantidad;
+
+    // Acumular financials
+    if (!financials.has(o.sku)) {
+      financials.set(o.sku, {
+        flex: { totalSubtotal: 0, totalComision: 0, totalCostoEnvio: 0, totalIngresoEnvio: 0, totalCantidad: 0 },
+        full: { totalSubtotal: 0, totalComision: 0, totalCostoEnvio: 0, totalIngresoEnvio: 0, totalCantidad: 0 },
+      });
+    }
+    const fin = financials.get(o.sku)![o.canal];
+    fin.totalSubtotal += o.subtotal;
+    fin.totalComision += o.comisionTotal;
+    fin.totalCostoEnvio += o.costoEnvio;
+    fin.totalIngresoEnvio += o.ingresoEnvio;
+    fin.totalCantidad += o.cantidad;
   }
   // Dividir por 6 semanas
   velOrdenes.forEach(v => {
@@ -214,9 +307,34 @@ function calcularReposicion(
     const cobBodega = velFlex > 0 ? (stockBodega / velFlex) * 7 : 999;
     const cobTotal = velTotal > 0 ? (stockTotal / velTotal) * 7 : 999;
 
-    // Target días
-    const targetFull = velFull * cobObjetivo / 7;
-    const targetFlex = velFlex * cobObjetivo / 7;
+    // Margen por canal
+    const costoProducto = calcCostoProductoBruto(skuVenta);
+    const sinCosto = costoProducto === null;
+    const fin = financials.get(skuVenta);
+    let margenFlex: number | null = null;
+    let margenFull: number | null = null;
+
+    if (!sinCosto && fin) {
+      const fp = fin.flex;
+      if (fp.totalCantidad > 0) {
+        const ingresoUnit = fp.totalSubtotal / fp.totalCantidad;
+        const comisionUnit = fp.totalComision / fp.totalCantidad;
+        const costoEnvioReal = COSTO_ENVIO_FLEX - (fp.totalIngresoEnvio / fp.totalCantidad);
+        margenFlex = Math.round(ingresoUnit - comisionUnit - costoEnvioReal - costoProducto);
+      }
+      const fu = fin.full;
+      if (fu.totalCantidad > 0) {
+        const ingresoUnit = fu.totalSubtotal / fu.totalCantidad;
+        const comisionUnit = fu.totalComision / fu.totalCantidad;
+        const costoEnvioUnit = fu.totalCostoEnvio / fu.totalCantidad;
+        margenFull = Math.round(ingresoUnit - comisionUnit - costoEnvioUnit - costoProducto);
+      }
+    }
+
+    // Target días: si margen Flex > Full → 30d, sino cobObjetivo (45d)
+    const targetDias = (margenFlex !== null && margenFull !== null && margenFlex > margenFull) ? 30 : cobObjetivo;
+    const targetFull = velFull * targetDias / 7;
+    const targetFlex = velFlex * targetDias / 7;
 
     // Mandar a Full
     const mandarFull = Math.max(0, Math.min(Math.ceil(targetFull - stockFull), stockBodega));
@@ -243,6 +361,7 @@ function calcularReposicion(
       mandarFull: sinStockProv.has(skuVenta) ? mandarFull : mandarFull,
       pedir: sinStockProv.has(skuVenta) ? 0 : pedirVenta,
       accion,
+      margenFlex, margenFull, costoProducto, sinCosto,
     });
 
     // Acumular demanda física por SKU Origen
@@ -624,7 +743,7 @@ export default function AdminReposicion() {
           {/* Tabla SKU Venta */}
           {!vistaOrigen && (
             <div style={{ overflowX:"auto", marginBottom:20 }}>
-              <table className="tbl" style={{ minWidth:1100 }}>
+              <table className="tbl" style={{ minWidth:1300 }}>
                 <thead>
                   <tr>
                     <th style={thStyle("skuVenta")} onClick={() => handleSort("skuVenta")}>SKU</th>
@@ -638,6 +757,8 @@ export default function AdminReposicion() {
                     <th style={thStyle("cobFull")} onClick={() => handleSort("cobFull")}>Cob Full</th>
                     <th style={thStyle("cobBodega")} onClick={() => handleSort("cobBodega")}>Cob Bod</th>
                     <th style={thStyle("cobTotal")} onClick={() => handleSort("cobTotal")}>Cob Total</th>
+                    <th style={thStyle("margenFlex")} onClick={() => handleSort("margenFlex")}>M.Flex</th>
+                    <th style={thStyle("margenFull")} onClick={() => handleSort("margenFull")}>M.Full</th>
                     <th style={thStyle("mandarFull")} onClick={() => handleSort("mandarFull")}>→Full</th>
                     <th style={thStyle("pedir")} onClick={() => handleSort("pedir")}>Pedir</th>
                     <th style={thStyle("accion")} onClick={() => handleSort("accion")}>Acción</th>
@@ -658,6 +779,12 @@ export default function AdminReposicion() {
                       <td className="mono" style={{ textAlign:"right", color: r.cobFull < config.puntoReorden ? "var(--red)" : r.cobFull > config.cobMaxima ? "var(--amber)" : undefined }}>{fmtNum(r.cobFull, 0)}</td>
                       <td className="mono" style={{ textAlign:"right" }}>{fmtNum(r.cobBodega, 0)}</td>
                       <td className="mono" style={{ textAlign:"right" }}>{fmtNum(r.cobTotal, 0)}</td>
+                      <td className="mono" style={{ textAlign:"right", fontSize:11, color: r.sinCosto ? "var(--txt3)" : r.margenFlex !== null ? (r.margenFlex >= 0 ? "var(--green)" : "var(--red)") : "var(--txt3)" }}>
+                        {r.sinCosto ? <span title="Sin costo en diccionario">⚠️</span> : r.margenFlex !== null ? `$${r.margenFlex.toLocaleString()}` : "-"}
+                      </td>
+                      <td className="mono" style={{ textAlign:"right", fontSize:11, color: r.sinCosto ? "var(--txt3)" : r.margenFull !== null ? (r.margenFull >= 0 ? "var(--green)" : "var(--red)") : "var(--txt3)" }}>
+                        {r.sinCosto ? <span title="Sin costo en diccionario">⚠️</span> : r.margenFull !== null ? `$${r.margenFull.toLocaleString()}` : "-"}
+                      </td>
                       <td className="mono" style={{ textAlign:"right", fontWeight:600, color: r.mandarFull > 0 ? "var(--blue)" : undefined }}>{r.mandarFull > 0 ? r.mandarFull : "-"}</td>
                       <td className="mono" style={{ textAlign:"right", fontWeight:600, color: r.pedir > 0 ? "var(--amber)" : undefined }}>
                         {sinStockProv.has(r.skuVenta) ? <span title="Sin stock proveedor" style={{ color:"var(--red)" }}>⚠ 0</span> : r.pedir > 0 ? r.pedir : "-"}
