@@ -1199,6 +1199,11 @@ export interface StockDiscrepancia {
 /**
  * Compara stock actual vs suma neta de movimientos.
  * Los movimientos son la fuente de verdad.
+ *
+ * Maneja CSV import (reemplazo): cuando se detecta un reemplazo,
+ * se resetea el stock esperado del SKU y solo se cuentan movimientos
+ * desde ese punto. Los movimientos "reset stock" se ignoran
+ * (pueden no haberse persistido correctamente).
  */
 export async function reconciliarStock(): Promise<StockDiscrepancia[]> {
   const movimientos = await db.fetchAllMovimientos();
@@ -1207,8 +1212,31 @@ export async function reconciliarStock(): Promise<StockDiscrepancia[]> {
   const prodMap = new Map(productos.map(p => [p.sku, p.nombre]));
 
   // Expected stock per (sku, posicion) from movements
+  // Process chronologically (fetchAllMovimientos returns ascending order)
   const expected: Record<string, number> = {};
+  const lastReemplazoTs: Record<string, number> = {}; // sku → timestamp ms
+
   for (const m of movimientos) {
+    // Skip "reset stock" outflows — part of CSV replace, may not persist fully
+    if (m.nota?.includes("reset stock")) continue;
+
+    // CSV reemplazo = full stock reset for this SKU
+    if (m.nota?.includes("(reemplazo)")) {
+      const ts = new Date(m.created_at || "").getTime();
+      const lastTs = lastReemplazoTs[m.sku] || 0;
+
+      if (ts - lastTs > 60000) {
+        // New reemplazo batch (>60s since last) → reset ALL expected for this SKU
+        const prefix = m.sku + "|";
+        for (const key of Object.keys(expected)) {
+          if (key.startsWith(prefix)) {
+            delete expected[key];
+          }
+        }
+      }
+      lastReemplazoTs[m.sku] = ts;
+    }
+
     const key = `${m.sku}|${m.posicion_id}`;
     const delta = m.tipo === "entrada" ? m.cantidad : -m.cantidad;
     expected[key] = (expected[key] || 0) + delta;
