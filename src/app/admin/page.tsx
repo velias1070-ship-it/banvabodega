@@ -90,7 +90,7 @@ export default function AdminPage() {
       <SheetSync onSynced={r}/>
       <div className="admin-layout">
         <nav className="admin-sidebar">
-          {([["dash","Dashboard","📊"],["rec","Recepciones","📦"],["picking","Picking Flex","🏷️"],["pedidos","Pedidos ML","🛒"],["etiquetas","Etiquetas","🖨️"],["conteos","Conteo Cíclico","📋"],["ops","Operaciones","⚡"],["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["pos","Posiciones","📍"],["stock_load","Carga Stock","📥"],["reposicion","Reposición","🔄"],["config","Configuración","⚙️"]] as const).map(([key,label,icon])=>(
+          {([["dash","Dashboard","📊"],["rec","Recepciones","📦"],["picking","Picking Flex","🏷️"],["pedidos","Pedidos ML","🛒"],["etiquetas","Etiquetas","🖨️"],["conteos","Conteo Cíclico","📋"],["ops","Operaciones","⚡"],["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["stock_load","Carga Stock","📥"],["reposicion","Reposición","🔄"],["config","Configuración","⚙️"]] as const).map(([key,label,icon])=>(
             <button key={key} className={`sidebar-btn ${tab===key?"active":""}`} onClick={()=>setTab(key as any)}>
               <span className="sidebar-icon">{icon}</span>
               <span className="sidebar-label">{label}</span>
@@ -98,7 +98,6 @@ export default function AdminPage() {
           ))}
           <div style={{flex:1}}/>
           <Link href="/conciliacion"><button className="sidebar-btn"><span className="sidebar-icon">🏦</span><span className="sidebar-label">Conciliador</span></button></Link>
-          <Link href="/admin/mapa"><button className="sidebar-btn"><span className="sidebar-icon">🗺️</span><span className="sidebar-label">Mapa Bodega</span></button></Link>
           <Link href="/admin/qr-codes"><button className="sidebar-btn"><span className="sidebar-icon">🖨️</span><span className="sidebar-label">Imprimir QRs</span></button></Link>
           <button className="sidebar-btn" onClick={()=>{if(confirm("Resetear todos los datos a demo?")){resetStore();window.location.reload();}}}><span className="sidebar-icon">🔄</span><span className="sidebar-label" style={{color:"var(--amber)"}}>Reset Demo</span></button>
         </nav>
@@ -106,7 +105,7 @@ export default function AdminPage() {
         <main className="admin-main">
           {/* Mobile tabs fallback */}
           <div className="admin-mobile-tabs">
-            {([["dash","Dashboard"],["rec","Recepción"],["picking","Picking"],["pedidos","Pedidos ML"],["etiquetas","Etiquetas"],["conteos","Conteos"],["ops","Ops"],["inv","Inventario"],["mov","Movim."],["prod","Productos"],["pos","Posiciones"],["stock_load","Carga"],["reposicion","Reposición"],["config","Config"]] as const).map(([key,label])=>(
+            {([["dash","Dashboard"],["rec","Recepción"],["picking","Picking"],["pedidos","Pedidos ML"],["etiquetas","Etiquetas"],["conteos","Conteos"],["ops","Ops"],["inv","Inventario"],["mov","Movim."],["prod","Productos"],["stock_load","Carga"],["reposicion","Reposición"],["config","Config"]] as const).map(([key,label])=>(
               <button key={key} className={`tab ${tab===key?"active-cyan":""}`} onClick={()=>setTab(key as any)}>{label}</button>
             ))}
           </div>
@@ -121,7 +120,6 @@ export default function AdminPage() {
             {tab==="inv"&&<Inventario/>}
             {tab==="mov"&&<Movimientos/>}
             {tab==="prod"&&<Productos refresh={r}/>}
-            {tab==="pos"&&<Posiciones refresh={r}/>}
             {tab==="stock_load"&&<CargaStock refresh={r}/>}
             {tab==="reposicion"&&<AdminReposicion/>}
             {tab==="config"&&<Configuracion refresh={r}/>}
@@ -5910,6 +5908,7 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
 
 // ==================== CONFIGURACIÓN ====================
 function Configuracion({ refresh }: { refresh: () => void }) {
+  const [configTab, setConfigTab] = useState<"general"|"posiciones"|"mapa">("general");
   const [cats, setCats] = useState<string[]>([]);
   const [provs, setProvs] = useState<string[]>([]);
   const [newCat, setNewCat] = useState("");
@@ -6028,6 +6027,22 @@ function Configuracion({ refresh }: { refresh: () => void }) {
 
   return (
     <div>
+      <div style={{display:"flex",gap:8,marginBottom:16}}>
+        {([["general","General","⚙️"],["posiciones","Posiciones","📍"],["mapa","Mapa Bodega","🗺️"]] as const).map(([key,label,icon])=>(
+          <button key={key} onClick={()=>setConfigTab(key)} style={{padding:"8px 16px",borderRadius:8,background:configTab===key?"var(--cyan)":"var(--bg3)",color:configTab===key?"#fff":"var(--txt2)",fontWeight:configTab===key?700:500,fontSize:13,border:configTab===key?"none":"1px solid var(--bg4)",cursor:"pointer"}}>{icon} {label}</button>
+        ))}
+      </div>
+
+      {configTab==="posiciones"&&<Posiciones refresh={refresh}/>}
+      {configTab==="mapa"&&(
+        <div className="card" style={{textAlign:"center",padding:32}}>
+          <div style={{fontSize:48,marginBottom:16}}>🗺️</div>
+          <div style={{fontSize:16,fontWeight:700,marginBottom:8}}>Mapa de Bodega</div>
+          <div style={{fontSize:13,color:"var(--txt2)",marginBottom:20}}>Editor visual de posiciones y layout de la bodega</div>
+          <Link href="/admin/mapa"><button style={{padding:"12px 32px",borderRadius:10,background:"var(--cyan)",color:"#fff",fontWeight:700,fontSize:14,cursor:"pointer"}}>Abrir Editor de Mapa</button></Link>
+        </div>
+      )}
+      {configTab==="general"&&<>
       <div className="admin-grid-2">
         {/* CATEGORIAS */}
         <div className="card">
@@ -6142,6 +6157,7 @@ function Configuracion({ refresh }: { refresh: () => void }) {
           </div>
         </div>
       </div>
+      </>}
     </div>
   );
 }
