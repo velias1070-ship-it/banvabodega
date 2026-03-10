@@ -30,11 +30,15 @@ export async function POST(req: NextRequest) {
     }
 
     // 2. Actualizar insight
-    await updateAgentInsight(insight_id, {
+    const updateResult = await updateAgentInsight(insight_id, {
       estado,
       feedback_texto: feedback_texto || null,
       feedback_at: new Date().toISOString(),
     });
+
+    if (!updateResult?.ok) {
+      return NextResponse.json({ error: updateResult?.error || "Error actualizando insight" }, { status: 500 });
+    }
 
     // 3. Si es corrección con texto, generar regla aprendida
     let regla_generada: string | null = null;
