@@ -1,131 +1,154 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
 
-/* ───── Tipos ───── */
-interface ProfitGuardOrder {
-  // Campos que probablemente devuelve la API (basados en el Excel)
-  [key: string]: unknown;
+/* ───── Tipos ProfitGuard API ───── */
+interface PGItem {
+  product: { sku: string; name: string };
+  quantity: number;
+  unitPrice: { cents: number };
+  total: { cents: number };
+  unitSalesFee: { cents: number };
+  commission: { cents: number };
+  shippingCost: { cents: number };
+  shippingRevenue: { cents: number };
+  creditCardExtraRevenue: { cents: number };
+  netTotal: { cents: number };
 }
 
+interface PGOrder {
+  externalId: string;
+  externalNumber: string;
+  datetime: string;
+  status: string;
+  logisticType: string;
+  orderItems: PGItem[];
+}
+
+interface PGPagination {
+  page: number;
+  page_size: number;
+  pages: number;
+  count: number;
+}
+
+interface PGResponse {
+  data: PGOrder[];
+  pagination: PGPagination;
+}
+
+/* ───── Tipo de salida ───── */
 interface OrdenMapped {
+  canal: string;
+  orderId: string;
+  fecha: string;
+  producto: string;
   sku: string;
   cantidad: number;
-  fecha: string; // ISO string
-  canal: "full" | "flex";
+  precioUnitario: number;
   subtotal: number;
+  comisionUnitaria: number;
   comisionTotal: number;
+  estado: string;
   costoEnvio: number;
   ingresoEnvio: number;
+  ingresoAdicionalTC: number;
+  total: number;
+  logistica: string;
 }
 
 /* ───── Helpers ───── */
 
-/** Busca un valor en un objeto con múltiples posibles keys (case-insensitive) */
-function findField(obj: Record<string, unknown>, ...patterns: string[]): unknown {
-  const keys = Object.keys(obj);
-  for (const pattern of patterns) {
-    const p = pattern.toLowerCase();
-    const found = keys.find(k => k.toLowerCase().includes(p));
-    if (found !== undefined) return obj[found];
+function mapOrden(orden: PGOrder, item: PGItem): OrdenMapped {
+  return {
+    canal: "banva",
+    orderId: orden.externalId,
+    fecha: orden.datetime,
+    producto: item.product.name,
+    sku: item.product.sku,
+    cantidad: item.quantity,
+    precioUnitario: item.unitPrice?.cents ?? 0,
+    subtotal: item.total?.cents ?? 0,
+    comisionUnitaria: item.unitSalesFee?.cents ?? 0,
+    comisionTotal: item.commission?.cents ?? 0,
+    estado: orden.status === "paid" ? "Pagada" : orden.status === "cancelled" ? "Cancelada" : orden.status,
+    costoEnvio: item.shippingCost?.cents ?? 0,
+    ingresoEnvio: item.shippingRevenue?.cents ?? 0,
+    ingresoAdicionalTC: item.creditCardExtraRevenue?.cents ?? 0,
+    total: item.netTotal?.cents ?? 0,
+    logistica: orden.logisticType || "",
+  };
+}
+
+async function fetchPage(apiKey: string, url: string): Promise<PGResponse> {
+  const res = await fetch(url, {
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Accept": "application/json",
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`ProfitGuard API error ${res.status}: ${text}`);
   }
-  return undefined;
+  return res.json();
 }
 
-function mapOrden(raw: ProfitGuardOrder): OrdenMapped | null {
-  const obj = raw as Record<string, unknown>;
+async function fetchAllOrders(apiKey: string, from: string, to: string): Promise<PGOrder[]> {
+  const allOrders: PGOrder[] = [];
 
-  // Estado: solo "Pagada"
-  const estado = String(findField(obj, "estado", "status") || "").trim();
-  if (estado !== "Pagada" && estado !== "pagada") return null;
+  // Estrategia 1: Con filtro de status "paid"
+  const baseUrl = "https://app.profitguard.cl/api/v1/orders";
+  let url = `${baseUrl}?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&status=paid&page=1`;
 
-  // SKU
-  const sku = String(findField(obj, "sku") || "").trim();
-  if (!sku) return null;
+  let firstResponse: PGResponse;
+  try {
+    firstResponse = await fetchPage(apiKey, url);
+  } catch (e) {
+    throw e;
+  }
 
-  // Cantidad
-  const cantidad = Number(findField(obj, "cantidad", "quantity", "qty") || 0);
-  if (cantidad <= 0) return null;
+  // Si no hay datos con status=paid, intentar sin filtro de status
+  if (firstResponse.data.length === 0) {
+    console.log("[ProfitGuard] Sin resultados con status=paid, intentando sin filtro de status");
+    url = `${baseUrl}?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&page=1`;
+    firstResponse = await fetchPage(apiKey, url);
+  }
 
-  // Fecha
-  const fechaRaw = findField(obj, "fecha", "date", "created_at", "order_date");
-  if (!fechaRaw) return null;
-  const fecha = new Date(String(fechaRaw));
-  if (isNaN(fecha.getTime())) return null;
+  // Si sigue vacío, intentar sin filtros de fecha (y filtrar en backend)
+  let filtrarFechaBackend = false;
+  if (firstResponse.data.length === 0) {
+    console.log("[ProfitGuard] Sin resultados con filtros de fecha, trayendo todo");
+    url = `${baseUrl}?page=1`;
+    firstResponse = await fetchPage(apiKey, url);
+    filtrarFechaBackend = true;
+  }
 
-  // Logística → canal
-  const logistica = String(findField(obj, "logistic", "logística", "tipo_logistic", "logistics_type", "tipo logistic") || "").trim().toLowerCase();
-  const canal: "full" | "flex" = (logistica === "fulfillment" || logistica === "xd_drop_off") ? "full" : "flex";
+  allOrders.push(...firstResponse.data);
+  const totalPages = firstResponse.pagination?.pages ?? 1;
 
-  // Campos financieros
-  const subtotal = Number(findField(obj, "subtotal") || 0);
-  const comisionTotal = Number(findField(obj, "comision_total", "comision total", "comision", "commission") || 0);
-  const costoEnvio = Number(findField(obj, "costo_envio", "costo envío", "costo envio", "shipping_cost") || 0);
-  const ingresoEnvio = Number(findField(obj, "ingreso_envio", "ingreso envío", "ingreso envio", "shipping_income") || 0);
+  console.log(`[ProfitGuard] Página 1/${totalPages} — ${firstResponse.data.length} órdenes`);
+  if (firstResponse.data.length > 0) {
+    console.log("[ProfitGuard] Ejemplo primer registro:", JSON.stringify(firstResponse.data[0], null, 2).slice(0, 500));
+  }
 
-  return { sku, cantidad, fecha: fecha.toISOString(), canal, subtotal, comisionTotal, costoEnvio, ingresoEnvio };
-}
+  // Paginar el resto
+  const baseForPagination = url.replace(/page=\d+/, "");
+  for (let page = 2; page <= totalPages; page++) {
+    await new Promise(r => setTimeout(r, 500)); // 500ms delay entre páginas
+    const pageUrl = `${baseForPagination}page=${page}`;
+    const pageRes = await fetchPage(apiKey, pageUrl);
+    allOrders.push(...pageRes.data);
+    console.log(`[ProfitGuard] Página ${page}/${totalPages} — ${pageRes.data.length} órdenes`);
+  }
 
-async function fetchAllOrders(apiKey: string, from: string, to: string): Promise<ProfitGuardOrder[]> {
-  const allOrders: ProfitGuardOrder[] = [];
-  let page = 1;
-  const limit = 500;
-  let hasMore = true;
-
-  while (hasMore) {
-    const url = new URL("https://app.profitguard.cl/api/v1/orders");
-    url.searchParams.set("from", from);
-    url.searchParams.set("to", to);
-    url.searchParams.set("page", String(page));
-    url.searchParams.set("limit", String(limit));
-
-    const res = await fetch(url.toString(), {
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Accept": "application/json",
-      },
+  // Si tuvimos que traer todo sin filtro de fecha, filtrar en backend
+  if (filtrarFechaBackend && from && to) {
+    const fromDate = new Date(from);
+    const toDate = new Date(to);
+    return allOrders.filter(o => {
+      const d = new Date(o.datetime);
+      return d >= fromDate && d <= toDate;
     });
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`ProfitGuard API error ${res.status}: ${text}`);
-    }
-
-    const body = await res.json();
-
-    // La API puede devolver un array directo o un objeto con data/orders/results
-    let orders: ProfitGuardOrder[];
-    if (Array.isArray(body)) {
-      orders = body;
-    } else if (body.data && Array.isArray(body.data)) {
-      orders = body.data;
-    } else if (body.orders && Array.isArray(body.orders)) {
-      orders = body.orders;
-    } else if (body.results && Array.isArray(body.results)) {
-      orders = body.results;
-    } else {
-      // Log la estructura para debug
-      console.log("[ProfitGuard] Respuesta inesperada, keys:", Object.keys(body));
-      // Intentar usar el body completo si parece ser un solo objeto
-      orders = [];
-      hasMore = false;
-      break;
-    }
-
-    allOrders.push(...orders);
-
-    // Detectar si hay más páginas
-    if (orders.length < limit) {
-      hasMore = false;
-    } else {
-      page++;
-      // Rate limit: esperar 1 segundo entre páginas
-      await new Promise(r => setTimeout(r, 1000));
-    }
-
-    // Log primera respuesta para debug
-    if (page === 2 && orders.length > 0) {
-      console.log("[ProfitGuard] Ejemplo de orden (primer registro):", JSON.stringify(orders[0], null, 2));
-    }
   }
 
   return allOrders;
@@ -183,21 +206,19 @@ export async function GET(req: NextRequest) {
   // Fetch desde ProfitGuard API
   try {
     const rawOrders = await fetchAllOrders(apiKey, from, to);
-    console.log(`[ProfitGuard] ${rawOrders.length} órdenes raw obtenidas`);
+    console.log(`[ProfitGuard] ${rawOrders.length} órdenes obtenidas`);
 
-    // Log primer registro para debug de mapeo
-    if (rawOrders.length > 0) {
-      console.log("[ProfitGuard] Keys del primer registro:", Object.keys(rawOrders[0] as Record<string, unknown>));
-    }
-
-    // Mapear al formato del WMS
+    // Expandir órdenes a filas por item
     const ordenes: OrdenMapped[] = [];
-    for (const raw of rawOrders) {
-      const mapped = mapOrden(raw);
-      if (mapped) ordenes.push(mapped);
+    for (const orden of rawOrders) {
+      if (!orden.orderItems || orden.orderItems.length === 0) continue;
+      for (const item of orden.orderItems) {
+        if (!item.product?.sku) continue;
+        ordenes.push(mapOrden(orden, item));
+      }
     }
 
-    console.log(`[ProfitGuard] ${ordenes.length} órdenes mapeadas (de ${rawOrders.length} raw)`);
+    console.log(`[ProfitGuard] ${ordenes.length} filas (items) de ${rawOrders.length} órdenes`);
 
     // Guardar en cache
     try {
