@@ -416,7 +416,8 @@ export function getComponentesPorML(codigoMl: string): ComposicionVenta[] {
 
 // Dado un SKU Venta, retorna los componentes físicos
 export function getComponentesPorSkuVenta(skuVenta: string): ComposicionVenta[] {
-  return _cache.composicion.filter(c => c.skuVenta === skuVenta);
+  const svUpper = skuVenta.toUpperCase();
+  return _cache.composicion.filter(c => c.skuVenta === skuVenta || c.skuVenta.toUpperCase() === svUpper);
 }
 
 // Dado un SKU Origen (físico), en qué packs/ventas participa
@@ -426,19 +427,21 @@ export function getVentasPorSkuOrigen(skuOrigen: string): ComposicionVenta[] {
 
 // Dado un SKU Venta, busca el SKU físico en la tabla de productos (para productos simples sin composicion_venta)
 export function getSkuFisicoPorSkuVenta(skuVenta: string): string | null {
-  // 1. Buscar en el campo skuVenta de productos
+  const svUpper = skuVenta.toUpperCase();
+  // 1. Buscar en el campo skuVenta de productos (case-insensitive)
   for (const [sku, prod] of Object.entries(_cache.products)) {
-    // Un producto puede tener múltiples skuVenta separados por coma
-    const ventas = prod.skuVenta.split(",").map(s => s.trim()).filter(Boolean);
-    if (ventas.includes(skuVenta)) return sku;
+    const ventas = prod.skuVenta.split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
+    if (ventas.includes(svUpper)) return sku;
   }
   // 2. Buscar en stockDetalle: si algún SKU físico tiene stock etiquetado con este skuVenta
   for (const [sku, svMap] of Object.entries(_cache.stockDetalle)) {
-    if (svMap[skuVenta]) return sku;
+    if (svMap[skuVenta] || svMap[svUpper]) return sku;
   }
   // 3. Buscar en mapeo ML: seller_sku → SKU físico (via ml_shipment_items + ml_items_map)
-  const fromML = _cache.skuVentaToFisico[skuVenta];
-  if (fromML && _cache.stock[fromML]) return fromML;
+  const fromML = _cache.skuVentaToFisico[skuVenta]
+    || _cache.skuVentaToFisico[svUpper]
+    || _cache.skuVentaToFisico[skuVenta.toLowerCase()];
+  if (fromML) return fromML;
   return null;
 }
 
