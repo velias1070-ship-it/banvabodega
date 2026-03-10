@@ -133,10 +133,14 @@ export async function insertAgentInsights(insights: Omit<DBAgentInsight, "id" | 
 
 export async function updateAgentInsight(id: string, fields: Partial<DBAgentInsight>): Promise<{ ok: boolean; error?: string }> {
   const sb = getServerSupabase(); if (!sb) return { ok: false, error: "DB no disponible" };
-  const { error } = await sb.from("agent_insights").update(fields).eq("id", id);
+  const { data, error } = await sb.from("agent_insights").update(fields).eq("id", id).select("id, estado");
   if (error) {
     console.error("[updateAgentInsight] Error:", error.message);
     return { ok: false, error: error.message };
+  }
+  if (!data || data.length === 0) {
+    console.error("[updateAgentInsight] No se actualizó ninguna fila para id:", id);
+    return { ok: false, error: "No se encontró el insight o no se pudo actualizar (RLS)" };
   }
   return { ok: true };
 }
