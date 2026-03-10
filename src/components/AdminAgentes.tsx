@@ -117,6 +117,7 @@ export default function AdminAgentes() {
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [loading, setLoading] = useState(true);
   const [runningAgent, setRunningAgent] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // Filtros
   const [filtroAgente, setFiltroAgente] = useState<string>("todos");
@@ -125,8 +126,13 @@ export default function AdminAgentes() {
 
   const loadData = useCallback(async () => {
     try {
+      setLoadError(null);
       const res = await fetch("/api/agents/status");
-      if (!res.ok) return;
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        setLoadError(errData.error || `Error cargando datos (HTTP ${res.status})`);
+        return;
+      }
       const data = await res.json();
       setConfigs(data.configs || []);
       setInsights(data.insights || []);
@@ -134,6 +140,7 @@ export default function AdminAgentes() {
       setRuns(data.runs || []);
     } catch (e) {
       console.error("Error cargando datos de agentes:", e);
+      setLoadError(`Error de conexión: ${e}`);
     } finally {
       setLoading(false);
     }
@@ -142,7 +149,7 @@ export default function AdminAgentes() {
   useEffect(() => { loadData(); }, [loadData]);
 
   // Resultado último run
-  const [lastRunResult, setLastRunResult] = useState<{ agente: string; resumen: string | null; insights_generados: number; insights_guardados: number; costo_usd: number; error?: string } | null>(null);
+  const [lastRunResult, setLastRunResult] = useState<{ agente: string; resumen: string | null; insights_generados: number; insights_guardados: number; costo_usd: number; error?: string; insert_error?: string } | null>(null);
 
   // Ejecutar agente
   const ejecutarAgente = async (agente: string) => {
@@ -166,6 +173,7 @@ export default function AdminAgentes() {
           insights_generados: data.insights_generados,
           insights_guardados: data.insights_guardados ?? data.insights_generados,
           costo_usd: data.costo_usd,
+          insert_error: data.insert_error || undefined,
         });
         // Si se generaron insights, mostrar la pestaña de insights
         if (data.insights_generados > 0) {
@@ -201,6 +209,18 @@ export default function AdminAgentes() {
 
   return (
     <div>
+      {/* Error de carga */}
+      {loadError && (
+        <div className="card" style={{ padding: 16, marginBottom: 16, border: "1px solid var(--redBd)", background: "var(--redBg)" }}>
+          <div style={{ color: "var(--red)", fontWeight: 700, fontSize: 14 }}>
+            Error cargando datos de agentes: {loadError}
+          </div>
+          <div style={{ fontSize: 12, color: "var(--txt3)", marginTop: 4 }}>
+            Verifica que las tablas de agentes existan en Supabase (ejecuta supabase-v11-agents.sql)
+          </div>
+        </div>
+      )}
+
       {/* Dashboard de agentes */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginBottom: 24 }}>
         {agentesActivos.map(ag => {
@@ -267,8 +287,13 @@ export default function AdminAgentes() {
                     {AGENT_ICONS[lastRunResult.agente]} {lastRunResult.agente}: {lastRunResult.insights_generados} insights generados ({fmtCost(lastRunResult.costo_usd)} USD)
                   </div>
                   {lastRunResult.insights_generados > 0 && lastRunResult.insights_guardados < lastRunResult.insights_generados && (
-                    <div style={{ color: "var(--amber)", fontSize: 12, marginTop: 4 }}>
-                      Advertencia: solo {lastRunResult.insights_guardados} de {lastRunResult.insights_generados} insights se guardaron en la DB
+                    <div style={{ color: "var(--red)", fontSize: 12, marginTop: 4, fontWeight: 600 }}>
+                      Error: solo {lastRunResult.insights_guardados} de {lastRunResult.insights_generados} insights se guardaron en la DB
+                      {lastRunResult.insert_error && (
+                        <div style={{ color: "var(--amber)", fontWeight: 400, marginTop: 2 }}>
+                          Detalle: {lastRunResult.insert_error}
+                        </div>
+                      )}
                     </div>
                   )}
                   {lastRunResult.resumen && (

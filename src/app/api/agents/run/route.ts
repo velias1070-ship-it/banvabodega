@@ -25,6 +25,29 @@ interface AgentResponse {
   resumen?: string;
 }
 
+// Valores permitidos por los CHECK constraints de la DB
+const TIPOS_VALIDOS = ["alerta", "sugerencia", "analisis", "resumen"] as const;
+const SEVERIDADES_VALIDAS = ["critica", "alta", "media", "info"] as const;
+
+function sanitizeTipo(v: string | undefined): typeof TIPOS_VALIDOS[number] {
+  if (v && TIPOS_VALIDOS.includes(v as typeof TIPOS_VALIDOS[number])) return v as typeof TIPOS_VALIDOS[number];
+  // Mapear valores comunes que Claude podría devolver
+  if (v === "recomendacion" || v === "recomendación") return "sugerencia";
+  if (v === "warning" || v === "advertencia") return "alerta";
+  if (v === "análisis" || v === "analysis") return "analisis";
+  return "analisis";
+}
+
+function sanitizeSeveridad(v: string | undefined): typeof SEVERIDADES_VALIDAS[number] {
+  if (v && SEVERIDADES_VALIDAS.includes(v as typeof SEVERIDADES_VALIDAS[number])) return v as typeof SEVERIDADES_VALIDAS[number];
+  // Mapear valores comunes
+  if (v === "crítica" || v === "critical") return "critica";
+  if (v === "high" || v === "importante") return "alta";
+  if (v === "medium" || v === "moderada" || v === "baja" || v === "low") return "media";
+  if (v === "informativa" || v === "informacion" || v === "información") return "info";
+  return "info";
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -142,6 +165,7 @@ export async function POST(req: NextRequest) {
 
       // 9. Guardar insights
       let savedInsights: unknown[] = [];
+      let insertError: string | null = null;
       if (insights.length > 0) {
         const expiresAt = agente === "inventario"
           ? new Date(Date.now() + 86400000).toISOString()
@@ -149,21 +173,24 @@ export async function POST(req: NextRequest) {
           ? new Date(Date.now() + 7 * 86400000).toISOString()
           : null;
 
-        const insertResult = await insertAgentInsights(insights.map((ins: InsightRaw) => ({
+        const insightsToInsert = insights.map((ins: InsightRaw) => ({
           agente,
           run_id: runId,
-          tipo: (ins.tipo || "analisis") as "alerta" | "sugerencia" | "analisis" | "resumen",
-          severidad: (ins.severidad || "info") as "critica" | "alta" | "media" | "info",
+          tipo: sanitizeTipo(ins.tipo),
+          severidad: sanitizeSeveridad(ins.severidad),
           categoria: ins.categoria || "general",
-          titulo: ins.titulo,
-          contenido: ins.contenido + (ins.accion_sugerida ? `\n\nAcción sugerida: ${ins.accion_sugerida}` : ""),
+          titulo: ins.titulo || "Sin título",
+          contenido: (ins.contenido || "") + (ins.accion_sugerida ? `\n\nAcción sugerida: ${ins.accion_sugerida}` : ""),
           datos: ins.datos || null,
           skus_relacionados: ins.skus || null,
           expires_at: expiresAt,
-        })));
+        }));
+
+        const insertResult = await insertAgentInsights(insightsToInsert);
 
         if (!insertResult.ok) {
           console.error("[agents/run] Error guardando insights:", insertResult.error);
+          insertError = insertResult.error || "Error desconocido al guardar insights";
         } else {
           savedInsights = insertResult.inserted || [];
         }
@@ -200,6 +227,7 @@ export async function POST(req: NextRequest) {
         tokens: { input: tokensInput, output: tokensOutput },
         costo_usd: costoUsd,
         duracion_ms: duracion,
+        ...(insertError ? { insert_error: insertError } : {}),
       });
 
     } catch (err) {
