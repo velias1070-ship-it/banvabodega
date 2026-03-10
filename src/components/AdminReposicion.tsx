@@ -740,6 +740,18 @@ export default function AdminReposicion() {
   const [creandoPicking, setCreandoPicking] = useState(false);
   const [pickingCreado, setPickingCreado] = useState<string | null>(null);
 
+  // ProfitGuard API
+  const [pgLoading, setPgLoading] = useState(false);
+  const [pgError, setPgError] = useState<string | null>(null);
+  const [pgCachedAt, setPgCachedAt] = useState<string | null>(null);
+  const [pgMinutosCache, setPgMinutosCache] = useState<number | null>(null);
+  const [showManualUpload, setShowManualUpload] = useState(false);
+  const [pgDesde, setPgDesde] = useState(() => {
+    const d = new Date(); d.setDate(d.getDate() - 60);
+    return d.toISOString().slice(0, 10);
+  });
+  const [pgHasta, setPgHasta] = useState(() => new Date().toISOString().slice(0, 10));
+
   // Editable envio a full
   const [envioEditMode, setEnvioEditMode] = useState(false);
   const [envioEditable, setEnvioEditable] = useState<Map<string, number>>(new Map()); // skuVenta -> qty override
@@ -862,6 +874,46 @@ export default function AdminReposicion() {
     };
     reader.readAsArrayBuffer(file);
   }, []);
+
+  // Cargar órdenes desde ProfitGuard API
+  const cargarDesdeProfitGuard = useCallback(async (forceRefresh = false) => {
+    setPgLoading(true);
+    setPgError(null);
+    try {
+      const from = `${pgDesde}T00:00`;
+      const to = `${pgHasta}T23:59`;
+      const url = `/api/profitguard/orders?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${forceRefresh ? "&refresh=1" : ""}`;
+      const res = await fetch(url);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        throw new Error(body.error || `Error ${res.status}`);
+      }
+      const body = await res.json();
+      const mapped: OrdenRaw[] = (body.ordenes || []).map((o: Record<string, unknown>) => ({
+        sku: o.sku as string,
+        cantidad: o.cantidad as number,
+        fecha: new Date(o.fecha as string),
+        canal: o.canal as "full" | "flex",
+        subtotal: (o.subtotal as number) || 0,
+        comisionTotal: (o.comisionTotal as number) || 0,
+        costoEnvio: (o.costoEnvio as number) || 0,
+        ingresoEnvio: (o.ingresoEnvio as number) || 0,
+      }));
+      setOrdenes(mapped);
+      setFileNameOrdenes(`ProfitGuard API (${mapped.length})`);
+      if (body.cached) {
+        setPgCachedAt(body.cached_at);
+        setPgMinutosCache(body.minutos_cache);
+      } else {
+        setPgCachedAt(new Date().toISOString());
+        setPgMinutosCache(0);
+      }
+    } catch (e) {
+      setPgError(e instanceof Error ? e.message : "Error desconocido");
+    } finally {
+      setPgLoading(false);
+    }
+  }, [pgDesde, pgHasta]);
 
   // Calcular
   const resultado = useMemo(() => {
@@ -1463,13 +1515,70 @@ export default function AdminReposicion() {
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:12, marginBottom:20 }}>
         <div className="card" style={{ textAlign:"center", padding:20 }}>
           <div style={{ fontSize:24, marginBottom:8 }}>📋</div>
-          <div style={{ fontSize:13, fontWeight:600, marginBottom:4 }}>Archivo de Órdenes</div>
-          <div style={{ fontSize:11, color:"var(--txt3)", marginBottom:12 }}>Export ProfitGuard — Ventas</div>
-          <label style={{ display:"inline-block", padding:"8px 20px", borderRadius:8, background:"var(--bg3)", border:"1px solid var(--bg4)", cursor:"pointer", fontSize:12, fontWeight:600, color:"var(--cyan)" }}>
-            {fileNameOrdenes || "Seleccionar archivo"}
-            <input type="file" accept=".xlsx,.xls,.csv" onChange={handleOrdenes} style={{ display:"none" }} />
-          </label>
-          {ordenes && <div style={{ marginTop:8, fontSize:11, color:"var(--green)" }}>{ordenes.length} órdenes cargadas</div>}
+          <div style={{ fontSize:13, fontWeight:600, marginBottom:4 }}>Órdenes ProfitGuard</div>
+          <div style={{ fontSize:11, color:"var(--txt3)", marginBottom:8 }}>Carga automática via API</div>
+
+          {/* Selector de rango de fechas */}
+          <div style={{ display:"flex", gap:6, justifyContent:"center", marginBottom:8 }}>
+            <input type="date" className="form-input mono" value={pgDesde}
+              onChange={e => setPgDesde(e.target.value)}
+              style={{ fontSize:11, padding:"4px 6px", width:120 }} />
+            <span style={{ color:"var(--txt3)", fontSize:11, alignSelf:"center" }}>→</span>
+            <input type="date" className="form-input mono" value={pgHasta}
+              onChange={e => setPgHasta(e.target.value)}
+              style={{ fontSize:11, padding:"4px 6px", width:120 }} />
+          </div>
+
+          {/* Botón cargar */}
+          <button
+            onClick={() => cargarDesdeProfitGuard(false)}
+            disabled={pgLoading}
+            style={{
+              padding:"8px 20px", borderRadius:8, border:"1px solid var(--cyanBd)",
+              background:"var(--cyanBg)", color:"var(--cyan)", cursor: pgLoading ? "wait" : "pointer",
+              fontSize:12, fontWeight:600, opacity: pgLoading ? 0.6 : 1,
+            }}
+          >
+            {pgLoading ? "Cargando..." : "Cargar desde ProfitGuard"}
+          </button>
+
+          {/* Estado */}
+          {pgError && (
+            <div style={{ marginTop:8, fontSize:11, color:"var(--red)" }}>
+              {pgError}
+            </div>
+          )}
+          {ordenes && !pgError && (
+            <div style={{ marginTop:8, fontSize:11, color:"var(--green)" }}>
+              {ordenes.length.toLocaleString()} órdenes cargadas
+            </div>
+          )}
+          {pgCachedAt && !pgError && (
+            <div style={{ marginTop:4, fontSize:10, color:"var(--txt3)" }}>
+              Cargadas hace {pgMinutosCache != null ? `${pgMinutosCache} min` : "—"}
+              {" · "}
+              <span onClick={() => cargarDesdeProfitGuard(true)}
+                style={{ color:"var(--cyan)", cursor:"pointer", textDecoration:"underline" }}>
+                Recargar
+              </span>
+            </div>
+          )}
+
+          {/* Fallback manual */}
+          <div style={{ marginTop:10 }}>
+            <span onClick={() => setShowManualUpload(!showManualUpload)}
+              style={{ fontSize:10, color:"var(--txt3)", cursor:"pointer", textDecoration:"underline" }}>
+              {showManualUpload ? "ocultar" : "o subir archivo manualmente"}
+            </span>
+            {showManualUpload && (
+              <div style={{ marginTop:6 }}>
+                <label style={{ display:"inline-block", padding:"6px 14px", borderRadius:8, background:"var(--bg3)", border:"1px solid var(--bg4)", cursor:"pointer", fontSize:11, fontWeight:600, color:"var(--txt2)" }}>
+                  {fileNameOrdenes && !fileNameOrdenes.startsWith("ProfitGuard") ? fileNameOrdenes : "Seleccionar archivo"}
+                  <input type="file" accept=".xlsx,.xls,.csv" onChange={handleOrdenes} style={{ display:"none" }} />
+                </label>
+              </div>
+            )}
+          </div>
         </div>
         <div className="card" style={{ textAlign:"center", padding:20 }}>
           <div style={{ fontSize:24, marginBottom:8 }}>📊</div>
