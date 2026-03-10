@@ -119,6 +119,9 @@ export default function AdminAgentes() {
   const [runningAgent, setRunningAgent] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  // Track de insights actualizados recientemente (para no revertir optimistic updates)
+  const recentUpdatesRef = useRef<Map<string, { estado: string; ts: number }>>(new Map());
+
   // Filtros
   const [filtroAgente, setFiltroAgente] = useState<string>("todos");
   const [filtroSeveridad, setFiltroSeveridad] = useState<string>("todos");
@@ -135,7 +138,17 @@ export default function AdminAgentes() {
       }
       const data = await res.json();
       setConfigs(data.configs || []);
-      setInsights(data.insights || []);
+      // Merge: respetar optimistic updates recientes (< 10s) que el server aún no refleja
+      const now = Date.now();
+      const updates = recentUpdatesRef.current;
+      // Limpiar updates viejos (> 10s)
+      Array.from(updates.entries()).forEach(([k, v]) => { if (now - v.ts > 10000) updates.delete(k); });
+      const mergedInsights = ((data.insights || []) as AgentInsight[]).map(i => {
+        const upd = updates.get(i.id);
+        if (upd && i.estado !== upd.estado) return { ...i, estado: upd.estado };
+        return i;
+      });
+      setInsights(mergedInsights);
       setRules(data.rules || []);
       setRuns(data.runs || []);
     } catch (e) {
@@ -325,6 +338,7 @@ export default function AdminAgentes() {
       {section === "insights" && <InsightsPanel insights={insightsFiltrados} filtroAgente={filtroAgente} filtroSeveridad={filtroSeveridad} filtroEstado={filtroEstado}
         setFiltroAgente={setFiltroAgente} setFiltroSeveridad={setFiltroSeveridad} setFiltroEstado={setFiltroEstado}
         agentes={configs} onRefresh={loadData} onUpdateInsight={(id, estado) => {
+          recentUpdatesRef.current.set(id, { estado, ts: Date.now() });
           setInsights(prev => prev.map(i => i.id === id ? { ...i, estado } : i));
         }} />}
       {section === "chat" && <ChatPanel />}
