@@ -165,9 +165,41 @@ export async function GET(req: NextRequest) {
   const from = searchParams.get("from");
   const to = searchParams.get("to");
   const forceRefresh = searchParams.get("refresh") === "1";
+  const debug = searchParams.get("debug") === "1";
 
   if (!from || !to) {
     return NextResponse.json({ error: "Parámetros 'from' y 'to' son requeridos" }, { status: 400 });
+  }
+
+  // Modo debug: devolver respuesta raw de la API para inspeccionar estructura
+  if (debug) {
+    try {
+      const baseUrl = "https://app.profitguard.cl/api/v1/orders";
+      const url = `${baseUrl}?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&page=1`;
+      const res = await fetch(url, {
+        headers: { "Authorization": `Bearer ${apiKey}`, "Accept": "application/json" },
+      });
+      const text = await res.text();
+      let parsed;
+      try { parsed = JSON.parse(text); } catch { parsed = null; }
+      return NextResponse.json({
+        debug: true,
+        status: res.status,
+        url,
+        raw_text_preview: text.slice(0, 2000),
+        parsed_keys: parsed ? Object.keys(parsed) : null,
+        pagination: parsed?.pagination ?? null,
+        data_length: Array.isArray(parsed?.data) ? parsed.data.length : null,
+        first_order_keys: parsed?.data?.[0] ? Object.keys(parsed.data[0]) : null,
+        first_order_sample: parsed?.data?.[0] ? JSON.stringify(parsed.data[0]).slice(0, 1500) : null,
+        first_item_keys: parsed?.data?.[0]?.orderItems?.[0] ? Object.keys(parsed.data[0].orderItems[0]) :
+                         parsed?.data?.[0]?.order_items?.[0] ? Object.keys(parsed.data[0].order_items[0]) : null,
+        first_item_sample: parsed?.data?.[0]?.orderItems?.[0] ? JSON.stringify(parsed.data[0].orderItems[0]).slice(0, 1000) :
+                           parsed?.data?.[0]?.order_items?.[0] ? JSON.stringify(parsed.data[0].order_items[0]).slice(0, 1000) : null,
+      });
+    } catch (e) {
+      return NextResponse.json({ debug: true, error: e instanceof Error ? e.message : "Error" }, { status: 502 });
+    }
   }
 
   // Revisar cache en Supabase
