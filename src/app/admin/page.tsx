@@ -3084,8 +3084,9 @@ function Inventario() {
   }, [expanded]);
 
   // Physical stock view (also search by sku_venta via composicion)
-  const allSkus = Object.keys(s.stock).filter(sku => {
-    if (skuTotal(sku) === 0) return false;
+  // Include all products (even with 0 stock) + any SKUs in stock not in products
+  const allProductSkus = new Set([...Object.keys(s.products), ...Object.keys(s.stock)]);
+  const allSkus = Array.from(allProductSkus).filter(sku => {
     if (!q) return true;
     const ql = q.toLowerCase();
     const prod = s.products[sku];
