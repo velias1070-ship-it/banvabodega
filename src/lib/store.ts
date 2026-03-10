@@ -424,10 +424,15 @@ export function getVentasPorSkuOrigen(skuOrigen: string): ComposicionVenta[] {
 
 // Dado un SKU Venta, busca el SKU físico en la tabla de productos (para productos simples sin composicion_venta)
 export function getSkuFisicoPorSkuVenta(skuVenta: string): string | null {
+  // 1. Buscar en el campo skuVenta de productos
   for (const [sku, prod] of Object.entries(_cache.products)) {
     // Un producto puede tener múltiples skuVenta separados por coma
     const ventas = prod.skuVenta.split(",").map(s => s.trim()).filter(Boolean);
     if (ventas.includes(skuVenta)) return sku;
+  }
+  // 2. Buscar en stockDetalle: si algún SKU físico tiene stock etiquetado con este skuVenta
+  for (const [sku, svMap] of Object.entries(_cache.stockDetalle)) {
+    if (svMap[skuVenta]) return sku;
   }
   return null;
 }
