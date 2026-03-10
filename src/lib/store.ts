@@ -544,6 +544,49 @@ export function findSkuVenta(query: string): { skuVenta: string; codigoMl: strin
 
 // ==================== ASYNC MUTATIONS ====================
 
+// Resolve sku_venta variants to decrement for an outbound movement.
+// Returns array of { skuVenta, qty } to decrement from each variant.
+// When stock has sku_venta assigned, we must pass it to updateStock so the RPC
+// matches the correct row (unique key includes sku_venta_key).
+function resolveSkuVentaForOut(sku: string, pos: string, totalQty: number): { skuVenta: string | null; qty: number }[] {
+  const detalleByVariant = _cache.stockDetalle[sku];
+  if (!detalleByVariant) return [{ skuVenta: null, qty: totalQty }];
+
+  // Collect all variants that have stock in this position
+  const variants: { skuVenta: string | null; available: number }[] = [];
+  for (const [sv, positions] of Object.entries(detalleByVariant)) {
+    const available = positions[pos] || 0;
+    if (available > 0) {
+      variants.push({ skuVenta: sv === SIN_ETIQUETAR ? null : sv, available });
+    }
+  }
+
+  if (variants.length === 0) return [{ skuVenta: null, qty: totalQty }];
+
+  // Distribute qty across variants (take from each until fulfilled)
+  const result: { skuVenta: string | null; qty: number }[] = [];
+  let remaining = totalQty;
+  for (const v of variants) {
+    if (remaining <= 0) break;
+    const take = Math.min(remaining, v.available);
+    result.push({ skuVenta: v.skuVenta, qty: take });
+    remaining -= take;
+  }
+  return result;
+}
+
+// Update stockDetalle cache after a movement
+function updateStockDetalleCache(sku: string, pos: string, skuVenta: string | null, delta: number) {
+  const sv = skuVenta || SIN_ETIQUETAR;
+  if (!_cache.stockDetalle[sku]) _cache.stockDetalle[sku] = {};
+  if (!_cache.stockDetalle[sku][sv]) _cache.stockDetalle[sku][sv] = {};
+  _cache.stockDetalle[sku][sv][pos] = (_cache.stockDetalle[sku][sv][pos] || 0) + delta;
+  if (_cache.stockDetalle[sku][sv][pos] <= 0) {
+    delete _cache.stockDetalle[sku][sv][pos];
+    if (Object.keys(_cache.stockDetalle[sku][sv]).length === 0) delete _cache.stockDetalle[sku][sv];
+  }
+}
+
 // Record movement + update stock (writes to Supabase + cache)
 export async function recordMovementAsync(m: Omit<Movement, "id">): Promise<Movement> {
   const mov: Movement = { ...m, id: uniqueMovId() };
@@ -553,6 +596,7 @@ export async function recordMovementAsync(m: Omit<Movement, "id">): Promise<Move
   let actualQty = m.qty;
   if (m.type === "in") {
     _cache.stock[m.sku][m.pos] = (_cache.stock[m.sku][m.pos] || 0) + m.qty;
+    updateStockDetalleCache(m.sku, m.pos, null, m.qty);
   } else {
     const prev = _cache.stock[m.sku][m.pos] || 0;
     actualQty = Math.min(m.qty, prev);
@@ -564,8 +608,16 @@ export async function recordMovementAsync(m: Omit<Movement, "id">): Promise<Move
 
   // Write to Supabase
   if (isConfigured()) {
-    const delta = m.type === "in" ? actualQty : -actualQty;
-    await db.updateStock(m.sku, m.pos, delta);
+    if (m.type === "in") {
+      await db.updateStock(m.sku, m.pos, actualQty);
+    } else {
+      // Resolve which sku_venta variants to decrement
+      const chunks = resolveSkuVentaForOut(m.sku, m.pos, actualQty);
+      for (const chunk of chunks) {
+        await db.updateStock(m.sku, m.pos, -chunk.qty, chunk.skuVenta);
+        updateStockDetalleCache(m.sku, m.pos, chunk.skuVenta, -chunk.qty);
+      }
+    }
     await db.insertMovimiento({
       tipo: m.type === "in" ? "entrada" : "salida",
       motivo: motivoToDB(m.reason, m.type),
@@ -591,30 +643,47 @@ export function recordMovement(m: Omit<Movement, "id">): Movement {
   const mov: Movement = { ...m, id: uniqueMovId() };
   if (!_cache.stock[m.sku]) _cache.stock[m.sku] = {};
   let actualQty = m.qty;
+
+  // For outbound, resolve sku_venta variants BEFORE updating cache
+  let outChunks: { skuVenta: string | null; qty: number }[] = [];
   if (m.type === "in") {
     _cache.stock[m.sku][m.pos] = (_cache.stock[m.sku][m.pos] || 0) + m.qty;
+    updateStockDetalleCache(m.sku, m.pos, null, m.qty);
   } else {
     const prev = _cache.stock[m.sku][m.pos] || 0;
     actualQty = Math.min(m.qty, prev);
+    outChunks = resolveSkuVentaForOut(m.sku, m.pos, actualQty);
     _cache.stock[m.sku][m.pos] = prev - actualQty;
     if (_cache.stock[m.sku][m.pos] === 0) delete _cache.stock[m.sku][m.pos];
+    // Update detalle cache for each variant
+    for (const chunk of outChunks) {
+      updateStockDetalleCache(m.sku, m.pos, chunk.skuVenta, -chunk.qty);
+    }
   }
   mov.qty = actualQty;
   _cache.movements.unshift(mov);
 
   // Fire to Supabase with cache rollback on failure
   if (isConfigured()) {
-    const delta = m.type === "in" ? actualQty : -actualQty;
-    db.updateStock(m.sku, m.pos, delta).catch((err) => {
-      console.error("Stock update failed, reverting cache:", err);
-      if (!_cache.stock[m.sku]) _cache.stock[m.sku] = {};
-      if (m.type === "in") {
+    if (m.type === "in") {
+      db.updateStock(m.sku, m.pos, actualQty).catch((err) => {
+        console.error("Stock update failed, reverting cache:", err);
+        if (!_cache.stock[m.sku]) _cache.stock[m.sku] = {};
         _cache.stock[m.sku][m.pos] = Math.max(0, (_cache.stock[m.sku][m.pos] || 0) - actualQty);
         if (_cache.stock[m.sku][m.pos] === 0) delete _cache.stock[m.sku][m.pos];
-      } else {
-        _cache.stock[m.sku][m.pos] = (_cache.stock[m.sku][m.pos] || 0) + actualQty;
+        updateStockDetalleCache(m.sku, m.pos, null, -actualQty);
+      });
+    } else {
+      // Fire each variant update to Supabase
+      for (const chunk of outChunks) {
+        db.updateStock(m.sku, m.pos, -chunk.qty, chunk.skuVenta).catch((err) => {
+          console.error("Stock update failed, reverting cache:", err);
+          if (!_cache.stock[m.sku]) _cache.stock[m.sku] = {};
+          _cache.stock[m.sku][m.pos] = (_cache.stock[m.sku][m.pos] || 0) + chunk.qty;
+          updateStockDetalleCache(m.sku, m.pos, chunk.skuVenta, chunk.qty);
+        });
       }
-    });
+    }
     db.insertMovimiento({
       tipo: m.type === "in" ? "entrada" : "salida",
       motivo: motivoToDB(m.reason, m.type),
