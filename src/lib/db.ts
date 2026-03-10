@@ -1334,9 +1334,15 @@ export async function fetchSkuVentaToFisicoMap(): Promise<Record<string, string>
   const map: Record<string, string> = {};
   for (const si of shipItems) {
     const sellerSku = (si.seller_sku || "").trim();
-    if (!sellerSku || map[sellerSku]) continue;
+    if (!sellerSku) continue;
     const fisico = itemToSku[si.item_id];
-    if (fisico && fisico !== sellerSku) map[sellerSku] = fisico;
+    if (!fisico || fisico === sellerSku) continue;
+    // Guardar tanto el original como versiones upper/lower para match case-insensitive
+    if (!map[sellerSku]) map[sellerSku] = fisico;
+    const upper = sellerSku.toUpperCase();
+    if (!map[upper]) map[upper] = fisico;
+    const lower = sellerSku.toLowerCase();
+    if (!map[lower]) map[lower] = fisico;
   }
   return map;
 }

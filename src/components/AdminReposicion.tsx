@@ -50,6 +50,7 @@ interface SkuVentaRow {
   formatosCompartidos: number;
   otrosFormatos: string[];
   stockBodegaFisico: number; // stock físico real del SKU Origen
+  sinMapeo: boolean; // true si no se encontró mapeo skuVenta→skuOrigen
 }
 
 interface SkuOrigenRow {
@@ -416,6 +417,7 @@ function calcularReposicion(
     let stockBodega = 0;
     let skuOrigenPrincipal = skuVenta;
     let stockBodegaFisico = 0;
+    let sinMapeo = false;
     if (componentes.length > 0) {
       // Para packs/combos, el stock de bodega es el mínimo de (stock_origen / unidades)
       stockBodega = Math.min(...componentes.map(c => Math.floor(skuTotal(c.skuOrigen) / c.unidades)));
@@ -423,9 +425,10 @@ function calcularReposicion(
       stockBodegaFisico = componentes.length === 1 ? skuTotal(componentes[0].skuOrigen) : skuTotal(componentes[0].skuOrigen);
     } else {
       // SKU simple: intentar buscar SKU físico real en productos
-      const skuFisico = getSkuFisicoPorSkuVenta(skuVenta) || skuVenta;
-      skuOrigenPrincipal = skuFisico;
-      stockBodega = skuTotal(skuFisico);
+      const skuFisico = getSkuFisicoPorSkuVenta(skuVenta);
+      sinMapeo = skuFisico === null;
+      skuOrigenPrincipal = skuFisico || skuVenta;
+      stockBodega = skuTotal(skuOrigenPrincipal);
       stockBodegaFisico = stockBodega;
     }
 
@@ -497,7 +500,7 @@ function calcularReposicion(
       pedir: sinStockProv.has(skuVenta) ? 0 : pedirVenta,
       accion,
       margenFlex, margenFull, costoProducto, sinCosto,
-      skuOrigenPrincipal, esCompartido, formatosCompartidos, otrosFormatos, stockBodegaFisico,
+      skuOrigenPrincipal, esCompartido, formatosCompartidos, otrosFormatos, stockBodegaFisico, sinMapeo,
     });
     // Guardar info para asociar a SKU Origen después
     ventaInfoMap.set(skuVenta, { nombre, velTotal, stockFull });
@@ -1723,7 +1726,11 @@ export default function AdminReposicion() {
                           <td className="mono" style={{ textAlign:"right" }}>{fmtNum(r.velFlex)}</td>
                           <td className="mono" style={{ textAlign:"right" }}>{r.stockFull}</td>
                           <td className="mono" style={{ textAlign:"right" }}>
-                            {r.esCompartido ? (
+                            {r.sinMapeo ? (
+                              <span title={`Sin mapeo: "${r.skuVenta}" no se encontró en el diccionario. Sincroniza el diccionario Google Sheet.`} style={{ cursor:"help", color:"var(--amber)" }}>
+                                ? <span style={{ fontSize:9 }}>sin mapeo</span>
+                              </span>
+                            ) : r.esCompartido ? (
                               <span title={`Stock físico de ${r.skuOrigenPrincipal}: ${r.stockBodegaFisico} uds en bodega. Compartido con: ${r.otrosFormatos.join(", ")}`} style={{ cursor:"help" }}>
                                 {r.stockBodega} <span style={{ color:"var(--cyan)", fontSize:9 }}>({r.formatosCompartidos}f)</span>
                               </span>
