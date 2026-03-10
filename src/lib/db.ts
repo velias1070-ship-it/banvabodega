@@ -1318,6 +1318,29 @@ export async function fetchMLItemsMap(): Promise<DBMLItemMap[]> {
   return (data || []) as DBMLItemMap[];
 }
 
+/** Construye mapeo seller_sku → SKU físico usando ml_shipment_items + ml_items_map */
+export async function fetchSkuVentaToFisicoMap(): Promise<Record<string, string>> {
+  const sb = getSupabase(); if (!sb) return {};
+  // 1. Get item_id → physical sku from ml_items_map
+  const { data: itemsMap } = await sb.from("ml_items_map").select("sku, item_id").eq("activo", true);
+  if (!itemsMap || itemsMap.length === 0) return {};
+  const itemToSku: Record<string, string> = {};
+  for (const row of itemsMap) itemToSku[row.item_id] = row.sku;
+
+  // 2. Get distinct seller_sku → item_id from ml_shipment_items
+  const { data: shipItems } = await sb.from("ml_shipment_items").select("seller_sku, item_id");
+  if (!shipItems || shipItems.length === 0) return {};
+
+  const map: Record<string, string> = {};
+  for (const si of shipItems) {
+    const sellerSku = (si.seller_sku || "").trim();
+    if (!sellerSku || map[sellerSku]) continue;
+    const fisico = itemToSku[si.item_id];
+    if (fisico && fisico !== sellerSku) map[sellerSku] = fisico;
+  }
+  return map;
+}
+
 export async function upsertMLItemMap(item: DBMLItemMap): Promise<boolean> {
   const sb = getSupabase(); if (!sb) return false;
   const { error } = await sb.from("ml_items_map").upsert(item, { onConflict: "sku,item_id" });

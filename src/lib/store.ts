@@ -73,6 +73,7 @@ export interface StoreData {
   movCounter: number;
   mapConfig?: MapConfig;
   composicion: ComposicionVenta[];
+  skuVentaToFisico: Record<string, string>;
 }
 
 // ==================== CONSTANTS ====================
@@ -110,7 +111,7 @@ export function saveProveedores(provs: string[]) {
 
 // ==================== CACHE ====================
 let _cache: StoreData = {
-  products: {}, positions: [], stock: {}, stockDetalle: {}, movements: [], movCounter: 0, composicion: [],
+  products: {}, positions: [], stock: {}, stockDetalle: {}, movements: [], movCounter: 0, composicion: [], skuVentaToFisico: {},
 };
 let _initialized = false;
 let _loading = false;
@@ -121,13 +122,14 @@ export async function initStore(): Promise<void> {
   if (!isConfigured()) { _initialized = true; return; }
   _loading = true;
   try {
-    const [prods, poss, stocks, movs, mapCfg, compVenta] = await Promise.all([
+    const [prods, poss, stocks, movs, mapCfg, compVenta, skuVentaToFisico] = await Promise.all([
       db.fetchProductos(),
       db.fetchPosiciones(),
       db.fetchStock(),
       db.fetchMovimientos(500),
       db.fetchMapConfig(),
       db.fetchComposicionVenta(),
+      db.fetchSkuVentaToFisicoMap(),
     ]);
 
     // Products → Record<sku, Product>
@@ -184,7 +186,7 @@ export async function initStore(): Promise<void> {
       skuOrigen: c.sku_origen, unidades: c.unidades,
     }));
 
-    _cache = { products, positions, stock, stockDetalle, movements, movCounter: movements.length, mapConfig, composicion };
+    _cache = { products, positions, stock, stockDetalle, movements, movCounter: movements.length, mapConfig, composicion, skuVentaToFisico };
     _initialized = true;
   } catch (err) {
     console.error("initStore error:", err);
@@ -277,7 +279,7 @@ async function flushToSupabase() {
 
 export function resetStore() {
   if (_flushTimer) { clearTimeout(_flushTimer); _flushTimer = null; }
-  _cache = { products: {}, positions: [], stock: {}, stockDetalle: {}, movements: [], movCounter: 0, composicion: [] };
+  _cache = { products: {}, positions: [], stock: {}, stockDetalle: {}, movements: [], movCounter: 0, composicion: [], skuVentaToFisico: {} };
   _initialized = false;
 }
 
@@ -434,6 +436,9 @@ export function getSkuFisicoPorSkuVenta(skuVenta: string): string | null {
   for (const [sku, svMap] of Object.entries(_cache.stockDetalle)) {
     if (svMap[skuVenta]) return sku;
   }
+  // 3. Buscar en mapeo ML: seller_sku → SKU físico (via ml_shipment_items + ml_items_map)
+  const fromML = _cache.skuVentaToFisico[skuVenta];
+  if (fromML && _cache.stock[fromML]) return fromML;
   return null;
 }
 
