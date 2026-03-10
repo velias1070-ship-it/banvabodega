@@ -3826,9 +3826,36 @@ function Movimientos() {
             </select>
           </div>
         </div>
-        <div style={{display:"flex",justifyContent:"space-between",marginTop:8,fontSize:12}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:8,fontSize:12}}>
           <span style={{color:"var(--txt3)"}}>{movs.length} movimientos</span>
-          <span><span style={{color:"var(--green)",fontWeight:600}}>+{totalIn.toLocaleString("es-CL")}</span> / <span style={{color:"var(--red)",fontWeight:600}}>-{totalOut.toLocaleString("es-CL")}</span></span>
+          <div style={{display:"flex",gap:8,alignItems:"center"}}>
+            <span><span style={{color:"var(--green)",fontWeight:600}}>+{totalIn.toLocaleString("es-CL")}</span> / <span style={{color:"var(--red)",fontWeight:600}}>-{totalOut.toLocaleString("es-CL")}</span></span>
+            <button onClick={() => {
+              const header = "ID,Fecha,Hora,Tipo,Motivo,SKU,Producto,Posición,Operador,Nota,Cantidad";
+              const rows = movs.map(m => {
+                const prod = s.products[m.sku];
+                const reason = (IN_REASONS as any)[m.reason] || (OUT_REASONS as any)[m.reason] || m.reason;
+                const escapeCsv = (v: string) => v.includes(",") || v.includes('"') || v.includes("\n") ? '"' + v.replace(/"/g, '""') + '"' : v;
+                return [
+                  m.id, fmtDate(m.ts), fmtTime(m.ts),
+                  m.type === "in" ? "ENTRADA" : "SALIDA",
+                  escapeCsv(reason), m.sku, escapeCsv(prod?.name || ""),
+                  m.pos, escapeCsv(m.who || ""), escapeCsv(m.note || ""),
+                  (m.type === "in" ? "" : "-") + m.qty
+                ].join(",");
+              });
+              const csv = "\uFEFF" + header + "\n" + rows.join("\n");
+              const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = `movimientos_${filterDate || new Date().toISOString().slice(0,10)}.csv`;
+              a.click();
+              URL.revokeObjectURL(url);
+            }} style={{padding:"4px 10px",borderRadius:6,background:"var(--bg3)",color:"var(--txt2)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)",cursor:"pointer"}}>
+              Exportar CSV
+            </button>
+          </div>
         </div>
       </div>
 
