@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
+export const maxDuration = 120; // Permitir hasta 2 min para paginar todas las páginas
+
 const PG_API = "https://app.profitguard.cl/api/v1/orders";
 
 interface PGOrderItem {
@@ -53,55 +55,79 @@ async function fetchPage(apiKey: string, url: string): Promise<PGResponse> {
   return res.json();
 }
 
-async function fetchAllOrders(apiKey: string, from: string, to: string): Promise<PGOrder[]> {
+async function fetchAllPages(apiKey: string, baseUrl: string): Promise<PGOrder[]> {
   const allOrders: PGOrder[] = [];
 
-  // Estrategia 1: Con filtro de status "paid"
-  let url = `${PG_API}?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&status=paid&page=1`;
-  let firstResponse = await fetchPage(apiKey, url);
-
-  // Si no hay datos con status=paid, intentar sin filtro de status
-  if (firstResponse.data.length === 0) {
-    console.log("[ProfitGuard] Sin resultados con status=paid, intentando sin filtro de status");
-    url = `${PG_API}?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&page=1`;
-    firstResponse = await fetchPage(apiKey, url);
-  }
-
-  // Si sigue vacío, intentar sin filtros de fecha (y filtrar en backend)
-  let filtrarFechaBackend = false;
-  if (firstResponse.data.length === 0) {
-    console.log("[ProfitGuard] Sin resultados con filtros de fecha, trayendo todo");
-    url = `${PG_API}?page=1`;
-    firstResponse = await fetchPage(apiKey, url);
-    filtrarFechaBackend = true;
-  }
-
+  // Página 1
+  const firstResponse = await fetchPage(apiKey, `${baseUrl}&page=1`);
   allOrders.push(...firstResponse.data);
   const totalPages = firstResponse.pagination?.pages ?? 1;
 
-  console.log(`[ProfitGuard] Página 1/${totalPages} — ${firstResponse.data.length} órdenes`);
+  console.log(`[ProfitGuard] Página 1/${totalPages} — ${firstResponse.data.length} órdenes (total según API: ${firstResponse.pagination?.count ?? "?"})`);
 
-  // Paginar el resto con 500ms delay
-  const baseForPagination = url.replace(/page=\d+/, "");
-  for (let page = 2; page <= totalPages; page++) {
-    await new Promise(r => setTimeout(r, 500));
-    const pageUrl = `${baseForPagination}page=${page}`;
-    const pageRes = await fetchPage(apiKey, pageUrl);
+  // Todas las páginas restantes sin límite
+  let page = 2;
+  while (page <= totalPages) {
+    await new Promise(r => setTimeout(r, 300));
+    const pageRes = await fetchPage(apiKey, `${baseUrl}&page=${page}`);
     allOrders.push(...pageRes.data);
     console.log(`[ProfitGuard] Página ${page}/${totalPages} — ${pageRes.data.length} órdenes`);
-  }
-
-  // Si tuvimos que traer todo sin filtro de fecha, filtrar en backend
-  if (filtrarFechaBackend && from && to) {
-    const fromDate = new Date(from);
-    const toDate = new Date(to);
-    return allOrders.filter(o => {
-      const d = new Date(o.datetime);
-      return d >= fromDate && d <= toDate;
-    });
+    page++;
   }
 
   return allOrders;
+}
+
+async function fetchAllOrders(apiKey: string, from: string, to: string): Promise<PGOrder[]> {
+  // Estrategia 1: Con filtro de fecha y status=paid
+  const urlWithDates = `${PG_API}?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&status=paid`;
+  let orders = await fetchAllPages(apiKey, urlWithDates);
+
+  if (orders.length > 0) {
+    // Verificar si las fechas realmente se aplicaron
+    const fechas = orders.map(o => new Date(o.datetime).getTime());
+    const minFecha = new Date(Math.min(...fechas));
+    const maxFecha = new Date(Math.max(...fechas));
+    const fromDate = new Date(from);
+    console.log(`[ProfitGuard] Rango solicitado: ${from} a ${to}`);
+    console.log(`[ProfitGuard] Rango recibido: ${minFecha.toISOString().slice(0,10)} a ${maxFecha.toISOString().slice(0,10)}`);
+
+    // Si la fecha mínima recibida es mucho más reciente que la solicitada, las fechas se ignoraron
+    const diffDays = (minFecha.getTime() - fromDate.getTime()) / (1000 * 60 * 60 * 24);
+    if (diffDays > 7) {
+      console.log(`[ProfitGuard] API parece ignorar filtro de fechas (diferencia ${Math.round(diffDays)} días). Intentando sin filtro de fechas...`);
+      orders = []; // Forzar fallback
+    }
+  }
+
+  // Estrategia 2: Sin filtro de status
+  if (orders.length === 0) {
+    console.log("[ProfitGuard] Intentando sin filtro de status...");
+    const urlNoStatus = `${PG_API}?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+    orders = await fetchAllPages(apiKey, urlNoStatus);
+  }
+
+  // Estrategia 3: Sin filtros de fecha — traer todo y filtrar en backend
+  if (orders.length === 0) {
+    console.log("[ProfitGuard] Sin resultados con filtros de fecha, trayendo todo sin filtros");
+    const urlAll = `${PG_API}?status=paid`;
+    orders = await fetchAllPages(apiKey, urlAll);
+
+    // Filtrar en backend
+    if (orders.length > 0 && from && to) {
+      const fromDate = new Date(from);
+      const toDate = new Date(to);
+      toDate.setHours(23, 59, 59, 999);
+      const before = orders.length;
+      orders = orders.filter(o => {
+        const d = new Date(o.datetime);
+        return d >= fromDate && d <= toDate;
+      });
+      console.log(`[ProfitGuard] Filtrado backend: ${before} → ${orders.length} órdenes en rango ${from} a ${to}`);
+    }
+  }
+
+  return orders;
 }
 
 interface MappedOrder {
