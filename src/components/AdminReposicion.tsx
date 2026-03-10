@@ -889,16 +889,20 @@ export default function AdminReposicion() {
         throw new Error(body.error || `Error ${res.status}`);
       }
       const body = await res.json();
-      const mapped: OrdenRaw[] = (body.ordenes || []).map((o: Record<string, unknown>) => ({
-        sku: o.sku as string,
-        cantidad: o.cantidad as number,
-        fecha: new Date(o.fecha as string),
-        canal: o.canal as "full" | "flex",
-        subtotal: (o.subtotal as number) || 0,
-        comisionTotal: (o.comisionTotal as number) || 0,
-        costoEnvio: (o.costoEnvio as number) || 0,
-        ingresoEnvio: (o.ingresoEnvio as number) || 0,
-      }));
+      const mapped: OrdenRaw[] = (body.ordenes || []).map((o: Record<string, unknown>) => {
+        const logistica = String(o.logistica || "").toLowerCase();
+        const canal: "full" | "flex" = (logistica === "fulfillment" || logistica === "xd_drop_off") ? "full" : "flex";
+        return {
+          sku: o.sku as string,
+          cantidad: o.cantidad as number,
+          fecha: new Date(o.fecha as string),
+          canal,
+          subtotal: (o.subtotal as number) || 0,
+          comisionTotal: (o.comisionTotal as number) || 0,
+          costoEnvio: (o.costoEnvio as number) || 0,
+          ingresoEnvio: (o.ingresoEnvio as number) || 0,
+        };
+      });
       setOrdenes(mapped);
       setFileNameOrdenes(`ProfitGuard API (${mapped.length})`);
       if (body.cached) {
