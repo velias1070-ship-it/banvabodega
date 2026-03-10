@@ -324,7 +324,9 @@ export default function AdminAgentes() {
       {/* Contenido */}
       {section === "insights" && <InsightsPanel insights={insightsFiltrados} filtroAgente={filtroAgente} filtroSeveridad={filtroSeveridad} filtroEstado={filtroEstado}
         setFiltroAgente={setFiltroAgente} setFiltroSeveridad={setFiltroSeveridad} setFiltroEstado={setFiltroEstado}
-        agentes={configs} onRefresh={loadData} />}
+        agentes={configs} onRefresh={loadData} onUpdateInsight={(id, estado) => {
+          setInsights(prev => prev.map(i => i.id === id ? { ...i, estado } : i));
+        }} />}
       {section === "chat" && <ChatPanel />}
       {section === "rules" && <RulesPanel rules={rules} agentes={configs} onRefresh={loadData} />}
       {section === "history" && <HistoryPanel runs={runs} />}
@@ -336,12 +338,13 @@ export default function AdminAgentes() {
 // Insights Panel
 // ============================================
 
-function InsightsPanel({ insights, filtroAgente, filtroSeveridad, filtroEstado, setFiltroAgente, setFiltroSeveridad, setFiltroEstado, agentes, onRefresh }: {
+function InsightsPanel({ insights, filtroAgente, filtroSeveridad, filtroEstado, setFiltroAgente, setFiltroSeveridad, setFiltroEstado, agentes, onRefresh, onUpdateInsight }: {
   insights: AgentInsight[];
   filtroAgente: string; filtroSeveridad: string; filtroEstado: string;
   setFiltroAgente: (v: string) => void; setFiltroSeveridad: (v: string) => void; setFiltroEstado: (v: string) => void;
   agentes: AgentConfig[];
   onRefresh: () => void;
+  onUpdateInsight: (id: string, estado: string) => void;
 }) {
   const [feedbackId, setFeedbackId] = useState<string | null>(null);
   const [feedbackTexto, setFeedbackTexto] = useState("");
@@ -356,9 +359,15 @@ function InsightsPanel({ insights, filtroAgente, filtroSeveridad, filtroEstado, 
         body: JSON.stringify({ insight_id: insightId, estado, feedback_texto: texto }),
       });
       const data = await res.json();
+      if (!res.ok) {
+        alert(`Error al actualizar insight: ${data.error || res.statusText}`);
+        return;
+      }
       if (data.regla_generada) {
         alert(`Regla generada: "${data.regla_generada}"`);
       }
+      // Actualización optimista: remover de pendientes inmediatamente
+      onUpdateInsight(insightId, estado);
       setFeedbackId(null);
       setFeedbackTexto("");
       onRefresh();

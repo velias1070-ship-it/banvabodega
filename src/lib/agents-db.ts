@@ -131,9 +131,14 @@ export async function insertAgentInsights(insights: Omit<DBAgentInsight, "id" | 
   return { ok: true, inserted: data || [] };
 }
 
-export async function updateAgentInsight(id: string, fields: Partial<DBAgentInsight>) {
-  const sb = getServerSupabase(); if (!sb) return;
-  await sb.from("agent_insights").update(fields).eq("id", id);
+export async function updateAgentInsight(id: string, fields: Partial<DBAgentInsight>): Promise<{ ok: boolean; error?: string }> {
+  const sb = getServerSupabase(); if (!sb) return { ok: false, error: "DB no disponible" };
+  const { error } = await sb.from("agent_insights").update(fields).eq("id", id);
+  if (error) {
+    console.error("[updateAgentInsight] Error:", error.message);
+    return { ok: false, error: error.message };
+  }
+  return { ok: true };
 }
 
 // ============================================
