@@ -266,6 +266,12 @@ export async function fetchAllMovimientos(): Promise<DBMovimiento[]> {
   return all;
 }
 
+export async function fetchMovimientosBySku(sku: string): Promise<DBMovimiento[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("movimientos").select("*").eq("sku", sku).order("created_at", { ascending: false });
+  return data || [];
+}
+
 export async function fetchMovimientosByRecepcion(recepcionId: string): Promise<DBMovimiento[]> {
   const sb = getSupabase(); if (!sb) return [];
   const { data } = await sb.from("movimientos").select("*").eq("recepcion_id", recepcionId);

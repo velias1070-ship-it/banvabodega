@@ -5,7 +5,7 @@ import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, s
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto } from "@/lib/db";
-import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, fetchAllPedidosFlex, fetchPedidosFlexByEstado, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments } from "@/lib/db";
+import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, fetchAllPedidosFlex, fetchPedidosFlexByEstado, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku } from "@/lib/db";
 import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap, ShipmentWithItems } from "@/lib/db";
 import { getOAuthUrl } from "@/lib/ml";
 import Link from "next/link";
@@ -3063,6 +3063,25 @@ function Inventario() {
   const [,setTick] = useState(0);
   const refresh = useCallback(() => setTick(t => t + 1), []);
   const s = getStore();
+  const [skuMovs, setSkuMovs] = useState<Movement[]>([]);
+  const [skuMovsLoading, setSkuMovsLoading] = useState(false);
+
+  useEffect(() => {
+    if (!expanded) { setSkuMovs([]); return; }
+    let cancelled = false;
+    setSkuMovsLoading(true);
+    fetchMovimientosBySku(expanded).then(rows => {
+      if (cancelled) return;
+      setSkuMovs(rows.map(r => ({
+        id: r.id || crypto.randomUUID(), sku: r.sku, pos: r.posicion_id, qty: r.cantidad,
+        type: r.tipo === "entrada" ? "in" as const : "out" as const,
+        reason: r.motivo as any, who: r.operario || "", note: r.nota || "",
+        ts: r.created_at || "",
+      })));
+      setSkuMovsLoading(false);
+    }).catch(() => { if (!cancelled) setSkuMovsLoading(false); });
+    return () => { cancelled = true; };
+  }, [expanded]);
 
   // Physical stock view (also search by sku_venta via composicion)
   const allSkus = Object.keys(s.stock).filter(sku => {
@@ -3540,9 +3559,9 @@ function Inventario() {
                           </div>
                         );})()}
                         <ReasignarFormatoPanel sku={sku} onDone={refresh} />
-                        <div style={{fontSize:12,fontWeight:700,marginBottom:8}}>Historial de movimientos — {sku}</div>
+                        <div style={{fontSize:12,fontWeight:700,marginBottom:8}}>Historial de movimientos — {sku} {skuMovsLoading ? <span style={{fontWeight:400,color:"var(--txt3)"}}>(cargando...)</span> : <span style={{fontWeight:400,color:"var(--txt3)",fontSize:10}}>({skuMovs.length} movimientos)</span>}</div>
                         <table className="tbl"><thead><tr><th>Fecha</th><th>Tipo</th><th>Motivo</th><th>Pos</th><th>Quien</th><th>Nota</th><th style={{textAlign:"right"}}>Qty</th></tr></thead>
-                          <tbody>{s.movements.filter(m=>m.sku===sku).slice(0,20).map(m=>(
+                          <tbody>{skuMovs.map(m=>(
                             <tr key={m.id}>
                               <td style={{fontSize:11}}>{fmtDate(m.ts)} {fmtTime(m.ts)}</td>
                               <td><span className="mov-badge" style={{background:m.type==="in"?"var(--greenBg)":"var(--redBg)",color:m.type==="in"?"var(--green)":"var(--red)"}}>{m.type==="in"?"IN":"OUT"}</span></td>
@@ -3564,7 +3583,6 @@ function Inventario() {
           <div className="mobile-only">
             {allSkus.map(sku=>{
               const prod=s.products[sku];const positions=skuPositions(sku);const total=skuTotal(sku);const isOpen=expanded===sku;
-              const movs=s.movements.filter(m=>m.sku===sku);
               return(
                 <div key={sku} className="card" style={{marginTop:6,cursor:"pointer"}} onClick={()=>setExpanded(isOpen?null:sku)}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
@@ -3597,8 +3615,8 @@ function Inventario() {
                       </div>
                     );})()}
                     <ReasignarFormatoPanel sku={sku} onDone={refresh} />
-                    <div style={{fontSize:11,fontWeight:700,color:"var(--txt2)",marginBottom:6}}>Historial ({movs.length})</div>
-                    {movs.slice(0,15).map(m=>(
+                    <div style={{fontSize:11,fontWeight:700,color:"var(--txt2)",marginBottom:6}}>Historial ({skuMovsLoading?"...":skuMovs.length} movimientos)</div>
+                    {skuMovs.map(m=>(
                       <div key={m.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"4px 0",fontSize:11}}>
                         <div><span style={{color:"var(--txt3)"}}>{fmtDate(m.ts)} {fmtTime(m.ts)}</span><span style={{marginLeft:6,color:"var(--txt3)"}}>Pos {m.pos}</span><span style={{marginLeft:6,fontSize:10,color:"var(--txt3)"}}>({(IN_REASONS as any)[m.reason]||(OUT_REASONS as any)[m.reason]})</span></div>
                         <span className="mono" style={{fontWeight:700,color:m.type==="in"?"var(--green)":"var(--red)"}}>{m.type==="in"?"+":"-"}{m.qty}</span>
