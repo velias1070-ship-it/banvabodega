@@ -79,6 +79,7 @@ interface SkuOrigenRow {
   statusProveedor?: ProveedorStatus;
   alertaCosto?: { costoWMS: number; costoProveedor: number };
   diasAgotamiento?: number;
+  nombreProveedor?: string; // proveedor del diccionario (Google Sheet)
 }
 
 interface ProveedorRaw {
@@ -537,6 +538,7 @@ function calcularReposicion(
   }
 
   // 5. Filas por SKU Origen (Nivel 2 — decisiones de compra y stock bodega)
+  const store = getStore();
   const origenRows: SkuOrigenRow[] = [];
   const origenEntries = Array.from(demandaFisicaPorOrigen.entries());
   for (let _j = 0; _j < origenEntries.length; _j++) {
@@ -587,6 +589,7 @@ function calcularReposicion(
       skusVentaAsociados,
       esCompartido: asociados.length > 1,
       accion,
+      nombreProveedor: store.products[skuOrigen]?.prov || undefined,
     });
   }
 
@@ -633,7 +636,6 @@ function calcularReposicion(
     const provMap = new Map<string, ProveedorRaw>();
     for (const p of proveedorData) provMap.set(p.skuOrigen, p);
 
-    const store = getStore();
     for (const row of origenRows) {
       const prov = provMap.get(row.skuOrigen);
       if (!prov) {
@@ -1444,7 +1446,7 @@ export default function AdminReposicion() {
     if (tieneProveedor) {
       const headers = ["SKU Origen", "Nombre", "Uds a pedir", "Bultos", "Inner Pack", "Pedir Real", "Costo Unitario", "Costo Total Línea", "Stock Proveedor", "Estado"];
       const dataRows = rows.map(r => {
-        const estado = r.statusProveedor === "sin_stock" ? "Sin stock" : r.statusProveedor === "otro_proveedor" ? "Otro proveedor" : "OK";
+        const estado = r.statusProveedor === "sin_stock" ? "Sin stock" : r.statusProveedor === "otro_proveedor" ? (r.nombreProveedor || "Otro proveedor") : "OK";
         return [
           r.skuOrigen, r.nombre,
           String(r.pedirProveedor),
@@ -2495,7 +2497,7 @@ export default function AdminReposicion() {
                             {r.statusProveedor === "sin_stock" ? (
                               <span style={{ color:"var(--red)" }}>⚠️ Sin stock{r.diasAgotamiento != null ? ` (${r.diasAgotamiento}d)` : ""}</span>
                             ) : r.statusProveedor === "otro_proveedor" ? (
-                              <span style={{ color:"var(--blue)" }}>🔵 Otro prov.</span>
+                              <span style={{ color:"var(--blue)" }}>🔵 {r.nombreProveedor || "Otro prov."}</span>
                             ) : (
                               <span style={{ color:"var(--green)" }}>✓</span>
                             )}
