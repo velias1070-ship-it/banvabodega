@@ -748,6 +748,7 @@ export default function AdminReposicion() {
   const [historialLoading, setHistorialLoading] = useState(false);
   const [pgLoading, setPgLoading] = useState(false);
   const [pgResult, setPgResult] = useState<{ nuevas: number; actualizadas: number; sinCambio: number; total: number } | null>(null);
+  const [pgProgreso, setPgProgreso] = useState("");
   const [fuenteOrdenes, setFuenteOrdenes] = useState<"historial" | "api" | "archivo" | null>(null);
   const [showArchivoOrdenes, setShowArchivoOrdenes] = useState(false);
   const [pgRangoDesde, setPgRangoDesde] = useState(() => {
@@ -866,33 +867,78 @@ export default function AdminReposicion() {
   const cargarDesdeProfitGuard = useCallback(async () => {
     setPgLoading(true);
     setPgResult(null);
+    setPgProgreso("Preparando...");
+
     try {
-      // 1. Obtener órdenes de ProfitGuard
-      const res = await fetch(`/api/profitguard/orders?from=${pgRangoDesde}&to=${pgRangoHasta}`);
-      const json = await res.json();
-      if (!res.ok || !json.ordenes) {
-        alert("Error al consultar ProfitGuard: " + (json.error || "Error desconocido"));
-        setPgLoading(false);
-        return;
+      // Dividir rango en chunks de 14 días
+      const chunks: { from: string; to: string; label: string }[] = [];
+      const meses = ["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
+      const start = new Date(pgRangoDesde + "T00:00:00");
+      const end = new Date(pgRangoHasta + "T23:59:59");
+
+      let cursor = new Date(start);
+      while (cursor <= end) {
+        const chunkEnd = new Date(cursor);
+        chunkEnd.setDate(chunkEnd.getDate() + 13); // 14 días
+        const actualEnd = chunkEnd > end ? end : chunkEnd;
+        const fromStr = cursor.toISOString().slice(0, 10);
+        const toStr = actualEnd.toISOString().slice(0, 10);
+        const label = `${cursor.getDate()} ${meses[cursor.getMonth()]} – ${actualEnd.getDate()} ${meses[actualEnd.getMonth()]}`;
+        chunks.push({ from: fromStr, to: toStr, label });
+        cursor = new Date(actualEnd);
+        cursor.setDate(cursor.getDate() + 1);
       }
-      // 2. Persistir en orders_history
-      const importRes = await fetch("/api/orders/import", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ordenes: json.ordenes, fuente: "api" }),
-      });
-      const importJson = await importRes.json();
-      setPgResult(importJson);
-      // 3. Cargar desde historial actualizado
+
+      const totales = { nuevas: 0, actualizadas: 0, sinCambio: 0, total: 0 };
+
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        setPgProgreso(`Cargando ${chunk.label} (${i + 1}/${chunks.length})...`);
+
+        // 1. Fetch órdenes del chunk
+        const res = await fetch(`/api/profitguard/orders?from=${chunk.from}&to=${chunk.to}`);
+        const json = await res.json();
+        if (!res.ok) {
+          console.error(`[ProfitGuard] Error chunk ${chunk.label}:`, json.error);
+          setPgProgreso(`Error en ${chunk.label}: ${json.error || "Error"}. Continuando...`);
+          await new Promise(r => setTimeout(r, 1000));
+          continue;
+        }
+
+        if (!json.ordenes || json.ordenes.length === 0) {
+          console.log(`[ProfitGuard] Chunk ${chunk.label}: 0 órdenes`);
+          continue;
+        }
+
+        // 2. Persistir inmediatamente
+        setPgProgreso(`Guardando ${json.ordenes.length} órdenes de ${chunk.label} (${i + 1}/${chunks.length})...`);
+        const importRes = await fetch("/api/orders/import", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ordenes: json.ordenes, fuente: "api" }),
+        });
+        const importJson = await importRes.json();
+        if (importJson) {
+          totales.nuevas += importJson.nuevas || 0;
+          totales.actualizadas += importJson.actualizadas || 0;
+          totales.sinCambio += importJson.sinCambio || 0;
+          totales.total += importJson.total || 0;
+        }
+      }
+
+      setPgResult(totales);
+      setPgProgreso("");
+
+      // Cargar desde historial actualizado
       await cargarDesdeHistorial();
       setFuenteOrdenes("api");
-      // Refrescar info historial
       fetch("/api/orders/query").then(r => r.json()).then(info => {
         if (info && info.total > 0) setHistorialInfo(info);
       }).catch(() => {});
     } catch (err) {
       console.error("Error ProfitGuard:", err);
       alert("Error de conexión con ProfitGuard");
+      setPgProgreso("");
     }
     setPgLoading(false);
   }, [pgRangoDesde, pgRangoHasta, cargarDesdeHistorial]);
@@ -1640,6 +1686,11 @@ export default function AdminReposicion() {
               style={{ width:"100%", padding:"6px 0", borderRadius:6, background:"var(--blueBg)", border:"1px solid var(--blueBd)", color:"var(--blue)", fontSize:11, fontWeight:600, cursor:"pointer" }}>
               {pgLoading ? "Consultando API..." : "Cargar desde ProfitGuard"}
             </button>
+            {pgProgreso && (
+              <div style={{ marginTop:4, fontSize:10, color:"var(--cyan)" }}>
+                {pgProgreso}
+              </div>
+            )}
             {pgResult && (
               <div style={{ marginTop:4, fontSize:10, color:"var(--green)" }}>
                 {pgResult.total.toLocaleString()} órdenes — {pgResult.nuevas} nuevas, {pgResult.actualizadas} actualizadas, {pgResult.sinCambio} sin cambio
