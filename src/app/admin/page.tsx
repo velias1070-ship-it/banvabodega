@@ -307,23 +307,35 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   const doAprobar = async (disc: DBDiscrepanciaCosto) => {
     if (!confirm(`Aprobar nuevo costo para ${disc.sku}?\nDiccionario: ${fmtMoney(disc.costo_diccionario)} → Factura: ${fmtMoney(disc.costo_factura)}\nEl diccionario se actualizará con el nuevo costo.`)) return;
     setLoading(true);
-    const result = await aprobarNuevoCosto(disc.id!, disc.sku, disc.costo_factura);
-    const sr = result.sheetResult;
-    if (sr?.ok) {
-      alert(`Costo aprobado y actualizado.\nDB: OK\nGoogle Sheet: fila ${sr.row}, celda ${sr.cell}`);
-    } else {
-      alert(`Costo aprobado en DB.\nGoogle Sheet: ${sr?.error || JSON.stringify(sr)}\n\nRevisa /api/sheet/update-cost en el navegador para diagnosticar.`);
+    try {
+      const result = await aprobarNuevoCosto(disc.id!, disc.sku, disc.costo_factura);
+      const sr = result.sheetResult;
+      if (sr?.ok) {
+        alert(`Costo aprobado y actualizado.\nDB: OK\nGoogle Sheet: fila ${sr.row}, celda ${sr.cell}`);
+      } else {
+        alert(`Costo aprobado en DB.\nGoogle Sheet: ${sr?.error || JSON.stringify(sr)}\n\nRevisa /api/sheet/update-cost en el navegador para diagnosticar.`);
+      }
+      await refreshDetail();
+    } catch (e: unknown) {
+      console.error("Error aprobando costo:", e);
+      alert(`Error al aprobar: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setLoading(false);
     }
-    await refreshDetail();
-    setLoading(false);
   };
   const doRechazar = async (disc: DBDiscrepanciaCosto) => {
     const nota = prompt("Motivo del rechazo (error proveedor, etc):", "Error de proveedor - reclamar");
     if (nota === null) return;
     setLoading(true);
-    await rechazarNuevoCosto(disc.id!, nota);
-    await refreshDetail();
-    setLoading(false);
+    try {
+      await rechazarNuevoCosto(disc.id!, nota);
+      await refreshDetail();
+    } catch (e: unknown) {
+      console.error("Error rechazando costo:", e);
+      alert(`Error al rechazar: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setLoading(false);
+    }
   };
 
   // ---- Line actions ----
@@ -402,30 +414,52 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   const doErrorAjusteConteo = async () => {
     if (!errorLinea || errorQty < 0 || !selRec) return;
     setErrorSaving(true);
-    await actualizarLineaRecepcion(errorLinea.id!, {
-      qty_factura: errorQty,
-      notas: `${errorLinea.notas ? errorLinea.notas + " | " : ""}Ajuste conteo: ${errorLinea.qty_factura} → ${errorQty}`,
-    });
-    setLineas(await getRecepcionLineas(selRec.id!));
-    const [dc, dq] = await Promise.all([detectarDiscrepanciasQty(selRec.id!, await getRecepcionLineas(selRec.id!)), getDiscrepanciasQty(selRec.id!)]);
-    setDiscrepanciasQty(dq);
-    setErrorSaving(false);
-    setErrorLinea(null);
+    try {
+      await actualizarLineaRecepcion(errorLinea.id!, {
+        qty_factura: errorQty,
+        notas: `${errorLinea.notas ? errorLinea.notas + " | " : ""}Ajuste conteo: ${errorLinea.qty_factura} → ${errorQty}`,
+      });
+      const updatedLineas = await getRecepcionLineas(selRec.id!);
+      setLineas(updatedLineas);
+      // Recalcular discrepancias (borrar PENDIENTE y re-detectar con nuevas cantidades)
+      const dq = await recalcularDiscrepanciasQty(selRec.id!, updatedLineas);
+      setDiscrepanciasQty(dq);
+      setErrorLinea(null);
+    } catch (e: unknown) {
+      console.error("Error ajuste conteo:", e);
+      alert(`Error al ajustar conteo: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setErrorSaving(false);
+    }
   };
   const doErrorCambioSku = async (newProduct: Product) => {
     if (!errorLinea || !selRec) return;
     setErrorSaving(true);
-    const oldSku = errorLinea.sku;
-    await actualizarLineaRecepcion(errorLinea.id!, {
-      sku: newProduct.sku,
-      nombre: newProduct.name,
-      codigo_ml: newProduct.mlCode || "",
-      requiere_etiqueta: newProduct.requiresLabel ?? errorLinea.requiere_etiqueta,
-      notas: `${errorLinea.notas ? errorLinea.notas + " | " : ""}Cambio SKU: ${oldSku} → ${newProduct.sku}`,
-    });
-    setLineas(await getRecepcionLineas(selRec.id!));
-    setErrorSaving(false);
-    setErrorLinea(null);
+    try {
+      const oldSku = errorLinea.sku;
+      await actualizarLineaRecepcion(errorLinea.id!, {
+        sku: newProduct.sku,
+        nombre: newProduct.name,
+        codigo_ml: newProduct.mlCode || "",
+        requiere_etiqueta: newProduct.requiresLabel ?? errorLinea.requiere_etiqueta,
+        notas: `${errorLinea.notas ? errorLinea.notas + " | " : ""}Cambio SKU: ${oldSku} → ${newProduct.sku}`,
+      });
+      const updatedLineas = await getRecepcionLineas(selRec.id!);
+      setLineas(updatedLineas);
+      // Recalcular discrepancias con nuevo SKU
+      const [dc, dq] = await Promise.all([
+        recalcularDiscrepancias(selRec.id!, updatedLineas),
+        recalcularDiscrepanciasQty(selRec.id!, updatedLineas),
+      ]);
+      setDiscrepancias(dc);
+      setDiscrepanciasQty(dq);
+      setErrorLinea(null);
+    } catch (e: unknown) {
+      console.error("Error cambio SKU:", e);
+      alert(`Error al cambiar SKU: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setErrorSaving(false);
+    }
   };
   const handleErrorSkuSearch = (q: string) => {
     setErrorSkuSearch(q);
@@ -821,9 +855,15 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                               const nota = prompt(`${r.label} — Notas (opcional):`, "");
                               if (nota === null) return;
                               setLoading(true);
-                              await resolverDiscrepanciaQty(d.id!, r.valor, nota);
-                              await refreshDetail();
-                              setLoading(false);
+                              try {
+                                await resolverDiscrepanciaQty(d.id!, r.valor, nota);
+                                await refreshDetail();
+                              } catch (e: unknown) {
+                                console.error("Error resolviendo discrepancia qty:", e);
+                                alert(`Error al resolver: ${e instanceof Error ? e.message : e}`);
+                              } finally {
+                                setLoading(false);
+                              }
                             }} disabled={loading}
                               style={{padding:"4px 8px",borderRadius:4,background:r.valor==="ACEPTADO"?"var(--green)":r.valor==="DEVOLUCION"?"var(--red)":"var(--cyan)",color:"#fff",fontSize:10,fontWeight:700,cursor:"pointer",border:"none"}}>
                               {r.label}
