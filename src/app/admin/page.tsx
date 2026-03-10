@@ -887,7 +887,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                   <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:12,marginBottom:16}}>
                     <button onClick={()=>setErrorQty(q=>Math.max(0,q-1))}
                       style={{width:48,height:48,borderRadius:10,background:"var(--bg3)",fontSize:22,fontWeight:700,border:"1px solid var(--bg4)"}}>−</button>
-                    <input type="number" value={errorQty} onChange={e=>setErrorQty(Math.max(0,parseInt(e.target.value)||0))}
+                    <input type="number" value={errorQty} onFocus={e=>e.target.select()} onChange={e=>setErrorQty(Math.max(0,parseInt(e.target.value)||0))}
                       style={{width:90,textAlign:"center",fontSize:32,fontWeight:700,padding:10,borderRadius:10,background:"var(--bg)",border:"2px solid var(--bg4)",color:"var(--txt1)"}} />
                     <button onClick={()=>setErrorQty(q=>q+1)}
                       style={{width:48,height:48,borderRadius:10,background:"var(--bg3)",fontSize:22,fontWeight:700,border:"1px solid var(--bg4)"}}>+</button>
@@ -975,10 +975,10 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                   <td style={{fontSize:11}}>
                     <input style={{...inputStyle,width:"100%",textAlign:"left"}} value={editLineaData.nombre} onChange={e=>setEditLineaData(d=>({...d,nombre:e.target.value}))}/>
                   </td>
-                  <td><input type="number" style={inputStyle} value={editLineaData.qty_factura} onChange={e=>setEditLineaData(d=>({...d,qty_factura:parseInt(e.target.value)||0}))}/></td>
-                  <td><input type="number" style={inputStyle} value={editLineaData.qty_recibida} onChange={e=>setEditLineaData(d=>({...d,qty_recibida:parseInt(e.target.value)||0}))}/></td>
-                  <td><input type="number" style={inputStyle} value={editLineaData.qty_etiquetada} onChange={e=>setEditLineaData(d=>({...d,qty_etiquetada:parseInt(e.target.value)||0}))}/></td>
-                  <td><input type="number" style={inputStyle} value={editLineaData.qty_ubicada} onChange={e=>setEditLineaData(d=>({...d,qty_ubicada:parseInt(e.target.value)||0}))}/></td>
+                  <td><input type="number" style={inputStyle} value={editLineaData.qty_factura} onFocus={e=>e.target.select()} onChange={e=>setEditLineaData(d=>({...d,qty_factura:parseInt(e.target.value)||0}))}/></td>
+                  <td><input type="number" style={inputStyle} value={editLineaData.qty_recibida} onFocus={e=>e.target.select()} onChange={e=>setEditLineaData(d=>({...d,qty_recibida:parseInt(e.target.value)||0}))}/></td>
+                  <td><input type="number" style={inputStyle} value={editLineaData.qty_etiquetada} onFocus={e=>e.target.select()} onChange={e=>setEditLineaData(d=>({...d,qty_etiquetada:parseInt(e.target.value)||0}))}/></td>
+                  <td><input type="number" style={inputStyle} value={editLineaData.qty_ubicada} onFocus={e=>e.target.select()} onChange={e=>setEditLineaData(d=>({...d,qty_ubicada:parseInt(e.target.value)||0}))}/></td>
                   <td><input type="number" step="0.01" style={inputStyle} value={editLineaData.costo_unitario} onChange={e=>setEditLineaData(d=>({...d,costo_unitario:parseFloat(e.target.value)||0}))}/></td>
                   <td className="mono" style={{textAlign:"right",fontSize:11,fontWeight:700}}>{editLineaData.costo_unitario?fmtMoney(editLineaData.costo_unitario*editLineaData.qty_factura):"—"}</td>
                   <td>
@@ -1100,7 +1100,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                     </div>
                   )}
                 </div>
-                <input type="number" className="form-input" value={addQty} onChange={e=>setAddQty(parseInt(e.target.value)||1)} style={{width:60,textAlign:"center",fontSize:12}}/>
+                <input type="number" className="form-input" value={addQty} onFocus={e=>e.target.select()} onChange={e=>setAddQty(parseInt(e.target.value)||1)} style={{width:60,textAlign:"center",fontSize:12}}/>
                 <button onClick={doAddLinea} style={{padding:"6px 12px",borderRadius:6,background:"var(--green)",color:"#fff",fontSize:12,fontWeight:700}}>+</button>
               </div>
             </div>
@@ -1166,7 +1166,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                   </div>
                 )}
               </div>
-              <input type="number" className="form-input" value={newQty} onChange={e=>setNewQty(parseInt(e.target.value)||1)} style={{width:70,textAlign:"center"}}/>
+              <input type="number" className="form-input" value={newQty} onFocus={e=>e.target.select()} onChange={e=>setNewQty(parseInt(e.target.value)||1)} style={{width:70,textAlign:"center"}}/>
               <button onClick={addLinea} style={{padding:"8px 14px",borderRadius:6,background:"var(--green)",color:"#fff",fontSize:12,fontWeight:700}}>+</button>
             </div>
           </div>
@@ -2323,7 +2323,7 @@ function AdminEtiquetas() {
                       <button onClick={()=>setQueue(queue.map((q,j)=>j===i?{...q,qty:Math.max(1,q.qty-1)}:q))}
                         style={{width:24,height:24,borderRadius:4,background:"var(--bg3)",color:"var(--txt2)",fontSize:14,fontWeight:700,border:"1px solid var(--bg4)",cursor:"pointer",lineHeight:"22px"}}>−</button>
                       <input className="mono" value={item.qty}
-                        onChange={e=>setQueue(queue.map((q,j)=>j===i?{...q,qty:Math.max(1,parseInt(e.target.value)||1)}:q))}
+                        onFocus={e=>e.target.select()} onChange={e=>setQueue(queue.map((q,j)=>j===i?{...q,qty:Math.max(1,parseInt(e.target.value)||1)}:q))}
                         style={{width:40,textAlign:"center",padding:4,borderRadius:4,background:"var(--bg3)",color:"var(--txt)",border:"1px solid var(--bg4)",fontSize:13,fontWeight:700}}/>
                       <button onClick={()=>setQueue(queue.map((q,j)=>j===i?{...q,qty:q.qty+1}:q))}
                         style={{width:24,height:24,borderRadius:4,background:"var(--bg3)",color:"var(--txt2)",fontSize:14,fontWeight:700,border:"1px solid var(--bg4)",cursor:"pointer",lineHeight:"22px"}}>+</button>
@@ -2651,7 +2651,7 @@ function Operaciones({ refresh }: { refresh: () => void }) {
                   <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:12}}>
                     <span style={{fontSize:12,color:"var(--txt3)",minWidth:90}}>Packs a vender:</span>
                     <button onClick={()=>setVentaQty(Math.max(1,ventaQty-1))} style={{width:36,height:36,borderRadius:"50%",background:"var(--bg3)",color:"var(--txt)",fontSize:18,border:"1px solid var(--bg4)"}}>−</button>
-                    <input type="number" className="form-input mono" value={ventaQty} onChange={e=>setVentaQty(Math.max(1,Math.min(ventaDisponible,parseInt(e.target.value)||1)))} style={{width:80,textAlign:"center",fontSize:18,fontWeight:700,padding:6}}/>
+                    <input type="number" className="form-input mono" value={ventaQty} onFocus={e=>e.target.select()} onChange={e=>setVentaQty(Math.max(1,Math.min(ventaDisponible,parseInt(e.target.value)||1)))} style={{width:80,textAlign:"center",fontSize:18,fontWeight:700,padding:6}}/>
                     <button onClick={()=>setVentaQty(Math.min(ventaDisponible,ventaQty+1))} style={{width:36,height:36,borderRadius:"50%",background:"var(--bg3)",color:"var(--txt)",fontSize:18,border:"1px solid var(--bg4)"}}>+</button>
                     <div className="qty-presets" style={{flex:1}}>{[1,2,5,10].map(n=><button key={n} className={ventaQty===n?"sel":""} onClick={()=>setVentaQty(Math.min(ventaDisponible,n))} style={{fontSize:10,padding:"4px 8px"}}>{n}</button>)}</div>
                   </div>
@@ -2713,7 +2713,7 @@ function Operaciones({ refresh }: { refresh: () => void }) {
               <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10}}>
                 <span style={{fontSize:12,color:"var(--txt3)",minWidth:50}}>Cantidad:</span>
                 <button onClick={()=>setQty(Math.max(1,qty-1))} style={{width:36,height:36,borderRadius:"50%",background:"var(--bg3)",color:"var(--txt)",fontSize:18,border:"1px solid var(--bg4)"}}>−</button>
-                <input type="number" className="form-input mono" value={qty} onChange={e=>setQty(Math.max(1,Math.min(mode==="transfer"?transferMax:maxQty,parseInt(e.target.value)||1)))} style={{width:80,textAlign:"center",fontSize:18,fontWeight:700,padding:6}}/>
+                <input type="number" className="form-input mono" value={qty} onFocus={e=>e.target.select()} onChange={e=>setQty(Math.max(1,Math.min(mode==="transfer"?transferMax:maxQty,parseInt(e.target.value)||1)))} style={{width:80,textAlign:"center",fontSize:18,fontWeight:700,padding:6}}/>
                 <button onClick={()=>setQty(Math.min(mode==="transfer"?transferMax:maxQty,qty+1))} style={{width:36,height:36,borderRadius:"50%",background:"var(--bg3)",color:"var(--txt)",fontSize:18,border:"1px solid var(--bg4)"}}>+</button>
                 <div className="qty-presets" style={{flex:1}}>{[5,10,20,50].map(n=><button key={n} className={qty===n?"sel":""} onClick={()=>setQty(n)} style={{fontSize:10,padding:"4px 8px"}}>{n}</button>)}</div>
               </div>
@@ -2927,7 +2927,7 @@ function MiniMapPanel({ positions, onSelectProduct, onSetMode, refresh }: {
                     <div key={item.sku} style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,fontSize:11}}>
                       <span className="mono" style={{flex:1,fontWeight:600}}>{item.sku}</span>
                       <button onClick={()=>setBulkQtyMap(m=>({...m,[item.sku]:Math.max(0,(m[item.sku]||0)-1)}))} style={{width:24,height:24,borderRadius:4,background:"var(--bg3)",border:"1px solid var(--bg4)",color:"var(--txt)",fontSize:14}}>−</button>
-                      <input type="number" className="form-input mono" value={bulkQtyMap[item.sku]||0} onChange={e=>setBulkQtyMap(m=>({...m,[item.sku]:Math.max(0,Math.min(item.qty,parseInt(e.target.value)||0))}))} style={{width:50,textAlign:"center",fontSize:12,padding:4}}/>
+                      <input type="number" className="form-input mono" value={bulkQtyMap[item.sku]||0} onFocus={e=>e.target.select()} onChange={e=>setBulkQtyMap(m=>({...m,[item.sku]:Math.max(0,Math.min(item.qty,parseInt(e.target.value)||0))}))} style={{width:50,textAlign:"center",fontSize:12,padding:4}}/>
                       <button onClick={()=>setBulkQtyMap(m=>({...m,[item.sku]:Math.min(item.qty,(m[item.sku]||0)+1)}))} style={{width:24,height:24,borderRadius:4,background:"var(--bg3)",border:"1px solid var(--bg4)",color:"var(--txt)",fontSize:14}}>+</button>
                       <span style={{color:"var(--txt3)",fontSize:10,minWidth:28}}>/ {item.qty}</span>
                     </div>
@@ -3683,7 +3683,7 @@ function ReasignarFormatoPanel({ sku, onDone }: { sku: string; onDone: () => voi
             <button onClick={() => setSelQty(p => ({...p, [d.pos]: Math.max(1, (p[d.pos] ?? d.qty) - 1)}))}
               style={{width:24,height:24,borderRadius:4,background:"var(--bg3)",fontSize:14,fontWeight:700,border:"1px solid var(--bg4)",color:"var(--txt)"}}>−</button>
             <input type="number" value={selQty[d.pos] ?? d.qty}
-              onChange={e => setSelQty(p => ({...p, [d.pos]: Math.max(1, Math.min(d.qty, parseInt(e.target.value) || 0))}))}
+              onFocus={e=>e.target.select()} onChange={e => setSelQty(p => ({...p, [d.pos]: Math.max(1, Math.min(d.qty, parseInt(e.target.value) || 0))}))}
               style={{width:50,textAlign:"center",fontSize:12,fontWeight:700,padding:4,borderRadius:4,background:"var(--bg3)",border:"1px solid var(--bg4)",color:"var(--txt)"}} />
             <button onClick={() => setSelQty(p => ({...p, [d.pos]: Math.min(d.qty, (p[d.pos] ?? d.qty) + 1)}))}
               style={{width:24,height:24,borderRadius:4,background:"var(--bg3)",fontSize:14,fontWeight:700,border:"1px solid var(--bg4)",color:"var(--txt)"}}>+</button>
@@ -4213,7 +4213,7 @@ function CargaStock({ refresh }: { refresh: () => void }) {
                       <option value="">Posición...</option>
                       {positions.map(p=><option key={p.id} value={p.id}>{p.id} — {p.label}</option>)}
                     </select>
-                    <input type="number" min={1} max={u.qty} value={row.qty||""} onChange={e=>{
+                    <input type="number" min={1} max={u.qty} value={row.qty||""} onFocus={e=>e.target.select()} onChange={e=>{
                       const n=[...sp]; n[idx]={...n[idx],qty:Math.max(0,parseInt(e.target.value)||0)}; setSplits(s=>({...s,[u.sku]:n}));
                     }} style={{width:70,textAlign:"center",padding:6,borderRadius:6,border:"1px solid var(--bg4)",background:"var(--bg1)",color:"var(--txt1)",fontSize:12,fontWeight:700}} placeholder="Cant"/>
                     <button onClick={()=>{
@@ -5226,8 +5226,8 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
             <div className="form-group"><label className="form-label">Client ID</label><input className="form-input mono" value={configForm.client_id} onChange={e => setConfigForm({...configForm, client_id: e.target.value})} placeholder="App ID de ML"/></div>
             <div className="form-group"><label className="form-label">Client Secret</label><input className="form-input mono" type="password" value={configForm.client_secret} onChange={e => setConfigForm({...configForm, client_secret: e.target.value})} placeholder="Secret key"/></div>
             <div className="form-group"><label className="form-label">Seller ID</label><input className="form-input mono" value={configForm.seller_id} onChange={e => setConfigForm({...configForm, seller_id: e.target.value})} placeholder="Se autocompleta al vincular"/></div>
-            <div className="form-group"><label className="form-label">Corte L-V (hora)</label><input type="number" className="form-input mono" value={configForm.hora_corte_lv} onChange={e => setConfigForm({...configForm, hora_corte_lv: parseInt(e.target.value) || 13})} min={0} max={23}/></div>
-            <div className="form-group"><label className="form-label">Corte Sábado (hora)</label><input type="number" className="form-input mono" value={configForm.hora_corte_sab} onChange={e => setConfigForm({...configForm, hora_corte_sab: parseInt(e.target.value) || 12})} min={0} max={23}/></div>
+            <div className="form-group"><label className="form-label">Corte L-V (hora)</label><input type="number" className="form-input mono" value={configForm.hora_corte_lv} onFocus={e=>e.target.select()} onChange={e => setConfigForm({...configForm, hora_corte_lv: parseInt(e.target.value) || 13})} min={0} max={23}/></div>
+            <div className="form-group"><label className="form-label">Corte Sábado (hora)</label><input type="number" className="form-input mono" value={configForm.hora_corte_sab} onFocus={e=>e.target.select()} onChange={e => setConfigForm({...configForm, hora_corte_sab: parseInt(e.target.value) || 12})} min={0} max={23}/></div>
           </div>
           <div style={{display:"flex",gap:8,marginTop:12}}>
             <button onClick={doSaveConfig} style={{padding:"8px 16px",borderRadius:8,background:"var(--green)",color:"#fff",fontWeight:700,fontSize:13}}>Guardar Config</button>

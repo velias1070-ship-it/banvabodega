@@ -503,7 +503,7 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, folio, prov
             </div>
             <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:12,marginBottom:12}}>
               <button onClick={() => setQtyCaja(q => Math.max(0, q - 1))} style={{width:44,height:44,borderRadius:8,background:"var(--bg3)",fontSize:20,fontWeight:700,border:"1px solid var(--bg4)"}}>−</button>
-              <input type="number" value={qtyCaja} onChange={e => setQtyCaja(Math.max(0, parseInt(e.target.value) || 0))}
+              <input type="number" value={qtyCaja} onFocus={e=>e.target.select()} onChange={e => setQtyCaja(Math.max(0, parseInt(e.target.value) || 0))}
                 style={{width:80,textAlign:"center",fontSize:28,fontWeight:700,padding:10,borderRadius:8,background:"var(--bg1)",border:"2px solid var(--bg4)",color:"var(--txt1)"}} />
               <button onClick={() => setQtyCaja(q => q + 1)} style={{width:44,height:44,borderRadius:8,background:"var(--bg3)",fontSize:20,fontWeight:700,border:"1px solid var(--bg4)"}}>+</button>
             </div>
@@ -676,7 +676,7 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, folio, prov
                 <div style={{fontSize:12,fontWeight:600,color:"var(--txt2)",marginBottom:6}}>Cantidad a ubicar en {ubicarPos}:</div>
                 <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:12,marginBottom:12}}>
                   <button onClick={() => setUbicarQty(q => Math.max(1, q - 1))} style={{width:40,height:40,borderRadius:8,background:"var(--bg3)",fontSize:18,fontWeight:700,border:"1px solid var(--bg4)"}}>−</button>
-                  <input type="number" value={ubicarQty} onChange={e => setUbicarQty(Math.max(1, Math.min(qtyPendienteUbicar, parseInt(e.target.value) || 0)))}
+                  <input type="number" value={ubicarQty} onFocus={e=>e.target.select()} onChange={e => setUbicarQty(Math.max(1, Math.min(qtyPendienteUbicar, parseInt(e.target.value) || 0)))}
                     style={{width:70,textAlign:"center",fontSize:24,fontWeight:700,padding:8,borderRadius:8,background:"var(--bg1)",border:"2px solid var(--bg4)",color:"var(--txt1)"}} />
                   <button onClick={() => setUbicarQty(q => Math.min(qtyPendienteUbicar, q + 1))} style={{width:40,height:40,borderRadius:8,background:"var(--bg3)",fontSize:18,fontWeight:700,border:"1px solid var(--bg4)"}}>+</button>
                 </div>

@@ -474,7 +474,7 @@ function CountPosition({ conteo, posIdx, operario, onDone, onBack }: {
             {qtyEdit === idx ? (
               <div style={{display:"flex",alignItems:"center",gap:4}}>
                 <button onClick={() => updateQty(idx, tempQty - 1)} style={{width:36,height:36,borderRadius:8,background:"var(--bg3)",color:"#fff",fontSize:18,fontWeight:700,border:"1px solid var(--bg4)"}}>−</button>
-                <input type="number" value={tempQty} onChange={e => setTempQty(parseInt(e.target.value) || 0)}
+                <input type="number" value={tempQty} onFocus={e=>e.target.select()} onChange={e => setTempQty(parseInt(e.target.value) || 0)}
                   style={{width:56,height:36,borderRadius:8,background:"var(--bg3)",color:"#fff",fontSize:16,fontWeight:700,textAlign:"center",border:"1px solid var(--bg4)"}}/>
                 <button onClick={() => updateQty(idx, tempQty + 1)} style={{width:36,height:36,borderRadius:8,background:"var(--bg3)",color:"#fff",fontSize:18,fontWeight:700,border:"1px solid var(--bg4)"}}>+</button>
                 <button onClick={() => { updateQty(idx, tempQty); setQtyEdit(null); }}
