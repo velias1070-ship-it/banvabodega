@@ -134,7 +134,7 @@ export interface DBDiscrepanciaCosto {
 }
 
 export type DiscrepanciaQtyTipo = "FALTANTE" | "SOBRANTE" | "SKU_ERRONEO" | "NO_EN_FACTURA";
-export type DiscrepanciaQtyEstado = "PENDIENTE" | "ACEPTADO" | "RECLAMADO" | "NOTA_CREDITO" | "DEVOLUCION";
+export type DiscrepanciaQtyEstado = "PENDIENTE" | "ACEPTADO" | "RECLAMADO" | "NOTA_CREDITO" | "DEVOLUCION" | "SUSTITUCION";
 
 export interface DBDiscrepanciaQty {
   id?: string;
