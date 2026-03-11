@@ -661,7 +661,7 @@ export async function syncDiccionarioFromSheet(): Promise<{
       if (row.codigoMl) codigosMlByOrigen.get(row.skuOrigen)!.add(row.codigoMl);
 
       if (!productMap.has(row.skuOrigen)) {
-        // Use unit cost (unidades=1 row). If first row is a pack, cost will be corrected below.
+        // Use unit cost (unidades=1 row). If first row is a pack, cost/name will be corrected below.
         productMap.set(row.skuOrigen, {
           sku: row.skuOrigen,
           sku_venta: row.skuVenta, // will be overwritten below with all ventas
@@ -676,9 +676,16 @@ export async function syncDiccionarioFromSheet(): Promise<{
           tamano: row.tamano,
           color: row.color,
         });
-      } else if (row.unidades === 1) {
-        // If we already created the product from a pack row, override with the unit cost
-        productMap.get(row.skuOrigen)!.costo = row.costo;
+      } else {
+        const existing = productMap.get(row.skuOrigen)!;
+        if (row.unidades === 1) {
+          // Prefer unit row for cost AND name (avoids "Pack de 2..." as product name)
+          existing.costo = row.costo;
+          existing.nombre = row.nombreOrigen;
+        } else if (row.skuVenta === row.skuOrigen && existing.nombre !== row.nombreOrigen) {
+          // If sku_venta matches sku_origen, this is the "identity" row — use its name
+          existing.nombre = row.nombreOrigen;
+        }
       }
     }
 
