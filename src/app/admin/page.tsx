@@ -1,10 +1,10 @@
 "use client";
 /* v3.1 — conteos + pedidos ML + cron fix */
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote, reconciliarStock, aplicarReconciliacion, editarStockVariante } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote, reconciliarStock, aplicarReconciliacion, editarStockVariante, sustituirProducto, getRecepcionAjustes, registrarAjuste, backfillFacturaOriginal } from "@/lib/store";
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
-import type { DBDiscrepanciaCosto } from "@/lib/db";
+import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
 import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, fetchAllPedidosFlex, fetchPedidosFlexByEstado, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku } from "@/lib/db";
 import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap, ShipmentWithItems } from "@/lib/db";
 import { getOAuthUrl } from "@/lib/ml";
@@ -159,6 +159,11 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   const [discrepancias, setDiscrepancias] = useState<DBDiscrepanciaCosto[]>([]);
   const [discrepanciasQty, setDiscrepanciasQty] = useState<DBDiscrepanciaQty[]>([]);
 
+  // Factura original & ajustes
+  const [facturaOrig, setFacturaOrig] = useState<FacturaOriginal|null>(null);
+  const [ajustes, setAjustes] = useState<DBRecepcionAjuste[]>([]);
+  const [showAjustes, setShowAjustes] = useState(false);
+
   // Day view state
   const [dayLineas, setDayLineas] = useState<DBRecepcionLinea[]>([]);
   const [dayFilter, setDayFilter] = useState<"todas"|"pendientes"|"diferencia">("todas");
@@ -189,11 +194,14 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
 
   // Error report modal
   const [errorLinea, setErrorLinea] = useState<DBRecepcionLinea|null>(null);
-  const [errorMode, setErrorMode] = useState<"menu"|"conteo"|"sku">("menu");
+  const [errorMode, setErrorMode] = useState<"menu"|"conteo"|"sku"|"sustitucion">("menu");
   const [errorQty, setErrorQty] = useState(0);
   const [errorSkuSearch, setErrorSkuSearch] = useState("");
   const [errorSkuResults, setErrorSkuResults] = useState<Product[]>([]);
   const [errorSaving, setErrorSaving] = useState(false);
+  const [sustQty, setSustQty] = useState(0);
+  const [sustCostoMode, setSustCostoMode] = useState<"factura"|"diccionario">("factura");
+  const [sustSelected, setSustSelected] = useState<Product|null>(null);
 
   // Create form
   const [newFolio, setNewFolio] = useState("");
@@ -245,17 +253,28 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
     setSelRec(rec);
     const recLineas = await getRecepcionLineas(rec.id!);
     setLineas(recLineas);
-    const [discs, discsQty] = await Promise.all([
+    const [discs, discsQty, recAjustes] = await Promise.all([
       detectarDiscrepancias(rec.id!, recLineas),
       detectarDiscrepanciasQty(rec.id!, recLineas),
+      getRecepcionAjustes(rec.id!),
     ]);
     setDiscrepancias(discs);
     setDiscrepanciasQty(discsQty);
+    setAjustes(recAjustes);
+    // Backfill factura_original si no existe
+    if (rec.factura_original) {
+      setFacturaOrig(rec.factura_original);
+    } else if (recLineas.length > 0) {
+      const snapshot = await backfillFacturaOriginal(rec.id!, recLineas, rec);
+      setFacturaOrig(snapshot);
+    } else {
+      setFacturaOrig(null);
+    }
     const meta = parseRecepcionMeta(rec.notas || "");
     setEditFolio(rec.folio); setEditProv(rec.proveedor);
     setEditNotas(meta.notas); setEditAsignados(meta.asignados);
     setEditCostoNeto(rec.costo_neto || 0); setEditIva(rec.iva || 0); setEditCostoBruto(rec.costo_bruto || 0);
-    setEditing(false); setShowAnular(false); setAuditResults(null); setEditLineaId(null);
+    setEditing(false); setShowAnular(false); setAuditResults(null); setEditLineaId(null); setShowAjustes(false);
   };
 
   const refreshDetail = async () => {
@@ -265,12 +284,14 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
     const updated = updatedRecs.find(r => r.id === selRec.id);
     if (updated) { setSelRec(updated); const m = parseRecepcionMeta(updated.notas||""); setEditNotas(m.notas); setEditAsignados(m.asignados); }
     setLineas(await getRecepcionLineas(selRec.id!));
-    const [dc, dq] = await Promise.all([
+    const [dc, dq, aj] = await Promise.all([
       getDiscrepancias(selRec.id!),
       getDiscrepanciasQty(selRec.id!),
+      getRecepcionAjustes(selRec.id!),
     ]);
     setDiscrepancias(dc);
     setDiscrepanciasQty(dq);
+    setAjustes(aj);
   };
 
   // ---- Status actions ----
@@ -307,23 +328,35 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   const doAprobar = async (disc: DBDiscrepanciaCosto) => {
     if (!confirm(`Aprobar nuevo costo para ${disc.sku}?\nDiccionario: ${fmtMoney(disc.costo_diccionario)} → Factura: ${fmtMoney(disc.costo_factura)}\nEl diccionario se actualizará con el nuevo costo.`)) return;
     setLoading(true);
-    const result = await aprobarNuevoCosto(disc.id!, disc.sku, disc.costo_factura);
-    const sr = result.sheetResult;
-    if (sr?.ok) {
-      alert(`Costo aprobado y actualizado.\nDB: OK\nGoogle Sheet: fila ${sr.row}, celda ${sr.cell}`);
-    } else {
-      alert(`Costo aprobado en DB.\nGoogle Sheet: ${sr?.error || JSON.stringify(sr)}\n\nRevisa /api/sheet/update-cost en el navegador para diagnosticar.`);
+    try {
+      const result = await aprobarNuevoCosto(disc.id!, disc.sku, disc.costo_factura);
+      const sr = result.sheetResult;
+      if (sr?.ok) {
+        alert(`Costo aprobado y actualizado.\nDB: OK\nGoogle Sheet: fila ${sr.row}, celda ${sr.cell}`);
+      } else {
+        alert(`Costo aprobado en DB.\nGoogle Sheet: ${sr?.error || JSON.stringify(sr)}\n\nRevisa /api/sheet/update-cost en el navegador para diagnosticar.`);
+      }
+      await refreshDetail();
+    } catch (e: unknown) {
+      console.error("Error aprobando costo:", e);
+      alert(`Error al aprobar: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setLoading(false);
     }
-    await refreshDetail();
-    setLoading(false);
   };
   const doRechazar = async (disc: DBDiscrepanciaCosto) => {
     const nota = prompt("Motivo del rechazo (error proveedor, etc):", "Error de proveedor - reclamar");
     if (nota === null) return;
     setLoading(true);
-    await rechazarNuevoCosto(disc.id!, nota);
-    await refreshDetail();
-    setLoading(false);
+    try {
+      await rechazarNuevoCosto(disc.id!, nota);
+      await refreshDetail();
+    } catch (e: unknown) {
+      console.error("Error rechazando costo:", e);
+      alert(`Error al rechazar: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setLoading(false);
+    }
   };
 
   // ---- Line actions ----
@@ -334,8 +367,18 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   };
   const doDeleteLinea = async (lineaId: string) => {
     if (!confirm("Eliminar esta línea de la recepción?")) return;
+    const deletedLinea = lineas.find(l => l.id === lineaId);
     await eliminarLineaRecepcion(lineaId);
+    if (deletedLinea && selRec) {
+      await registrarAjuste({
+        recepcion_id: selRec.id!, tipo: "linea_eliminada",
+        sku_original: deletedLinea.sku, campo: "eliminada",
+        valor_anterior: `${deletedLinea.qty_factura} uds @ ${deletedLinea.costo_unitario || 0}`,
+        motivo: "Línea eliminada por admin", admin: "admin",
+      });
+    }
     setLineas(await getRecepcionLineas(selRec!.id!));
+    setAjustes(await getRecepcionAjustes(selRec!.id!));
   };
   const doUpdateLineQty = async (lineaId: string, val: string) => {
     const n = parseInt(val); if (isNaN(n) || n < 0) return;
@@ -350,7 +393,6 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
     if (!editLineaId || !selRec) return;
     setLoading(true);
     try {
-      // Check if qty_ubicada changed — adjust stock + movement
       const originalLinea = lineas.find(l => l.id === editLineaId);
       const oldQtyUbicada = originalLinea?.qty_ubicada || 0;
       const newQtyUbicada = editLineaData.qty_ubicada;
@@ -367,22 +409,48 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
         sku: editLineaData.sku,
         estado: editLineaData.estado as DBRecepcionLinea["estado"],
       });
+      // Log ajustes for changed fields
+      if (originalLinea) {
+        const oldQtyR = originalLinea.qty_recibida || 0;
+        const newQtyR = editLineaData.qty_recibida;
+        if (oldQtyR !== newQtyR) {
+          await registrarAjuste({ recepcion_id: selRec.id!, tipo: "cantidad", sku_original: originalLinea.sku, campo: "qty_recibida", valor_anterior: String(oldQtyR), valor_nuevo: String(newQtyR), motivo: "Ajuste manual por admin", admin: "admin" });
+        }
+        const oldQtyF = originalLinea.qty_factura;
+        if (oldQtyF !== editLineaData.qty_factura) {
+          await registrarAjuste({ recepcion_id: selRec.id!, tipo: "cantidad", sku_original: originalLinea.sku, campo: "qty_factura", valor_anterior: String(oldQtyF), valor_nuevo: String(editLineaData.qty_factura), motivo: "Ajuste qty factura por admin", admin: "admin" });
+        }
+        const oldCosto = originalLinea.costo_unitario || 0;
+        if (oldCosto !== editLineaData.costo_unitario) {
+          await registrarAjuste({ recepcion_id: selRec.id!, tipo: "costo", sku_original: originalLinea.sku, campo: "costo_unitario", valor_anterior: String(oldCosto), valor_nuevo: String(editLineaData.costo_unitario), motivo: "Ajuste costo por admin", admin: "admin" });
+        }
+      }
     } catch (e: unknown) {
       alert(`Error al guardar: ${e instanceof Error ? e.message : e}`);
     }
     setEditLineaId(null);
     setLineas(await getRecepcionLineas(selRec!.id!));
+    setAjustes(await getRecepcionAjustes(selRec!.id!));
     setLoading(false);
   };
   const doAddLinea = async () => {
     if (!addSku || !selRec) return;
     const prod = getStore().products[addSku.toUpperCase()];
+    const skuUp = addSku.toUpperCase();
+    const costo = prod?.cost || 0;
     await agregarLineaRecepcion(selRec.id!, {
-      sku: addSku.toUpperCase(), nombre: prod?.name || addSku, codigoML: prod?.mlCode || "",
-      cantidad: addQty, costo: prod?.cost || 0, requiereEtiqueta: prod?.requiresLabel !== false,
+      sku: skuUp, nombre: prod?.name || addSku, codigoML: prod?.mlCode || "",
+      cantidad: addQty, costo, requiereEtiqueta: prod?.requiresLabel !== false,
+    });
+    await registrarAjuste({
+      recepcion_id: selRec.id!, tipo: "linea_agregada",
+      sku_nuevo: skuUp, campo: "nueva_linea",
+      valor_nuevo: `${addQty} uds @ ${costo}`,
+      motivo: "Línea agregada por admin", admin: "admin",
     });
     setAddSku(""); setAddQty(1);
     setLineas(await getRecepcionLineas(selRec.id!));
+    setAjustes(await getRecepcionAjustes(selRec.id!));
   };
 
   // Toggle operator assignment
@@ -402,30 +470,105 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   const doErrorAjusteConteo = async () => {
     if (!errorLinea || errorQty < 0 || !selRec) return;
     setErrorSaving(true);
-    await actualizarLineaRecepcion(errorLinea.id!, {
-      qty_factura: errorQty,
-      notas: `${errorLinea.notas ? errorLinea.notas + " | " : ""}Ajuste conteo: ${errorLinea.qty_factura} → ${errorQty}`,
-    });
-    setLineas(await getRecepcionLineas(selRec.id!));
-    const [dc, dq] = await Promise.all([detectarDiscrepanciasQty(selRec.id!, await getRecepcionLineas(selRec.id!)), getDiscrepanciasQty(selRec.id!)]);
-    setDiscrepanciasQty(dq);
-    setErrorSaving(false);
-    setErrorLinea(null);
+    try {
+      await actualizarLineaRecepcion(errorLinea.id!, {
+        qty_factura: errorQty,
+        notas: `${errorLinea.notas ? errorLinea.notas + " | " : ""}Ajuste conteo: ${errorLinea.qty_factura} → ${errorQty}`,
+      });
+      await registrarAjuste({
+        recepcion_id: selRec.id!, tipo: "cantidad",
+        sku_original: errorLinea.sku, campo: "qty_factura",
+        valor_anterior: String(errorLinea.qty_factura), valor_nuevo: String(errorQty),
+        motivo: `Ajuste conteo: ${errorLinea.qty_factura} → ${errorQty}`, admin: "admin",
+      });
+      const updatedLineas = await getRecepcionLineas(selRec.id!);
+      setLineas(updatedLineas);
+      const dq = await recalcularDiscrepanciasQty(selRec.id!, updatedLineas);
+      setDiscrepanciasQty(dq);
+      setAjustes(await getRecepcionAjustes(selRec.id!));
+      setErrorLinea(null);
+    } catch (e: unknown) {
+      console.error("Error ajuste conteo:", e);
+      alert(`Error al ajustar conteo: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setErrorSaving(false);
+    }
   };
   const doErrorCambioSku = async (newProduct: Product) => {
     if (!errorLinea || !selRec) return;
     setErrorSaving(true);
-    const oldSku = errorLinea.sku;
-    await actualizarLineaRecepcion(errorLinea.id!, {
-      sku: newProduct.sku,
-      nombre: newProduct.name,
-      codigo_ml: newProduct.mlCode || "",
-      requiere_etiqueta: newProduct.requiresLabel ?? errorLinea.requiere_etiqueta,
-      notas: `${errorLinea.notas ? errorLinea.notas + " | " : ""}Cambio SKU: ${oldSku} → ${newProduct.sku}`,
-    });
-    setLineas(await getRecepcionLineas(selRec.id!));
-    setErrorSaving(false);
-    setErrorLinea(null);
+    try {
+      const oldSku = errorLinea.sku;
+      await actualizarLineaRecepcion(errorLinea.id!, {
+        sku: newProduct.sku,
+        nombre: newProduct.name,
+        codigo_ml: newProduct.mlCode || "",
+        requiere_etiqueta: newProduct.requiresLabel ?? errorLinea.requiere_etiqueta,
+        notas: `${errorLinea.notas ? errorLinea.notas + " | " : ""}Cambio SKU: ${oldSku} → ${newProduct.sku}`,
+      });
+      await registrarAjuste({
+        recepcion_id: selRec.id!, tipo: "sustitucion",
+        sku_original: oldSku, sku_nuevo: newProduct.sku,
+        campo: "sku",
+        valor_anterior: `${oldSku} × ${errorLinea.qty_factura} @ ${fmtMoney(errorLinea.costo_unitario||0)}`,
+        valor_nuevo: `${newProduct.sku} × ${errorLinea.qty_factura} @ ${fmtMoney(errorLinea.costo_unitario||0)}`,
+        motivo: "Corrección de SKU erróneo", admin: "admin",
+      });
+      const updatedLineas = await getRecepcionLineas(selRec.id!);
+      setLineas(updatedLineas);
+      const [dc, dq] = await Promise.all([
+        recalcularDiscrepancias(selRec.id!, updatedLineas),
+        recalcularDiscrepanciasQty(selRec.id!, updatedLineas),
+      ]);
+      setDiscrepancias(dc);
+      setDiscrepanciasQty(dq);
+      setAjustes(await getRecepcionAjustes(selRec.id!));
+      setErrorLinea(null);
+    } catch (e: unknown) {
+      console.error("Error cambio SKU:", e);
+      alert(`Error al cambiar SKU: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setErrorSaving(false);
+    }
+  };
+  const doSustitucion = async () => {
+    if (!errorLinea || !selRec || !sustSelected || sustQty <= 0) return;
+    setErrorSaving(true);
+    try {
+      const costoSust = sustCostoMode === "factura" ? (errorLinea.costo_unitario || 0) : (sustSelected.cost || 0);
+      const result = await sustituirProducto(
+        selRec.id!,
+        errorLinea.id!,
+        {
+          sku: sustSelected.sku,
+          nombre: sustSelected.name,
+          codigoML: sustSelected.mlCode || "",
+          requiereEtiqueta: sustSelected.requiresLabel !== false,
+          costoDiccionario: sustSelected.cost || 0,
+        },
+        sustQty,
+        sustCostoMode === "factura",
+      );
+      await registrarAjuste({
+        recepcion_id: selRec.id!, tipo: "sustitucion",
+        sku_original: errorLinea.sku, sku_nuevo: sustSelected.sku,
+        campo: "sku",
+        valor_anterior: `${errorLinea.sku} × ${errorLinea.qty_factura} @ ${fmtMoney(errorLinea.costo_unitario||0)}`,
+        valor_nuevo: `${sustSelected.sku} × ${sustQty} @ ${fmtMoney(costoSust)}`,
+        motivo: "Proveedor envió producto distinto", admin: "admin",
+      });
+      setLineas(await getRecepcionLineas(selRec.id!));
+      setDiscrepancias(result.discrepanciasCosto);
+      setDiscrepanciasQty(result.discrepancias);
+      setAjustes(await getRecepcionAjustes(selRec.id!));
+      setErrorLinea(null);
+      setSustSelected(null);
+    } catch (e: unknown) {
+      console.error("Error en sustitución:", e);
+      alert(`Error al sustituir: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setErrorSaving(false);
+    }
   };
   const handleErrorSkuSearch = (q: string) => {
     setErrorSkuSearch(q);
@@ -489,50 +632,134 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
               <div style={{fontSize:11,color:"var(--txt3)",marginTop:4}}>{ubicadas}/{total} líneas completadas</div>
             </>
           )}
-          {/* Cost summary */}
+          {/* Factura Original / Ajustada / Diferencia */}
           {(() => {
-            const costoFacturaCalc = lineas.reduce((sum, l) => sum + (l.costo_unitario || 0) * l.qty_factura, 0);
+            // Factura ajustada: calculada dinámicamente de líneas actuales
+            const netoAjustado = lineas.reduce((s, l) => s + (l.costo_unitario || 0) * (l.qty_recibida > 0 ? l.qty_recibida : l.qty_factura), 0);
+            const ivaAjustado = Math.round(netoAjustado * 0.19);
+            const brutoAjustado = netoAjustado + ivaAjustado;
             const hayRecibido = lineas.some(l => l.qty_recibida > 0);
-            const costoRecibido = hayRecibido ? lineas.reduce((sum, l) => sum + (l.costo_unitario || 0) * (l.qty_recibida || l.qty_factura), 0) : 0;
-            const hasCostosFactura = (selRec.costo_neto || 0) > 0 || (selRec.costo_bruto || 0) > 0;
-            const diffFactura = hayRecibido && costoRecibido !== costoFacturaCalc ? costoRecibido - costoFacturaCalc : 0;
-            return (costoFacturaCalc > 0 || hasCostosFactura) ? (
-              <div style={{marginTop:10,padding:"10px 12px",borderRadius:8,background:"var(--bg3)",border:"1px solid var(--bg4)"}}>
-                <div style={{fontSize:11,fontWeight:700,color:"var(--txt2)",marginBottom:6}}>Costos</div>
-                <div style={{display:"grid",gridTemplateColumns:hasCostosFactura?(hayRecibido?"1fr 1fr 1fr":"1fr 1fr"):"1fr",gap:8,fontSize:12}}>
-                  {hasCostosFactura && (
-                    <div>
-                      <div style={{fontSize:10,color:"var(--txt3)",marginBottom:4,fontWeight:600}}>Factura</div>
-                      <div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"var(--txt3)"}}>Neto:</span><strong>{fmtMoney(selRec.costo_neto || 0)}</strong></div>
-                      <div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"var(--txt3)"}}>IVA:</span><strong>{fmtMoney(selRec.iva || 0)}</strong></div>
-                      <div style={{display:"flex",justifyContent:"space-between",borderTop:"1px solid var(--bg4)",paddingTop:4,marginTop:4}}><span style={{color:"var(--txt3)"}}>Bruto:</span><strong style={{color:"var(--cyan)"}}>{fmtMoney(selRec.costo_bruto || 0)}</strong></div>
+
+            // Diferencia
+            const netoOrig = facturaOrig?.neto || 0;
+            const brutoOrig = facturaOrig?.bruto || 0;
+            const diffNeto = hayRecibido ? netoAjustado - netoOrig : 0;
+            const diffBruto = hayRecibido ? brutoAjustado - brutoOrig : 0;
+
+            const costBlockStyle = {padding:"10px 12px",borderRadius:8,border:"1px solid var(--bg4)",marginTop:10};
+            const rowStyle = {display:"flex",justifyContent:"space-between",marginBottom:2,fontSize:12};
+            const totalRowStyle = {...rowStyle,borderTop:"1px solid var(--bg4)",paddingTop:4,marginTop:4,marginBottom:0};
+
+            return (facturaOrig || netoAjustado > 0) ? (
+              <div style={{marginTop:10}}>
+                {/* Bloque 1: Factura Original */}
+                {facturaOrig && (
+                  <div style={{...costBlockStyle,background:"var(--bg3)"}}>
+                    <div style={{fontSize:11,fontWeight:700,color:"var(--txt2)",marginBottom:8}}>Factura Original (N° {selRec.folio} — {selRec.proveedor})</div>
+                    <div style={{marginBottom:8}}>
+                      {facturaOrig.lineas.map((fl, i) => (
+                        <div key={i} style={{display:"flex",justifyContent:"space-between",fontSize:11,padding:"2px 0",color:"var(--txt2)"}}>
+                          <span className="mono" style={{flex:1}}>{fl.sku}</span>
+                          <span className="mono" style={{width:60,textAlign:"right"}}>×{fl.cantidad}</span>
+                          <span className="mono" style={{width:80,textAlign:"right"}}>@{fmtMoney(fl.costo_unitario)}</span>
+                          <span className="mono" style={{width:100,textAlign:"right",fontWeight:700}}>{fmtMoney(fl.cantidad * fl.costo_unitario)}</span>
+                        </div>
+                      ))}
                     </div>
-                  )}
-                  {costoFacturaCalc > 0 && (
-                    <div>
-                      <div style={{fontSize:10,color:"var(--txt3)",marginBottom:4,fontWeight:600}}>Calculado (qty factura)</div>
-                      <div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"var(--txt3)"}}>Neto:</span><strong>{fmtMoney(costoFacturaCalc)}</strong></div>
-                      <div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"var(--txt3)"}}>IVA (19%):</span><strong>{fmtMoney(Math.round(costoFacturaCalc * 0.19))}</strong></div>
-                      <div style={{display:"flex",justifyContent:"space-between",borderTop:"1px solid var(--bg4)",paddingTop:4,marginTop:4}}><span style={{color:"var(--txt3)"}}>Bruto:</span><strong style={{color:"var(--cyan)"}}>{fmtMoney(Math.round(costoFacturaCalc * 1.19))}</strong></div>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,fontSize:12,padding:"6px 0",borderTop:"1px solid var(--bg4)"}}>
+                      <div><span style={{color:"var(--txt3)",fontSize:10}}>Neto:</span> <strong>{fmtMoney(facturaOrig.neto)}</strong></div>
+                      <div><span style={{color:"var(--txt3)",fontSize:10}}>IVA:</span> <strong>{fmtMoney(facturaOrig.iva)}</strong></div>
+                      <div><span style={{color:"var(--txt3)",fontSize:10}}>Bruto:</span> <strong style={{color:"var(--cyan)"}}>{fmtMoney(facturaOrig.bruto)}</strong></div>
                     </div>
-                  )}
-                  {hayRecibido && costoRecibido > 0 && (
-                    <div>
-                      <div style={{fontSize:10,color:diffFactura!==0?"var(--amber)":"var(--green)",marginBottom:4,fontWeight:600}}>Calculado (qty recibida)</div>
-                      <div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"var(--txt3)"}}>Neto:</span><strong>{fmtMoney(costoRecibido)}</strong></div>
-                      <div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"var(--txt3)"}}>IVA (19%):</span><strong>{fmtMoney(Math.round(costoRecibido * 0.19))}</strong></div>
-                      <div style={{display:"flex",justifyContent:"space-between",borderTop:"1px solid var(--bg4)",paddingTop:4,marginTop:4}}><span style={{color:"var(--txt3)"}}>Bruto:</span><strong style={{color:diffFactura!==0?"var(--amber)":"var(--cyan)"}}>{fmtMoney(Math.round(costoRecibido * 1.19))}</strong></div>
-                    </div>
-                  )}
-                </div>
-                {hasCostosFactura && costoFacturaCalc > 0 && Math.abs((selRec.costo_neto || 0) - costoFacturaCalc) > 1 && (
-                  <div style={{marginTop:6,padding:"4px 8px",borderRadius:4,background:"var(--amberBg)",border:"1px solid var(--amberBd)",fontSize:10,color:"var(--amber)",fontWeight:600,textAlign:"center"}}>
-                    Diferencia neto factura vs calc: {fmtMoney(Math.abs((selRec.costo_neto || 0) - costoFacturaCalc))}
                   </div>
                 )}
-                {hayRecibido && diffFactura !== 0 && (
-                  <div style={{marginTop:4,padding:"4px 8px",borderRadius:4,background:diffFactura>0?"var(--redBg)":"var(--greenBg)",border:`1px solid ${diffFactura>0?"var(--redBd,var(--red))":"var(--greenBd,var(--green))"}`,fontSize:10,color:diffFactura>0?"var(--red)":"var(--green)",fontWeight:600,textAlign:"center"}}>
-                    {diffFactura > 0 ? "Recibiste de más" : "Recibiste de menos"}: {fmtMoney(Math.abs(diffFactura))} neto ({diffFactura > 0 ? "te deben" : "les debes"})
+
+                {/* Bloque 2: Factura Ajustada */}
+                {hayRecibido && (
+                  <div style={{...costBlockStyle,background:"var(--bg3)"}}>
+                    <div style={{fontSize:11,fontWeight:700,color:diffNeto!==0?"var(--amber)":"var(--green)",marginBottom:8}}>Factura Ajustada (Real)</div>
+                    <div style={{marginBottom:8}}>
+                      {lineas.map(l => {
+                        const isOriginal = facturaOrig?.lineas.some(fl => fl.sku === l.sku);
+                        const noLlego = l.qty_recibida === 0 && l.qty_factura > 0;
+                        const esNueva = !isOriginal && l.qty_factura === 0;
+                        const subtotal = (l.costo_unitario || 0) * (l.qty_recibida > 0 ? l.qty_recibida : 0);
+                        return (
+                          <div key={l.id} style={{display:"flex",justifyContent:"space-between",fontSize:11,padding:"2px 0",
+                            color: noLlego ? "var(--txt3)" : esNueva ? "var(--cyan)" : "var(--txt2)",
+                            textDecoration: noLlego ? "line-through" : "none"}}>
+                            <span className="mono" style={{flex:1}}>{l.sku}</span>
+                            <span className="mono" style={{width:60,textAlign:"right"}}>×{l.qty_recibida}</span>
+                            <span className="mono" style={{width:80,textAlign:"right"}}>@{fmtMoney(l.costo_unitario||0)}</span>
+                            <span className="mono" style={{width:100,textAlign:"right",fontWeight:700}}>{fmtMoney(subtotal)}</span>
+                            <span style={{width:80,textAlign:"right",fontSize:9,fontWeight:600,color:noLlego?"var(--red)":esNueva?"var(--cyan)":"transparent"}}>
+                              {noLlego ? "(no llegó)" : esNueva ? "(nuevo)" : ""}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,fontSize:12,padding:"6px 0",borderTop:"1px solid var(--bg4)"}}>
+                      <div><span style={{color:"var(--txt3)",fontSize:10}}>Neto:</span> <strong>{fmtMoney(netoAjustado)}</strong></div>
+                      <div><span style={{color:"var(--txt3)",fontSize:10}}>IVA:</span> <strong>{fmtMoney(ivaAjustado)}</strong></div>
+                      <div><span style={{color:"var(--txt3)",fontSize:10}}>Bruto:</span> <strong style={{color:diffNeto!==0?"var(--amber)":"var(--cyan)"}}>{fmtMoney(brutoAjustado)}</strong></div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Bloque 3: Diferencia */}
+                {hayRecibido && facturaOrig && (
+                  <div style={{...costBlockStyle,
+                    background: diffNeto === 0 ? "var(--greenBg)" : diffNeto > 0 ? "var(--amberBg)" : "var(--redBg)",
+                    border: `1px solid ${diffNeto === 0 ? "var(--greenBd,var(--green))" : diffNeto > 0 ? "var(--amberBd)" : "var(--redBd,var(--red))"}`}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                      <div style={{fontSize:12}}>
+                        <span style={{fontWeight:700,color:diffNeto===0?"var(--green)":diffNeto>0?"var(--amber)":"var(--red)"}}>
+                          Diferencia: {diffNeto>=0?"+":""}{ fmtMoney(diffNeto)} neto | {diffBruto>=0?"+":""}{fmtMoney(diffBruto)} bruto
+                        </span>
+                      </div>
+                    </div>
+                    <div style={{fontSize:11,marginTop:4,fontWeight:600,color:diffNeto===0?"var(--green)":diffNeto>0?"var(--amber)":"var(--red)"}}>
+                      {diffNeto === 0
+                        ? "Factura cuadra perfectamente"
+                        : diffNeto > 0
+                        ? `Recibiste de más: ${fmtMoney(Math.abs(diffNeto))} neto (te deben)`
+                        : `No llegó todo: te deben nota de crédito por ${fmtMoney(Math.abs(diffNeto))} neto`}
+                    </div>
+                  </div>
+                )}
+
+                {/* Historial de ajustes */}
+                {ajustes.length > 0 && (
+                  <div style={{...costBlockStyle,background:"var(--bg3)"}}>
+                    <button onClick={()=>setShowAjustes(!showAjustes)} style={{width:"100%",display:"flex",justifyContent:"space-between",alignItems:"center",background:"none",border:"none",cursor:"pointer",padding:0}}>
+                      <span style={{fontSize:11,fontWeight:700,color:"var(--txt2)"}}>Historial de ajustes ({ajustes.length})</span>
+                      <span style={{fontSize:12,color:"var(--txt3)"}}>{showAjustes ? "▲" : "▼"}</span>
+                    </button>
+                    {showAjustes && (
+                      <div style={{marginTop:8}}>
+                        {ajustes.map(a => (
+                          <div key={a.id} style={{padding:"6px 0",borderBottom:"1px solid var(--bg4)",fontSize:11}}>
+                            <div style={{display:"flex",justifyContent:"space-between",marginBottom:2}}>
+                              <span style={{fontWeight:700,color:
+                                a.tipo==="sustitucion"?"var(--cyan)":
+                                a.tipo==="linea_agregada"?"var(--green)":
+                                a.tipo==="linea_eliminada"?"var(--red)":
+                                a.tipo==="costo"?"var(--amber)":"var(--txt2)"}}>
+                                {a.tipo==="sustitucion"?"Sustitución":a.tipo==="cantidad"?"Cantidad":a.tipo==="linea_agregada"?"Línea agregada":a.tipo==="linea_eliminada"?"Línea eliminada":a.tipo==="costo"?"Costo":a.tipo}
+                              </span>
+                              <span style={{color:"var(--txt3)",fontSize:10}}>{a.created_at ? `${fmtDate(a.created_at)} ${fmtTime(a.created_at)}` : ""} — {a.admin||""}</span>
+                            </div>
+                            {a.tipo==="sustitucion" && <div style={{color:"var(--txt2)"}}><span className="mono">{a.sku_original}</span> → <span className="mono">{a.sku_nuevo}</span></div>}
+                            {a.tipo==="cantidad" && <div style={{color:"var(--txt2)"}}><span className="mono">{a.sku_original}</span>: {a.valor_anterior} → {a.valor_nuevo}</div>}
+                            {a.tipo==="linea_agregada" && <div style={{color:"var(--txt2)"}}><span className="mono">{a.sku_nuevo}</span>: {a.valor_nuevo}</div>}
+                            {a.tipo==="linea_eliminada" && <div style={{color:"var(--txt2)"}}><span className="mono">{a.sku_original}</span>: {a.valor_anterior}</div>}
+                            {a.tipo==="costo" && <div style={{color:"var(--txt2)"}}><span className="mono">{a.sku_original}</span>: {a.valor_anterior} → {a.valor_nuevo}</div>}
+                            {a.motivo && <div style={{color:"var(--txt3)",fontSize:10,marginTop:2}}>{a.motivo}</div>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -792,8 +1019,8 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                 <tbody>{discrepanciasQty.map(d => {
                   const tipoLabel: Record<string,string> = { FALTANTE: "Faltante", SOBRANTE: "Sobrante", SKU_ERRONEO: "SKU erróneo", NO_EN_FACTURA: "No en factura" };
                   const tipoColor: Record<string,string> = { FALTANTE: "var(--red)", SOBRANTE: "var(--amber)", SKU_ERRONEO: "var(--red)", NO_EN_FACTURA: "var(--cyan)" };
-                  const estadoLabel: Record<string,string> = { PENDIENTE: "Pendiente", ACEPTADO: "Aceptado", RECLAMADO: "Reclamado", NOTA_CREDITO: "Nota crédito", DEVOLUCION: "Devolución" };
-                  const estadoColor: Record<string,string> = { PENDIENTE: "var(--amber)", ACEPTADO: "var(--green)", RECLAMADO: "var(--blue,var(--cyan))", NOTA_CREDITO: "var(--cyan)", DEVOLUCION: "var(--red)" };
+                  const estadoLabel: Record<string,string> = { PENDIENTE: "Pendiente", ACEPTADO: "Aceptado", RECLAMADO: "Reclamado", NOTA_CREDITO: "Nota crédito", DEVOLUCION: "Devolución", SUSTITUCION: "Sustitución" };
+                  const estadoColor: Record<string,string> = { PENDIENTE: "var(--amber)", ACEPTADO: "var(--green)", RECLAMADO: "var(--blue,var(--cyan))", NOTA_CREDITO: "var(--cyan)", DEVOLUCION: "var(--red)", SUSTITUCION: "var(--cyan)" };
                   return (
                   <tr key={d.id} style={{background: d.estado==="PENDIENTE" ? "var(--amberBg)" : "transparent"}}>
                     <td className="mono" style={{fontSize:11,fontWeight:700}}>{d.sku}</td>
@@ -821,9 +1048,15 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                               const nota = prompt(`${r.label} — Notas (opcional):`, "");
                               if (nota === null) return;
                               setLoading(true);
-                              await resolverDiscrepanciaQty(d.id!, r.valor, nota);
-                              await refreshDetail();
-                              setLoading(false);
+                              try {
+                                await resolverDiscrepanciaQty(d.id!, r.valor, nota);
+                                await refreshDetail();
+                              } catch (e: unknown) {
+                                console.error("Error resolviendo discrepancia qty:", e);
+                                alert(`Error al resolver: ${e instanceof Error ? e.message : e}`);
+                              } finally {
+                                setLoading(false);
+                              }
                             }} disabled={loading}
                               style={{padding:"4px 8px",borderRadius:4,background:r.valor==="ACEPTADO"?"var(--green)":r.valor==="DEVOLUCION"?"var(--red)":"var(--cyan)",color:"#fff",fontSize:10,fontWeight:700,cursor:"pointer",border:"none"}}>
                               {r.label}
@@ -865,6 +1098,11 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                     style={{width:"100%",padding:"16px 14px",borderRadius:10,background:"var(--bg3)",border:"1px solid var(--bg4)",marginBottom:8,textAlign:"left",cursor:"pointer"}}>
                     <div style={{fontSize:14,fontWeight:700,color:"var(--red)"}}>SKU incorrecto</div>
                     <div style={{fontSize:11,color:"var(--txt3)",marginTop:2}}>El producto fisico no corresponde al SKU de la factura</div>
+                  </button>
+                  <button onClick={()=>{setErrorMode("sustitucion");setErrorSkuSearch("");setErrorSkuResults([]);setSustSelected(null);setSustQty(errorLinea?.qty_factura||0);setSustCostoMode("factura");}}
+                    style={{width:"100%",padding:"16px 14px",borderRadius:10,background:"var(--bg3)",border:"1px solid var(--cyan)",marginBottom:8,textAlign:"left",cursor:"pointer"}}>
+                    <div style={{fontSize:14,fontWeight:700,color:"var(--cyan)"}}>Sustitución de producto</div>
+                    <div style={{fontSize:11,color:"var(--txt3)",marginTop:2}}>El proveedor envió un producto distinto al facturado. Se registran ambos SKUs y se ajustan costos.</div>
                   </button>
                   <button onClick={closeErrorReport}
                     style={{width:"100%",padding:12,borderRadius:8,background:"var(--bg3)",color:"var(--txt3)",fontSize:13,fontWeight:600,border:"1px solid var(--bg4)"}}>
@@ -947,6 +1185,129 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                     style={{width:"100%",padding:12,borderRadius:8,background:"var(--bg3)",color:"var(--txt3)",fontSize:13,fontWeight:600,border:"1px solid var(--bg4)"}}>
                     Atras
                   </button>
+                </div>
+              )}
+
+              {/* Sustitución de producto */}
+              {errorMode === "sustitucion" && errorLinea && (
+                <div style={{padding:24}}>
+                  <div style={{fontSize:14,fontWeight:800,marginBottom:4}}>Sustitución de producto</div>
+                  <div style={{fontSize:12,color:"var(--txt3)",marginBottom:4}}>
+                    Factura: <strong className="mono" style={{color:"var(--red)"}}>{errorLinea.sku}</strong> — {errorLinea.nombre}
+                  </div>
+                  <div style={{fontSize:11,color:"var(--txt3)",marginBottom:12}}>
+                    Qty factura: <strong>{errorLinea.qty_factura}</strong> · Costo unit: <strong>{fmtMoney(errorLinea.costo_unitario||0)}</strong>
+                  </div>
+
+                  {/* Step 1: Search substitute product */}
+                  {!sustSelected ? (
+                    <>
+                      <div style={{fontSize:12,fontWeight:700,color:"var(--cyan)",marginBottom:6}}>Producto que llegó realmente:</div>
+                      <input type="text" className="form-input" value={errorSkuSearch} onChange={e=>handleErrorSkuSearch(e.target.value)}
+                        placeholder="Buscar por SKU, nombre o codigo ML..." autoFocus style={{marginBottom:8,fontSize:13}} />
+                      <div style={{maxHeight:220,overflowY:"auto",marginBottom:12}}>
+                        {errorSkuSearch.trim().length >= 2 && errorSkuResults.length === 0 && (
+                          <div style={{textAlign:"center",padding:16,color:"var(--txt3)",fontSize:12}}>Sin resultados</div>
+                        )}
+                        {errorSkuResults.map(p => (
+                          <div key={p.sku} onClick={()=>{setSustSelected(p);}}
+                            style={{padding:"10px 12px",borderRadius:8,background:"var(--bg3)",border:"1px solid var(--bg4)",
+                              marginBottom:4,cursor:"pointer",opacity:p.sku===errorLinea.sku?0.4:1}}>
+                            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                              <span className="mono" style={{fontWeight:700,fontSize:13,color:"var(--cyan)"}}>{p.sku}</span>
+                              <span className="mono" style={{fontSize:10,color:"var(--txt3)"}}>{fmtMoney(p.cost||0)}</span>
+                            </div>
+                            <div style={{fontSize:11,color:"var(--txt2)",marginTop:2}}>{p.name}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      {/* Step 2: Confirm product, quantity, and cost */}
+                      <div style={{padding:"10px 12px",borderRadius:8,background:"var(--cyanBg)",border:"1px solid var(--cyanBd)",marginBottom:12}}>
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                          <span className="mono" style={{fontWeight:700,fontSize:13,color:"var(--cyan)"}}>{sustSelected.sku}</span>
+                          <button onClick={()=>setSustSelected(null)} style={{fontSize:10,color:"var(--txt3)",background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>Cambiar</button>
+                        </div>
+                        <div style={{fontSize:11,color:"var(--txt2)",marginTop:2}}>{sustSelected.name}</div>
+                        <div style={{fontSize:10,color:"var(--txt3)",marginTop:2}}>Costo diccionario: {fmtMoney(sustSelected.cost||0)}</div>
+                      </div>
+
+                      {/* Quantity */}
+                      <div style={{fontSize:12,fontWeight:600,color:"var(--txt2)",marginBottom:6}}>Cantidad recibida:</div>
+                      <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:12,marginBottom:12}}>
+                        <button onClick={()=>setSustQty(q=>Math.max(1,q-1))}
+                          style={{width:40,height:40,borderRadius:8,background:"var(--bg3)",fontSize:20,fontWeight:700,border:"1px solid var(--bg4)"}}>−</button>
+                        <input type="number" value={sustQty} onFocus={e=>e.target.select()} onChange={e=>setSustQty(Math.max(1,parseInt(e.target.value)||1))}
+                          style={{width:80,textAlign:"center",fontSize:28,fontWeight:700,padding:8,borderRadius:8,background:"var(--bg)",border:"2px solid var(--bg4)",color:"var(--txt1)"}} />
+                        <button onClick={()=>setSustQty(q=>q+1)}
+                          style={{width:40,height:40,borderRadius:8,background:"var(--bg3)",fontSize:20,fontWeight:700,border:"1px solid var(--bg4)"}}>+</button>
+                      </div>
+
+                      {/* Cost mode */}
+                      <div style={{fontSize:12,fontWeight:600,color:"var(--txt2)",marginBottom:6}}>Costo unitario del sustituto:</div>
+                      <div style={{display:"flex",gap:6,marginBottom:12}}>
+                        <button onClick={()=>setSustCostoMode("factura")}
+                          style={{flex:1,padding:"10px 8px",borderRadius:8,textAlign:"center",cursor:"pointer",
+                            background:sustCostoMode==="factura"?"var(--cyanBg)":"var(--bg3)",
+                            border:sustCostoMode==="factura"?"2px solid var(--cyan)":"1px solid var(--bg4)"}}>
+                          <div style={{fontSize:12,fontWeight:700,color:sustCostoMode==="factura"?"var(--cyan)":"var(--txt2)"}}>Costo de factura</div>
+                          <div className="mono" style={{fontSize:16,fontWeight:800,marginTop:2,color:sustCostoMode==="factura"?"var(--cyan)":"var(--txt3)"}}>{fmtMoney(errorLinea.costo_unitario||0)}</div>
+                          <div style={{fontSize:9,color:"var(--txt3)",marginTop:2}}>Lo que se pagó por unidad</div>
+                        </button>
+                        <button onClick={()=>setSustCostoMode("diccionario")}
+                          style={{flex:1,padding:"10px 8px",borderRadius:8,textAlign:"center",cursor:"pointer",
+                            background:sustCostoMode==="diccionario"?"var(--amberBg)":"var(--bg3)",
+                            border:sustCostoMode==="diccionario"?"2px solid var(--amber)":"1px solid var(--bg4)"}}>
+                          <div style={{fontSize:12,fontWeight:700,color:sustCostoMode==="diccionario"?"var(--amber)":"var(--txt2)"}}>Costo diccionario</div>
+                          <div className="mono" style={{fontSize:16,fontWeight:800,marginTop:2,color:sustCostoMode==="diccionario"?"var(--amber)":"var(--txt3)"}}>{fmtMoney(sustSelected.cost||0)}</div>
+                          <div style={{fontSize:9,color:"var(--txt3)",marginTop:2}}>Costo registrado del producto</div>
+                        </button>
+                      </div>
+
+                      {/* Summary */}
+                      <div style={{padding:"10px 12px",borderRadius:8,background:"var(--bg)",border:"1px solid var(--bg4)",marginBottom:12,fontSize:11}}>
+                        <div style={{fontWeight:700,marginBottom:4,color:"var(--txt2)"}}>Resumen de sustitución:</div>
+                        <div style={{display:"flex",justifyContent:"space-between",marginBottom:2}}>
+                          <span style={{color:"var(--red)"}}>Factura ({errorLinea.sku}):</span>
+                          <span className="mono">{errorLinea.qty_factura} × {fmtMoney(errorLinea.costo_unitario||0)} = {fmtMoney((errorLinea.qty_factura)*(errorLinea.costo_unitario||0))}</span>
+                        </div>
+                        <div style={{display:"flex",justifyContent:"space-between",marginBottom:2}}>
+                          <span style={{color:"var(--cyan)"}}>Recibido ({sustSelected.sku}):</span>
+                          <span className="mono">{sustQty} × {fmtMoney(sustCostoMode==="factura"?(errorLinea.costo_unitario||0):(sustSelected.cost||0))} = {fmtMoney(sustQty*(sustCostoMode==="factura"?(errorLinea.costo_unitario||0):(sustSelected.cost||0)))}</span>
+                        </div>
+                        {sustCostoMode==="factura" && (sustSelected.cost||0) !== (errorLinea.costo_unitario||0) && (
+                          <div style={{marginTop:4,padding:"4px 8px",borderRadius:4,background:"var(--amberBg)",color:"var(--amber)",fontSize:10,fontWeight:600}}>
+                            Nota: el costo diccionario ({fmtMoney(sustSelected.cost||0)}) difiere del costo factura. Se generará discrepancia de costo.
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Actions */}
+                      <div style={{display:"flex",gap:8}}>
+                        <button onClick={()=>{setSustSelected(null);setErrorSkuSearch("");setErrorSkuResults([]);}}
+                          style={{flex:1,padding:12,borderRadius:8,background:"var(--bg3)",color:"var(--txt3)",fontSize:13,fontWeight:600,border:"1px solid var(--bg4)"}}>
+                          Atras
+                        </button>
+                        <button onClick={doSustitucion} disabled={errorSaving || sustQty <= 0}
+                          style={{flex:2,padding:12,borderRadius:8,
+                            background:(errorSaving||sustQty<=0)?"var(--bg3)":"var(--cyan)",
+                            color:(errorSaving||sustQty<=0)?"var(--txt3)":"#fff",
+                            fontSize:13,fontWeight:700,border:"none",cursor:"pointer"}}>
+                          {errorSaving ? "Procesando..." : "Confirmar sustitución"}
+                        </button>
+                      </div>
+                    </>
+                  )}
+
+                  {/* Back to menu (when searching) */}
+                  {!sustSelected && (
+                    <button onClick={()=>setErrorMode("menu")}
+                      style={{width:"100%",padding:12,borderRadius:8,background:"var(--bg3)",color:"var(--txt3)",fontSize:13,fontWeight:600,border:"1px solid var(--bg4)",marginTop:4}}>
+                      Atras
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -5897,6 +6258,27 @@ function CreateConteo({ onCreated, onCancel }: { onCreated: () => void; onCancel
 function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBConteo; onBack: () => void; refresh: () => void }) {
   const [conteo, setConteo] = useState(initialConteo);
   const [processing, setProcessing] = useState(false);
+
+  // Recalcular stock_sistema para líneas inesperadas con el stock real actual
+  useEffect(() => {
+    const s = getStore();
+    let changed = false;
+    const fixedLineas = conteo.lineas.map(l => {
+      if (l.es_inesperado && l.stock_sistema === 0) {
+        const stockReal = s.stock[l.sku]?.[l.posicion_id] ?? 0;
+        if (stockReal !== 0) {
+          changed = true;
+          return { ...l, stock_sistema: stockReal };
+        }
+      }
+      return l;
+    });
+    if (changed) {
+      const updated = { ...conteo, lineas: fixedLineas };
+      setConteo(updated);
+      updateConteo(conteo.id!, { lineas: fixedLineas });
+    }
+  }, [initialConteo.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const reloadConteo = async () => {
     const all = await fetchConteos();

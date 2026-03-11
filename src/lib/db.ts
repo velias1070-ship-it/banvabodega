@@ -73,6 +73,28 @@ export interface DBRecepcion {
   costo_neto?: number;
   iva?: number;
   costo_bruto?: number;
+  factura_original?: FacturaOriginal | null;
+}
+
+export interface FacturaOriginal {
+  lineas: { sku: string; nombre: string; cantidad: number; costo_unitario: number }[];
+  neto: number;
+  iva: number;
+  bruto: number;
+}
+
+export interface DBRecepcionAjuste {
+  id?: string;
+  recepcion_id: string;
+  tipo: string;
+  sku_original?: string | null;
+  sku_nuevo?: string | null;
+  campo?: string | null;
+  valor_anterior?: string | null;
+  valor_nuevo?: string | null;
+  motivo?: string | null;
+  admin?: string | null;
+  created_at?: string;
 }
 
 export interface DBRecepcionLinea {
@@ -134,7 +156,7 @@ export interface DBDiscrepanciaCosto {
 }
 
 export type DiscrepanciaQtyTipo = "FALTANTE" | "SOBRANTE" | "SKU_ERRONEO" | "NO_EN_FACTURA";
-export type DiscrepanciaQtyEstado = "PENDIENTE" | "ACEPTADO" | "RECLAMADO" | "NOTA_CREDITO" | "DEVOLUCION";
+export type DiscrepanciaQtyEstado = "PENDIENTE" | "ACEPTADO" | "RECLAMADO" | "NOTA_CREDITO" | "DEVOLUCION" | "SUSTITUCION";
 
 export interface DBDiscrepanciaQty {
   id?: string;
@@ -355,28 +377,32 @@ export async function insertDiscrepancias(discs: Omit<DBDiscrepanciaCosto, "id" 
   const sb = getSupabase(); if (!sb) return;
   if (discs.length === 0) return;
   try {
-    await sb.from("discrepancias_costo").insert(discs);
-  } catch {}
+    const { error } = await sb.from("discrepancias_costo").insert(discs);
+    if (error) console.error("insertDiscrepancias error:", error.message, discs);
+  } catch (e) { console.error("insertDiscrepancias exception:", e); }
 }
 
 export async function updateDiscrepancia(id: string, fields: Partial<DBDiscrepanciaCosto>) {
   const sb = getSupabase(); if (!sb) return;
   try {
-    await sb.from("discrepancias_costo").update(fields).eq("id", id);
-  } catch {}
+    const { error } = await sb.from("discrepancias_costo").update(fields).eq("id", id);
+    if (error) console.error("updateDiscrepancia error:", error.message, { id, fields });
+  } catch (e) { console.error("updateDiscrepancia exception:", e); }
 }
 
 export async function deleteDiscrepanciasPendientes(recepcionId: string) {
   const sb = getSupabase(); if (!sb) return;
   try {
-    await sb.from("discrepancias_costo").delete()
+    const { error } = await sb.from("discrepancias_costo").delete()
       .eq("recepcion_id", recepcionId).eq("estado", "PENDIENTE");
-  } catch {}
+    if (error) console.error("deleteDiscrepanciasPendientes error:", error.message);
+  } catch (e) { console.error("deleteDiscrepanciasPendientes exception:", e); }
 }
 
 export async function updateProductoCosto(sku: string, nuevoCosto: number) {
   const sb = getSupabase(); if (!sb) return;
-  await sb.from("productos").update({ costo: nuevoCosto }).eq("sku", sku);
+  const { error } = await sb.from("productos").update({ costo: nuevoCosto }).eq("sku", sku);
+  if (error) console.error("updateProductoCosto error:", error.message, { sku, nuevoCosto });
 }
 
 // ==================== DISCREPANCIAS DE CANTIDAD ====================
@@ -394,23 +420,26 @@ export async function insertDiscrepanciasQty(discs: Omit<DBDiscrepanciaQty, "id"
   const sb = getSupabase(); if (!sb) return;
   if (discs.length === 0) return;
   try {
-    await sb.from("discrepancias_qty").insert(discs);
-  } catch {}
+    const { error } = await sb.from("discrepancias_qty").insert(discs);
+    if (error) console.error("insertDiscrepanciasQty error:", error.message, discs);
+  } catch (e) { console.error("insertDiscrepanciasQty exception:", e); }
 }
 
 export async function updateDiscrepanciaQty(id: string, fields: Partial<DBDiscrepanciaQty>) {
   const sb = getSupabase(); if (!sb) return;
   try {
-    await sb.from("discrepancias_qty").update(fields).eq("id", id);
-  } catch {}
+    const { error } = await sb.from("discrepancias_qty").update(fields).eq("id", id);
+    if (error) console.error("updateDiscrepanciaQty error:", error.message, { id, fields });
+  } catch (e) { console.error("updateDiscrepanciaQty exception:", e); }
 }
 
 export async function deleteDiscrepanciasQtyPendientes(recepcionId: string) {
   const sb = getSupabase(); if (!sb) return;
   try {
-    await sb.from("discrepancias_qty").delete()
+    const { error } = await sb.from("discrepancias_qty").delete()
       .eq("recepcion_id", recepcionId).eq("estado", "PENDIENTE");
-  } catch {}
+    if (error) console.error("deleteDiscrepanciasQtyPendientes error:", error.message);
+  } catch (e) { console.error("deleteDiscrepanciasQtyPendientes exception:", e); }
 }
 
 // Fetch ALL lines from multiple receptions at once
@@ -1996,5 +2025,23 @@ export async function fetchRcvComprasPendientes(empresaId: string): Promise<DBRc
     .or("estado_pago.eq.pendiente,estado_pago.is.null")
     .order("fecha_docto", { ascending: false });
   return (data || []) as DBRcvCompra[];
+}
+
+// ==================== RECEPCION AJUSTES ====================
+export async function fetchRecepcionAjustes(recepcionId: string): Promise<DBRecepcionAjuste[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("recepcion_ajustes").select("*")
+    .eq("recepcion_id", recepcionId).order("created_at", { ascending: false });
+  return data || [];
+}
+
+export async function insertRecepcionAjuste(ajuste: Omit<DBRecepcionAjuste, "id" | "created_at">) {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("recepcion_ajustes").insert(ajuste);
+}
+
+export async function updateRecepcionFacturaOriginal(id: string, facturaOriginal: FacturaOriginal) {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("recepciones").update({ factura_original: facturaOriginal as unknown as Record<string, unknown> }).eq("id", id);
 }
 

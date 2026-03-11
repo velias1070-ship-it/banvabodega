@@ -79,6 +79,7 @@ interface SkuOrigenRow {
   statusProveedor?: ProveedorStatus;
   alertaCosto?: { costoWMS: number; costoProveedor: number };
   diasAgotamiento?: number;
+  nombreProveedor?: string; // proveedor del diccionario (Google Sheet)
 }
 
 interface ProveedorRaw {
@@ -537,6 +538,7 @@ function calcularReposicion(
   }
 
   // 5. Filas por SKU Origen (Nivel 2 — decisiones de compra y stock bodega)
+  const store = getStore();
   const origenRows: SkuOrigenRow[] = [];
   const origenEntries = Array.from(demandaFisicaPorOrigen.entries());
   for (let _j = 0; _j < origenEntries.length; _j++) {
@@ -587,6 +589,7 @@ function calcularReposicion(
       skusVentaAsociados,
       esCompartido: asociados.length > 1,
       accion,
+      nombreProveedor: store.products[skuOrigen]?.prov || undefined,
     });
   }
 
@@ -633,7 +636,6 @@ function calcularReposicion(
     const provMap = new Map<string, ProveedorRaw>();
     for (const p of proveedorData) provMap.set(p.skuOrigen, p);
 
-    const store = getStore();
     for (const row of origenRows) {
       const prov = provMap.get(row.skuOrigen);
       if (!prov) {
@@ -743,17 +745,19 @@ export default function AdminReposicion() {
   const [creandoPicking, setCreandoPicking] = useState(false);
   const [pickingCreado, setPickingCreado] = useState<string | null>(null);
 
-  // ProfitGuard API
+  // ── Historial de órdenes ──
+  const [historialInfo, setHistorialInfo] = useState<{ total: number; fecha_min: string | null; fecha_max: string | null; ultima_importacion: { fuente: string; ordenes_nuevas: number; created_at: string } | null } | null>(null);
+  const [historialLoading, setHistorialLoading] = useState(false);
   const [pgLoading, setPgLoading] = useState(false);
-  const [pgError, setPgError] = useState<string | null>(null);
-  const [pgCachedAt, setPgCachedAt] = useState<string | null>(null);
-  const [pgMinutosCache, setPgMinutosCache] = useState<number | null>(null);
-  const [showManualUpload, setShowManualUpload] = useState(false);
-  const [pgDesde, setPgDesde] = useState(() => {
+  const [pgResult, setPgResult] = useState<{ nuevas: number; actualizadas: number; sinCambio: number; total: number } | null>(null);
+  const [pgProgreso, setPgProgreso] = useState("");
+  const [fuenteOrdenes, setFuenteOrdenes] = useState<"historial" | "api" | "archivo" | null>(null);
+  const [showArchivoOrdenes, setShowArchivoOrdenes] = useState(false);
+  const [pgRangoDesde, setPgRangoDesde] = useState(() => {
     const d = new Date(); d.setDate(d.getDate() - 60);
     return d.toISOString().slice(0, 10);
   });
-  const [pgHasta, setPgHasta] = useState(() => new Date().toISOString().slice(0, 10));
+  const [pgRangoHasta, setPgRangoHasta] = useState(() => new Date().toISOString().slice(0, 10));
 
   // Editable envio a full
   const [envioEditMode, setEnvioEditMode] = useState(false);
@@ -784,6 +788,162 @@ export default function AdminReposicion() {
     localStorage.setItem("banva_reposicion_fn_velocidad", fileNameVelocidad);
     localStorage.setItem("banva_reposicion_fn_proveedor", fileNameProveedor);
   }, [fileNameOrdenes, fileNameVelocidad, fileNameProveedor]);
+
+  // ── Verificar historial al montar ──
+  useEffect(() => {
+    fetch("/api/orders/query").then(r => r.json()).then(info => {
+      if (info && info.total > 0) setHistorialInfo(info);
+    }).catch(() => {});
+  }, []);
+
+  // ── Funciones de carga de órdenes ──
+  const persistirOrdenes = useCallback(async (ordenesArr: OrdenRaw[], fuente: string) => {
+    try {
+      const mapped = ordenesArr.map(o => ({
+        order_id: `manual-${o.fecha.toISOString().slice(0,10)}-${o.sku}`,
+        fecha: o.fecha.toISOString(),
+        sku_venta: o.sku,
+        cantidad: o.cantidad,
+        canal: o.canal === "full" ? "Full" : "Flex",
+        precio_unitario: o.subtotal > 0 && o.cantidad > 0 ? Math.round(o.subtotal / o.cantidad) : 0,
+        subtotal: o.subtotal,
+        comision_unitaria: o.comisionTotal > 0 && o.cantidad > 0 ? Math.round(o.comisionTotal / o.cantidad) : 0,
+        comision_total: o.comisionTotal,
+        costo_envio: o.costoEnvio,
+        ingreso_envio: o.ingresoEnvio,
+        total: o.subtotal - o.comisionTotal - o.costoEnvio + o.ingresoEnvio,
+        logistic_type: o.canal === "full" ? "fulfillment" : "self_service",
+        estado: "Pagada",
+        fuente,
+      }));
+      await fetch("/api/orders/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ordenes: mapped, fuente }),
+      });
+    } catch (err) {
+      console.error("Error persistiendo órdenes:", err);
+    }
+  }, []);
+
+  const cargarDesdeHistorial = useCallback(async () => {
+    setHistorialLoading(true);
+    try {
+      const hace60d = new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
+      const res = await fetch(`/api/orders/query?from=${hace60d}&estado=Pagada&group_by=sku_canal`);
+      const json = await res.json();
+      if (!json.datos || json.datos.length === 0) {
+        setHistorialLoading(false);
+        return;
+      }
+      // También traer filas individuales para reconstruir OrdenRaw[]
+      const sb = getSupabase();
+      if (!sb) { setHistorialLoading(false); return; }
+      const { data } = await sb.from("orders_history")
+        .select("sku_venta, cantidad, fecha, canal, subtotal, comision_total, costo_envio, ingreso_envio")
+        .eq("estado", "Pagada")
+        .gte("fecha", hace60d)
+        .order("fecha", { ascending: false })
+        .limit(50000);
+      if (data && data.length > 0) {
+        const parsed: OrdenRaw[] = data.map((r: Record<string, unknown>) => ({
+          sku: r.sku_venta as string,
+          cantidad: r.cantidad as number,
+          fecha: new Date(r.fecha as string),
+          canal: ((r.canal as string) === "Full" ? "full" : "flex") as "full" | "flex",
+          subtotal: (r.subtotal as number) || 0,
+          comisionTotal: (r.comision_total as number) || 0,
+          costoEnvio: (r.costo_envio as number) || 0,
+          ingresoEnvio: (r.ingreso_envio as number) || 0,
+        }));
+        setOrdenes(parsed);
+        setFuenteOrdenes("historial");
+        setFileNameOrdenes(`Historial (${data.length} órdenes)`);
+      }
+    } catch (err) {
+      console.error("Error cargando historial:", err);
+    }
+    setHistorialLoading(false);
+  }, []);
+
+  const cargarDesdeProfitGuard = useCallback(async () => {
+    setPgLoading(true);
+    setPgResult(null);
+    setPgProgreso("Preparando...");
+
+    try {
+      // Dividir rango en chunks de 14 días
+      const chunks: { from: string; to: string; label: string }[] = [];
+      const meses = ["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
+      const start = new Date(pgRangoDesde + "T00:00:00");
+      const end = new Date(pgRangoHasta + "T23:59:59");
+
+      let cursor = new Date(start);
+      while (cursor <= end) {
+        const chunkEnd = new Date(cursor);
+        chunkEnd.setDate(chunkEnd.getDate() + 13); // 14 días
+        const actualEnd = chunkEnd > end ? end : chunkEnd;
+        const fromStr = cursor.toISOString().slice(0, 10);
+        const toStr = actualEnd.toISOString().slice(0, 10);
+        const label = `${cursor.getDate()} ${meses[cursor.getMonth()]} – ${actualEnd.getDate()} ${meses[actualEnd.getMonth()]}`;
+        chunks.push({ from: fromStr, to: toStr, label });
+        cursor = new Date(actualEnd);
+        cursor.setDate(cursor.getDate() + 1);
+      }
+
+      const totales = { nuevas: 0, actualizadas: 0, sinCambio: 0, total: 0 };
+
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        setPgProgreso(`Cargando ${chunk.label} (${i + 1}/${chunks.length})...`);
+
+        // 1. Fetch órdenes del chunk
+        const res = await fetch(`/api/profitguard/orders?from=${chunk.from}&to=${chunk.to}`);
+        const json = await res.json();
+        if (!res.ok) {
+          console.error(`[ProfitGuard] Error chunk ${chunk.label}:`, json.error);
+          setPgProgreso(`Error en ${chunk.label}: ${json.error || "Error"}. Continuando...`);
+          await new Promise(r => setTimeout(r, 1000));
+          continue;
+        }
+
+        if (!json.ordenes || json.ordenes.length === 0) {
+          console.log(`[ProfitGuard] Chunk ${chunk.label}: 0 órdenes`);
+          continue;
+        }
+
+        // 2. Persistir inmediatamente
+        setPgProgreso(`Guardando ${json.ordenes.length} órdenes de ${chunk.label} (${i + 1}/${chunks.length})...`);
+        const importRes = await fetch("/api/orders/import", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ordenes: json.ordenes, fuente: "api" }),
+        });
+        const importJson = await importRes.json();
+        if (importJson) {
+          totales.nuevas += importJson.nuevas || 0;
+          totales.actualizadas += importJson.actualizadas || 0;
+          totales.sinCambio += importJson.sinCambio || 0;
+          totales.total += importJson.total || 0;
+        }
+      }
+
+      setPgResult(totales);
+      setPgProgreso("");
+
+      // Cargar desde historial actualizado
+      await cargarDesdeHistorial();
+      setFuenteOrdenes("api");
+      fetch("/api/orders/query").then(r => r.json()).then(info => {
+        if (info && info.total > 0) setHistorialInfo(info);
+      }).catch(() => {});
+    } catch (err) {
+      console.error("Error ProfitGuard:", err);
+      alert("Error de conexión con ProfitGuard");
+      setPgProgreso("");
+    }
+    setPgLoading(false);
+  }, [pgRangoDesde, pgRangoHasta, cargarDesdeHistorial]);
 
   // Pre-cargar ajustes de envío a Full si no hay edición guardada
   useEffect(() => {
@@ -816,7 +976,7 @@ export default function AdminReposicion() {
     });
   }, []);
 
-  // Parsear archivo de órdenes
+  // Parsear archivo de órdenes y persistir
   const handleOrdenes = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -825,10 +985,20 @@ export default function AdminReposicion() {
     reader.onload = (ev) => {
       const data = new Uint8Array(ev.target?.result as ArrayBuffer);
       const wb = XLSX.read(data, { type: "array" });
-      setOrdenes(parseOrdenes(wb));
+      const parsed = parseOrdenes(wb);
+      setOrdenes(parsed);
+      setFuenteOrdenes("archivo");
+      // Persistir en background
+      if (parsed.length > 0) {
+        persistirOrdenes(parsed, "manual").then(() => {
+          fetch("/api/orders/query").then(r => r.json()).then(info => {
+            if (info && info.total > 0) setHistorialInfo(info);
+          }).catch(() => {});
+        });
+      }
     };
     reader.readAsArrayBuffer(file);
-  }, []);
+  }, [persistirOrdenes]);
 
   // Parsear archivo de velocidad
   const handleVelocidad = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -877,50 +1047,6 @@ export default function AdminReposicion() {
     };
     reader.readAsArrayBuffer(file);
   }, []);
-
-  // Cargar órdenes desde ProfitGuard API
-  const cargarDesdeProfitGuard = useCallback(async (forceRefresh = false) => {
-    setPgLoading(true);
-    setPgError(null);
-    try {
-      const from = `${pgDesde}T00:00`;
-      const to = `${pgHasta}T23:59`;
-      const url = `/api/profitguard/orders?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${forceRefresh ? "&refresh=1" : ""}`;
-      const res = await fetch(url);
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-        throw new Error(body.error || `Error ${res.status}`);
-      }
-      const body = await res.json();
-      const mapped: OrdenRaw[] = (body.ordenes || []).map((o: Record<string, unknown>) => {
-        const logistica = String(o.logistica || "").toLowerCase();
-        const canal: "full" | "flex" = (logistica === "fulfillment" || logistica === "xd_drop_off") ? "full" : "flex";
-        return {
-          sku: o.sku as string,
-          cantidad: o.cantidad as number,
-          fecha: new Date(o.fecha as string),
-          canal,
-          subtotal: (o.subtotal as number) || 0,
-          comisionTotal: (o.comisionTotal as number) || 0,
-          costoEnvio: (o.costoEnvio as number) || 0,
-          ingresoEnvio: (o.ingresoEnvio as number) || 0,
-        };
-      });
-      setOrdenes(mapped);
-      setFileNameOrdenes(`ProfitGuard API (${mapped.length})`);
-      if (body.cached) {
-        setPgCachedAt(body.cached_at);
-        setPgMinutosCache(body.minutos_cache);
-      } else {
-        setPgCachedAt(new Date().toISOString());
-        setPgMinutosCache(0);
-      }
-    } catch (e) {
-      setPgError(e instanceof Error ? e.message : "Error desconocido");
-    } finally {
-      setPgLoading(false);
-    }
-  }, [pgDesde, pgHasta]);
 
   // Calcular
   const resultado = useMemo(() => {
@@ -1320,7 +1446,7 @@ export default function AdminReposicion() {
     if (tieneProveedor) {
       const headers = ["SKU Origen", "Nombre", "Uds a pedir", "Bultos", "Inner Pack", "Pedir Real", "Costo Unitario", "Costo Total Línea", "Stock Proveedor", "Estado"];
       const dataRows = rows.map(r => {
-        const estado = r.statusProveedor === "sin_stock" ? "Sin stock" : r.statusProveedor === "otro_proveedor" ? "Otro proveedor" : "OK";
+        const estado = r.statusProveedor === "sin_stock" ? "Sin stock" : r.statusProveedor === "otro_proveedor" ? (r.nombreProveedor || "Otro proveedor") : "OK";
         return [
           r.skuOrigen, r.nombre,
           String(r.pedirProveedor),
@@ -1520,72 +1646,84 @@ export default function AdminReposicion() {
 
       {/* Upload files */}
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:12, marginBottom:20 }}>
-        <div className="card" style={{ textAlign:"center", padding:20 }}>
-          <div style={{ fontSize:24, marginBottom:8 }}>📋</div>
-          <div style={{ fontSize:13, fontWeight:600, marginBottom:4 }}>Órdenes ProfitGuard</div>
-          <div style={{ fontSize:11, color:"var(--txt3)", marginBottom:8 }}>Carga automática via API</div>
+        <div className="card" style={{ padding:16 }}>
+          <div style={{ fontSize:24, marginBottom:6, textAlign:"center" }}>📋</div>
+          <div style={{ fontSize:13, fontWeight:600, marginBottom:4, textAlign:"center" }}>Órdenes de Venta</div>
 
-          {/* Selector de rango de fechas */}
-          <div style={{ display:"flex", gap:6, justifyContent:"center", marginBottom:8 }}>
-            <input type="date" className="form-input mono" value={pgDesde}
-              onChange={e => setPgDesde(e.target.value)}
-              style={{ fontSize:11, padding:"4px 6px", width:120 }} />
-            <span style={{ color:"var(--txt3)", fontSize:11, alignSelf:"center" }}>→</span>
-            <input type="date" className="form-input mono" value={pgHasta}
-              onChange={e => setPgHasta(e.target.value)}
-              style={{ fontSize:11, padding:"4px 6px", width:120 }} />
-          </div>
-
-          {/* Botón cargar */}
-          <button
-            onClick={() => cargarDesdeProfitGuard(false)}
-            disabled={pgLoading}
-            style={{
-              padding:"8px 20px", borderRadius:8, border:"1px solid var(--cyanBd)",
-              background:"var(--cyanBg)", color:"var(--cyan)", cursor: pgLoading ? "wait" : "pointer",
-              fontSize:12, fontWeight:600, opacity: pgLoading ? 0.6 : 1,
-            }}
-          >
-            {pgLoading ? "Cargando..." : "Cargar desde ProfitGuard"}
-          </button>
-
-          {/* Estado */}
-          {pgError && (
-            <div style={{ marginTop:8, fontSize:11, color:"var(--red)" }}>
-              {pgError}
-            </div>
-          )}
-          {ordenes && !pgError && (
-            <div style={{ marginTop:8, fontSize:11, color:"var(--green)" }}>
-              {ordenes.length.toLocaleString()} órdenes cargadas
-            </div>
-          )}
-          {pgCachedAt && !pgError && (
-            <div style={{ marginTop:4, fontSize:10, color:"var(--txt3)" }}>
-              Cargadas hace {pgMinutosCache != null ? `${pgMinutosCache} min` : "—"}
-              {" · "}
-              <span onClick={() => cargarDesdeProfitGuard(true)}
-                style={{ color:"var(--cyan)", cursor:"pointer", textDecoration:"underline" }}>
-                Recargar
-              </span>
+          {/* Opción 1: Historial guardado */}
+          {historialInfo && historialInfo.total > 0 && (
+            <div style={{ background:"var(--bg3)", borderRadius:10, padding:10, marginBottom:8, border:"1px solid var(--bg4)" }}>
+              <div style={{ fontSize:11, color:"var(--txt2)", marginBottom:4 }}>
+                Historial: <span className="mono" style={{ color:"var(--cyan)" }}>{historialInfo.total.toLocaleString()}</span> órdenes
+                {historialInfo.fecha_min && historialInfo.fecha_max && (
+                  <span> ({new Date(historialInfo.fecha_min).toLocaleDateString("es-CL", { month:"short" })} – {new Date(historialInfo.fecha_max).toLocaleDateString("es-CL", { month:"short", year:"numeric" })})</span>
+                )}
+              </div>
+              {historialInfo.ultima_importacion && (
+                <div style={{ fontSize:10, color:"var(--txt3)", marginBottom:6 }}>
+                  Última: {(() => {
+                    const h = Math.round((Date.now() - new Date(historialInfo.ultima_importacion.created_at).getTime()) / 3600000);
+                    return h < 1 ? "hace menos de 1 hora" : `hace ${h}h`;
+                  })()} ({historialInfo.ultima_importacion.fuente})
+                  {historialInfo.ultima_importacion.ordenes_nuevas > 0 && ` — ${historialInfo.ultima_importacion.ordenes_nuevas} nuevas`}
+                </div>
+              )}
+              <button onClick={cargarDesdeHistorial} disabled={historialLoading}
+                style={{ width:"100%", padding:"6px 0", borderRadius:6, background:"var(--cyanBg)", border:"1px solid var(--cyanBd)", color:"var(--cyan)", fontSize:11, fontWeight:600, cursor:"pointer" }}>
+                {historialLoading ? "Cargando..." : "Usar historial guardado"}
+              </button>
             </div>
           )}
 
-          {/* Fallback manual */}
-          <div style={{ marginTop:10 }}>
-            <span onClick={() => setShowManualUpload(!showManualUpload)}
-              style={{ fontSize:10, color:"var(--txt3)", cursor:"pointer", textDecoration:"underline" }}>
-              {showManualUpload ? "ocultar" : "o subir archivo manualmente"}
-            </span>
-            {showManualUpload && (
-              <div style={{ marginTop:6 }}>
-                <label style={{ display:"inline-block", padding:"6px 14px", borderRadius:8, background:"var(--bg3)", border:"1px solid var(--bg4)", cursor:"pointer", fontSize:11, fontWeight:600, color:"var(--txt2)" }}>
-                  {fileNameOrdenes && !fileNameOrdenes.startsWith("ProfitGuard") ? fileNameOrdenes : "Seleccionar archivo"}
-                  <input type="file" accept=".xlsx,.xls,.csv" onChange={handleOrdenes} style={{ display:"none" }} />
-                </label>
+          {/* Opción 2: ProfitGuard API */}
+          <div style={{ background:"var(--bg3)", borderRadius:10, padding:10, marginBottom:8, border:"1px solid var(--bg4)" }}>
+            <div style={{ fontSize:11, color:"var(--txt2)", marginBottom:4 }}>Actualizar desde ProfitGuard</div>
+            <div style={{ display:"flex", gap:4, marginBottom:6 }}>
+              <input type="date" className="form-input mono" value={pgRangoDesde} onChange={e => setPgRangoDesde(e.target.value)}
+                style={{ flex:1, fontSize:10, padding:"3px 4px" }} />
+              <input type="date" className="form-input mono" value={pgRangoHasta} onChange={e => setPgRangoHasta(e.target.value)}
+                style={{ flex:1, fontSize:10, padding:"3px 4px" }} />
+            </div>
+            <button onClick={cargarDesdeProfitGuard} disabled={pgLoading}
+              style={{ width:"100%", padding:"6px 0", borderRadius:6, background:"var(--blueBg)", border:"1px solid var(--blueBd)", color:"var(--blue)", fontSize:11, fontWeight:600, cursor:"pointer" }}>
+              {pgLoading ? "Consultando API..." : "Cargar desde ProfitGuard"}
+            </button>
+            {pgProgreso && (
+              <div style={{ marginTop:4, fontSize:10, color:"var(--cyan)" }}>
+                {pgProgreso}
+              </div>
+            )}
+            {pgResult && (
+              <div style={{ marginTop:4, fontSize:10, color:"var(--green)" }}>
+                {pgResult.total.toLocaleString()} órdenes — {pgResult.nuevas} nuevas, {pgResult.actualizadas} actualizadas, {pgResult.sinCambio} sin cambio
               </div>
             )}
           </div>
+
+          {/* Opción 3: Subir archivo (colapsado) */}
+          <div style={{ textAlign:"center" }}>
+            {!showArchivoOrdenes ? (
+              <button onClick={() => setShowArchivoOrdenes(true)}
+                style={{ background:"none", border:"none", color:"var(--txt3)", fontSize:10, cursor:"pointer", textDecoration:"underline" }}>
+                Subir archivo manualmente
+              </button>
+            ) : (
+              <>
+                <label style={{ display:"inline-block", padding:"6px 16px", borderRadius:6, background:"var(--bg3)", border:"1px solid var(--bg4)", cursor:"pointer", fontSize:11, fontWeight:600, color:"var(--cyan)" }}>
+                  {fileNameOrdenes || "Seleccionar archivo"}
+                  <input type="file" accept=".xlsx,.xls,.csv" onChange={handleOrdenes} style={{ display:"none" }} />
+                </label>
+              </>
+            )}
+          </div>
+
+          {/* Estado actual */}
+          {ordenes && (
+            <div style={{ marginTop:6, fontSize:11, color:"var(--green)", textAlign:"center" }}>
+              {ordenes.length.toLocaleString()} órdenes cargadas
+              {fuenteOrdenes && <span style={{ color:"var(--txt3)" }}> ({fuenteOrdenes})</span>}
+            </div>
+          )}
         </div>
         <div className="card" style={{ textAlign:"center", padding:20 }}>
           <div style={{ fontSize:24, marginBottom:8 }}>📊</div>
@@ -2359,7 +2497,7 @@ export default function AdminReposicion() {
                             {r.statusProveedor === "sin_stock" ? (
                               <span style={{ color:"var(--red)" }}>⚠️ Sin stock{r.diasAgotamiento != null ? ` (${r.diasAgotamiento}d)` : ""}</span>
                             ) : r.statusProveedor === "otro_proveedor" ? (
-                              <span style={{ color:"var(--blue)" }}>🔵 Otro prov.</span>
+                              <span style={{ color:"var(--blue)" }}>🔵 {r.nombreProveedor || "Otro prov."}</span>
                             ) : (
                               <span style={{ color:"var(--green)" }}>✓</span>
                             )}

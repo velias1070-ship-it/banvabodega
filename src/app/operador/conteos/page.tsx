@@ -359,12 +359,13 @@ function CountPosition({ conteo, posIdx, operario, onDone, onBack }: {
           const posLabel = pos?.label || posId;
           const s = getStore();
           const prod = s.products[item.sku];
+          const stockActual = s.stock[item.sku]?.[posId] ?? 0;
           newLineas.push({
             posicion_id: posId,
             posicion_label: posLabel,
             sku: item.sku,
             nombre: prod?.name || item.nombre,
-            stock_sistema: 0,
+            stock_sistema: stockActual,
             stock_contado: item.qty,
             operario,
             timestamp: now,

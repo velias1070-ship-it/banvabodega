@@ -45,16 +45,44 @@ async function prepararReposicion(): Promise<{ datos: Record<string, unknown>; h
   const { data: composicion } = await sb.from("composicion_venta").select("sku_venta, sku_origen, unidades");
   const comp = composicion || [];
 
-  // Pedidos recientes (últimos 30 días) para velocidad
-  const hace30d = new Date(Date.now() - 30 * 86400000).toISOString();
-  const { data: shipmentItems } = await sb.from("ml_shipment_items").select("sku, cantidad, ml_shipments!inner(status, date_created, logistic_type)")
-    .gte("ml_shipments.date_created", hace30d);
+  // Velocidad por SKU por canal desde orders_history (últimas 6 semanas)
+  const hace6sem = new Date(Date.now() - 42 * 86400000).toISOString();
+  const { data: ordersData } = await sb.from("orders_history")
+    .select("sku_venta, cantidad, canal, fecha")
+    .eq("estado", "Pagada")
+    .gte("fecha", hace6sem)
+    .limit(50000);
 
-  // Picking sessions recientes como proxy de actividad
-  const { data: pickings } = await sb.from("picking_sessions").select("tipo, lineas, created_at")
-    .gte("created_at", hace30d)
-    .order("created_at", { ascending: false })
-    .limit(100);
+  // Agregar velocidad por SKU y canal
+  const velPorSku: Record<string, { full: number; flex: number; total: number }> = {};
+  if (ordersData && ordersData.length > 0) {
+    for (const o of ordersData) {
+      if (!velPorSku[o.sku_venta]) velPorSku[o.sku_venta] = { full: 0, flex: 0, total: 0 };
+      const v = velPorSku[o.sku_venta];
+      const qty = o.cantidad || 0;
+      if (o.canal === "Full") v.full += qty;
+      else v.flex += qty;
+      v.total += qty;
+    }
+    // Dividir por 6 semanas
+    for (const v of Object.values(velPorSku)) {
+      v.full = Math.round((v.full / 6) * 100) / 100;
+      v.flex = Math.round((v.flex / 6) * 100) / 100;
+      v.total = Math.round((v.total / 6) * 100) / 100;
+    }
+  }
+
+  // Fallback: Pedidos recientes de ML (últimos 30 días) si no hay orders_history
+  const hace30d = new Date(Date.now() - 30 * 86400000).toISOString();
+  let ventasRecientes: { sku: string; cantidad: number }[] = [];
+  if (!ordersData || ordersData.length === 0) {
+    const { data: shipmentItems } = await sb.from("ml_shipment_items").select("sku, cantidad, ml_shipments!inner(status, date_created, logistic_type)")
+      .gte("ml_shipments.date_created", hace30d);
+    ventasRecientes = (shipmentItems || []).slice(0, 200).map((si: Record<string, unknown>) => ({
+      sku: si.sku as string,
+      cantidad: si.cantidad as number,
+    }));
+  }
 
   // Movimientos recientes (salidas = ventas proxy)
   const { data: movimientos } = await sb.from("movimientos").select("sku, tipo, razon, cantidad, created_at")
@@ -68,6 +96,7 @@ async function prepararReposicion(): Promise<{ datos: Record<string, unknown>; h
       total_skus: prods.length,
       total_stock_unidades: Object.values(stockPorSku).reduce((a, b) => a + b, 0),
       skus_sin_stock: prods.filter(p => !stockPorSku[p.sku] || stockPorSku[p.sku] <= 0).length,
+      ordenes_historial: ordersData?.length || 0,
       fecha_datos: new Date().toISOString(),
     },
     productos: prods.map(p => ({
@@ -82,17 +111,14 @@ async function prepararReposicion(): Promise<{ datos: Record<string, unknown>; h
       stock_bodega: stockPorSku[p.sku] || 0,
     })),
     composicion: comp,
-    ventas_recientes: (shipmentItems || []).slice(0, 200).map((si: Record<string, unknown>) => ({
-      sku: si.sku,
-      cantidad: si.cantidad,
-    })),
+    velocidad_por_sku: velPorSku,
+    ventas_recientes: ventasRecientes,
     movimientos_salida: (movimientos || []).slice(0, 200).map(m => ({
       sku: m.sku,
       cantidad: m.cantidad,
       razon: m.razon,
       fecha: m.created_at,
     })),
-    pickings_recientes: (pickings || []).length,
   };
 
   return { datos, hash: hashDatos(datos) };
@@ -183,38 +209,85 @@ async function prepararRentabilidad(): Promise<{ datos: Record<string, unknown>;
   // Productos con costo
   const { data: productos } = await sb.from("productos").select("sku, sku_venta, nombre, costo, precio, categoria");
 
-  // Shipments con items para calcular ingresos
-  const hace60d = new Date(Date.now() - 60 * 86400000).toISOString();
-  const { data: shipments } = await sb.from("ml_shipments").select("id, status, logistic_type, date_created")
-    .gte("date_created", hace60d)
-    .in("status", ["shipped", "delivered"]);
-
-  const { data: shipmentItems } = await sb.from("ml_shipment_items").select("shipment_id, sku, cantidad, precio_unitario")
-    .in("shipment_id", (shipments || []).map(s => s.id));
-
   // Composición
   const { data: composicion } = await sb.from("composicion_venta").select("sku_venta, sku_origen, unidades");
 
   const prods = productos || [];
-  const items = shipmentItems || [];
-  const ships = shipments || [];
 
-  // Mapear shipment_id → logistic_type
-  const shipMap: Record<string, string> = {};
-  for (const s of ships) shipMap[s.id] = s.logistic_type || "unknown";
+  // Márgenes desde orders_history en tres ventanas: 7d, 30d, 60d
+  const ahora = Date.now();
+  const hace7d = new Date(ahora - 7 * 86400000).toISOString();
+  const hace30d = new Date(ahora - 30 * 86400000).toISOString();
+  const hace60d = new Date(ahora - 60 * 86400000).toISOString();
 
-  // Ventas por SKU y canal
-  const ventasPorSku: Record<string, { full: number; flex: number; ingreso_full: number; ingreso_flex: number }> = {};
-  for (const item of items) {
-    const canal = (shipMap[item.shipment_id] || "").includes("fulfillment") ? "full" : "flex";
-    if (!ventasPorSku[item.sku]) ventasPorSku[item.sku] = { full: 0, flex: 0, ingreso_full: 0, ingreso_flex: 0 };
-    const v = ventasPorSku[item.sku];
-    if (canal === "full") {
-      v.full += item.cantidad || 0;
-      v.ingreso_full += (item.precio_unitario || 0) * (item.cantidad || 0);
-    } else {
-      v.flex += item.cantidad || 0;
-      v.ingreso_flex += (item.precio_unitario || 0) * (item.cantidad || 0);
+  const { data: ordersData } = await sb.from("orders_history")
+    .select("sku_venta, cantidad, canal, subtotal, comision_total, costo_envio, ingreso_envio, total, fecha")
+    .eq("estado", "Pagada")
+    .gte("fecha", hace60d)
+    .limit(50000);
+
+  const orders = ordersData || [];
+
+  // Agregar por SKU y canal, con ventanas temporales
+  type MargenAgg = { cantidad: number; subtotal: number; comision: number; costo_envio: number; ingreso_envio: number; total: number };
+  const empty = (): MargenAgg => ({ cantidad: 0, subtotal: 0, comision: 0, costo_envio: 0, ingreso_envio: 0, total: 0 });
+
+  const ventasPorSku: Record<string, {
+    full_7d: MargenAgg; flex_7d: MargenAgg;
+    full_30d: MargenAgg; flex_30d: MargenAgg;
+    full_60d: MargenAgg; flex_60d: MargenAgg;
+  }> = {};
+
+  for (const o of orders) {
+    const sku = o.sku_venta;
+    if (!ventasPorSku[sku]) {
+      ventasPorSku[sku] = {
+        full_7d: empty(), flex_7d: empty(),
+        full_30d: empty(), flex_30d: empty(),
+        full_60d: empty(), flex_60d: empty(),
+      };
+    }
+    const v = ventasPorSku[sku];
+    const canal = o.canal === "Full" ? "full" : "flex";
+    const fecha = new Date(o.fecha).toISOString();
+
+    const add = (agg: MargenAgg) => {
+      agg.cantidad += o.cantidad || 0;
+      agg.subtotal += o.subtotal || 0;
+      agg.comision += o.comision_total || 0;
+      agg.costo_envio += o.costo_envio || 0;
+      agg.ingreso_envio += o.ingreso_envio || 0;
+      agg.total += o.total || 0;
+    };
+
+    // 60d siempre
+    add(v[`${canal}_60d` as keyof typeof v] as MargenAgg);
+    if (fecha >= hace30d) add(v[`${canal}_30d` as keyof typeof v] as MargenAgg);
+    if (fecha >= hace7d) add(v[`${canal}_7d` as keyof typeof v] as MargenAgg);
+  }
+
+  // Fallback a ML shipments si no hay orders_history
+  let fallbackVentas: Record<string, { full: number; flex: number; ingreso_full: number; ingreso_flex: number }> | null = null;
+  if (orders.length === 0) {
+    const { data: shipments } = await sb.from("ml_shipments").select("id, status, logistic_type, date_created")
+      .gte("date_created", hace60d)
+      .in("status", ["shipped", "delivered"]);
+    const { data: shipmentItems } = await sb.from("ml_shipment_items").select("shipment_id, sku, cantidad, precio_unitario")
+      .in("shipment_id", (shipments || []).map(s => s.id));
+    const shipMap: Record<string, string> = {};
+    for (const s of (shipments || [])) shipMap[s.id] = s.logistic_type || "unknown";
+    fallbackVentas = {};
+    for (const item of (shipmentItems || [])) {
+      const canal = (shipMap[item.shipment_id] || "").includes("fulfillment") ? "full" : "flex";
+      if (!fallbackVentas[item.sku]) fallbackVentas[item.sku] = { full: 0, flex: 0, ingreso_full: 0, ingreso_flex: 0 };
+      const fv = fallbackVentas[item.sku];
+      if (canal === "full") {
+        fv.full += item.cantidad || 0;
+        fv.ingreso_full += (item.precio_unitario || 0) * (item.cantidad || 0);
+      } else {
+        fv.flex += item.cantidad || 0;
+        fv.ingreso_flex += (item.precio_unitario || 0) * (item.cantidad || 0);
+      }
     }
   }
 
@@ -222,7 +295,7 @@ async function prepararRentabilidad(): Promise<{ datos: Record<string, unknown>;
     resumen: {
       total_productos: prods.length,
       productos_con_costo: prods.filter(p => p.costo && p.costo > 0).length,
-      total_shipments_periodo: ships.length,
+      ordenes_historial: orders.length,
       fecha_datos: new Date().toISOString(),
     },
     productos: prods.map(p => ({
@@ -232,7 +305,8 @@ async function prepararRentabilidad(): Promise<{ datos: Record<string, unknown>;
       costo: p.costo,
       precio: p.precio,
       categoria: p.categoria,
-      ventas: ventasPorSku[p.sku] || { full: 0, flex: 0, ingreso_full: 0, ingreso_flex: 0 },
+      margenes: ventasPorSku[p.sku_venta || p.sku] || null,
+      ventas_fallback: fallbackVentas ? (fallbackVentas[p.sku] || { full: 0, flex: 0, ingreso_full: 0, ingreso_flex: 0 }) : undefined,
     })),
     composicion: composicion || [],
   };
