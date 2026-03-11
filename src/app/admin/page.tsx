@@ -6320,13 +6320,13 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
   const [conteo, setConteo] = useState(initialConteo);
   const [processing, setProcessing] = useState(false);
   const [expandedSku, setExpandedSku] = useState<string | null>(null);
+  const [lastRefresh, setLastRefresh] = useState(Date.now());
 
-  // Recalcular stock_sistema con el stock real actual para líneas no resueltas
-  useEffect(() => {
+  // Función para refrescar stock_sistema con el stock real actual
+  const refreshStockSistema = useCallback(() => {
     const s = getStore();
     let changed = false;
     const fixedLineas = conteo.lineas.map(l => {
-      // Solo actualizar líneas que aún no fueron aprobadas/verificadas
       if (l.estado === "AJUSTADO" || l.estado === "VERIFICADO") return l;
       const stockReal = s.stock[l.sku]?.[l.posicion_id] ?? 0;
       if (stockReal !== l.stock_sistema) {
@@ -6340,7 +6340,25 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
       setConteo(updated);
       updateConteo(conteo.id!, { lineas: fixedLineas });
     }
-  }, [initialConteo.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    setLastRefresh(Date.now());
+  }, [conteo]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Refrescar al montar
+  useEffect(() => { refreshStockSistema(); }, [initialConteo.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Obtener movimientos que ocurrieron durante el conteo para los SKUs contados
+  const getMovsDuranteConteo = useCallback((sku: string, posId?: string) => {
+    const s = getStore();
+    const desde = conteo.created_at || conteo.fecha + "T00:00:00";
+    return s.movements.filter(m => {
+      if (m.sku !== sku) return false;
+      if (posId && m.pos !== posId) return false;
+      if (m.ts < desde) return false;
+      // Excluir movimientos generados por el propio conteo
+      if (m.note?.includes("conteo cíclico") || m.note?.includes("Traspaso conteo")) return false;
+      return true;
+    });
+  }, [conteo.created_at, conteo.fecha]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const reloadConteo = async () => {
     const all = await fetchConteos();
@@ -6505,7 +6523,10 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
               {conteo.tipo === "por_posicion" ? "Por posición" : "Por SKU"} · {conteo.posiciones.length} posiciones · Estado: <strong>{conteo.estado}</strong>
             </div>
           </div>
-          <div style={{display:"flex",gap:6}}>
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            {conteo.estado !== "CERRADA" && (
+              <button onClick={refreshStockSistema} style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"var(--cyan)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>🔄 Refrescar stock</button>
+            )}
             {conteo.estado !== "CERRADA" && (
               <button onClick={doDelete} style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"var(--red)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>Eliminar</button>
             )}
@@ -6761,6 +6782,39 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
                                       </div>
                                     );
                                   })}
+                                </div>
+                              );
+                            })()}
+                            {/* Movimientos ocurridos durante el conteo para este SKU */}
+                            {(() => {
+                              const movsDurante = getMovsDuranteConteo(l.sku);
+                              if (movsDurante.length === 0) return null;
+                              const netChange = movsDurante.reduce((sum, m) => sum + (m.type === "in" ? m.qty : -m.qty), 0);
+                              return (
+                                <div style={{marginTop:8,padding:"10px 12px",borderRadius:8,background:"#a855f710",border:"1px solid #a855f733"}}>
+                                  <div style={{fontSize:11,fontWeight:700,color:"#a855f7",marginBottom:6,display:"flex",justifyContent:"space-between"}}>
+                                    <span>📋 Movimientos durante el conteo ({movsDurante.length})</span>
+                                    <span className="mono" style={{fontSize:11,color: netChange === 0 ? "var(--txt3)" : netChange < 0 ? "#ef4444" : "#10b981"}}>
+                                      Neto: {netChange > 0 ? "+" : ""}{netChange}
+                                    </span>
+                                  </div>
+                                  <div style={{fontSize:10,color:"var(--txt3)",marginBottom:6}}>
+                                    Estos movimientos ocurrieron desde que se creó el conteo y ya están reflejados en "Stock sistema":
+                                  </div>
+                                  <div style={{maxHeight:150,overflowY:"auto"}}>
+                                    {movsDurante.slice(0, 20).map((m, mi) => (
+                                      <div key={mi} style={{display:"flex",alignItems:"center",gap:8,padding:"3px 6px",borderRadius:4,background: mi % 2 === 0 ? "var(--bg3)" : "transparent",fontSize:10}}>
+                                        <span style={{width:16,textAlign:"center",fontWeight:700,color: m.type === "in" ? "#10b981" : "#ef4444"}}>{m.type === "in" ? "+" : "−"}</span>
+                                        <span className="mono" style={{fontWeight:600,minWidth:24,textAlign:"right"}}>{m.qty}</span>
+                                        <span className="mono" style={{color:"var(--txt3)",minWidth:40}}>{m.pos}</span>
+                                        <span style={{color:"var(--txt2)",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                                          {m.reason === "venta_flex" ? "Venta Flex" : m.reason === "envio_full" ? "Envío Full" : m.reason === "ajuste_salida" ? "Ajuste salida" : m.reason === "compra" ? "Compra/Recepción" : m.reason}
+                                        </span>
+                                        <span style={{color:"var(--txt3)",fontSize:9,whiteSpace:"nowrap"}}>{new Date(m.ts).toLocaleString("es-CL", {day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</span>
+                                      </div>
+                                    ))}
+                                    {movsDurante.length > 20 && <div style={{fontSize:9,color:"var(--txt3)",textAlign:"center",padding:4}}>...y {movsDurante.length - 20} más</div>}
+                                  </div>
                                 </div>
                               );
                             })()}
