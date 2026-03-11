@@ -3100,6 +3100,7 @@ function Inventario() {
   const [q, setQ] = useState("");
   const [expanded, setExpanded] = useState<string|null>(null);
   const [viewMode, setViewMode] = useState<"fisico"|"ml">("fisico");
+  const [soloSinEtiquetar, setSoloSinEtiquetar] = useState(false);
   const [,setTick] = useState(0);
   const refresh = useCallback(() => setTick(t => t + 1), []);
   const s = getStore();
@@ -3139,7 +3140,14 @@ function Inventario() {
     if (detalle.some(d => d.skuVenta !== SIN_ETIQUETAR && d.skuVenta.toLowerCase().includes(ql))) return true;
     return false;
   }).sort((a,b)=>skuTotal(b)-skuTotal(a));
-  const grandTotal = allSkus.reduce((s,sku)=>s+skuTotal(sku),0);
+
+  // SKUs con stock sin etiquetar
+  const skusSinEtiquetar = allSkus.filter(sku => {
+    const detalle = skuStockDetalle(sku);
+    return detalle.some(d => d.skuVenta === SIN_ETIQUETAR && d.qty > 0);
+  });
+  const filteredSkus = soloSinEtiquetar ? skusSinEtiquetar : allSkus;
+  const grandTotal = filteredSkus.reduce((s,sku)=>s+skuTotal(sku),0);
 
   // ML publication view
   const allVentas = getSkusVenta();
@@ -3349,6 +3357,13 @@ function Inventario() {
               background:viewMode==="ml"?"var(--amberBg)":"var(--bg3)",color:viewMode==="ml"?"var(--amber)":"var(--txt3)",
               border:viewMode==="ml"?"1px solid var(--amber)":"1px solid var(--bg4)"}}>🛒 Publicaciones ML</button>
           </div>
+          {viewMode === "fisico" && (
+            <button onClick={()=>setSoloSinEtiquetar(!soloSinEtiquetar)} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
+              background:soloSinEtiquetar?"var(--amberBg)":"var(--bg3)",color:soloSinEtiquetar?"var(--amber)":"var(--txt3)",
+              border:soloSinEtiquetar?"1px solid var(--amber)":"1px solid var(--bg4)"}}>
+              Sin etiquetar ({skusSinEtiquetar.length})
+            </button>
+          )}
           <button onClick={doExportInventario} disabled={exporting} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
             background:"var(--bg3)",color:"var(--green)",border:"1px solid var(--bg4)",cursor:exporting?"wait":"pointer",opacity:exporting?0.6:1}}>
             {exporting ? "Exportando..." : "Exportar Inventario"}
@@ -3361,7 +3376,7 @@ function Inventario() {
           <div style={{textAlign:"right",whiteSpace:"nowrap"}}>
             {viewMode === "fisico" ? (
               <>
-                <div style={{fontSize:10,color:"var(--txt3)"}}>{allSkus.length} SKUs</div>
+                <div style={{fontSize:10,color:"var(--txt3)"}}>{filteredSkus.length} SKUs{soloSinEtiquetar ? " sin etiquetar" : ""}</div>
                 <div className="mono" style={{fontSize:14,fontWeight:700,color:"var(--blue)"}}>{grandTotal.toLocaleString("es-CL")} uds</div>
               </>
             ) : (
@@ -3568,7 +3583,7 @@ function Inventario() {
                   <th>SKU</th><th>Producto</th><th>Cat.</th><th>Proveedor</th><th>Ubicaciones</th><th style={{textAlign:"right"}}>Total</th><th style={{textAlign:"right"}}>Valor</th>
                 </tr></thead>
                 <tbody>
-                  {allSkus.map(sku=>{
+                  {filteredSkus.map(sku=>{
                     const prod=s.products[sku];const total=skuTotal(sku);const positions=skuPositions(sku);
                     const isOpen=expanded===sku;
                     return([
@@ -3622,7 +3637,7 @@ function Inventario() {
 
           {/* Mobile: card view */}
           <div className="mobile-only">
-            {allSkus.map(sku=>{
+            {filteredSkus.map(sku=>{
               const prod=s.products[sku];const positions=skuPositions(sku);const total=skuTotal(sku);const isOpen=expanded===sku;
               return(
                 <div key={sku} className="card" style={{marginTop:6,cursor:"pointer"}} onClick={()=>setExpanded(isOpen?null:sku)}>
