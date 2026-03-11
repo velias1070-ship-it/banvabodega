@@ -3680,6 +3680,115 @@ function Inventario() {
     }
   };
 
+  const doExportFull = () => {
+    const s = getStore();
+    // Build map: skuVenta → total qty (summing across all positions)
+    const skuVentaQty: Record<string, number> = {};
+    const skuVentaNombre: Record<string, string> = {};
+    // Track which sku_origen have multiple sku_venta
+    const origenToVentas: Record<string, string[]> = {};
+
+    // 1. Collect all composicion entries to know sku_origen → sku_venta[]
+    for (const sku of Object.keys(s.products)) {
+      const ventas = getVentasPorSkuOrigen(sku);
+      if (ventas.length > 0) {
+        origenToVentas[sku] = ventas.map(v => v.skuVenta);
+      }
+    }
+
+    // 2. Sum labeled stock per sku_venta from stockDetalle
+    for (const [skuOrigen, svMap] of Object.entries(s.stockDetalle)) {
+      for (const [sv, posMap] of Object.entries(svMap)) {
+        if (sv === SIN_ETIQUETAR) continue;
+        const qty = Object.values(posMap).reduce((a, b) => a + b, 0);
+        if (qty <= 0) continue;
+        skuVentaQty[sv] = (skuVentaQty[sv] || 0) + qty;
+        if (!skuVentaNombre[sv]) {
+          const prod = s.products[skuOrigen];
+          skuVentaNombre[sv] = prod?.name || skuOrigen;
+        }
+      }
+    }
+
+    // 3. For unlabeled stock, if sku_origen has exactly 1 sku_venta, attribute to it
+    for (const [skuOrigen, svMap] of Object.entries(s.stockDetalle)) {
+      const sinEtiq = svMap[SIN_ETIQUETAR];
+      if (!sinEtiq) continue;
+      const qty = Object.values(sinEtiq).reduce((a, b) => a + b, 0);
+      if (qty <= 0) continue;
+      const ventas = origenToVentas[skuOrigen];
+      if (ventas && ventas.length === 1) {
+        skuVentaQty[ventas[0]] = (skuVentaQty[ventas[0]] || 0) + qty;
+      } else if (!ventas || ventas.length === 0) {
+        // No composicion — use sku_origen as sku_venta
+        skuVentaQty[skuOrigen] = (skuVentaQty[skuOrigen] || 0) + qty;
+        if (!skuVentaNombre[skuOrigen]) {
+          const prod = s.products[skuOrigen];
+          skuVentaNombre[skuOrigen] = prod?.name || "";
+        }
+      }
+      // If multiple ventas, skip unlabeled (can't determine which sku_venta)
+    }
+
+    // 4. Also include stock entries NOT in stockDetalle
+    for (const [skuOrigen, posMap] of Object.entries(s.stock)) {
+      if (s.stockDetalle[skuOrigen]) continue;
+      const qty = Object.values(posMap).reduce((a, b) => a + b, 0);
+      if (qty <= 0) continue;
+      const ventas = origenToVentas[skuOrigen];
+      if (ventas && ventas.length === 1) {
+        skuVentaQty[ventas[0]] = (skuVentaQty[ventas[0]] || 0) + qty;
+        if (!skuVentaNombre[ventas[0]]) {
+          const prod = s.products[skuOrigen];
+          skuVentaNombre[ventas[0]] = prod?.name || "";
+        }
+      } else {
+        skuVentaQty[skuOrigen] = (skuVentaQty[skuOrigen] || 0) + qty;
+        if (!skuVentaNombre[skuOrigen]) {
+          const prod = s.products[skuOrigen];
+          skuVentaNombre[skuOrigen] = prod?.name || "";
+        }
+      }
+    }
+
+    // 5. Build notes for sku_venta where sku_origen has multiple ventas
+    const skuVentaNotas: Record<string, string> = {};
+    for (const [skuOrigen, ventasList] of Object.entries(origenToVentas)) {
+      if (ventasList.length <= 1) continue;
+      const prod = s.products[skuOrigen];
+      const prodName = prod?.name || skuOrigen;
+      for (const sv of ventasList) {
+        const ventas = getVentasPorSkuOrigen(skuOrigen);
+        const venta = ventas.find(v => v.skuVenta === sv);
+        const uds = venta?.unidades || 1;
+        const otrosFormatos = ventasList.filter(v => v !== sv);
+        skuVentaNotas[sv] = `SKU origen: ${skuOrigen} (${prodName}) - ${uds}u - Tambien: ${otrosFormatos.join(", ")}`;
+      }
+    }
+
+    // 6. Generate CSV
+    const rows: string[] = [];
+    rows.push(["sku_venta","nombre","cantidad","nota"].join(","));
+    const sorted = Object.entries(skuVentaQty).sort((a, b) => b[1] - a[1]);
+    for (const [sv, qty] of sorted) {
+      rows.push([
+        csvEscape(sv),
+        csvEscape(skuVentaNombre[sv] || ""),
+        String(qty),
+        csvEscape(skuVentaNotas[sv] || ""),
+      ].join(","));
+    }
+
+    const csv = rows.join("\n");
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `banva_stock_full_${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div>
       <div className="card">
@@ -3702,6 +3811,10 @@ function Inventario() {
           <button onClick={doExportInventario} disabled={exporting} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
             background:"var(--bg3)",color:"var(--green)",border:"1px solid var(--bg4)",cursor:exporting?"wait":"pointer",opacity:exporting?0.6:1}}>
             {exporting ? "Exportando..." : "Exportar Inventario"}
+          </button>
+          <button onClick={doExportFull} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
+            background:"var(--bg3)",color:"var(--cyan)",border:"1px solid var(--cyanBd)",cursor:"pointer"}}>
+            Exportar Full
           </button>
           <button onClick={doReclasificar} disabled={reclasificando} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
             background:reclasificando?"var(--bg3)":"var(--amberBg)",color:reclasificando?"var(--txt3)":"var(--amber)",border:"1px solid var(--amberBd)",cursor:reclasificando?"wait":"pointer",opacity:reclasificando?0.6:1}}>
