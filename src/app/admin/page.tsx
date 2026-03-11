@@ -1,7 +1,7 @@
 "use client";
 /* v3.1 — conteos + pedidos ML + cron fix */
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote, reconciliarStock, aplicarReconciliacion } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote, reconciliarStock, aplicarReconciliacion, sustituirProducto } from "@/lib/store";
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto } from "@/lib/db";
@@ -189,11 +189,14 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
 
   // Error report modal
   const [errorLinea, setErrorLinea] = useState<DBRecepcionLinea|null>(null);
-  const [errorMode, setErrorMode] = useState<"menu"|"conteo"|"sku">("menu");
+  const [errorMode, setErrorMode] = useState<"menu"|"conteo"|"sku"|"sustitucion">("menu");
   const [errorQty, setErrorQty] = useState(0);
   const [errorSkuSearch, setErrorSkuSearch] = useState("");
   const [errorSkuResults, setErrorSkuResults] = useState<Product[]>([]);
   const [errorSaving, setErrorSaving] = useState(false);
+  const [sustQty, setSustQty] = useState(0);
+  const [sustCostoMode, setSustCostoMode] = useState<"factura"|"diccionario">("factura");
+  const [sustSelected, setSustSelected] = useState<Product|null>(null);
 
   // Create form
   const [newFolio, setNewFolio] = useState("");
@@ -457,6 +460,35 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
     } catch (e: unknown) {
       console.error("Error cambio SKU:", e);
       alert(`Error al cambiar SKU: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setErrorSaving(false);
+    }
+  };
+  const doSustitucion = async () => {
+    if (!errorLinea || !selRec || !sustSelected || sustQty <= 0) return;
+    setErrorSaving(true);
+    try {
+      const result = await sustituirProducto(
+        selRec.id!,
+        errorLinea.id!,
+        {
+          sku: sustSelected.sku,
+          nombre: sustSelected.name,
+          codigoML: sustSelected.mlCode || "",
+          requiereEtiqueta: sustSelected.requiresLabel !== false,
+          costoDiccionario: sustSelected.cost || 0,
+        },
+        sustQty,
+        sustCostoMode === "factura",
+      );
+      setLineas(await getRecepcionLineas(selRec.id!));
+      setDiscrepancias(result.discrepanciasCosto);
+      setDiscrepanciasQty(result.discrepancias);
+      setErrorLinea(null);
+      setSustSelected(null);
+    } catch (e: unknown) {
+      console.error("Error en sustitución:", e);
+      alert(`Error al sustituir: ${e instanceof Error ? e.message : e}`);
     } finally {
       setErrorSaving(false);
     }
@@ -826,8 +858,8 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                 <tbody>{discrepanciasQty.map(d => {
                   const tipoLabel: Record<string,string> = { FALTANTE: "Faltante", SOBRANTE: "Sobrante", SKU_ERRONEO: "SKU erróneo", NO_EN_FACTURA: "No en factura" };
                   const tipoColor: Record<string,string> = { FALTANTE: "var(--red)", SOBRANTE: "var(--amber)", SKU_ERRONEO: "var(--red)", NO_EN_FACTURA: "var(--cyan)" };
-                  const estadoLabel: Record<string,string> = { PENDIENTE: "Pendiente", ACEPTADO: "Aceptado", RECLAMADO: "Reclamado", NOTA_CREDITO: "Nota crédito", DEVOLUCION: "Devolución" };
-                  const estadoColor: Record<string,string> = { PENDIENTE: "var(--amber)", ACEPTADO: "var(--green)", RECLAMADO: "var(--blue,var(--cyan))", NOTA_CREDITO: "var(--cyan)", DEVOLUCION: "var(--red)" };
+                  const estadoLabel: Record<string,string> = { PENDIENTE: "Pendiente", ACEPTADO: "Aceptado", RECLAMADO: "Reclamado", NOTA_CREDITO: "Nota crédito", DEVOLUCION: "Devolución", SUSTITUCION: "Sustitución" };
+                  const estadoColor: Record<string,string> = { PENDIENTE: "var(--amber)", ACEPTADO: "var(--green)", RECLAMADO: "var(--blue,var(--cyan))", NOTA_CREDITO: "var(--cyan)", DEVOLUCION: "var(--red)", SUSTITUCION: "var(--cyan)" };
                   return (
                   <tr key={d.id} style={{background: d.estado==="PENDIENTE" ? "var(--amberBg)" : "transparent"}}>
                     <td className="mono" style={{fontSize:11,fontWeight:700}}>{d.sku}</td>
@@ -905,6 +937,11 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                     style={{width:"100%",padding:"16px 14px",borderRadius:10,background:"var(--bg3)",border:"1px solid var(--bg4)",marginBottom:8,textAlign:"left",cursor:"pointer"}}>
                     <div style={{fontSize:14,fontWeight:700,color:"var(--red)"}}>SKU incorrecto</div>
                     <div style={{fontSize:11,color:"var(--txt3)",marginTop:2}}>El producto fisico no corresponde al SKU de la factura</div>
+                  </button>
+                  <button onClick={()=>{setErrorMode("sustitucion");setErrorSkuSearch("");setErrorSkuResults([]);setSustSelected(null);setSustQty(errorLinea?.qty_factura||0);setSustCostoMode("factura");}}
+                    style={{width:"100%",padding:"16px 14px",borderRadius:10,background:"var(--bg3)",border:"1px solid var(--cyan)",marginBottom:8,textAlign:"left",cursor:"pointer"}}>
+                    <div style={{fontSize:14,fontWeight:700,color:"var(--cyan)"}}>Sustitución de producto</div>
+                    <div style={{fontSize:11,color:"var(--txt3)",marginTop:2}}>El proveedor envió un producto distinto al facturado. Se registran ambos SKUs y se ajustan costos.</div>
                   </button>
                   <button onClick={closeErrorReport}
                     style={{width:"100%",padding:12,borderRadius:8,background:"var(--bg3)",color:"var(--txt3)",fontSize:13,fontWeight:600,border:"1px solid var(--bg4)"}}>
@@ -987,6 +1024,129 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                     style={{width:"100%",padding:12,borderRadius:8,background:"var(--bg3)",color:"var(--txt3)",fontSize:13,fontWeight:600,border:"1px solid var(--bg4)"}}>
                     Atras
                   </button>
+                </div>
+              )}
+
+              {/* Sustitución de producto */}
+              {errorMode === "sustitucion" && errorLinea && (
+                <div style={{padding:24}}>
+                  <div style={{fontSize:14,fontWeight:800,marginBottom:4}}>Sustitución de producto</div>
+                  <div style={{fontSize:12,color:"var(--txt3)",marginBottom:4}}>
+                    Factura: <strong className="mono" style={{color:"var(--red)"}}>{errorLinea.sku}</strong> — {errorLinea.nombre}
+                  </div>
+                  <div style={{fontSize:11,color:"var(--txt3)",marginBottom:12}}>
+                    Qty factura: <strong>{errorLinea.qty_factura}</strong> · Costo unit: <strong>{fmtMoney(errorLinea.costo_unitario||0)}</strong>
+                  </div>
+
+                  {/* Step 1: Search substitute product */}
+                  {!sustSelected ? (
+                    <>
+                      <div style={{fontSize:12,fontWeight:700,color:"var(--cyan)",marginBottom:6}}>Producto que llegó realmente:</div>
+                      <input type="text" className="form-input" value={errorSkuSearch} onChange={e=>handleErrorSkuSearch(e.target.value)}
+                        placeholder="Buscar por SKU, nombre o codigo ML..." autoFocus style={{marginBottom:8,fontSize:13}} />
+                      <div style={{maxHeight:220,overflowY:"auto",marginBottom:12}}>
+                        {errorSkuSearch.trim().length >= 2 && errorSkuResults.length === 0 && (
+                          <div style={{textAlign:"center",padding:16,color:"var(--txt3)",fontSize:12}}>Sin resultados</div>
+                        )}
+                        {errorSkuResults.map(p => (
+                          <div key={p.sku} onClick={()=>{setSustSelected(p);}}
+                            style={{padding:"10px 12px",borderRadius:8,background:"var(--bg3)",border:"1px solid var(--bg4)",
+                              marginBottom:4,cursor:"pointer",opacity:p.sku===errorLinea.sku?0.4:1}}>
+                            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                              <span className="mono" style={{fontWeight:700,fontSize:13,color:"var(--cyan)"}}>{p.sku}</span>
+                              <span className="mono" style={{fontSize:10,color:"var(--txt3)"}}>{fmtMoney(p.cost||0)}</span>
+                            </div>
+                            <div style={{fontSize:11,color:"var(--txt2)",marginTop:2}}>{p.name}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      {/* Step 2: Confirm product, quantity, and cost */}
+                      <div style={{padding:"10px 12px",borderRadius:8,background:"var(--cyanBg)",border:"1px solid var(--cyanBd)",marginBottom:12}}>
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                          <span className="mono" style={{fontWeight:700,fontSize:13,color:"var(--cyan)"}}>{sustSelected.sku}</span>
+                          <button onClick={()=>setSustSelected(null)} style={{fontSize:10,color:"var(--txt3)",background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>Cambiar</button>
+                        </div>
+                        <div style={{fontSize:11,color:"var(--txt2)",marginTop:2}}>{sustSelected.name}</div>
+                        <div style={{fontSize:10,color:"var(--txt3)",marginTop:2}}>Costo diccionario: {fmtMoney(sustSelected.cost||0)}</div>
+                      </div>
+
+                      {/* Quantity */}
+                      <div style={{fontSize:12,fontWeight:600,color:"var(--txt2)",marginBottom:6}}>Cantidad recibida:</div>
+                      <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:12,marginBottom:12}}>
+                        <button onClick={()=>setSustQty(q=>Math.max(1,q-1))}
+                          style={{width:40,height:40,borderRadius:8,background:"var(--bg3)",fontSize:20,fontWeight:700,border:"1px solid var(--bg4)"}}>−</button>
+                        <input type="number" value={sustQty} onFocus={e=>e.target.select()} onChange={e=>setSustQty(Math.max(1,parseInt(e.target.value)||1))}
+                          style={{width:80,textAlign:"center",fontSize:28,fontWeight:700,padding:8,borderRadius:8,background:"var(--bg)",border:"2px solid var(--bg4)",color:"var(--txt1)"}} />
+                        <button onClick={()=>setSustQty(q=>q+1)}
+                          style={{width:40,height:40,borderRadius:8,background:"var(--bg3)",fontSize:20,fontWeight:700,border:"1px solid var(--bg4)"}}>+</button>
+                      </div>
+
+                      {/* Cost mode */}
+                      <div style={{fontSize:12,fontWeight:600,color:"var(--txt2)",marginBottom:6}}>Costo unitario del sustituto:</div>
+                      <div style={{display:"flex",gap:6,marginBottom:12}}>
+                        <button onClick={()=>setSustCostoMode("factura")}
+                          style={{flex:1,padding:"10px 8px",borderRadius:8,textAlign:"center",cursor:"pointer",
+                            background:sustCostoMode==="factura"?"var(--cyanBg)":"var(--bg3)",
+                            border:sustCostoMode==="factura"?"2px solid var(--cyan)":"1px solid var(--bg4)"}}>
+                          <div style={{fontSize:12,fontWeight:700,color:sustCostoMode==="factura"?"var(--cyan)":"var(--txt2)"}}>Costo de factura</div>
+                          <div className="mono" style={{fontSize:16,fontWeight:800,marginTop:2,color:sustCostoMode==="factura"?"var(--cyan)":"var(--txt3)"}}>{fmtMoney(errorLinea.costo_unitario||0)}</div>
+                          <div style={{fontSize:9,color:"var(--txt3)",marginTop:2}}>Lo que se pagó por unidad</div>
+                        </button>
+                        <button onClick={()=>setSustCostoMode("diccionario")}
+                          style={{flex:1,padding:"10px 8px",borderRadius:8,textAlign:"center",cursor:"pointer",
+                            background:sustCostoMode==="diccionario"?"var(--amberBg)":"var(--bg3)",
+                            border:sustCostoMode==="diccionario"?"2px solid var(--amber)":"1px solid var(--bg4)"}}>
+                          <div style={{fontSize:12,fontWeight:700,color:sustCostoMode==="diccionario"?"var(--amber)":"var(--txt2)"}}>Costo diccionario</div>
+                          <div className="mono" style={{fontSize:16,fontWeight:800,marginTop:2,color:sustCostoMode==="diccionario"?"var(--amber)":"var(--txt3)"}}>{fmtMoney(sustSelected.cost||0)}</div>
+                          <div style={{fontSize:9,color:"var(--txt3)",marginTop:2}}>Costo registrado del producto</div>
+                        </button>
+                      </div>
+
+                      {/* Summary */}
+                      <div style={{padding:"10px 12px",borderRadius:8,background:"var(--bg)",border:"1px solid var(--bg4)",marginBottom:12,fontSize:11}}>
+                        <div style={{fontWeight:700,marginBottom:4,color:"var(--txt2)"}}>Resumen de sustitución:</div>
+                        <div style={{display:"flex",justifyContent:"space-between",marginBottom:2}}>
+                          <span style={{color:"var(--red)"}}>Factura ({errorLinea.sku}):</span>
+                          <span className="mono">{errorLinea.qty_factura} × {fmtMoney(errorLinea.costo_unitario||0)} = {fmtMoney((errorLinea.qty_factura)*(errorLinea.costo_unitario||0))}</span>
+                        </div>
+                        <div style={{display:"flex",justifyContent:"space-between",marginBottom:2}}>
+                          <span style={{color:"var(--cyan)"}}>Recibido ({sustSelected.sku}):</span>
+                          <span className="mono">{sustQty} × {fmtMoney(sustCostoMode==="factura"?(errorLinea.costo_unitario||0):(sustSelected.cost||0))} = {fmtMoney(sustQty*(sustCostoMode==="factura"?(errorLinea.costo_unitario||0):(sustSelected.cost||0)))}</span>
+                        </div>
+                        {sustCostoMode==="factura" && (sustSelected.cost||0) !== (errorLinea.costo_unitario||0) && (
+                          <div style={{marginTop:4,padding:"4px 8px",borderRadius:4,background:"var(--amberBg)",color:"var(--amber)",fontSize:10,fontWeight:600}}>
+                            Nota: el costo diccionario ({fmtMoney(sustSelected.cost||0)}) difiere del costo factura. Se generará discrepancia de costo.
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Actions */}
+                      <div style={{display:"flex",gap:8}}>
+                        <button onClick={()=>{setSustSelected(null);setErrorSkuSearch("");setErrorSkuResults([]);}}
+                          style={{flex:1,padding:12,borderRadius:8,background:"var(--bg3)",color:"var(--txt3)",fontSize:13,fontWeight:600,border:"1px solid var(--bg4)"}}>
+                          Atras
+                        </button>
+                        <button onClick={doSustitucion} disabled={errorSaving || sustQty <= 0}
+                          style={{flex:2,padding:12,borderRadius:8,
+                            background:(errorSaving||sustQty<=0)?"var(--bg3)":"var(--cyan)",
+                            color:(errorSaving||sustQty<=0)?"var(--txt3)":"#fff",
+                            fontSize:13,fontWeight:700,border:"none",cursor:"pointer"}}>
+                          {errorSaving ? "Procesando..." : "Confirmar sustitución"}
+                        </button>
+                      </div>
+                    </>
+                  )}
+
+                  {/* Back to menu (when searching) */}
+                  {!sustSelected && (
+                    <button onClick={()=>setErrorMode("menu")}
+                      style={{width:"100%",padding:12,borderRadius:8,background:"var(--bg3)",color:"var(--txt3)",fontSize:13,fontWeight:600,border:"1px solid var(--bg4)",marginTop:4}}>
+                      Atras
+                    </button>
+                  )}
                 </div>
               )}
             </div>

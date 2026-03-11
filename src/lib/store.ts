@@ -2028,6 +2028,7 @@ const DISC_QTY_RESOLUCIONES: Record<db.DiscrepanciaQtyTipo, { valor: db.Discrepa
     { valor: "ACEPTADO", label: "Aceptar faltante" },
     { valor: "RECLAMADO", label: "Reclamar al proveedor" },
     { valor: "NOTA_CREDITO", label: "Solicitar nota de crédito" },
+    { valor: "SUSTITUCION", label: "Producto sustituido" },
   ],
   SOBRANTE: [
     { valor: "ACEPTADO", label: "Aceptar sobrante" },
@@ -2040,6 +2041,7 @@ const DISC_QTY_RESOLUCIONES: Record<db.DiscrepanciaQtyTipo, { valor: db.Discrepa
   NO_EN_FACTURA: [
     { valor: "ACEPTADO", label: "Aceptar producto extra" },
     { valor: "DEVOLUCION", label: "Devolver al proveedor" },
+    { valor: "SUSTITUCION", label: "Producto sustituido" },
   ],
 };
 
@@ -2122,6 +2124,124 @@ export async function crearDiscrepanciaQtyManual(
 
 export function tieneDiscrepanciasQtyPendientes(discs: db.DBDiscrepanciaQty[]): boolean {
   return discs.some(d => d.estado === "PENDIENTE");
+}
+
+// ==================== SUSTITUCIÓN DE PRODUCTO ====================
+
+export interface SustitucionResult {
+  lineaOriginal: db.DBRecepcionLinea;
+  lineaSustituta: db.DBRecepcionLinea;
+  discrepancias: db.DBDiscrepanciaQty[];
+  discrepanciasCosto: db.DBDiscrepanciaCosto[];
+}
+
+/**
+ * Maneja sustitución de producto en recepción:
+ * - Proveedor envió producto diferente al facturado
+ * - Actualiza línea original (qty_recibida=0)
+ * - Crea nueva línea para el producto que realmente llegó
+ * - Genera discrepancias vinculadas (FALTANTE + NO_EN_FACTURA) y las resuelve como SUSTITUCION
+ * - Maneja costos: la línea sustituta usa el costo de factura (lo que se pagó)
+ */
+export async function sustituirProducto(
+  recepcionId: string,
+  lineaOriginalId: string,
+  productoSustituto: { sku: string; nombre: string; codigoML: string; requiereEtiqueta: boolean; costoDiccionario: number },
+  cantidadRecibida: number,
+  usarCostoFactura: boolean,
+): Promise<SustitucionResult> {
+  // 1. Obtener línea original
+  const lineas = await db.fetchRecepcionLineas(recepcionId);
+  const original = lineas.find(l => l.id === lineaOriginalId);
+  if (!original) throw new Error("Línea original no encontrada");
+
+  const costoOriginal = original.costo_unitario || 0;
+  const costoSustituto = usarCostoFactura ? costoOriginal : productoSustituto.costoDiccionario;
+  const ts = new Date().toISOString();
+  const notaBase = `Sustitución: ${original.sku} → ${productoSustituto.sku} (${cantidadRecibida} uds)`;
+
+  // 2. Actualizar línea original: qty_recibida = 0
+  await db.updateRecepcionLinea(lineaOriginalId, {
+    qty_recibida: 0,
+    qty_etiquetada: 0,
+    qty_ubicada: 0,
+    notas: `${original.notas ? original.notas + " | " : ""}${notaBase} — No llegó este producto`,
+  });
+
+  // 3. Si la línea original ya tenía stock ubicado, revertirlo
+  if ((original.qty_ubicada || 0) > 0) {
+    // Esto es por si ya se había ubicado antes de detectar la sustitución
+    // (como el caso descrito: qty_ubicada=40 pero era otro producto)
+    await ajustarLineaAdmin(lineaOriginalId, recepcionId, original.sku, original.qty_ubicada || 0, 0);
+  }
+
+  // 4. Crear nueva línea para producto sustituto
+  const autoFormato = _resolverFormatoVenta(productoSustituto.sku);
+  await db.insertRecepcionLineas([{
+    recepcion_id: recepcionId,
+    sku: productoSustituto.sku,
+    codigo_ml: productoSustituto.codigoML,
+    nombre: productoSustituto.nombre,
+    qty_factura: 0,
+    qty_recibida: cantidadRecibida,
+    qty_etiquetada: 0,
+    qty_ubicada: 0,
+    estado: "CONTADA" as const,
+    requiere_etiqueta: autoFormato ? true : productoSustituto.requiereEtiqueta,
+    costo_unitario: costoSustituto,
+    sku_venta: autoFormato || undefined,
+    notas: `${notaBase} — Costo ${usarCostoFactura ? "de factura" : "de diccionario"}: ${costoSustituto}`,
+    operario_conteo: "admin",
+    operario_etiquetado: "",
+    operario_ubicacion: "",
+  }]);
+
+  // 5. Borrar discrepancias pendientes y regenerar
+  await db.deleteDiscrepanciasQtyPendientes(recepcionId);
+  await db.deleteDiscrepanciasPendientes(recepcionId);
+
+  const updatedLineas = await db.fetchRecepcionLineas(recepcionId);
+
+  // 6. Detectar discrepancias de cantidad (generará FALTANTE para original, NO_EN_FACTURA para sustituto)
+  const dq = await detectarDiscrepanciasQty(recepcionId, updatedLineas);
+
+  // 7. Auto-resolver las discrepancias de la sustitución como SUSTITUCION
+  const discOriginal = dq.find(d => d.sku === original.sku && d.tipo === "FALTANTE" && d.estado === "PENDIENTE");
+  const discSustituto = dq.find(d => d.sku === productoSustituto.sku && d.tipo === "NO_EN_FACTURA" && d.estado === "PENDIENTE");
+
+  if (discOriginal) {
+    await db.updateDiscrepanciaQty(discOriginal.id!, {
+      estado: "SUSTITUCION",
+      resuelto_por: "admin",
+      resuelto_at: ts,
+      notas: `Sustituido por ${productoSustituto.sku} (${cantidadRecibida} uds)`,
+    });
+  }
+  if (discSustituto) {
+    await db.updateDiscrepanciaQty(discSustituto.id!, {
+      estado: "SUSTITUCION",
+      resuelto_por: "admin",
+      resuelto_at: ts,
+      notas: `Sustituyó a ${original.sku} — Costo unitario: ${costoSustituto}`,
+    });
+  }
+
+  // 8. Detectar discrepancias de costo
+  const dc = await detectarDiscrepancias(recepcionId, updatedLineas);
+
+  // 9. Re-fetch todo actualizado
+  const finalLineas = await db.fetchRecepcionLineas(recepcionId);
+  const lineaOrig = finalLineas.find(l => l.id === lineaOriginalId)!;
+  const lineaSust = finalLineas.find(l => l.sku === productoSustituto.sku && l.recepcion_id === recepcionId && l.qty_factura === 0)!;
+  const finalDq = await db.fetchDiscrepanciasQty(recepcionId);
+  const finalDc = await db.fetchDiscrepancias(recepcionId);
+
+  return {
+    lineaOriginal: lineaOrig,
+    lineaSustituta: lineaSust,
+    discrepancias: finalDq,
+    discrepanciasCosto: finalDc,
+  };
 }
 
 // ==================== FORMAT HELPERS ====================
