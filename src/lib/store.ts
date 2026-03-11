@@ -901,10 +901,20 @@ export async function getRecepcionesActivas() { return db.fetchRecepcionesActiva
 export async function getRecepcionLineas(recId: string) { return db.fetchRecepcionLineas(recId); }
 
 export async function crearRecepcion(folio: string, proveedor: string, imagenUrl: string, lineas: { sku: string; codigoML: string; nombre: string; cantidad: number; costo: number; requiereEtiqueta: boolean }[], costos?: { costo_neto?: number; iva?: number; costo_bruto?: number }): Promise<string | null> {
+  // Calcular factura_original snapshot antes de insertar
+  const netoCalc = lineas.reduce((s, l) => s + l.cantidad * l.costo, 0);
+  const facturaOriginal: db.FacturaOriginal = {
+    lineas: lineas.map(l => ({ sku: l.sku, nombre: l.nombre, cantidad: l.cantidad, costo_unitario: l.costo })),
+    neto: costos?.costo_neto || netoCalc,
+    iva: costos?.iva || Math.round(netoCalc * 0.19),
+    bruto: costos?.costo_bruto || Math.round(netoCalc * 1.19),
+  };
+
   const id = await db.insertRecepcion({
     folio, proveedor, imagen_url: imagenUrl, estado: "CREADA",
     notas: "", created_by: "admin",
     ...(costos || {}),
+    factura_original: facturaOriginal,
   });
   if (!id) return null;
 
@@ -1924,6 +1934,26 @@ export async function agregarLineaRecepcion(recepcionId: string, linea: { sku: s
     sku_venta: autoFormato || undefined,
     notas: "", operario_conteo: "", operario_etiquetado: "", operario_ubicacion: "",
   }]);
+}
+
+// ==================== RECEPCION AJUSTES ====================
+
+export async function getRecepcionAjustes(recId: string) { return db.fetchRecepcionAjustes(recId); }
+
+export async function registrarAjuste(ajuste: Omit<db.DBRecepcionAjuste, "id" | "created_at">) {
+  await db.insertRecepcionAjuste(ajuste);
+}
+
+/** Backfill factura_original para recepciones viejas que no lo tienen */
+export async function backfillFacturaOriginal(recepcionId: string, lineas: db.DBRecepcionLinea[], rec: db.DBRecepcion): Promise<db.FacturaOriginal> {
+  const snapshot: db.FacturaOriginal = {
+    lineas: lineas.map(l => ({ sku: l.sku, nombre: l.nombre, cantidad: l.qty_factura, costo_unitario: l.costo_unitario || 0 })),
+    neto: rec.costo_neto || lineas.reduce((s, l) => s + l.qty_factura * (l.costo_unitario || 0), 0),
+    iva: rec.iva || Math.round((rec.costo_neto || lineas.reduce((s, l) => s + l.qty_factura * (l.costo_unitario || 0), 0)) * 0.19),
+    bruto: rec.costo_bruto || Math.round((rec.costo_neto || lineas.reduce((s, l) => s + l.qty_factura * (l.costo_unitario || 0), 0)) * 1.19),
+  };
+  await db.updateRecepcionFacturaOriginal(recepcionId, snapshot);
+  return snapshot;
 }
 
 // ==================== DISCREPANCIAS DE COSTO ====================
