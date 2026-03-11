@@ -1,6 +1,6 @@
 "use client";
 /* v3.1 — conteos + pedidos ML + cron fix */
-import { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote, reconciliarStock, aplicarReconciliacion, editarStockVariante, sustituirProducto, getRecepcionAjustes, registrarAjuste, backfillFacturaOriginal } from "@/lib/store";
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
@@ -6319,6 +6319,7 @@ function CreateConteo({ onCreated, onCancel }: { onCreated: () => void; onCancel
 function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBConteo; onBack: () => void; refresh: () => void }) {
   const [conteo, setConteo] = useState(initialConteo);
   const [processing, setProcessing] = useState(false);
+  const [expandedSku, setExpandedSku] = useState<string | null>(null);
 
   // Recalcular stock_sistema con el stock real actual para líneas no resueltas
   useEffect(() => {
@@ -6531,11 +6532,31 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
                   const diff = l.stock_contado - l.stock_sistema;
                   const diffColor = diff === 0 ? "#10b981" : Math.abs(diff) >= 5 ? "#ef4444" : "#f59e0b";
                   const isContado = l.estado === "CONTADO";
+                  const lineKey = `${l.posicion_id}|${l.sku}`;
+                  const isExpanded = expandedSku === lineKey;
+                  const hasDiff = l.estado !== "PENDIENTE" && diff !== 0;
+                  const colCount = (conteo.estado === "REVISION" || conteo.estado === "EN_PROCESO") ? 7 : 6;
+
+                  // Build stock global info for this SKU
+                  const s = getStore();
+                  const skuStock = s.stock[l.sku] || {};
+                  const allPositions = Object.entries(skuStock).filter(([, q]) => q > 0);
+                  const totalSistema = allPositions.reduce((sum, [, q]) => sum + q, 0);
+
+                  // Find all conteo lines for this SKU (to show what operator counted elsewhere)
+                  const conteoLinesSku = conteo.lineas.filter(cl => cl.sku === l.sku);
+
+                  // Projected total if approved: total sistema + diff for this line
+                  const proyectado = totalSistema + diff;
+
                   return (
-                    <tr key={i} style={{background: l.estado === "PENDIENTE" ? "transparent" : diff === 0 ? "#10b98108" : `${diffColor}08`}}>
+                    <React.Fragment key={i}>
+                    <tr style={{background: l.estado === "PENDIENTE" ? "transparent" : diff === 0 ? "#10b98108" : `${diffColor}08`, cursor: hasDiff ? "pointer" : "default"}}
+                      onClick={() => hasDiff && setExpandedSku(isExpanded ? null : lineKey)}>
                       <td className="mono" style={{fontWeight:700,fontSize:11}}>
                         {l.sku}
                         {l.es_inesperado && <span style={{marginLeft:4,fontSize:9,padding:"1px 4px",borderRadius:3,background:"#f59e0b22",color:"#f59e0b",fontWeight:700}}>NUEVO</span>}
+                        {hasDiff && <span style={{marginLeft:4,fontSize:9,color:"var(--txt3)"}}>{isExpanded ? "▼" : "▶"}</span>}
                       </td>
                       <td style={{fontSize:11,maxWidth:150,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.nombre}</td>
                       <td className="mono" style={{textAlign:"right",fontWeight:600}}>{l.stock_sistema}</td>
@@ -6553,7 +6574,7 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
                         </span>
                       </td>
                       {(conteo.estado === "REVISION" || conteo.estado === "EN_PROCESO") && (
-                        <td style={{textAlign:"right",whiteSpace:"nowrap"}}>
+                        <td style={{textAlign:"right",whiteSpace:"nowrap"}} onClick={e => e.stopPropagation()}>
                           {isContado && diff !== 0 && (
                             <>
                               <button onClick={() => aprobarLinea(l.posicion_id, l.sku)} disabled={processing}
@@ -6576,6 +6597,88 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
                         </td>
                       )}
                     </tr>
+                    {isExpanded && (
+                      <tr>
+                        <td colSpan={colCount} style={{padding:0,border:"none"}}>
+                          <div style={{margin:"0 0 8px 0",padding:"10px 14px",background:"var(--bg2)",borderRadius:8,border:"1px solid var(--bg4)"}}>
+                            <div style={{fontSize:11,fontWeight:700,color:"var(--cyan)",marginBottom:8,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                              <span>📦 Stock global de {l.sku}</span>
+                              <span className="mono" style={{fontSize:12,color:"var(--txt)"}}>
+                                Total sistema: <b>{totalSistema}</b>
+                                {l.estado !== "PENDIENTE" && diff !== 0 && (
+                                  <span style={{marginLeft:8,color: proyectado > totalSistema ? "#ef4444" : proyectado < totalSistema ? "#f59e0b" : "#10b981"}}>
+                                    → Si aprueba: <b>{proyectado}</b> ({diff > 0 ? "+" : ""}{diff})
+                                  </span>
+                                )}
+                              </span>
+                            </div>
+                            <table style={{width:"100%",fontSize:11,borderCollapse:"collapse"}}>
+                              <thead>
+                                <tr style={{borderBottom:"1px solid var(--bg4)"}}>
+                                  <th style={{textAlign:"left",padding:"3px 6px",fontSize:10,color:"var(--txt3)",fontWeight:600}}>Posición</th>
+                                  <th style={{textAlign:"right",padding:"3px 6px",fontSize:10,color:"var(--txt3)",fontWeight:600}}>Stock sistema</th>
+                                  <th style={{textAlign:"right",padding:"3px 6px",fontSize:10,color:"var(--txt3)",fontWeight:600}}>Contado</th>
+                                  <th style={{textAlign:"left",padding:"3px 6px",fontSize:10,color:"var(--txt3)",fontWeight:600}}>En conteo</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {allPositions.map(([pid, qty]) => {
+                                  const conteoLine = conteoLinesSku.find(cl => cl.posicion_id === pid);
+                                  const enConteo = conteo.posiciones.includes(pid);
+                                  const esEstaLinea = pid === l.posicion_id;
+                                  return (
+                                    <tr key={pid} style={{borderBottom:"1px solid var(--bg3)", background: esEstaLinea ? `${diffColor}10` : "transparent"}}>
+                                      <td className="mono" style={{padding:"4px 6px",fontWeight: esEstaLinea ? 800 : 500, color: esEstaLinea ? "var(--cyan)" : "var(--txt2)"}}>
+                                        {pid} {esEstaLinea && "◀"}
+                                      </td>
+                                      <td className="mono" style={{textAlign:"right",padding:"4px 6px",fontWeight:600}}>{qty}</td>
+                                      <td className="mono" style={{textAlign:"right",padding:"4px 6px",fontWeight:600,
+                                        color: conteoLine && conteoLine.estado !== "PENDIENTE" ? (conteoLine.stock_contado !== qty ? "#f59e0b" : "#10b981") : "var(--txt3)"}}>
+                                        {conteoLine && conteoLine.estado !== "PENDIENTE" ? conteoLine.stock_contado : "—"}
+                                      </td>
+                                      <td style={{padding:"4px 6px",fontSize:10}}>
+                                        {enConteo ? (
+                                          conteoLine && conteoLine.estado !== "PENDIENTE" ?
+                                            <span style={{color:"#10b981",fontWeight:600}}>✓ Contada</span> :
+                                            <span style={{color:"#f59e0b",fontWeight:600}}>⏳ Pendiente</span>
+                                        ) : (
+                                          <span style={{color:"var(--txt3)"}}>No incluida</span>
+                                        )}
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                                {/* Positions in conteo with this SKU but 0 system stock (inesperado scenarios) */}
+                                {conteoLinesSku.filter(cl => !allPositions.some(([pid]) => pid === cl.posicion_id)).map(cl => (
+                                  <tr key={cl.posicion_id} style={{borderBottom:"1px solid var(--bg3)", background: cl.posicion_id === l.posicion_id ? `${diffColor}10` : "transparent"}}>
+                                    <td className="mono" style={{padding:"4px 6px",fontWeight: cl.posicion_id === l.posicion_id ? 800 : 500, color: cl.posicion_id === l.posicion_id ? "var(--cyan)" : "var(--txt2)"}}>
+                                      {cl.posicion_id} {cl.posicion_id === l.posicion_id && "◀"}
+                                    </td>
+                                    <td className="mono" style={{textAlign:"right",padding:"4px 6px",fontWeight:600}}>0</td>
+                                    <td className="mono" style={{textAlign:"right",padding:"4px 6px",fontWeight:600,
+                                      color: cl.estado !== "PENDIENTE" ? (cl.stock_contado !== 0 ? "#f59e0b" : "#10b981") : "var(--txt3)"}}>
+                                      {cl.estado !== "PENDIENTE" ? cl.stock_contado : "—"}
+                                    </td>
+                                    <td style={{padding:"4px 6px",fontSize:10}}>
+                                      {cl.estado !== "PENDIENTE" ?
+                                        <span style={{color:"#10b981",fontWeight:600}}>✓ Contada</span> :
+                                        <span style={{color:"#f59e0b",fontWeight:600}}>⏳ Pendiente</span>}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                            {/* Warning if position with stock not included in conteo */}
+                            {allPositions.some(([pid]) => !conteo.posiciones.includes(pid)) && (
+                              <div style={{marginTop:8,padding:"6px 10px",borderRadius:6,background:"#f59e0b15",border:"1px solid #f59e0b33",fontSize:10,color:"#f59e0b",fontWeight:600}}>
+                                ⚠️ Hay posiciones con stock de este SKU que NO están incluidas en este conteo. Verifique antes de aprobar.
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </React.Fragment>
                   );
                 })}
               </tbody>
