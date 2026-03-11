@@ -73,6 +73,28 @@ export interface DBRecepcion {
   costo_neto?: number;
   iva?: number;
   costo_bruto?: number;
+  factura_original?: FacturaOriginal | null;
+}
+
+export interface FacturaOriginal {
+  lineas: { sku: string; nombre: string; cantidad: number; costo_unitario: number }[];
+  neto: number;
+  iva: number;
+  bruto: number;
+}
+
+export interface DBRecepcionAjuste {
+  id?: string;
+  recepcion_id: string;
+  tipo: string;
+  sku_original?: string | null;
+  sku_nuevo?: string | null;
+  campo?: string | null;
+  valor_anterior?: string | null;
+  valor_nuevo?: string | null;
+  motivo?: string | null;
+  admin?: string | null;
+  created_at?: string;
 }
 
 export interface DBRecepcionLinea {
@@ -2003,5 +2025,23 @@ export async function fetchRcvComprasPendientes(empresaId: string): Promise<DBRc
     .or("estado_pago.eq.pendiente,estado_pago.is.null")
     .order("fecha_docto", { ascending: false });
   return (data || []) as DBRcvCompra[];
+}
+
+// ==================== RECEPCION AJUSTES ====================
+export async function fetchRecepcionAjustes(recepcionId: string): Promise<DBRecepcionAjuste[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("recepcion_ajustes").select("*")
+    .eq("recepcion_id", recepcionId).order("created_at", { ascending: false });
+  return data || [];
+}
+
+export async function insertRecepcionAjuste(ajuste: Omit<DBRecepcionAjuste, "id" | "created_at">) {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("recepcion_ajustes").insert(ajuste);
+}
+
+export async function updateRecepcionFacturaOriginal(id: string, facturaOriginal: FacturaOriginal) {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("recepciones").update({ factura_original: facturaOriginal as unknown as Record<string, unknown> }).eq("id", id);
 }
 
