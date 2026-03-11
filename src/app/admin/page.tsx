@@ -6716,10 +6716,10 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
                               const transferSources = allPositions
                                 .filter(([pid]) => pid !== l.posicion_id)
                                 .filter(([pid, qty]) => {
-                                  // Candidate: has stock >= diff, and is NOT in this conteo (so we can't verify it was emptied)
-                                  // OR is in conteo and operator counted less than system (meaning stock was taken from there)
+                                  // Candidate: has stock and is NOT in this conteo (can't verify if emptied)
+                                  // OR is in conteo and operator counted less than system (stock was taken from there)
                                   const cl = conteoLinesSku.find(c => c.posicion_id === pid);
-                                  if (!cl) return qty >= diff; // Not in conteo but has stock — likely source
+                                  if (!cl) return qty > 0; // Not in conteo but has stock — possible source
                                   if (cl.estado !== "PENDIENTE" && cl.stock_contado < qty) return true; // Counted less — stock was taken
                                   return false;
                                 })
@@ -6737,7 +6737,7 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
                                     🔄 Posible traspaso detectado
                                   </div>
                                   <div style={{fontSize:10,color:"var(--txt2)",marginBottom:8}}>
-                                    El operador encontró +{diff} en {l.posicion_id}. Puede traspasar desde otra posición sin alterar el stock total:
+                                    El operador encontró +{diff} en {l.posicion_id}. Puede traspasar desde otra posición sin alterar el stock total{transferSources.reduce((s, t) => s + Math.min(diff, t.available), 0) < diff ? ` (cubre hasta ${transferSources.reduce((s, t) => s + Math.min(diff, t.available), 0)} de ${diff})` : ""}:
                                   </div>
                                   {transferSources.map(src => {
                                     const transferQty = Math.min(diff, src.available);
