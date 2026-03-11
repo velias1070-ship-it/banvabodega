@@ -6181,6 +6181,27 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
   const [conteo, setConteo] = useState(initialConteo);
   const [processing, setProcessing] = useState(false);
 
+  // Recalcular stock_sistema para líneas inesperadas con el stock real actual
+  useEffect(() => {
+    const s = getStore();
+    let changed = false;
+    const fixedLineas = conteo.lineas.map(l => {
+      if (l.es_inesperado && l.stock_sistema === 0) {
+        const stockReal = s.stock[l.sku]?.[l.posicion_id] ?? 0;
+        if (stockReal !== 0) {
+          changed = true;
+          return { ...l, stock_sistema: stockReal };
+        }
+      }
+      return l;
+    });
+    if (changed) {
+      const updated = { ...conteo, lineas: fixedLineas };
+      setConteo(updated);
+      updateConteo(conteo.id!, { lineas: fixedLineas });
+    }
+  }, [initialConteo.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const reloadConteo = async () => {
     const all = await fetchConteos();
     const found = all.find(c => c.id === conteo.id);
