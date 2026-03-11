@@ -1,7 +1,7 @@
 "use client";
 /* v3.1 — conteos + pedidos ML + cron fix */
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote, reconciliarStock, aplicarReconciliacion } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote, reconciliarStock, aplicarReconciliacion, editarStockVariante } from "@/lib/store";
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto } from "@/lib/db";
@@ -3561,15 +3561,9 @@ function Inventario() {
                         {(()=>{const detalle=skuStockDetalle(sku);return detalle.length>0&&(
                           <div style={{marginBottom:16}}>
                             <div style={{fontSize:12,fontWeight:700,marginBottom:8}}>Detalle por formato de venta — {sku}</div>
-                            <table className="tbl"><thead><tr><th>Formato</th><th>Posicion</th><th style={{textAlign:"right"}}>Cantidad</th></tr></thead>
+                            <table className="tbl"><thead><tr><th>Formato</th><th>Posicion</th><th style={{textAlign:"right"}}>Cantidad</th><th style={{width:60}}></th></tr></thead>
                               <tbody>{detalle.map((d,i)=>(
-                                <tr key={i}>
-                                  <td className="mono" style={{fontSize:11,fontWeight:700,color:d.skuVenta===SIN_ETIQUETAR?"var(--amber)":"var(--cyan)"}}>
-                                    {d.skuVenta===SIN_ETIQUETAR?"Sin etiquetar":d.skuVenta}
-                                  </td>
-                                  <td className="mono" style={{fontSize:11}}>{d.pos} — {d.label}</td>
-                                  <td className="mono" style={{textAlign:"right",fontWeight:700,color:"var(--blue)"}}>{d.qty}</td>
-                                </tr>
+                                <EditableStockRow key={`${d.skuVenta}-${d.pos}-${i}`} sku={sku} skuVenta={d.skuVenta} pos={d.pos} label={d.label} qty={d.qty} onDone={refresh} />
                               ))}</tbody>
                             </table>
                           </div>
@@ -3620,13 +3614,7 @@ function Inventario() {
                       <div style={{marginBottom:10}}>
                         <div style={{fontSize:11,fontWeight:700,color:"var(--txt2)",marginBottom:6}}>Por formato de venta</div>
                         {detalle.map((d,i)=>(
-                          <div key={i} className="mini-row" style={{alignItems:"center"}}>
-                            <span className="mono" style={{fontWeight:700,fontSize:11,color:d.skuVenta===SIN_ETIQUETAR?"var(--amber)":"var(--cyan)",minWidth:80}}>
-                              {d.skuVenta===SIN_ETIQUETAR?"Sin etiquetar":d.skuVenta}
-                            </span>
-                            <span className="mono" style={{flex:1,fontSize:10,color:"var(--txt3)"}}>{d.pos}</span>
-                            <span className="mono" style={{fontWeight:700,fontSize:12,color:"var(--blue)"}}>{d.qty}</span>
-                          </div>
+                          <EditableStockRowMobile key={`${d.skuVenta}-${d.pos}-${i}`} sku={sku} skuVenta={d.skuVenta} pos={d.pos} label={d.label} qty={d.qty} onDone={refresh} />
                         ))}
                       </div>
                     );})()}
@@ -3644,6 +3632,96 @@ function Inventario() {
             })}
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+// ==================== EDITAR STOCK POR VARIANTE (INLINE) ====================
+function EditableStockRow({ sku, skuVenta, pos, label, qty, onDone }: { sku: string; skuVenta: string; pos: string; label: string; qty: number; onDone: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(qty);
+  const [saving, setSaving] = useState(false);
+
+  const doSave = async () => {
+    if (val === qty) { setEditing(false); return; }
+    setSaving(true);
+    try {
+      const realSkuVenta = skuVenta === SIN_ETIQUETAR ? null : skuVenta;
+      await editarStockVariante(sku, pos, realSkuVenta, val);
+      onDone();
+      setEditing(false);
+    } catch (e: unknown) {
+      alert("Error: " + (e instanceof Error ? e.message : String(e)));
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <tr>
+      <td className="mono" style={{fontSize:11,fontWeight:700,color:skuVenta===SIN_ETIQUETAR?"var(--amber)":"var(--cyan)"}}>
+        {skuVenta===SIN_ETIQUETAR?"Sin etiquetar":skuVenta}
+      </td>
+      <td className="mono" style={{fontSize:11}}>{pos} — {label}</td>
+      <td className="mono" style={{textAlign:"right",fontWeight:700,color:"var(--blue)"}}>
+        {editing ? (
+          <input type="number" value={val} min={0} onFocus={e=>e.target.select()}
+            onChange={e=>setVal(Math.max(0,parseInt(e.target.value)||0))}
+            onKeyDown={e=>{if(e.key==="Enter")doSave();if(e.key==="Escape"){setEditing(false);setVal(qty);}}}
+            style={{width:60,textAlign:"center",fontSize:12,fontWeight:700,padding:"2px 4px",borderRadius:4,background:"var(--bg2)",border:"1px solid var(--cyan)",color:"var(--txt)"}} autoFocus />
+        ) : qty}
+      </td>
+      <td style={{textAlign:"center"}}>
+        {editing ? (
+          <span style={{display:"flex",gap:4,justifyContent:"center"}}>
+            <button onClick={doSave} disabled={saving} style={{padding:"2px 8px",borderRadius:4,fontSize:10,fontWeight:700,background:"var(--green)",color:"#fff",border:"none",cursor:"pointer",opacity:saving?0.5:1}}>{saving?"...":"OK"}</button>
+            <button onClick={()=>{setEditing(false);setVal(qty);}} style={{padding:"2px 8px",borderRadius:4,fontSize:10,fontWeight:700,background:"var(--bg3)",color:"var(--txt3)",border:"1px solid var(--bg4)",cursor:"pointer"}}>X</button>
+          </span>
+        ) : (
+          <button onClick={()=>{setVal(qty);setEditing(true);}} style={{padding:"2px 8px",borderRadius:4,fontSize:10,fontWeight:700,background:"var(--bg3)",color:"var(--txt3)",border:"1px solid var(--bg4)",cursor:"pointer"}}>Editar</button>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+function EditableStockRowMobile({ sku, skuVenta, pos, label, qty, onDone }: { sku: string; skuVenta: string; pos: string; label: string; qty: number; onDone: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(qty);
+  const [saving, setSaving] = useState(false);
+
+  const doSave = async () => {
+    if (val === qty) { setEditing(false); return; }
+    setSaving(true);
+    try {
+      const realSkuVenta = skuVenta === SIN_ETIQUETAR ? null : skuVenta;
+      await editarStockVariante(sku, pos, realSkuVenta, val);
+      onDone();
+      setEditing(false);
+    } catch (e: unknown) {
+      alert("Error: " + (e instanceof Error ? e.message : String(e)));
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="mini-row" style={{alignItems:"center"}}>
+      <span className="mono" style={{fontWeight:700,fontSize:11,color:skuVenta===SIN_ETIQUETAR?"var(--amber)":"var(--cyan)",minWidth:80}}>
+        {skuVenta===SIN_ETIQUETAR?"Sin etiquetar":skuVenta}
+      </span>
+      <span className="mono" style={{flex:1,fontSize:10,color:"var(--txt3)"}}>{pos}</span>
+      {editing ? (
+        <span style={{display:"flex",gap:4,alignItems:"center"}}>
+          <input type="number" value={val} min={0} inputMode="numeric" onFocus={e=>e.target.select()}
+            onChange={e=>setVal(Math.max(0,parseInt(e.target.value)||0))}
+            onKeyDown={e=>{if(e.key==="Enter")doSave();if(e.key==="Escape"){setEditing(false);setVal(qty);}}}
+            style={{width:50,textAlign:"center",fontSize:12,fontWeight:700,padding:"2px 4px",borderRadius:4,background:"var(--bg2)",border:"1px solid var(--cyan)",color:"var(--txt)"}} autoFocus />
+          <button onClick={doSave} disabled={saving} style={{padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:700,background:"var(--green)",color:"#fff",border:"none",cursor:"pointer",opacity:saving?0.5:1}}>{saving?"...":"OK"}</button>
+          <button onClick={()=>{setEditing(false);setVal(qty);}} style={{padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:700,background:"var(--bg3)",color:"var(--txt3)",border:"1px solid var(--bg4)",cursor:"pointer"}}>X</button>
+        </span>
+      ) : (
+        <span style={{display:"flex",gap:4,alignItems:"center"}}>
+          <span className="mono" style={{fontWeight:700,fontSize:12,color:"var(--blue)"}}>{qty}</span>
+          <button onClick={()=>{setVal(qty);setEditing(true);}} style={{padding:"2px 6px",borderRadius:4,fontSize:9,fontWeight:700,background:"var(--bg3)",color:"var(--txt3)",border:"1px solid var(--bg4)",cursor:"pointer"}}>Editar</button>
+        </span>
       )}
     </div>
   );
