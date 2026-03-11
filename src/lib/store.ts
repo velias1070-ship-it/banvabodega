@@ -544,6 +544,16 @@ export function findSkuVenta(query: string): { skuVenta: string; codigoMl: strin
 
 // ==================== ASYNC MUTATIONS ====================
 
+// Auto-etiquetar: si un SKU origen tiene exactamente 1 sku_venta en composicion, retornarlo.
+// Si tiene más de uno, retorna null (queda "sin etiquetar").
+function resolveAutoSkuVenta(sku: string): string | null {
+  const ventas = _cache.composicion.filter(c => c.skuOrigen === sku);
+  // Obtener SKUs de venta únicos
+  const uniqueSkuVenta = new Set(ventas.map(v => v.skuVenta));
+  if (uniqueSkuVenta.size === 1) return ventas[0].skuVenta;
+  return null;
+}
+
 // Resolve sku_venta variants to decrement for an outbound movement.
 // Returns array of { skuVenta, qty } to decrement from each variant.
 // When stock has sku_venta assigned, we must pass it to updateStock so the RPC
@@ -594,9 +604,12 @@ export async function recordMovementAsync(m: Omit<Movement, "id">): Promise<Move
   // Update cache (clamp "out" to prevent negative stock)
   if (!_cache.stock[m.sku]) _cache.stock[m.sku] = {};
   let actualQty = m.qty;
+  // Auto-etiquetar: si el SKU tiene exactamente 1 sku_venta, asignar automáticamente
+  const autoSkuVenta = m.type === "in" ? resolveAutoSkuVenta(m.sku) : null;
+
   if (m.type === "in") {
     _cache.stock[m.sku][m.pos] = (_cache.stock[m.sku][m.pos] || 0) + m.qty;
-    updateStockDetalleCache(m.sku, m.pos, null, m.qty);
+    updateStockDetalleCache(m.sku, m.pos, autoSkuVenta, m.qty);
   } else {
     const prev = _cache.stock[m.sku][m.pos] || 0;
     actualQty = Math.min(m.qty, prev);
@@ -609,7 +622,7 @@ export async function recordMovementAsync(m: Omit<Movement, "id">): Promise<Move
   // Write to Supabase
   if (isConfigured()) {
     if (m.type === "in") {
-      await db.updateStock(m.sku, m.pos, actualQty);
+      await db.updateStock(m.sku, m.pos, actualQty, autoSkuVenta);
     } else {
       // Resolve which sku_venta variants to decrement
       const chunks = resolveSkuVentaForOut(m.sku, m.pos, actualQty);
@@ -644,11 +657,14 @@ export function recordMovement(m: Omit<Movement, "id">): Movement {
   if (!_cache.stock[m.sku]) _cache.stock[m.sku] = {};
   let actualQty = m.qty;
 
+  // Auto-etiquetar: si el SKU tiene exactamente 1 sku_venta, asignar automáticamente
+  const autoSkuVenta = m.type === "in" ? resolveAutoSkuVenta(m.sku) : null;
+
   // For outbound, resolve sku_venta variants BEFORE updating cache
   let outChunks: { skuVenta: string | null; qty: number }[] = [];
   if (m.type === "in") {
     _cache.stock[m.sku][m.pos] = (_cache.stock[m.sku][m.pos] || 0) + m.qty;
-    updateStockDetalleCache(m.sku, m.pos, null, m.qty);
+    updateStockDetalleCache(m.sku, m.pos, autoSkuVenta, m.qty);
   } else {
     const prev = _cache.stock[m.sku][m.pos] || 0;
     actualQty = Math.min(m.qty, prev);
@@ -666,12 +682,12 @@ export function recordMovement(m: Omit<Movement, "id">): Movement {
   // Fire to Supabase with cache rollback on failure
   if (isConfigured()) {
     if (m.type === "in") {
-      db.updateStock(m.sku, m.pos, actualQty).catch((err) => {
+      db.updateStock(m.sku, m.pos, actualQty, autoSkuVenta).catch((err) => {
         console.error("Stock update failed, reverting cache:", err);
         if (!_cache.stock[m.sku]) _cache.stock[m.sku] = {};
         _cache.stock[m.sku][m.pos] = Math.max(0, (_cache.stock[m.sku][m.pos] || 0) - actualQty);
         if (_cache.stock[m.sku][m.pos] === 0) delete _cache.stock[m.sku][m.pos];
-        updateStockDetalleCache(m.sku, m.pos, null, -actualQty);
+        updateStockDetalleCache(m.sku, m.pos, autoSkuVenta, -actualQty);
       });
     } else {
       // Fire each variant update to Supabase
@@ -867,17 +883,23 @@ export function getUnassignedStock(): { sku: string; name: string; qty: number }
 export function assignPosition(sku: string, targetPos: string, qty: number): boolean {
   if (!_cache.stock[sku]?.["SIN_ASIGNAR"] || _cache.stock[sku]["SIN_ASIGNAR"] < qty) return false;
 
+  // Auto-etiquetar al asignar posición
+  const autoSv = resolveAutoSkuVenta(sku);
+
   // Update cache synchronously
   _cache.stock[sku]["SIN_ASIGNAR"] -= qty;
   if (_cache.stock[sku]["SIN_ASIGNAR"] <= 0) delete _cache.stock[sku]["SIN_ASIGNAR"];
   if (!_cache.stock[sku][targetPos]) _cache.stock[sku][targetPos] = 0;
   _cache.stock[sku][targetPos] += qty;
+  // Update detalle cache
+  updateStockDetalleCache(sku, "SIN_ASIGNAR", null, -qty);
+  updateStockDetalleCache(sku, targetPos, autoSv, qty);
 
   // Fire & forget to Supabase
   if (isConfigured()) {
     (async () => {
       await db.updateStock(sku, "SIN_ASIGNAR", -qty);
-      await db.updateStock(sku, targetPos, qty);
+      await db.updateStock(sku, targetPos, qty, autoSv);
       await db.insertMovimiento({
         tipo: "salida", motivo: "transferencia_out", sku,
         posicion_id: "SIN_ASIGNAR", cantidad: qty,
@@ -886,7 +908,7 @@ export function assignPosition(sku: string, targetPos: string, qty: number): boo
       await db.insertMovimiento({
         tipo: "entrada", motivo: "transferencia_in", sku,
         posicion_id: targetPos, cantidad: qty,
-        operario: "Admin", nota: "Asignación ← SIN_ASIGNAR",
+        operario: "Admin", nota: "Asignación ← SIN_ASIGNAR" + (autoSv ? ` [${autoSv}]` : ""),
       });
     })().catch(console.error);
   }
@@ -984,7 +1006,8 @@ export async function etiquetarLinea(lineaId: string, qtyEtiquetada: number, ope
 
 // Ubicar línea: operario pone en posición → stock entra al WMS
 export async function ubicarLinea(lineaId: string, sku: string, posicionId: string, qty: number, operario: string, recepcionId: string, opts?: { skuVenta?: string | null; folio?: string; proveedor?: string }) {
-  const skuVenta = opts?.skuVenta ?? null;
+  // Si no viene skuVenta explícito, auto-etiquetar si el SKU tiene exactamente 1 formato de venta
+  const skuVenta = opts?.skuVenta ?? resolveAutoSkuVenta(sku);
   // Build nota with invoice info
   let nota = "Recepción - ubicación en bodega";
   if (opts?.folio) {
@@ -1084,6 +1107,55 @@ export async function reasignarFormato(
   // stock agregado no cambia (misma posición, mismo SKU, solo cambia sku_venta)
 }
 
+// ==================== EDITAR STOCK POR VARIANTE ====================
+// Permite al admin editar la cantidad de una variante de sku_venta en una posición
+export async function editarStockVariante(
+  sku: string,
+  posicionId: string,
+  skuVenta: string | null,
+  nuevaCantidad: number,
+) {
+  if (!isConfigured()) throw new Error("Supabase no configurado");
+  if (nuevaCantidad < 0) throw new Error("La cantidad no puede ser negativa");
+
+  const sv = skuVenta || SIN_ETIQUETAR;
+  const actual = _cache.stockDetalle[sku]?.[sv]?.[posicionId] || 0;
+  const delta = nuevaCantidad - actual;
+  if (delta === 0) return;
+
+  // Actualizar en DB
+  await db.setStock(sku, posicionId, nuevaCantidad, skuVenta);
+
+  // Registrar movimiento de ajuste
+  const tipo = delta > 0 ? "entrada" : "salida";
+  const motivo = delta > 0 ? "ajuste_entrada" : "ajuste_salida";
+  const etiqueta = skuVenta || "Sin etiquetar";
+  await db.insertMovimiento({
+    tipo, motivo, sku,
+    posicion_id: posicionId, cantidad: Math.abs(delta),
+    operario: "admin",
+    nota: `Ajuste manual variante [${etiqueta}]: ${actual} → ${nuevaCantidad}`,
+  });
+
+  // Actualizar cache stockDetalle
+  if (!_cache.stockDetalle[sku]) _cache.stockDetalle[sku] = {};
+  if (!_cache.stockDetalle[sku][sv]) _cache.stockDetalle[sku][sv] = {};
+  if (nuevaCantidad <= 0) {
+    delete _cache.stockDetalle[sku][sv][posicionId];
+    if (Object.keys(_cache.stockDetalle[sku][sv]).length === 0) delete _cache.stockDetalle[sku][sv];
+  } else {
+    _cache.stockDetalle[sku][sv][posicionId] = nuevaCantidad;
+  }
+
+  // Actualizar cache stock agregado
+  if (!_cache.stock[sku]) _cache.stock[sku] = {};
+  _cache.stock[sku][posicionId] = (_cache.stock[sku][posicionId] || 0) + delta;
+  if (_cache.stock[sku][posicionId] <= 0) delete _cache.stock[sku][posicionId];
+
+  // Queue sync
+  db.addToStockSyncQueue([sku]).catch(() => {});
+}
+
 // ==================== ADMIN LINE ADJUSTMENT ====================
 // When admin edits qty_ubicada, adjust stock + create adjustment movement
 export async function ajustarLineaAdmin(
@@ -1102,8 +1174,11 @@ export async function ajustarLineaAdmin(
   // Use the last known position, or SIN_ASIGNAR as fallback
   const posicion = movsLinea.length > 0 ? movsLinea[movsLinea.length - 1].posicion_id : "SIN_ASIGNAR";
 
+  // Auto-etiquetar si delta positivo (entrada)
+  const autoSv = delta > 0 ? resolveAutoSkuVenta(sku) : null;
+
   // Adjust stock
-  await db.updateStock(sku, posicion, delta);
+  await db.updateStock(sku, posicion, delta, autoSv);
 
   // Create adjustment movement
   await db.insertMovimiento({
@@ -1114,12 +1189,13 @@ export async function ajustarLineaAdmin(
     cantidad: Math.abs(delta),
     recepcion_id: recepcionId,
     operario: "admin",
-    nota: `Ajuste admin: ${oldQtyUbicada} → ${newQtyUbicada} (${delta > 0 ? "+" : ""}${delta})`,
+    nota: `Ajuste admin: ${oldQtyUbicada} → ${newQtyUbicada} (${delta > 0 ? "+" : ""}${delta})` + (autoSv ? ` [${autoSv}]` : ""),
   });
 
   // Update cache
   if (!_cache.stock[sku]) _cache.stock[sku] = {};
   _cache.stock[sku][posicion] = (_cache.stock[sku][posicion] || 0) + delta;
+  updateStockDetalleCache(sku, posicion, autoSv, delta);
 }
 
 // ==================== AUDIT & REPAIR ====================
@@ -1390,8 +1466,9 @@ export async function aplicarReconciliacion(discrepancias: StockDiscrepancia[]):
           remaining -= reduce;
         }
       } else {
-        // Stock falta → agregar a variante sin etiquetar
-        await db.updateStock(d.sku, d.posicion, d.diferencia, null);
+        // Stock falta → agregar con auto-etiquetado si tiene 1 solo sku_venta
+        const autoSv = resolveAutoSkuVenta(d.sku);
+        await db.updateStock(d.sku, d.posicion, d.diferencia, autoSv);
       }
 
       // Update cache

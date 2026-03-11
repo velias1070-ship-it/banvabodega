@@ -1,7 +1,7 @@
 "use client";
 /* v3.1 — conteos + pedidos ML + cron fix */
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote, reconciliarStock, aplicarReconciliacion, sustituirProducto, getRecepcionAjustes, registrarAjuste, backfillFacturaOriginal } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote, reconciliarStock, aplicarReconciliacion, editarStockVariante, sustituirProducto, getRecepcionAjustes, registrarAjuste, backfillFacturaOriginal } from "@/lib/store";
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
@@ -3470,6 +3470,20 @@ function Inventario() {
   const filteredSkus = soloSinEtiquetar ? skusSinEtiquetar : allSkus;
   const grandTotal = filteredSkus.reduce((s,sku)=>s+skuTotal(sku),0);
 
+  // KPIs de etiquetado global
+  const etiqGlobal = (() => {
+    let etiq = 0, sinEtiq = 0;
+    for (const [, svMap] of Object.entries(s.stockDetalle)) {
+      for (const [sv, posMap] of Object.entries(svMap)) {
+        for (const qty of Object.values(posMap)) {
+          if (qty <= 0) continue;
+          if (sv === SIN_ETIQUETAR) sinEtiq += qty; else etiq += qty;
+        }
+      }
+    }
+    return { etiq, sinEtiq, total: etiq + sinEtiq, pct: etiq + sinEtiq > 0 ? Math.round((etiq / (etiq + sinEtiq)) * 100) : 0 };
+  })();
+
   // ML publication view
   const allVentas = getSkusVenta();
   const ventasConStock = allVentas.map(v => {
@@ -3694,6 +3708,17 @@ function Inventario() {
             {reclasificando ? "Reclasificando..." : "Reclasificar formatos"}
           </button>
           <input className="form-input mono" value={q} onChange={e=>setQ(e.target.value)} placeholder={viewMode==="fisico"?"Filtrar SKU, nombre, proveedor...":"Filtrar codigo ML, SKU venta, nombre..."} style={{fontSize:13,flex:1}}/>
+          {viewMode === "fisico" && etiqGlobal.total > 0 && (
+            <div style={{display:"flex",alignItems:"center",gap:6,padding:"4px 10px",borderRadius:6,background:"var(--bg3)",border:"1px solid var(--bg4)"}}>
+              <div style={{width:40,height:40,borderRadius:"50%",background:`conic-gradient(var(--green) ${etiqGlobal.pct*3.6}deg, var(--amber) ${etiqGlobal.pct*3.6}deg)`,display:"flex",alignItems:"center",justifyContent:"center"}}>
+                <div style={{width:28,height:28,borderRadius:"50%",background:"var(--bg3)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,fontWeight:800,color:"var(--txt)"}}>{etiqGlobal.pct}%</div>
+              </div>
+              <div style={{fontSize:10,lineHeight:1.4}}>
+                <div style={{color:"var(--green)",fontWeight:700}}>{etiqGlobal.etiq.toLocaleString("es-CL")} etiq.</div>
+                <div style={{color:"var(--amber)"}}>{etiqGlobal.sinEtiq.toLocaleString("es-CL")} sin etiq.</div>
+              </div>
+            </div>
+          )}
           <div style={{textAlign:"right",whiteSpace:"nowrap"}}>
             {viewMode === "fisico" ? (
               <>
@@ -3901,36 +3926,51 @@ function Inventario() {
             <div className="card" style={{padding:0,overflow:"hidden"}}>
               <table className="tbl">
                 <thead><tr>
-                  <th>SKU</th><th>Producto</th><th>Cat.</th><th>Proveedor</th><th>Ubicaciones</th><th style={{textAlign:"right"}}>Total</th><th style={{textAlign:"right"}}>Valor</th>
+                  <th>SKU</th><th>Producto</th><th>Cat.</th><th>Proveedor</th><th>Etiquetado</th><th>Ubicaciones</th><th style={{textAlign:"right"}}>Total</th><th style={{textAlign:"right"}}>Valor</th>
                 </tr></thead>
                 <tbody>
                   {filteredSkus.map(sku=>{
                     const prod=s.products[sku];const total=skuTotal(sku);const positions=skuPositions(sku);
                     const isOpen=expanded===sku;
+                    const det=skuStockDetalle(sku);
+                    const etiqQty=det.filter(d=>d.skuVenta!==SIN_ETIQUETAR).reduce((s,d)=>s+d.qty,0);
+                    const sinEtQty=det.filter(d=>d.skuVenta===SIN_ETIQUETAR).reduce((s,d)=>s+d.qty,0);
+                    const etiqStatus=total===0?"—":sinEtQty===0?"full":etiqQty===0?"none":"partial";
+                    const etiqFormatos=Array.from(new Set(det.filter(d=>d.skuVenta!==SIN_ETIQUETAR).map(d=>d.skuVenta)));
                     return([
                       <tr key={sku} onClick={()=>setExpanded(isOpen?null:sku)} style={{cursor:"pointer",background:isOpen?"var(--bg3)":"transparent"}}>
                         <td className="mono" style={{fontWeight:700,fontSize:12}}>{sku}</td>
                         <td style={{fontSize:12}}>{prod?.name||sku}</td>
                         <td><span className="tag">{prod?.cat}</span></td>
                         <td><span className="tag">{prod?.prov}</span></td>
+                        <td>{etiqStatus==="full"?(
+                          <span style={{display:"inline-flex",alignItems:"center",gap:4}}>
+                            <span style={{padding:"2px 8px",borderRadius:4,fontSize:10,fontWeight:700,background:"var(--greenBg)",color:"var(--green)",border:"1px solid var(--greenBd)"}}>100%</span>
+                            {etiqFormatos.length===1&&<span className="mono" style={{fontSize:9,color:"var(--cyan)"}}>{etiqFormatos[0]}</span>}
+                            {etiqFormatos.length>1&&<span className="mono" style={{fontSize:9,color:"var(--cyan)"}}>{etiqFormatos.length} formatos</span>}
+                          </span>
+                        ):etiqStatus==="none"?(
+                          <span style={{padding:"2px 8px",borderRadius:4,fontSize:10,fontWeight:700,background:"var(--amberBg)",color:"var(--amber)",border:"1px solid var(--amberBd)"}}>Sin etiquetar</span>
+                        ):etiqStatus==="partial"?(
+                          <span style={{display:"inline-flex",alignItems:"center",gap:4}}>
+                            <span style={{padding:"2px 8px",borderRadius:4,fontSize:10,fontWeight:700,background:"var(--blueBg)",color:"var(--blue)",border:"1px solid var(--blueBd)"}}>{etiqQty}/{total}</span>
+                            <span style={{fontSize:9,color:"var(--amber)"}}>{sinEtQty} sin etiq.</span>
+                          </span>
+                        ):(
+                          <span style={{fontSize:10,color:"var(--txt3)"}}>—</span>
+                        )}</td>
                         <td>{positions.map(p=><span key={p.pos} className="mono" style={{fontSize:10,marginRight:6,padding:"2px 6px",background:"var(--bg3)",borderRadius:4}}>{p.pos}: {p.qty}</span>)}</td>
                         <td className="mono" style={{textAlign:"right",fontWeight:700,color:"var(--blue)"}}>{total}</td>
                         <td className="mono" style={{textAlign:"right",fontSize:11}}>{prod?fmtMoney(prod.cost*total):"-"}</td>
                       </tr>,
-                      isOpen && <tr key={sku+"-detail"}><td colSpan={7} style={{background:"var(--bg3)",padding:16}}>
+                      isOpen && <tr key={sku+"-detail"}><td colSpan={8} style={{background:"var(--bg3)",padding:16}}>
                         {/* Detalle por formato de venta */}
                         {(()=>{const detalle=skuStockDetalle(sku);return detalle.length>0&&(
                           <div style={{marginBottom:16}}>
                             <div style={{fontSize:12,fontWeight:700,marginBottom:8}}>Detalle por formato de venta — {sku}</div>
-                            <table className="tbl"><thead><tr><th>Formato</th><th>Posicion</th><th style={{textAlign:"right"}}>Cantidad</th></tr></thead>
+                            <table className="tbl"><thead><tr><th>Formato</th><th>Posicion</th><th style={{textAlign:"right"}}>Cantidad</th><th style={{width:60}}></th></tr></thead>
                               <tbody>{detalle.map((d,i)=>(
-                                <tr key={i}>
-                                  <td className="mono" style={{fontSize:11,fontWeight:700,color:d.skuVenta===SIN_ETIQUETAR?"var(--amber)":"var(--cyan)"}}>
-                                    {d.skuVenta===SIN_ETIQUETAR?"Sin etiquetar":d.skuVenta}
-                                  </td>
-                                  <td className="mono" style={{fontSize:11}}>{d.pos} — {d.label}</td>
-                                  <td className="mono" style={{textAlign:"right",fontWeight:700,color:"var(--blue)"}}>{d.qty}</td>
-                                </tr>
+                                <EditableStockRow key={`${d.skuVenta}-${d.pos}-${i}`} sku={sku} skuVenta={d.skuVenta} pos={d.pos} label={d.label} qty={d.qty} onDone={refresh} />
                               ))}</tbody>
                             </table>
                           </div>
@@ -3960,13 +4000,28 @@ function Inventario() {
           <div className="mobile-only">
             {filteredSkus.map(sku=>{
               const prod=s.products[sku];const positions=skuPositions(sku);const total=skuTotal(sku);const isOpen=expanded===sku;
+              const det=skuStockDetalle(sku);
+              const etiqQty=det.filter(d=>d.skuVenta!==SIN_ETIQUETAR).reduce((s,d)=>s+d.qty,0);
+              const sinEtQty=det.filter(d=>d.skuVenta===SIN_ETIQUETAR).reduce((s,d)=>s+d.qty,0);
+              const etiqFormatos=Array.from(new Set(det.filter(d=>d.skuVenta!==SIN_ETIQUETAR).map(d=>d.skuVenta)));
               return(
                 <div key={sku} className="card" style={{marginTop:6,cursor:"pointer"}} onClick={()=>setExpanded(isOpen?null:sku)}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                     <div>
                       <div className="mono" style={{fontSize:14,fontWeight:700}}>{sku}</div>
                       <div style={{fontSize:12,color:"var(--txt2)"}}>{prod?.name||sku}</div>
-                      <div style={{display:"flex",gap:4,marginTop:3}}>{prod?.cat&&<span className="tag">{prod.cat}</span>}{prod?.prov&&<span className="tag">{prod.prov}</span>}</div>
+                      <div style={{display:"flex",gap:4,marginTop:3,flexWrap:"wrap"}}>
+                        {prod?.cat&&<span className="tag">{prod.cat}</span>}{prod?.prov&&<span className="tag">{prod.prov}</span>}
+                        {total>0&&sinEtQty===0&&etiqQty>0?(
+                          <span style={{padding:"1px 6px",borderRadius:4,fontSize:9,fontWeight:700,background:"var(--greenBg)",color:"var(--green)",border:"1px solid var(--greenBd)"}}>
+                            {etiqFormatos.length===1?etiqFormatos[0]:`${etiqFormatos.length} formatos`}
+                          </span>
+                        ):total>0&&sinEtQty>0&&etiqQty>0?(
+                          <span style={{padding:"1px 6px",borderRadius:4,fontSize:9,fontWeight:700,background:"var(--blueBg)",color:"var(--blue)",border:"1px solid var(--blueBd)"}}>{etiqQty}/{total} etiq.</span>
+                        ):total>0&&sinEtQty>0?(
+                          <span style={{padding:"1px 6px",borderRadius:4,fontSize:9,fontWeight:700,background:"var(--amberBg)",color:"var(--amber)",border:"1px solid var(--amberBd)"}}>Sin etiquetar</span>
+                        ):null}
+                      </div>
                     </div>
                     <div style={{textAlign:"right"}}>
                       <div className="mono" style={{fontSize:20,fontWeight:700,color:"var(--blue)"}}>{total}</div>
@@ -3981,13 +4036,7 @@ function Inventario() {
                       <div style={{marginBottom:10}}>
                         <div style={{fontSize:11,fontWeight:700,color:"var(--txt2)",marginBottom:6}}>Por formato de venta</div>
                         {detalle.map((d,i)=>(
-                          <div key={i} className="mini-row" style={{alignItems:"center"}}>
-                            <span className="mono" style={{fontWeight:700,fontSize:11,color:d.skuVenta===SIN_ETIQUETAR?"var(--amber)":"var(--cyan)",minWidth:80}}>
-                              {d.skuVenta===SIN_ETIQUETAR?"Sin etiquetar":d.skuVenta}
-                            </span>
-                            <span className="mono" style={{flex:1,fontSize:10,color:"var(--txt3)"}}>{d.pos}</span>
-                            <span className="mono" style={{fontWeight:700,fontSize:12,color:"var(--blue)"}}>{d.qty}</span>
-                          </div>
+                          <EditableStockRowMobile key={`${d.skuVenta}-${d.pos}-${i}`} sku={sku} skuVenta={d.skuVenta} pos={d.pos} label={d.label} qty={d.qty} onDone={refresh} />
                         ))}
                       </div>
                     );})()}
@@ -4005,6 +4054,96 @@ function Inventario() {
             })}
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+// ==================== EDITAR STOCK POR VARIANTE (INLINE) ====================
+function EditableStockRow({ sku, skuVenta, pos, label, qty, onDone }: { sku: string; skuVenta: string; pos: string; label: string; qty: number; onDone: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(qty);
+  const [saving, setSaving] = useState(false);
+
+  const doSave = async () => {
+    if (val === qty) { setEditing(false); return; }
+    setSaving(true);
+    try {
+      const realSkuVenta = skuVenta === SIN_ETIQUETAR ? null : skuVenta;
+      await editarStockVariante(sku, pos, realSkuVenta, val);
+      onDone();
+      setEditing(false);
+    } catch (e: unknown) {
+      alert("Error: " + (e instanceof Error ? e.message : String(e)));
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <tr>
+      <td className="mono" style={{fontSize:11,fontWeight:700,color:skuVenta===SIN_ETIQUETAR?"var(--amber)":"var(--cyan)"}}>
+        {skuVenta===SIN_ETIQUETAR?"Sin etiquetar":skuVenta}
+      </td>
+      <td className="mono" style={{fontSize:11}}>{pos} — {label}</td>
+      <td className="mono" style={{textAlign:"right",fontWeight:700,color:"var(--blue)"}}>
+        {editing ? (
+          <input type="number" value={val} min={0} onFocus={e=>e.target.select()}
+            onChange={e=>setVal(Math.max(0,parseInt(e.target.value)||0))}
+            onKeyDown={e=>{if(e.key==="Enter")doSave();if(e.key==="Escape"){setEditing(false);setVal(qty);}}}
+            style={{width:60,textAlign:"center",fontSize:12,fontWeight:700,padding:"2px 4px",borderRadius:4,background:"var(--bg2)",border:"1px solid var(--cyan)",color:"var(--txt)"}} autoFocus />
+        ) : qty}
+      </td>
+      <td style={{textAlign:"center"}}>
+        {editing ? (
+          <span style={{display:"flex",gap:4,justifyContent:"center"}}>
+            <button onClick={doSave} disabled={saving} style={{padding:"2px 8px",borderRadius:4,fontSize:10,fontWeight:700,background:"var(--green)",color:"#fff",border:"none",cursor:"pointer",opacity:saving?0.5:1}}>{saving?"...":"OK"}</button>
+            <button onClick={()=>{setEditing(false);setVal(qty);}} style={{padding:"2px 8px",borderRadius:4,fontSize:10,fontWeight:700,background:"var(--bg3)",color:"var(--txt3)",border:"1px solid var(--bg4)",cursor:"pointer"}}>X</button>
+          </span>
+        ) : (
+          <button onClick={()=>{setVal(qty);setEditing(true);}} style={{padding:"2px 8px",borderRadius:4,fontSize:10,fontWeight:700,background:"var(--bg3)",color:"var(--txt3)",border:"1px solid var(--bg4)",cursor:"pointer"}}>Editar</button>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+function EditableStockRowMobile({ sku, skuVenta, pos, label, qty, onDone }: { sku: string; skuVenta: string; pos: string; label: string; qty: number; onDone: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(qty);
+  const [saving, setSaving] = useState(false);
+
+  const doSave = async () => {
+    if (val === qty) { setEditing(false); return; }
+    setSaving(true);
+    try {
+      const realSkuVenta = skuVenta === SIN_ETIQUETAR ? null : skuVenta;
+      await editarStockVariante(sku, pos, realSkuVenta, val);
+      onDone();
+      setEditing(false);
+    } catch (e: unknown) {
+      alert("Error: " + (e instanceof Error ? e.message : String(e)));
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="mini-row" style={{alignItems:"center"}}>
+      <span className="mono" style={{fontWeight:700,fontSize:11,color:skuVenta===SIN_ETIQUETAR?"var(--amber)":"var(--cyan)",minWidth:80}}>
+        {skuVenta===SIN_ETIQUETAR?"Sin etiquetar":skuVenta}
+      </span>
+      <span className="mono" style={{flex:1,fontSize:10,color:"var(--txt3)"}}>{pos}</span>
+      {editing ? (
+        <span style={{display:"flex",gap:4,alignItems:"center"}}>
+          <input type="number" value={val} min={0} inputMode="numeric" onFocus={e=>e.target.select()}
+            onChange={e=>setVal(Math.max(0,parseInt(e.target.value)||0))}
+            onKeyDown={e=>{if(e.key==="Enter")doSave();if(e.key==="Escape"){setEditing(false);setVal(qty);}}}
+            style={{width:50,textAlign:"center",fontSize:12,fontWeight:700,padding:"2px 4px",borderRadius:4,background:"var(--bg2)",border:"1px solid var(--cyan)",color:"var(--txt)"}} autoFocus />
+          <button onClick={doSave} disabled={saving} style={{padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:700,background:"var(--green)",color:"#fff",border:"none",cursor:"pointer",opacity:saving?0.5:1}}>{saving?"...":"OK"}</button>
+          <button onClick={()=>{setEditing(false);setVal(qty);}} style={{padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:700,background:"var(--bg3)",color:"var(--txt3)",border:"1px solid var(--bg4)",cursor:"pointer"}}>X</button>
+        </span>
+      ) : (
+        <span style={{display:"flex",gap:4,alignItems:"center"}}>
+          <span className="mono" style={{fontWeight:700,fontSize:12,color:"var(--blue)"}}>{qty}</span>
+          <button onClick={()=>{setVal(qty);setEditing(true);}} style={{padding:"2px 6px",borderRadius:4,fontSize:9,fontWeight:700,background:"var(--bg3)",color:"var(--txt3)",border:"1px solid var(--bg4)",cursor:"pointer"}}>Editar</button>
+        </span>
       )}
     </div>
   );
