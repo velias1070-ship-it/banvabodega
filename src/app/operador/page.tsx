@@ -778,11 +778,11 @@ function QtyPicker({ qty, setQty, max }: { qty: number; setQty: (n:number)=>void
     <>
       <div style={{display:"flex",gap:8,alignItems:"center"}}>
         <button onClick={()=>setQty(clamp(qty-1))}
-          style={{width:52,height:52,borderRadius:"50%",background:"var(--bg3)",color:"var(--txt)",fontSize:24,fontWeight:700,border:"1px solid var(--bg4)"}}>−</button>
+          style={{width:52,minWidth:52,height:52,borderRadius:"50%",background:"var(--bg3)",color:"var(--txt)",fontSize:24,fontWeight:700,border:"1px solid var(--bg4)",flexShrink:0}}>−</button>
         <input type="number" className="mono" value={qty} onFocus={e=>e.target.select()} onChange={e=>setQty(clamp(parseInt(e.target.value)||1))}
-          style={{flex:1,textAlign:"center",fontSize:32,fontWeight:800,padding:8,background:"var(--bg3)",border:"1px solid var(--bg4)",borderRadius:12,color:"var(--txt)"}}/>
+          style={{flex:1,minWidth:0,textAlign:"center",fontSize:32,fontWeight:800,padding:8,background:"var(--bg3)",border:"1px solid var(--bg4)",borderRadius:12,color:"var(--txt)"}}/>
         <button onClick={()=>setQty(clamp(qty+1))}
-          style={{width:52,height:52,borderRadius:"50%",background:"var(--bg3)",color:"var(--txt)",fontSize:24,fontWeight:700,border:"1px solid var(--bg4)"}}>+</button>
+          style={{width:52,minWidth:52,height:52,borderRadius:"50%",background:"var(--bg3)",color:"var(--txt)",fontSize:24,fontWeight:700,border:"1px solid var(--bg4)",flexShrink:0}}>+</button>
       </div>
       <div style={{display:"flex",gap:4,marginTop:8,justifyContent:"center",flexWrap:"wrap"}}>
         {[1,5,10,12,20,50].filter(n => !max || n <= max).map(n=>(
