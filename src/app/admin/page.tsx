@@ -6426,6 +6426,42 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
     setProcessing(false);
   };
 
+  // Traspasar: mover stock de una posición origen a la posición contada (en vez de ajustar)
+  const traspasarLinea = async (posId: string, sku: string, fromPos: string, qty: number) => {
+    if (!confirm(`¿Traspasar ${qty} unidades de ${sku} desde ${fromPos} → ${posId}?\n\nEsto NO cambia el stock total, solo mueve entre posiciones.`)) return;
+    setProcessing(true);
+    const ts = new Date().toISOString();
+    const nota = `Traspaso conteo cíclico ${conteo.fecha}: ${fromPos} → ${posId}`;
+    // Salida desde la posición origen
+    await recordMovementAsync({
+      ts, type: "out", reason: "ajuste_conteo", sku, pos: fromPos, qty,
+      who: "Admin (conteo)", note: nota,
+    });
+    // Entrada en la posición destino
+    await recordMovementAsync({
+      ts, type: "in", reason: "ajuste_conteo", sku, pos: posId, qty,
+      who: "Admin (conteo)", note: nota,
+    });
+
+    // Marcar la línea como ajustada y actualizar stock_sistema
+    const s = getStore();
+    const newLineas = conteo.lineas.map(l => {
+      if (l.posicion_id === posId && l.sku === sku) {
+        return { ...l, estado: "AJUSTADO" as const, stock_sistema: s.stock[sku]?.[posId] ?? l.stock_contado };
+      }
+      return l;
+    });
+
+    const allResolved = newLineas.every(l => l.estado !== "CONTADO" && l.estado !== "PENDIENTE");
+    await updateConteo(conteo.id!, {
+      lineas: newLineas,
+      ...(allResolved ? { estado: "CERRADA", closed_at: new Date().toISOString(), closed_by: "Admin" } : {}),
+    });
+    setConteo({ ...conteo, lineas: newLineas, ...(allResolved ? { estado: "CERRADA" as const } : {}) });
+    refresh();
+    setProcessing(false);
+  };
+
   const aprobarTodo = async () => {
     if (!confirm("¿Aprobar TODOS los ajustes pendientes? Se generarán movimientos automáticos.")) return;
     setProcessing(true);
@@ -6674,6 +6710,60 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
                                 ⚠️ Hay posiciones con stock de este SKU que NO están incluidas en este conteo. Verifique antes de aprobar.
                               </div>
                             )}
+                            {/* Transfer detection: if this line has +N and there are other positions with stock that could be the source */}
+                            {isContado && diff > 0 && (() => {
+                              // Find positions with stock that could be the source of the transfer
+                              const transferSources = allPositions
+                                .filter(([pid]) => pid !== l.posicion_id)
+                                .filter(([pid, qty]) => {
+                                  // Candidate: has stock >= diff, and is NOT in this conteo (so we can't verify it was emptied)
+                                  // OR is in conteo and operator counted less than system (meaning stock was taken from there)
+                                  const cl = conteoLinesSku.find(c => c.posicion_id === pid);
+                                  if (!cl) return qty >= diff; // Not in conteo but has stock — likely source
+                                  if (cl.estado !== "PENDIENTE" && cl.stock_contado < qty) return true; // Counted less — stock was taken
+                                  return false;
+                                })
+                                .map(([pid, qty]) => {
+                                  const cl = conteoLinesSku.find(c => c.posicion_id === pid);
+                                  const available = cl && cl.estado !== "PENDIENTE" ? qty - cl.stock_contado : qty;
+                                  return { pid, sysQty: qty, available, contada: cl && cl.estado !== "PENDIENTE" };
+                                })
+                                .filter(t => t.available > 0);
+
+                              if (transferSources.length === 0) return null;
+                              return (
+                                <div style={{marginTop:8,padding:"10px 12px",borderRadius:8,background:"#3b82f610",border:"1px solid #3b82f633"}}>
+                                  <div style={{fontSize:11,fontWeight:700,color:"#3b82f6",marginBottom:6}}>
+                                    🔄 Posible traspaso detectado
+                                  </div>
+                                  <div style={{fontSize:10,color:"var(--txt2)",marginBottom:8}}>
+                                    El operador encontró +{diff} en {l.posicion_id}. Puede traspasar desde otra posición sin alterar el stock total:
+                                  </div>
+                                  {transferSources.map(src => {
+                                    const transferQty = Math.min(diff, src.available);
+                                    return (
+                                      <div key={src.pid} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 8px",borderRadius:6,background:"var(--bg3)",marginBottom:4}}>
+                                        <div style={{fontSize:11}}>
+                                          <span className="mono" style={{fontWeight:700,color:"var(--txt)"}}>{src.pid}</span>
+                                          <span style={{color:"var(--txt3)",marginLeft:6}}>
+                                            (sistema: {src.sysQty}{src.contada ? `, contado: ${src.sysQty - src.available}` : ""})
+                                          </span>
+                                          <span style={{color:"#3b82f6",marginLeft:6,fontWeight:600}}>
+                                            → mover {transferQty} a {l.posicion_id}
+                                          </span>
+                                        </div>
+                                        <button
+                                          onClick={(e) => { e.stopPropagation(); traspasarLinea(l.posicion_id, l.sku, src.pid, transferQty); }}
+                                          disabled={processing}
+                                          style={{padding:"4px 12px",borderRadius:6,fontSize:10,fontWeight:700,background:"#3b82f622",color:"#3b82f6",border:"1px solid #3b82f644",cursor:"pointer",whiteSpace:"nowrap"}}>
+                                          Traspasar {transferQty}
+                                        </button>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              );
+                            })()}
                           </div>
                         </td>
                       </tr>
