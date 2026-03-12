@@ -1643,6 +1643,11 @@ export async function fetchSyncLog(empresaId: string): Promise<DBSyncLog[]> {
   return (data || []) as DBSyncLog[];
 }
 
+export async function insertSyncLog(log: Omit<DBSyncLog, "id" | "synced_at">): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("sync_log").insert(log);
+}
+
 // ==================== CONCILIADOR — RCV COMPRAS ====================
 
 export async function fetchRcvCompras(empresaId: string, periodo?: string): Promise<DBRcvCompra[]> {
