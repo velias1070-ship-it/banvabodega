@@ -341,15 +341,22 @@ function Dashboard({ empresa, periodo, onChangePeriodo }: { empresa: DBEmpresa; 
   const [conciliaciones, setConciliaciones] = useState<DBConciliacion[]>([]);
   const [alertas, setAlertas] = useState<DBAlerta[]>([]);
   const [syncLogs, setSyncLogs] = useState<DBSyncLog[]>([]);
+  const [reembolsosPend, setReembolsosPend] = useState<DBMovimientoBanco[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!empresa.id) return;
     setLoading(true);
+    // Convertir periodo YYYYMM → rango de fechas para movimientos banco
+    const y = parseInt(periodo.slice(0, 4));
+    const m2 = parseInt(periodo.slice(4, 6));
+    const desde = `${y}-${String(m2).padStart(2, "0")}-01`;
+    const lastDay = new Date(y, m2, 0).getDate();
+    const hasta = `${y}-${String(m2).padStart(2, "0")}-${lastDay}`;
     Promise.all([
       fetchRcvCompras(empresa.id, periodo),
       fetchRcvVentas(empresa.id, periodo),
-      fetchMovimientosBanco(empresa.id),
+      fetchMovimientosBanco(empresa.id, { desde, hasta }),
       fetchConciliaciones(empresa.id),
       fetchAlertas(empresa.id, "activa"),
       fetchSyncLog(empresa.id),
@@ -398,6 +405,13 @@ function Dashboard({ empresa, periodo, onChangePeriodo }: { empresa: DBEmpresa; 
   const concPendientes = conciliaciones.filter(c => c.estado === "pendiente").length;
   const concConfirmadas = conciliaciones.filter(c => c.estado === "confirmado").length;
   const movSinConciliar = movBanco.filter(m => !m.estado_conciliacion || m.estado_conciliacion === "pendiente").length;
+
+  // === Reembolsos pendientes a Vicente ===
+  const totalReembolsoPend = reembolsosPend.reduce((s, m) => s + Math.abs(m.monto), 0);
+  const reembolsosViejos = reembolsosPend.filter(m => {
+    const dias = Math.floor((Date.now() - new Date(m.fecha).getTime()) / (1000 * 60 * 60 * 24));
+    return dias > 15;
+  });
 
   // === Último sync del periodo actual ===
   const syncDelPeriodo = syncLogs.filter(s => s.periodo === periodo);
@@ -537,6 +551,59 @@ function Dashboard({ empresa, periodo, onChangePeriodo }: { empresa: DBEmpresa; 
         </div>
       </div>
 
+      {/* KPI fila 4: Reembolsos pendientes a Vicente */}
+      {reembolsosPend.length > 0 && (
+        <div className="card" style={{ padding: 16, marginBottom: 12, borderLeft: "3px solid var(--amber)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <h3 style={{ fontSize: 14, fontWeight: 700, margin: 0, color: "var(--amber)" }}>
+              💳 Reembolsos pendientes a Vicente
+            </h3>
+            <div className="mono" style={{ fontSize: 22, fontWeight: 700, color: "var(--amber)" }}>
+              {fmtMoney(totalReembolsoPend)}
+            </div>
+          </div>
+          <div style={{ fontSize: 12, color: "var(--txt3)", marginBottom: 8 }}>
+            {reembolsosPend.length} gasto{reembolsosPend.length !== 1 ? "s" : ""} de empresa pagado{reembolsosPend.length !== 1 ? "s" : ""} con TC personal sin reembolsar
+          </div>
+          {/* Alerta si hay reembolsos viejos (>15 días) */}
+          {reembolsosViejos.length > 0 && (
+            <div style={{
+              padding: "8px 12px", borderRadius: 8, marginBottom: 10,
+              background: "var(--redBg)", border: "1px solid var(--redBd)",
+            }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--red)" }}>
+                ⚠️ {reembolsosViejos.length} reembolso{reembolsosViejos.length !== 1 ? "s" : ""} con más de 15 días sin pagar — {fmtMoney(reembolsosViejos.reduce((s, m) => s + Math.abs(m.monto), 0))}
+              </span>
+            </div>
+          )}
+          {/* Lista de reembolsos pendientes (top 5) */}
+          {reembolsosPend.slice(0, 5).map((m, i) => {
+            const dias = Math.floor((Date.now() - new Date(m.fecha).getTime()) / (1000 * 60 * 60 * 24));
+            return (
+              <div key={m.id || i} style={{
+                display: "flex", justifyContent: "space-between", alignItems: "center",
+                padding: "6px 0", borderBottom: i < Math.min(reembolsosPend.length, 5) - 1 ? "1px solid var(--bg4)" : "none",
+              }}>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 500 }}>{m.descripcion}</div>
+                  <div style={{ fontSize: 11, color: dias > 15 ? "var(--red)" : "var(--txt3)" }}>
+                    {m.fecha} · hace {dias} día{dias !== 1 ? "s" : ""}
+                  </div>
+                </div>
+                <div className="mono" style={{ fontSize: 13, fontWeight: 600, color: "var(--amber)" }}>
+                  {fmtMoney(Math.abs(m.monto))}
+                </div>
+              </div>
+            );
+          })}
+          {reembolsosPend.length > 5 && (
+            <div style={{ fontSize: 11, color: "var(--txt3)", textAlign: "center", marginTop: 6 }}>
+              +{reembolsosPend.length - 5} más
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Historial de syncs del periodo */}
       {syncDelPeriodo.length > 0 && (
         <div className="card" style={{ padding: 14, marginBottom: 12 }}>
@@ -592,7 +659,8 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("");
   const [tipoFilter, setTipoFilter] = useState<string>("todos");
-  const [showImport, setShowImport] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
   const load = useCallback(() => {
     if (!empresa.id) return;
@@ -601,6 +669,29 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   }, [empresa.id, periodo]);
 
   useEffect(() => { load(); }, [load]);
+
+  const handleSyncSii = async () => {
+    setSyncing(true);
+    setSyncMsg(null);
+    try {
+      const res = await fetch("/api/sii/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ periodo, tipo: "compras" }),
+      });
+      const data = await res.json();
+      if (data.status === "ok") {
+        setSyncMsg(`${data.compras} compras importadas del SII`);
+        load();
+      } else {
+        setSyncMsg(`Error: ${data.error || "Error desconocido"}`);
+      }
+    } catch (e) {
+      setSyncMsg(`Error de conexión: ${e instanceof Error ? e.message : "sin detalles"}`);
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   if (loading) return <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>Cargando...</div>;
 
@@ -624,20 +715,26 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-        <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>RCV Compras</h2>
-        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-          <button onClick={() => setShowImport(true)}
-            style={{ padding: "6px 14px", borderRadius: 8, background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)", fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
-            Importar SII
-          </button>
+        <div>
+          <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>RCV Compras</h2>
+          <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 2 }}>{formatPeriodo(periodo)}</div>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <span style={{ fontSize: 12, color: "var(--txt3)" }}>{filtered.length} de {data.length} docs</span>
           <span className="mono" style={{ fontSize: 14, fontWeight: 700, color: "var(--red)" }}>{fmtMoney(total)}</span>
+          <button onClick={handleSyncSii} disabled={syncing}
+            className="scan-btn" style={{ padding: "6px 14px", fontSize: 11, fontWeight: 600, background: "linear-gradient(135deg, #2563eb, #3b82f6)", opacity: syncing ? 0.6 : 1 }}>
+            {syncing ? "Importando..." : "Importar SII"}
+          </button>
         </div>
       </div>
-
-      {showImport && (
-        <SiiImportModal tipo="COMPRA" empresa={empresa} periodoActual={periodo}
-          onClose={() => setShowImport(false)} onImported={load} />
+      {syncMsg && (
+        <div style={{ padding: "8px 12px", borderRadius: 8, marginBottom: 12, fontSize: 12, fontWeight: 600,
+          background: syncMsg.startsWith("Error") ? "var(--redBg)" : "var(--greenBg)",
+          color: syncMsg.startsWith("Error") ? "var(--red)" : "var(--green)",
+          border: `1px solid ${syncMsg.startsWith("Error") ? "var(--redBd)" : "var(--greenBd)"}` }}>
+          {syncMsg}
+        </div>
       )}
 
       {/* Resumen rápido */}
@@ -678,9 +775,9 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
           <div style={{ fontSize: 32, marginBottom: 8 }}>📄</div>
           <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Sin compras para este período</div>
           <div style={{ fontSize: 12, color: "var(--txt3)", marginBottom: 12 }}>Importa los datos directamente desde el SII</div>
-          <button onClick={() => setShowImport(true)}
-            style={{ padding: "10px 20px", borderRadius: 10, background: "var(--cyan)", color: "#000", fontWeight: 700, fontSize: 13, border: "none", cursor: "pointer" }}>
-            Importar desde SII
+          <button onClick={handleSyncSii} disabled={syncing}
+            style={{ padding: "10px 20px", borderRadius: 10, background: "var(--cyan)", color: "#000", fontWeight: 700, fontSize: 13, border: "none", cursor: syncing ? "not-allowed" : "pointer", opacity: syncing ? 0.6 : 1 }}>
+            {syncing ? "Importando..." : "Importar desde SII"}
           </button>
         </div>
       ) : (
@@ -739,7 +836,8 @@ function TabRcvVentas({ empresa, periodo }: { empresa: DBEmpresa; periodo: strin
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("");
   const [tipoFilter, setTipoFilter] = useState<string>("todos");
-  const [showImport, setShowImport] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
   const load = useCallback(() => {
     if (!empresa.id) return;
@@ -748,6 +846,29 @@ function TabRcvVentas({ empresa, periodo }: { empresa: DBEmpresa; periodo: strin
   }, [empresa.id, periodo]);
 
   useEffect(() => { load(); }, [load]);
+
+  const handleSyncSii = async () => {
+    setSyncing(true);
+    setSyncMsg(null);
+    try {
+      const res = await fetch("/api/sii/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ periodo, tipo: "ventas" }),
+      });
+      const data = await res.json();
+      if (data.status === "ok") {
+        setSyncMsg(`${data.ventas} ventas importadas del SII`);
+        load();
+      } else {
+        setSyncMsg(`Error: ${data.error || "Error desconocido"}`);
+      }
+    } catch (e) {
+      setSyncMsg(`Error de conexión: ${e instanceof Error ? e.message : "sin detalles"}`);
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   if (loading) return <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>Cargando...</div>;
 
@@ -771,20 +892,26 @@ function TabRcvVentas({ empresa, periodo }: { empresa: DBEmpresa; periodo: strin
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-        <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>RCV Ventas</h2>
-        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-          <button onClick={() => setShowImport(true)}
-            style={{ padding: "6px 14px", borderRadius: 8, background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)", fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
-            Importar SII
-          </button>
+        <div>
+          <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>RCV Ventas</h2>
+          <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 2 }}>{formatPeriodo(periodo)}</div>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <span style={{ fontSize: 12, color: "var(--txt3)" }}>{filtered.length} de {data.length} docs</span>
           <span className="mono" style={{ fontSize: 14, fontWeight: 700, color: "var(--green)" }}>{fmtMoney(total)}</span>
+          <button onClick={handleSyncSii} disabled={syncing}
+            className="scan-btn" style={{ padding: "6px 14px", fontSize: 11, fontWeight: 600, background: "linear-gradient(135deg, #2563eb, #3b82f6)", opacity: syncing ? 0.6 : 1 }}>
+            {syncing ? "Importando..." : "Importar SII"}
+          </button>
         </div>
       </div>
-
-      {showImport && (
-        <SiiImportModal tipo="VENTA" empresa={empresa} periodoActual={periodo}
-          onClose={() => setShowImport(false)} onImported={load} />
+      {syncMsg && (
+        <div style={{ padding: "8px 12px", borderRadius: 8, marginBottom: 12, fontSize: 12, fontWeight: 600,
+          background: syncMsg.startsWith("Error") ? "var(--redBg)" : "var(--greenBg)",
+          color: syncMsg.startsWith("Error") ? "var(--red)" : "var(--green)",
+          border: `1px solid ${syncMsg.startsWith("Error") ? "var(--redBd)" : "var(--greenBd)"}` }}>
+          {syncMsg}
+        </div>
       )}
 
       {/* Resumen rápido */}
@@ -825,9 +952,9 @@ function TabRcvVentas({ empresa, periodo }: { empresa: DBEmpresa; periodo: strin
           <div style={{ fontSize: 32, marginBottom: 8 }}>📄</div>
           <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Sin ventas para este período</div>
           <div style={{ fontSize: 12, color: "var(--txt3)", marginBottom: 12 }}>Importa los datos directamente desde el SII</div>
-          <button onClick={() => setShowImport(true)}
-            style={{ padding: "10px 20px", borderRadius: 10, background: "var(--cyan)", color: "#000", fontWeight: 700, fontSize: 13, border: "none", cursor: "pointer" }}>
-            Importar desde SII
+          <button onClick={handleSyncSii} disabled={syncing}
+            style={{ padding: "10px 20px", borderRadius: 10, background: "var(--cyan)", color: "#000", fontWeight: 700, fontSize: 13, border: "none", cursor: syncing ? "not-allowed" : "pointer", opacity: syncing ? 0.6 : 1 }}>
+            {syncing ? "Importando..." : "Importar desde SII"}
           </button>
         </div>
       ) : (
@@ -872,20 +999,36 @@ function TabRcvVentas({ empresa, periodo }: { empresa: DBEmpresa; periodo: strin
 }
 
 // ==================== BANCO ====================
-function TabBanco({ empresa }: { empresa: DBEmpresa }) {
+const PAGE_SIZE_BANCO = 50;
+
+function TabBanco({ empresa, periodo }: { empresa: DBEmpresa; periodo: string }) {
   const [data, setData] = useState<DBMovimientoBanco[]>([]);
   const [loading, setLoading] = useState(true);
-  const [banco, setBanco] = useState("banco_chile");
+  const [bancoUpload, setBancoUpload] = useState("banco_chile");
   const [showUpload, setShowUpload] = useState<false | "csv" | "liquidacion">(false);
   const [filter, setFilter] = useState("");
+  const [bancoFilter, setBancoFilter] = useState("todos");
+  const [page, setPage] = useState(0);
+
+  // Convertir periodo YYYYMM → rango de fechas para filtrar
+  const periodoToRange = useCallback((p: string) => {
+    const y = parseInt(p.slice(0, 4));
+    const m = parseInt(p.slice(4, 6));
+    const desde = `${y}-${String(m).padStart(2, "0")}-01`;
+    const lastDay = new Date(y, m, 0).getDate();
+    const hasta = `${y}-${String(m).padStart(2, "0")}-${lastDay}`;
+    return { desde, hasta };
+  }, []);
 
   const load = useCallback(async () => {
     if (!empresa.id) return;
     setLoading(true);
-    const d = await fetchMovimientosBanco(empresa.id);
+    const { desde, hasta } = periodoToRange(periodo);
+    const d = await fetchMovimientosBanco(empresa.id, { desde, hasta });
     setData(d);
     setLoading(false);
-  }, [empresa.id]);
+    setPage(0);
+  }, [empresa.id, periodo, periodoToRange]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -893,7 +1036,7 @@ function TabBanco({ empresa }: { empresa: DBEmpresa }) {
     if (!empresa.id) return;
     const items: DBMovimientoBanco[] = rows.map(r => ({
       empresa_id: empresa.id!,
-      banco,
+      banco: bancoUpload,
       cuenta: null,
       fecha: r.fecha,
       descripcion: r.descripcion,
@@ -908,27 +1051,49 @@ function TabBanco({ empresa }: { empresa: DBEmpresa }) {
   };
 
   const handleDeleteAll = async () => {
-    if (!confirm("¿Eliminar todos los movimientos bancarios? Esta acción no se puede deshacer.")) return;
+    if (!confirm("¿Eliminar todos los movimientos del periodo? Esta acción no se puede deshacer.")) return;
     const ids = data.map(d => d.id).filter(Boolean) as string[];
     if (ids.length > 0) await deleteMovimientosBancoByIds(ids);
     load();
   };
 
-  const filtered = filter
-    ? data.filter(m => (m.descripcion || "").toLowerCase().includes(filter.toLowerCase()) || (m.referencia || "").includes(filter))
-    : data;
+  // Bancos únicos para el filtro
+  const bancosUnicos = Array.from(new Set(data.map(m => m.banco))).sort();
 
+  // Filtrado: por banco + por texto
+  const filtered = data.filter(m => {
+    if (bancoFilter !== "todos" && m.banco !== bancoFilter) return false;
+    if (filter) {
+      const q = filter.toLowerCase();
+      const matchDesc = (m.descripcion || "").toLowerCase().includes(q);
+      const matchRef = (m.referencia || "").toLowerCase().includes(q);
+      if (!matchDesc && !matchRef) return false;
+    }
+    return true;
+  });
+
+  // KPIs sobre TODOS los datos filtrados (no solo la página)
   const ingresos = filtered.filter(m => m.monto > 0).reduce((s, m) => s + m.monto, 0);
   const egresos = filtered.filter(m => m.monto < 0).reduce((s, m) => s + m.monto, 0);
+
+  // Paginación
+  const totalPages = Math.ceil(filtered.length / PAGE_SIZE_BANCO);
+  const pageData = filtered.slice(page * PAGE_SIZE_BANCO, (page + 1) * PAGE_SIZE_BANCO);
+
+  // Reset página cuando cambia filtro
+  useEffect(() => { setPage(0); }, [filter, bancoFilter]);
 
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-        <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>Movimientos Banco</h2>
+        <div>
+          <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>Movimientos Banco</h2>
+          <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 2 }}>{formatPeriodo(periodo)} · {data.length.toLocaleString()} movimientos</div>
+        </div>
         <div style={{ display: "flex", gap: 8 }}>
           {data.length > 0 && (
             <button onClick={handleDeleteAll} style={{ padding: "6px 12px", borderRadius: 8, background: "var(--bg3)", color: "var(--red)", fontSize: 11, fontWeight: 600, border: "1px solid var(--bg4)" }}>
-              Limpiar todo
+              Limpiar periodo
             </button>
           )}
           {showUpload ? (
@@ -953,7 +1118,7 @@ function TabBanco({ empresa }: { empresa: DBEmpresa }) {
         <div className="card" style={{ padding: 16, marginBottom: 16 }}>
           <div style={{ marginBottom: 12 }}>
             <label className="form-label">Banco / Fuente</label>
-            <select value={banco} onChange={e => setBanco(e.target.value)} className="form-input" style={{ fontSize: 13 }}>
+            <select value={bancoUpload} onChange={e => setBancoUpload(e.target.value)} className="form-input" style={{ fontSize: 13 }}>
               <option value="banco_chile">Banco de Chile</option>
               <option value="santander">Santander</option>
               <option value="bci">BCI</option>
@@ -961,7 +1126,7 @@ function TabBanco({ empresa }: { empresa: DBEmpresa }) {
               <option value="otro">Otro</option>
             </select>
           </div>
-          <CsvUploader banco={banco} onImport={handleImport} />
+          <CsvUploader banco={bancoUpload} onImport={handleImport} />
         </div>
       )}
 
@@ -977,12 +1142,12 @@ function TabBanco({ empresa }: { empresa: DBEmpresa }) {
       ) : data.length === 0 ? (
         <div className="card" style={{ padding: 32, textAlign: "center" }}>
           <div style={{ fontSize: 32, marginBottom: 8 }}>🏦</div>
-          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Sin movimientos bancarios</div>
-          <div style={{ fontSize: 12, color: "var(--txt3)" }}>Sube un CSV del banco para comenzar</div>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Sin movimientos en {formatPeriodo(periodo)}</div>
+          <div style={{ fontSize: 12, color: "var(--txt3)" }}>Sube un CSV o sincroniza desde los scrapers</div>
         </div>
       ) : (
         <>
-          {/* Resumen */}
+          {/* Resumen KPIs */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 12 }}>
             <div style={{ padding: 10, background: "var(--greenBg)", borderRadius: 10, textAlign: "center" }}>
               <div style={{ fontSize: 10, color: "var(--green)" }}>Ingresos</div>
@@ -998,9 +1163,24 @@ function TabBanco({ empresa }: { empresa: DBEmpresa }) {
             </div>
           </div>
 
-          <input className="form-input" placeholder="Buscar por descripción o referencia..." value={filter} onChange={e => setFilter(e.target.value)}
-            style={{ marginBottom: 12, fontSize: 13 }} />
+          {/* Filtros: banco + texto */}
+          <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
+            {bancosUnicos.length > 1 && (
+              <select value={bancoFilter} onChange={e => setBancoFilter(e.target.value)} className="form-input" style={{ fontSize: 12, width: "auto", minWidth: 140 }}>
+                <option value="todos">Todos los bancos</option>
+                {bancosUnicos.map(b => (
+                  <option key={b} value={b}>{b.toUpperCase()}</option>
+                ))}
+              </select>
+            )}
+            <input className="form-input" placeholder="Buscar descripción o referencia..." value={filter} onChange={e => setFilter(e.target.value)}
+              style={{ fontSize: 12, flex: 1 }} />
+            <div style={{ fontSize: 11, color: "var(--txt3)", whiteSpace: "nowrap" }}>
+              {filtered.length.toLocaleString()} de {data.length.toLocaleString()}
+            </div>
+          </div>
 
+          {/* Tabla paginada */}
           <div style={{ overflowX: "auto" }}>
             <table className="tbl" style={{ fontSize: 11 }}>
               <thead>
@@ -1010,19 +1190,44 @@ function TabBanco({ empresa }: { empresa: DBEmpresa }) {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((m, i) => (
+                {pageData.map((m, i) => (
                   <tr key={m.id || i}>
                     <td className="mono">{fmtDate(m.fecha)}</td>
-                    <td style={{ maxWidth: 250, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.descripcion || "—"}</td>
+                    <td style={{ maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.descripcion || "—"}</td>
                     <td style={{ fontSize: 10, textTransform: "uppercase" }}>{m.banco}</td>
                     <td className="mono" style={{ textAlign: "right", fontWeight: 700, color: m.monto >= 0 ? "var(--green)" : "var(--red)" }}>{fmtMoney(m.monto)}</td>
                     <td className="mono" style={{ textAlign: "right", color: "var(--txt3)" }}>{m.saldo !== null ? fmtMoney(m.saldo) : "—"}</td>
-                    <td className="mono" style={{ fontSize: 10, color: "var(--txt3)" }}>{m.referencia || "—"}</td>
+                    <td className="mono" style={{ fontSize: 10, color: "var(--txt3)", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis" }}>{m.referencia || "—"}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+
+          {/* Paginación */}
+          {totalPages > 1 && (
+            <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, marginTop: 12, paddingBottom: 8 }}>
+              <button onClick={() => setPage(0)} disabled={page === 0}
+                style={{ padding: "4px 8px", borderRadius: 6, fontSize: 11, background: "var(--bg3)", color: page === 0 ? "var(--txt3)" : "var(--cyan)", border: "1px solid var(--bg4)", cursor: page === 0 ? "default" : "pointer", opacity: page === 0 ? 0.4 : 1 }}>
+                ««
+              </button>
+              <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}
+                style={{ padding: "4px 10px", borderRadius: 6, fontSize: 11, background: "var(--bg3)", color: page === 0 ? "var(--txt3)" : "var(--cyan)", border: "1px solid var(--bg4)", cursor: page === 0 ? "default" : "pointer", opacity: page === 0 ? 0.4 : 1 }}>
+                ‹ Anterior
+              </button>
+              <span className="mono" style={{ fontSize: 11, color: "var(--txt2)", padding: "0 8px" }}>
+                {page + 1} / {totalPages}
+              </span>
+              <button onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}
+                style={{ padding: "4px 10px", borderRadius: 6, fontSize: 11, background: "var(--bg3)", color: page >= totalPages - 1 ? "var(--txt3)" : "var(--cyan)", border: "1px solid var(--bg4)", cursor: page >= totalPages - 1 ? "default" : "pointer", opacity: page >= totalPages - 1 ? 0.4 : 1 }}>
+                Siguiente ›
+              </button>
+              <button onClick={() => setPage(totalPages - 1)} disabled={page >= totalPages - 1}
+                style={{ padding: "4px 8px", borderRadius: 6, fontSize: 11, background: "var(--bg3)", color: page >= totalPages - 1 ? "var(--txt3)" : "var(--cyan)", border: "1px solid var(--bg4)", cursor: page >= totalPages - 1 ? "default" : "pointer", opacity: page >= totalPages - 1 ? 0.4 : 1 }}>
+                »»
+              </button>
+            </div>
+          )}
         </>
       )}
     </div>
@@ -1119,7 +1324,7 @@ export default function ConciliacionPage() {
             {empresa && tab === "dash" && <Dashboard empresa={empresa} periodo={periodo} onChangePeriodo={setPeriodo} />}
             {empresa && tab === "compras" && <TabRcvCompras empresa={empresa} periodo={periodo} />}
             {empresa && tab === "ventas" && <TabRcvVentas empresa={empresa} periodo={periodo} />}
-            {empresa && tab === "banco" && <TabBanco empresa={empresa} />}
+            {empresa && tab === "banco" && <TabBanco empresa={empresa} periodo={periodo} />}
             {empresa && tab === "conciliacion" && <ConciliacionSplitView empresa={empresa} periodo={periodo} />}
             {tab === "cuentas" && <PlanCuentasTree />}
             {tab === "reglas" && <RuleBuilder />}
