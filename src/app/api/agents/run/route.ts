@@ -152,10 +152,18 @@ export async function POST(req: NextRequest) {
       try {
         parsed = JSON.parse(rawText);
       } catch {
-        // Intentar extraer JSON de la respuesta
+        // Intentar extraer JSON y limpiar errores comunes de LLMs
         const jsonMatch = rawText.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
-          parsed = JSON.parse(jsonMatch[0]);
+          // Limpiar trailing commas antes de ] o } (error común de LLMs)
+          const cleaned = jsonMatch[0]
+            .replace(/,\s*([}\]])/g, "$1")
+            .replace(/([{,]\s*)"?(\w+)"?\s*:/g, '$1"$2":');
+          try {
+            parsed = JSON.parse(cleaned);
+          } catch {
+            throw new Error("No se pudo parsear la respuesta del agente como JSON");
+          }
         } else {
           throw new Error("No se pudo parsear la respuesta del agente como JSON");
         }
