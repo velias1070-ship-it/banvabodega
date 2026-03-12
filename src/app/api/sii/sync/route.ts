@@ -40,7 +40,10 @@ export async function POST(req: NextRequest) {
 
     const result = await siiRes.json();
     if (result.status === "error") {
-      return NextResponse.json({ error: `SII error: ${result.error}` }, { status: 502 });
+      return NextResponse.json(
+        { error: `SII error: ${result.error}`, log: result.log || [] },
+        { status: 502 }
+      );
     }
 
     console.log(`[SII Sync] OK — compras: ${result.compras}, ventas: ${result.ventas}`);

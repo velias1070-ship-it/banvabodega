@@ -681,10 +681,12 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
       });
       const data = await res.json();
       if (data.status === "ok") {
-        setSyncMsg(`${data.compras} compras importadas del SII`);
-        load();
+        const logInfo = data.log ? `\n${data.log.join("\n")}` : "";
+        setSyncMsg(`${data.compras} compras importadas del SII${data.compras === 0 ? logInfo : ""}`);
+        if (data.compras > 0) load();
       } else {
-        setSyncMsg(`Error: ${data.error || "Error desconocido"}`);
+        const logInfo = data.log ? `\n${data.log.join("\n")}` : "";
+        setSyncMsg(`Error: ${data.error || "Error desconocido"}${logInfo}`);
       }
     } catch (e) {
       setSyncMsg(`Error de conexión: ${e instanceof Error ? e.message : "sin detalles"}`);
@@ -730,6 +732,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
       </div>
       {syncMsg && (
         <div style={{ padding: "8px 12px", borderRadius: 8, marginBottom: 12, fontSize: 12, fontWeight: 600,
+          whiteSpace: "pre-wrap", maxHeight: 300, overflow: "auto",
           background: syncMsg.startsWith("Error") ? "var(--redBg)" : "var(--greenBg)",
           color: syncMsg.startsWith("Error") ? "var(--red)" : "var(--green)",
           border: `1px solid ${syncMsg.startsWith("Error") ? "var(--redBd)" : "var(--greenBd)"}` }}>
@@ -858,10 +861,12 @@ function TabRcvVentas({ empresa, periodo }: { empresa: DBEmpresa; periodo: strin
       });
       const data = await res.json();
       if (data.status === "ok") {
-        setSyncMsg(`${data.ventas} ventas importadas del SII`);
-        load();
+        const logInfo = data.log ? `\n${data.log.join("\n")}` : "";
+        setSyncMsg(`${data.ventas} ventas importadas del SII${data.ventas === 0 ? logInfo : ""}`);
+        if (data.ventas > 0) load();
       } else {
-        setSyncMsg(`Error: ${data.error || "Error desconocido"}`);
+        const logInfo = data.log ? `\n${data.log.join("\n")}` : "";
+        setSyncMsg(`Error: ${data.error || "Error desconocido"}${logInfo}`);
       }
     } catch (e) {
       setSyncMsg(`Error de conexión: ${e instanceof Error ? e.message : "sin detalles"}`);
@@ -907,6 +912,7 @@ function TabRcvVentas({ empresa, periodo }: { empresa: DBEmpresa; periodo: strin
       </div>
       {syncMsg && (
         <div style={{ padding: "8px 12px", borderRadius: 8, marginBottom: 12, fontSize: 12, fontWeight: 600,
+          whiteSpace: "pre-wrap", maxHeight: 300, overflow: "auto",
           background: syncMsg.startsWith("Error") ? "var(--redBg)" : "var(--greenBg)",
           color: syncMsg.startsWith("Error") ? "var(--red)" : "var(--green)",
           border: `1px solid ${syncMsg.startsWith("Error") ? "var(--redBd)" : "var(--greenBd)"}` }}>
