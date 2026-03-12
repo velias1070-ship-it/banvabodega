@@ -150,7 +150,11 @@ export async function saveMLConfig(updates: Partial<MLConfig>): Promise<void> {
 /**
  * Ensures we have a valid access token. Refreshes if expired.
  * Returns the valid access_token or null if refresh fails.
+ * Uses a singleton promise to prevent race conditions when multiple
+ * concurrent requests try to refresh at the same time.
  */
+let _refreshPromise: Promise<string | null> | null = null;
+
 export async function ensureValidToken(): Promise<string | null> {
   const config = await getMLConfig();
   if (!config || !config.access_token) return null;
@@ -163,41 +167,68 @@ export async function ensureValidToken(): Promise<string | null> {
     return config.access_token;
   }
 
+  // Si ya hay un refresh en curso, esperar a ese mismo
+  if (_refreshPromise) {
+    return _refreshPromise;
+  }
+
   // Token expired or about to expire - refresh
   console.log("[ML] Token expired, refreshing...");
-  try {
-    const resp = await fetch(`${ML_API}/oauth/token`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
-      body: new URLSearchParams({
-        grant_type: "refresh_token",
-        client_id: config.client_id,
-        client_secret: config.client_secret,
-        refresh_token: config.refresh_token,
-      }),
-    });
+  _refreshPromise = (async () => {
+    try {
+      // Re-leer config por si otro proceso ya refrescó el token
+      const freshConfig = await getMLConfig();
+      if (freshConfig) {
+        const freshExpiry = new Date(freshConfig.token_expires_at).getTime();
+        if (Date.now() < freshExpiry - 5 * 60 * 1000) {
+          console.log("[ML] Token already refreshed by another request");
+          return freshConfig.access_token;
+        }
+      }
 
-    if (!resp.ok) {
-      const err = await resp.text();
-      console.error("[ML] Token refresh failed:", resp.status, err);
+      const cfg = freshConfig || config;
+      if (!cfg.client_id || !cfg.client_secret || !cfg.refresh_token) {
+        console.error("[ML] Token refresh failed: missing credentials (client_id, client_secret, or refresh_token)");
+        return null;
+      }
+
+      const resp = await fetch(`${ML_API}/oauth/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          client_id: cfg.client_id,
+          client_secret: cfg.client_secret,
+          refresh_token: cfg.refresh_token,
+        }),
+      });
+
+      if (!resp.ok) {
+        const err = await resp.text();
+        console.error("[ML] Token refresh failed:", resp.status, err);
+        return null;
+      }
+
+      const data = await resp.json();
+      const newExpiry = new Date(Date.now() + data.expires_in * 1000).toISOString();
+
+      await saveMLConfig({
+        access_token: data.access_token,
+        refresh_token: data.refresh_token,
+        token_expires_at: newExpiry,
+      });
+
+      console.log("[ML] Token refreshed successfully, expires:", newExpiry);
+      return data.access_token;
+    } catch (err) {
+      console.error("[ML] Token refresh error:", err);
       return null;
+    } finally {
+      _refreshPromise = null;
     }
+  })();
 
-    const data = await resp.json();
-    const newExpiry = new Date(Date.now() + data.expires_in * 1000).toISOString();
-
-    await saveMLConfig({
-      access_token: data.access_token,
-      refresh_token: data.refresh_token,
-      token_expires_at: newExpiry,
-    });
-
-    console.log("[ML] Token refreshed successfully, expires:", newExpiry);
-    return data.access_token;
-  } catch (err) {
-    console.error("[ML] Token refresh error:", err);
-    return null;
-  }
+  return _refreshPromise;
 }
 
 /**
