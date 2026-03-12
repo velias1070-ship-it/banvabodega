@@ -56,6 +56,7 @@ export interface Movement {
   reason: InReason | OutReason;
   sku: string; pos: string; qty: number;
   who: string; note: string;
+  skuVenta?: string | null;
 }
 
 export type StockMap = Record<string, Record<string, number>>;
@@ -604,12 +605,12 @@ export async function recordMovementAsync(m: Omit<Movement, "id">): Promise<Move
   // Update cache (clamp "out" to prevent negative stock)
   if (!_cache.stock[m.sku]) _cache.stock[m.sku] = {};
   let actualQty = m.qty;
-  // Auto-etiquetar: si el SKU tiene exactamente 1 sku_venta, asignar automáticamente
-  const autoSkuVenta = m.type === "in" ? resolveAutoSkuVenta(m.sku) : null;
+  // Usar skuVenta explícito si viene, sino auto-etiquetar si tiene exactamente 1 sku_venta
+  const resolvedSkuVenta = m.type === "in" ? (m.skuVenta || resolveAutoSkuVenta(m.sku)) : null;
 
   if (m.type === "in") {
     _cache.stock[m.sku][m.pos] = (_cache.stock[m.sku][m.pos] || 0) + m.qty;
-    updateStockDetalleCache(m.sku, m.pos, autoSkuVenta, m.qty);
+    updateStockDetalleCache(m.sku, m.pos, resolvedSkuVenta, m.qty);
   } else {
     const prev = _cache.stock[m.sku][m.pos] || 0;
     actualQty = Math.min(m.qty, prev);
@@ -622,7 +623,7 @@ export async function recordMovementAsync(m: Omit<Movement, "id">): Promise<Move
   // Write to Supabase
   if (isConfigured()) {
     if (m.type === "in") {
-      await db.updateStock(m.sku, m.pos, actualQty, autoSkuVenta);
+      await db.updateStock(m.sku, m.pos, actualQty, resolvedSkuVenta);
     } else {
       // Resolve which sku_venta variants to decrement
       const chunks = resolveSkuVentaForOut(m.sku, m.pos, actualQty);
@@ -657,14 +658,14 @@ export function recordMovement(m: Omit<Movement, "id">): Movement {
   if (!_cache.stock[m.sku]) _cache.stock[m.sku] = {};
   let actualQty = m.qty;
 
-  // Auto-etiquetar: si el SKU tiene exactamente 1 sku_venta, asignar automáticamente
-  const autoSkuVenta = m.type === "in" ? resolveAutoSkuVenta(m.sku) : null;
+  // Usar skuVenta explícito si viene, sino auto-etiquetar si tiene exactamente 1 sku_venta
+  const resolvedSkuVenta = m.type === "in" ? (m.skuVenta || resolveAutoSkuVenta(m.sku)) : null;
 
   // For outbound, resolve sku_venta variants BEFORE updating cache
   let outChunks: { skuVenta: string | null; qty: number }[] = [];
   if (m.type === "in") {
     _cache.stock[m.sku][m.pos] = (_cache.stock[m.sku][m.pos] || 0) + m.qty;
-    updateStockDetalleCache(m.sku, m.pos, autoSkuVenta, m.qty);
+    updateStockDetalleCache(m.sku, m.pos, resolvedSkuVenta, m.qty);
   } else {
     const prev = _cache.stock[m.sku][m.pos] || 0;
     actualQty = Math.min(m.qty, prev);
@@ -682,12 +683,12 @@ export function recordMovement(m: Omit<Movement, "id">): Movement {
   // Fire to Supabase with cache rollback on failure
   if (isConfigured()) {
     if (m.type === "in") {
-      db.updateStock(m.sku, m.pos, actualQty, autoSkuVenta).catch((err) => {
+      db.updateStock(m.sku, m.pos, actualQty, resolvedSkuVenta).catch((err) => {
         console.error("Stock update failed, reverting cache:", err);
         if (!_cache.stock[m.sku]) _cache.stock[m.sku] = {};
         _cache.stock[m.sku][m.pos] = Math.max(0, (_cache.stock[m.sku][m.pos] || 0) - actualQty);
         if (_cache.stock[m.sku][m.pos] === 0) delete _cache.stock[m.sku][m.pos];
-        updateStockDetalleCache(m.sku, m.pos, autoSkuVenta, -actualQty);
+        updateStockDetalleCache(m.sku, m.pos, resolvedSkuVenta, -actualQty);
       });
     } else {
       // Fire each variant update to Supabase
