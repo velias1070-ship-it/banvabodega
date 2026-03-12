@@ -162,7 +162,7 @@ interface Config {
   cobMaxima: number;
 }
 
-const DEFAULT_CONFIG: Config = { cobObjetivo: 45, puntoReorden: 14, cobMaxima: 60 };
+const DEFAULT_CONFIG: Config = { cobObjetivo: 40, puntoReorden: 14, cobMaxima: 60 };
 
 const ACCION_ORDEN: Record<Accion, number> = {
   "AGOTADO PEDIR": 0, "URGENTE": 1, "MANDAR A FULL": 2, "PLANIFICAR": 3, "OK": 4, "EXCESO": 5, "SIN VENTA": 6,
@@ -484,8 +484,17 @@ function calcularReposicion(
       }
     }
 
-    // Target días: si margen Flex > Full → 30d, sino cobObjetivo (45d)
-    const targetDias = (margenFlex !== null && margenFull !== null && margenFlex > margenFull) ? 30 : cobObjetivo;
+    // Target días según ratio margen Flex/Full
+    let targetDias = cobObjetivo; // default 40d (Full >= Flex o sin datos)
+    if (margenFlex !== null && margenFull !== null && margenFlex > margenFull) {
+      if (margenFull > 0) {
+        const ratio = margenFlex / margenFull;
+        targetDias = ratio > 1.2 ? 15 : 25;
+      } else {
+        // margenFull <= 0: Flex es claramente superior → 15d
+        targetDias = 15;
+      }
+    }
     const targetFull = velFull * targetDias / 7;
     const targetFlex = velFlex * targetDias / 7;
 
@@ -531,7 +540,15 @@ function calcularReposicion(
       p("Margen Flex", `ingreso - comisión - envío - costo`, `$${margenFlex.toLocaleString()}`);
       p("Margen Full", `ingreso - comisión - envío - costo`, `$${margenFull.toLocaleString()}`);
     }
-    p("Target días", margenFlex !== null && margenFull !== null && margenFlex > margenFull ? `margenFlex > margenFull → 30d` : `default → ${cobObjetivo}d`, `${targetDias}d`);
+    p("Target días", (() => {
+      if (margenFlex === null || margenFull === null) return `sin datos de margen → ${cobObjetivo}d`;
+      if (margenFlex <= margenFull) return `margenFull($${margenFull}) >= margenFlex($${margenFlex}) → ${cobObjetivo}d`;
+      if (margenFull <= 0) return `margenFull <= 0, Flex superior → 15d`;
+      const ratio = margenFlex / margenFull;
+      return ratio > 1.2
+        ? `Flex/Full = ${ratio.toFixed(2)} > 1.2 → 15d`
+        : `Flex/Full = ${ratio.toFixed(2)} (1.0–1.2) → 25d`;
+    })(), `${targetDias}d`);
     p("Target Full", `${velFull.toFixed(2)} × ${targetDias} / 7`, `${targetFull.toFixed(1)} uds`);
     p("Target Flex", `${velFlex.toFixed(2)} × ${targetDias} / 7`, `${targetFlex.toFixed(1)} uds`);
     p("Mandar a Full", `max(0, min(ceil(${targetFull.toFixed(1)} - ${stockFull}), ${stockBodega}))`, `${mandarFull} uds`);

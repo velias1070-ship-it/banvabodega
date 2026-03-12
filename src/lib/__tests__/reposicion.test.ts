@@ -78,62 +78,88 @@ describe("calcularCobertura", () => {
 });
 
 describe("calcularTargetDias", () => {
-  it("retorna 30 si margen Flex > Full", () => {
-    expect(calcularTargetDias(5000, 3000, 45)).toBe(30);
+  it("retorna 15d si Flex/Full > 1.2 (Flex muy superior)", () => {
+    // 5000/3000 = 1.67 > 1.2
+    expect(calcularTargetDias(5000, 3000, 40)).toBe(15);
+  });
+
+  it("retorna 25d si Flex/Full entre 1.0 y 1.2", () => {
+    // 3300/3000 = 1.1 → entre 1 y 1.2
+    expect(calcularTargetDias(3300, 3000, 40)).toBe(25);
+  });
+
+  it("retorna 25d si Flex/Full = 1.2 exacto (no supera)", () => {
+    // 3600/3000 = 1.2 → no es > 1.2, es = 1.2
+    expect(calcularTargetDias(3600, 3000, 40)).toBe(25);
+  });
+
+  it("retorna 15d si Flex/Full > 1.2 justo por encima", () => {
+    // 3601/3000 = 1.2003 > 1.2
+    expect(calcularTargetDias(3601, 3000, 40)).toBe(15);
   });
 
   it("retorna cobObjetivo si margen Full >= Flex", () => {
-    expect(calcularTargetDias(3000, 5000, 45)).toBe(45);
+    expect(calcularTargetDias(3000, 5000, 40)).toBe(40);
   });
 
   it("retorna cobObjetivo si no hay márgenes", () => {
-    expect(calcularTargetDias(null, null, 45)).toBe(45);
+    expect(calcularTargetDias(null, null, 40)).toBe(40);
   });
 
   it("retorna cobObjetivo si márgenes iguales", () => {
-    expect(calcularTargetDias(3000, 3000, 45)).toBe(45);
+    expect(calcularTargetDias(3000, 3000, 40)).toBe(40);
+  });
+
+  it("retorna 15d si margenFull <= 0 y Flex es positivo", () => {
+    expect(calcularTargetDias(2000, 0, 40)).toBe(15);
+    expect(calcularTargetDias(2000, -500, 40)).toBe(15);
+  });
+
+  it("retorna cobObjetivo si solo uno es null", () => {
+    expect(calcularTargetDias(null, 3000, 40)).toBe(40);
+    expect(calcularTargetDias(3000, null, 40)).toBe(40);
   });
 });
 
 describe("calcularMandarFull", () => {
   it("calcula correctamente cuánto mandar", () => {
-    // velFull=10, target45d → target=10*45/7=64.3, stock=20 → necesita 44.3 → ceil=45, min(45, bodega=100)=45
-    expect(calcularMandarFull(10, 45, 20, 100)).toBe(45);
+    // velFull=10, target40d → target=10*40/7=57.1, stock=20 → necesita 37.1 → ceil=38, min(38, bodega=100)=38
+    expect(calcularMandarFull(10, 40, 20, 100)).toBe(38);
   });
 
   it("limita por stock bodega", () => {
-    // target=64.3, stock=20, necesita 45, pero bodega=10 → 10
-    expect(calcularMandarFull(10, 45, 20, 10)).toBe(10);
+    // target=57.1, stock=20, necesita 38, pero bodega=10 → 10
+    expect(calcularMandarFull(10, 40, 20, 10)).toBe(10);
   });
 
   it("no manda si ya tiene suficiente stock Full", () => {
-    // target=64.3, stockFull=70 → 70 > 64.3 → 0
-    expect(calcularMandarFull(10, 45, 70, 100)).toBe(0);
+    // target=57.1, stockFull=70 → 70 > 57.1 → 0
+    expect(calcularMandarFull(10, 40, 70, 100)).toBe(0);
   });
 
   it("sin velocidad Full, no manda nada", () => {
-    expect(calcularMandarFull(0, 45, 0, 100)).toBe(0);
+    expect(calcularMandarFull(0, 40, 0, 100)).toBe(0);
   });
 
   it("no manda negativo", () => {
-    expect(calcularMandarFull(1, 45, 100, 50)).toBe(0);
+    expect(calcularMandarFull(1, 40, 100, 50)).toBe(0);
   });
 });
 
 describe("calcularPedirVenta", () => {
   it("calcula cuánto pedir", () => {
-    // velFull=8, velFlex=2, target45d
-    // targetFull=8*45/7=51.4, targetFlex=2*45/7=12.9
-    // total target=64.3, stock=20+30=50 → pedir=ceil(64.3-50)=15
-    expect(calcularPedirVenta(8, 2, 45, 20, 30)).toBe(15);
+    // velFull=8, velFlex=2, target40d
+    // targetFull=8*40/7=45.7, targetFlex=2*40/7=11.4
+    // total target=57.1, stock=20+30=50 → pedir=ceil(57.1-50)=8
+    expect(calcularPedirVenta(8, 2, 40, 20, 30)).toBe(8);
   });
 
   it("no pide si tiene suficiente stock", () => {
-    expect(calcularPedirVenta(5, 5, 45, 50, 50)).toBe(0);
+    expect(calcularPedirVenta(5, 5, 40, 50, 50)).toBe(0);
   });
 
   it("sin velocidad, no pide", () => {
-    expect(calcularPedirVenta(0, 0, 45, 0, 0)).toBe(0);
+    expect(calcularPedirVenta(0, 0, 40, 0, 0)).toBe(0);
   });
 });
 
@@ -220,18 +246,18 @@ describe("escenario integrado: caso real conocido", () => {
     // 15 / 8.33 * 7 ≈ 12.6 días
     expect(cobFull).toBeCloseTo(12.6, 0);
 
-    // 3. Target días (sin márgenes → cobObjetivo 45)
-    const targetDias = calcularTargetDias(null, null, 45);
-    expect(targetDias).toBe(45);
+    // 3. Target días (sin márgenes → cobObjetivo 40)
+    const targetDias = calcularTargetDias(null, null, 40);
+    expect(targetDias).toBe(40);
 
     // 4. Mandar a Full
     const mandarFull = calcularMandarFull(vel.velFull, targetDias, 15, 80);
-    // target = 8.33 * 45 / 7 = 53.6, necesita ceil(53.6 - 15) = 39, min(39, 80) = 39
-    expect(mandarFull).toBe(39);
+    // target = 8.33 * 40 / 7 = 47.6, necesita ceil(47.6 - 15) = 33, min(33, 80) = 33
+    expect(mandarFull).toBe(33);
 
     // 5. Pedir
     const pedir = calcularPedirVenta(vel.velFull, vel.velFlex, targetDias, 15, 80);
-    // targetTotal = 11.67*45/7 = 75.0, stock = 15+80=95, 75-95 = -20 → 0
+    // targetTotal = 11.67*40/7 = 66.7, stock = 15+80=95, 66.7-95 = -28.3 → 0
     expect(pedir).toBe(0);
 
     // 6. Acción: cobFull ≈ 12.6 < 14 → URGENTE
@@ -262,8 +288,8 @@ describe("escenario integrado: caso real conocido", () => {
     const cobFull = calcularCobertura(50, vel.velFull); // 50/1*7 = 350d
     expect(cobFull).toBe(350);
 
-    const mandarFull = calcularMandarFull(vel.velFull, 45, 50, 100);
-    // target = 1*45/7=6.4, ceil(6.4-50) = -44 → 0
+    const mandarFull = calcularMandarFull(vel.velFull, 40, 50, 100);
+    // target = 1*40/7=5.7, ceil(5.7-50) = -44 → 0
     expect(mandarFull).toBe(0);
 
     const accion = determinarAccion(vel.velTotal, vel.velFull, 50, 100, Math.round(cobFull), 14, 60);
