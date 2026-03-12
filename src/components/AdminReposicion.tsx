@@ -792,6 +792,7 @@ export default function AdminReposicion() {
   });
   const [showEnvioFull, setShowEnvioFull] = useState(true);
   const [showPedidoProv, setShowPedidoProv] = useState(true);
+  const [subTab, setSubTab] = useState<"resumen" | "envio" | "pedido">("resumen");
   const [expandedEnvio, setExpandedEnvio] = useState<Set<string>>(new Set());
   const [vistaOrigen, setVistaOrigen] = useState(false);
   const [expandedOrigenGroup, setExpandedOrigenGroup] = useState<Set<string>>(new Set());
@@ -1884,6 +1885,28 @@ export default function AdminReposicion() {
             )}
           </div>
 
+          {/* Sub-tabs: Resumen / Envío a Full / Pedido a Proveedor */}
+          <div style={{ display:"flex", gap:0, marginBottom:16, borderBottom:"2px solid var(--bg4)" }}>
+            {([
+              { key: "resumen" as const, label: "📊 Resumen", count: vistaOrigen ? filasOrigen.length : filasVenta.length },
+              { key: "envio" as const, label: "📦 Envío a Full", count: envioEditMode ? envioFinal.length : envioDetalles.length },
+              { key: "pedido" as const, label: "🛒 Pedido Proveedor", count: resultado.origenRows.filter(r => r.pedirProveedor > 0).length },
+            ]).map(t => (
+              <button key={t.key} onClick={() => setSubTab(t.key)}
+                style={{
+                  padding:"10px 20px", fontSize:13, fontWeight:600, cursor:"pointer",
+                  background: subTab === t.key ? "var(--bg3)" : "transparent",
+                  color: subTab === t.key ? "var(--cyan)" : "var(--txt3)",
+                  border:"none", borderBottom: subTab === t.key ? "2px solid var(--cyan)" : "2px solid transparent",
+                  marginBottom:-2, transition:"all 0.2s",
+                }}>
+                {t.label} <span className="mono" style={{ fontSize:11, marginLeft:4, opacity:0.7 }}>({t.count})</span>
+              </button>
+            ))}
+          </div>
+
+          {/* === TAB: Resumen === */}
+          {subTab === "resumen" && <>
           {/* Filtros y vista */}
           <div style={{ display:"flex", gap:8, alignItems:"center", marginBottom:12, flexWrap:"wrap" }}>
             <input className="form-input" placeholder="Buscar SKU o nombre..." value={busqueda} onChange={e => setBusqueda(e.target.value)}
@@ -2135,6 +2158,10 @@ export default function AdminReposicion() {
             </div>
           )}
 
+          </>}
+
+          {/* === TAB: Envío a Full === */}
+          {subTab === "envio" && <>
           {/* Lista: Envío a Full */}
           <div className="card" style={{ marginBottom:16 }}>
             <button onClick={() => setShowEnvioFull(!showEnvioFull)} style={{ background:"none", border:"none", color:"var(--txt)", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"space-between", width:"100%", padding:0, fontSize:14, fontWeight:600 }}>
@@ -2512,7 +2539,10 @@ export default function AdminReposicion() {
               </div>
             )}
           </div>
+          </>}
 
+          {/* === TAB: Pedido a Proveedor === */}
+          {subTab === "pedido" && <>
           {/* Lista: Pedido a proveedor */}
           <div className="card" style={{ marginBottom:16 }}>
             <button onClick={() => setShowPedidoProv(!showPedidoProv)} style={{ background:"none", border:"none", color:"var(--txt)", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"space-between", width:"100%", padding:0, fontSize:14, fontWeight:600 }}>
@@ -2616,6 +2646,7 @@ export default function AdminReposicion() {
               );
             })()}
           </div>
+          </>}
         </>
       )}
 
