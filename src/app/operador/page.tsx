@@ -257,6 +257,16 @@ function Ingreso({ refresh }: { refresh: () => void }) {
     if (p) { setPos(p.id); setPosLabel(p.label); setStep(1); setCam(false); }
   };
 
+  const handleProductScan = useCallback((code: string) => {
+    const results = findProduct(code);
+    if (results.length > 0) {
+      setProduct(results[0]); setStep(2);
+      if (navigator.vibrate) navigator.vibrate(100);
+    } else {
+      show(`Producto no encontrado: ${code}`, "err");
+    }
+  }, []);
+
   const doConfirm = () => {
     if (!product || !pos || qty < 1) return;
     recordMovement({ ts: new Date().toISOString(), type: "in", reason, sku: product.sku, pos, qty, who: "Operador", note });
@@ -285,7 +295,9 @@ function Ingreso({ refresh }: { refresh: () => void }) {
           <SelTag color="#10b981" label="Posición" value={`${pos} — ${posLabel}`}/>
           {posItems.length > 0 && <PosContent items={posItems}/>}
           <div style={{fontSize:15,fontWeight:700,marginBottom:10,marginTop:8}}>¿Qué producto guardas?</div>
-          <ProductSearch onSelect={(p) => { setProduct(p); setStep(2); }} placeholder="Nombre, SKU o código..."/>
+          <BarcodeScanner active={true} onScan={handleProductScan} label="Escanea código de barras del producto" mode="barcode"/>
+          <div style={{fontSize:12,color:"#94a3b8",marginTop:10,marginBottom:6}}>O busca manualmente:</div>
+          <ProductSearch onSelect={(p) => { setProduct(p); setStep(2); }} placeholder="Nombre, SKU o código ML..."/>
           <CancelBtn onClick={reset}/>
         </div>
       )}
