@@ -25,11 +25,15 @@ export async function GET(_req: NextRequest) {
     // Rules
     const { data: rules } = await sb.from("agent_rules").select("*").order("agente, prioridad");
 
+    // Triggers
+    const { data: triggers } = await sb.from("agent_triggers").select("*").order("agente, nombre");
+
     return NextResponse.json({
       configs: configs || [],
       insights: insights || [],
       runs: runs || [],
       rules: rules || [],
+      triggers: triggers || [],
     });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });

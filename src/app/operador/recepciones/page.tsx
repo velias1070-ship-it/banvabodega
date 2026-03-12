@@ -100,6 +100,8 @@ export default function RecepcionesOperador() {
       // Check if all lines of this reception are UBICADA
       if (lineas.every(l => l.estado === "UBICADA")) {
         await actualizarRecepcion(selLinea.recepcion_id, { estado: "COMPLETADA", completed_at: new Date().toISOString() });
+        // Trigger: recepción completada
+        import("@/lib/agents-triggers").then(m => m.dispararTrigger("recepcion_completada", { recepcion_id: selLinea.recepcion_id })).catch(() => {});
       }
       if (updated.estado === "UBICADA") {
         // Line fully done, unlock and go back

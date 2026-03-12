@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { syncRecentOrders, syncHistoricalOrders, diagnoseMlConnection } from "@/lib/ml";
+import { dispararTriggerServer } from "@/lib/agents-triggers-server";
 
 const SYNC_SECRET = process.env.ML_SYNC_SECRET || "";
 
@@ -25,6 +26,11 @@ export async function GET(req: NextRequest) {
     console.log("[ML Sync] Starting polling sync...");
     const result = await syncRecentOrders();
     console.log(`[ML Sync] Done: ${result.total} orders found, ${result.new_orders} new items`);
+
+    // Trigger: órdenes importadas (si hay nuevas)
+    if (result.new_orders > 0) {
+      dispararTriggerServer("ordenes_importadas", { cantidad_nuevas: result.new_orders }).catch(() => {});
+    }
 
     return NextResponse.json({
       status: "ok",
@@ -65,6 +71,11 @@ export async function POST(req: NextRequest) {
       const result = await syncHistoricalOrders(days);
       console.log(`[ML Sync] Historical done: ${result.total} total, ${result.shipments_processed} shipments, ${result.new_orders} items`);
 
+      // Trigger: órdenes importadas (si hay nuevas)
+      if (result.new_orders > 0) {
+        dispararTriggerServer("ordenes_importadas", { cantidad_nuevas: result.new_orders }).catch(() => {});
+      }
+
       return NextResponse.json({
         status: "ok",
         total_orders: result.total,
@@ -85,6 +96,11 @@ export async function POST(req: NextRequest) {
   try {
     console.log("[ML Sync] Starting recent sync...");
     const result = await syncRecentOrders();
+
+    if (result.new_orders > 0) {
+      dispararTriggerServer("ordenes_importadas", { cantidad_nuevas: result.new_orders }).catch(() => {});
+    }
+
     return NextResponse.json({
       status: "ok",
       total_orders: result.total,

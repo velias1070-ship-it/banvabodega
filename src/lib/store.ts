@@ -811,6 +811,8 @@ export async function syncFromSheet(): Promise<{ added: number; updated: number;
   if (typeof window !== "undefined") {
     localStorage.setItem("banva_sheet_last_sync", Date.now().toString());
   }
+  // Trigger: proveedor cargado (diccionario de productos actualizado)
+  import("./agents-triggers").then(m => m.dispararTrigger("proveedor_cargado")).catch(() => {});
   return { ...result.productos, composicionTotal: result.composicion.total };
 }
 
@@ -1758,6 +1760,8 @@ export async function pickearComponente(
   // When picking is fully completed, mark linked pedidos_flex as DESPACHADO
   if (allDone && sessionId) {
     db.updatePedidosFlexByPickingSession(sessionId, "DESPACHADO").catch(console.error);
+    // Trigger: picking completado
+    import("./agents-triggers").then(m => m.dispararTrigger("picking_completado", { session_id: sessionId, tipo: "flex" })).catch(() => {});
   }
 
   return true;
@@ -1800,6 +1804,10 @@ export async function pickearLineaFull(
     ...(sessionDone ? { completed_at: new Date().toISOString() } : {}),
   });
 
+  if (sessionDone) {
+    import("./agents-triggers").then(m => m.dispararTrigger("picking_completado", { session_id: sessionId, tipo: "envio_full" })).catch(() => {});
+  }
+
   return true;
 }
 
@@ -1823,6 +1831,10 @@ export async function marcarArmadoFull(
     estado: sessionDone ? "COMPLETADA" : "EN_PROCESO",
     ...(sessionDone ? { completed_at: new Date().toISOString() } : {}),
   });
+
+  if (sessionDone) {
+    import("./agents-triggers").then(m => m.dispararTrigger("picking_completado", { session_id: sessionId, tipo: "envio_full" })).catch(() => {});
+  }
 
   return true;
 }
@@ -1875,6 +1887,8 @@ export async function cerrarRecepcion(id: string): Promise<{ ok: boolean; pendie
   const pendientesQty = discsQty.filter(d => d.estado === "PENDIENTE").length;
   if (pendientes > 0 || pendientesQty > 0) return { ok: false, pendientes, pendientesQty };
   await db.updateRecepcion(id, { estado: "CERRADA" });
+  // Trigger: recepción cerrada
+  import("./agents-triggers").then(m => m.dispararTrigger("recepcion_cerrada", { recepcion_id: id })).catch(() => {});
   return { ok: true };
 }
 
@@ -1967,7 +1981,14 @@ export async function detectarDiscrepancias(recepcionId: string, lineas: db.DBRe
       diferencia: diff, porcentaje: pct, estado: costoDic === 0 ? "PENDIENTE" : "PENDIENTE",
     });
   }
-  if (nuevas.length > 0) await db.insertDiscrepancias(nuevas);
+  if (nuevas.length > 0) {
+    await db.insertDiscrepancias(nuevas);
+    // Trigger: discrepancias de costo detectadas
+    import("./agents-triggers").then(m => m.dispararTrigger("discrepancia_costo_detectada", {
+      recepcion_id: recepcionId, cantidad: nuevas.length,
+      skus: nuevas.map(n => n.sku),
+    })).catch(() => {});
+  }
   return db.fetchDiscrepancias(recepcionId);
 }
 
@@ -1986,8 +2007,11 @@ export async function aprobarNuevoCosto(discId: string, sku: string, nuevoCosto:
     estado: "APROBADO", resuelto_por: "admin", resuelto_at: new Date().toISOString(),
   });
   // Update the unit cost in productos table
+  const costoAnterior = _cache.products[sku]?.cost || 0;
   await db.updateProductoCosto(sku, nuevoCosto);
   if (_cache.products[sku]) _cache.products[sku].cost = nuevoCosto;
+  // Trigger: costo aprobado
+  import("./agents-triggers").then(m => m.dispararTrigger("costo_aprobado", { sku, costo_anterior: costoAnterior, costo_nuevo: nuevoCosto })).catch(() => {});
 
   // Build list of all SKU venta rows that use this SKU origen, with their unidades
   // So the Sheet API can update each row: cost = nuevoCosto * unidades

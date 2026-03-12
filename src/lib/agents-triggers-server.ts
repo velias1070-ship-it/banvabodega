@@ -1,0 +1,58 @@
+import { getServerSupabase } from "./supabase-server";
+
+/**
+ * Server-side version of dispararTrigger.
+ * Looks up matching event triggers and calls /api/agents/run for each.
+ * Fire and forget — does not block the caller.
+ */
+export async function dispararTriggerServer(evento: string, datos?: Record<string, unknown>) {
+  try {
+    const sb = getServerSupabase(); if (!sb) return;
+
+    const { data: triggers } = await sb
+      .from("agent_triggers")
+      .select("*")
+      .eq("tipo", "evento")
+      .eq("activo", true);
+
+    if (!triggers || triggers.length === 0) return;
+
+    const matching = triggers.filter((t: { configuracion: { evento?: string } }) => {
+      return t.configuracion?.evento === evento;
+    });
+
+    if (matching.length === 0) return;
+
+    // Determine base URL for internal API calls
+    const baseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+      ? (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000")
+      : "http://localhost:3000";
+
+    for (const trigger of matching) {
+      // Fire and forget
+      fetch(`${baseUrl}/api/agents/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          agente: trigger.agente,
+          trigger: "evento",
+          evento,
+          datos,
+        }),
+      }).catch(err => console.error(`[trigger-server] Error ejecutando ${trigger.agente}:`, err));
+
+      // Update ultima_ejecucion
+      sb.from("agent_triggers")
+        .update({ ultima_ejecucion: new Date().toISOString() })
+        .eq("id", trigger.id)
+        .then(
+          () => {},
+          (err: unknown) => console.error(`[trigger-server] Error actualizando trigger ${trigger.id}:`, err),
+        );
+    }
+
+    console.log(`[trigger-server] Evento '${evento}' disparó ${matching.length} agente(s): ${matching.map((t: { agente: string }) => t.agente).join(", ")}`);
+  } catch (err) {
+    console.error(`[trigger-server] Error procesando evento '${evento}':`, err);
+  }
+}

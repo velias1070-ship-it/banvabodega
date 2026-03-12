@@ -56,6 +56,17 @@ interface AgentRun {
   created_at: string;
 }
 
+interface AgentTrigger {
+  id: string;
+  agente: string;
+  nombre: string;
+  tipo: "tiempo" | "evento" | "manual";
+  configuracion: Record<string, unknown>;
+  activo: boolean;
+  ultima_ejecucion: string | null;
+  created_at: string;
+}
+
 interface ChatMessage {
   role: "user" | "assistant";
   contenido: string;
@@ -105,16 +116,63 @@ function fmtCost(usd: number | null): string {
   return `$${usd.toFixed(4)}`;
 }
 
+function modelLabel(model: string): string {
+  if (model.includes("opus")) return "Opus 4.6";
+  if (model.includes("haiku")) return "Haiku 4.5";
+  if (model.includes("sonnet")) return "Sonnet 4.6";
+  return model;
+}
+
+function modelColor(model: string): string {
+  if (model.includes("opus")) return "var(--amber)";
+  if (model.includes("haiku")) return "var(--green)";
+  return "var(--cyan)";
+}
+
+const TRIGGER_TYPE_BADGE: Record<string, { icon: string; label: string; color: string }> = {
+  tiempo: { icon: "\ud83d\udd50", label: "Tiempo", color: "var(--blue)" },
+  evento: { icon: "\u26a1", label: "Evento", color: "var(--amber)" },
+  manual: { icon: "\ud83d\udc46", label: "Manual", color: "var(--txt3)" },
+};
+
+function triggerConfigResumen(trigger: AgentTrigger): string {
+  const c = trigger.configuracion;
+  if (trigger.tipo === "tiempo") {
+    const dias = (c.dias as string[])?.join("/") || "";
+    const hora = (c.hora as string) || "";
+    const intervalo = c.intervalo as string;
+    if (intervalo === "mensual") return `Día ${c.dia_mes || 1} ${hora}`;
+    if (dias) return `${dias.toUpperCase()} ${hora}`;
+    return hora;
+  }
+  if (trigger.tipo === "evento") {
+    const evento = (c.evento as string) || "";
+    const map: Record<string, string> = {
+      ordenes_importadas: "Al importar órdenes",
+      proveedor_cargado: "Al cargar proveedor",
+      picking_completado: "Al completar picking",
+      recepcion_completada: "Al completar recepción",
+      recepcion_cerrada: "Al cerrar recepción",
+      discrepancia_costo_detectada: "Al detectar discrepancia",
+      costo_aprobado: "Al aprobar costo",
+      acciones_acumuladas: "50+ acciones admin",
+    };
+    return map[evento] || evento;
+  }
+  return "Manual";
+}
+
 // ============================================
 // Componente Principal
 // ============================================
 
 export default function AdminAgentes() {
-  const [section, setSection] = useState<"insights" | "chat" | "rules" | "history">("insights");
+  const [section, setSection] = useState<"insights" | "chat" | "rules" | "triggers" | "history">("insights");
   const [configs, setConfigs] = useState<AgentConfig[]>([]);
   const [insights, setInsights] = useState<AgentInsight[]>([]);
   const [rules, setRules] = useState<AgentRule[]>([]);
   const [runs, setRuns] = useState<AgentRun[]>([]);
+  const [triggers, setTriggers] = useState<AgentTrigger[]>([]);
   const [loading, setLoading] = useState(true);
   const [runningAgent, setRunningAgent] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -151,6 +209,7 @@ export default function AdminAgentes() {
       setInsights(mergedInsights);
       setRules(data.rules || []);
       setRuns(data.runs || []);
+      setTriggers(data.triggers || []);
     } catch (e) {
       console.error("Error cargando datos de agentes:", e);
       setLoadError(`Error de conexión: ${e}`);
@@ -252,8 +311,11 @@ export default function AdminAgentes() {
                     {ag.last_run_at ? timeAgo(ag.last_run_at) : "Sin ejecutar"}
                   </div>
                 </div>
-                <div style={{ marginLeft: "auto" }}>
-                  <div style={{ width: 8, height: 8, borderRadius: "50%", background: hasError ? "var(--red)" : ag.last_run_at ? "var(--green)" : "var(--txt3)" }} />
+                <div style={{ marginLeft: "auto", textAlign: "right" }}>
+                  <div style={{ width: 8, height: 8, borderRadius: "50%", background: hasError ? "var(--red)" : ag.last_run_at ? "var(--green)" : "var(--txt3)", marginLeft: "auto" }} />
+                  <div style={{ fontSize: 9, color: modelColor(ag.model), fontWeight: 600, marginTop: 4 }}>
+                    {modelLabel(ag.model)}
+                  </div>
                 </div>
               </div>
 
@@ -327,6 +389,7 @@ export default function AdminAgentes() {
         {([
           ["insights", `Insights${insightsPendientes > 0 ? ` (${insightsPendientes})` : ""}`],
           ["chat", "Chat Orquestador"],
+          ["triggers", "Triggers"],
           ["rules", "Reglas Aprendidas"],
           ["history", "Historial"],
         ] as const).map(([key, label]) => (
@@ -342,6 +405,7 @@ export default function AdminAgentes() {
           setInsights(prev => prev.map(i => i.id === id ? { ...i, estado } : i));
         }} />}
       {section === "chat" && <ChatPanel />}
+      {section === "triggers" && <TriggersPanel triggers={triggers} agentes={configs} onRefresh={loadData} />}
       {section === "rules" && <RulesPanel rules={rules} agentes={configs} onRefresh={loadData} />}
       {section === "history" && <HistoryPanel runs={runs} />}
     </div>
@@ -787,6 +851,195 @@ function RulesPanel({ rules, agentes, onRefresh }: { rules: AgentRule[]; agentes
         <div style={{ padding: 32, textAlign: "center", color: "var(--txt3)" }}>
           No hay reglas aprendidas aún.
           <br /><span style={{ fontSize: 12 }}>Las reglas se generan automáticamente al corregir insights, o puedes crearlas manualmente.</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================
+// Triggers Panel
+// ============================================
+
+function TriggersPanel({ triggers, agentes, onRefresh }: { triggers: AgentTrigger[]; agentes: AgentConfig[]; onRefresh: () => void }) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editHora, setEditHora] = useState("");
+  const [editDias, setEditDias] = useState<string[]>([]);
+  const [toggling, setToggling] = useState<string | null>(null);
+
+  const toggleActivo = async (trigger: AgentTrigger) => {
+    setToggling(trigger.id);
+    try {
+      await fetch("/api/agents/status", { method: "GET" }); // just to verify connectivity
+      const sb = (await import("@/lib/supabase")).getSupabase();
+      if (sb) {
+        await sb.from("agent_triggers").update({ activo: !trigger.activo }).eq("id", trigger.id);
+      }
+      onRefresh();
+    } finally {
+      setToggling(null);
+    }
+  };
+
+  const guardarHorario = async (trigger: AgentTrigger) => {
+    const sb = (await import("@/lib/supabase")).getSupabase();
+    if (!sb) return;
+    const newConfig: Record<string, unknown> = { ...trigger.configuracion, hora: editHora };
+    if (editDias.length > 0) newConfig.dias = editDias;
+    await sb.from("agent_triggers").update({ configuracion: newConfig }).eq("id", trigger.id);
+    setEditingId(null);
+    onRefresh();
+  };
+
+  // Group by agent
+  const triggersByAgent: Record<string, AgentTrigger[]> = {};
+  for (const t of triggers) {
+    if (!triggersByAgent[t.agente]) triggersByAgent[t.agente] = [];
+    triggersByAgent[t.agente].push(t);
+  }
+
+  const allDias = ["lun", "mar", "mie", "jue", "vie", "sab", "dom"];
+
+  return (
+    <div>
+      <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 16 }}>
+        Triggers de agentes ({triggers.length})
+      </div>
+
+      {Object.entries(triggersByAgent).map(([agente, agTriggers]) => {
+        const config = agentes.find(a => a.id === agente);
+        return (
+          <div key={agente} style={{ marginBottom: 24 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+              <span style={{ fontSize: 18 }}>{AGENT_ICONS[agente] || "\ud83e\udd16"}</span>
+              <span style={{ fontWeight: 700, fontSize: 14, color: AGENT_COLORS[agente] }}>
+                {config?.nombre_display || agente}
+              </span>
+              {config && (
+                <span style={{
+                  fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 4,
+                  background: `${modelColor(config.model)}15`, color: modelColor(config.model),
+                }}>
+                  {modelLabel(config.model)}
+                </span>
+              )}
+            </div>
+
+            {agTriggers.map(trigger => {
+              const badge = TRIGGER_TYPE_BADGE[trigger.tipo] || TRIGGER_TYPE_BADGE.manual;
+              const isEditing = editingId === trigger.id;
+
+              return (
+                <div key={trigger.id} className="card" style={{
+                  padding: 14, marginBottom: 6,
+                  opacity: trigger.activo ? 1 : 0.5,
+                  borderLeft: `3px solid ${badge.color}`,
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    {/* Toggle activo */}
+                    <button
+                      onClick={() => toggleActivo(trigger)}
+                      disabled={toggling === trigger.id}
+                      style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: 16 }}
+                    >
+                      {trigger.activo ? "\ud83d\udfe2" : "\u26aa"}
+                    </button>
+
+                    <div style={{ flex: 1 }}>
+                      {/* Nombre + tipo badge */}
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+                        <span style={{ fontWeight: 600, fontSize: 13 }}>{trigger.nombre}</span>
+                        <span style={{
+                          fontSize: 10, fontWeight: 600, padding: "1px 6px", borderRadius: 4,
+                          background: `${badge.color}20`, color: badge.color,
+                        }}>
+                          {badge.icon} {badge.label}
+                        </span>
+                      </div>
+
+                      {/* Config resumen */}
+                      <div style={{ fontSize: 12, color: "var(--txt2)" }}>
+                        {triggerConfigResumen(trigger)}
+                      </div>
+
+                      {/* Última ejecución */}
+                      <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 2 }}>
+                        {trigger.ultima_ejecucion ? `Última: ${timeAgo(trigger.ultima_ejecucion)}` : "Nunca ejecutado"}
+                      </div>
+                    </div>
+
+                    {/* Edit button (solo para triggers de tiempo) */}
+                    {trigger.tipo === "tiempo" && (
+                      <button
+                        onClick={() => {
+                          if (isEditing) {
+                            setEditingId(null);
+                          } else {
+                            setEditingId(trigger.id);
+                            setEditHora((trigger.configuracion.hora as string) || "08:00");
+                            setEditDias((trigger.configuracion.dias as string[]) || []);
+                          }
+                        }}
+                        style={{
+                          padding: "4px 8px", borderRadius: 4, background: "var(--bg3)",
+                          color: "var(--txt2)", fontSize: 11, border: "1px solid var(--bg4)",
+                        }}
+                      >
+                        {isEditing ? "Cancelar" : "\u2699\ufe0f"}
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Editor de horario */}
+                  {isEditing && (
+                    <div style={{ marginTop: 10, padding: 10, background: "var(--bg)", borderRadius: 8 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                        <label style={{ fontSize: 12, color: "var(--txt2)" }}>Hora:</label>
+                        <input
+                          type="time"
+                          className="form-input"
+                          value={editHora}
+                          onChange={e => setEditHora(e.target.value)}
+                          style={{ width: 100, fontSize: 12 }}
+                        />
+                      </div>
+                      {(trigger.configuracion.dias as string[] | undefined) && (
+                        <div style={{ marginBottom: 8 }}>
+                          <label style={{ fontSize: 12, color: "var(--txt2)", display: "block", marginBottom: 4 }}>Días:</label>
+                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                            {allDias.map(d => (
+                              <button key={d}
+                                onClick={() => setEditDias(prev => prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d])}
+                                style={{
+                                  padding: "4px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600,
+                                  background: editDias.includes(d) ? "var(--cyan)" : "var(--bg3)",
+                                  color: editDias.includes(d) ? "#000" : "var(--txt3)",
+                                  border: "1px solid var(--bg4)",
+                                }}
+                              >
+                                {d.toUpperCase()}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      <button onClick={() => guardarHorario(trigger)}
+                        style={{ padding: "6px 14px", borderRadius: 6, background: "var(--cyan)", color: "#000", fontSize: 12, fontWeight: 700 }}>
+                        Guardar
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
+
+      {triggers.length === 0 && (
+        <div style={{ padding: 32, textAlign: "center", color: "var(--txt3)" }}>
+          No hay triggers configurados.
+          <br /><span style={{ fontSize: 12 }}>Ejecuta supabase-v14-agent-triggers.sql para crear los triggers iniciales.</span>
         </div>
       )}
     </div>
