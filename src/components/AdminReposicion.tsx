@@ -25,6 +25,18 @@ interface VelocidadRaw {
   semanas: number[];
 }
 
+/* ───── Log de auditoría del cálculo ───── */
+interface CalculationStep {
+  label: string;
+  formula: string;
+  value: string;
+}
+
+interface SkuCalculationLog {
+  skuVenta: string;
+  pasos: CalculationStep[];
+}
+
 interface SkuVentaRow {
   skuVenta: string;
   nombre: string;
@@ -51,6 +63,8 @@ interface SkuVentaRow {
   otrosFormatos: string[];
   stockBodegaFisico: number; // stock físico real del SKU Origen
   sinMapeo: boolean; // true si no se encontró mapeo skuVenta→skuOrigen
+  // Log de auditoría
+  calcLog?: SkuCalculationLog;
 }
 
 interface SkuOrigenRow {
@@ -493,6 +507,37 @@ function calcularReposicion(
 
     const nombre = pg?.nombre || getStore().products[skuVenta]?.name || skuVenta;
 
+    // ── Log de auditoría paso a paso ──
+    const calcLog: SkuCalculationLog = { skuVenta, pasos: [] };
+    const p = (label: string, formula: string, value: string) => calcLog.pasos.push({ label, formula, value });
+
+    p("Órdenes Full (6 sem)", `Σ cantidad Full últimas 6 sem = ${(ord.full * 6).toFixed(0)}`, `${(ord.full * 6).toFixed(0)} uds`);
+    p("Órdenes Flex (6 sem)", `Σ cantidad Flex últimas 6 sem = ${(ord.flex * 6).toFixed(0)}`, `${(ord.flex * 6).toFixed(0)} uds`);
+    p("Vel Órdenes Full", `${(ord.full * 6).toFixed(0)} / 6`, `${ord.full.toFixed(2)} uds/sem`);
+    p("Vel Órdenes Flex", `${(ord.flex * 6).toFixed(0)} / 6`, `${ord.flex.toFixed(2)} uds/sem`);
+    p("Vel Órdenes Total", `${ord.full.toFixed(2)} + ${ord.flex.toFixed(2)}`, `${velOrdenesTotal.toFixed(2)} uds/sem`);
+    p("Vel ProfitGuard", `promedio semanal PG`, `${pgPromedio.toFixed(2)} uds/sem`);
+    p("Vel Total (final)", `max(PG=${pgPromedio.toFixed(2)}, Órdenes=${velOrdenesTotal.toFixed(2)})`, `${velTotal.toFixed(2)} uds/sem`);
+    p("% Full", `${(ord.full * 6).toFixed(0)} / (${(ord.full * 6).toFixed(0)} + ${(ord.flex * 6).toFixed(0)})`, `${(pctFull * 100).toFixed(1)}%`);
+    p("Vel Full", `${velTotal.toFixed(2)} × ${(pctFull * 100).toFixed(1)}%`, `${velFull.toFixed(2)} uds/sem`);
+    p("Vel Flex", `${velTotal.toFixed(2)} × ${(pctFlex * 100).toFixed(1)}%`, `${velFlex.toFixed(2)} uds/sem`);
+    p("Stock Full", `ProfitGuard`, `${stockFull} uds`);
+    p("Stock Bodega", componentes.length > 0 ? `min(stock_origen / unidades_pack)` : `skuTotal(${skuOrigenPrincipal})`, `${stockBodega} uds`);
+    p("Stock Total", `${stockFull} + ${stockBodega}`, `${stockTotal} uds`);
+    p("Cob Full (días)", velFull > 0 ? `(${stockFull} / ${velFull.toFixed(2)}) × 7` : `sin ventas Full → ∞`, `${Math.round(cobFull)}d`);
+    p("Cob Bodega (días)", velFlex > 0 ? `(${stockBodega} / ${velFlex.toFixed(2)}) × 7` : `sin ventas Flex → ∞`, `${Math.round(cobBodega)}d`);
+    p("Cob Total (días)", velTotal > 0 ? `(${stockTotal} / ${velTotal.toFixed(2)}) × 7` : `sin ventas → ∞`, `${Math.round(cobTotal)}d`);
+    if (margenFlex !== null && margenFull !== null) {
+      p("Margen Flex", `ingreso - comisión - envío - costo`, `$${margenFlex.toLocaleString()}`);
+      p("Margen Full", `ingreso - comisión - envío - costo`, `$${margenFull.toLocaleString()}`);
+    }
+    p("Target días", margenFlex !== null && margenFull !== null && margenFlex > margenFull ? `margenFlex > margenFull → 30d` : `default → ${cobObjetivo}d`, `${targetDias}d`);
+    p("Target Full", `${velFull.toFixed(2)} × ${targetDias} / 7`, `${targetFull.toFixed(1)} uds`);
+    p("Target Flex", `${velFlex.toFixed(2)} × ${targetDias} / 7`, `${targetFlex.toFixed(1)} uds`);
+    p("Mandar a Full", `max(0, min(ceil(${targetFull.toFixed(1)} - ${stockFull}), ${stockBodega}))`, `${mandarFull} uds`);
+    p("Pedir (venta)", `max(0, ceil((${targetFull.toFixed(1)} + ${targetFlex.toFixed(1)}) - (${stockFull} + ${stockBodega})))`, `${pedirVenta} uds`);
+    p("Acción", `reglas de clasificación`, accion);
+
     ventaRows.push({
       skuVenta, nombre, velTotal, velFull, velFlex,
       stockFull, stockBodega, stockTotal,
@@ -502,6 +547,7 @@ function calcularReposicion(
       accion,
       margenFlex, margenFull, costoProducto, sinCosto,
       skuOrigenPrincipal, esCompartido, formatosCompartidos, otrosFormatos, stockBodegaFisico, sinMapeo,
+      calcLog,
     });
     // Guardar info para asociar a SKU Origen después
     ventaInfoMap.set(skuVenta, { nombre, velTotal, stockFull });
@@ -758,6 +804,9 @@ export default function AdminReposicion() {
     return d.toISOString().slice(0, 10);
   });
   const [pgRangoHasta, setPgRangoHasta] = useState(() => new Date().toISOString().slice(0, 10));
+
+  // Modal detalle de cálculo
+  const [detalleSkuVenta, setDetalleSkuVenta] = useState<string | null>(null);
 
   // Editable envio a full
   const [envioEditMode, setEnvioEditMode] = useState(false);
@@ -1478,6 +1527,37 @@ export default function AdminReposicion() {
     }
   };
 
+  // Export CSV con verificación de fórmulas
+  const exportVerificacionCSV = () => {
+    if (!resultado) return;
+    const headers = [
+      "SKU Venta", "Nombre", "Acción",
+      "Vel PG (sem)", "Vel Órdenes Full (6sem÷6)", "Vel Órdenes Flex (6sem÷6)", "Vel Órdenes Total",
+      "Vel Final (max PG vs Órd)", "%Full", "%Flex", "Vel Full", "Vel Flex",
+      "Stock Full", "Stock Bodega", "Stock Total",
+      "Cob Full (días)", "Cob Bodega (días)", "Cob Total (días)",
+      "Margen Flex", "Margen Full", "Target días", "Target Full", "Target Flex",
+      "Mandar a Full", "Pedir Proveedor",
+    ];
+    const rows = resultado.ventaRows.map(r => {
+      const log = r.calcLog;
+      const getVal = (label: string) => log?.pasos.find(p => p.label === label)?.value || "";
+      return [
+        r.skuVenta, r.nombre, r.accion,
+        getVal("Vel ProfitGuard"), getVal("Vel Órdenes Full"), getVal("Vel Órdenes Flex"), getVal("Vel Órdenes Total"),
+        getVal("Vel Total (final)"), getVal("% Full"), String((100 - parseFloat(getVal("% Full") || "0")).toFixed(1) + "%"),
+        getVal("Vel Full"), getVal("Vel Flex"),
+        String(r.stockFull), String(r.stockBodega), String(r.stockTotal),
+        getVal("Cob Full (días)"), getVal("Cob Bodega (días)"), getVal("Cob Total (días)"),
+        r.margenFlex !== null ? `$${r.margenFlex}` : "sin costo",
+        r.margenFull !== null ? `$${r.margenFull}` : "sin costo",
+        getVal("Target días"), getVal("Target Full"), getVal("Target Flex"),
+        getVal("Mandar a Full"), getVal("Pedir (venta)"),
+      ];
+    });
+    exportCSV(headers, rows, `verificacion_reposicion_${new Date().toISOString().slice(0, 10)}.csv`);
+  };
+
   // ---- Editable envio helpers ----
   const enterEnvioEdit = () => {
     setEnvioEditMode(true);
@@ -1813,6 +1893,9 @@ export default function AdminReposicion() {
             <span style={{ fontSize:11, color:"var(--txt3)" }}>
               {vistaOrigen ? filasOrigen.length : filasVenta.length} SKUs
             </span>
+            <button onClick={exportVerificacionCSV} title="Exportar CSV con fórmulas descompuestas para verificación" style={{ padding:"6px 12px", borderRadius:6, background:"var(--bg3)", border:"1px solid var(--bg4)", color:"var(--amber)", fontSize:11, fontWeight:600, cursor:"pointer", marginLeft:4 }}>
+              CSV Verificación
+            </button>
           </div>
 
           {/* Tabla SKU Venta — con agrupación visual por SKU Origen compartido */}
@@ -1856,7 +1939,7 @@ export default function AdminReposicion() {
                         <tr key={r.skuVenta} style={grupo.esGrupo ? { borderLeft:"3px solid var(--cyan)" } : undefined}>
                           <td className="mono" style={{ fontSize:11, fontWeight:600 }}>
                             {r.esCompartido && <span title={`Comparte stock con: ${r.otrosFormatos.join(", ")}`} style={{ color:"var(--cyan)", marginRight:4, cursor:"help" }}>🔗</span>}
-                            {r.skuVenta}
+                            <span onClick={() => setDetalleSkuVenta(r.skuVenta)} style={{ cursor:"pointer", borderBottom:"1px dashed var(--txt3)" }} title="Ver detalle de cálculo">{r.skuVenta}</span>
                           </td>
                           <td style={{ maxWidth:180, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", fontSize:11 }} title={r.nombre}>{r.nombre}</td>
                           <td className="mono" style={{ textAlign:"right" }}>{fmtNum(r.velTotal)}</td>
@@ -2518,6 +2601,69 @@ export default function AdminReposicion() {
           </div>
         </>
       )}
+
+      {/* ===== MODAL: Detalle de cálculo por SKU ===== */}
+      {detalleSkuVenta && resultado && (() => {
+        const row = resultado.ventaRows.find(r => r.skuVenta === detalleSkuVenta);
+        if (!row || !row.calcLog) return null;
+        const log = row.calcLog;
+        return (
+          <div onClick={() => setDetalleSkuVenta(null)} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.7)", zIndex:1000, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
+            <div onClick={e => e.stopPropagation()} style={{ background:"var(--bg2)", border:"1px solid var(--bg4)", borderRadius:16, maxWidth:700, width:"100%", maxHeight:"85vh", overflow:"auto", padding:24 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+                <div>
+                  <h3 style={{ margin:0, fontSize:16, fontWeight:700 }}>Detalle de cálculo</h3>
+                  <div className="mono" style={{ fontSize:13, color:"var(--cyan)", marginTop:4 }}>{row.skuVenta}</div>
+                  <div style={{ fontSize:12, color:"var(--txt3)", marginTop:2 }}>{row.nombre}</div>
+                </div>
+                <button onClick={() => setDetalleSkuVenta(null)} style={{ background:"var(--bg3)", border:"1px solid var(--bg4)", borderRadius:8, width:32, height:32, cursor:"pointer", color:"var(--txt)", fontSize:16, fontWeight:700 }}>✕</button>
+              </div>
+
+              {/* Resultado rápido */}
+              <div style={{ display:"flex", gap:12, marginBottom:16, flexWrap:"wrap" }}>
+                {[
+                  { label: "Vel Total", val: `${row.velTotal.toFixed(1)}/sem`, color: "var(--txt)" },
+                  { label: "St.Full", val: String(row.stockFull), color: "var(--txt)" },
+                  { label: "St.Bod", val: String(row.stockBodega), color: "var(--txt)" },
+                  { label: "Cob Full", val: `${row.cobFull}d`, color: row.cobFull < 14 ? "var(--red)" : row.cobFull > 60 ? "var(--amber)" : "var(--green)" },
+                  { label: "→Full", val: String(row.mandarFull), color: row.mandarFull > 0 ? "var(--blue)" : "var(--txt3)" },
+                  { label: "Pedir", val: String(row.pedir), color: row.pedir > 0 ? "var(--amber)" : "var(--txt3)" },
+                ].map(k => (
+                  <div key={k.label} style={{ background:"var(--bg3)", borderRadius:8, padding:"8px 14px", textAlign:"center", flex:"1 1 80px" }}>
+                    <div className="mono" style={{ fontSize:15, fontWeight:700, color:k.color }}>{k.val}</div>
+                    <div style={{ fontSize:10, color:"var(--txt3)", marginTop:2 }}>{k.label}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Pasos del cálculo */}
+              <table style={{ width:"100%", fontSize:12, borderCollapse:"collapse" }}>
+                <thead>
+                  <tr style={{ borderBottom:"2px solid var(--bg4)" }}>
+                    <th style={{ textAlign:"left", padding:"6px 8px", fontSize:10, color:"var(--txt3)", fontWeight:600 }}>PASO</th>
+                    <th style={{ textAlign:"left", padding:"6px 8px", fontSize:10, color:"var(--txt3)", fontWeight:600 }}>FÓRMULA</th>
+                    <th style={{ textAlign:"right", padding:"6px 8px", fontSize:10, color:"var(--txt3)", fontWeight:600 }}>RESULTADO</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {log.pasos.map((paso, i) => (
+                    <tr key={i} style={{ borderBottom:"1px solid var(--bg3)", background: i % 2 === 0 ? "transparent" : "var(--bg)" }}>
+                      <td style={{ padding:"6px 8px", fontWeight:600, whiteSpace:"nowrap", color:"var(--txt2)" }}>{paso.label}</td>
+                      <td className="mono" style={{ padding:"6px 8px", fontSize:11, color:"var(--txt3)", wordBreak:"break-word" }}>{paso.formula}</td>
+                      <td className="mono" style={{ padding:"6px 8px", textAlign:"right", fontWeight:700, whiteSpace:"nowrap" }}>{paso.value}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              {/* Acción final */}
+              <div style={{ marginTop:16, display:"flex", justifyContent:"center" }}>
+                {badge(row.accion)}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
