@@ -23,13 +23,19 @@ async function getScanbotSDK() {
   if (sdkInitPromise) return sdkInitPromise;
 
   sdkInitPromise = (async () => {
-    const ScanbotSDK = (await import("scanbot-web-sdk/ui")).default;
-    sdkInstance = ScanbotSDK;
-    await ScanbotSDK.initialize({
-      licenseKey: "",
-      enginePath: "/wasm/",
-    });
-    return ScanbotSDK;
+    try {
+      const ScanbotSDK = (await import("scanbot-web-sdk/ui")).default;
+      await ScanbotSDK.initialize({
+        licenseKey: "",
+        enginePath: "/wasm/",
+      });
+      sdkInstance = ScanbotSDK;
+      return ScanbotSDK;
+    } catch (err) {
+      // Reset so next call retries instead of returning cached rejected promise
+      sdkInitPromise = null;
+      throw err;
+    }
   })();
 
   return sdkInitPromise;
@@ -66,6 +72,7 @@ export default function BarcodeScanner({
   const [lastScanned, setLastScanned] = useState("");
   const [flash, setFlash] = useState(false);
   const [scanning, setScanning] = useState(false);
+  const [cameraError, setCameraError] = useState("");
   const [manualMode, setManualMode] = useState(false);
   const [manualValue, setManualValue] = useState("");
   const manualInputRef = useRef<HTMLInputElement>(null);
@@ -125,11 +132,27 @@ export default function BarcodeScanner({
 
   const startScanning = useCallback(async () => {
     try {
+      setCameraError("");
       // Clean up any stale overlays from previous sessions
       releaseAllCameraStreams();
 
       setScanning(true);
-      const ScanbotSDK = await getScanbotSDK();
+
+      // Pre-check camera availability
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setCameraError("Tu navegador no soporta acceso a la cámara. Usá el modo manual.");
+        setManualMode(true);
+        return;
+      }
+
+      let ScanbotSDK;
+      try {
+        ScanbotSDK = await getScanbotSDK();
+      } catch (sdkErr) {
+        console.error("Scanbot SDK init error:", sdkErr);
+        setCameraError("Error al inicializar el escáner. Recargá la página o usá el modo manual.");
+        return;
+      }
 
       if (!mountedRef.current) return;
 
@@ -157,9 +180,10 @@ export default function BarcodeScanner({
           "UPC_A", "UPC_E",
           "CODABAR", "ITF",
           "DATABAR", "DATABAR_EXPANDED",
+          "QR_CODE",
         ];
         config.userGuidance.title.text = "Apuntá al código de barras";
-        config.viewFinder.aspectRatio = { width: 5, height: 1 };
+        config.viewFinder.aspectRatio = { width: 5, height: 2 };
       } else {
         config.userGuidance.title.text = "Apuntá al código";
       }
@@ -179,10 +203,22 @@ export default function BarcodeScanner({
       if (result && result.items && result.items.length > 0) {
         handleCodeScanned(result.items[0].barcode.text);
       }
-    } catch (err) {
+    } catch (err: unknown) {
       console.error("Scanbot error:", err);
+      const msg = err instanceof Error ? err.message : String(err);
+      // Detect camera permission errors
+      if (msg.includes("NotAllowed") || msg.includes("Permission") || msg.includes("permission")) {
+        setCameraError("Permiso de cámara denegado. Habilitalo en la configuración del navegador y recargá la página.");
+      } else if (msg.includes("NotFound") || msg.includes("device")) {
+        setCameraError("No se encontró una cámara en este dispositivo. Usá el modo manual.");
+        setManualMode(true);
+      } else {
+        setCameraError("No se pudo abrir la cámara. Intentá de nuevo o usá el modo manual.");
+      }
       // If camera failed, clean up stale state so next attempt works
       releaseAllCameraStreams();
+      // Reset SDK in case it's in a bad state
+      resetScanbotSDK();
     } finally {
       if (mountedRef.current) setScanning(false);
     }
@@ -234,6 +270,41 @@ export default function BarcodeScanner({
         }}>
           <span style={{ fontSize: 16 }}>{modeIcon}</span>
           {label}
+        </div>
+      )}
+
+      {/* Camera error message */}
+      {cameraError && (
+        <div style={{
+          padding: "12px 16px",
+          margin: "8px 12px 0",
+          borderRadius: 8,
+          background: "#ef444422",
+          border: "1px solid #ef4444",
+          color: "#fca5a5",
+          fontSize: 13,
+          fontWeight: 600,
+          textAlign: "center",
+          display: "flex",
+          flexDirection: "column",
+          gap: 8,
+        }}>
+          <span>{cameraError}</span>
+          <button
+            onClick={() => { setCameraError(""); startScanning(); }}
+            style={{
+              padding: "8px 16px",
+              borderRadius: 6,
+              background: "#ef444433",
+              border: "1px solid #ef4444",
+              color: "#fca5a5",
+              fontSize: 12,
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            🔄 Reintentar cámara
+          </button>
         </div>
       )}
 
