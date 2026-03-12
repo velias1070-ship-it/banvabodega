@@ -2355,187 +2355,188 @@ export default function AdminReposicion() {
               </div>
             )}
 
-            {/* ===== NORMAL VIEW: collapsible detail cards ===== */}
+            {/* ===== NORMAL VIEW: tabla estructurada ===== */}
             {showEnvioFull && !envioEditMode && (
-              <div style={{ marginTop:12 }}>
-                {envioDetalles.map(d => {
-                  const isExpanded = expandedEnvio.has(d.skuVenta);
-                  const tipoBadge = d.tipo === "simple" ? "Simple" : d.tipo === "pack" ? "Pack" : "Combo";
-                  const tipoColor = d.tipo === "simple" ? "var(--txt3)" : d.tipo === "pack" ? "var(--cyan)" : "var(--amber)";
-                  const estadoIcon = d.estado === "listo" ? "✅" : d.estado === "armar" ? "⚙️" : "⚠️";
-                  const estadoLabel = d.estado === "listo" ? "Listo" : d.estado === "armar" ? "Armar packs" : "Stock insuficiente";
-                  const estadoColor = d.estado === "insuficiente" ? "var(--red)" : d.estado === "armar" ? "var(--amber)" : "var(--green)";
+              <div style={{ overflowX:"auto", marginTop:12 }}>
+                <table className="tbl" style={{ minWidth:1100 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ width:30 }}></th>
+                      <th>SKU Venta</th>
+                      <th>Nombre</th>
+                      <th>Tipo</th>
+                      <th style={{ textAlign:"right" }}>Enviar</th>
+                      <th style={{ textAlign:"right" }}>Uds Físicas</th>
+                      <th style={{ textAlign:"right" }}>Inner Pack</th>
+                      <th style={{ textAlign:"right" }}>Bultos</th>
+                      <th style={{ textAlign:"right" }}>Sueltas</th>
+                      <th style={{ textAlign:"right" }}>Stock Bod.</th>
+                      <th>Ubicaciones</th>
+                      <th style={{ textAlign:"center" }}>Estado</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {envioDetalles.map(d => {
+                      const isExpanded = expandedEnvio.has(d.skuVenta);
+                      const tipoBadge = d.tipo === "simple" ? "Simple" : d.tipo === "pack" ? "Pack" : "Combo";
+                      const tipoColor = d.tipo === "simple" ? "var(--txt3)" : d.tipo === "pack" ? "var(--cyan)" : "var(--amber)";
+                      const estadoIcon = d.estado === "listo" ? "✅" : d.estado === "armar" ? "⚙️" : "⚠️";
+                      const estadoLabel = d.estado === "listo" ? "Listo" : d.estado === "armar" ? "Armar" : "Insuf.";
+                      const estadoColor = d.estado === "insuficiente" ? "var(--red)" : d.estado === "armar" ? "var(--amber)" : "var(--green)";
+                      const c0 = d.componentes[0];
+                      const totalFisicas = d.componentes.reduce((s, c) => s + c.unidadesFisicas, 0);
+                      const hasAlerta = alertasEnvioCompartido.has(d.skuVenta);
+                      const hasRedondeo = d.redondeo && d.redondeo.direccion !== "sin_cambio";
 
-                  return (
-                    <div key={d.skuVenta} style={{ border:"1px solid var(--bg4)", borderRadius:10, marginBottom:8, overflow:"hidden" }}>
-                      {/* Fila cerrada */}
-                      <button onClick={() => toggleEnvioExpand(d.skuVenta)} style={{ background:"var(--bg2)", border:"none", color:"var(--txt)", cursor:"pointer", display:"flex", alignItems:"center", gap:10, width:"100%", padding:"10px 14px", fontSize:12 }}>
-                        <span style={{ transform: isExpanded ? "rotate(90deg)" : "rotate(0)", transition:"transform 0.2s", display:"inline-block", fontSize:10 }}>▶</span>
-                        <span className="mono" style={{ fontWeight:700, fontSize:11, minWidth:140 }}>{d.skuVenta}</span>
-                        <span style={{ flex:1, textAlign:"left", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", fontSize:11 }}>{d.nombre}</span>
-                        <span className="mono" style={{ fontWeight:700, color:"var(--blue)", minWidth:60, textAlign:"right" }}>
-                          {d.mandarFull} uds
-                          {d.redondeo && d.redondeo.direccion !== "sin_cambio" && (
-                            <span style={{ fontSize:9, marginLeft:4, color: d.redondeo.direccion === "arriba" ? "var(--green)" : "var(--amber)" }}>
-                              {d.redondeo.direccion === "arriba" ? "▲" : "▼"}
-                            </span>
-                          )}
-                        </span>
-                        <span style={{ padding:"2px 8px", borderRadius:4, fontSize:9, fontWeight:700, background:"var(--bg3)", color:tipoColor, border:`1px solid ${tipoColor}40`, minWidth:50, textAlign:"center" }}>{tipoBadge}</span>
-                        <span style={{ fontSize:11, color:estadoColor, minWidth:120, textAlign:"right", whiteSpace:"nowrap" }}>{estadoIcon} {estadoLabel}</span>
-                      </button>
-
-                      {/* Info de redondeo inner pack */}
-                      {d.redondeo && d.redondeo.direccion !== "sin_cambio" && (
-                        <div style={{ padding:"8px 14px", background: d.redondeo.direccion === "arriba" ? "var(--greenBg)" : "var(--amberBg)", borderTop:`1px solid ${d.redondeo.direccion === "arriba" ? "var(--greenBd)" : "var(--amberBd)"}`, fontSize:11 }}>
-                          <div style={{ display:"flex", gap:16, flexWrap:"wrap", alignItems:"center", marginBottom:4 }}>
-                            <span style={{ color:"var(--txt3)" }}>Original: <span className="mono" style={{ fontWeight:600 }}>{d.redondeo.original}</span> uds</span>
-                            <span style={{ color:"var(--txt3)" }}>Inner pack: <span className="mono" style={{ fontWeight:600 }}>{d.redondeo.innerPack}</span></span>
-                            <span style={{ fontWeight:700, color: d.redondeo.direccion === "arriba" ? "var(--green)" : "var(--amber)" }}>
-                              → Enviar: <span className="mono">{d.redondeo.redondeado}</span> uds ({d.componentes[0]?.innerPack ? Math.round(d.redondeo.redondeado * (d.componentes[0]?.unidadesPorPack || 1) / d.redondeo.innerPack) : "?"} bultos) {d.redondeo.direccion === "arriba" ? "▲ redondeado arriba" : "▼ redondeado abajo"}
-                            </span>
-                          </div>
-                          <div style={{ color:"var(--txt2)", fontSize:10 }}>{d.redondeo.razon}</div>
-                          <div style={{ color:"var(--txt3)", fontSize:10, marginTop:2 }}>
-                            Stock bodega: {d.redondeo.stockBodegaDespues + (d.redondeo.redondeado * (d.componentes[0]?.unidadesPorPack || 1))} → quedan {Math.max(0, d.redondeo.stockBodegaDespues)} después de enviar
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Alerta stock compartido */}
-                      {alertasEnvioCompartido.has(d.skuVenta) && (() => {
-                        const alerta = alertasEnvioCompartido.get(d.skuVenta)!;
-                        return (
-                          <div style={{ padding:"8px 14px", background:"var(--amberBg)", borderTop:"1px solid var(--amberBd)", fontSize:11, color:"var(--amber)" }}>
-                            ⚠️ Stock insuficiente para abastecer todos los formatos de <span className="mono" style={{ fontWeight:700 }}>{alerta.skuOrigen}</span>.
-                            Total requerido: {alerta.totalFisico} uds — Bodega: {alerta.stockBodega} uds.
-                            Se priorizó <span className="mono" style={{ fontWeight:700 }}>{alerta.priorizado}</span> (menor cobertura Full).
-                            {alerta.formatos.map(f => (
-                              <span key={f.skuVenta} style={{ marginLeft:8 }}>{f.skuVenta}: {f.uds} uds</span>
-                            ))}
-                          </div>
-                        );
-                      })()}
-
-                      {/* Fila abierta — detalle */}
-                      {isExpanded && (
-                        <div style={{ padding:"12px 16px", background:"var(--bg)", borderTop:"1px solid var(--bg4)", fontSize:12, lineHeight:1.8 }}>
-                          {d.componentes.map((c, ci) => (
-                            <div key={c.skuOrigen} style={{ marginBottom: ci < d.componentes.length - 1 ? 16 : 0 }}>
-                              {/* Desglose físico (packs/combos) */}
-                              {d.tipo !== "simple" && (
-                                <div style={{ marginBottom:8 }}>
-                                  <div style={{ fontWeight:700, color:"var(--cyan)", marginBottom:4 }}>⚙️ DESGLOSE FÍSICO{d.tipo === "combo" ? ` — Componente ${ci + 1}` : ""}</div>
-                                  <div style={{ paddingLeft:16 }}>
-                                    <div>SKU Origen: <span className="mono" style={{ fontWeight:600 }}>{c.skuOrigen}</span></div>
-                                    <div>Nombre: {c.nombreOrigen}</div>
-                                    <div>Unidades por pack: {c.unidadesPorPack}</div>
-                                    <div>Total unidades físicas: <span className="mono" style={{ fontWeight:700 }}>{c.unidadesFisicas}</span> ({d.mandarFull} {d.tipo === "pack" ? "packs" : "combos"} × {c.unidadesPorPack} uds)</div>
-                                  </div>
-                                </div>
+                      return (
+                        <React.Fragment key={d.skuVenta}>
+                          {/* Fila principal */}
+                          <tr style={{ cursor:"pointer", background: !c0?.alcanza ? "var(--redBg)" : hasAlerta ? "var(--amberBg)" : undefined }}
+                            onClick={() => toggleEnvioExpand(d.skuVenta)}>
+                            <td style={{ textAlign:"center", fontSize:10, color:"var(--txt3)" }}>
+                              <span style={{ transform: isExpanded ? "rotate(90deg)" : "rotate(0)", transition:"transform 0.2s", display:"inline-block" }}>▶</span>
+                            </td>
+                            <td className="mono" style={{ fontSize:11, fontWeight:700, whiteSpace:"nowrap" }}>{d.skuVenta}</td>
+                            <td style={{ fontSize:11, maxWidth:200, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={d.nombre}>{d.nombre}</td>
+                            <td><span style={{ fontSize:9, fontWeight:700, padding:"2px 6px", borderRadius:4, color:tipoColor, background:"var(--bg3)", border:`1px solid ${tipoColor}40` }}>{tipoBadge}</span></td>
+                            <td className="mono" style={{ textAlign:"right", fontWeight:700, color:"var(--blue)" }}>
+                              {d.mandarFull}
+                              {hasRedondeo && (
+                                <span style={{ fontSize:9, marginLeft:3, color: d.redondeo!.direccion === "arriba" ? "var(--green)" : "var(--amber)" }}>
+                                  {d.redondeo!.direccion === "arriba" ? "▲" : "▼"}
+                                </span>
                               )}
+                            </td>
+                            <td className="mono" style={{ textAlign:"right" }}>{d.tipo === "simple" ? totalFisicas : <span>{totalFisicas} <span style={{ fontSize:9, color:"var(--txt3)" }}>({d.mandarFull}×{c0?.unidadesPorPack})</span></span>}</td>
+                            <td className="mono" style={{ textAlign:"right" }}>{c0?.innerPack ?? <span style={{ color:"var(--txt3)" }}>—</span>}</td>
+                            <td className="mono" style={{ textAlign:"right" }}>{c0?.innerPack ? c0.bultosCompletos : <span style={{ color:"var(--txt3)" }}>—</span>}</td>
+                            <td className="mono" style={{ textAlign:"right", color: c0?.sueltas ? "var(--amber)" : "var(--txt3)" }}>
+                              {c0?.innerPack ? (c0.sueltas > 0 ? c0.sueltas : "0") : "—"}
+                              {c0?.sueltas > 0 && c0?.innerPack && <span style={{ fontSize:9, color:"var(--amber)", marginLeft:2 }} title={`Faltan ${c0.faltanParaBulto} para bulto completo`}>⚠</span>}
+                            </td>
+                            <td className="mono" style={{ textAlign:"right", color: c0 && !c0.alcanza ? "var(--red)" : undefined }}>
+                              {c0?.stockTotal ?? 0}
+                            </td>
+                            <td style={{ fontSize:10, whiteSpace:"nowrap" }}>
+                              {c0?.posiciones.length ? c0.posiciones.map(p => <span key={p.pos} className="mono" style={{ marginRight:6 }}>{p.label || p.pos} <span style={{ color:"var(--txt3)" }}>({p.qty})</span></span>) : <span style={{ color:"var(--red)" }}>Sin stock</span>}
+                            </td>
+                            <td style={{ textAlign:"center" }}>
+                              <span style={{ fontSize:10, fontWeight:700, color:estadoColor, whiteSpace:"nowrap" }}>{estadoIcon} {estadoLabel}</span>
+                            </td>
+                          </tr>
 
-                              {/* Info de bultos (solo si hay inner pack) */}
-                              {c.innerPack !== null && (
-                                <div style={{ marginBottom:8 }}>
-                                  <div style={{ fontWeight:700, color:"var(--amber)", marginBottom:4 }}>📦 BULTOS{d.tipo !== "simple" ? ` ${c.skuOrigen}` : ""} (inner pack = {c.innerPack} uds)</div>
-                                  <div style={{ paddingLeft:16 }}>
-                                    <div>{c.bultosCompletos} bulto{c.bultosCompletos !== 1 ? "s" : ""} completo{c.bultosCompletos !== 1 ? "s" : ""} ({c.bultosCompletos * c.innerPack} uds)</div>
-                                    {c.sueltas > 0 && (
-                                      <>
-                                        <div>{c.sueltas} ud{c.sueltas !== 1 ? "s" : ""} suelta{c.sueltas !== 1 ? "s" : ""}
-                                          {c.unidadesPorPack > 1 && ` (= ${c.sueltasEnPacks} ${d.tipo === "pack" ? "pack" : "combo"}{c.sueltasEnPacks !== 1 ? "s" : ""} de ${d.skuVenta})`}
-                                        </div>
-                                        <div style={{ color:"var(--amber)" }}>⚠️ Faltan {c.faltanParaBulto} uds para completar {c.bultosCompletos + 1}° bulto</div>
-                                      </>
-                                    )}
-                                  </div>
-                                </div>
-                              )}
+                          {/* Fila expandida — detalle */}
+                          {isExpanded && (
+                            <tr>
+                              <td colSpan={12} style={{ padding:0, background:"var(--bg)" }}>
+                                <div style={{ padding:"12px 16px", borderLeft:"3px solid var(--cyan)" }}>
+                                  {/* Redondeo info */}
+                                  {hasRedondeo && (
+                                    <div style={{ display:"flex", gap:16, flexWrap:"wrap", alignItems:"center", padding:"6px 10px", marginBottom:8, borderRadius:6, fontSize:11, background: d.redondeo!.direccion === "arriba" ? "var(--greenBg)" : "var(--amberBg)", border:`1px solid ${d.redondeo!.direccion === "arriba" ? "var(--greenBd)" : "var(--amberBd)"}` }}>
+                                      <span style={{ color:"var(--txt3)" }}>Original: <span className="mono" style={{ fontWeight:600 }}>{d.redondeo!.original}</span></span>
+                                      <span style={{ color:"var(--txt3)" }}>Inner pack: <span className="mono" style={{ fontWeight:600 }}>{d.redondeo!.innerPack}</span></span>
+                                      <span style={{ fontWeight:700, color: d.redondeo!.direccion === "arriba" ? "var(--green)" : "var(--amber)" }}>
+                                        → {d.redondeo!.redondeado} uds ({c0?.innerPack ? Math.round(d.redondeo!.redondeado * (c0?.unidadesPorPack || 1) / d.redondeo!.innerPack) : "?"} bultos) {d.redondeo!.direccion === "arriba" ? "▲ arriba" : "▼ abajo"}
+                                      </span>
+                                      <span style={{ color:"var(--txt3)", fontSize:10 }}>Queda bodega: {Math.max(0, d.redondeo!.stockBodegaDespues)}</span>
+                                    </div>
+                                  )}
 
-                              {/* Instrucciones logística (packs/combos) */}
-                              {d.tipo !== "simple" && (
-                                <div style={{ marginBottom:8 }}>
-                                  <div style={{ fontWeight:700, color:"var(--cyan)", marginBottom:4 }}>⚙️ LOGÍSTICA DEBE:</div>
-                                  <div style={{ paddingLeft:16 }}>
-                                    {c.innerPack !== null && c.bultosCompletos > 0 && (
-                                      <div>→ Abrir {c.bultosCompletos} bulto{c.bultosCompletos !== 1 ? "s" : ""} de {c.skuOrigen} ({c.bultosCompletos * c.innerPack} uds)</div>
-                                    )}
-                                    {c.innerPack !== null && c.sueltas > 0 && (
-                                      <div>→ Del {c.bultosCompletos + 1}° bulto tomar solo {c.sueltas} uds{c.innerPack - c.sueltas > 0 ? ` (quedan ${c.innerPack - c.sueltas} en bodega)` : ""}</div>
-                                    )}
-                                    {c.innerPack === null && (
-                                      <div>→ Tomar {c.unidadesFisicas} uds de {c.skuOrigen}</div>
-                                    )}
-                                    {d.tipo === "pack" && (
-                                      <>
-                                        <div>→ Armar {d.mandarFull} packs de a {c.unidadesPorPack} unidades</div>
-                                        <div>→ Etiquetar cada pack como {d.skuVenta}</div>
-                                      </>
-                                    )}
-                                    {d.tipo === "combo" && ci === d.componentes.length - 1 && (
-                                      <>
-                                        <div>→ Armar {d.mandarFull} combos ({d.componentes.map(cc => `${cc.unidadesPorPack} ${cc.skuOrigen}`).join(" + ")} cada uno)</div>
-                                        <div>→ Etiquetar cada combo como {d.skuVenta}</div>
-                                      </>
-                                    )}
-                                  </div>
-                                </div>
-                              )}
+                                  {/* Alerta stock compartido */}
+                                  {hasAlerta && (() => {
+                                    const alerta = alertasEnvioCompartido.get(d.skuVenta)!;
+                                    return (
+                                      <div style={{ padding:"6px 10px", marginBottom:8, borderRadius:6, fontSize:11, background:"var(--amberBg)", border:"1px solid var(--amberBd)", color:"var(--amber)" }}>
+                                        ⚠️ Stock compartido de <span className="mono" style={{ fontWeight:700 }}>{alerta.skuOrigen}</span>: necesita {alerta.totalFisico} uds, bodega tiene {alerta.stockBodega}. Priorizado: {alerta.priorizado}.
+                                      </div>
+                                    );
+                                  })()}
 
-                              {/* Producto simple: solo unidades */}
-                              {d.tipo === "simple" && c.innerPack === null && (
-                                <div style={{ marginBottom:8 }}>
-                                  <div style={{ fontWeight:700, color:"var(--blue)", marginBottom:4 }}>📦 ENVIAR</div>
-                                  <div style={{ paddingLeft:16 }}>{c.unidadesFisicas} unidades de {c.skuOrigen}</div>
-                                </div>
-                              )}
+                                  {/* Tabla de componentes */}
+                                  {d.componentes.length > 0 && (
+                                    <table style={{ width:"100%", fontSize:11, borderCollapse:"collapse" }}>
+                                      <thead>
+                                        <tr style={{ borderBottom:"1px solid var(--bg4)" }}>
+                                          <th style={{ textAlign:"left", padding:"4px 8px", fontSize:10, color:"var(--txt3)" }}>SKU Origen</th>
+                                          <th style={{ textAlign:"left", padding:"4px 8px", fontSize:10, color:"var(--txt3)" }}>Nombre</th>
+                                          <th style={{ textAlign:"right", padding:"4px 8px", fontSize:10, color:"var(--txt3)" }}>Uds/Pack</th>
+                                          <th style={{ textAlign:"right", padding:"4px 8px", fontSize:10, color:"var(--txt3)" }}>Uds Físicas</th>
+                                          <th style={{ textAlign:"right", padding:"4px 8px", fontSize:10, color:"var(--txt3)" }}>Bultos</th>
+                                          <th style={{ textAlign:"right", padding:"4px 8px", fontSize:10, color:"var(--txt3)" }}>Sueltas</th>
+                                          <th style={{ textAlign:"right", padding:"4px 8px", fontSize:10, color:"var(--txt3)" }}>Stock</th>
+                                          <th style={{ textAlign:"left", padding:"4px 8px", fontSize:10, color:"var(--txt3)" }}>Ubicaciones</th>
+                                          <th style={{ textAlign:"center", padding:"4px 8px", fontSize:10, color:"var(--txt3)" }}>Alcanza</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {d.componentes.map(c => (
+                                          <tr key={c.skuOrigen} style={{ borderBottom:"1px solid var(--bg3)" }}>
+                                            <td className="mono" style={{ padding:"4px 8px", fontWeight:600 }}>{c.skuOrigen}</td>
+                                            <td style={{ padding:"4px 8px", maxWidth:160, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{c.nombreOrigen}</td>
+                                            <td className="mono" style={{ padding:"4px 8px", textAlign:"right" }}>{c.unidadesPorPack}</td>
+                                            <td className="mono" style={{ padding:"4px 8px", textAlign:"right", fontWeight:600 }}>{c.unidadesFisicas}</td>
+                                            <td className="mono" style={{ padding:"4px 8px", textAlign:"right" }}>{c.innerPack ? `${c.bultosCompletos} (×${c.innerPack})` : "—"}</td>
+                                            <td className="mono" style={{ padding:"4px 8px", textAlign:"right", color: c.sueltas > 0 ? "var(--amber)" : "var(--txt3)" }}>
+                                              {c.innerPack ? c.sueltas : "—"}
+                                              {c.sueltas > 0 && c.innerPack && <span style={{ fontSize:9, color:"var(--txt3)" }}> falta {c.faltanParaBulto}</span>}
+                                            </td>
+                                            <td className="mono" style={{ padding:"4px 8px", textAlign:"right", color: !c.alcanza ? "var(--red)" : undefined }}>{c.stockTotal}</td>
+                                            <td style={{ padding:"4px 8px", fontSize:10 }}>
+                                              {c.posiciones.length > 0
+                                                ? c.posiciones.map(p => <span key={p.pos} className="mono" style={{ marginRight:6 }}>{p.label || p.pos} <span style={{ color:"var(--txt3)" }}>({p.qty})</span></span>)
+                                                : <span style={{ color:"var(--red)" }}>Sin stock</span>}
+                                            </td>
+                                            <td style={{ padding:"4px 8px", textAlign:"center" }}>
+                                              {c.alcanza ? <span style={{ color:"var(--green)" }}>✅</span> : <span style={{ color:"var(--red)" }} title={`Necesita ${c.unidadesFisicas}, tiene ${c.stockTotal}. Max: ${c.maxPacks} ${d.tipo === "pack" ? "packs" : d.tipo === "combo" ? "combos" : "uds"}`}>❌</span>}
+                                            </td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  )}
 
-                              {/* Ubicaciones en bodega */}
-                              <div style={{ marginBottom:8 }}>
-                                <div style={{ fontWeight:700, color:"var(--green)", marginBottom:4 }}>📍 BUSCAR EN BODEGA:</div>
-                                <div style={{ paddingLeft:16 }}>
-                                  {c.posiciones.length > 0 ? (
-                                    <>
-                                      {c.posiciones.map(p => (
-                                        <div key={p.pos}>→ <span className="mono" style={{ fontWeight:600 }}>{c.skuOrigen}</span>: {p.qty} uds en <span className="mono" style={{ fontWeight:600 }}>{p.label || p.pos}</span></div>
+                                  {/* Instrucciones logística */}
+                                  {(d.tipo !== "simple" || d.componentes.some(c => !c.alcanza)) && (
+                                    <div style={{ marginTop:8, padding:"6px 10px", borderRadius:6, background:"var(--bg3)", fontSize:11, color:"var(--txt2)" }}>
+                                      {d.componentes.map((c, ci) => (
+                                        <React.Fragment key={c.skuOrigen}>
+                                          {d.tipo !== "simple" && (
+                                            <>
+                                              {c.innerPack !== null && c.bultosCompletos > 0 && (
+                                                <div>→ Abrir {c.bultosCompletos} bulto{c.bultosCompletos !== 1 ? "s" : ""} de <span className="mono">{c.skuOrigen}</span> ({c.bultosCompletos * c.innerPack} uds)</div>
+                                              )}
+                                              {c.innerPack !== null && c.sueltas > 0 && (
+                                                <div>→ Del {c.bultosCompletos + 1}° bulto tomar {c.sueltas} uds{c.innerPack - c.sueltas > 0 ? ` (quedan ${c.innerPack - c.sueltas} en bodega)` : ""}</div>
+                                              )}
+                                              {c.innerPack === null && (
+                                                <div>→ Tomar {c.unidadesFisicas} uds de <span className="mono">{c.skuOrigen}</span></div>
+                                              )}
+                                              {d.tipo === "pack" && ci === 0 && (
+                                                <div style={{ color:"var(--cyan)" }}>→ Armar {d.mandarFull} packs de {c.unidadesPorPack} uds → etiquetar como <span className="mono">{d.skuVenta}</span></div>
+                                              )}
+                                              {d.tipo === "combo" && ci === d.componentes.length - 1 && (
+                                                <div style={{ color:"var(--cyan)" }}>→ Armar {d.mandarFull} combos ({d.componentes.map(cc => `${cc.unidadesPorPack}× ${cc.skuOrigen}`).join(" + ")}) → etiquetar como <span className="mono">{d.skuVenta}</span></div>
+                                              )}
+                                            </>
+                                          )}
+                                          {!c.alcanza && (
+                                            <div style={{ color:"var(--red)", fontWeight:600 }}>
+                                              ⚠ {c.skuOrigen}: necesita {c.unidadesFisicas}, tiene {c.stockTotal} — máx {c.maxPacks} {d.tipo === "pack" ? "packs" : d.tipo === "combo" ? "combos" : "uds"}
+                                            </div>
+                                          )}
+                                        </React.Fragment>
                                       ))}
-                                      <div>→ Stock total: {c.stockTotal} {c.alcanza ? <span style={{ color:"var(--green)" }}>✅ Alcanza</span> : <span style={{ color:"var(--red)" }}>❌ No alcanza (necesita {c.unidadesFisicas})</span>}</div>
-                                    </>
-                                  ) : (
-                                    <div style={{ color:"var(--red)" }}>→ No se encontró stock de {c.skuOrigen} en bodega</div>
+                                    </div>
                                   )}
                                 </div>
-                              </div>
-
-                              {/* Alerta stock insuficiente */}
-                              {!c.alcanza && (
-                                <div style={{ padding:"8px 12px", background:"var(--redBg)", border:"1px solid var(--redBd)", borderRadius:8, marginTop:4 }}>
-                                  <div style={{ fontWeight:700, color:"var(--red)" }}>⚠️ STOCK INSUFICIENTE:</div>
-                                  <div style={{ paddingLeft:16, color:"var(--red)", fontSize:11 }}>
-                                    <div>→ Necesitas {c.unidadesFisicas} uds de {c.skuOrigen}</div>
-                                    <div>→ Bodega tiene {c.stockTotal} uds</div>
-                                    {c.unidadesPorPack > 1 ? (
-                                      <>
-                                        <div>→ Puedes armar máximo {c.maxPacks} {d.tipo === "pack" ? "packs" : "combos"} de {d.skuVenta} (en vez de {d.mandarFull})</div>
-                                        <div>→ Faltan {c.unidadesFisicas - c.stockTotal} uds físicas ({Math.ceil((c.unidadesFisicas - c.stockTotal) / c.unidadesPorPack)} {d.tipo === "pack" ? "packs" : "combos"})</div>
-                                      </>
-                                    ) : (
-                                      <>
-                                        <div>→ Puedes enviar máximo {c.stockTotal} uds (en vez de {d.mandarFull})</div>
-                                        <div>→ Faltan {c.unidadesFisicas - c.stockTotal} uds</div>
-                                      </>
-                                    )}
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             )}
           </div>
