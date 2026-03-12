@@ -343,6 +343,8 @@ function Dashboard({ empresa, periodo, onChangePeriodo }: { empresa: DBEmpresa; 
   const [syncLogs, setSyncLogs] = useState<DBSyncLog[]>([]);
   const [reembolsosPend, setReembolsosPend] = useState<DBMovimientoBanco[]>([]);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
   useEffect(() => {
     if (!empresa.id) return;
@@ -365,6 +367,53 @@ function Dashboard({ empresa, periodo, onChangePeriodo }: { empresa: DBEmpresa; 
       setLoading(false);
     });
   }, [empresa.id, periodo]);
+
+  // Función para recargar datos
+  const reload = () => {
+    if (!empresa.id) return;
+    setLoading(true);
+    const y2 = parseInt(periodo.slice(0, 4));
+    const m3 = parseInt(periodo.slice(4, 6));
+    const d1 = `${y2}-${String(m3).padStart(2, "0")}-01`;
+    const ld2 = new Date(y2, m3, 0).getDate();
+    const d2 = `${y2}-${String(m3).padStart(2, "0")}-${ld2}`;
+    Promise.all([
+      fetchRcvCompras(empresa.id!, periodo),
+      fetchRcvVentas(empresa.id!, periodo),
+      fetchMovimientosBanco(empresa.id!, { desde: d1, hasta: d2 }),
+      fetchConciliaciones(empresa.id!),
+      fetchAlertas(empresa.id!, "activa"),
+      fetchSyncLog(empresa.id!),
+    ]).then(([c, v, m, conc, al, sl]) => {
+      setCompras(c); setVentas(v); setMovBanco(m); setConciliaciones(conc); setAlertas(al); setSyncLogs(sl);
+      setLoading(false);
+    });
+  };
+
+  // Sincronizar compras + ventas del SII para el periodo actual
+  const handleSyncSii = async () => {
+    setSyncing(true);
+    setSyncMsg(null);
+    try {
+      const res = await fetch("/api/sii/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ periodo, tipo: "ambos" }),
+      });
+      const data = await res.json();
+      if (data.status === "ok") {
+        setSyncMsg(`${data.compras} compras + ${data.ventas} ventas importadas`);
+        reload();
+      } else {
+        const logInfo = data.log ? `\n${data.log.join("\n")}` : "";
+        setSyncMsg(`Error: ${data.error || "Error desconocido"}${logInfo}`);
+      }
+    } catch (e) {
+      setSyncMsg(`Error de conexión: ${e instanceof Error ? e.message : "sin detalles"}`);
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   if (loading) return <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>Cargando...</div>;
 
@@ -419,21 +468,44 @@ function Dashboard({ empresa, periodo, onChangePeriodo }: { empresa: DBEmpresa; 
 
   return (
     <div>
-      {/* Header con título y último sync */}
+      {/* Header con título, botón sync y último sync */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
         <div>
           <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>Dashboard</h2>
           <div style={{ fontSize: 12, color: "var(--txt3)", marginTop: 2 }}>{formatPeriodo(periodo)}</div>
         </div>
-        {ultimoSync && (
-          <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 10, color: "var(--txt3)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Último sync</div>
-            <div className="mono" style={{ fontSize: 12, color: "var(--cyan)" }}>
-              {ultimoSync.synced_at ? new Date(ultimoSync.synced_at).toLocaleString("es-CL", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—"}
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <button onClick={handleSyncSii} disabled={syncing}
+            style={{
+              padding: "8px 16px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: syncing ? "wait" : "pointer",
+              background: syncing ? "var(--bg4)" : "var(--cyanBg)",
+              color: syncing ? "var(--txt3)" : "var(--cyan)",
+              border: `1px solid ${syncing ? "var(--bg4)" : "var(--cyanBd)"}`,
+              opacity: syncing ? 0.7 : 1,
+            }}>
+            {syncing ? "⏳ Sincronizando..." : "🔄 Sincronizar SII"}
+          </button>
+          {ultimoSync && (
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: 10, color: "var(--txt3)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Último sync</div>
+              <div className="mono" style={{ fontSize: 12, color: "var(--cyan)" }}>
+                {ultimoSync.synced_at ? new Date(ultimoSync.synced_at).toLocaleString("es-CL", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—"}
+              </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
+
+      {/* Mensaje de sync */}
+      {syncMsg && (
+        <div style={{ padding: "8px 12px", borderRadius: 8, marginBottom: 12, fontSize: 12, fontWeight: 600,
+          whiteSpace: "pre-wrap", maxHeight: 300, overflow: "auto",
+          background: syncMsg.startsWith("Error") ? "var(--redBg)" : "var(--greenBg)",
+          color: syncMsg.startsWith("Error") ? "var(--red)" : "var(--green)",
+          border: `1px solid ${syncMsg.startsWith("Error") ? "var(--redBd)" : "var(--greenBd)"}` }}>
+          {syncMsg}
+        </div>
+      )}
 
       {/* Selector rápido de periodos sincronizados */}
       {periodosSincronizados.length > 1 && (
