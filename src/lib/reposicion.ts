@@ -42,7 +42,7 @@ export interface Config {
   cobMaxima: number;
 }
 
-export const DEFAULT_CONFIG: Config = { cobObjetivo: 45, puntoReorden: 14, cobMaxima: 60 };
+export const DEFAULT_CONFIG: Config = { cobObjetivo: 40, puntoReorden: 14, cobMaxima: 60 };
 
 export interface FinancialAgg {
   totalSubtotal: number;
@@ -110,14 +110,23 @@ export function calcularCobertura(stock: number, velocidadSemanal: number): numb
 }
 
 /**
- * Calcula target de días: 30 si margenFlex > margenFull, sino cobObjetivo.
+ * Calcula target de días según ratio margen Flex/Full:
+ * - Full >= Flex o sin datos → cobObjetivo (40d)
+ * - Flex > Full y ratio > 1.2 → 15d
+ * - Flex > Full y ratio 1.0–1.2 → 25d
+ * - Flex > Full y Full <= 0 → 15d (Flex claramente superior)
  */
 export function calcularTargetDias(
   margenFlex: number | null,
   margenFull: number | null,
   cobObjetivo: number,
 ): number {
-  return (margenFlex !== null && margenFull !== null && margenFlex > margenFull) ? 30 : cobObjetivo;
+  if (margenFlex === null || margenFull === null) return cobObjetivo;
+  if (margenFlex <= margenFull) return cobObjetivo;
+  // margenFlex > margenFull
+  if (margenFull <= 0) return 15;
+  const ratio = margenFlex / margenFull;
+  return ratio > 1.2 ? 15 : 25;
 }
 
 /**
