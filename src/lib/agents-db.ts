@@ -250,14 +250,45 @@ export async function upsertSnapshot(tipo: string, hash: string, datos: Record<s
 }
 
 // ============================================
+// Agent Triggers (server-side)
+// ============================================
+
+export interface DBAgentTrigger {
+  id: string;
+  agente: string;
+  nombre: string;
+  tipo: "tiempo" | "evento" | "manual";
+  configuracion: Record<string, unknown>;
+  activo: boolean;
+  ultima_ejecucion: string | null;
+  created_at: string;
+}
+
+export async function fetchAgentTriggersServer(filters?: { tipo?: string; activo?: boolean }): Promise<DBAgentTrigger[]> {
+  const sb = getServerSupabase(); if (!sb) return [];
+  let q = sb.from("agent_triggers").select("*").order("agente").order("nombre");
+  if (filters?.tipo) q = q.eq("tipo", filters.tipo);
+  if (filters?.activo !== undefined) q = q.eq("activo", filters.activo);
+  const { data } = await q;
+  return data || [];
+}
+
+export async function updateAgentTriggerServer(id: string, fields: Partial<DBAgentTrigger>) {
+  const sb = getServerSupabase(); if (!sb) return;
+  await sb.from("agent_triggers").update(fields).eq("id", id);
+}
+
+// ============================================
 // Helpers
 // ============================================
 
 export function calcCostoUsd(tokensInput: number, tokensOutput: number, model: string): number {
-  // Precios Sonnet 4: $3/M input, $15/M output
-  // Precios Opus 4: $15/M input, $75/M output
+  // Precios Sonnet 4.6: $3/M input, $15/M output
+  // Precios Opus 4.6: $15/M input, $75/M output
+  // Precios Haiku 4.5: $0.80/M input, $4/M output
   const isOpus = model.includes("opus");
-  const inputRate = isOpus ? 15 : 3;
-  const outputRate = isOpus ? 75 : 15;
+  const isHaiku = model.includes("haiku");
+  const inputRate = isOpus ? 15 : isHaiku ? 0.8 : 3;
+  const outputRate = isOpus ? 75 : isHaiku ? 4 : 15;
   return (tokensInput * inputRate + tokensOutput * outputRate) / 1_000_000;
 }

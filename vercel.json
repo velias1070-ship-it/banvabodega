@@ -7,6 +7,10 @@
     {
       "path": "/api/ml/stock-sync",
       "schedule": "0 20 * * *"
+    },
+    {
+      "path": "/api/agents/cron",
+      "schedule": "0 8 * * *"
     }
   ]
 }
