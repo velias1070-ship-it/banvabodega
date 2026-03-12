@@ -23,10 +23,11 @@ export async function GET(_req: NextRequest) {
       .limit(50);
 
     // Rules
-    const { data: rules } = await sb.from("agent_rules").select("*").order("agente, prioridad");
+    const { data: rules } = await sb.from("agent_rules").select("*").order("agente").order("prioridad");
 
     // Triggers
-    const { data: triggers } = await sb.from("agent_triggers").select("*").order("agente, nombre");
+    const { data: triggers, error: triggersErr } = await sb.from("agent_triggers").select("*").order("agente").order("nombre");
+    if (triggersErr) console.error("[agents/status] triggers error:", triggersErr.message);
 
     return NextResponse.json({
       configs: configs || [],
