@@ -1,7 +1,7 @@
 "use client";
 import { useState, useCallback, useEffect, useRef } from "react";
-import { getStore, findProduct, findPosition, activePositions, skuTotal, skuPositions, posContents, recordMovement, IN_REASONS, OUT_REASONS, initStore, refreshStore, isSupabaseConfigured, getMapConfig, getVentasPorSkuOrigen } from "@/lib/store";
-import type { Product, InReason, OutReason } from "@/lib/store";
+import { getStore, findProduct, findPosition, activePositions, skuTotal, skuPositions, posContents, recordMovement, IN_REASONS, OUT_REASONS, initStore, refreshStore, isSupabaseConfigured, getMapConfig, getVentasPorSkuOrigen, getComponentesPorML } from "@/lib/store";
+import type { Product, InReason, OutReason, ComposicionVenta } from "@/lib/store";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 const BarcodeScanner = dynamic(() => import("@/components/BarcodeScanner"), { ssr: false });
@@ -245,6 +245,9 @@ function Ingreso({ refresh }: { refresh: () => void }) {
   const [note, setNote] = useState("");
   const [cam, setCam] = useState(false);
   const [step, setStep] = useState(0);
+  // SKU venta tracking: cuando se escanea o selecciona un formato de venta específico
+  const [selectedSkuVenta, setSelectedSkuVenta] = useState<string|null>(null);
+  const [unitMultiplier, setUnitMultiplier] = useState(1);
 
   const handleScan = useCallback((code: string) => {
     const p = findPosition(code);
@@ -257,25 +260,78 @@ function Ingreso({ refresh }: { refresh: () => void }) {
     if (p) { setPos(p.id); setPosLabel(p.label); setStep(1); setCam(false); }
   };
 
+  // Resolver producto desde barcode: buscar primero en composicion_venta por código ML
   const handleProductScan = useCallback((code: string) => {
+    // 1. Buscar en composicion_venta por código ML → resuelve SKU venta + unidades
+    const comps = getComponentesPorML(code);
+    if (comps.length > 0) {
+      // Encontró en composicion_venta → sabemos el SKU venta exacto
+      const comp = comps[0];
+      const prod = findProduct(comp.skuOrigen);
+      if (prod.length > 0) {
+        setProduct(prod[0]);
+        setSelectedSkuVenta(comp.skuVenta);
+        setUnitMultiplier(comp.unidades);
+        setQty(1);
+        setStep(2);
+        if (navigator.vibrate) navigator.vibrate(100);
+        return;
+      }
+    }
+    // 2. Fallback: buscar en productos directamente
     const results = findProduct(code);
     if (results.length > 0) {
-      setProduct(results[0]); setStep(2);
+      const p = results[0];
+      const ventas = getVentasPorSkuOrigen(p.sku);
+      if (ventas.length === 1) {
+        // Solo un formato de venta → auto-asignar
+        setSelectedSkuVenta(ventas[0].skuVenta);
+        setUnitMultiplier(ventas[0].unidades);
+      } else if (ventas.length > 1) {
+        // Múltiples formatos → el operador elige en step 2
+        setSelectedSkuVenta(null);
+        setUnitMultiplier(1);
+      } else {
+        setSelectedSkuVenta(null);
+        setUnitMultiplier(1);
+      }
+      setProduct(p); setQty(1); setStep(2);
       if (navigator.vibrate) navigator.vibrate(100);
     } else {
       show(`Producto no encontrado: ${code}`, "err");
     }
   }, []);
 
+  // Cuando se selecciona producto por búsqueda manual
+  const handleManualSelect = (p: Product) => {
+    const ventas = getVentasPorSkuOrigen(p.sku);
+    if (ventas.length === 1) {
+      setSelectedSkuVenta(ventas[0].skuVenta);
+      setUnitMultiplier(ventas[0].unidades);
+    } else {
+      setSelectedSkuVenta(null);
+      setUnitMultiplier(1);
+    }
+    setProduct(p); setQty(1); setStep(2);
+  };
+
+  const totalUnidades = qty * unitMultiplier;
+
   const doConfirm = () => {
     if (!product || !pos || qty < 1) return;
-    recordMovement({ ts: new Date().toISOString(), type: "in", reason, sku: product.sku, pos, qty, who: "Operador", note });
-    show(`+${qty} ${product.sku} → ${posLabel}`);
+    recordMovement({
+      ts: new Date().toISOString(), type: "in", reason,
+      sku: product.sku, pos, qty: totalUnidades,
+      who: "Operador", note,
+      skuVenta: selectedSkuVenta,
+    });
+    show(`+${totalUnidades} ${product.sku}${selectedSkuVenta ? ` (${selectedSkuVenta})` : ""} → ${posLabel}`);
     setStep(0); setPos(""); setPosLabel(""); setProduct(null); setQty(1); setNote("");
+    setSelectedSkuVenta(null); setUnitMultiplier(1);
     refresh();
   };
 
-  const reset = () => { setStep(0); setPos(""); setPosLabel(""); setProduct(null); setQty(1); setNote(""); setCam(false); };
+  const reset = () => { setStep(0); setPos(""); setPosLabel(""); setProduct(null); setQty(1); setNote(""); setCam(false); setSelectedSkuVenta(null); setUnitMultiplier(1); };
   const posItems = pos ? posContents(pos) : [];
 
   return (
@@ -297,7 +353,7 @@ function Ingreso({ refresh }: { refresh: () => void }) {
           <div style={{fontSize:15,fontWeight:700,marginBottom:10,marginTop:8}}>¿Qué producto guardas?</div>
           <BarcodeScanner active={true} onScan={handleProductScan} label="Escanea código de barras del producto" mode="barcode"/>
           <div style={{fontSize:12,color:"#94a3b8",marginTop:10,marginBottom:6}}>O busca manualmente:</div>
-          <ProductSearch onSelect={(p) => { setProduct(p); setStep(2); }} placeholder="Nombre, SKU o código ML..."/>
+          <ProductSearch onSelect={handleManualSelect} placeholder="Nombre, SKU o código ML..."/>
           <CancelBtn onClick={reset}/>
         </div>
       )}
@@ -306,8 +362,63 @@ function Ingreso({ refresh }: { refresh: () => void }) {
         <div className="card">
           <SelTag color="#10b981" label="Posición" value={`${pos} — ${posLabel}`}/>
           <SelTag color="#3b82f6" label="Producto" value={`${product.sku} — ${product.name}`}/>
-          <div style={{fontSize:15,fontWeight:700,marginBottom:10,marginTop:12}}>¿Cuántas unidades?</div>
+
+          {/* Selector de formato de venta si hay múltiples opciones */}
+          {(() => {
+            const ventas = getVentasPorSkuOrigen(product.sku);
+            if (ventas.length > 1) {
+              return (
+                <div style={{marginTop:10,marginBottom:4}}>
+                  <div style={{fontSize:12,fontWeight:600,color:"#94a3b8",marginBottom:6}}>Formato de venta:</div>
+                  <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                    {ventas.map(v => {
+                      const isSelected = selectedSkuVenta === v.skuVenta;
+                      return (
+                        <button key={v.skuVenta} onClick={() => { setSelectedSkuVenta(v.skuVenta); setUnitMultiplier(v.unidades); }}
+                          style={{padding:"10px 12px",borderRadius:10,fontSize:13,fontWeight:600,textAlign:"left",
+                            background:isSelected?"#1e3a5f":"var(--bg3)",color:isSelected?"#3b82f6":"#94a3b8",
+                            border:isSelected?"2px solid #3b82f6":"1px solid var(--bg4)"}}>
+                          <span className="mono" style={{fontWeight:700}}>{v.skuVenta}</span>
+                          <span style={{marginLeft:8,fontSize:11,color:isSelected?"#60a5fa":"#64748b"}}>
+                            {v.unidades > 1 ? `📦 Pack ×${v.unidades} uds` : "×1 ud individual"}
+                          </span>
+                          {v.codigoMl && <span style={{marginLeft:6,fontSize:10,color:"#64748b"}}>ML: {v.codigoMl}</span>}
+                        </button>
+                      );
+                    })}
+                    <button onClick={() => { setSelectedSkuVenta(null); setUnitMultiplier(1); }}
+                      style={{padding:"10px 12px",borderRadius:10,fontSize:13,fontWeight:600,textAlign:"left",
+                        background:!selectedSkuVenta?"#1a2e1a":"var(--bg3)",color:!selectedSkuVenta?"#10b981":"#64748b",
+                        border:!selectedSkuVenta?"2px solid #10b981":"1px solid var(--bg4)"}}>
+                      Sin etiqueta (solo SKU origen)
+                    </button>
+                  </div>
+                </div>
+              );
+            }
+            return null;
+          })()}
+
+          {/* Info del formato seleccionado cuando viene de escaneo con pack */}
+          {selectedSkuVenta && unitMultiplier > 1 && (
+            <div style={{marginTop:8,padding:"8px 12px",borderRadius:8,background:"#1e3a5f",border:"1px solid #2563eb44",fontSize:12}}>
+              <span style={{color:"#60a5fa",fontWeight:600}}>📦 {selectedSkuVenta}</span>
+              <span style={{color:"#94a3b8",marginLeft:6}}>— Cada unidad de venta = {unitMultiplier} uds físicas</span>
+            </div>
+          )}
+
+          <div style={{fontSize:15,fontWeight:700,marginBottom:10,marginTop:12}}>
+            {unitMultiplier > 1 ? "¿Cuántos packs ingresas?" : "¿Cuántas unidades?"}
+          </div>
           <QtyPicker qty={qty} setQty={setQty}/>
+
+          {/* Resumen de unidades reales si es pack */}
+          {unitMultiplier > 1 && (
+            <div style={{marginTop:8,padding:"10px 12px",borderRadius:8,background:"#065f4622",border:"1px solid #10b98144",textAlign:"center"}}>
+              <span style={{fontSize:14,fontWeight:700,color:"#10b981"}}>{qty} pack{qty>1?"s":""} × {unitMultiplier} uds = {totalUnidades} unidades físicas</span>
+            </div>
+          )}
+
           <div style={{marginTop:12}}>
             <div style={{fontSize:12,fontWeight:600,color:"#94a3b8",marginBottom:6}}>Motivo:</div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
@@ -321,7 +432,7 @@ function Ingreso({ refresh }: { refresh: () => void }) {
           <input className="form-input" value={note} onChange={e=>setNote(e.target.value)} placeholder="Nota (opcional)..." style={{marginTop:10,fontSize:13}}/>
           <button onClick={doConfirm}
             style={{marginTop:16,width:"100%",padding:16,borderRadius:12,fontWeight:700,fontSize:16,color:"#fff",background:"linear-gradient(135deg,#059669,#10b981)"}}>
-            CONFIRMAR +{qty} × {product.sku}
+            CONFIRMAR +{totalUnidades} × {product.sku}{selectedSkuVenta ? ` (${selectedSkuVenta})` : ""}
           </button>
           <CancelBtn onClick={()=>setStep(1)} label="Volver"/>
         </div>
