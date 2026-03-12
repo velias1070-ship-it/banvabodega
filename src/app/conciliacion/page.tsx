@@ -4,9 +4,10 @@ import Link from "next/link";
 import {
   fetchEmpresaDefault,
   fetchRcvCompras, fetchRcvVentas,
+  upsertRcvCompras, upsertRcvVentas,
   fetchMovimientosBanco, insertMovimientosBanco, deleteMovimientosBancoByIds,
   fetchConciliaciones,
-  fetchAlertas, fetchSyncLog,
+  fetchAlertas, fetchSyncLog, insertSyncLog,
 } from "@/lib/db";
 import type {
   DBEmpresa, DBRcvCompra, DBRcvVenta, DBMovimientoBanco,
@@ -128,6 +129,208 @@ function formatPeriodo(p: string): string {
   const d = new Date(y, m - 1, 1);
   const label = d.toLocaleDateString("es-CL", { month: "long", year: "numeric" });
   return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+// ==================== SII IMPORT MODAL ====================
+const SII_CREDS_KEY = "banva_sii_creds";
+
+function useSiiCreds() {
+  const [creds, setCreds] = useState<{ rut: string; clave: string }>({ rut: "", clave: "" });
+  useEffect(() => {
+    try {
+      const saved = sessionStorage.getItem(SII_CREDS_KEY);
+      if (saved) setCreds(JSON.parse(saved));
+    } catch { /* noop */ }
+  }, []);
+  const save = (rut: string, clave: string) => {
+    setCreds({ rut, clave });
+    sessionStorage.setItem(SII_CREDS_KEY, JSON.stringify({ rut, clave }));
+  };
+  const clear = () => {
+    setCreds({ rut: "", clave: "" });
+    sessionStorage.removeItem(SII_CREDS_KEY);
+  };
+  return { creds, save, clear };
+}
+
+interface SiiImportModalProps {
+  tipo: "COMPRA" | "VENTA";
+  empresa: DBEmpresa;
+  periodoActual: string;
+  onClose: () => void;
+  onImported: () => void;
+}
+
+function SiiImportModal({ tipo, empresa, periodoActual, onClose, onImported }: SiiImportModalProps) {
+  const sii = useSiiCreds();
+  const [rut, setRut] = useState(sii.creds.rut || empresa.rut || "");
+  const [clave, setClave] = useState(sii.creds.clave || "");
+  const [periodo, setPeriodo] = useState(periodoActual);
+  const [guardarCreds, setGuardarCreds] = useState(!!sii.creds.clave);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [resultado, setResultado] = useState<{ registros: number } | null>(null);
+
+  const label = tipo === "COMPRA" ? "Compras" : "Ventas";
+
+  const handleImport = async () => {
+    if (!rut || !clave || !periodo) {
+      setError("Completa todos los campos");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    setResultado(null);
+
+    try {
+      const resp = await fetch("/api/sii/rcv", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rut, clave, periodo, tipo }),
+      });
+
+      const json = await resp.json();
+
+      if (!resp.ok) {
+        setError(json.error || `Error HTTP ${resp.status}`);
+        setLoading(false);
+        return;
+      }
+
+      if (!json.data || json.data.length === 0) {
+        setResultado({ registros: 0 });
+        setLoading(false);
+        return;
+      }
+
+      // Guardar en Supabase
+      if (tipo === "COMPRA") {
+        const items = json.data.map((d: Record<string, unknown>) => ({
+          ...d,
+          empresa_id: empresa.id,
+        }));
+        await upsertRcvCompras(items);
+      } else {
+        const items = json.data.map((d: Record<string, unknown>) => ({
+          ...d,
+          empresa_id: empresa.id,
+        }));
+        await upsertRcvVentas(items);
+      }
+
+      // Registrar sync
+      if (empresa.id) {
+        await insertSyncLog({
+          empresa_id: empresa.id,
+          periodo,
+          tipo: tipo === "COMPRA" ? "compras" : "ventas",
+          registros: json.data.length,
+        });
+      }
+
+      // Guardar credenciales en sesión si se pidió
+      if (guardarCreds) {
+        sii.save(rut, clave);
+      } else {
+        sii.clear();
+      }
+
+      setResultado({ registros: json.data.length });
+      onImported();
+    } catch (err) {
+      setError(`Error de conexión: ${err instanceof Error ? err.message : "desconocido"}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }}
+      onClick={e => { if (e.target === e.currentTarget && !loading) onClose(); }}>
+      <div style={{ width: "100%", maxWidth: 420, background: "var(--bg2)", borderRadius: 16, border: "1px solid var(--bg4)", padding: 24, boxShadow: "0 20px 60px rgba(0,0,0,0.5)" }}>
+        {/* Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.1em", color: "var(--cyan)", textTransform: "uppercase" }}>SII</div>
+            <h3 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Importar RCV {label}</h3>
+          </div>
+          <button onClick={onClose} disabled={loading}
+            style={{ background: "var(--bg3)", border: "1px solid var(--bg4)", borderRadius: 8, padding: "6px 10px", color: "var(--txt3)", fontSize: 16, cursor: "pointer" }}>
+            ✕
+          </button>
+        </div>
+
+        {/* Form */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {/* Periodo selector */}
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", marginBottom: 4, display: "block" }}>Período a importar</label>
+            <select value={periodo} onChange={e => setPeriodo(e.target.value)} disabled={loading}
+              style={{ width: "100%", background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 8, padding: "10px 12px", fontSize: 14, fontWeight: 600 }}>
+              {periodOptions().map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </div>
+
+          {/* RUT */}
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", marginBottom: 4, display: "block" }}>RUT Empresa</label>
+            <input className="form-input mono" value={rut} onChange={e => setRut(e.target.value)} disabled={loading}
+              placeholder="77994007-1" style={{ fontSize: 14, padding: "10px 12px" }} />
+          </div>
+
+          {/* Clave */}
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", marginBottom: 4, display: "block" }}>Clave Tributaria SII</label>
+            <input type="password" className="form-input" value={clave} onChange={e => setClave(e.target.value)} disabled={loading}
+              placeholder="Clave del SII" style={{ fontSize: 14, padding: "10px 12px" }}
+              onKeyDown={e => { if (e.key === "Enter" && !loading) handleImport(); }} />
+          </div>
+
+          {/* Guardar creds checkbox */}
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--txt3)", cursor: "pointer" }}>
+            <input type="checkbox" checked={guardarCreds} onChange={e => setGuardarCreds(e.target.checked)} />
+            Recordar credenciales en esta sesión
+          </label>
+        </div>
+
+        {/* Error */}
+        {error && (
+          <div style={{ marginTop: 12, padding: "10px 14px", background: "var(--redBg)", border: "1px solid var(--redBd)", borderRadius: 8, color: "var(--red)", fontSize: 12, fontWeight: 600 }}>
+            {error}
+          </div>
+        )}
+
+        {/* Resultado exitoso */}
+        {resultado && (
+          <div style={{ marginTop: 12, padding: "10px 14px", background: "var(--greenBg)", border: "1px solid var(--greenBd)", borderRadius: 8, color: "var(--green)", fontSize: 12, fontWeight: 600 }}>
+            {resultado.registros > 0
+              ? `${resultado.registros} documentos importados de ${formatPeriodo(periodo)}`
+              : `No se encontraron documentos de ${label.toLowerCase()} para ${formatPeriodo(periodo)}`}
+          </div>
+        )}
+
+        {/* Actions */}
+        <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+          <button onClick={onClose} disabled={loading}
+            style={{ flex: 1, padding: 12, borderRadius: 10, background: "var(--bg3)", color: "var(--txt2)", fontWeight: 600, fontSize: 13, border: "1px solid var(--bg4)" }}>
+            {resultado ? "Cerrar" : "Cancelar"}
+          </button>
+          {!resultado && (
+            <button onClick={handleImport} disabled={loading || !rut || !clave}
+              style={{ flex: 1, padding: 12, borderRadius: 10, background: loading ? "var(--bg4)" : "var(--cyan)", color: loading ? "var(--txt3)" : "#000", fontWeight: 700, fontSize: 13, border: "none", cursor: loading ? "not-allowed" : "pointer" }}>
+              {loading ? "Consultando SII..." : `Importar ${label}`}
+            </button>
+          )}
+        </div>
+
+        {/* Info footer */}
+        <div style={{ marginTop: 12, fontSize: 10, color: "var(--txt3)", textAlign: "center", lineHeight: 1.4 }}>
+          Se conecta directamente al SII con tu clave tributaria.
+          Las credenciales {guardarCreds ? "se guardan solo en esta sesión del navegador" : "no se almacenan"}.
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ==================== DASHBOARD ====================
@@ -389,12 +592,15 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("");
   const [tipoFilter, setTipoFilter] = useState<string>("todos");
+  const [showImport, setShowImport] = useState(false);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     if (!empresa.id) return;
     setLoading(true);
     fetchRcvCompras(empresa.id, periodo).then(d => { setData(d); setLoading(false); });
   }, [empresa.id, periodo]);
+
+  useEffect(() => { load(); }, [load]);
 
   if (loading) return <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>Cargando...</div>;
 
@@ -420,10 +626,19 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
         <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>RCV Compras</h2>
         <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+          <button onClick={() => setShowImport(true)}
+            style={{ padding: "6px 14px", borderRadius: 8, background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)", fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+            Importar SII
+          </button>
           <span style={{ fontSize: 12, color: "var(--txt3)" }}>{filtered.length} de {data.length} docs</span>
           <span className="mono" style={{ fontSize: 14, fontWeight: 700, color: "var(--red)" }}>{fmtMoney(total)}</span>
         </div>
       </div>
+
+      {showImport && (
+        <SiiImportModal tipo="COMPRA" empresa={empresa} periodoActual={periodo}
+          onClose={() => setShowImport(false)} onImported={load} />
+      )}
 
       {/* Resumen rápido */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 12 }}>
@@ -462,7 +677,11 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
         <div className="card" style={{ padding: 32, textAlign: "center" }}>
           <div style={{ fontSize: 32, marginBottom: 8 }}>📄</div>
           <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Sin compras para este período</div>
-          <div style={{ fontSize: 12, color: "var(--txt3)" }}>Ejecuta el sync SII para cargar datos</div>
+          <div style={{ fontSize: 12, color: "var(--txt3)", marginBottom: 12 }}>Importa los datos directamente desde el SII</div>
+          <button onClick={() => setShowImport(true)}
+            style={{ padding: "10px 20px", borderRadius: 10, background: "var(--cyan)", color: "#000", fontWeight: 700, fontSize: 13, border: "none", cursor: "pointer" }}>
+            Importar desde SII
+          </button>
         </div>
       ) : (
         <div style={{ overflowX: "auto" }}>
@@ -520,12 +739,15 @@ function TabRcvVentas({ empresa, periodo }: { empresa: DBEmpresa; periodo: strin
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("");
   const [tipoFilter, setTipoFilter] = useState<string>("todos");
+  const [showImport, setShowImport] = useState(false);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     if (!empresa.id) return;
     setLoading(true);
     fetchRcvVentas(empresa.id, periodo).then(d => { setData(d); setLoading(false); });
   }, [empresa.id, periodo]);
+
+  useEffect(() => { load(); }, [load]);
 
   if (loading) return <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>Cargando...</div>;
 
@@ -551,10 +773,19 @@ function TabRcvVentas({ empresa, periodo }: { empresa: DBEmpresa; periodo: strin
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
         <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>RCV Ventas</h2>
         <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+          <button onClick={() => setShowImport(true)}
+            style={{ padding: "6px 14px", borderRadius: 8, background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)", fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+            Importar SII
+          </button>
           <span style={{ fontSize: 12, color: "var(--txt3)" }}>{filtered.length} de {data.length} docs</span>
           <span className="mono" style={{ fontSize: 14, fontWeight: 700, color: "var(--green)" }}>{fmtMoney(total)}</span>
         </div>
       </div>
+
+      {showImport && (
+        <SiiImportModal tipo="VENTA" empresa={empresa} periodoActual={periodo}
+          onClose={() => setShowImport(false)} onImported={load} />
+      )}
 
       {/* Resumen rápido */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 12 }}>
@@ -593,7 +824,11 @@ function TabRcvVentas({ empresa, periodo }: { empresa: DBEmpresa; periodo: strin
         <div className="card" style={{ padding: 32, textAlign: "center" }}>
           <div style={{ fontSize: 32, marginBottom: 8 }}>📄</div>
           <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Sin ventas para este período</div>
-          <div style={{ fontSize: 12, color: "var(--txt3)" }}>Ejecuta el sync SII para cargar datos</div>
+          <div style={{ fontSize: 12, color: "var(--txt3)", marginBottom: 12 }}>Importa los datos directamente desde el SII</div>
+          <button onClick={() => setShowImport(true)}
+            style={{ padding: "10px 20px", borderRadius: 10, background: "var(--cyan)", color: "#000", fontWeight: 700, fontSize: 13, border: "none", cursor: "pointer" }}>
+            Importar desde SII
+          </button>
         </div>
       ) : (
         <div style={{ overflowX: "auto" }}>
