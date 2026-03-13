@@ -1052,18 +1052,15 @@ export async function ubicarLinea(lineaId: string, sku: string, posicionId: stri
   const linea = lineas.find(l => l.id === lineaId);
   if (!linea) return;
   const newQtyUbicada = (linea.qty_ubicada || 0) + qty;
-  const qtyTotal = (linea.qty_recibida ?? linea.qty_factura) ?? 0;
+  const qtyTotal = linea.qty_recibida || linea.qty_factura || 0;
 
   const allLocated = newQtyUbicada >= qtyTotal && qtyTotal > 0;
-  const allReceived = qtyTotal >= (linea.qty_factura || 0);
   let nextEstado = linea.estado;
   const extraFields: Partial<db.DBRecepcionLinea> = {};
 
-  if (allLocated && allReceived) {
+  if (allLocated) {
     nextEstado = "UBICADA";
     extraFields.ts_ubicacion = new Date().toISOString();
-  } else if (allLocated && !allReceived) {
-    nextEstado = "PENDIENTE";
   }
 
   await db.updateRecepcionLinea(lineaId, {
