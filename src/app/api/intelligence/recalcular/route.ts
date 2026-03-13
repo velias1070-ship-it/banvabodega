@@ -1,0 +1,375 @@
+import { NextRequest, NextResponse } from "next/server";
+import { getServerSupabase } from "@/lib/supabase-server";
+import {
+  queryStockPorSku,
+  queryComposicion,
+  queryProductos,
+  queryOrdenes,
+  queryEventosActivos,
+  queryConteos,
+  queryMovimientos,
+  queryStockFullCache,
+  queryStockSnapshots,
+  queryOrdenesCompraActivas,
+  upsertSkuIntelligence,
+  insertHistorySnapshots,
+  upsertStockSnapshots,
+  type SkuIntelligenceUpsert,
+} from "@/lib/intelligence-queries";
+import {
+  recalcularTodo,
+  generarHistoryRows,
+  generarStockSnapshots,
+  DEFAULT_INTEL_CONFIG,
+} from "@/lib/intelligence";
+import type { SkuIntelRow, OrdenInput, QuiebreSnapshot } from "@/lib/intelligence";
+
+/**
+ * POST /api/intelligence/recalcular
+ *
+ * Body: { skus?: string[], full?: boolean, snapshot?: boolean }
+ * - full=true: recalcula todos los SKUs
+ * - skus: recalcula solo esos SKUs
+ * - sin params: recalcula SKUs con movimientos desde último recálculo
+ * - snapshot=true: además guarda history + stock_snapshots (usado por cron diario)
+ */
+export async function POST(req: NextRequest) {
+  const start = Date.now();
+  try {
+    const body = await req.json().catch(() => ({}));
+    const skusFilter: string[] | undefined = body.skus;
+    const full: boolean = body.full === true;
+    const doSnapshot: boolean = body.snapshot === true;
+
+    const sb = getServerSupabase();
+    if (!sb) {
+      return NextResponse.json({ error: "Sin conexión a Supabase" }, { status: 500 });
+    }
+
+    console.log(`[intelligence] Iniciando recálculo. full=${full}, skus=${skusFilter?.length || "todos"}, snapshot=${doSnapshot}`);
+
+    // ── Fetch todas las fuentes de datos en paralelo ──
+    const [
+      stockBodega,
+      composicion,
+      productos,
+      ordenes,
+      stockFullCache,
+      snapshots,
+      ocLineas,
+      conteos,
+      movimientos,
+    ] = await Promise.all([
+      queryStockPorSku(),
+      queryComposicion(),
+      queryProductos(),
+      queryOrdenes(60),
+      queryStockFullCache(),
+      queryStockSnapshots(60),
+      queryOrdenesCompraActivas(),
+      queryConteos(3),
+      queryMovimientos(60),
+    ]);
+
+    // Eventos activos para hoy
+    const hoy = new Date();
+    const hoyStr = hoy.toISOString().slice(0, 10);
+    const eventosActivos = await queryEventosActivos(hoyStr);
+
+    // ── Stock en tránsito desde órdenes de compra ──
+    const stockEnTransito = new Map<string, number>();
+    const ocPendientesPorSku = new Map<string, number>();
+    for (const linea of ocLineas) {
+      const pendiente = (linea.cantidad_pedida || 0) - (linea.cantidad_recibida || 0);
+      if (pendiente > 0) {
+        stockEnTransito.set(
+          linea.sku_origen,
+          (stockEnTransito.get(linea.sku_origen) || 0) + pendiente,
+        );
+        ocPendientesPorSku.set(
+          linea.sku_origen,
+          (ocPendientesPorSku.get(linea.sku_origen) || 0) + 1,
+        );
+      }
+    }
+
+    // ── Inferir quiebres de Full desde orders_history ──
+    // Si un SKU con vel_30d > 1 tiene 3+ días consecutivos con 0 ventas Full
+    // rodeados de días con ventas, marcar como quiebre retroactivo.
+    const quiebresInferidos = inferirQuiebresDeOrdenes(ordenes, hoy);
+
+    // Combinar quiebres de snapshots + inferidos
+    const quiebresCombinados: QuiebreSnapshot[] = [
+      ...snapshots.map(s => ({
+        fecha: s.fecha,
+        sku_origen: s.sku_origen,
+        en_quiebre_full: s.en_quiebre_full,
+      })),
+      ...quiebresInferidos,
+    ];
+
+    // ── Ejecutar recálculo completo ──
+    const resultados = recalcularTodo({
+      productos,
+      composicion,
+      ordenes: ordenes as OrdenInput[],
+      stockBodega,
+      stockFull: stockFullCache,
+      eventosActivos: eventosActivos.map(e => ({
+        nombre: e.nombre,
+        multiplicador: e.multiplicador,
+        categorias: e.categorias || [],
+      })),
+      quiebres: quiebresCombinados,
+      conteos: conteos.map(c => ({
+        lineas: (c.lineas || []) as { sku?: string; diferencia?: number }[],
+        created_at: c.created_at,
+      })),
+      movimientos: movimientos.map(m => ({
+        sku: m.sku,
+        created_at: m.created_at,
+      })),
+      stockEnTransito,
+      ocPendientesPorSku,
+      config: DEFAULT_INTEL_CONFIG,
+      hoy,
+    });
+
+    // ── Filtrar si no es full ──
+    let rowsToUpsert = resultados;
+    if (!full && skusFilter && skusFilter.length > 0) {
+      const filterSet = new Set(skusFilter.map(s => s.toUpperCase()));
+      rowsToUpsert = resultados.filter(r => filterSet.has(r.sku_origen.toUpperCase()));
+    } else if (!full && !skusFilter) {
+      // Recalcular solo SKUs con movimientos recientes (últimos 7 días)
+      const skusConMov = new Set<string>();
+      for (const m of movimientos) {
+        const diffDias = (hoy.getTime() - new Date(m.created_at).getTime()) / 86400000;
+        if (diffDias <= 7) skusConMov.add(m.sku);
+      }
+      if (skusConMov.size > 0) {
+        rowsToUpsert = resultados.filter(r => skusConMov.has(r.sku_origen));
+      }
+      // Si no hay movimientos recientes, no recalcular nada
+      if (skusConMov.size === 0) {
+        return NextResponse.json({
+          ok: true,
+          recalculados: 0,
+          tiempo_ms: Date.now() - start,
+          mensaje: "Sin movimientos recientes, nada que recalcular",
+        });
+      }
+    }
+
+    // ── Upsert a sku_intelligence ──
+    const upsertRows = rowsToUpsert.map(rowToUpsert);
+    const total = await upsertSkuIntelligence(upsertRows);
+
+    // ── Snapshot diario (si se pide) ──
+    let snapshotCount = 0;
+    let historyCount = 0;
+    if (doSnapshot) {
+      // History snapshot
+      const historyRows = generarHistoryRows(resultados, hoyStr);
+      historyCount = await insertHistorySnapshots(historyRows);
+
+      // Stock snapshots (registro de quiebres)
+      const stockSnaps = generarStockSnapshots(resultados, hoyStr);
+      await upsertStockSnapshots(stockSnaps);
+      snapshotCount = stockSnaps.length;
+    }
+
+    // Resumen de alertas
+    const alertasResumen: Record<string, number> = {};
+    for (const r of rowsToUpsert) {
+      for (const a of r.alertas) {
+        alertasResumen[a] = (alertasResumen[a] || 0) + 1;
+      }
+    }
+
+    const tiempo = Date.now() - start;
+    console.log(`[intelligence] Recálculo completado. ${total} SKUs en ${tiempo}ms.`);
+
+    return NextResponse.json({
+      ok: true,
+      recalculados: total,
+      total_skus_evaluados: resultados.length,
+      tiempo_ms: tiempo,
+      snapshot: doSnapshot ? { history: historyCount, stock_snapshots: snapshotCount } : null,
+      alertas: alertasResumen,
+      resumen: {
+        urgentes: rowsToUpsert.filter(r => r.accion === "URGENTE").length,
+        agotados: rowsToUpsert.filter(r => r.accion === "AGOTADO_PEDIR").length,
+        mandar_full: rowsToUpsert.filter(r => r.accion === "MANDAR_FULL").length,
+        en_transito: rowsToUpsert.filter(r => r.accion === "EN_TRANSITO").length,
+        dead_stock: rowsToUpsert.filter(r => r.accion === "DEAD_STOCK").length,
+        liquidar: rowsToUpsert.filter(r => r.liquidacion_accion !== null).length,
+      },
+    });
+  } catch (err) {
+    console.error("[intelligence] Error en recálculo:", err);
+    return NextResponse.json({ error: String(err) }, { status: 500 });
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   HELPERS
+   ═══════════════════════════════════════════════════════════ */
+
+/**
+ * Infiere quiebres de Full desde orders_history.
+ * Si un SKU con vel_30d > 1 uds/sem tiene 3+ días consecutivos con 0 ventas Full
+ * rodeados de días con ventas, es un quiebre.
+ */
+function inferirQuiebresDeOrdenes(
+  ordenes: { sku_venta: string; cantidad: number; canal: string; fecha: string }[],
+  hoy: Date,
+): QuiebreSnapshot[] {
+  // Solo órdenes Full de los últimos 60 días
+  const hace60d = hoy.getTime() - 60 * 86400000;
+  const ordsFull = ordenes.filter(o =>
+    o.canal === "Full" && new Date(o.fecha).getTime() >= hace60d,
+  );
+
+  // Agrupar por SKU → por día
+  const porSku = new Map<string, Map<string, number>>();
+  for (const o of ordsFull) {
+    const dia = o.fecha.slice(0, 10);
+    if (!porSku.has(o.sku_venta)) porSku.set(o.sku_venta, new Map());
+    const dias = porSku.get(o.sku_venta)!;
+    dias.set(dia, (dias.get(dia) || 0) + o.cantidad);
+  }
+
+  const quiebres: QuiebreSnapshot[] = [];
+
+  porSku.forEach((diasMap, skuVenta) => {
+    // Calcular vel_30d aproximada
+    const totalQty = Array.from(diasMap.values()).reduce((s, v) => s + v, 0);
+    const vel30d = totalQty / 4.3;
+    if (vel30d < 1) return; // No aplica a SKUs lentos
+
+    // Generar array de todos los días del rango
+    const diasOrdenados = Array.from(diasMap.keys()).sort();
+    if (diasOrdenados.length < 2) return;
+
+    const primerDia = new Date(diasOrdenados[0]);
+    const ultimoDia = new Date(diasOrdenados[diasOrdenados.length - 1]);
+
+    // Iterar día a día buscando gaps de 3+
+    let gapCount = 0;
+    const cursor = new Date(primerDia);
+    while (cursor <= ultimoDia) {
+      const diaStr = cursor.toISOString().slice(0, 10);
+      if (!diasMap.has(diaStr)) {
+        gapCount++;
+      } else {
+        // Si venimos de un gap de 3+ días, marcar esos días como quiebre
+        if (gapCount >= 3) {
+          for (let g = gapCount; g >= 1; g--) {
+            const fechaQuiebre = new Date(cursor);
+            fechaQuiebre.setDate(fechaQuiebre.getDate() - g);
+            quiebres.push({
+              fecha: fechaQuiebre.toISOString().slice(0, 10),
+              sku_origen: skuVenta, // Se mapea a origen después si es necesario
+              en_quiebre_full: true,
+            });
+          }
+        }
+        gapCount = 0;
+      }
+      cursor.setDate(cursor.getDate() + 1);
+    }
+  });
+
+  return quiebres;
+}
+
+/** Convierte SkuIntelRow a formato de upsert para Supabase */
+function rowToUpsert(r: SkuIntelRow): SkuIntelligenceUpsert {
+  return {
+    sku_origen: r.sku_origen,
+    nombre: r.nombre,
+    categoria: r.categoria,
+    proveedor: r.proveedor,
+    skus_venta: r.skus_venta,
+    vel_7d: r.vel_7d,
+    vel_30d: r.vel_30d,
+    vel_60d: r.vel_60d,
+    vel_ponderada: r.vel_ponderada,
+    vel_full: r.vel_full,
+    vel_flex: r.vel_flex,
+    vel_total: r.vel_total,
+    pct_full: r.pct_full,
+    pct_flex: r.pct_flex,
+    tendencia_vel: r.tendencia_vel,
+    tendencia_vel_pct: r.tendencia_vel_pct,
+    es_pico: r.es_pico,
+    pico_magnitud: r.pico_magnitud,
+    multiplicador_evento: r.multiplicador_evento,
+    evento_activo: r.evento_activo,
+    vel_ajustada_evento: r.vel_ajustada_evento,
+    stock_full: r.stock_full,
+    stock_bodega: r.stock_bodega,
+    stock_total: r.stock_total,
+    stock_sin_etiquetar: r.stock_sin_etiquetar,
+    stock_proveedor: r.stock_proveedor,
+    tiene_stock_prov: r.tiene_stock_prov,
+    inner_pack: r.inner_pack,
+    stock_en_transito: r.stock_en_transito,
+    stock_proyectado: r.stock_proyectado,
+    oc_pendientes: r.oc_pendientes,
+    cob_full: r.cob_full,
+    cob_flex: r.cob_flex,
+    cob_total: r.cob_total,
+    target_dias_full: r.target_dias_full,
+    margen_full_7d: r.margen_full_7d,
+    margen_full_30d: r.margen_full_30d,
+    margen_full_60d: r.margen_full_60d,
+    margen_flex_7d: r.margen_flex_7d,
+    margen_flex_30d: r.margen_flex_30d,
+    margen_flex_60d: r.margen_flex_60d,
+    margen_tendencia_full: r.margen_tendencia_full,
+    margen_tendencia_flex: r.margen_tendencia_flex,
+    canal_mas_rentable: r.canal_mas_rentable,
+    precio_promedio: r.precio_promedio,
+    abc: r.abc,
+    ingreso_30d: r.ingreso_30d,
+    pct_ingreso_acumulado: r.pct_ingreso_acumulado,
+    cv: r.cv,
+    xyz: r.xyz,
+    desviacion_std: r.desviacion_std,
+    cuadrante: r.cuadrante,
+    gmroi: r.gmroi,
+    dio: r.dio,
+    costo_neto: r.costo_neto,
+    costo_bruto: r.costo_bruto,
+    costo_inventario_total: r.costo_inventario_total,
+    stock_seguridad: r.stock_seguridad,
+    punto_reorden: r.punto_reorden,
+    nivel_servicio: r.nivel_servicio,
+    dias_sin_stock_full: r.dias_sin_stock_full,
+    semanas_con_quiebre: r.semanas_con_quiebre,
+    venta_perdida_uds: r.venta_perdida_uds,
+    venta_perdida_pesos: r.venta_perdida_pesos,
+    ingreso_perdido: r.ingreso_perdido,
+    accion: r.accion,
+    prioridad: r.prioridad,
+    mandar_full: r.mandar_full,
+    pedir_proveedor: r.pedir_proveedor,
+    pedir_proveedor_bultos: r.pedir_proveedor_bultos,
+    requiere_ajuste_precio: r.requiere_ajuste_precio,
+    liquidacion_accion: r.liquidacion_accion,
+    liquidacion_dias_extra: r.liquidacion_dias_extra,
+    liquidacion_descuento_sugerido: r.liquidacion_descuento_sugerido,
+    ultimo_conteo: r.ultimo_conteo,
+    dias_sin_conteo: r.dias_sin_conteo,
+    diferencias_conteo: r.diferencias_conteo,
+    ultimo_movimiento: r.ultimo_movimiento,
+    dias_sin_movimiento: r.dias_sin_movimiento,
+    alertas: r.alertas,
+    alertas_count: r.alertas_count,
+    updated_at: r.updated_at,
+    datos_desde: r.datos_desde,
+    datos_hasta: r.datos_hasta,
+  };
+}
