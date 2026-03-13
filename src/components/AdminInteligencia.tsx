@@ -17,12 +17,15 @@ interface IntelRow {
   vel_flex: number;
   vel_7d: number;
   vel_30d: number;
+  vel_60d: number;
   stock_full: number;
   stock_bodega: number;
   stock_total: number;
   stock_en_transito: number;
   stock_proyectado: number;
   oc_pendientes: number;
+  pct_full: number;
+  pct_flex: number;
   cob_full: number;
   cob_total: number;
   target_dias_full: number;
@@ -36,6 +39,9 @@ interface IntelRow {
   pedir_proveedor_bultos: number;
   margen_full_30d: number;
   margen_flex_30d: number;
+  canal_mas_rentable: string | null;
+  precio_promedio: number;
+  costo_bruto: number;
   gmroi: number;
   dio: number;
   ingreso_30d: number;
@@ -204,6 +210,68 @@ export default function AdminInteligencia() {
     }
   });
 
+  // Exportar CSV
+  const exportarCSV = () => {
+    const headers = [
+      "SKU Origen","Nombre","Accion","ABC","XYZ","Cuadrante",
+      "Vel/Sem","Vel 7d","Vel 30d","Vel 60d","Vel Ponderada",
+      "%Full","%Flex","Stock Full","Stock Bodega","Stock Total",
+      "En Transito","Cob Full (dias)","Cob Total (dias)","Target dias",
+      "Mandar Full","Pedir Prov","Margen Full 30d","Margen Flex 30d",
+      "Canal Mas Rentable","GMROI","DIO","Ingreso 30d","Precio Promedio",
+      "Costo Bruto","Venta Perdida","Liquidacion","Alertas","Proveedor",
+    ];
+    const csvRows = [headers.join(";")];
+    for (const r of filtered) {
+      const row = [
+        r.sku_origen,
+        (r.nombre || "").replace(/;/g, ","),
+        r.accion,
+        r.abc,
+        r.xyz,
+        r.cuadrante,
+        fmtN(r.vel_ponderada, 2),
+        fmtN(r.vel_7d, 2),
+        fmtN(r.vel_30d, 2),
+        fmtN(r.vel_60d, 2),
+        fmtN(r.vel_ponderada, 2),
+        fmtN(r.pct_full, 1),
+        fmtN(r.pct_flex, 1),
+        fmtInt(r.stock_full),
+        fmtInt(r.stock_bodega),
+        fmtInt(r.stock_total),
+        fmtInt(r.stock_en_transito),
+        fmtN(r.cob_full, 1),
+        fmtN(r.cob_total, 1),
+        fmtN(r.target_dias_full, 0),
+        fmtInt(r.mandar_full),
+        fmtInt(r.pedir_proveedor),
+        Math.round(r.margen_full_30d || 0),
+        Math.round(r.margen_flex_30d || 0),
+        r.canal_mas_rentable || "",
+        fmtN(r.gmroi, 2),
+        fmtN(r.dio, 0),
+        Math.round(r.ingreso_30d || 0),
+        Math.round(r.precio_promedio || 0),
+        Math.round(r.costo_bruto || 0),
+        Math.round(r.venta_perdida_pesos || 0),
+        r.liquidacion_accion || "",
+        (r.alertas || []).join(", "),
+        r.proveedor || "",
+      ];
+      csvRows.push(row.join(";"));
+    }
+    const bom = "\uFEFF";
+    const blob = new Blob([bom + csvRows.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const hoyStr = new Date().toISOString().slice(0, 10);
+    a.href = url;
+    a.download = `inteligencia_${hoyStr}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   // KPIs
   const totalSkus = rows.length;
   const agotadosFull = rows.filter(r => r.stock_full <= 0 && r.vel_full > 0).length;
@@ -235,6 +303,13 @@ export default function AdminInteligencia() {
             style={{ padding: "8px 16px", borderRadius: 8, background: "var(--cyanBg)", color: "var(--cyan)", fontWeight: 600, fontSize: 12, border: "1px solid var(--cyanBd)" }}
           >
             {recalculando ? "Recalculando..." : "Recalcular Todo"}
+          </button>
+          <button
+            onClick={exportarCSV}
+            disabled={filtered.length === 0}
+            style={{ padding: "8px 16px", borderRadius: 8, background: "var(--greenBg)", color: "var(--green)", fontWeight: 600, fontSize: 12, border: "1px solid var(--greenBd)" }}
+          >
+            Exportar CSV
           </button>
           <button
             onClick={cargar}
