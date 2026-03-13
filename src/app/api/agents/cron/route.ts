@@ -168,12 +168,39 @@ export async function GET(req: NextRequest) {
 
     console.log(`[agents/cron] Completado. ${ejecutados.length} triggers ejecutados.`);
 
+    // ── Snapshot diario de inteligencia ──
+    // Ejecutar recálculo full + snapshot una vez al día (entre 6-8am Chile)
+    let intelligenceResult = null;
+    try {
+      const hour = now.getHours();
+      if (hour >= 6 && hour <= 8) {
+        console.log("[agents/cron] Ejecutando recálculo de inteligencia + snapshot diario...");
+        const intelRes = await fetch(`${baseUrl}/api/intelligence/recalcular`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ full: true, snapshot: true }),
+        });
+        if (intelRes.ok) {
+          intelligenceResult = await intelRes.json();
+          console.log(`[agents/cron] Intelligence snapshot completado: ${intelligenceResult.recalculados} SKUs en ${intelligenceResult.tiempo_ms}ms`);
+        } else {
+          console.error("[agents/cron] Error en intelligence snapshot:", await intelRes.text());
+        }
+      }
+    } catch (err) {
+      console.error("[agents/cron] Error ejecutando intelligence snapshot:", err);
+    }
+
     return NextResponse.json({
       status: "ok",
       hora_chile: now.toLocaleString("es-CL"),
       triggers_evaluados: triggers.length,
       ejecutados: ejecutados.length,
       detalle: ejecutados,
+      intelligence: intelligenceResult ? {
+        recalculados: intelligenceResult.recalculados,
+        tiempo_ms: intelligenceResult.tiempo_ms,
+      } : null,
     });
 
   } catch (err) {
