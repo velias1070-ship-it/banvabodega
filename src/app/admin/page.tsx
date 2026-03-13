@@ -698,10 +698,14 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                           const newFactura: FacturaOriginal = { lineas: editFacturaLineas, neto, iva, bruto };
                           setLoading(true);
                           await updateRecepcionFacturaOriginal(selRec.id!, newFactura);
-                          // Sync qty_factura y costo_unitario en recepcion_lineas que coincidan por SKU
+                          // Sync qty_factura y costo_unitario en recepcion_lineas; crear línea si es nueva
                           for (const fl of editFacturaLineas) {
                             const match = lineas.find(l => l.sku === fl.sku);
-                            if (match) await actualizarLineaRecepcion(match.id!, { qty_factura: fl.cantidad, costo_unitario: fl.costo_unitario });
+                            if (match) {
+                              await actualizarLineaRecepcion(match.id!, { qty_factura: fl.cantidad, costo_unitario: fl.costo_unitario });
+                            } else {
+                              await agregarLineaRecepcion(selRec.id!, { sku: fl.sku, nombre: fl.nombre, codigoML: "", cantidad: fl.cantidad, costo: fl.costo_unitario, requiereEtiqueta: false });
+                            }
                           }
                           // Sync costos en encabezado
                           await actualizarRecepcion(selRec.id!, { costo_neto: neto, iva, costo_bruto: bruto });
@@ -722,8 +726,33 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                           <input type="number" value={fl.costo_unitario} onChange={e => { const v = [...editFacturaLineas]; v[i] = {...v[i], costo_unitario: Number(e.target.value)||0}; setEditFacturaLineas(v); }}
                             style={{width:70,padding:"2px 4px",borderRadius:4,background:"var(--bg2)",color:"var(--txt)",border:"1px solid var(--bg4)",fontSize:11,textAlign:"right",fontFamily:"var(--font-mono)"}} />
                           <span className="mono" style={{width:90,textAlign:"right",fontWeight:700}}>{fmtMoney(fl.cantidad * fl.costo_unitario)}</span>
+                          <button onClick={() => { const v = editFacturaLineas.filter((_, j) => j !== i); setEditFacturaLineas(v); }}
+                            style={{padding:"1px 5px",borderRadius:4,background:"var(--redBg)",color:"var(--red)",fontSize:10,fontWeight:700,border:"1px solid var(--redBd)",cursor:"pointer",lineHeight:1}}>×</button>
                         </div>
                       ))}
+                      {/* Agregar línea */}
+                      <div style={{display:"flex",alignItems:"center",gap:4,fontSize:11,padding:"5px 0",borderTop:"1px dashed var(--bg4)",marginTop:4}}>
+                        <input placeholder="SKU"
+                          id="factura-orig-new-sku"
+                          style={{flex:1,padding:"2px 4px",borderRadius:4,background:"var(--bg2)",color:"var(--txt)",border:"1px solid var(--bg4)",fontSize:11,fontFamily:"var(--font-mono)"}} />
+                        <span style={{fontSize:9,color:"var(--txt3)"}}>×</span>
+                        <input placeholder="Qty" type="number" id="factura-orig-new-qty"
+                          style={{width:50,padding:"2px 4px",borderRadius:4,background:"var(--bg2)",color:"var(--txt)",border:"1px solid var(--bg4)",fontSize:11,textAlign:"right",fontFamily:"var(--font-mono)"}} />
+                        <span style={{fontSize:9,color:"var(--txt3)"}}>@$</span>
+                        <input placeholder="Costo" type="number" id="factura-orig-new-costo"
+                          style={{width:70,padding:"2px 4px",borderRadius:4,background:"var(--bg2)",color:"var(--txt)",border:"1px solid var(--bg4)",fontSize:11,textAlign:"right",fontFamily:"var(--font-mono)"}} />
+                        <button onClick={() => {
+                          const skuEl = document.getElementById("factura-orig-new-sku") as HTMLInputElement;
+                          const qtyEl = document.getElementById("factura-orig-new-qty") as HTMLInputElement;
+                          const costoEl = document.getElementById("factura-orig-new-costo") as HTMLInputElement;
+                          const sku = skuEl?.value?.trim().toUpperCase(); const qty = Number(qtyEl?.value) || 0; const costo = Number(costoEl?.value) || 0;
+                          if (!sku) return;
+                          const prod = findProduct(sku).find(p => p.sku === sku);
+                          setEditFacturaLineas([...editFacturaLineas, { sku, nombre: prod?.nombre || sku, cantidad: qty, costo_unitario: costo }]);
+                          if (skuEl) skuEl.value = ""; if (qtyEl) qtyEl.value = ""; if (costoEl) costoEl.value = "";
+                          skuEl?.focus();
+                        }} style={{padding:"2px 8px",borderRadius:4,background:"var(--greenBg)",color:"var(--green)",fontSize:10,fontWeight:700,border:"1px solid var(--greenBd)",cursor:"pointer"}}>+</button>
+                      </div>
                     </div>
                     {(() => {
                       const neto = editFacturaLineas.reduce((s, l) => s + l.cantidad * l.costo_unitario, 0);
