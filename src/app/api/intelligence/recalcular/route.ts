@@ -14,6 +14,7 @@ import {
   upsertSkuIntelligence,
   insertHistorySnapshots,
   upsertStockSnapshots,
+  queryPrevIntelligence,
   type SkuIntelligenceUpsert,
 } from "@/lib/intelligence-queries";
 import {
@@ -59,6 +60,7 @@ export async function POST(req: NextRequest) {
       ocLineas,
       conteos,
       movimientos,
+      prevIntelligence,
     ] = await Promise.all([
       queryStockPorSku(),
       queryComposicion(),
@@ -69,6 +71,7 @@ export async function POST(req: NextRequest) {
       queryOrdenesCompraActivas(),
       queryConteos(3),
       queryMovimientos(60),
+      queryPrevIntelligence(),
     ]);
 
     // Eventos activos para hoy
@@ -131,6 +134,7 @@ export async function POST(req: NextRequest) {
       })),
       stockEnTransito,
       ocPendientesPorSku,
+      prevIntelligence,
       config: DEFAULT_INTEL_CONFIG,
       hoy,
     });
@@ -368,6 +372,12 @@ function rowToUpsert(r: SkuIntelRow): SkuIntelligenceUpsert {
     dias_sin_movimiento: r.dias_sin_movimiento,
     alertas: r.alertas,
     alertas_count: r.alertas_count,
+    vel_pre_quiebre: r.vel_pre_quiebre,
+    dias_en_quiebre: r.dias_en_quiebre,
+    es_quiebre_proveedor: r.es_quiebre_proveedor,
+    abc_pre_quiebre: r.abc_pre_quiebre,
+    gmroi_potencial: r.gmroi_potencial,
+    es_catch_up: r.es_catch_up,
     updated_at: r.updated_at,
     datos_desde: r.datos_desde,
     datos_hasta: r.datos_hasta,
