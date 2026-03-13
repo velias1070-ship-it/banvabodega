@@ -1073,10 +1073,27 @@ export default function AdminReposicion() {
     if (!file) return;
     setFileNameVelocidad(file.name);
     const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = async (ev) => {
       const data = new Uint8Array(ev.target?.result as ArrayBuffer);
       const wb = XLSX.read(data, { type: "array" });
-      setVelocidades(parseVelocidad(wb));
+      const parsed = parseVelocidad(wb);
+      setVelocidades(parsed);
+
+      // Persistir stock Full en stock_full_cache para que intelligence lo lea server-side
+      const sb = getSupabase();
+      if (sb && parsed.length > 0) {
+        const rows = parsed.map(v => ({
+          sku_venta: v.skuVenta,
+          cantidad: v.stockFull,
+          nombre: v.nombre,
+          vel_promedio: v.promedioSemanal,
+          updated_at: new Date().toISOString(),
+        }));
+        for (let i = 0; i < rows.length; i += 500) {
+          await sb.from("stock_full_cache").upsert(rows.slice(i, i + 500), { onConflict: "sku_venta" });
+        }
+        console.log(`[AdminReposicion] stock_full_cache actualizado: ${rows.length} SKUs`);
+      }
     };
     reader.readAsArrayBuffer(file);
   }, []);
