@@ -354,7 +354,7 @@ export default function AdminInteligencia() {
                 <td className="mono" style={{ textAlign: "right", fontSize: 11, color: "var(--txt3)" }}>{fmtN(r.target_dias_full, 0)}d</td>
                 <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.mandar_full > 0 ? "var(--blue)" : "var(--txt3)" }}>{r.mandar_full > 0 ? fmtInt(r.mandar_full) : "—"}</td>
                 <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.pedir_proveedor > 0 ? "var(--amber)" : "var(--txt3)" }}>{r.pedir_proveedor > 0 ? fmtInt(r.pedir_proveedor) : "—"}</td>
-                <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.margen_full_30d < 0 ? "var(--red)" : "var(--green)" }}>{fmtN(r.margen_full_30d, 0)}%</td>
+                <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.margen_full_30d < 0 ? "var(--red)" : "var(--green)" }}>{fmtMoney(r.margen_full_30d)}</td>
                 <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtN(r.gmroi, 2)}</td>
                 <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.dio > 90 ? "var(--red)" : r.dio > 60 ? "var(--amber)" : "var(--txt)" }}>{fmtN(r.dio, 0)}</td>
                 <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.venta_perdida_pesos > 0 ? "var(--red)" : "var(--txt3)" }}>{r.venta_perdida_pesos > 0 ? fmtMoney(r.venta_perdida_pesos) : "—"}</td>
