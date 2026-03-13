@@ -14,6 +14,7 @@ import {
   upsertSkuIntelligence,
   insertHistorySnapshots,
   upsertStockSnapshots,
+  type SkuIntelligenceUpsert,
 } from "@/lib/intelligence-queries";
 import {
   recalcularTodo,
@@ -284,7 +285,7 @@ function inferirQuiebresDeOrdenes(
 }
 
 /** Convierte SkuIntelRow a formato de upsert para Supabase */
-function rowToUpsert(r: SkuIntelRow): Record<string, unknown> {
+function rowToUpsert(r: SkuIntelRow): SkuIntelligenceUpsert {
   return {
     sku_origen: r.sku_origen,
     nombre: r.nombre,
