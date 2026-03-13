@@ -1,0 +1,377 @@
+"use client";
+import { useState, useEffect, useCallback } from "react";
+import { getSupabase } from "@/lib/supabase";
+
+// ============================================
+// Tipos
+// ============================================
+
+interface IntelRow {
+  sku_origen: string;
+  nombre: string | null;
+  categoria: string | null;
+  proveedor: string | null;
+  skus_venta: string[];
+  vel_ponderada: number;
+  vel_full: number;
+  vel_flex: number;
+  vel_7d: number;
+  vel_30d: number;
+  stock_full: number;
+  stock_bodega: number;
+  stock_total: number;
+  stock_en_transito: number;
+  stock_proyectado: number;
+  oc_pendientes: number;
+  cob_full: number;
+  cob_total: number;
+  target_dias_full: number;
+  abc: string;
+  xyz: string;
+  cuadrante: string;
+  accion: string;
+  prioridad: number;
+  mandar_full: number;
+  pedir_proveedor: number;
+  pedir_proveedor_bultos: number;
+  margen_full_30d: number;
+  margen_flex_30d: number;
+  gmroi: number;
+  dio: number;
+  ingreso_30d: number;
+  dias_sin_stock_full: number;
+  venta_perdida_pesos: number;
+  alertas: string[];
+  alertas_count: number;
+  evento_activo: string | null;
+  multiplicador_evento: number;
+  liquidacion_accion: string | null;
+  liquidacion_descuento_sugerido: number;
+  stock_seguridad: number;
+  punto_reorden: number;
+  updated_at: string;
+}
+
+// ============================================
+// Helpers
+// ============================================
+
+const fmtN = (n: number | null | undefined, d = 1) => n == null ? "—" : Number(n).toFixed(d);
+const fmtInt = (n: number | null | undefined) => n == null ? "—" : Math.round(Number(n)).toLocaleString("es-CL");
+const fmtMoney = (n: number | null | undefined) => n == null ? "—" : "$" + Math.round(Number(n)).toLocaleString("es-CL");
+
+function accionColor(a: string): string {
+  switch (a) {
+    case "URGENTE": return "var(--red)";
+    case "PEDIR": return "var(--amber)";
+    case "MANDAR": return "var(--blue)";
+    case "OK": return "var(--green)";
+    case "EXCESO": return "var(--cyan)";
+    default: return "var(--txt3)";
+  }
+}
+
+function abcColor(a: string): string {
+  switch (a) {
+    case "A": return "var(--green)";
+    case "B": return "var(--amber)";
+    case "C": return "var(--txt3)";
+    default: return "var(--txt3)";
+  }
+}
+
+function cuadranteLabel(c: string): string {
+  switch (c) {
+    case "ESTRELLA": return "Estrella";
+    case "VOLUMEN": return "Volumen";
+    case "CASHCOW": return "Cash Cow";
+    case "REVISAR": return "Revisar";
+    default: return c;
+  }
+}
+
+// ============================================
+// Componente principal
+// ============================================
+
+export default function AdminInteligencia() {
+  const [rows, setRows] = useState<IntelRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [lastUpdate, setLastUpdate] = useState<string | null>(null);
+  const [recalculando, setRecalculando] = useState(false);
+  const [recalcResult, setRecalcResult] = useState<string | null>(null);
+
+  // Filtros
+  const [filtroAccion, setFiltroAccion] = useState<string>("todos");
+  const [filtroABC, setFiltroABC] = useState<string>("todos");
+  const [filtroCuadrante, setFiltroCuadrante] = useState<string>("todos");
+  const [filtroProveedor, setFiltroProveedor] = useState<string>("todos");
+  const [filtroAlerta, setFiltroAlerta] = useState<string>("todos");
+  const [busqueda, setBusqueda] = useState("");
+  const [ordenarPor, setOrdenarPor] = useState<string>("prioridad");
+
+  const cargar = useCallback(async () => {
+    setLoading(true);
+    const sb = getSupabase();
+    if (!sb) { setLoading(false); return; }
+    const { data } = await sb.from("sku_intelligence")
+      .select("*")
+      .or("vel_ponderada.gt.0,stock_total.gt.0")
+      .order("prioridad", { ascending: true })
+      .limit(500);
+    const r = (data || []) as IntelRow[];
+    setRows(r);
+    if (r.length > 0) setLastUpdate(r[0].updated_at);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { cargar(); }, [cargar]);
+
+  const recalcular = useCallback(async () => {
+    setRecalculando(true);
+    setRecalcResult(null);
+    try {
+      const res = await fetch("/api/intelligence/recalcular", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ full: true }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setRecalcResult(`Recalculados: ${data.recalculados} SKUs en ${data.tiempo_ms}ms`);
+        await cargar();
+      } else {
+        setRecalcResult("Error al recalcular");
+      }
+    } catch {
+      setRecalcResult("Error de conexion");
+    }
+    setRecalculando(false);
+  }, [cargar]);
+
+  // Proveedores únicos
+  const proveedores = Array.from(new Set(rows.map(r => r.proveedor).filter(Boolean))) as string[];
+
+  // Alertas únicas
+  const alertasUnicas: string[] = [];
+  rows.forEach(r => {
+    (r.alertas || []).forEach(a => {
+      if (!alertasUnicas.includes(a)) alertasUnicas.push(a);
+    });
+  });
+  alertasUnicas.sort();
+
+  // Filtrar
+  let filtered = rows;
+  if (filtroAccion !== "todos") filtered = filtered.filter(r => r.accion === filtroAccion);
+  if (filtroABC !== "todos") filtered = filtered.filter(r => r.abc === filtroABC);
+  if (filtroCuadrante !== "todos") filtered = filtered.filter(r => r.cuadrante === filtroCuadrante);
+  if (filtroProveedor !== "todos") filtered = filtered.filter(r => r.proveedor === filtroProveedor);
+  if (filtroAlerta !== "todos") filtered = filtered.filter(r => (r.alertas || []).includes(filtroAlerta));
+  if (busqueda.trim()) {
+    const q = busqueda.toLowerCase();
+    filtered = filtered.filter(r =>
+      r.sku_origen.toLowerCase().includes(q) ||
+      (r.nombre || "").toLowerCase().includes(q) ||
+      (r.skus_venta || []).some(sv => sv.toLowerCase().includes(q))
+    );
+  }
+
+  // Ordenar
+  filtered = [...filtered].sort((a, b) => {
+    switch (ordenarPor) {
+      case "prioridad": return a.prioridad - b.prioridad;
+      case "vel": return b.vel_ponderada - a.vel_ponderada;
+      case "cob": return a.cob_full - b.cob_full;
+      case "ingreso": return b.ingreso_30d - a.ingreso_30d;
+      case "venta_perdida": return b.venta_perdida_pesos - a.venta_perdida_pesos;
+      case "gmroi": return b.gmroi - a.gmroi;
+      case "dio": return b.dio - a.dio;
+      default: return 0;
+    }
+  });
+
+  // KPIs
+  const totalSkus = rows.length;
+  const agotadosFull = rows.filter(r => r.stock_full <= 0 && r.vel_full > 0).length;
+  const urgentes = rows.filter(r => r.accion === "URGENTE" || r.accion === "PEDIR").length;
+  const totalAlertas = rows.reduce((a, r) => a + r.alertas_count, 0);
+  const ventaPerdida = rows.reduce((a, r) => a + (r.venta_perdida_pesos || 0), 0);
+  const conEvento = rows.filter(r => r.evento_activo).length;
+  const enTransito = rows.filter(r => r.stock_en_transito > 0).length;
+  const liquidacion = rows.filter(r => r.liquidacion_accion).length;
+  const abcA = rows.filter(r => r.abc === "A").length;
+  const abcB = rows.filter(r => r.abc === "B").length;
+  const abcC = rows.filter(r => r.abc === "C").length;
+
+  if (loading) return <div style={{ padding: 24, color: "var(--txt3)" }}>Cargando inteligencia...</div>;
+
+  return (
+    <div style={{ padding: "0 4px" }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Inteligencia de Inventario</h2>
+          {lastUpdate && <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 2 }}>Ultima actualizacion: {new Date(lastUpdate).toLocaleString("es-CL")}</div>}
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            onClick={recalcular}
+            disabled={recalculando}
+            style={{ padding: "8px 16px", borderRadius: 8, background: "var(--cyanBg)", color: "var(--cyan)", fontWeight: 600, fontSize: 12, border: "1px solid var(--cyanBd)" }}
+          >
+            {recalculando ? "Recalculando..." : "Recalcular Todo"}
+          </button>
+          <button
+            onClick={cargar}
+            style={{ padding: "8px 16px", borderRadius: 8, background: "var(--bg3)", color: "var(--txt2)", fontWeight: 600, fontSize: 12, border: "1px solid var(--bg4)" }}
+          >
+            Refrescar
+          </button>
+        </div>
+      </div>
+      {recalcResult && <div style={{ padding: "8px 12px", borderRadius: 8, background: "var(--greenBg)", color: "var(--green)", fontSize: 12, marginBottom: 12, border: "1px solid var(--greenBd)" }}>{recalcResult}</div>}
+
+      {/* KPIs */}
+      <div className="kpi-grid" style={{ marginBottom: 16 }}>
+        <div className="kpi"><div className="kpi-value" style={{ color: "var(--cyan)" }}>{totalSkus}</div><div className="kpi-label">SKUs Activos</div></div>
+        <div className="kpi"><div className="kpi-value" style={{ color: "var(--red)" }}>{agotadosFull}</div><div className="kpi-label">Agotados Full</div></div>
+        <div className="kpi"><div className="kpi-value" style={{ color: "var(--amber)" }}>{urgentes}</div><div className="kpi-label">Urgentes/Pedir</div></div>
+        <div className="kpi"><div className="kpi-value" style={{ color: "var(--red)" }}>{totalAlertas}</div><div className="kpi-label">Alertas Totales</div></div>
+        <div className="kpi"><div className="kpi-value mono" style={{ color: "var(--red)", fontSize: 14 }}>{fmtMoney(ventaPerdida)}</div><div className="kpi-label">Venta Perdida</div></div>
+        <div className="kpi"><div className="kpi-value" style={{ color: "var(--blue)" }}>{enTransito}</div><div className="kpi-label">Con Stock en Transito</div></div>
+        <div className="kpi"><div className="kpi-value" style={{ color: "var(--amber)" }}>{conEvento}</div><div className="kpi-label">Evento Activo</div></div>
+        <div className="kpi"><div className="kpi-value" style={{ color: "var(--txt3)" }}>{liquidacion}</div><div className="kpi-label">Liquidacion</div></div>
+      </div>
+
+      {/* ABC Distribution Bar */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center" }}>
+        <span style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)" }}>ABC:</span>
+        <div style={{ flex: 1, display: "flex", height: 20, borderRadius: 6, overflow: "hidden" }}>
+          {abcA > 0 && <div style={{ width: `${(abcA / totalSkus) * 100}%`, background: "var(--green)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, color: "#000" }}>A ({abcA})</div>}
+          {abcB > 0 && <div style={{ width: `${(abcB / totalSkus) * 100}%`, background: "var(--amber)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, color: "#000" }}>B ({abcB})</div>}
+          {abcC > 0 && <div style={{ width: `${(abcC / totalSkus) * 100}%`, background: "var(--bg4)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, color: "var(--txt3)" }}>C ({abcC})</div>}
+        </div>
+      </div>
+
+      {/* Filtros */}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+        <input
+          type="text"
+          placeholder="Buscar SKU o nombre..."
+          value={busqueda}
+          onChange={e => setBusqueda(e.target.value)}
+          className="form-input"
+          style={{ flex: "1 1 180px", minWidth: 120, fontSize: 12, padding: "6px 10px" }}
+        />
+        <select value={filtroAccion} onChange={e => setFiltroAccion(e.target.value)} className="form-input" style={{ fontSize: 12, padding: "6px 8px" }}>
+          <option value="todos">Accion: Todas</option>
+          <option value="URGENTE">URGENTE</option>
+          <option value="PEDIR">PEDIR</option>
+          <option value="MANDAR">MANDAR</option>
+          <option value="OK">OK</option>
+          <option value="EXCESO">EXCESO</option>
+        </select>
+        <select value={filtroABC} onChange={e => setFiltroABC(e.target.value)} className="form-input" style={{ fontSize: 12, padding: "6px 8px" }}>
+          <option value="todos">ABC: Todos</option>
+          <option value="A">A</option>
+          <option value="B">B</option>
+          <option value="C">C</option>
+        </select>
+        <select value={filtroCuadrante} onChange={e => setFiltroCuadrante(e.target.value)} className="form-input" style={{ fontSize: 12, padding: "6px 8px" }}>
+          <option value="todos">Cuadrante: Todos</option>
+          <option value="ESTRELLA">Estrella</option>
+          <option value="VOLUMEN">Volumen</option>
+          <option value="CASHCOW">Cash Cow</option>
+          <option value="REVISAR">Revisar</option>
+        </select>
+        <select value={filtroProveedor} onChange={e => setFiltroProveedor(e.target.value)} className="form-input" style={{ fontSize: 12, padding: "6px 8px" }}>
+          <option value="todos">Proveedor: Todos</option>
+          {proveedores.map(p => <option key={p} value={p}>{p}</option>)}
+        </select>
+        <select value={filtroAlerta} onChange={e => setFiltroAlerta(e.target.value)} className="form-input" style={{ fontSize: 12, padding: "6px 8px" }}>
+          <option value="todos">Alerta: Todas</option>
+          {alertasUnicas.map(a => <option key={a} value={a}>{a}</option>)}
+        </select>
+        <select value={ordenarPor} onChange={e => setOrdenarPor(e.target.value)} className="form-input" style={{ fontSize: 12, padding: "6px 8px" }}>
+          <option value="prioridad">Ordenar: Prioridad</option>
+          <option value="vel">Ordenar: Velocidad</option>
+          <option value="cob">Ordenar: Cobertura (menor)</option>
+          <option value="ingreso">Ordenar: Ingreso 30d</option>
+          <option value="venta_perdida">Ordenar: Venta Perdida</option>
+          <option value="gmroi">Ordenar: GMROI</option>
+          <option value="dio">Ordenar: DIO</option>
+        </select>
+      </div>
+
+      <div style={{ fontSize: 11, color: "var(--txt3)", marginBottom: 8 }}>{filtered.length} de {totalSkus} SKUs</div>
+
+      {/* Tabla */}
+      <div style={{ overflowX: "auto" }}>
+        <table className="tbl" style={{ minWidth: 1200 }}>
+          <thead>
+            <tr>
+              <th>SKU</th>
+              <th>Nombre</th>
+              <th>Accion</th>
+              <th>ABC</th>
+              <th>Cuad.</th>
+              <th style={{ textAlign: "right" }}>Vel/sem</th>
+              <th style={{ textAlign: "right" }}>St.Full</th>
+              <th style={{ textAlign: "right" }}>St.Bod</th>
+              <th style={{ textAlign: "right" }}>Transito</th>
+              <th style={{ textAlign: "right" }}>Cob Full</th>
+              <th style={{ textAlign: "right" }}>Target</th>
+              <th style={{ textAlign: "right" }}>Mandar</th>
+              <th style={{ textAlign: "right" }}>Pedir</th>
+              <th style={{ textAlign: "right" }}>Margen F</th>
+              <th style={{ textAlign: "right" }}>GMROI</th>
+              <th style={{ textAlign: "right" }}>DIO</th>
+              <th style={{ textAlign: "right" }}>V.Perdida</th>
+              <th>Alertas</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map(r => (
+              <tr key={r.sku_origen}>
+                <td className="mono" style={{ fontSize: 11, whiteSpace: "nowrap" }}>{r.sku_origen}</td>
+                <td style={{ fontSize: 11, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.nombre || ""}>{r.nombre || "—"}</td>
+                <td>
+                  <span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 700, background: accionColor(r.accion) + "22", color: accionColor(r.accion), border: `1px solid ${accionColor(r.accion)}44` }}>
+                    {r.accion}
+                  </span>
+                </td>
+                <td style={{ textAlign: "center" }}>
+                  <span style={{ color: abcColor(r.abc), fontWeight: 700, fontSize: 12 }}>{r.abc}</span>
+                  <span style={{ color: "var(--txt3)", fontSize: 10 }}>{r.xyz}</span>
+                </td>
+                <td style={{ fontSize: 10, color: "var(--txt2)" }}>{cuadranteLabel(r.cuadrante)}</td>
+                <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtN(r.vel_ponderada)}</td>
+                <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.stock_full <= 0 && r.vel_full > 0 ? "var(--red)" : "var(--txt)" }}>{fmtInt(r.stock_full)}</td>
+                <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtInt(r.stock_bodega)}</td>
+                <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.stock_en_transito > 0 ? "var(--blue)" : "var(--txt3)" }}>{r.stock_en_transito > 0 ? fmtInt(r.stock_en_transito) : "—"}</td>
+                <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.cob_full < 14 ? "var(--red)" : r.cob_full < 30 ? "var(--amber)" : "var(--green)" }}>{fmtN(r.cob_full, 0)}d</td>
+                <td className="mono" style={{ textAlign: "right", fontSize: 11, color: "var(--txt3)" }}>{fmtN(r.target_dias_full, 0)}d</td>
+                <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.mandar_full > 0 ? "var(--blue)" : "var(--txt3)" }}>{r.mandar_full > 0 ? fmtInt(r.mandar_full) : "—"}</td>
+                <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.pedir_proveedor > 0 ? "var(--amber)" : "var(--txt3)" }}>{r.pedir_proveedor > 0 ? fmtInt(r.pedir_proveedor) : "—"}</td>
+                <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.margen_full_30d < 0 ? "var(--red)" : "var(--green)" }}>{fmtN(r.margen_full_30d, 0)}%</td>
+                <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtN(r.gmroi, 2)}</td>
+                <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.dio > 90 ? "var(--red)" : r.dio > 60 ? "var(--amber)" : "var(--txt)" }}>{fmtN(r.dio, 0)}</td>
+                <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.venta_perdida_pesos > 0 ? "var(--red)" : "var(--txt3)" }}>{r.venta_perdida_pesos > 0 ? fmtMoney(r.venta_perdida_pesos) : "—"}</td>
+                <td>
+                  <div style={{ display: "flex", gap: 2, flexWrap: "wrap", maxWidth: 160 }}>
+                    {(r.alertas || []).slice(0, 3).map((a, i) => (
+                      <span key={i} style={{ padding: "1px 5px", borderRadius: 3, fontSize: 9, background: "var(--redBg)", color: "var(--red)", border: "1px solid var(--redBd)", whiteSpace: "nowrap" }}>{a}</span>
+                    ))}
+                    {(r.alertas || []).length > 3 && <span style={{ fontSize: 9, color: "var(--txt3)" }}>+{r.alertas.length - 3}</span>}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {filtered.length === 0 && <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>No hay datos de inteligencia. Ejecuta &quot;Recalcular Todo&quot; para generar.</div>}
+    </div>
+  );
+}
