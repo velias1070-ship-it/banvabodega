@@ -352,7 +352,7 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, folio, prov
 
   const doEtiquetar = async (qty: number) => {
     const newTotal = (linea.qty_etiquetada || 0) + qty;
-    const qtyTotal = linea.qty_recibida ?? linea.qty_factura;
+    const qtyTotal = linea.qty_recibida || linea.qty_factura;
     setSaving(true);
     await etiquetarLinea(linea.id!, newTotal, operario, qtyTotal);
     showToast(`${qty} unidades etiquetadas (${newTotal}/${qtyTotal})`);
@@ -362,7 +362,7 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, folio, prov
     setScanResult(null);
     setScanCode("");
     // Renew lock after each labeling action
-    renovarBloqueo(linea.id!, operario);
+    await renovarBloqueo(linea.id!, operario);
     onStepComplete();
   };
 
@@ -400,7 +400,7 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, folio, prov
     : (linea.sku_venta ? [{ skuVenta: linea.sku_venta, codigoMl: linea.codigo_ml, unidades: 1 }] : []);
 
   useEffect(() => {
-    const qtyTotal = linea.qty_recibida ?? linea.qty_factura;
+    const qtyTotal = linea.qty_recibida || linea.qty_factura;
     const remaining = qtyTotal - (linea.qty_ubicada || 0);
     setUbicarQty(Math.max(0, remaining));
     // Sincronizar formato cuando cambia la línea
@@ -440,7 +440,7 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, folio, prov
   };
 
   const isComplete = linea.estado === "UBICADA";
-  const qtyTotal = linea.qty_recibida ?? linea.qty_factura;
+  const qtyTotal = linea.qty_recibida || linea.qty_factura;
   const qtyPendienteUbicar = qtyTotal - (linea.qty_ubicada || 0);
 
   return (
