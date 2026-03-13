@@ -226,6 +226,44 @@ export async function queryOrdenesCompraActivas(): Promise<OrdenCompraLineaRow[]
   }));
 }
 
+/** Datos previos de sku_intelligence para continuidad de quiebre prolongado */
+export async function queryPrevIntelligence(): Promise<Map<string, {
+  sku_origen: string;
+  vel_pre_quiebre: number;
+  dias_en_quiebre: number;
+  es_quiebre_proveedor: boolean;
+  abc_pre_quiebre: string | null;
+  vel_ponderada: number;
+  abc: string;
+  stock_full: number;
+  tiene_stock_prov: boolean;
+}>> {
+  const sb = getServerSupabase();
+  if (!sb) return new Map();
+  const { data } = await sb.from("sku_intelligence")
+    .select("sku_origen, vel_pre_quiebre, dias_en_quiebre, es_quiebre_proveedor, abc_pre_quiebre, vel_ponderada, abc, stock_full, tiene_stock_prov")
+    .or("dias_en_quiebre.gt.0,vel_pre_quiebre.gt.0");
+  const map = new Map<string, {
+    sku_origen: string; vel_pre_quiebre: number; dias_en_quiebre: number;
+    es_quiebre_proveedor: boolean; abc_pre_quiebre: string | null;
+    vel_ponderada: number; abc: string; stock_full: number; tiene_stock_prov: boolean;
+  }>();
+  for (const row of (data || [])) {
+    map.set(row.sku_origen, {
+      sku_origen: row.sku_origen,
+      vel_pre_quiebre: row.vel_pre_quiebre || 0,
+      dias_en_quiebre: row.dias_en_quiebre || 0,
+      es_quiebre_proveedor: row.es_quiebre_proveedor || false,
+      abc_pre_quiebre: row.abc_pre_quiebre || null,
+      vel_ponderada: row.vel_ponderada || 0,
+      abc: row.abc || "C",
+      stock_full: row.stock_full || 0,
+      tiene_stock_prov: row.tiene_stock_prov ?? true,
+    });
+  }
+  return map;
+}
+
 /* ───── Upserts ───── */
 
 export interface SkuIntelligenceUpsert {

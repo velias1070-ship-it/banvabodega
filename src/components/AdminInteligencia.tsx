@@ -49,6 +49,12 @@ interface IntelRow {
   liquidacion_descuento_sugerido: number;
   stock_seguridad: number;
   punto_reorden: number;
+  vel_pre_quiebre: number;
+  dias_en_quiebre: number;
+  es_quiebre_proveedor: boolean;
+  abc_pre_quiebre: string | null;
+  gmroi_potencial: number;
+  es_catch_up: boolean;
   updated_at: string;
 }
 
@@ -63,10 +69,17 @@ const fmtMoney = (n: number | null | undefined) => n == null ? "—" : "$" + Mat
 function accionColor(a: string): string {
   switch (a) {
     case "URGENTE": return "var(--red)";
+    case "AGOTADO_PEDIR": return "var(--red)";
+    case "AGOTADO_SIN_PROVEEDOR": return "var(--red)";
     case "PEDIR": return "var(--amber)";
+    case "MANDAR_FULL": return "var(--blue)";
     case "MANDAR": return "var(--blue)";
+    case "PLANIFICAR": return "var(--amber)";
+    case "EN_TRANSITO": return "var(--blue)";
     case "OK": return "var(--green)";
     case "EXCESO": return "var(--cyan)";
+    case "DEAD_STOCK": return "var(--txt3)";
+    case "INACTIVO": return "var(--txt3)";
     default: return "var(--txt3)";
   }
 }
@@ -200,6 +213,7 @@ export default function AdminInteligencia() {
   const conEvento = rows.filter(r => r.evento_activo).length;
   const enTransito = rows.filter(r => r.stock_en_transito > 0).length;
   const liquidacion = rows.filter(r => r.liquidacion_accion).length;
+  const estrellasQuiebre = rows.filter(r => r.dias_en_quiebre >= 14 && r.vel_pre_quiebre > 2 && (r.abc === "A" || r.abc_pre_quiebre === "A"));
   const abcA = rows.filter(r => r.abc === "A").length;
   const abcB = rows.filter(r => r.abc === "B").length;
   const abcC = rows.filter(r => r.abc === "C").length;
@@ -244,6 +258,27 @@ export default function AdminInteligencia() {
         <div className="kpi"><div className="kpi-value" style={{ color: "var(--txt3)" }}>{liquidacion}</div><div className="kpi-label">Liquidacion</div></div>
       </div>
 
+      {/* Estrellas en Quiebre Prolongado */}
+      {estrellasQuiebre.length > 0 && (
+        <div className="card" style={{ marginBottom: 16, padding: 14, border: "1px solid var(--redBd)", background: "var(--redBg)" }}>
+          <div style={{ fontWeight: 700, fontSize: 13, color: "var(--red)", marginBottom: 8 }}>Productos Estrella en Quiebre ({estrellasQuiebre.length})</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {estrellasQuiebre.map(r => (
+              <div key={r.sku_origen} style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", padding: "6px 8px", borderRadius: 6, background: "var(--bg2)" }}>
+                <span className="mono" style={{ fontWeight: 700, fontSize: 12, color: "var(--txt)" }}>{r.sku_origen}</span>
+                <span style={{ fontSize: 11, color: "var(--txt2)", flex: 1, minWidth: 120 }}>{r.nombre || ""}</span>
+                <span style={{ fontSize: 10, color: "var(--amber)" }}>ABC: {r.abc_pre_quiebre || r.abc} (pre-quiebre)</span>
+                <span style={{ fontSize: 10, color: "var(--txt2)" }}>Vel pre-quiebre: <span className="mono" style={{ color: "var(--cyan)" }}>{fmtN(r.vel_pre_quiebre)}/sem</span></span>
+                <span style={{ fontSize: 10, color: "var(--red)" }}>Quiebre: <span className="mono">{r.dias_en_quiebre}d</span></span>
+                {r.es_quiebre_proveedor && <span style={{ padding: "1px 6px", borderRadius: 3, fontSize: 9, background: "var(--amberBg)", color: "var(--amber)", border: "1px solid var(--amberBd)" }}>Sin stock proveedor</span>}
+                <span style={{ fontSize: 10, color: "var(--red)" }}>V.perdida: <span className="mono">{fmtMoney(r.venta_perdida_pesos)}</span></span>
+                {r.pedir_proveedor > 0 && <span style={{ fontSize: 10, color: "var(--green)" }}>Pedir: <span className="mono">{fmtInt(r.pedir_proveedor)} uds</span></span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* ABC Distribution Bar */}
       <div style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center" }}>
         <span style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)" }}>ABC:</span>
@@ -267,10 +302,14 @@ export default function AdminInteligencia() {
         <select value={filtroAccion} onChange={e => setFiltroAccion(e.target.value)} className="form-input" style={{ fontSize: 12, padding: "6px 8px" }}>
           <option value="todos">Accion: Todas</option>
           <option value="URGENTE">URGENTE</option>
-          <option value="PEDIR">PEDIR</option>
-          <option value="MANDAR">MANDAR</option>
+          <option value="AGOTADO_PEDIR">AGOTADO PEDIR</option>
+          <option value="AGOTADO_SIN_PROVEEDOR">SIN PROVEEDOR</option>
+          <option value="MANDAR_FULL">MANDAR FULL</option>
+          <option value="PLANIFICAR">PLANIFICAR</option>
+          <option value="EN_TRANSITO">EN TRANSITO</option>
           <option value="OK">OK</option>
           <option value="EXCESO">EXCESO</option>
+          <option value="DEAD_STOCK">DEAD STOCK</option>
         </select>
         <select value={filtroABC} onChange={e => setFiltroABC(e.target.value)} className="form-input" style={{ fontSize: 12, padding: "6px 8px" }}>
           <option value="todos">ABC: Todos</option>
@@ -332,21 +371,32 @@ export default function AdminInteligencia() {
             </tr>
           </thead>
           <tbody>
-            {filtered.map(r => (
-              <tr key={r.sku_origen}>
-                <td className="mono" style={{ fontSize: 11, whiteSpace: "nowrap" }}>{r.sku_origen}</td>
+            {filtered.map(r => {
+              const esEstrellaQuiebre = r.dias_en_quiebre >= 14 && r.vel_pre_quiebre > 2 && (r.abc === "A" || r.abc_pre_quiebre === "A");
+              return (
+              <tr key={r.sku_origen} style={esEstrellaQuiebre ? { background: "var(--redBg)" } : undefined}>
+                <td className="mono" style={{ fontSize: 11, whiteSpace: "nowrap" }}>
+                  {esEstrellaQuiebre && <span title={`Quiebre ${r.dias_en_quiebre}d`} style={{ marginRight: 3 }}>*</span>}
+                  {r.es_catch_up && <span title="Catch-up post quiebre" style={{ marginRight: 3, color: "var(--amber)" }}>!</span>}
+                  {r.sku_origen}
+                </td>
                 <td style={{ fontSize: 11, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.nombre || ""}>{r.nombre || "—"}</td>
                 <td>
                   <span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 700, background: accionColor(r.accion) + "22", color: accionColor(r.accion), border: `1px solid ${accionColor(r.accion)}44` }}>
                     {r.accion}
                   </span>
+                  {r.dias_en_quiebre > 0 && <div style={{ fontSize: 9, color: "var(--txt3)", marginTop: 1 }}>{r.dias_en_quiebre}d quiebre</div>}
                 </td>
                 <td style={{ textAlign: "center" }}>
                   <span style={{ color: abcColor(r.abc), fontWeight: 700, fontSize: 12 }}>{r.abc}</span>
                   <span style={{ color: "var(--txt3)", fontSize: 10 }}>{r.xyz}</span>
+                  {r.abc_pre_quiebre && r.abc_pre_quiebre !== r.abc && <div style={{ fontSize: 9, color: "var(--amber)" }}>pre:{r.abc_pre_quiebre}</div>}
                 </td>
                 <td style={{ fontSize: 10, color: "var(--txt2)" }}>{cuadranteLabel(r.cuadrante)}</td>
-                <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtN(r.vel_ponderada)}</td>
+                <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>
+                  {fmtN(r.vel_ponderada)}
+                  {esEstrellaQuiebre && <div style={{ fontSize: 9, color: "var(--cyan)" }}>pre:{fmtN(r.vel_pre_quiebre)}</div>}
+                </td>
                 <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.stock_full <= 0 && r.vel_full > 0 ? "var(--red)" : "var(--txt)" }}>{fmtInt(r.stock_full)}</td>
                 <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtInt(r.stock_bodega)}</td>
                 <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.stock_en_transito > 0 ? "var(--blue)" : "var(--txt3)" }}>{r.stock_en_transito > 0 ? fmtInt(r.stock_en_transito) : "—"}</td>
@@ -367,7 +417,8 @@ export default function AdminInteligencia() {
                   </div>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>

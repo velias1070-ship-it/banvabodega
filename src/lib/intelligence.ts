@@ -18,6 +18,7 @@ export type AccionIntel =
   | "DEAD_STOCK"
   | "MANDAR_FULL"
   | "AGOTADO_PEDIR"
+  | "AGOTADO_SIN_PROVEEDOR"
   | "URGENTE"
   | "EN_TRANSITO"
   | "PLANIFICAR"
@@ -46,7 +47,10 @@ export type AlertaIntel =
   | "liquidar"
   | "evento_activo"
   | "cambio_canal_rentable"
-  | "en_transito";
+  | "en_transito"
+  | "estrella_quiebre_prolongado"
+  | "proveedor_volvio_stock"
+  | "catch_up_post_quiebre";
 
 export interface SkuIntelRow {
   sku_origen: string;
@@ -146,6 +150,14 @@ export interface SkuIntelRow {
   alertas: AlertaIntel[];
   alertas_count: number;
 
+  // Quiebre prolongado
+  vel_pre_quiebre: number;
+  dias_en_quiebre: number;
+  es_quiebre_proveedor: boolean;
+  abc_pre_quiebre: string | null;
+  gmroi_potencial: number;
+  es_catch_up: boolean;
+
   updated_at: string;
   datos_desde: string | null;
   datos_hasta: string | null;
@@ -218,6 +230,19 @@ export const DEFAULT_INTEL_CONFIG: RecalculoConfig = {
   cobMaxima: 60,
 };
 
+/** Datos previos de sku_intelligence para continuidad de quiebre prolongado */
+export interface PrevIntelRow {
+  sku_origen: string;
+  vel_pre_quiebre: number;
+  dias_en_quiebre: number;
+  es_quiebre_proveedor: boolean;
+  abc_pre_quiebre: string | null;
+  vel_ponderada: number;
+  abc: string;
+  stock_full: number;
+  tiene_stock_prov: boolean;
+}
+
 export interface RecalculoInput {
   productos: ProductoInput[];
   composicion: ComposicionInput[];
@@ -230,6 +255,7 @@ export interface RecalculoInput {
   movimientos: MovimientoInput[];
   stockEnTransito: Map<string, number>;
   ocPendientesPorSku: Map<string, number>;
+  prevIntelligence: Map<string, PrevIntelRow>;
   config: RecalculoConfig;
   hoy: Date;
 }
@@ -289,7 +315,7 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
   const {
     productos, composicion, ordenes, stockBodega, stockFull,
     eventosActivos, quiebres, conteos, movimientos,
-    stockEnTransito, ocPendientesPorSku, config, hoy,
+    stockEnTransito, ocPendientesPorSku, prevIntelligence, config, hoy,
   } = input;
 
   const hoyStr = hoy.toISOString().slice(0, 10);
@@ -605,20 +631,77 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
     const ventaPerdidaPesos = ventaPerdidaUds * margenFull30d;
     const ingresoPerdido = ventaPerdidaUds * precioPromedio;
 
+    // ── PASO 14b: Quiebre prolongado ──
+    const prev = prevIntelligence.get(skuOrigen);
+    let velPreQuiebre = prev?.vel_pre_quiebre || 0;
+    let diasEnQuiebre = prev?.dias_en_quiebre || 0;
+    let esQuiebreProveedor = prev?.es_quiebre_proveedor || false;
+    let abcPreQuiebre: string | null = prev?.abc_pre_quiebre || null;
+    let esCatchUp = false;
+    let gmroiPotencial = 0;
+
+    const enQuiebreAhora = stFull === 0 && velPonderada > 0;
+
+    if (enQuiebreAhora) {
+      if (prev && prev.dias_en_quiebre > 0) {
+        // Continúa en quiebre — incrementar días
+        diasEnQuiebre = prev.dias_en_quiebre + 1;
+        velPreQuiebre = prev.vel_pre_quiebre;
+        abcPreQuiebre = prev.abc_pre_quiebre;
+        esQuiebreProveedor = prev.es_quiebre_proveedor;
+      } else {
+        // Acaba de entrar en quiebre — congelar velocidad actual
+        diasEnQuiebre = diasQuiebre > 0 ? diasQuiebre : 1;
+        velPreQuiebre = velPonderada;
+        abcPreQuiebre = null; // Se asigna después del paso ABC global
+        esQuiebreProveedor = !prod || prod.estado_sku === "sin_stock_proveedor";
+      }
+    } else if (prev && prev.dias_en_quiebre > 0 && stFull > 0) {
+      // SKU se repuso — verificar catch-up
+      if (prev.vel_pre_quiebre > 2 && vel7d > prev.vel_pre_quiebre * 1.5) {
+        esCatchUp = true;
+      }
+      if (vel30d > 0 && !esCatchUp) {
+        // 3+ semanas vendiendo → reset completo
+        velPreQuiebre = 0;
+        diasEnQuiebre = 0;
+        esQuiebreProveedor = false;
+        abcPreQuiebre = null;
+      } else {
+        // Primeras semanas post-reposición
+        velPreQuiebre = prev.vel_pre_quiebre;
+        diasEnQuiebre = 0;
+        abcPreQuiebre = prev.abc_pre_quiebre;
+      }
+    }
+
+    const enQuiebreProlongado = enQuiebreAhora && diasEnQuiebre >= 14 && velPreQuiebre > 2;
+
+    // GMROI potencial: cuánto DEBERÍA rendir si tuviera stock
+    if (enQuiebreProlongado && velPreQuiebre > 0 && costoBruto > 0) {
+      const margenPromPot = margenFull30d * pctFull + margenFlex30d * pctFlex;
+      const margenAnualPot = margenPromPot * velPreQuiebre * 52;
+      const costoInvPot = costoBruto * velPreQuiebre * (targetDiasFull / 7);
+      gmroiPotencial = costoInvPot > 0 ? round2(margenAnualPot / costoInvPot) : 0;
+    }
+
     // ── PASO 15: Acción y prioridad ──
+    // Usar velEfectiva para pedir (vel_pre_quiebre si en quiebre prolongado)
+    const velParaPedir = enQuiebreProlongado ? velPreQuiebre : (multiplicadorEvento > 1 ? velAjustadaEvento : velPonderada);
     const velTarget = multiplicadorEvento > 1 ? velAjustadaEvento : velPonderada;
-    const targetFullUds = velTarget * pctFull * targetDiasFull / 7;
-    const targetFlexUds = velTarget * pctFlex * 30 / 7;
+    const targetFullUds = velParaPedir * pctFull * targetDiasFull / 7;
+    const targetFlexUds = velParaPedir * pctFlex * 30 / 7;
     const mandarFull = Math.max(0, Math.min(Math.ceil(targetFullUds - stFull), stBodega));
     const pedirTotal = Math.max(0, Math.ceil((targetFullUds + targetFlexUds) - stProyectado));
     const pedirProvBultos = innerPack > 1 && pedirTotal > 0 ? Math.ceil(pedirTotal / innerPack) : pedirTotal;
 
     let accion: AccionIntel;
     let prioridad: number;
-    if (velPonderada === 0 && stTotal === 0) { accion = "INACTIVO"; prioridad = 99; }
-    else if (velPonderada === 0 && stTotal > 0) { accion = "DEAD_STOCK"; prioridad = 80; }
-    else if (stFull === 0 && velFull > 0 && stBodega > 0) { accion = "MANDAR_FULL"; prioridad = 10; }
-    else if (stFull === 0 && velFull > 0 && stBodega === 0) { accion = "AGOTADO_PEDIR"; prioridad = 5; }
+    if (velPonderada === 0 && velPreQuiebre === 0 && stTotal === 0) { accion = "INACTIVO"; prioridad = 99; }
+    else if (velPonderada === 0 && velPreQuiebre === 0 && stTotal > 0) { accion = "DEAD_STOCK"; prioridad = 80; }
+    else if (stFull === 0 && (velFull > 0 || enQuiebreProlongado) && stBodega > 0) { accion = "MANDAR_FULL"; prioridad = 10; }
+    else if (stFull === 0 && (velFull > 0 || enQuiebreProlongado) && stBodega === 0 && esQuiebreProveedor) { accion = "AGOTADO_SIN_PROVEEDOR"; prioridad = 3; }
+    else if (stFull === 0 && (velFull > 0 || enQuiebreProlongado) && stBodega === 0) { accion = "AGOTADO_PEDIR"; prioridad = 5; }
     else if (cobFull < puntoReorden && cobFull < 999) { accion = "URGENTE"; prioridad = 15; }
     else if (cobFull < 30) { accion = "PLANIFICAR"; prioridad = 40; }
     else if (cobFull <= config.cobMaxima) { accion = "OK"; prioridad = 60; }
@@ -749,6 +832,14 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
       alertas: [],
       alertas_count: 0,
 
+      // Quiebre prolongado
+      vel_pre_quiebre: round2(velPreQuiebre),
+      dias_en_quiebre: diasEnQuiebre,
+      es_quiebre_proveedor: esQuiebreProveedor,
+      abc_pre_quiebre: abcPreQuiebre,
+      gmroi_potencial: gmroiPotencial,
+      es_catch_up: esCatchUp,
+
       updated_at: hoy.toISOString(),
       datos_desde: fechaMin ? fechaMin.slice(0, 10) : null,
       datos_hasta: fechaMax ? fechaMax.slice(0, 10) : null,
@@ -760,6 +851,12 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
   // ════════════════════════════════════════
 
   // ── PASO 9: Clasificación ABC (Pareto 80/20) ──
+  // Para SKUs en quiebre prolongado, usar vel_pre_quiebre × precio para ingreso estimado
+  for (const r of rows) {
+    if (r.dias_en_quiebre >= 14 && r.vel_pre_quiebre > 2) {
+      r.ingreso_30d = round2(r.vel_pre_quiebre * r.precio_promedio * 4.3);
+    }
+  }
   const rowsConIngreso = rows.filter(r => r.ingreso_30d > 0);
   rowsConIngreso.sort((a, b) => b.ingreso_30d - a.ingreso_30d);
   const ingresoTotal = rowsConIngreso.reduce((s, r) => s + r.ingreso_30d, 0);
@@ -777,6 +874,12 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
   // SKUs sin ingreso → C
   for (const r of rows) {
     if (r.ingreso_30d <= 0) r.abc = "C";
+  }
+  // Asignar abc_pre_quiebre para SKUs que acaban de entrar en quiebre
+  for (const r of rows) {
+    if (r.dias_en_quiebre > 0 && !r.abc_pre_quiebre) {
+      r.abc_pre_quiebre = r.abc;
+    }
   }
 
   // ── PASO 11: Cuadrante (mediana vel × margen) ──
@@ -852,6 +955,18 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
     if (r.liquidacion_accion !== null) alertas.push("liquidar");
     if (r.evento_activo !== null) alertas.push("evento_activo");
     if (r.stock_en_transito > 0) alertas.push("en_transito");
+
+    // Quiebre prolongado
+    if (r.dias_en_quiebre >= 14 && r.vel_pre_quiebre > 2 && (r.abc === "A" || r.abc_pre_quiebre === "A")) {
+      alertas.push("estrella_quiebre_prolongado");
+    }
+    if (r.es_catch_up) alertas.push("catch_up_post_quiebre");
+
+    // Proveedor volvió a tener stock (antes no tenía, ahora sí)
+    const prev2 = prevIntelligence.get(r.sku_origen);
+    if (prev2 && prev2.es_quiebre_proveedor && !r.es_quiebre_proveedor && r.vel_pre_quiebre > 2) {
+      alertas.push("proveedor_volvio_stock");
+    }
 
     r.alertas = alertas;
     r.alertas_count = alertas.length;
