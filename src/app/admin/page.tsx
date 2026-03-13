@@ -677,11 +677,29 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                         </div>
                       ))}
                     </div>
-                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,fontSize:12,padding:"6px 0",borderTop:"1px solid var(--bg4)"}}>
-                      <div><span style={{color:"var(--txt3)",fontSize:10}}>Neto:</span> <strong>{fmtMoney(facturaOrig.neto)}</strong></div>
-                      <div><span style={{color:"var(--txt3)",fontSize:10}}>IVA:</span> <strong>{fmtMoney(facturaOrig.iva)}</strong></div>
-                      <div><span style={{color:"var(--txt3)",fontSize:10}}>Bruto:</span> <strong style={{color:"var(--cyan)"}}>{fmtMoney(facturaOrig.bruto)}</strong></div>
-                    </div>
+                    {(() => {
+                      const netoCalc = facturaOrig.lineas.reduce((s, l) => s + l.cantidad * l.costo_unitario, 0);
+                      const brutoCalc = Math.round(netoCalc * 1.19);
+                      const ivaCalc = brutoCalc - netoCalc;
+                      const diffNeto = netoCalc - facturaOrig.neto;
+                      return (<>
+                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,fontSize:12,padding:"6px 0",borderTop:"1px solid var(--bg4)"}}>
+                          <div><span style={{color:"var(--txt3)",fontSize:10}}>Neto (app):</span> <strong>{fmtMoney(facturaOrig.neto)}</strong></div>
+                          <div><span style={{color:"var(--txt3)",fontSize:10}}>IVA (app):</span> <strong>{fmtMoney(facturaOrig.iva)}</strong></div>
+                          <div><span style={{color:"var(--txt3)",fontSize:10}}>Bruto (app):</span> <strong style={{color:"var(--cyan)"}}>{fmtMoney(facturaOrig.bruto)}</strong></div>
+                        </div>
+                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,fontSize:12,padding:"4px 0 0",borderTop:"1px dashed var(--bg4)"}}>
+                          <div><span style={{color:"var(--txt3)",fontSize:10}}>Neto (calc):</span> <strong style={{color: diffNeto !== 0 ? "var(--amber)" : "var(--txt)"}}>{fmtMoney(netoCalc)}</strong></div>
+                          <div><span style={{color:"var(--txt3)",fontSize:10}}>IVA (calc):</span> <strong style={{color: diffNeto !== 0 ? "var(--amber)" : "var(--txt)"}}>{fmtMoney(ivaCalc)}</strong></div>
+                          <div><span style={{color:"var(--txt3)",fontSize:10}}>Bruto (calc):</span> <strong style={{color: diffNeto !== 0 ? "var(--amber)" : "var(--cyan)"}}>{fmtMoney(brutoCalc)}</strong></div>
+                        </div>
+                        {diffNeto !== 0 && (
+                          <div style={{fontSize:10,color:"var(--amber)",marginTop:4,textAlign:"right"}}>
+                            Diferencia neto: {diffNeto > 0 ? "+" : ""}{fmtMoney(diffNeto)}
+                          </div>
+                        )}
+                      </>);
+                    })()}
                   </div>
                 )}
                 {/* Bloque 1b: Factura Original — modo edición */}
