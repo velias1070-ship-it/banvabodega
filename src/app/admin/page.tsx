@@ -748,7 +748,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                           const sku = skuEl?.value?.trim().toUpperCase(); const qty = Number(qtyEl?.value) || 0; const costo = Number(costoEl?.value) || 0;
                           if (!sku) return;
                           const prod = findProduct(sku).find(p => p.sku === sku);
-                          setEditFacturaLineas([...editFacturaLineas, { sku, nombre: prod?.nombre || sku, cantidad: qty, costo_unitario: costo }]);
+                          setEditFacturaLineas([...editFacturaLineas, { sku, nombre: prod?.name || sku, cantidad: qty, costo_unitario: costo }]);
                           if (skuEl) skuEl.value = ""; if (qtyEl) qtyEl.value = ""; if (costoEl) costoEl.value = "";
                           skuEl?.focus();
                         }} style={{padding:"2px 8px",borderRadius:4,background:"var(--greenBg)",color:"var(--green)",fontSize:10,fontWeight:700,border:"1px solid var(--greenBd)",cursor:"pointer"}}>+</button>
