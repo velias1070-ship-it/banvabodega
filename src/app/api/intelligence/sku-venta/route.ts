@@ -1,6 +1,21 @@
 import { NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
 
+/** Paginar queries de Supabase (máx 1000 filas por request) */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function paginate(queryFn: () => any): Promise<Record<string, unknown>[]> {
+  const result: Record<string, unknown>[] = [];
+  let off = 0;
+  while (true) {
+    const { data } = await queryFn().range(off, off + 999);
+    if (!data || data.length === 0) break;
+    result.push(...data);
+    if (data.length < 1000) break;
+    off += 1000;
+  }
+  return result;
+}
+
 /**
  * GET /api/intelligence/sku-venta
  *
@@ -22,23 +37,20 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "Sin conexión a Supabase" }, { status: 500 });
     }
 
-    // ── Fetch en paralelo ──
-    const [intelRes, compRes, cacheRes, ordRes] = await Promise.all([
-      sb.from("sku_intelligence")
-        .select("sku_origen, nombre, categoria, proveedor, abc, xyz, cuadrante, accion, prioridad, alertas, alertas_count, target_dias_full, stock_bodega, stock_en_transito, mandar_full, pedir_proveedor, evento_activo, liquidacion_accion, dias_en_quiebre, vel_pre_quiebre, es_quiebre_proveedor, abc_pre_quiebre, es_catch_up, venta_perdida_pesos, updated_at, vel_ponderada, stock_total"),
-      sb.from("composicion_venta").select("sku_venta, sku_origen, unidades"),
-      sb.from("stock_full_cache").select("sku_venta, cantidad"),
-      sb.from("orders_history")
+    // ── Fetch todo paginado en paralelo ──
+    const fechaDesde = new Date(Date.now() - 60 * 86400000).toISOString();
+    const [intelRows, composicion, cacheRows, ordenes] = await Promise.all([
+      paginate(() => sb.from("sku_intelligence")
+        .select("sku_origen, nombre, categoria, proveedor, abc, xyz, cuadrante, accion, prioridad, alertas, alertas_count, target_dias_full, stock_bodega, stock_en_transito, mandar_full, pedir_proveedor, evento_activo, liquidacion_accion, dias_en_quiebre, vel_pre_quiebre, es_quiebre_proveedor, abc_pre_quiebre, es_catch_up, venta_perdida_pesos, updated_at, vel_ponderada, stock_total")
+        .or("vel_ponderada.gt.0,stock_total.gt.0")),
+      paginate(() => sb.from("composicion_venta").select("sku_venta, sku_origen, unidades")),
+      paginate(() => sb.from("stock_full_cache").select("sku_venta, cantidad")),
+      paginate(() => sb.from("orders_history")
         .select("sku_venta, cantidad, canal, fecha, subtotal, comision_total, costo_envio, ingreso_envio, total")
         .eq("estado", "Pagada")
-        .gte("fecha", new Date(Date.now() - 60 * 86400000).toISOString())
-        .limit(50000),
-    ]);
-
-    const intelRows = (intelRes.data || []) as Record<string, unknown>[];
-    const composicion = (compRes.data || []) as { sku_venta: string; sku_origen: string; unidades: number }[];
-    const cacheRows = (cacheRes.data || []) as { sku_venta: string; cantidad: number }[];
-    const ordenes = (ordRes.data || []) as { sku_venta: string; cantidad: number; canal: string; fecha: string; subtotal: number; comision_total: number; costo_envio: number; ingreso_envio: number; total: number }[];
+        .gte("fecha", fechaDesde)
+        .order("fecha", { ascending: false })),
+    ]) as [Record<string, unknown>[], { sku_venta: string; sku_origen: string; unidades: number }[], { sku_venta: string; cantidad: number }[], { sku_venta: string; cantidad: number; canal: string; fecha: string; subtotal: number; comision_total: number; costo_envio: number; ingreso_envio: number; total: number }[]];
 
     // Debug log collector
     const debugLog: string[] = [];

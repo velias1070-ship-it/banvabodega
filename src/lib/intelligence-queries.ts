@@ -91,16 +91,34 @@ export interface OrdenCompraLineaRow {
   estado: string;
 }
 
+/* ───── Helpers ───── */
+
+/** Paginar queries de Supabase (default 1000 por request) */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function paginatedSelect(query: () => any, pageSize = 1000): Promise<Record<string, unknown>[]> {
+  const result: Record<string, unknown>[] = [];
+  let offset = 0;
+  while (true) {
+    const { data } = await query().range(offset, offset + pageSize - 1);
+    if (!data || data.length === 0) break;
+    result.push(...data);
+    if (data.length < pageSize) break;
+    offset += pageSize;
+  }
+  return result;
+}
+
 /* ───── Queries ───── */
 
 /** Stock agrupado por SKU (equivale a skuTotal server-side) */
 export async function queryStockPorSku(): Promise<Map<string, number>> {
   const sb = getServerSupabase();
   if (!sb) return new Map();
-  const { data } = await sb.from("stock").select("sku, cantidad");
+  const data = await paginatedSelect(() => sb.from("stock").select("sku, cantidad"));
   const map = new Map<string, number>();
-  for (const row of (data || [])) {
-    map.set(row.sku, (map.get(row.sku) || 0) + (row.cantidad || 0));
+  for (const row of data) {
+    const sku = row.sku as string;
+    map.set(sku, (map.get(sku) || 0) + ((row.cantidad as number) || 0));
   }
   return map;
 }
@@ -109,17 +127,18 @@ export async function queryStockPorSku(): Promise<Map<string, number>> {
 export async function queryComposicion(): Promise<ComposicionRow[]> {
   const sb = getServerSupabase();
   if (!sb) return [];
-  const { data } = await sb.from("composicion_venta").select("sku_venta, sku_origen, unidades");
-  return (data || []) as ComposicionRow[];
+  const data = await paginatedSelect(() => sb.from("composicion_venta").select("sku_venta, sku_origen, unidades"));
+  return data as unknown as ComposicionRow[];
 }
 
 /** Productos activos */
 export async function queryProductos(): Promise<ProductoRow[]> {
   const sb = getServerSupabase();
   if (!sb) return [];
-  const { data } = await sb.from("productos")
-    .select("sku, sku_venta, nombre, categoria, proveedor, costo, precio, inner_pack, lead_time_dias, moq, estado_sku");
-  return (data || []).map((p: Record<string, unknown>) => ({
+  const data = await paginatedSelect(() =>
+    sb.from("productos").select("sku, sku_venta, nombre, categoria, proveedor, costo, precio, inner_pack, lead_time_dias, moq, estado_sku")
+  );
+  return data.map((p) => ({
     sku: p.sku as string,
     sku_venta: (p.sku_venta as string) || "",
     nombre: (p.nombre as string) || "",
@@ -134,18 +153,27 @@ export async function queryProductos(): Promise<ProductoRow[]> {
   }));
 }
 
-/** Órdenes de orders_history (últimos N días, estado Pagada) */
+/** Órdenes de orders_history (últimos N días, estado Pagada) — paginado */
 export async function queryOrdenes(desdeDias: number = 60): Promise<OrdenHistoryRow[]> {
   const sb = getServerSupabase();
   if (!sb) return [];
   const desde = new Date(Date.now() - desdeDias * 86400000).toISOString();
-  const { data } = await sb.from("orders_history")
-    .select("sku_venta, cantidad, canal, fecha, subtotal, comision_total, costo_envio, ingreso_envio, total")
-    .eq("estado", "Pagada")
-    .gte("fecha", desde)
-    .order("fecha", { ascending: false })
-    .limit(50000);
-  return (data || []) as OrdenHistoryRow[];
+  const result: OrdenHistoryRow[] = [];
+  const PAGE = 1000;
+  let offset = 0;
+  while (true) {
+    const { data } = await sb.from("orders_history")
+      .select("sku_venta, cantidad, canal, fecha, subtotal, comision_total, costo_envio, ingreso_envio, total")
+      .eq("estado", "Pagada")
+      .gte("fecha", desde)
+      .order("fecha", { ascending: false })
+      .range(offset, offset + PAGE - 1);
+    if (!data || data.length === 0) break;
+    result.push(...(data as OrdenHistoryRow[]));
+    if (data.length < PAGE) break;
+    offset += PAGE;
+  }
+  return result;
 }
 
 /** Eventos de demanda activos para una fecha */
@@ -173,53 +201,56 @@ export async function queryConteos(limiteMeses: number = 3): Promise<ConteoRow[]
   return (data || []) as ConteoRow[];
 }
 
-/** Movimientos recientes */
+/** Movimientos recientes — paginado */
 export async function queryMovimientos(desdeDias: number = 60): Promise<MovimientoRow[]> {
   const sb = getServerSupabase();
   if (!sb) return [];
   const desde = new Date(Date.now() - desdeDias * 86400000).toISOString();
-  const { data } = await sb.from("movimientos")
-    .select("sku, tipo, razon, cantidad, created_at")
-    .gte("created_at", desde)
-    .order("created_at", { ascending: false })
-    .limit(5000);
-  return (data || []) as MovimientoRow[];
+  const data = await paginatedSelect(() =>
+    sb.from("movimientos")
+      .select("sku, tipo, razon, cantidad, created_at")
+      .gte("created_at", desde)
+      .order("created_at", { ascending: false })
+  );
+  return data as unknown as MovimientoRow[];
 }
 
-/** Stock Full cache (server-side) */
+/** Stock Full cache (server-side) — paginado */
 export async function queryStockFullCache(): Promise<Map<string, number>> {
   const sb = getServerSupabase();
   if (!sb) return new Map();
-  const { data } = await sb.from("stock_full_cache").select("sku_venta, cantidad");
+  const data = await paginatedSelect(() => sb.from("stock_full_cache").select("sku_venta, cantidad"));
   const map = new Map<string, number>();
-  for (const row of (data || [])) {
-    map.set(row.sku_venta, row.cantidad || 0);
+  for (const row of data) {
+    map.set(row.sku_venta as string, (row.cantidad as number) || 0);
   }
   return map;
 }
 
-/** Velocidad promedio de ProfitGuard por SKU Venta */
+/** Velocidad promedio de ProfitGuard por SKU Venta — paginado */
 export async function queryVelProfitguard(): Promise<Map<string, number>> {
   const sb = getServerSupabase();
   if (!sb) return new Map();
-  const { data } = await sb.from("stock_full_cache").select("sku_venta, vel_promedio");
+  const data = await paginatedSelect(() => sb.from("stock_full_cache").select("sku_venta, vel_promedio"));
   const map = new Map<string, number>();
-  for (const row of (data || [])) {
-    if (row.vel_promedio > 0) map.set(row.sku_venta, row.vel_promedio);
+  for (const row of data) {
+    if ((row.vel_promedio as number) > 0) map.set(row.sku_venta as string, row.vel_promedio as number);
   }
   return map;
 }
 
-/** Snapshots de stock para detección de quiebres (últimos N días) */
+/** Snapshots de stock para detección de quiebres (últimos N días) — paginado */
 export async function queryStockSnapshots(desdeDias: number = 60): Promise<StockSnapshotRow[]> {
   const sb = getServerSupabase();
   if (!sb) return [];
   const desde = new Date(Date.now() - desdeDias * 86400000).toISOString().slice(0, 10);
-  const { data } = await sb.from("stock_snapshots")
-    .select("fecha, sku_origen, en_quiebre_full")
-    .gte("fecha", desde)
-    .order("fecha", { ascending: true });
-  return (data || []) as StockSnapshotRow[];
+  const data = await paginatedSelect(() =>
+    sb.from("stock_snapshots")
+      .select("fecha, sku_origen, en_quiebre_full")
+      .gte("fecha", desde)
+      .order("fecha", { ascending: true })
+  );
+  return data as unknown as StockSnapshotRow[];
 }
 
 /** Líneas de órdenes de compra activas (stock en tránsito) */
@@ -252,25 +283,27 @@ export async function queryPrevIntelligence(): Promise<Map<string, {
 }>> {
   const sb = getServerSupabase();
   if (!sb) return new Map();
-  const { data } = await sb.from("sku_intelligence")
-    .select("sku_origen, vel_pre_quiebre, dias_en_quiebre, es_quiebre_proveedor, abc_pre_quiebre, vel_ponderada, abc, stock_full, tiene_stock_prov")
-    .or("dias_en_quiebre.gt.0,vel_pre_quiebre.gt.0");
+  const rows = await paginatedSelect(() =>
+    sb.from("sku_intelligence")
+      .select("sku_origen, vel_pre_quiebre, dias_en_quiebre, es_quiebre_proveedor, abc_pre_quiebre, vel_ponderada, abc, stock_full, tiene_stock_prov")
+      .or("dias_en_quiebre.gt.0,vel_pre_quiebre.gt.0")
+  );
   const map = new Map<string, {
     sku_origen: string; vel_pre_quiebre: number; dias_en_quiebre: number;
     es_quiebre_proveedor: boolean; abc_pre_quiebre: string | null;
     vel_ponderada: number; abc: string; stock_full: number; tiene_stock_prov: boolean;
   }>();
-  for (const row of (data || [])) {
-    map.set(row.sku_origen, {
-      sku_origen: row.sku_origen,
-      vel_pre_quiebre: row.vel_pre_quiebre || 0,
-      dias_en_quiebre: row.dias_en_quiebre || 0,
-      es_quiebre_proveedor: row.es_quiebre_proveedor || false,
-      abc_pre_quiebre: row.abc_pre_quiebre || null,
-      vel_ponderada: row.vel_ponderada || 0,
-      abc: row.abc || "C",
-      stock_full: row.stock_full || 0,
-      tiene_stock_prov: row.tiene_stock_prov ?? true,
+  for (const row of rows) {
+    map.set(row.sku_origen as string, {
+      sku_origen: row.sku_origen as string,
+      vel_pre_quiebre: (row.vel_pre_quiebre as number) || 0,
+      dias_en_quiebre: (row.dias_en_quiebre as number) || 0,
+      es_quiebre_proveedor: (row.es_quiebre_proveedor as boolean) || false,
+      abc_pre_quiebre: (row.abc_pre_quiebre as string) || null,
+      vel_ponderada: (row.vel_ponderada as number) || 0,
+      abc: (row.abc as string) || "C",
+      stock_full: (row.stock_full as number) || 0,
+      tiene_stock_prov: (row.tiene_stock_prov as boolean) ?? true,
     });
   }
   return map;
