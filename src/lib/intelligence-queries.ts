@@ -198,6 +198,18 @@ export async function queryStockFullCache(): Promise<Map<string, number>> {
   return map;
 }
 
+/** Velocidad promedio de ProfitGuard por SKU Venta */
+export async function queryVelProfitguard(): Promise<Map<string, number>> {
+  const sb = getServerSupabase();
+  if (!sb) return new Map();
+  const { data } = await sb.from("stock_full_cache").select("sku_venta, vel_promedio");
+  const map = new Map<string, number>();
+  for (const row of (data || [])) {
+    if (row.vel_promedio > 0) map.set(row.sku_venta, row.vel_promedio);
+  }
+  return map;
+}
+
 /** Snapshots de stock para detección de quiebres (últimos N días) */
 export async function queryStockSnapshots(desdeDias: number = 60): Promise<StockSnapshotRow[]> {
   const sb = getServerSupabase();

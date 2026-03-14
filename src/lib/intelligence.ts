@@ -249,6 +249,7 @@ export interface RecalculoInput {
   ordenes: OrdenInput[];
   stockBodega: Map<string, number>;
   stockFull: Map<string, number>;
+  velProfitguard: Map<string, number>;
   eventosActivos: EventoInput[];
   quiebres: QuiebreSnapshot[];
   conteos: ConteoInput[];
@@ -313,7 +314,7 @@ function zScore(nivel: number): number {
 
 export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
   const {
-    productos, composicion, ordenes, stockBodega, stockFull,
+    productos, composicion, ordenes, stockBodega, stockFull, velProfitguard,
     eventosActivos, quiebres, conteos, movimientos,
     stockEnTransito, ocPendientesPorSku, prevIntelligence, config, hoy,
   } = input;
@@ -530,7 +531,15 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
     const vel60d = sumar(ordenesFisicas60d) / semanasActivas60d;
 
     // Velocidad ponderada (Promedio Móvil Ponderado)
-    const velPonderada = (vel7d * 0.5) + (vel30d * 0.3) + (vel60d * 0.2);
+    let velPonderada = (vel7d * 0.5) + (vel30d * 0.3) + (vel60d * 0.2);
+
+    // Referencia ProfitGuard: sumar vel_promedio de todos los SKU Venta asociados (en uds físicas)
+    let velPG = 0;
+    for (const va of ventasAsoc) {
+      const vpg = velProfitguard.get(va.skuVenta) || 0;
+      velPG += vpg * va.unidades;
+    }
+    if (velPG > velPonderada) velPonderada = velPG;
 
     // Distribución por canal
     const totalCanal30d = fullQty30d + flexQty30d;
