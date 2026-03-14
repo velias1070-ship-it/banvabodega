@@ -1228,6 +1228,386 @@ export async function getShippingLabelsZpl(shippingIds: number[]): Promise<strin
   return resp.text();
 }
 
+// ==================== STOCK FULL SYNC (ML Fulfillment → WMS) ====================
+
+interface MLMarketplaceItem {
+  id: string;
+  title: string;
+  inventory_id?: string;
+  available_quantity: number;
+  sold_quantity: number;
+  variations?: Array<{
+    id: number;
+    inventory_id?: string;
+    available_quantity: number;
+    sold_quantity: number;
+    seller_custom_field?: string;
+  }>;
+}
+
+interface FulfillmentStockDetail {
+  available_quantity: number;
+  not_available_quantity: number;
+  not_available_detail: {
+    damaged: number;
+    lost: number;
+    in_transfer: number;
+    not_supported: number;
+    [key: string]: number;
+  };
+}
+
+export interface SyncStockFullResult {
+  ok: boolean;
+  items_sincronizados: number;
+  stock_actualizado: number;
+  sin_inventory_id: number;
+  errores: string[];
+  tiempo_ms: number;
+}
+
+/**
+ * Fetch all seller item IDs using scroll-based search.
+ */
+async function fetchAllSellerItems(sellerId: string): Promise<string[]> {
+  const allIds: string[] = [];
+  let scrollId: string | null = null;
+
+  // Primera página con search_type=scan para obtener scroll_id
+  const first = await mlGet<{ results: string[]; scroll_id?: string; paging: { total: number } }>(
+    `/users/${sellerId}/items/search?search_type=scan&limit=100`
+  );
+  if (!first) return [];
+
+  allIds.push(...first.results);
+  scrollId = first.scroll_id || null;
+
+  // Paginar con scroll_id
+  while (scrollId && allIds.length < first.paging.total) {
+    await delay(500);
+    const page = await mlGet<{ results: string[]; scroll_id?: string }>(
+      `/users/${sellerId}/items/search?search_type=scan&scroll_id=${scrollId}&limit=100`
+    );
+    if (!page || page.results.length === 0) break;
+    allIds.push(...page.results);
+    scrollId = page.scroll_id || null;
+  }
+
+  return allIds;
+}
+
+/**
+ * Fetch item details from marketplace API.
+ */
+async function fetchMarketplaceItem(itemId: string): Promise<MLMarketplaceItem | null> {
+  return mlGet<MLMarketplaceItem>(`/items/${itemId}`);
+}
+
+/**
+ * Fetch fulfillment stock detail for an inventory_id.
+ */
+async function fetchFulfillmentStock(inventoryId: string, sellerId: string): Promise<FulfillmentStockDetail | null> {
+  return mlGet<FulfillmentStockDetail>(
+    `/inventories/${inventoryId}/stock/fulfillment?seller_id=${sellerId}`
+  );
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Sincroniza stock Full desde ML API a stock_full_cache.
+ * Flujo:
+ * 1. Lista todos los items del seller
+ * 2. Obtiene inventory_id de cada item/variación
+ * 3. Mapea inventory_id → sku_venta via composicion_venta.codigo_ml
+ * 4. Consulta stock fulfillment detallado
+ * 5. Upsert en ml_items_map y stock_full_cache
+ */
+export async function syncStockFull(): Promise<SyncStockFullResult> {
+  const start = Date.now();
+  const errores: string[] = [];
+  const sb = getServerSupabase();
+
+  const config = await getMLConfig();
+  if (!config?.seller_id || !sb) {
+    return { ok: false, items_sincronizados: 0, stock_actualizado: 0, sin_inventory_id: 0, errores: ["No ML config o seller_id"], tiempo_ms: Date.now() - start };
+  }
+
+  // 1. Obtener mapeo codigo_ml → sku_venta desde composicion_venta
+  const { data: compData } = await sb.from("composicion_venta").select("codigo_ml, sku_venta");
+  const codigoToSkuVenta = new Map<string, string>();
+  for (const row of (compData || [])) {
+    if (row.codigo_ml && row.sku_venta) {
+      codigoToSkuVenta.set(row.codigo_ml.toUpperCase(), row.sku_venta);
+    }
+  }
+
+  // 2. Listar todos los items del seller
+  console.log(`[syncStockFull] Obteniendo items del seller ${config.seller_id}...`);
+  const itemIds = await fetchAllSellerItems(config.seller_id);
+  console.log(`[syncStockFull] ${itemIds.length} items encontrados`);
+
+  // 3. Procesar items en batches de 5
+  const itemsMapRows: Array<{
+    item_id: string;
+    inventory_id: string | null;
+    sku_venta: string | null;
+    titulo: string;
+    available_quantity: number;
+    sold_quantity: number;
+    variation_id: string | null;
+  }> = [];
+
+  let sinInventoryId = 0;
+
+  for (let i = 0; i < itemIds.length; i += 5) {
+    const batch = itemIds.slice(i, i + 5);
+    const promises = batch.map(async (itemId) => {
+      try {
+        const item = await fetchMarketplaceItem(itemId);
+        if (!item) {
+          errores.push(`No se pudo obtener item ${itemId}`);
+          return;
+        }
+
+        if (item.variations && item.variations.length > 0) {
+          // Item con variaciones: cada variación tiene su inventory_id
+          for (const v of item.variations) {
+            const invId = v.inventory_id || null;
+            const skuVenta = invId ? codigoToSkuVenta.get(invId.toUpperCase()) || null : null;
+            if (!invId) sinInventoryId++;
+            itemsMapRows.push({
+              item_id: itemId,
+              inventory_id: invId,
+              sku_venta: skuVenta,
+              titulo: item.title,
+              available_quantity: v.available_quantity || 0,
+              sold_quantity: v.sold_quantity || 0,
+              variation_id: String(v.id),
+            });
+          }
+        } else {
+          // Item sin variaciones
+          const invId = item.inventory_id || null;
+          const skuVenta = invId ? codigoToSkuVenta.get(invId.toUpperCase()) || null : null;
+          if (!invId) sinInventoryId++;
+          itemsMapRows.push({
+            item_id: itemId,
+            inventory_id: invId,
+            sku_venta: skuVenta,
+            titulo: item.title,
+            available_quantity: item.available_quantity || 0,
+            sold_quantity: item.sold_quantity || 0,
+            variation_id: null,
+          });
+        }
+      } catch (err) {
+        errores.push(`Error procesando ${itemId}: ${err}`);
+      }
+    });
+    await Promise.all(promises);
+    if (i + 5 < itemIds.length) await delay(500);
+  }
+
+  // 4. Obtener stock fulfillment detallado para items con inventory_id
+  const inventoryIds = Array.from(new Set(itemsMapRows.filter(r => r.inventory_id).map(r => r.inventory_id!)));
+  console.log(`[syncStockFull] ${inventoryIds.length} inventory_ids a consultar fulfillment`);
+
+  // Mapeo inventory_id → fulfillment detail
+  const fulfillmentMap = new Map<string, FulfillmentStockDetail>();
+
+  for (let i = 0; i < inventoryIds.length; i += 5) {
+    const batch = inventoryIds.slice(i, i + 5);
+    const promises = batch.map(async (invId) => {
+      try {
+        const detail = await fetchFulfillmentStock(invId, config.seller_id);
+        if (detail) {
+          fulfillmentMap.set(invId.toUpperCase(), detail);
+        }
+      } catch (err) {
+        errores.push(`Error fulfillment ${invId}: ${err}`);
+      }
+    });
+    await Promise.all(promises);
+    if (i + 5 < inventoryIds.length) await delay(500);
+  }
+
+  // 5. Upsert ml_items_map
+  const mlItemsUpsert = itemsMapRows.map(r => ({
+    sku: r.sku_venta || r.item_id, // fallback a item_id si no hay mapeo
+    item_id: r.item_id,
+    variation_id: r.variation_id ? parseInt(r.variation_id) : null,
+    inventory_id: r.inventory_id,
+    sku_venta: r.sku_venta,
+    titulo: r.titulo,
+    available_quantity: r.available_quantity,
+    sold_quantity: r.sold_quantity,
+    activo: true,
+    updated_at: new Date().toISOString(),
+  }));
+
+  for (let i = 0; i < mlItemsUpsert.length; i += 500) {
+    const batch = mlItemsUpsert.slice(i, i + 500);
+    const { error } = await sb.from("ml_items_map").upsert(batch, { onConflict: "sku,item_id" });
+    if (error) errores.push(`Upsert ml_items_map error: ${error.message}`);
+  }
+
+  // 6. Upsert stock_full_cache — agregar stock fulfillment por sku_venta
+  // Agrupar por sku_venta (un sku_venta puede tener múltiples inventory_ids)
+  const stockBySku = new Map<string, {
+    cantidad: number;
+    stock_no_disponible: number;
+    stock_danado: number;
+    stock_perdido: number;
+    stock_transferencia: number;
+  }>();
+
+  for (const row of itemsMapRows) {
+    if (!row.sku_venta || !row.inventory_id) continue;
+    const detail = fulfillmentMap.get(row.inventory_id.toUpperCase());
+    if (!detail) continue;
+
+    const existing = stockBySku.get(row.sku_venta) || {
+      cantidad: 0, stock_no_disponible: 0, stock_danado: 0, stock_perdido: 0, stock_transferencia: 0,
+    };
+
+    const nad = detail.not_available_detail || {};
+    existing.cantidad += detail.available_quantity || 0;
+    existing.stock_no_disponible += detail.not_available_quantity || 0;
+    existing.stock_danado += nad.damaged || 0;
+    existing.stock_perdido += nad.lost || 0;
+    existing.stock_transferencia += nad.in_transfer || 0;
+
+    stockBySku.set(row.sku_venta, existing);
+  }
+
+  const stockUpsert = Array.from(stockBySku.entries()).map(([sku_venta, s]) => ({
+    sku_venta,
+    cantidad: s.cantidad,
+    stock_no_disponible: s.stock_no_disponible,
+    stock_danado: s.stock_danado,
+    stock_perdido: s.stock_perdido,
+    stock_transferencia: s.stock_transferencia,
+    updated_at: new Date().toISOString(),
+  }));
+
+  for (let i = 0; i < stockUpsert.length; i += 500) {
+    const batch = stockUpsert.slice(i, i + 500);
+    const { error } = await sb.from("stock_full_cache").upsert(batch, { onConflict: "sku_venta" });
+    if (error) errores.push(`Upsert stock_full_cache error: ${error.message}`);
+  }
+
+  const result: SyncStockFullResult = {
+    ok: errores.length === 0,
+    items_sincronizados: itemsMapRows.length,
+    stock_actualizado: stockBySku.size,
+    sin_inventory_id: sinInventoryId,
+    errores,
+    tiempo_ms: Date.now() - start,
+  };
+
+  console.log(`[syncStockFull] Completado: ${result.items_sincronizados} items, ${result.stock_actualizado} SKUs actualizados, ${result.sin_inventory_id} sin inventory_id, ${result.errores.length} errores en ${result.tiempo_ms}ms`);
+  return result;
+}
+
+/**
+ * Actualiza stock Full para un inventory_id específico (llamado desde webhook).
+ * Retorna el sku_venta actualizado o null si no se pudo mapear.
+ */
+export async function syncSingleFulfillmentStock(inventoryId: string): Promise<string | null> {
+  const sb = getServerSupabase();
+  const config = await getMLConfig();
+  if (!config?.seller_id || !sb) return null;
+
+  // Mapear inventory_id → sku_venta via composicion_venta
+  const { data: compData } = await sb.from("composicion_venta")
+    .select("sku_venta")
+    .ilike("codigo_ml", inventoryId);
+
+  if (!compData || compData.length === 0) {
+    console.log(`[syncSingleFulfillmentStock] No se encontró mapeo para inventory_id ${inventoryId}`);
+    return null;
+  }
+
+  const skuVenta = compData[0].sku_venta;
+
+  // Obtener stock fulfillment
+  const detail = await fetchFulfillmentStock(inventoryId, config.seller_id);
+  if (!detail) {
+    console.error(`[syncSingleFulfillmentStock] No se pudo obtener fulfillment para ${inventoryId}`);
+    return null;
+  }
+
+  const nad = detail.not_available_detail || {};
+
+  // Actualizar ml_items_map
+  await sb.from("ml_items_map")
+    .update({
+      available_quantity: detail.available_quantity,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("inventory_id", inventoryId);
+
+  // Upsert stock_full_cache
+  // Si el SKU venta tiene múltiples inventory_ids, necesitamos sumar todos
+  // Buscar todos los inventory_ids de este sku_venta
+  const { data: allComp } = await sb.from("composicion_venta")
+    .select("codigo_ml")
+    .eq("sku_venta", skuVenta);
+
+  let totalDisponible = 0;
+  let totalNoDispo = 0;
+  let totalDanado = 0;
+  let totalPerdido = 0;
+  let totalTransfer = 0;
+
+  if (allComp && allComp.length > 1) {
+    // Múltiples inventory_ids para este SKU venta — consultar todos
+    for (const comp of allComp) {
+      if (comp.codigo_ml.toUpperCase() === inventoryId.toUpperCase()) {
+        // Este es el que ya tenemos
+        totalDisponible += detail.available_quantity || 0;
+        totalNoDispo += detail.not_available_quantity || 0;
+        totalDanado += nad.damaged || 0;
+        totalPerdido += nad.lost || 0;
+        totalTransfer += nad.in_transfer || 0;
+      } else {
+        // Consultar los otros
+        const otherDetail = await fetchFulfillmentStock(comp.codigo_ml, config.seller_id);
+        if (otherDetail) {
+          const oNad = otherDetail.not_available_detail || {};
+          totalDisponible += otherDetail.available_quantity || 0;
+          totalNoDispo += otherDetail.not_available_quantity || 0;
+          totalDanado += oNad.damaged || 0;
+          totalPerdido += oNad.lost || 0;
+          totalTransfer += oNad.in_transfer || 0;
+        }
+      }
+    }
+  } else {
+    totalDisponible = detail.available_quantity || 0;
+    totalNoDispo = detail.not_available_quantity || 0;
+    totalDanado = nad.damaged || 0;
+    totalPerdido = nad.lost || 0;
+    totalTransfer = nad.in_transfer || 0;
+  }
+
+  await sb.from("stock_full_cache").upsert({
+    sku_venta: skuVenta,
+    cantidad: totalDisponible,
+    stock_no_disponible: totalNoDispo,
+    stock_danado: totalDanado,
+    stock_perdido: totalPerdido,
+    stock_transferencia: totalTransfer,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: "sku_venta" });
+
+  console.log(`[syncSingleFulfillmentStock] ${skuVenta}: ${totalDisponible} disponible, ${totalDanado} dañado, ${totalPerdido} perdido`);
+  return skuVenta;
+}
+
 // ==================== OAUTH URL ====================
 
 export function getOAuthUrl(clientId: string, redirectUri: string): string {

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fetchAndProcessOrder, processShipment, mlGet, MLOrder } from "@/lib/ml";
+import { fetchAndProcessOrder, processShipment, mlGet, MLOrder, syncSingleFulfillmentStock } from "@/lib/ml";
 
 /**
  * MercadoLibre webhook endpoint.
@@ -68,6 +68,36 @@ export async function POST(req: NextRequest) {
       }
 
       return NextResponse.json({ status: "ok", shipment_id: shipmentId, items: 0 });
+    }
+
+    // Handle fulfillment stock changes
+    if (topic === "marketplace_fbm_stock") {
+      // resource puede ser /inventories/{INVENTORY_ID}/stock/fulfillment o similar
+      const invMatch = resource?.match(/inventories\/([^/]+)/);
+      const inventoryId = invMatch ? invMatch[1] : null;
+
+      if (inventoryId) {
+        console.log(`[ML Webhook] Fulfillment stock change for inventory ${inventoryId}`);
+        const skuVenta = await syncSingleFulfillmentStock(inventoryId);
+
+        // Disparar recálculo incremental si se actualizó un SKU
+        if (skuVenta) {
+          try {
+            const baseUrl = process.env.VERCEL_URL
+              ? `https://${process.env.VERCEL_URL}`
+              : "http://localhost:3000";
+            fetch(`${baseUrl}/api/intelligence/recalcular`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ full: false, skus: [skuVenta] }),
+            }).catch(() => {});
+          } catch { /* fire and forget */ }
+        }
+
+        return NextResponse.json({ status: "ok", inventory_id: inventoryId, sku_venta: skuVenta });
+      }
+
+      return NextResponse.json({ status: "ignored", reason: "no_inventory_id" });
     }
 
     return NextResponse.json({ status: "ignored", topic });
