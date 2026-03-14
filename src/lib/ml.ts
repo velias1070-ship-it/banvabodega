@@ -294,6 +294,26 @@ export async function mlGet<T = unknown>(path: string, extraHeaders?: Record<str
 }
 
 /**
+ * Make authenticated GET, return raw JSON (for debugging)
+ */
+async function mlGetRaw(path: string): Promise<unknown | null> {
+  const token = await ensureValidToken();
+  if (!token) return null;
+
+  const resp = await fetch(`${ML_API}${path}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => "");
+    console.error(`[ML] GET ${path} failed: ${resp.status} ${body.slice(0, 200)}`);
+    return null;
+  }
+
+  return resp.json();
+}
+
+/**
  * Make authenticated PUT request to ML API
  */
 export async function mlPut<T = unknown>(path: string, body: unknown, extraHeaders?: Record<string, string>): Promise<T | null> {
@@ -1272,43 +1292,59 @@ export interface SyncStockFullResult {
 async function fetchAllSellerItems(sellerId: string): Promise<string[]> {
   const allIds: string[] = [];
 
-  // Intentar con search_type=scan (scroll pagination)
-  const first = await mlGet<{ results: string[]; scroll_id?: string; paging: { total: number } }>(
-    `/users/${sellerId}/items/search?search_type=scan&limit=100&status=active`
-  );
+  // Probar múltiples variantes del endpoint
+  const urls = [
+    `/users/${sellerId}/items/search?search_type=scan&limit=100`,
+    `/users/${sellerId}/items/search?limit=50&offset=0`,
+    `/users/${sellerId}/items/search?status=active&limit=50&offset=0`,
+  ];
 
-  if (first && first.results.length > 0) {
-    allIds.push(...first.results);
-    let scrollId = first.scroll_id || null;
+  for (const url of urls) {
+    console.log(`[syncStockFull] Probando: GET ${url}`);
+    const resp = await mlGetRaw(url);
+    if (resp) {
+      console.log(`[syncStockFull] Response: ${JSON.stringify(resp).slice(0, 500)}`);
+      const data = resp as { results?: string[]; scroll_id?: string; paging?: { total: number } };
+      if (data.results && data.results.length > 0) {
+        allIds.push(...data.results);
 
-    while (scrollId && allIds.length < first.paging.total) {
-      await delay(500);
-      const page = await mlGet<{ results: string[]; scroll_id?: string }>(
-        `/users/${sellerId}/items/search?search_type=scan&scroll_id=${scrollId}&limit=100`
-      );
-      if (!page || page.results.length === 0) break;
-      allIds.push(...page.results);
-      scrollId = page.scroll_id || null;
+        // Si fue scan, paginar con scroll_id
+        if (url.includes("search_type=scan") && data.scroll_id && data.paging) {
+          let scrollId: string | null = data.scroll_id;
+          while (scrollId && allIds.length < data.paging.total) {
+            await delay(500);
+            const sp: { results: string[]; scroll_id?: string } | null = await mlGet(
+              `/users/${sellerId}/items/search?search_type=scan&scroll_id=${scrollId}&limit=100`
+            );
+            if (!sp || sp.results.length === 0) break;
+            allIds.push(...sp.results);
+            scrollId = sp.scroll_id || null;
+          }
+        }
+        // Si fue offset, paginar
+        else if (data.paging && data.paging.total > allIds.length) {
+          let offset = allIds.length;
+          const baseUrl = url.replace(/offset=\d+/, "");
+          while (offset < data.paging.total && offset < 1000) {
+            await delay(500);
+            const op: { results: string[]; paging: { total: number } } | null = await mlGet(
+              `${baseUrl}offset=${offset}&limit=50`
+            );
+            if (!op || op.results.length === 0) break;
+            allIds.push(...op.results);
+            offset += op.results.length;
+          }
+        }
+
+        console.log(`[syncStockFull] Éxito con ${url}: ${allIds.length} items totales`);
+        return allIds;
+      }
+    } else {
+      console.log(`[syncStockFull] ${url} devolvió null (error HTTP)`);
     }
-
-    return allIds;
   }
 
-  // Fallback: paginación con offset (para sellers que no soportan scan)
-  console.log("[syncStockFull] scan devolvió 0, intentando con offset pagination...");
-  let offset = 0;
-  const limit = 50;
-  while (true) {
-    const page = await mlGet<{ results: string[]; paging: { total: number; offset: number; limit: number } }>(
-      `/users/${sellerId}/items/search?offset=${offset}&limit=${limit}&status=active`
-    );
-    if (!page || page.results.length === 0) break;
-    allIds.push(...page.results);
-    offset += page.results.length;
-    if (offset >= page.paging.total || offset >= 1000) break; // ML limita offset a 1000
-    await delay(500);
-  }
-
+  console.log("[syncStockFull] Ningún endpoint devolvió items");
   return allIds;
 }
 
