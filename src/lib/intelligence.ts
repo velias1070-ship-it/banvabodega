@@ -359,6 +359,27 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
     ordenesPorSkuVenta.get(svUp)!.push(o);
   }
 
+  // ── Reasignar órdenes huérfanas: sku_venta == sku_origen sin formato propio ──
+  // Si hay órdenes bajo un SKU que es sku_origen pero NO es sku_venta en composición,
+  // esas órdenes corresponden al formato individual (unidades=1) de ese origen.
+  const allSkusVentaComp = new Set<string>();
+  for (const c of composicion) allSkusVentaComp.add(c.sku_venta.toUpperCase());
+
+  ordenesPorSkuVenta.forEach((ords, svUp) => {
+    // Solo reasignar si svUp es un sku_origen con formatos pero NO es un sku_venta registrado
+    if (allSkusVentaComp.has(svUp)) return; // ya es un sku_venta válido
+    const formatos = ventasPorOrigen.get(svUp);
+    if (!formatos || formatos.length === 0) return; // no es un sku_origen conocido
+    // Buscar el formato individual (unidades=1)
+    const individual = formatos.find(f => f.unidades === 1);
+    if (!individual) return; // no hay formato individual
+    // Mover órdenes al formato individual
+    const target = individual.skuVenta;
+    if (!ordenesPorSkuVenta.has(target)) ordenesPorSkuVenta.set(target, []);
+    ordenesPorSkuVenta.get(target)!.push(...ords);
+    ordenesPorSkuVenta.delete(svUp);
+  });
+
   // ── Pre-agrupar quiebres por SKU Origen ──
   const quiebresPorSku = new Map<string, QuiebreSnapshot[]>();
   for (const q of quiebres) {

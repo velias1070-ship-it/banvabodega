@@ -82,6 +82,23 @@ export async function GET() {
       }
     }
 
+    // ── Reasignar órdenes huérfanas: sku_venta == sku_origen sin formato propio ──
+    const allSkusVentaComp = new Set<string>();
+    for (const c of composicion) allSkusVentaComp.add(c.sku_venta.toUpperCase());
+
+    // Iterar sobre copia de keys para poder mutar el mapa
+    for (const svUp of Array.from(ordenesPorSV.keys())) {
+      if (allSkusVentaComp.has(svUp)) continue; // ya es un sku_venta válido
+      const formatos = ventasPorOrigen.get(svUp);
+      if (!formatos || formatos.length === 0) continue; // no es un sku_origen conocido
+      const individual = formatos.find(f => f.unidades === 1);
+      if (!individual) continue;
+      const target = individual.skuVenta;
+      if (!ordenesPorSV.has(target)) ordenesPorSV.set(target, []);
+      ordenesPorSV.get(target)!.push(...(ordenesPorSV.get(svUp) || []));
+      ordenesPorSV.delete(svUp);
+    }
+
     // ── Contar cuántos SKU Venta comparten cada SKU Origen (para flag compartido) ──
     const ventasCountPorOrigen = new Map<string, number>();
     ventasPorOrigen.forEach((ventas, skuOrigen) => {
