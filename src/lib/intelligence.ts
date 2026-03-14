@@ -326,49 +326,20 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
   const prodMap = new Map<string, ProductoInput>();
   for (const p of productos) prodMap.set(p.sku, p);
 
-  // SKU Venta → SKU Origen(es) con unidades
-  const compPorVenta = new Map<string, ComposicionInput[]>();
-  for (const c of composicion) {
-    if (!compPorVenta.has(c.sku_venta)) compPorVenta.set(c.sku_venta, []);
-    compPorVenta.get(c.sku_venta)!.push(c);
-  }
-
-  // SKU Origen → SKU Ventas asociados
+  // SKU Origen → SKU Ventas asociados — SOLO desde composicion_venta
   const ventasPorOrigen = new Map<string, { skuVenta: string; unidades: number }[]>();
-  // Resolver SKU Venta → SKU Origen para SKUs simples (sin composición)
-  const skuVentaToFisico = new Map<string, string>();
-  for (const p of productos) {
-    if (p.sku_venta) {
-      const ventas = p.sku_venta.split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
-      for (const sv of ventas) {
-        skuVentaToFisico.set(sv.toUpperCase(), p.sku);
-      }
+
+  // Construir ventasPorOrigen SOLO desde composicion_venta, normalizado y deduplicado
+  for (const c of composicion) {
+    const svUp = c.sku_venta.toUpperCase();
+    const soUp = c.sku_origen.toUpperCase();
+    if (!ventasPorOrigen.has(soUp)) ventasPorOrigen.set(soUp, []);
+    const existing = ventasPorOrigen.get(soUp)!;
+    // Deduplicar por UPPER
+    if (!existing.some(e => e.skuVenta === svUp)) {
+      existing.push({ skuVenta: svUp, unidades: c.unidades });
     }
   }
-
-  // Construir ventasPorOrigen usando composición + fallback
-  const allSkusVenta = new Set<string>();
-  for (const o of ordenes) allSkusVenta.add(o.sku_venta);
-  for (const c of composicion) allSkusVenta.add(c.sku_venta);
-  stockFull.forEach((_, sv) => allSkusVenta.add(sv));
-
-  Array.from(allSkusVenta).forEach(sv => {
-    const comps = compPorVenta.get(sv);
-    if (comps && comps.length > 0) {
-      for (const c of comps) {
-        if (!ventasPorOrigen.has(c.sku_origen)) ventasPorOrigen.set(c.sku_origen, []);
-        ventasPorOrigen.get(c.sku_origen)!.push({ skuVenta: sv, unidades: c.unidades });
-      }
-    } else {
-      const fisico = skuVentaToFisico.get(sv.toUpperCase()) || sv;
-      if (!ventasPorOrigen.has(fisico)) ventasPorOrigen.set(fisico, []);
-      // Evitar duplicados
-      const existing = ventasPorOrigen.get(fisico)!;
-      if (!existing.some(e => e.skuVenta === sv)) {
-        existing.push({ skuVenta: sv, unidades: 1 });
-      }
-    }
-  });
 
   // Todos los SKU Origen activos
   const allSkusOrigen = new Set<string>();
@@ -380,11 +351,12 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
     if (qty > 0) allSkusOrigen.add(sku);
   });
 
-  // ── Pre-agrupar órdenes por SKU Venta ──
+  // ── Pre-agrupar órdenes por SKU Venta (normalizado UPPER) ──
   const ordenesPorSkuVenta = new Map<string, OrdenInput[]>();
   for (const o of ordenes) {
-    if (!ordenesPorSkuVenta.has(o.sku_venta)) ordenesPorSkuVenta.set(o.sku_venta, []);
-    ordenesPorSkuVenta.get(o.sku_venta)!.push(o);
+    const svUp = o.sku_venta.toUpperCase();
+    if (!ordenesPorSkuVenta.has(svUp)) ordenesPorSkuVenta.set(svUp, []);
+    ordenesPorSkuVenta.get(svUp)!.push(o);
   }
 
   // ── Pre-agrupar quiebres por SKU Origen ──
