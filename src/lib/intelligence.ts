@@ -333,7 +333,7 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
 
   // ── Mapas de lookup ──
   const prodMap = new Map<string, ProductoInput>();
-  for (const p of productos) prodMap.set(p.sku, p);
+  for (const p of productos) prodMap.set(p.sku.toUpperCase(), p);
 
   // SKU Origen → SKU Ventas asociados — SOLO desde composicion_venta
   const ventasPorOrigen = new Map<string, { skuVenta: string; unidades: number }[]>();
@@ -350,13 +350,28 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
     }
   }
 
+  // ── Normalizar Maps de entrada a UPPERCASE ──
+  const normMap = <V>(m: Map<string, V>): Map<string, V> => {
+    const out = new Map<string, V>();
+    m.forEach((v, k) => {
+      const ku = k.toUpperCase();
+      const existing = out.get(ku);
+      if (existing === undefined) out.set(ku, v);
+      else if (typeof v === "number" && typeof existing === "number") out.set(ku, (existing + v) as V);
+    });
+    return out;
+  };
+  const stockBodegaN = normMap(stockBodega);
+  const stockEnTransitoN = normMap(stockEnTransito);
+  const ocPendientesPorSkuN = normMap(ocPendientesPorSku);
+
   // Todos los SKU Origen activos
   const allSkusOrigen = new Set<string>();
   for (const p of productos) {
-    if (p.estado_sku !== "descontinuado") allSkusOrigen.add(p.sku);
+    if (p.estado_sku !== "descontinuado") allSkusOrigen.add(p.sku.toUpperCase());
   }
   ventasPorOrigen.forEach((_, sku) => allSkusOrigen.add(sku));
-  stockBodega.forEach((qty, sku) => {
+  stockBodegaN.forEach((qty, sku) => {
     if (qty > 0) allSkusOrigen.add(sku);
   });
 
@@ -568,7 +583,7 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
     const velAjustadaEvento = velPonderada * multiplicadorEvento;
 
     // ── PASO 5: Stock ──
-    const stBodega = stockBodega.get(skuOrigen) || 0;
+    const stBodega = stockBodegaN.get(skuOrigen) || 0;
     // Stock Full: sumar de todos los SKU Venta asociados (convertir a físico)
     let stFull = 0;
     for (const va of ventasAsoc) {
@@ -576,9 +591,9 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
       stFull += sfVenta * va.unidades;
     }
     const stTotal = stFull + stBodega;
-    const stEnTransito = stockEnTransito.get(skuOrigen) || 0;
+    const stEnTransito = stockEnTransitoN.get(skuOrigen) || 0;
     const stProyectado = stTotal + stEnTransito;
-    const ocPend = ocPendientesPorSku.get(skuOrigen) || 0;
+    const ocPend = ocPendientesPorSkuN.get(skuOrigen) || 0;
 
     // ── PASO 6: Cobertura ──
     const velCalculo = multiplicadorEvento > 1 ? velAjustadaEvento : velPonderada;
