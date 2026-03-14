@@ -6001,9 +6001,13 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
           <div style={{display:"flex",gap:8,marginTop:12}}>
             <button onClick={doSaveConfig} style={{padding:"8px 16px",borderRadius:8,background:"var(--green)",color:"#fff",fontWeight:700,fontSize:13}}>Guardar Config</button>
             {configForm.client_id && (
-              <a href={authUrl} style={{padding:"8px 16px",borderRadius:8,background:"#3483fa",color:"#fff",fontWeight:700,fontSize:13,textDecoration:"none",display:"inline-flex",alignItems:"center"}}>
+              <button onClick={() => {
+                const url = getOAuthUrl(configForm.client_id, `${window.location.origin}/api/ml/auth`);
+                console.log("[ML] OAuth URL:", url);
+                window.location.href = url;
+              }} style={{padding:"8px 16px",borderRadius:8,background:"#3483fa",color:"#fff",fontWeight:700,fontSize:13,border:"none",cursor:"pointer",display:"inline-flex",alignItems:"center"}}>
                 🔗 Vincular cuenta ML
-              </a>
+              </button>
             )}
           </div>
         </div>
