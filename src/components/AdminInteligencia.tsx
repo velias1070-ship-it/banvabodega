@@ -177,6 +177,7 @@ export default function AdminInteligencia() {
   const [filtroAlerta, setFiltroAlerta] = useState<string>("todos");
   const [busqueda, setBusqueda] = useState("");
   const [ordenarPor, setOrdenarPor] = useState<string>("prioridad");
+  const [mlItemsMap, setMlItemsMap] = useState<Map<string, string[]>>(new Map()); // sku → item_ids ML
 
   const cargarOrigen = useCallback(async () => {
     const sb = getSupabase();
@@ -204,11 +205,24 @@ export default function AdminInteligencia() {
     } catch { /* silenciar */ }
   }, [lastUpdate]);
 
+  const cargarMlMap = useCallback(async () => {
+    const sb = getSupabase();
+    if (!sb) return;
+    const { data } = await sb.from("ml_items_map").select("sku, item_id");
+    const map = new Map<string, string[]>();
+    for (const row of (data || [])) {
+      const arr = map.get(row.sku) || [];
+      arr.push(row.item_id);
+      map.set(row.sku, arr);
+    }
+    setMlItemsMap(map);
+  }, []);
+
   const cargar = useCallback(async () => {
     setLoading(true);
-    await Promise.all([cargarOrigen(), cargarVenta()]);
+    await Promise.all([cargarOrigen(), cargarVenta(), cargarMlMap()]);
     setLoading(false);
-  }, [cargarOrigen, cargarVenta]);
+  }, [cargarOrigen, cargarVenta, cargarMlMap]);
 
   useEffect(() => { cargar(); }, [cargar]);
 
@@ -262,9 +276,22 @@ export default function AdminInteligencia() {
     filtered = filtered.filter((r: AnyRow) => {
       const skuKey = vistaOrigen ? (r as IntelRow).sku_origen : (r as VentaRow).sku_venta;
       const skuOrigen = vistaOrigen ? (r as IntelRow).sku_origen : (r as VentaRow).sku_origen;
-      return skuKey.toLowerCase().includes(q) ||
-        (r.nombre || "").toLowerCase().includes(q) ||
-        skuOrigen.toLowerCase().includes(q);
+      if (skuKey.toLowerCase().includes(q)) return true;
+      if ((r.nombre || "").toLowerCase().includes(q)) return true;
+      if (skuOrigen.toLowerCase().includes(q)) return true;
+      // Buscar en SKUs venta asociados (vista origen)
+      if (vistaOrigen) {
+        const svs = (r as IntelRow).skus_venta || [];
+        if (svs.some(sv => sv.toLowerCase().includes(q))) return true;
+      }
+      // Buscar por código ML (item_id)
+      const mlIds = mlItemsMap.get(skuOrigen) || [];
+      if (mlIds.some(id => id.toLowerCase().includes(q))) return true;
+      if (!vistaOrigen) {
+        const mlIdsVenta = mlItemsMap.get((r as VentaRow).sku_venta) || [];
+        if (mlIdsVenta.some(id => id.toLowerCase().includes(q))) return true;
+      }
+      return false;
     });
   }
 
@@ -404,7 +431,7 @@ export default function AdminInteligencia() {
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
         <input
           type="text"
-          placeholder="Buscar SKU o nombre..."
+          placeholder="Buscar SKU, nombre o código ML..."
           value={busqueda}
           onChange={e => setBusqueda(e.target.value)}
           className="form-input"
