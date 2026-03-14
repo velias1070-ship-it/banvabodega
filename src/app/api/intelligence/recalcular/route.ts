@@ -15,6 +15,7 @@ import {
   insertHistorySnapshots,
   upsertStockSnapshots,
   queryPrevIntelligence,
+  queryVelProfitguard,
   type SkuIntelligenceUpsert,
 } from "@/lib/intelligence-queries";
 import {
@@ -61,6 +62,7 @@ export async function POST(req: NextRequest) {
       conteos,
       movimientos,
       prevIntelligence,
+      velProfitguard,
     ] = await Promise.all([
       queryStockPorSku(),
       queryComposicion(),
@@ -72,6 +74,7 @@ export async function POST(req: NextRequest) {
       queryConteos(3),
       queryMovimientos(60),
       queryPrevIntelligence(),
+      queryVelProfitguard(),
     ]);
 
     // Eventos activos para hoy
@@ -118,6 +121,7 @@ export async function POST(req: NextRequest) {
       ordenes: ordenes as OrdenInput[],
       stockBodega,
       stockFull: stockFullCache,
+      velProfitguard,
       eventosActivos: eventosActivos.map(e => ({
         nombre: e.nombre,
         multiplicador: e.multiplicador,
