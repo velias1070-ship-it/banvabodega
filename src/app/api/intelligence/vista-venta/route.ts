@@ -44,73 +44,75 @@ export async function GET() {
     const stockFullMap = new Map<string, number>();
     const stockDetailMap = new Map<string, { stock_danado: number; stock_perdido: number; stock_transferencia: number }>();
     for (const r of cacheRows) {
-      stockFullMap.set(r.sku_venta, r.cantidad || 0);
+      const svUp = r.sku_venta.toUpperCase();
+      stockFullMap.set(svUp, r.cantidad || 0);
       const danado = r.stock_danado || 0;
       const perdido = r.stock_perdido || 0;
       const transferencia = r.stock_transferencia || 0;
       if (danado > 0 || perdido > 0 || transferencia > 0) {
-        stockDetailMap.set(r.sku_venta, { stock_danado: danado, stock_perdido: perdido, stock_transferencia: transferencia });
+        stockDetailMap.set(svUp, { stock_danado: danado, stock_perdido: perdido, stock_transferencia: transferencia });
       }
     }
 
-    // Composición: SKU Venta → [{sku_origen, unidades}]
+    // Composición: SKU Venta → [{sku_origen, unidades}] (normalizado UPPER)
     const compPorVenta = new Map<string, { sku_origen: string; unidades: number }[]>();
     for (const c of composicion) {
-      if (!compPorVenta.has(c.sku_venta)) compPorVenta.set(c.sku_venta, []);
-      compPorVenta.get(c.sku_venta)!.push({ sku_origen: c.sku_origen, unidades: c.unidades });
+      const svUp = c.sku_venta.toUpperCase();
+      if (!compPorVenta.has(svUp)) compPorVenta.set(svUp, []);
+      compPorVenta.get(svUp)!.push({ sku_origen: c.sku_origen.toUpperCase(), unidades: c.unidades });
     }
 
-    // Productos: SKU Origen → SKU Venta(s) simples (sin composición)
-    const skuVentaToFisico = new Map<string, string>();
     const productoNombres = new Map<string, string>();
     const productoCostos = new Map<string, number>();
     for (const p of productos) {
       productoNombres.set(p.sku, p.nombre || "");
       productoCostos.set(p.sku, p.costo || 0);
-      if (p.sku_venta) {
-        for (const sv of p.sku_venta.split(",").map((s: string) => s.trim()).filter(Boolean)) {
-          skuVentaToFisico.set(sv.toUpperCase(), p.sku);
-        }
-      }
     }
 
-    // ── Agrupar órdenes por SKU Venta ──
+    // ── Agrupar órdenes por SKU Venta (normalizado UPPER) ──
     const hoyMs = Date.now();
     const ordenesPorSV = new Map<string, typeof ordenes>();
     for (const o of ordenes) {
-      if (!ordenesPorSV.has(o.sku_venta)) ordenesPorSV.set(o.sku_venta, []);
-      ordenesPorSV.get(o.sku_venta)!.push(o);
+      const svUp = o.sku_venta.toUpperCase();
+      if (!ordenesPorSV.has(svUp)) ordenesPorSV.set(svUp, []);
+      ordenesPorSV.get(svUp)!.push(o);
     }
 
-    // ── Construir mapeo SKU Origen → SKU Ventas ──
+    // ── Construir mapeo SKU Origen → SKU Ventas SOLO desde composicion_venta ──
     const ventasPorOrigen = new Map<string, { skuVenta: string; unidades: number }[]>();
 
-    // Todos los SKU Venta conocidos
-    const allSkusVenta = new Set<string>();
-    for (const c of composicion) allSkusVenta.add(c.sku_venta);
-    stockFullMap.forEach((_, sv) => allSkusVenta.add(sv));
-    for (const o of ordenes) allSkusVenta.add(o.sku_venta);
-
-    Array.from(allSkusVenta).forEach(sv => {
-      const comps = compPorVenta.get(sv);
-      if (comps && comps.length > 0) {
-        // Pack/combo: mapea a múltiples orígenes
-        for (const c of comps) {
-          if (!ventasPorOrigen.has(c.sku_origen)) ventasPorOrigen.set(c.sku_origen, []);
-          const arr = ventasPorOrigen.get(c.sku_origen)!;
-          if (!arr.some(e => e.skuVenta === sv)) {
-            arr.push({ skuVenta: sv, unidades: c.unidades });
-          }
-        }
-      } else {
-        // Simple: 1:1
-        const fisico = skuVentaToFisico.get(sv.toUpperCase()) || sv;
-        if (!ventasPorOrigen.has(fisico)) ventasPorOrigen.set(fisico, []);
-        const arr = ventasPorOrigen.get(fisico)!;
-        if (!arr.some(e => e.skuVenta === sv)) {
-          arr.push({ skuVenta: sv, unidades: 1 });
-        }
+    for (const c of composicion) {
+      const svUp = c.sku_venta.toUpperCase();
+      const soUp = c.sku_origen.toUpperCase();
+      if (!ventasPorOrigen.has(soUp)) ventasPorOrigen.set(soUp, []);
+      const arr = ventasPorOrigen.get(soUp)!;
+      // Deduplicar por UPPER
+      if (!arr.some(e => e.skuVenta === svUp)) {
+        arr.push({ skuVenta: svUp, unidades: c.unidades });
       }
+    }
+
+    // ── Reasignar órdenes huérfanas: sku_venta == sku_origen sin formato propio ──
+    const allSkusVentaComp = new Set<string>();
+    for (const c of composicion) allSkusVentaComp.add(c.sku_venta.toUpperCase());
+
+    // Iterar sobre copia de keys para poder mutar el mapa
+    for (const svUp of Array.from(ordenesPorSV.keys())) {
+      if (allSkusVentaComp.has(svUp)) continue; // ya es un sku_venta válido
+      const formatos = ventasPorOrigen.get(svUp);
+      if (!formatos || formatos.length === 0) continue; // no es un sku_origen conocido
+      const individual = formatos.find(f => f.unidades === 1);
+      if (!individual) continue;
+      const target = individual.skuVenta;
+      if (!ordenesPorSV.has(target)) ordenesPorSV.set(target, []);
+      ordenesPorSV.get(target)!.push(...(ordenesPorSV.get(svUp) || []));
+      ordenesPorSV.delete(svUp);
+    }
+
+    // ── Contar cuántos SKU Venta comparten cada SKU Origen (para flag compartido) ──
+    const ventasCountPorOrigen = new Map<string, number>();
+    ventasPorOrigen.forEach((ventas, skuOrigen) => {
+      ventasCountPorOrigen.set(skuOrigen, ventas.length);
     });
 
     // ── Generar filas a nivel SKU Venta ──
@@ -187,6 +189,8 @@ export async function GET() {
           prioridad: intel.prioridad,
           target_dias_full: intel.target_dias_full,
           stock_bodega: intel.stock_bodega,
+          stock_bodega_compartido: (ventasCountPorOrigen.get(skuOrigen) || 1) > 1,
+          stock_bodega_formatos: ventasCountPorOrigen.get(skuOrigen) || 1,
           stock_en_transito: intel.stock_en_transito,
           mandar_full: intel.mandar_full,
           pedir_proveedor: intel.pedir_proveedor,
