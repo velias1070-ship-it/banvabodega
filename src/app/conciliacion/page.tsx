@@ -956,7 +956,8 @@ function TabRcvVentas({ empresa, periodo }: { empresa: DBEmpresa; periodo: strin
   let filtered = data;
   if (tipoFilter !== "todos") filtered = filtered.filter(v => String(v.tipo_doc) === tipoFilter);
   if (filter) filtered = filtered.filter(v =>
-    (v.rut_emisor || "").includes(filter) ||
+    (v.razon_social || "").toLowerCase().includes(filter.toLowerCase()) ||
+    (v.rut_receptor || v.rut_emisor || "").includes(filter) ||
     (v.folio || "").includes(filter) ||
     (v.nro || "").includes(filter)
   );
@@ -1014,7 +1015,7 @@ function TabRcvVentas({ empresa, periodo }: { empresa: DBEmpresa; periodo: strin
 
       {/* Filtros */}
       <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-        <input className="form-input" placeholder="Buscar por RUT, folio o N°..." value={filter} onChange={e => setFilter(e.target.value)}
+        <input className="form-input" placeholder="Buscar por nombre, RUT o folio..." value={filter} onChange={e => setFilter(e.target.value)}
           style={{ fontSize: 13, flex: 1 }} />
         <select value={tipoFilter} onChange={e => setTipoFilter(e.target.value)}
           style={{ background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 8, padding: "6px 10px", fontSize: 12 }}>
@@ -1040,7 +1041,7 @@ function TabRcvVentas({ empresa, periodo }: { empresa: DBEmpresa; periodo: strin
           <table className="tbl" style={{ fontSize: 11 }}>
             <thead>
               <tr>
-                <th>Tipo</th><th>Folio</th><th>RUT Receptor</th><th>Fecha</th>
+                <th>Tipo</th><th>Folio</th><th>Receptor</th><th>Fecha</th>
                 <th style={{ textAlign: "right" }}>Neto</th><th style={{ textAlign: "right" }}>IVA</th><th style={{ textAlign: "right" }}>Total</th>
               </tr>
             </thead>
@@ -1053,7 +1054,18 @@ function TabRcvVentas({ empresa, periodo }: { empresa: DBEmpresa; periodo: strin
                     </span>
                   </td>
                   <td className="mono" style={{ fontWeight: 600 }}>{v.folio || v.nro || "—"}</td>
-                  <td className="mono" style={{ fontSize: 10 }}>{fmtRut(v.rut_emisor)}</td>
+                  <td>
+                    <div style={{ maxWidth: 200 }}>
+                      {v.razon_social ? (
+                        <>
+                          <div style={{ fontSize: 11, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{v.razon_social}</div>
+                          <div className="mono" style={{ fontSize: 9, color: "var(--txt3)" }}>{fmtRut(v.rut_receptor || v.rut_emisor)}</div>
+                        </>
+                      ) : (
+                        <span className="mono" style={{ fontSize: 10 }}>{fmtRut(v.rut_receptor || v.rut_emisor)}</span>
+                      )}
+                    </div>
+                  </td>
                   <td className="mono">{fmtDate(v.fecha_docto)}</td>
                   <td className="mono" style={{ textAlign: "right" }}>{fmtMoney(v.monto_neto || 0)}</td>
                   <td className="mono" style={{ textAlign: "right", color: "var(--amber)" }}>{fmtMoney(v.monto_iva || 0)}</td>

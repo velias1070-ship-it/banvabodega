@@ -1464,6 +1464,8 @@ export interface DBRcvVenta {
   tipo_doc: string;
   nro: string | null;
   rut_emisor: string | null;
+  rut_receptor: string | null;
+  razon_social: string | null;
   folio: string | null;
   fecha_docto: string | null;
   monto_neto: number;
@@ -1472,6 +1474,7 @@ export interface DBRcvVenta {
   monto_total: number;
   fecha_recepcion: string | null;
   evento_receptor: string | null;
+  estado: string | null;
   created_at?: string;
 }
 

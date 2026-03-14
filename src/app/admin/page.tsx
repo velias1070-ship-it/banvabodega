@@ -5,7 +5,7 @@ import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, s
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
-import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, fetchAllPedidosFlex, fetchPedidosFlexByEstado, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku } from "@/lib/db";
+import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, fetchAllPedidosFlex, fetchPedidosFlexByEstado, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal } from "@/lib/db";
 import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap, ShipmentWithItems } from "@/lib/db";
 import { getOAuthUrl } from "@/lib/ml";
 import Link from "next/link";
@@ -216,6 +216,10 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   const [newCostoNeto, setNewCostoNeto] = useState(0);
   const [newIva, setNewIva] = useState(0);
   const [newCostoBruto, setNewCostoBruto] = useState(0);
+
+  // Edit factura original
+  const [editingFactura, setEditingFactura] = useState(false);
+  const [editFacturaLineas, setEditFacturaLineas] = useState<{sku:string;nombre:string;cantidad:number;costo_unitario:number}[]>([]);
 
   // Add line to existing
   const [addSku, setAddSku] = useState("");
@@ -656,10 +660,13 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
 
             return (facturaOrig || netoAjustado > 0) ? (
               <div style={{marginTop:10}}>
-                {/* Bloque 1: Factura Original */}
-                {facturaOrig && (
+                {/* Bloque 1: Factura Original (editable) */}
+                {facturaOrig && !editingFactura && (
                   <div style={{...costBlockStyle,background:"var(--bg3)"}}>
-                    <div style={{fontSize:11,fontWeight:700,color:"var(--txt2)",marginBottom:8}}>Factura Original (N° {selRec.folio} — {selRec.proveedor})</div>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                      <span style={{fontSize:11,fontWeight:700,color:"var(--txt2)"}}>Factura Original (N° {selRec.folio} — {selRec.proveedor})</span>
+                      {isEditable && <button onClick={() => { setEditFacturaLineas(facturaOrig.lineas.map(l => ({...l}))); setEditingFactura(true); }} style={{padding:"3px 8px",borderRadius:4,background:"var(--bg4)",color:"var(--cyan)",fontSize:10,fontWeight:700,border:"1px solid var(--bg4)",cursor:"pointer"}}>Editar</button>}
+                    </div>
                     <div style={{marginBottom:8}}>
                       {facturaOrig.lineas.map((fl, i) => (
                         <div key={i} style={{display:"flex",justifyContent:"space-between",fontSize:11,padding:"2px 0",color:"var(--txt2)"}}>
@@ -670,11 +677,113 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                         </div>
                       ))}
                     </div>
-                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,fontSize:12,padding:"6px 0",borderTop:"1px solid var(--bg4)"}}>
-                      <div><span style={{color:"var(--txt3)",fontSize:10}}>Neto:</span> <strong>{fmtMoney(facturaOrig.neto)}</strong></div>
-                      <div><span style={{color:"var(--txt3)",fontSize:10}}>IVA:</span> <strong>{fmtMoney(facturaOrig.iva)}</strong></div>
-                      <div><span style={{color:"var(--txt3)",fontSize:10}}>Bruto:</span> <strong style={{color:"var(--cyan)"}}>{fmtMoney(facturaOrig.bruto)}</strong></div>
+                    {(() => {
+                      const netoCalc = facturaOrig.lineas.reduce((s, l) => s + l.cantidad * l.costo_unitario, 0);
+                      const brutoCalc = Math.round(netoCalc * 1.19);
+                      const ivaCalc = brutoCalc - netoCalc;
+                      const diffNeto = netoCalc - facturaOrig.neto;
+                      return (<>
+                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,fontSize:12,padding:"6px 0",borderTop:"1px solid var(--bg4)"}}>
+                          <div><span style={{color:"var(--txt3)",fontSize:10}}>Neto (app):</span> <strong>{fmtMoney(facturaOrig.neto)}</strong></div>
+                          <div><span style={{color:"var(--txt3)",fontSize:10}}>IVA (app):</span> <strong>{fmtMoney(facturaOrig.iva)}</strong></div>
+                          <div><span style={{color:"var(--txt3)",fontSize:10}}>Bruto (app):</span> <strong style={{color:"var(--cyan)"}}>{fmtMoney(facturaOrig.bruto)}</strong></div>
+                        </div>
+                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,fontSize:12,padding:"4px 0 0",borderTop:"1px dashed var(--bg4)"}}>
+                          <div><span style={{color:"var(--txt3)",fontSize:10}}>Neto (calc):</span> <strong style={{color: diffNeto !== 0 ? "var(--amber)" : "var(--txt)"}}>{fmtMoney(netoCalc)}</strong></div>
+                          <div><span style={{color:"var(--txt3)",fontSize:10}}>IVA (calc):</span> <strong style={{color: diffNeto !== 0 ? "var(--amber)" : "var(--txt)"}}>{fmtMoney(ivaCalc)}</strong></div>
+                          <div><span style={{color:"var(--txt3)",fontSize:10}}>Bruto (calc):</span> <strong style={{color: diffNeto !== 0 ? "var(--amber)" : "var(--cyan)"}}>{fmtMoney(brutoCalc)}</strong></div>
+                        </div>
+                        {diffNeto !== 0 && (
+                          <div style={{fontSize:10,color:"var(--amber)",marginTop:4,textAlign:"right"}}>
+                            Diferencia neto: {diffNeto > 0 ? "+" : ""}{fmtMoney(diffNeto)}
+                          </div>
+                        )}
+                      </>);
+                    })()}
+                  </div>
+                )}
+                {/* Bloque 1b: Factura Original — modo edición */}
+                {facturaOrig && editingFactura && (
+                  <div style={{...costBlockStyle,background:"var(--bg3)",border:"1px solid var(--cyan)"}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                      <span style={{fontSize:11,fontWeight:700,color:"var(--cyan)"}}>Editando Factura Original</span>
+                      <div style={{display:"flex",gap:4}}>
+                        <button onClick={() => setEditingFactura(false)} style={{padding:"3px 8px",borderRadius:4,background:"var(--bg4)",color:"var(--txt3)",fontSize:10,fontWeight:700,border:"none",cursor:"pointer"}}>Cancelar</button>
+                        <button onClick={async () => {
+                          const neto = editFacturaLineas.reduce((s, l) => s + l.cantidad * l.costo_unitario, 0);
+                          const iva = Math.round(neto * 0.19);
+                          const bruto = neto + iva;
+                          const newFactura: FacturaOriginal = { lineas: editFacturaLineas, neto, iva, bruto };
+                          setLoading(true);
+                          await updateRecepcionFacturaOriginal(selRec.id!, newFactura);
+                          // Sync qty_factura y costo_unitario en recepcion_lineas; crear línea si es nueva
+                          for (const fl of editFacturaLineas) {
+                            const match = lineas.find(l => l.sku === fl.sku);
+                            if (match) {
+                              await actualizarLineaRecepcion(match.id!, { qty_factura: fl.cantidad, costo_unitario: fl.costo_unitario });
+                            } else {
+                              await agregarLineaRecepcion(selRec.id!, { sku: fl.sku, nombre: fl.nombre, codigoML: "", cantidad: fl.cantidad, costo: fl.costo_unitario, requiereEtiqueta: false });
+                            }
+                          }
+                          // Sync costos en encabezado
+                          await actualizarRecepcion(selRec.id!, { costo_neto: neto, iva, costo_bruto: bruto });
+                          setEditingFactura(false);
+                          await refreshDetail();
+                          setLoading(false);
+                        }} style={{padding:"3px 8px",borderRadius:4,background:"var(--cyan)",color:"#000",fontSize:10,fontWeight:700,border:"none",cursor:"pointer"}}>Guardar</button>
+                      </div>
                     </div>
+                    <div style={{marginBottom:8}}>
+                      {editFacturaLineas.map((fl, i) => (
+                        <div key={i} style={{display:"flex",alignItems:"center",gap:4,fontSize:11,padding:"3px 0",color:"var(--txt2)"}}>
+                          <span className="mono" style={{flex:1}}>{fl.sku}</span>
+                          <span style={{fontSize:9,color:"var(--txt3)"}}>×</span>
+                          <input type="number" value={fl.cantidad} onChange={e => { const v = [...editFacturaLineas]; v[i] = {...v[i], cantidad: Number(e.target.value)||0}; setEditFacturaLineas(v); }}
+                            style={{width:50,padding:"2px 4px",borderRadius:4,background:"var(--bg2)",color:"var(--txt)",border:"1px solid var(--bg4)",fontSize:11,textAlign:"right",fontFamily:"var(--font-mono)"}} />
+                          <span style={{fontSize:9,color:"var(--txt3)"}}>@$</span>
+                          <input type="number" value={fl.costo_unitario} onChange={e => { const v = [...editFacturaLineas]; v[i] = {...v[i], costo_unitario: Number(e.target.value)||0}; setEditFacturaLineas(v); }}
+                            style={{width:70,padding:"2px 4px",borderRadius:4,background:"var(--bg2)",color:"var(--txt)",border:"1px solid var(--bg4)",fontSize:11,textAlign:"right",fontFamily:"var(--font-mono)"}} />
+                          <span className="mono" style={{width:90,textAlign:"right",fontWeight:700}}>{fmtMoney(fl.cantidad * fl.costo_unitario)}</span>
+                          <button onClick={() => { const v = editFacturaLineas.filter((_, j) => j !== i); setEditFacturaLineas(v); }}
+                            style={{padding:"1px 5px",borderRadius:4,background:"var(--redBg)",color:"var(--red)",fontSize:10,fontWeight:700,border:"1px solid var(--redBd)",cursor:"pointer",lineHeight:1}}>×</button>
+                        </div>
+                      ))}
+                      {/* Agregar línea */}
+                      <div style={{display:"flex",alignItems:"center",gap:4,fontSize:11,padding:"5px 0",borderTop:"1px dashed var(--bg4)",marginTop:4}}>
+                        <input placeholder="SKU"
+                          id="factura-orig-new-sku"
+                          style={{flex:1,padding:"2px 4px",borderRadius:4,background:"var(--bg2)",color:"var(--txt)",border:"1px solid var(--bg4)",fontSize:11,fontFamily:"var(--font-mono)"}} />
+                        <span style={{fontSize:9,color:"var(--txt3)"}}>×</span>
+                        <input placeholder="Qty" type="number" id="factura-orig-new-qty"
+                          style={{width:50,padding:"2px 4px",borderRadius:4,background:"var(--bg2)",color:"var(--txt)",border:"1px solid var(--bg4)",fontSize:11,textAlign:"right",fontFamily:"var(--font-mono)"}} />
+                        <span style={{fontSize:9,color:"var(--txt3)"}}>@$</span>
+                        <input placeholder="Costo" type="number" id="factura-orig-new-costo"
+                          style={{width:70,padding:"2px 4px",borderRadius:4,background:"var(--bg2)",color:"var(--txt)",border:"1px solid var(--bg4)",fontSize:11,textAlign:"right",fontFamily:"var(--font-mono)"}} />
+                        <button onClick={() => {
+                          const skuEl = document.getElementById("factura-orig-new-sku") as HTMLInputElement;
+                          const qtyEl = document.getElementById("factura-orig-new-qty") as HTMLInputElement;
+                          const costoEl = document.getElementById("factura-orig-new-costo") as HTMLInputElement;
+                          const sku = skuEl?.value?.trim().toUpperCase(); const qty = Number(qtyEl?.value) || 0; const costo = Number(costoEl?.value) || 0;
+                          if (!sku) return;
+                          const prod = findProduct(sku).find(p => p.sku === sku);
+                          setEditFacturaLineas([...editFacturaLineas, { sku, nombre: prod?.name || sku, cantidad: qty, costo_unitario: costo }]);
+                          if (skuEl) skuEl.value = ""; if (qtyEl) qtyEl.value = ""; if (costoEl) costoEl.value = "";
+                          skuEl?.focus();
+                        }} style={{padding:"2px 8px",borderRadius:4,background:"var(--greenBg)",color:"var(--green)",fontSize:10,fontWeight:700,border:"1px solid var(--greenBd)",cursor:"pointer"}}>+</button>
+                      </div>
+                    </div>
+                    {(() => {
+                      const neto = editFacturaLineas.reduce((s, l) => s + l.cantidad * l.costo_unitario, 0);
+                      const iva = Math.round(neto * 0.19);
+                      const bruto = neto + iva;
+                      return (
+                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,fontSize:12,padding:"6px 0",borderTop:"1px solid var(--cyan)"}}>
+                          <div><span style={{color:"var(--txt3)",fontSize:10}}>Neto:</span> <strong>{fmtMoney(neto)}</strong></div>
+                          <div><span style={{color:"var(--txt3)",fontSize:10}}>IVA:</span> <strong>{fmtMoney(iva)}</strong></div>
+                          <div><span style={{color:"var(--txt3)",fontSize:10}}>Bruto:</span> <strong style={{color:"var(--cyan)"}}>{fmtMoney(bruto)}</strong></div>
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
 

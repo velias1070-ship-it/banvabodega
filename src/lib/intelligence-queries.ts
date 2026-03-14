@@ -227,6 +227,23 @@ export async function queryStockFullCache(): Promise<Map<string, number>> {
   return map;
 }
 
+/** Detalle de stock Full: dañado, perdido, transferencia por SKU Venta — paginado */
+export async function queryStockFullDetail(): Promise<Map<string, { sku_venta: string; stock_danado: number; stock_perdido: number; stock_transferencia: number }>> {
+  const sb = getServerSupabase();
+  if (!sb) return new Map();
+  const data = await paginatedSelect(() => sb.from("stock_full_cache").select("sku_venta, stock_danado, stock_perdido, stock_transferencia"));
+  const map = new Map<string, { sku_venta: string; stock_danado: number; stock_perdido: number; stock_transferencia: number }>();
+  for (const row of data) {
+    const danado = (row.stock_danado as number) || 0;
+    const perdido = (row.stock_perdido as number) || 0;
+    const transferencia = (row.stock_transferencia as number) || 0;
+    if (danado > 0 || perdido > 0 || transferencia > 0) {
+      map.set(row.sku_venta as string, { sku_venta: row.sku_venta as string, stock_danado: danado, stock_perdido: perdido, stock_transferencia: transferencia });
+    }
+  }
+  return map;
+}
+
 /** Velocidad promedio de ProfitGuard por SKU Venta — paginado */
 export async function queryVelProfitguard(): Promise<Map<string, number>> {
   const sb = getServerSupabase();
