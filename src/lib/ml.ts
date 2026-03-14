@@ -257,14 +257,15 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string): 
     }
 
     const data = await resp.json();
+    console.log("[ML] OAuth response keys:", Object.keys(data), "has refresh_token:", !!data.refresh_token, "user_id:", data.user_id);
     await saveMLConfig({
       access_token: data.access_token,
-      refresh_token: data.refresh_token,
+      refresh_token: data.refresh_token || "",
       token_expires_at: new Date(Date.now() + data.expires_in * 1000).toISOString(),
       seller_id: String(data.user_id),
     });
 
-    console.log("[ML] OAuth complete, seller_id:", data.user_id);
+    console.log("[ML] OAuth complete, seller_id:", data.user_id, "refresh_token saved:", !!data.refresh_token);
     return true;
   } catch (err) {
     console.error("[ML] Code exchange error:", err);
