@@ -59,7 +59,7 @@ export async function GET() {
       productoNombres.set(p.sku, p.nombre || "");
       productoCostos.set(p.sku, p.costo || 0);
       if (p.sku_venta) {
-        for (const sv of p.sku_venta.split(",").map((s: string) => s.trim()).filter(Boolean)) {
+        for (const sv of p.sku_venta.split(",").map((s: string) => s.trim().toUpperCase()).filter(Boolean)) {
           skuVentaToFisico.set(sv.toUpperCase(), p.sku);
         }
       }
@@ -94,14 +94,20 @@ export async function GET() {
           }
         }
       } else {
-        // Simple: 1:1
-        const fisico = skuVentaToFisico.get(sv.toUpperCase()) || sv;
+        // Simple: buscar en productos por sku_venta, si no, el propio SKU Venta es el origen
+        const fisico = skuVentaToFisico.get(sv.toUpperCase()) || sv.toUpperCase();
         if (!ventasPorOrigen.has(fisico)) ventasPorOrigen.set(fisico, []);
         const arr = ventasPorOrigen.get(fisico)!;
         if (!arr.some(e => e.skuVenta === sv)) {
           arr.push({ skuVenta: sv, unidades: 1 });
         }
       }
+    });
+
+    // ── Contar cuántos SKU Venta comparten cada SKU Origen (para flag compartido) ──
+    const ventasCountPorOrigen = new Map<string, number>();
+    ventasPorOrigen.forEach((ventas, skuOrigen) => {
+      ventasCountPorOrigen.set(skuOrigen, ventas.length);
     });
 
     // ── Generar filas a nivel SKU Venta ──
@@ -178,6 +184,8 @@ export async function GET() {
           prioridad: intel.prioridad,
           target_dias_full: intel.target_dias_full,
           stock_bodega: intel.stock_bodega,
+          stock_bodega_compartido: (ventasCountPorOrigen.get(skuOrigen) || 1) > 1,
+          stock_bodega_formatos: ventasCountPorOrigen.get(skuOrigen) || 1,
           stock_en_transito: intel.stock_en_transito,
           mandar_full: intel.mandar_full,
           pedir_proveedor: intel.pedir_proveedor,

@@ -339,7 +339,7 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
   const skuVentaToFisico = new Map<string, string>();
   for (const p of productos) {
     if (p.sku_venta) {
-      const ventas = p.sku_venta.split(",").map(s => s.trim()).filter(Boolean);
+      const ventas = p.sku_venta.split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
       for (const sv of ventas) {
         skuVentaToFisico.set(sv.toUpperCase(), p.sku);
       }
