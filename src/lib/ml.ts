@@ -1271,26 +1271,42 @@ export interface SyncStockFullResult {
  */
 async function fetchAllSellerItems(sellerId: string): Promise<string[]> {
   const allIds: string[] = [];
-  let scrollId: string | null = null;
 
-  // Primera página con search_type=scan para obtener scroll_id
+  // Intentar con search_type=scan (scroll pagination)
   const first = await mlGet<{ results: string[]; scroll_id?: string; paging: { total: number } }>(
-    `/users/${sellerId}/items/search?search_type=scan&limit=100`
+    `/users/${sellerId}/items/search?search_type=scan&limit=100&status=active`
   );
-  if (!first) return [];
 
-  allIds.push(...first.results);
-  scrollId = first.scroll_id || null;
+  if (first && first.results.length > 0) {
+    allIds.push(...first.results);
+    let scrollId = first.scroll_id || null;
 
-  // Paginar con scroll_id
-  while (scrollId && allIds.length < first.paging.total) {
-    await delay(500);
-    const page = await mlGet<{ results: string[]; scroll_id?: string }>(
-      `/users/${sellerId}/items/search?search_type=scan&scroll_id=${scrollId}&limit=100`
+    while (scrollId && allIds.length < first.paging.total) {
+      await delay(500);
+      const page = await mlGet<{ results: string[]; scroll_id?: string }>(
+        `/users/${sellerId}/items/search?search_type=scan&scroll_id=${scrollId}&limit=100`
+      );
+      if (!page || page.results.length === 0) break;
+      allIds.push(...page.results);
+      scrollId = page.scroll_id || null;
+    }
+
+    return allIds;
+  }
+
+  // Fallback: paginación con offset (para sellers que no soportan scan)
+  console.log("[syncStockFull] scan devolvió 0, intentando con offset pagination...");
+  let offset = 0;
+  const limit = 50;
+  while (true) {
+    const page = await mlGet<{ results: string[]; paging: { total: number; offset: number; limit: number } }>(
+      `/users/${sellerId}/items/search?offset=${offset}&limit=${limit}&status=active`
     );
     if (!page || page.results.length === 0) break;
     allIds.push(...page.results);
-    scrollId = page.scroll_id || null;
+    offset += page.results.length;
+    if (offset >= page.paging.total || offset >= 1000) break; // ML limita offset a 1000
+    await delay(500);
   }
 
   return allIds;
@@ -1346,8 +1362,9 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
 
   // 2. Listar todos los items del seller
   console.log(`[syncStockFull] Obteniendo items del seller ${config.seller_id}...`);
+  console.log(`[syncStockFull] Mapeo composicion_venta: ${codigoToSkuVenta.size} codigo_ml encontrados`);
   const itemIds = await fetchAllSellerItems(config.seller_id);
-  console.log(`[syncStockFull] ${itemIds.length} items encontrados`);
+  console.log(`[syncStockFull] ${itemIds.length} items encontrados${itemIds.length > 0 ? ` (primeros: ${itemIds.slice(0, 3).join(", ")})` : ""}`);
 
   // 3. Procesar items en batches de 5
   const itemsMapRows: Array<{
