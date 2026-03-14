@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { syncStockFull } from "@/lib/ml";
 
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 /**
  * POST /api/ml/sync-stock-full
