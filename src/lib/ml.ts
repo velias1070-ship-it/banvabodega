@@ -1416,8 +1416,8 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
 
   let sinInventoryId = 0;
 
-  for (let i = 0; i < itemIds.length; i += 5) {
-    const batch = itemIds.slice(i, i + 5);
+  for (let i = 0; i < itemIds.length; i += 20) {
+    const batch = itemIds.slice(i, i + 20);
     const promises = batch.map(async (itemId) => {
       try {
         const item = await fetchMarketplaceItem(itemId);
@@ -1462,7 +1462,7 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
       }
     });
     await Promise.all(promises);
-    if (i + 5 < itemIds.length) await delay(500);
+    if (i + 20 < itemIds.length) await delay(100);
   }
 
   // 4. Obtener stock fulfillment detallado para items con inventory_id
@@ -1472,8 +1472,8 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
   // Mapeo inventory_id → fulfillment detail
   const fulfillmentMap = new Map<string, FulfillmentStockDetail>();
 
-  for (let i = 0; i < inventoryIds.length; i += 5) {
-    const batch = inventoryIds.slice(i, i + 5);
+  for (let i = 0; i < inventoryIds.length; i += 20) {
+    const batch = inventoryIds.slice(i, i + 20);
     const promises = batch.map(async (invId) => {
       try {
         const detail = await fetchFulfillmentStock(invId, config.seller_id);
@@ -1485,7 +1485,7 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
       }
     });
     await Promise.all(promises);
-    if (i + 5 < inventoryIds.length) await delay(500);
+    if (i + 20 < inventoryIds.length) await delay(100);
   }
 
   // 5. Upsert ml_items_map
