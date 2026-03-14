@@ -196,7 +196,7 @@ export default function AdminInteligencia() {
 
   const cargarVenta = useCallback(async () => {
     try {
-      const res = await fetch("/api/intelligence/vista-venta");
+      const res = await fetch("/api/intelligence/sku-venta");
       if (res.ok) {
         const json = await res.json();
         setVentaRows((json.rows || []) as VentaRow[]);
