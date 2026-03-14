@@ -168,12 +168,32 @@ export async function GET(req: NextRequest) {
 
     console.log(`[agents/cron] Completado. ${ejecutados.length} triggers ejecutados.`);
 
-    // ── Snapshot diario de inteligencia ──
-    // Ejecutar recálculo full + snapshot una vez al día (entre 6-8am Chile)
+    // ── Sync stock Full desde ML + Snapshot diario de inteligencia ──
+    // Ejecutar sync + recálculo full + snapshot una vez al día (entre 6-8am Chile)
+    let stockFullResult = null;
     let intelligenceResult = null;
     try {
       const hour = now.getHours();
       if (hour >= 6 && hour <= 8) {
+        // Primero: sincronizar stock Full desde ML
+        try {
+          console.log("[agents/cron] Sincronizando stock Full desde ML...");
+          const stockRes = await fetch(`${baseUrl}/api/ml/sync-stock-full`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ recalcular: false }),
+          });
+          if (stockRes.ok) {
+            stockFullResult = await stockRes.json();
+            console.log(`[agents/cron] Stock Full sync: ${stockFullResult.items_sincronizados} items, ${stockFullResult.stock_actualizado} SKUs en ${stockFullResult.tiempo_ms}ms`);
+          } else {
+            console.error("[agents/cron] Error en stock Full sync:", await stockRes.text());
+          }
+        } catch (err) {
+          console.error("[agents/cron] Error sincronizando stock Full:", err);
+        }
+
+        // Luego: recálculo de inteligencia con stock Full fresco
         console.log("[agents/cron] Ejecutando recálculo de inteligencia + snapshot diario...");
         const intelRes = await fetch(`${baseUrl}/api/intelligence/recalcular`, {
           method: "POST",
@@ -197,6 +217,11 @@ export async function GET(req: NextRequest) {
       triggers_evaluados: triggers.length,
       ejecutados: ejecutados.length,
       detalle: ejecutados,
+      stock_full_sync: stockFullResult ? {
+        items: stockFullResult.items_sincronizados,
+        skus: stockFullResult.stock_actualizado,
+        tiempo_ms: stockFullResult.tiempo_ms,
+      } : null,
       intelligence: intelligenceResult ? {
         recalculados: intelligenceResult.recalculados,
         tiempo_ms: intelligenceResult.tiempo_ms,

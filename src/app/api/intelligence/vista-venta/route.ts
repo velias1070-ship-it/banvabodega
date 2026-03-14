@@ -23,7 +23,7 @@ export async function GET() {
         .or("vel_ponderada.gt.0,stock_total.gt.0"),
       sb.from("composicion_venta").select("sku_venta, sku_origen, unidades"),
       sb.from("productos").select("sku, sku_venta, nombre, costo, precio"),
-      sb.from("stock_full_cache").select("sku_venta, cantidad"),
+      sb.from("stock_full_cache").select("sku_venta, cantidad, stock_danado, stock_perdido, stock_transferencia, stock_no_disponible"),
       sb.from("orders_history")
         .select("sku_venta, cantidad, canal, fecha, subtotal, comision_total, costo_envio, ingreso_envio, total")
         .eq("estado", "Pagada")
@@ -34,7 +34,7 @@ export async function GET() {
     const intelRows = (intelRes.data || []) as Record<string, unknown>[];
     const composicion = (compRes.data || []) as { sku_venta: string; sku_origen: string; unidades: number }[];
     const productos = (prodRes.data || []) as { sku: string; sku_venta: string; nombre: string; costo: number; precio: number }[];
-    const cacheRows = (cacheRes.data || []) as { sku_venta: string; cantidad: number }[];
+    const cacheRows = (cacheRes.data || []) as { sku_venta: string; cantidad: number; stock_danado: number; stock_perdido: number; stock_transferencia: number; stock_no_disponible: number }[];
     const ordenes = (ordRes.data || []) as { sku_venta: string; cantidad: number; canal: string; fecha: string; subtotal: number; comision_total: number; costo_envio: number; ingreso_envio: number; total: number }[];
 
     // ── Maps de lookup ──
@@ -42,7 +42,16 @@ export async function GET() {
     for (const r of intelRows) intelMap.set(r.sku_origen as string, r);
 
     const stockFullMap = new Map<string, number>();
-    for (const r of cacheRows) stockFullMap.set(r.sku_venta, r.cantidad || 0);
+    const stockDetailMap = new Map<string, { stock_danado: number; stock_perdido: number; stock_transferencia: number }>();
+    for (const r of cacheRows) {
+      stockFullMap.set(r.sku_venta, r.cantidad || 0);
+      const danado = r.stock_danado || 0;
+      const perdido = r.stock_perdido || 0;
+      const transferencia = r.stock_transferencia || 0;
+      if (danado > 0 || perdido > 0 || transferencia > 0) {
+        stockDetailMap.set(r.sku_venta, { stock_danado: danado, stock_perdido: perdido, stock_transferencia: transferencia });
+      }
+    }
 
     // Composición: SKU Venta → [{sku_origen, unidades}]
     const compPorVenta = new Map<string, { sku_origen: string; unidades: number }[]>();
@@ -192,6 +201,9 @@ export async function GET() {
           updated_at: intel.updated_at,
           // Propios del SKU Venta
           stock_full: stFull,
+          stock_danado: stockDetailMap.get(skuVenta)?.stock_danado || 0,
+          stock_perdido: stockDetailMap.get(skuVenta)?.stock_perdido || 0,
+          stock_transferencia_full: stockDetailMap.get(skuVenta)?.stock_transferencia || 0,
           vel_7d: Math.round(vel7d * 100) / 100,
           vel_30d: Math.round(vel30d * 100) / 100,
           vel_60d: Math.round(vel60d * 100) / 100,

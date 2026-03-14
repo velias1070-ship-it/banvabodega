@@ -95,6 +95,9 @@ interface VentaRow {
   updated_at: string;
   // Propios del SKU Venta
   stock_full: number;
+  stock_danado: number;
+  stock_perdido: number;
+  stock_transferencia_full: number;
   vel_7d: number;
   vel_30d: number;
   vel_60d: number;
@@ -167,6 +170,8 @@ export default function AdminInteligencia() {
   const [lastUpdate, setLastUpdate] = useState<string | null>(null);
   const [recalculando, setRecalculando] = useState(false);
   const [recalcResult, setRecalcResult] = useState<string | null>(null);
+  const [syncingML, setSyncingML] = useState(false);
+  const [syncMLResult, setSyncMLResult] = useState<string | null>(null);
   const [vistaOrigen, setVistaOrigen] = useState(false); // default SKU Venta
 
   // Filtros
@@ -232,6 +237,28 @@ export default function AdminInteligencia() {
       setRecalcResult("Error de conexion");
     }
     setRecalculando(false);
+  }, [cargar]);
+
+  const syncStockML = useCallback(async () => {
+    setSyncingML(true);
+    setSyncMLResult(null);
+    try {
+      const res = await fetch("/api/ml/sync-stock-full", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recalcular: true }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSyncMLResult(`ML Sync: ${data.items_sincronizados} items, ${data.stock_actualizado} SKUs actualizados en ${(data.tiempo_ms / 1000).toFixed(1)}s${data.errores?.length ? ` (${data.errores.length} errores)` : ""}`);
+        await cargar();
+      } else {
+        setSyncMLResult("Error al sincronizar stock ML");
+      }
+    } catch {
+      setSyncMLResult("Error de conexion con ML");
+    }
+    setSyncingML(false);
   }, [cargar]);
 
   // ── Datos activos según vista ──
@@ -334,6 +361,13 @@ export default function AdminInteligencia() {
             </button>
           </div>
           <button
+            onClick={syncStockML}
+            disabled={syncingML}
+            style={{ padding: "8px 16px", borderRadius: 8, background: "var(--blueBg)", color: "var(--blue)", fontWeight: 600, fontSize: 12, border: "1px solid var(--blueBd)" }}
+          >
+            {syncingML ? "Sincronizando ML..." : "Sync Stock ML"}
+          </button>
+          <button
             onClick={recalcular}
             disabled={recalculando}
             style={{ padding: "8px 16px", borderRadius: 8, background: "var(--cyanBg)", color: "var(--cyan)", fontWeight: 600, fontSize: 12, border: "1px solid var(--cyanBd)" }}
@@ -355,6 +389,7 @@ export default function AdminInteligencia() {
           </button>
         </div>
       </div>
+      {syncMLResult && <div style={{ padding: "8px 12px", borderRadius: 8, background: "var(--blueBg)", color: "var(--blue)", fontSize: 12, marginBottom: 8, border: "1px solid var(--blueBd)" }}>{syncMLResult}</div>}
       {recalcResult && <div style={{ padding: "8px 12px", borderRadius: 8, background: "var(--greenBg)", color: "var(--green)", fontSize: 12, marginBottom: 12, border: "1px solid var(--greenBd)" }}>{recalcResult}</div>}
 
       {/* KPIs */}
@@ -578,7 +613,22 @@ export default function AdminInteligencia() {
                     {fmtN(r.vel_ponderada)}
                     {esEstrellaQuiebre && <div style={{ fontSize: 9, color: "var(--cyan)" }}>pre:{fmtN(r.vel_pre_quiebre)}</div>}
                   </td>
-                  <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.stock_full <= 0 && r.vel_full > 0 ? "var(--red)" : "var(--txt)" }}>{fmtInt(r.stock_full)}</td>
+                  <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.stock_full <= 0 && r.vel_full > 0 ? "var(--red)" : "var(--txt)" }}
+                    title={(() => {
+                      const vr = r as unknown as VentaRow;
+                      const d = vr.stock_danado || 0;
+                      const p = vr.stock_perdido || 0;
+                      const t = vr.stock_transferencia_full || 0;
+                      if (d > 0 || p > 0 || t > 0) {
+                        const total = r.stock_full + d + p + t;
+                        return `${r.stock_full} disponibles${d > 0 ? ` + ${d} danados` : ""}${p > 0 ? ` + ${p} perdidos` : ""}${t > 0 ? ` + ${t} en transferencia` : ""} = ${total} totales en Full`;
+                      }
+                      return undefined;
+                    })()}
+                  >
+                    {fmtInt(r.stock_full)}
+                    {!vistaOrigen && ((r as unknown as VentaRow).stock_danado > 0 || (r as unknown as VentaRow).stock_perdido > 0) && <span style={{ color: "var(--amber)", fontSize: 9, marginLeft: 2 }}>!</span>}
+                  </td>
                   <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtInt(r.stock_bodega)}</td>
                   <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.stock_en_transito > 0 ? "var(--blue)" : "var(--txt3)" }}>{r.stock_en_transito > 0 ? fmtInt(r.stock_en_transito) : "—"}</td>
                   <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.cob_full < 14 ? "var(--red)" : r.cob_full < 30 ? "var(--amber)" : "var(--green)" }}>{fmtN(r.cob_full, 0)}d</td>

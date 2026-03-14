@@ -50,7 +50,8 @@ export type AlertaIntel =
   | "en_transito"
   | "estrella_quiebre_prolongado"
   | "proveedor_volvio_stock"
-  | "catch_up_post_quiebre";
+  | "catch_up_post_quiebre"
+  | "stock_danado_full";
 
 export interface SkuIntelRow {
   sku_origen: string;
@@ -243,12 +244,20 @@ export interface PrevIntelRow {
   tiene_stock_prov: boolean;
 }
 
+export interface StockFullDetailRow {
+  sku_venta: string;
+  stock_danado: number;
+  stock_perdido: number;
+  stock_transferencia: number;
+}
+
 export interface RecalculoInput {
   productos: ProductoInput[];
   composicion: ComposicionInput[];
   ordenes: OrdenInput[];
   stockBodega: Map<string, number>;
   stockFull: Map<string, number>;
+  stockFullDetail: Map<string, StockFullDetailRow>;
   velProfitguard: Map<string, number>;
   eventosActivos: EventoInput[];
   quiebres: QuiebreSnapshot[];
@@ -314,8 +323,8 @@ function zScore(nivel: number): number {
 
 export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
   const {
-    productos, composicion, ordenes, stockBodega, stockFull, velProfitguard,
-    eventosActivos, quiebres, conteos, movimientos,
+    productos, composicion, ordenes, stockBodega, stockFull, stockFullDetail,
+    velProfitguard, eventosActivos, quiebres, conteos, movimientos,
     stockEnTransito, ocPendientesPorSku, prevIntelligence, config, hoy,
   } = input;
 
@@ -964,6 +973,20 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
     if (r.liquidacion_accion !== null) alertas.push("liquidar");
     if (r.evento_activo !== null) alertas.push("evento_activo");
     if (r.stock_en_transito > 0) alertas.push("en_transito");
+
+    // Stock dañado o perdido en Full (ML)
+    if (stockFullDetail) {
+      let totalDanado = 0;
+      let totalPerdido = 0;
+      for (const sv of r.skus_venta) {
+        const detail = stockFullDetail.get(sv);
+        if (detail) {
+          totalDanado += detail.stock_danado;
+          totalPerdido += detail.stock_perdido;
+        }
+      }
+      if (totalDanado > 0 || totalPerdido > 0) alertas.push("stock_danado_full");
+    }
 
     // Quiebre prolongado
     if (r.dias_en_quiebre >= 14 && r.vel_pre_quiebre > 2 && (r.abc === "A" || r.abc_pre_quiebre === "A")) {
