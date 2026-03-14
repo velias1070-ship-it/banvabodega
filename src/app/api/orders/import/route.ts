@@ -25,7 +25,10 @@ interface OrderRow {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const ordenes: OrderRow[] = body.ordenes;
+    const ordenes: OrderRow[] = (body.ordenes || []).map((o: OrderRow) => ({
+      ...o,
+      sku_venta: (o.sku_venta || "").toUpperCase().trim(),
+    }));
     const fuente: string = body.fuente || "manual";
 
     if (!Array.isArray(ordenes) || ordenes.length === 0) {

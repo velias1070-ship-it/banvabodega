@@ -81,6 +81,8 @@ interface VentaRow {
   prioridad: number;
   target_dias_full: number;
   stock_bodega: number;
+  stock_bodega_compartido: boolean;
+  stock_bodega_formatos: number;
   stock_en_transito: number;
   mandar_full: number;
   pedir_proveedor: number;
@@ -517,7 +519,7 @@ export default function AdminInteligencia() {
                     {r.sku_venta}
                     {r.unidades_por_pack > 1 && <span style={{ fontSize: 9, color: "var(--txt3)", marginLeft: 3 }}>x{r.unidades_por_pack}</span>}
                   </td>
-                  <td className="mono" style={{ fontSize: 10, color: "var(--txt3)", whiteSpace: "nowrap" }}>{r.sku_origen !== r.sku_venta ? r.sku_origen : "—"}</td>
+                  <td className="mono" style={{ fontSize: 10, color: r.sku_origen !== r.sku_venta ? "var(--txt2)" : "var(--txt3)", whiteSpace: "nowrap" }}>{r.sku_origen || r.sku_venta}</td>
                   <td style={{ fontSize: 11, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.nombre || ""}>{r.nombre || "—"}</td>
                   <td>
                     <span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 700, background: accionColor(r.accion) + "22", color: accionColor(r.accion), border: `1px solid ${accionColor(r.accion)}44` }}>
@@ -531,7 +533,9 @@ export default function AdminInteligencia() {
                   <td style={{ fontSize: 10, color: "var(--txt2)" }}>{cuadranteLabel(r.cuadrante)}</td>
                   <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtN(r.vel_ponderada)}</td>
                   <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.stock_full <= 0 && r.vel_full > 0 ? "var(--red)" : "var(--txt)" }}>{fmtInt(r.stock_full)}</td>
-                  <td className="mono" style={{ textAlign: "right", fontSize: 11, color: "var(--txt3)" }}>{fmtInt(r.stock_bodega)}</td>
+                  <td className="mono" style={{ textAlign: "right", fontSize: 11, color: "var(--txt3)" }} title={r.stock_bodega_compartido ? `Stock bodega compartido entre ${r.stock_bodega_formatos} formatos del mismo SKU Origen` : undefined}>
+                    {fmtInt(r.stock_bodega)}{r.stock_bodega_compartido && <span style={{ fontSize: 9, color: "var(--amber)", marginLeft: 2 }}>*</span>}
+                  </td>
                   <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.cob_full < 14 ? "var(--red)" : r.cob_full < 30 ? "var(--amber)" : "var(--green)" }}>{r.cob_full >= 999 ? "—" : fmtN(r.cob_full, 0) + "d"}</td>
                   <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.margen_full_30d < 0 ? "var(--red)" : "var(--green)" }}>{fmtMoney(r.margen_full_30d)}</td>
                   <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.margen_flex_30d < 0 ? "var(--red)" : r.margen_flex_30d > 0 ? "var(--green)" : "var(--txt3)" }}>{fmtMoney(r.margen_flex_30d)}</td>
@@ -549,6 +553,11 @@ export default function AdminInteligencia() {
               ))}
             </tbody>
           </table>
+          {(filtered as VentaRow[]).some(r => r.stock_bodega_compartido) && (
+            <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 6, paddingLeft: 4 }}>
+              <span style={{ color: "var(--amber)" }}>*</span> Stock bodega compartido entre varios formatos del mismo SKU Origen (el total es el mismo, no se suma entre filas)
+            </div>
+          )}
         </div>
       )}
 
@@ -679,7 +688,7 @@ function exportarCSVVenta(filtered: VentaRow[]) {
     "SKU Venta","SKU Origen","Nombre","Pack","Uds/Pack",
     "Accion","ABC","XYZ","Cuadrante",
     "Vel/Sem","Vel 7d","Vel 30d","Vel Full","Vel Flex",
-    "%Full","%Flex","Stock Full","Stock Bodega",
+    "%Full","%Flex","Stock Full","Stock Bodega","Stock Bod (compartido)",
     "Cob Full (dias)","Margen Full 30d","Margen Flex 30d",
     "Ingreso 30d","Canal Mas Rentable","Precio Promedio",
     "Venta Perdida","Alertas","Proveedor",
@@ -695,6 +704,7 @@ function exportarCSVVenta(filtered: VentaRow[]) {
       fmtN(r.vel_full, 2), fmtN(r.vel_flex, 2),
       fmtN(r.pct_full, 1), fmtN(r.pct_flex, 1),
       fmtInt(r.stock_full), fmtInt(r.stock_bodega),
+      r.stock_bodega_compartido ? "si" : "no",
       r.cob_full >= 999 ? "" : fmtN(r.cob_full, 1),
       Math.round(r.margen_full_30d || 0), Math.round(r.margen_flex_30d || 0),
       Math.round(r.ingreso_30d || 0), r.canal_mas_rentable || "",
