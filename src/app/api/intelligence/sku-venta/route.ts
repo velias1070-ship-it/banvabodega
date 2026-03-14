@@ -8,9 +8,14 @@ import { getServerSupabase } from "@/lib/supabase-server";
  * por cada sku_venta. Velocidad, margen, ingreso y stock son propios de
  * cada formato. ABC, XYZ, cuadrante, alertas, acción se heredan del
  * SKU Origen vía sku_intelligence.
+ *
+ * ?debug=SKU → devuelve info de diagnóstico para ese SKU
  */
-export async function GET() {
+export async function GET(request: Request) {
   const start = Date.now();
+  const url = new URL(request.url);
+  const debugSku = url.searchParams.get("debug")?.toUpperCase() || null;
+
   try {
     const sb = getServerSupabase();
     if (!sb) {
@@ -35,6 +40,47 @@ export async function GET() {
     const cacheRows = (cacheRes.data || []) as { sku_venta: string; cantidad: number }[];
     const ordenes = (ordRes.data || []) as { sku_venta: string; cantidad: number; canal: string; fecha: string; subtotal: number; comision_total: number; costo_envio: number; ingreso_envio: number; total: number }[];
 
+    // Debug log collector
+    const debugLog: string[] = [];
+    const isDebug = (sku: string) => debugSku && (sku.includes(debugSku) || debugSku.includes(sku));
+
+    if (debugSku) {
+      debugLog.push(`=== DEBUG para SKU: ${debugSku} ===`);
+      debugLog.push(`Total órdenes cargadas: ${ordenes.length}`);
+      debugLog.push(`Total composicion rows: ${composicion.length}`);
+      debugLog.push(`Total intel rows: ${intelRows.length}`);
+      debugLog.push(`Total cache rows: ${cacheRows.length}`);
+
+      // Buscar en composición
+      const compDebug = composicion.filter(c =>
+        c.sku_venta.toUpperCase().includes(debugSku) || c.sku_origen.toUpperCase().includes(debugSku)
+      );
+      debugLog.push(`\n--- composicion_venta entries ---`);
+      for (const c of compDebug) {
+        debugLog.push(`  sku_venta="${c.sku_venta}" (UPPER="${c.sku_venta.toUpperCase()}"), sku_origen="${c.sku_origen}" (UPPER="${c.sku_origen.toUpperCase()}"), unidades=${c.unidades}`);
+      }
+
+      // Buscar en orders_history
+      const ordDebug = ordenes.filter(o => o.sku_venta.toUpperCase().includes(debugSku));
+      debugLog.push(`\n--- orders_history entries (matching) ---`);
+      debugLog.push(`  Total matching: ${ordDebug.length}`);
+      const bySkuVenta = new Map<string, number>();
+      for (const o of ordDebug) {
+        const key = o.sku_venta;
+        bySkuVenta.set(key, (bySkuVenta.get(key) || 0) + 1);
+      }
+      bySkuVenta.forEach((count, sv) => {
+        debugLog.push(`  "${sv}" (UPPER="${sv.toUpperCase()}"): ${count} órdenes`);
+      });
+
+      // Buscar en intel
+      const intelDebug = intelRows.filter(r => (r.sku_origen as string).toUpperCase().includes(debugSku));
+      debugLog.push(`\n--- sku_intelligence entries ---`);
+      for (const r of intelDebug) {
+        debugLog.push(`  sku_origen="${r.sku_origen}", vel_ponderada=${r.vel_ponderada}, stock_total=${r.stock_total}`);
+      }
+    }
+
     // ── Maps de lookup ──
     const intelMap = new Map<string, Record<string, unknown>>();
     for (const r of intelRows) {
@@ -54,6 +100,13 @@ export async function GET() {
       ordenesPorSV.get(svUp)!.push(o);
     }
 
+    if (debugSku) {
+      debugLog.push(`\n--- ordenesPorSV (después de agrupar, antes de huérfanos) ---`);
+      ordenesPorSV.forEach((ords, sv) => {
+        if (isDebug(sv)) debugLog.push(`  "${sv}": ${ords.length} órdenes`);
+      });
+    }
+
     // ── Composición: SKU Origen → formatos de venta (UPPER, deduplicado) ──
     const allSkusVentaComp = new Set<string>();
     const ventasPorOrigen = new Map<string, { skuVenta: string; unidades: number }[]>();
@@ -68,19 +121,48 @@ export async function GET() {
       }
     }
 
+    if (debugSku) {
+      debugLog.push(`\n--- allSkusVentaComp (contiene ${debugSku}?) ---`);
+      allSkusVentaComp.forEach(sv => {
+        if (isDebug(sv)) debugLog.push(`  "${sv}" → SÍ está en allSkusVentaComp`);
+      });
+
+      debugLog.push(`\n--- ventasPorOrigen ---`);
+      ventasPorOrigen.forEach((ventas, soUp) => {
+        if (isDebug(soUp) || ventas.some(v => isDebug(v.skuVenta))) {
+          debugLog.push(`  origen="${soUp}" → ${JSON.stringify(ventas)}`);
+        }
+      });
+    }
+
     // ── Reasignar órdenes huérfanas ──
-    // Si hay órdenes bajo un sku_venta que coincide con un sku_origen pero NO
-    // es un sku_venta registrado en composicion_venta, sumar al formato individual.
+    // SOLO si el sku_venta de la orden NO está en composicion_venta
+    if (debugSku) debugLog.push(`\n--- Evaluación de huérfanos ---`);
     for (const svUp of Array.from(ordenesPorSV.keys())) {
-      if (allSkusVentaComp.has(svUp)) continue;
+      const enComp = allSkusVentaComp.has(svUp);
+      if (debugSku && isDebug(svUp)) {
+        debugLog.push(`  svUp="${svUp}": enComp=${enComp}`);
+      }
+      if (enComp) continue; // Es un sku_venta registrado → no tocar sus órdenes
       const formatos = ventasPorOrigen.get(svUp);
       if (!formatos || formatos.length === 0) continue;
       const individual = formatos.find(f => f.unidades === 1);
       if (!individual) continue;
       const target = individual.skuVenta;
+      const ordsCount = ordenesPorSV.get(svUp)?.length || 0;
+      if (debugSku && (isDebug(svUp) || isDebug(target))) {
+        debugLog.push(`  REASIGNANDO: "${svUp}" (${ordsCount} órdenes) → "${target}"`);
+      }
       if (!ordenesPorSV.has(target)) ordenesPorSV.set(target, []);
       ordenesPorSV.get(target)!.push(...(ordenesPorSV.get(svUp) || []));
       ordenesPorSV.delete(svUp);
+    }
+
+    if (debugSku) {
+      debugLog.push(`\n--- ordenesPorSV (después de huérfanos) ---`);
+      ordenesPorSV.forEach((ords, sv) => {
+        if (isDebug(sv)) debugLog.push(`  "${sv}": ${ords.length} órdenes`);
+      });
     }
 
     // ── Contar formatos por origen (para flag compartido) ──
@@ -94,14 +176,29 @@ export async function GET() {
 
     ventasPorOrigen.forEach((ventas, skuOrigen) => {
       const intel = intelMap.get(skuOrigen);
+
+      if (debugSku && isDebug(skuOrigen)) {
+        debugLog.push(`\n--- Procesando origen="${skuOrigen}" ---`);
+        debugLog.push(`  intelMap.has("${skuOrigen}"): ${intelMap.has(skuOrigen)}`);
+        if (!intel) debugLog.push(`  ⚠️ INTEL NO ENCONTRADO → se salta todo este origen`);
+      }
+
       if (!intel) return;
 
       for (const { skuVenta, unidades } of ventas) {
-        // ── Stock Full propio ──
         const stFull = stockFullMap.get(skuVenta) || 0;
-
-        // ── Velocidad y margen desde orders_history por este sku_venta ──
         const ords = ordenesPorSV.get(skuVenta) || [];
+
+        if (debugSku && isDebug(skuVenta)) {
+          debugLog.push(`\n  --- Formato: skuVenta="${skuVenta}", unidades=${unidades} ---`);
+          debugLog.push(`    stockFullMap.get("${skuVenta}"): ${stFull}`);
+          debugLog.push(`    ordenesPorSV.get("${skuVenta}"): ${ords.length} órdenes`);
+          if (ords.length > 0) {
+            debugLog.push(`    Primera orden: ${JSON.stringify(ords[0])}`);
+            debugLog.push(`    Última orden: ${JSON.stringify(ords[ords.length - 1])}`);
+          }
+        }
+
         let qty7 = 0, qty30 = 0, qty60 = 0;
         let fullQty30 = 0, flexQty30 = 0;
         let margenFull = 0, margenFlex = 0;
@@ -135,18 +232,20 @@ export async function GET() {
         const pctFlex = 1 - pctFull;
         const velFull = velPonderada * pctFull;
         const velFlex = velPonderada * pctFlex;
-
-        // ── Cobertura Full propia ──
         const cobFull = velFull > 0 ? (stFull / velFull) * 7 : 999;
-
-        // ── Canal más rentable ──
         const mppFull = ordsFull30 > 0 ? margenFull / fullQty30 : 0;
         const mppFlex = ordsFlex30 > 0 ? margenFlex / flexQty30 : 0;
         const canalMasRentable = mppFull >= mppFlex ? "Full" : "Flex";
-
         const precioPromedio = precioCount > 0 ? precioSum / precioCount : 0;
 
-        // Composición del SKU Venta (para detectar multi-componente packs)
+        if (debugSku && isDebug(skuVenta)) {
+          debugLog.push(`    qty7=${qty7}, qty30=${qty30}, qty60=${qty60}`);
+          debugLog.push(`    vel7d=${vel7d}, vel30d=${vel30d.toFixed(2)}, vel60d=${vel60d.toFixed(2)}`);
+          debugLog.push(`    velPonderada=${velPonderada.toFixed(2)}`);
+          debugLog.push(`    margenFull=${margenFull}, margenFlex=${margenFlex}`);
+          debugLog.push(`    ingreso30=${ingreso30}`);
+        }
+
         const compEntries = composicion.filter(c => c.sku_venta.toUpperCase() === skuVenta);
         const esPack = unidades > 1 || compEntries.length > 1;
 
@@ -156,7 +255,6 @@ export async function GET() {
           nombre: (intel.nombre as string) || null,
           unidades_por_pack: unidades,
           es_pack: esPack,
-          // Heredados del origen
           abc: intel.abc,
           xyz: intel.xyz,
           cuadrante: intel.cuadrante,
@@ -181,7 +279,6 @@ export async function GET() {
           venta_perdida_pesos: intel.venta_perdida_pesos,
           liquidacion_accion: intel.liquidacion_accion,
           updated_at: intel.updated_at,
-          // Propios del SKU Venta (desde orders_history)
           stock_full: stFull,
           vel_7d: Math.round(vel7d * 100) / 100,
           vel_30d: Math.round(vel30d * 100) / 100,
@@ -197,21 +294,30 @@ export async function GET() {
           ingreso_30d: Math.round(ingreso30),
           canal_mas_rentable: canalMasRentable,
           precio_promedio: Math.round(precioPromedio),
-          // Debug
           ordenes_encontradas: ords.length,
         });
       }
     });
 
-    // Ordenar por prioridad
     result.sort((a, b) => ((a.prioridad as number) || 99) - ((b.prioridad as number) || 99));
 
-    return NextResponse.json({
+    const response: Record<string, unknown> = {
       ok: true,
       total: result.length,
       tiempo_ms: Date.now() - start,
       rows: result,
-    });
+    };
+
+    if (debugSku) {
+      // En modo debug, solo devolver las filas del SKU buscado + el log
+      response.rows = result.filter(r =>
+        (r.sku_venta as string).includes(debugSku) || (r.sku_origen as string).includes(debugSku)
+      );
+      response.total = (response.rows as unknown[]).length;
+      response.debug = debugLog;
+    }
+
+    return NextResponse.json(response);
   } catch (err) {
     console.error("[intelligence/sku-venta] Error:", err);
     return NextResponse.json({ error: String(err) }, { status: 500 });
