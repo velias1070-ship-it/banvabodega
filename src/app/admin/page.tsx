@@ -7320,7 +7320,7 @@ function AdminStockML() {
       || (prod?.name || "").toLowerCase().includes(ql);
   });
 
-  const syncOne = async (sku: string) => {
+  const syncOne = async (sku: string, force = false) => {
     const qty = parseInt(overrides[sku] || "0", 10);
     if (isNaN(qty) || qty < 0) return;
     setSyncing(p => ({ ...p, [sku]: true }));
@@ -7329,16 +7329,16 @@ function AdminStockML() {
       const resp = await fetch("/api/ml/stock-compare", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ skus: [sku], quantities: { [sku]: qty } }),
+        body: JSON.stringify({ skus: [sku], quantities: { [sku]: qty }, force }),
       });
       const json = await resp.json();
       if (json.error) {
         setSyncResult(p => ({ ...p, [sku]: `Error: ${json.error}` }));
-      } else if (json.synced > 0) {
+      } else if (json.results?.[sku]?.ok) {
         setSyncResult(p => ({ ...p, [sku]: "OK" }));
       } else {
-        const errMsg = json.errors?.join(", ") || "Sin mapeo o safety block";
-        setSyncResult(p => ({ ...p, [sku]: errMsg }));
+        const reason = json.results?.[sku]?.reason || "Error desconocido";
+        setSyncResult(p => ({ ...p, [sku]: reason }));
       }
     } catch (err) {
       setSyncResult(p => ({ ...p, [sku]: String(err) }));
@@ -7347,7 +7347,7 @@ function AdminStockML() {
     }
   };
 
-  const syncAll = async () => {
+  const syncAll = async (force = false) => {
     if (!confirm(`Sincronizar ${filtered.length} SKUs a MercadoLibre?`)) return;
     setSyncAllLoading(true);
     const quantities: Record<string, number> = {};
@@ -7361,13 +7361,23 @@ function AdminStockML() {
       const resp = await fetch("/api/ml/stock-compare", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ skus, quantities }),
+        body: JSON.stringify({ skus, quantities, force }),
       });
       const json = await resp.json();
       if (json.error) {
         alert(`Error: ${json.error}`);
       } else {
-        alert(`Sync completado: ${json.synced}/${json.total} SKUs sincronizados${json.errors ? `\nErrores: ${json.errors.join(", ")}` : ""}`);
+        // Show per-SKU results
+        const failed = Object.entries(json.results || {}).filter(([, r]: [string, any]) => !r.ok);
+        let msg = `Sync completado: ${json.synced}/${json.total} SKUs sincronizados`;
+        if (failed.length > 0) {
+          msg += `\n\nFallaron ${failed.length}:\n` + failed.map(([sku, r]: [string, any]) => `• ${sku}: ${r.reason}`).join("\n");
+        }
+        alert(msg);
+        // Update per-row results in UI
+        for (const [sku, r] of Object.entries(json.results || {}) as [string, any][]) {
+          setSyncResult(p => ({ ...p, [sku]: r.ok ? "OK" : r.reason }));
+        }
         loadData();
       }
     } catch (err) {
@@ -7395,7 +7405,7 @@ function AdminStockML() {
             style={{padding:"8px 16px",borderRadius:8,background:"var(--bg3)",color:"var(--txt)",border:"1px solid var(--bg4)",fontWeight:600,fontSize:12,cursor:"pointer"}}>
             {loading ? "Cargando..." : "🔄 Refrescar"}
           </button>
-          <button onClick={syncAll} disabled={syncAllLoading || filtered.length === 0}
+          <button onClick={() => syncAll()} disabled={syncAllLoading || filtered.length === 0}
             style={{padding:"8px 16px",borderRadius:8,background:"var(--cyan)",color:"#000",border:"none",fontWeight:700,fontSize:12,cursor:"pointer"}}>
             {syncAllLoading ? "Sincronizando..." : `⚡ Sync Todo (${filtered.length})`}
           </button>
@@ -7476,7 +7486,17 @@ function AdminStockML() {
                         style={{padding:"4px 10px",borderRadius:6,background: result === "OK" ? "var(--green)" : "var(--cyan)",color:"#000",border:"none",fontWeight:700,fontSize:11,cursor:"pointer",opacity:isSyncing?0.5:1}}>
                         {isSyncing ? "..." : result === "OK" ? "✓" : "Sync"}
                       </button>
-                      {result && result !== "OK" && <div style={{fontSize:10,color:"var(--red)",marginTop:2,maxWidth:120,overflow:"hidden",textOverflow:"ellipsis"}} title={result}>{result}</div>}
+                      {result && result !== "OK" && (
+                        <div style={{marginTop:2}}>
+                          <div style={{fontSize:10,color:"var(--red)",maxWidth:140,overflow:"hidden",textOverflow:"ellipsis"}} title={result}>{result}</div>
+                          {result.includes("Safety block") && (
+                            <button onClick={() => syncOne(r.sku, true)} disabled={isSyncing}
+                              style={{marginTop:2,padding:"2px 8px",borderRadius:4,background:"var(--amber)",color:"#000",border:"none",fontWeight:700,fontSize:10,cursor:"pointer"}}>
+                              Forzar
+                            </button>
+                          )}
+                        </div>
+                      )}
                     </td>
                     <td style={{fontSize:10,color:"var(--txt3)",whiteSpace:"nowrap"}}>{r.ultimo_sync ? fmtDate(r.ultimo_sync) + " " + fmtTime(r.ultimo_sync) : "Nunca"}</td>
                   </tr>
