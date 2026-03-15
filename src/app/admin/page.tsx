@@ -61,7 +61,7 @@ function LoginGate({ onLogin }: { onLogin: (pin: string) => boolean }) {
 }
 
 export default function AdminPage() {
-  const [tab, setTab] = useState<"dash"|"rec"|"picking"|"pedidos"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"intel"|"eventos"|"agentes"|"config">("dash");
+  const [tab, setTab] = useState<"dash"|"rec"|"picking"|"pedidos"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"intel"|"eventos"|"agentes"|"stockml"|"config">("dash");
   const [,setTick] = useState(0);
   const r = useCallback(()=>setTick(t=>t+1),[]);
   const [mounted, setMounted] = useState(false);
@@ -93,7 +93,7 @@ export default function AdminPage() {
       <SheetSync onSynced={r}/>
       <div className="admin-layout">
         <nav className="admin-sidebar">
-          {([["dash","Dashboard","📊"],["rec","Recepciones","📦"],["picking","Picking Flex","🏷️"],["pedidos","Pedidos ML","🛒"],["ops","Operaciones","⚡"],["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["reposicion","Reposición","🔄"],["intel","Inteligencia","🧠"],["eventos","Eventos","📅"],["agentes","Agentes IA","🤖"],["config","Configuración","⚙️"]] as const).map(([key,label,icon])=>(
+          {([["dash","Dashboard","📊"],["rec","Recepciones","📦"],["picking","Picking Flex","🏷️"],["pedidos","Pedidos ML","🛒"],["ops","Operaciones","⚡"],["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["reposicion","Reposición","🔄"],["intel","Inteligencia","🧠"],["eventos","Eventos","📅"],["agentes","Agentes IA","🤖"],["stockml","Stock ML","📡"],["config","Configuración","⚙️"]] as const).map(([key,label,icon])=>(
             <button key={key} className={`sidebar-btn ${tab===key?"active":""}`} onClick={()=>setTab(key as any)}>
               <span className="sidebar-icon">{icon}</span>
               <span className="sidebar-label">{label}</span>
@@ -108,7 +108,7 @@ export default function AdminPage() {
         <main className="admin-main">
           {/* Mobile tabs fallback */}
           <div className="admin-mobile-tabs">
-            {([["dash","Dashboard"],["rec","Recepción"],["picking","Picking"],["pedidos","Pedidos ML"],["ops","Ops"],["inv","Inventario"],["mov","Movim."],["prod","Productos"],["reposicion","Reposición"],["intel","Inteligencia"],["eventos","Eventos"],["agentes","Agentes IA"],["config","Config"]] as const).map(([key,label])=>(
+            {([["dash","Dashboard"],["rec","Recepción"],["picking","Picking"],["pedidos","Pedidos ML"],["ops","Ops"],["inv","Inventario"],["mov","Movim."],["prod","Productos"],["reposicion","Reposición"],["intel","Inteligencia"],["eventos","Eventos"],["agentes","Agentes IA"],["stockml","Stock ML"],["config","Config"]] as const).map(([key,label])=>(
               <button key={key} className={`tab ${tab===key?"active-cyan":""}`} onClick={()=>setTab(key as any)}>{label}</button>
             ))}
           </div>
@@ -125,6 +125,7 @@ export default function AdminPage() {
             {tab==="intel"&&<AdminInteligencia/>}
             {tab==="eventos"&&<AdminEventos/>}
             {tab==="agentes"&&<AdminAgentes/>}
+            {tab==="stockml"&&<AdminStockML/>}
             {tab==="config"&&<Configuracion refresh={r}/>}
           </div>
         </main>
@@ -7260,6 +7261,236 @@ function DiccionarioConfig() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ==================== STOCK ML ====================
+interface StockCompareRow {
+  sku: string;
+  item_id: string;
+  user_product_id: string | null;
+  stock_wms: number;
+  stock_flex_ml: number;
+  stock_full_ml: number;
+  ultimo_sync: string | null;
+  ultimo_stock_enviado: number | null;
+}
+
+function AdminStockML() {
+  const [rows, setRows] = useState<StockCompareRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [q, setQ] = useState("");
+  const [overrides, setOverrides] = useState<Record<string, string>>({});
+  const [syncing, setSyncing] = useState<Record<string, boolean>>({});
+  const [syncResult, setSyncResult] = useState<Record<string, string>>({});
+  const [syncAllLoading, setSyncAllLoading] = useState(false);
+  const s = getStore();
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const resp = await fetch("/api/ml/stock-compare");
+      const json = await resp.json();
+      if (json.error) { setError(json.error); return; }
+      setRows(json.rows || []);
+      // Pre-fill overrides with WMS stock (default: sync all WMS stock to Flex)
+      const ov: Record<string, string> = {};
+      for (const r of json.rows || []) {
+        ov[r.sku] = String(r.stock_wms);
+      }
+      setOverrides(ov);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  const filtered = rows.filter(r => {
+    if (!q) return true;
+    const ql = q.toLowerCase();
+    const prod = s.products[r.sku];
+    return r.sku.toLowerCase().includes(ql)
+      || r.item_id.toLowerCase().includes(ql)
+      || (prod?.name || "").toLowerCase().includes(ql);
+  });
+
+  const syncOne = async (sku: string) => {
+    const qty = parseInt(overrides[sku] || "0", 10);
+    if (isNaN(qty) || qty < 0) return;
+    setSyncing(p => ({ ...p, [sku]: true }));
+    setSyncResult(p => ({ ...p, [sku]: "" }));
+    try {
+      const resp = await fetch("/api/ml/stock-compare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ skus: [sku], quantities: { [sku]: qty } }),
+      });
+      const json = await resp.json();
+      if (json.error) {
+        setSyncResult(p => ({ ...p, [sku]: `Error: ${json.error}` }));
+      } else if (json.synced > 0) {
+        setSyncResult(p => ({ ...p, [sku]: "OK" }));
+      } else {
+        const errMsg = json.errors?.join(", ") || "Sin mapeo o safety block";
+        setSyncResult(p => ({ ...p, [sku]: errMsg }));
+      }
+    } catch (err) {
+      setSyncResult(p => ({ ...p, [sku]: String(err) }));
+    } finally {
+      setSyncing(p => ({ ...p, [sku]: false }));
+    }
+  };
+
+  const syncAll = async () => {
+    if (!confirm(`Sincronizar ${filtered.length} SKUs a MercadoLibre?`)) return;
+    setSyncAllLoading(true);
+    const quantities: Record<string, number> = {};
+    const skus: string[] = [];
+    for (const r of filtered) {
+      const qty = parseInt(overrides[r.sku] || "0", 10);
+      quantities[r.sku] = isNaN(qty) ? r.stock_wms : qty;
+      skus.push(r.sku);
+    }
+    try {
+      const resp = await fetch("/api/ml/stock-compare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ skus, quantities }),
+      });
+      const json = await resp.json();
+      if (json.error) {
+        alert(`Error: ${json.error}`);
+      } else {
+        alert(`Sync completado: ${json.synced}/${json.total} SKUs sincronizados${json.errors ? `\nErrores: ${json.errors.join(", ")}` : ""}`);
+        loadData();
+      }
+    } catch (err) {
+      alert(`Error: ${String(err)}`);
+    } finally {
+      setSyncAllLoading(false);
+    }
+  };
+
+  // KPIs
+  const totalWms = filtered.reduce((s, r) => s + r.stock_wms, 0);
+  const totalFlex = filtered.reduce((s, r) => s + r.stock_flex_ml, 0);
+  const totalFull = filtered.reduce((s, r) => s + r.stock_full_ml, 0);
+  const desincronizados = filtered.filter(r => {
+    const deseado = parseInt(overrides[r.sku] || "0", 10);
+    return r.stock_flex_ml !== deseado;
+  }).length;
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:16}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
+        <h2 style={{margin:0,fontSize:18}}>Stock ML — WMS vs Flex</h2>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={loadData} disabled={loading}
+            style={{padding:"8px 16px",borderRadius:8,background:"var(--bg3)",color:"var(--txt)",border:"1px solid var(--bg4)",fontWeight:600,fontSize:12,cursor:"pointer"}}>
+            {loading ? "Cargando..." : "🔄 Refrescar"}
+          </button>
+          <button onClick={syncAll} disabled={syncAllLoading || filtered.length === 0}
+            style={{padding:"8px 16px",borderRadius:8,background:"var(--cyan)",color:"#000",border:"none",fontWeight:700,fontSize:12,cursor:"pointer"}}>
+            {syncAllLoading ? "Sincronizando..." : `⚡ Sync Todo (${filtered.length})`}
+          </button>
+        </div>
+      </div>
+
+      {error && <div style={{padding:12,borderRadius:8,background:"var(--redBg)",border:"1px solid var(--redBd)",color:"var(--red)",fontSize:12}}>{error}</div>}
+
+      {/* KPIs */}
+      <div className="kpi-grid" style={{gridTemplateColumns:"repeat(4, 1fr)"}}>
+        <div className="kpi">
+          <div style={{fontSize:10,color:"var(--txt3)",textTransform:"uppercase",letterSpacing:1}}>SKUs Mapeados</div>
+          <div style={{fontSize:24,fontWeight:700,fontFamily:"var(--font-mono)"}}>{filtered.length}</div>
+        </div>
+        <div className="kpi">
+          <div style={{fontSize:10,color:"var(--txt3)",textTransform:"uppercase",letterSpacing:1}}>Stock WMS</div>
+          <div style={{fontSize:24,fontWeight:700,fontFamily:"var(--font-mono)",color:"var(--cyan)"}}>{totalWms}</div>
+        </div>
+        <div className="kpi">
+          <div style={{fontSize:10,color:"var(--txt3)",textTransform:"uppercase",letterSpacing:1}}>Stock Flex ML</div>
+          <div style={{fontSize:24,fontWeight:700,fontFamily:"var(--font-mono)",color:"var(--green)"}}>{totalFlex}</div>
+        </div>
+        <div className="kpi">
+          <div style={{fontSize:10,color:"var(--txt3)",textTransform:"uppercase",letterSpacing:1}}>Desincronizados</div>
+          <div style={{fontSize:24,fontWeight:700,fontFamily:"var(--font-mono)",color:desincronizados>0?"var(--amber)":"var(--green)"}}>{desincronizados}</div>
+        </div>
+      </div>
+
+      {/* Search */}
+      <input className="form-input" placeholder="Buscar SKU, item ID, nombre..." value={q} onChange={e=>setQ(e.target.value)}
+        style={{maxWidth:400}} />
+
+      {loading ? (
+        <div style={{padding:40,textAlign:"center",color:"var(--txt3)"}}>Consultando stock en MercadoLibre...</div>
+      ) : filtered.length === 0 ? (
+        <div style={{padding:40,textAlign:"center",color:"var(--txt3)"}}>No hay SKUs mapeados a ML. Configura los mapeos en la pestaña Config.</div>
+      ) : (
+        <div style={{overflowX:"auto"}}>
+          <table className="tbl" style={{width:"100%",fontSize:12}}>
+            <thead>
+              <tr>
+                <th style={{textAlign:"left"}}>SKU</th>
+                <th style={{textAlign:"left"}}>Producto</th>
+                <th style={{textAlign:"right"}}>Stock WMS</th>
+                <th style={{textAlign:"right"}}>Flex ML</th>
+                <th style={{textAlign:"right"}}>Full ML</th>
+                <th style={{textAlign:"center",minWidth:100}}>Enviar a Flex</th>
+                <th style={{textAlign:"center"}}>Sync</th>
+                <th style={{textAlign:"left"}}>Último sync</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map(r => {
+                const prod = s.products[r.sku];
+                const deseado = parseInt(overrides[r.sku] || "0", 10);
+                const diff = r.stock_flex_ml !== deseado;
+                const isSyncing = syncing[r.sku];
+                const result = syncResult[r.sku];
+                return (
+                  <tr key={r.sku + r.item_id} style={{background: diff ? "var(--amberBg)" : undefined}}>
+                    <td style={{fontFamily:"var(--font-mono)",fontWeight:600}}>{r.sku}</td>
+                    <td style={{color:"var(--txt2)",maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{prod?.name || "—"}</td>
+                    <td style={{textAlign:"right",fontFamily:"var(--font-mono)",fontWeight:700,color:"var(--cyan)"}}>{r.stock_wms}</td>
+                    <td style={{textAlign:"right",fontFamily:"var(--font-mono)",fontWeight:700,color:"var(--green)"}}>{r.stock_flex_ml}</td>
+                    <td style={{textAlign:"right",fontFamily:"var(--font-mono)",color:"var(--txt3)"}}>{r.stock_full_ml}</td>
+                    <td style={{textAlign:"center"}}>
+                      <input
+                        type="number"
+                        min={0}
+                        value={overrides[r.sku] ?? ""}
+                        onChange={e => setOverrides(p => ({ ...p, [r.sku]: e.target.value }))}
+                        style={{width:70,textAlign:"center",padding:"4px 6px",borderRadius:6,background:"var(--bg3)",border:"1px solid var(--bg4)",color:"var(--txt)",fontFamily:"var(--font-mono)",fontSize:12,fontWeight:700}}
+                        inputMode="numeric"
+                      />
+                    </td>
+                    <td style={{textAlign:"center"}}>
+                      <button onClick={() => syncOne(r.sku)} disabled={isSyncing}
+                        style={{padding:"4px 10px",borderRadius:6,background: result === "OK" ? "var(--green)" : "var(--cyan)",color:"#000",border:"none",fontWeight:700,fontSize:11,cursor:"pointer",opacity:isSyncing?0.5:1}}>
+                        {isSyncing ? "..." : result === "OK" ? "✓" : "Sync"}
+                      </button>
+                      {result && result !== "OK" && <div style={{fontSize:10,color:"var(--red)",marginTop:2,maxWidth:120,overflow:"hidden",textOverflow:"ellipsis"}} title={result}>{result}</div>}
+                    </td>
+                    <td style={{fontSize:10,color:"var(--txt3)",whiteSpace:"nowrap"}}>{r.ultimo_sync ? fmtDate(r.ultimo_sync) + " " + fmtTime(r.ultimo_sync) : "Nunca"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="card" style={{padding:12,fontSize:11,color:"var(--txt3)"}}>
+        <strong>Nota:</strong> La columna "Enviar a Flex" permite ajustar la cantidad antes de sincronizar. Por defecto usa el stock total del WMS.
+        En días de mucho movimiento, revisa las cantidades antes de hacer Sync. El sistema bloquea automáticamente si el stock baja de &gt;10 a 0 (safety block).
+      </div>
     </div>
   );
 }
