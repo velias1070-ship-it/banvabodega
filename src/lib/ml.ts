@@ -995,17 +995,29 @@ export async function getDistributedStock(userProductId: string): Promise<StockR
 }
 
 /**
- * Update Flex stock (selling_address) using the distributed stock API.
+ * Determine which stock location type the seller controls.
+ * Priority: selling_address (Flex) > seller_warehouse (multi-origin) > null (Full-only)
+ */
+export function getSellerStockType(locations: StockLocation[]): "selling_address" | "seller_warehouse" | null {
+  if (locations.some(l => l.type === "selling_address")) return "selling_address";
+  if (locations.some(l => l.type === "seller_warehouse")) return "seller_warehouse";
+  return null;
+}
+
+/**
+ * Update seller-controlled stock using the distributed stock API.
+ * Writes to selling_address or seller_warehouse depending on the product's locations.
  * Requires x-version header for optimistic concurrency.
  */
 export async function updateFlexStock(
   userProductId: string,
   quantity: number,
-  version: number
+  version: number,
+  stockType: "selling_address" | "seller_warehouse" = "selling_address"
 ): Promise<{ ok: boolean; error?: string }> {
   try {
     const result = await mlPut(
-      `/user-products/${userProductId}/stock/type/selling_address`,
+      `/user-products/${userProductId}/stock/type/${stockType}`,
       { quantity },
       { "x-version": String(version) }
     );
@@ -1014,9 +1026,6 @@ export async function updateFlexStock(
     const msg = String(err);
     if (msg.includes("VERSION_CONFLICT")) {
       return { ok: false, error: "VERSION_CONFLICT" };
-    }
-    if (msg.includes("selling address not found")) {
-      return { ok: false, error: "SOLO_FULL: este producto no tiene stock Flex (selling_address). Solo opera vía Full (meli_facility)." };
     }
     return { ok: false, error: msg };
   }
@@ -1067,15 +1076,15 @@ export async function syncStockToML(sku: string, availableQty: number): Promise<
         continue;
       }
 
-      // 2b. Skip if no selling_address (Full-only item)
-      const hasSellingAddress = stockData.locations.some(l => l.type === "selling_address");
-      if (!hasSellingAddress) {
-        console.warn(`[ML Stock] ${userProductId} has no selling_address — Full-only item, skipping`);
+      // 2b. Determine seller-controlled stock type
+      const stockType = getSellerStockType(stockData.locations);
+      if (!stockType) {
+        console.warn(`[ML Stock] ${userProductId} has no seller-controlled location — Full-only item, skipping`);
         continue;
       }
 
       // 3. PUT with x-version header
-      const result = await updateFlexStock(userProductId, availableQty, stockData.version);
+      const result = await updateFlexStock(userProductId, availableQty, stockData.version, stockType);
 
       if (result.ok) {
         await sb.from("ml_items_map").update({
@@ -1089,7 +1098,7 @@ export async function syncStockToML(sku: string, availableQty: number): Promise<
         console.warn(`[ML Stock] Version conflict for ${sku}, retrying...`);
         const freshStock = await getDistributedStock(userProductId);
         if (freshStock) {
-          const retryResult = await updateFlexStock(userProductId, availableQty, freshStock.version);
+          const retryResult = await updateFlexStock(userProductId, availableQty, freshStock.version, stockType);
           if (retryResult.ok) {
             await sb.from("ml_items_map").update({
               ultimo_sync: new Date().toISOString(),
