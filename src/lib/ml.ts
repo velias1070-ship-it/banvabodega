@@ -296,6 +296,24 @@ export async function mlGet<T = unknown>(path: string, extraHeaders?: Record<str
   return resp.json() as Promise<T>;
 }
 
+/** mlGet that also returns response headers (for x-version etc.) */
+async function mlGetWithHeaders<T = unknown>(path: string): Promise<{ data: T; headers: Headers } | null> {
+  const token = await ensureValidToken();
+  if (!token) return null;
+
+  const resp = await fetch(`${ML_API}${path}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (!resp.ok) {
+    console.error(`[ML] GET ${path} failed:`, resp.status);
+    return null;
+  }
+
+  const data = await resp.json() as T;
+  return { data, headers: resp.headers };
+}
+
 /**
  * Make authenticated GET, return raw JSON (for debugging)
  */
@@ -985,14 +1003,16 @@ export async function getItemUserProductId(itemId: string): Promise<string | nul
  * Returns locations with quantities and the version for optimistic concurrency.
  */
 export async function getDistributedStock(userProductId: string): Promise<StockResponse | null> {
-  const data = await mlGet<StockResponse>(`/user-products/${userProductId}/stock`);
-  if (!data) return null;
+  const result = await mlGetWithHeaders<{ locations?: StockLocation[] }>(`/user-products/${userProductId}/stock`);
+  if (!result) return null;
 
-  // Extract version from response
+  // ML returns version in x-version response header, not in JSON body
+  const headerVersion = parseInt(result.headers.get("x-version") || "0", 10);
+
   return {
     user_product_id: userProductId,
-    locations: data.locations || [],
-    version: data.version || 0,
+    locations: result.data.locations || [],
+    version: headerVersion,
   };
 }
 
