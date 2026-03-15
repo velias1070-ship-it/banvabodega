@@ -997,7 +997,6 @@ export async function getDistributedStock(userProductId: string): Promise<StockR
 /**
  * Update Flex stock (selling_address) using the distributed stock API.
  * Requires x-version header for optimistic concurrency.
- * Returns true on success, throws on version conflict (409).
  */
 export async function updateFlexStock(
   userProductId: string,
@@ -1015,6 +1014,9 @@ export async function updateFlexStock(
     const msg = String(err);
     if (msg.includes("VERSION_CONFLICT")) {
       return { ok: false, error: "VERSION_CONFLICT" };
+    }
+    if (msg.includes("selling address not found")) {
+      return { ok: false, error: "SOLO_FULL: este producto no tiene stock Flex (selling_address). Solo opera vía Full (meli_facility)." };
     }
     return { ok: false, error: msg };
   }
@@ -1062,6 +1064,13 @@ export async function syncStockToML(sku: string, availableQty: number): Promise<
       const stockData = await getDistributedStock(userProductId);
       if (!stockData) {
         console.error(`[ML Stock] Cannot read stock for ${userProductId}`);
+        continue;
+      }
+
+      // 2b. Skip if no selling_address (Full-only item)
+      const hasSellingAddress = stockData.locations.some(l => l.type === "selling_address");
+      if (!hasSellingAddress) {
+        console.warn(`[ML Stock] ${userProductId} has no selling_address — Full-only item, skipping`);
         continue;
       }
 
