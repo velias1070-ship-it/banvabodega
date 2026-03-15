@@ -1125,10 +1125,13 @@ export async function syncStockToML(sku: string, availableQty: number): Promise<
         }).eq("id", map.id);
         synced++;
       } else if (result.error === "VERSION_CONFLICT") {
-        // 409: version mismatch — retry once with fresh version
-        console.warn(`[ML Stock] Version conflict for ${sku}, retrying...`);
-        const freshStock = await getDistributedStock(userProductId);
-        if (freshStock) {
+        // 409: version mismatch — retry up to 3 times with delay
+        let retried = false;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          console.warn(`[ML Stock] Version conflict for ${sku}, retry ${attempt}/3...`);
+          await new Promise(r => setTimeout(r, attempt * 500)); // 500ms, 1s, 1.5s
+          const freshStock = await getDistributedStock(userProductId);
+          if (!freshStock) break;
           const retryResult = await updateFlexStock(userProductId, availableQty, freshStock.version, stockType, freshStock.locations);
           if (retryResult.ok) {
             await sb.from("ml_items_map").update({
@@ -1137,7 +1140,16 @@ export async function syncStockToML(sku: string, availableQty: number): Promise<
               stock_version: freshStock.version + 1,
             }).eq("id", map.id);
             synced++;
+            retried = true;
+            break;
           }
+          if (retryResult.error !== "VERSION_CONFLICT") {
+            console.error(`[ML Stock] Retry ${attempt} for ${sku} failed:`, retryResult.error);
+            break;
+          }
+        }
+        if (!retried) {
+          console.error(`[ML Stock] All retries failed for ${sku} (VERSION_CONFLICT)`);
         }
       } else {
         console.error(`[ML Stock] Error syncing ${sku}:`, result.error);
