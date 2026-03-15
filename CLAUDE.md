@@ -41,3 +41,7 @@ Ver `.claude/rules/` para reglas por dominio:
 - [meli-api.md](.claude/rules/meli-api.md) — integración MercadoLibre
 - [security.md](.claude/rules/security.md) — autenticación, roles, permisos
 - [testing.md](.claude/rules/testing.md) — estrategia de testing
+
+
+## Git
+Siempre trabaja directamente en la branch main. No crees branches separadas. Haz commit y push directo a main.
