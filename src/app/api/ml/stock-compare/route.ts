@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
-import { getDistributedStock, getItemUserProductId, updateFlexStock } from "@/lib/ml";
+import { getDistributedStock, getItemUserProductId, getSellerStockType, updateFlexStock } from "@/lib/ml";
 
 interface CompareRow {
   sku: string;
@@ -159,22 +159,22 @@ export async function POST(req: NextRequest) {
             continue;
           }
 
-          // 5b. Verify this product has selling_address (Flex) location
-          const hasSellingAddress = stockData.locations.some(l => l.type === "selling_address");
-          if (!hasSellingAddress) {
+          // 5b. Determine seller-controlled stock type
+          const stockType = getSellerStockType(stockData.locations);
+          if (!stockType) {
             const locationTypes = stockData.locations.map(l => l.type).join(", ") || "ninguna";
-            skuErrors.push(`${userProductId} no tiene selling_address (Flex). Locations: ${locationTypes}. Es un item solo Full.`);
+            skuErrors.push(`${userProductId} solo tiene locations de ML: ${locationTypes}. No se puede escribir stock.`);
             continue;
           }
 
           // 6. PUT with version
-          let result = await updateFlexStock(userProductId, available, stockData.version);
+          let result = await updateFlexStock(userProductId, available, stockData.version, stockType);
 
           // Retry on version conflict
           if (!result.ok && result.error === "VERSION_CONFLICT") {
             const freshStock = await getDistributedStock(userProductId);
             if (freshStock) {
-              result = await updateFlexStock(userProductId, available, freshStock.version);
+              result = await updateFlexStock(userProductId, available, freshStock.version, stockType);
             }
           }
 
