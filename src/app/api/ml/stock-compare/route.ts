@@ -159,6 +159,14 @@ export async function POST(req: NextRequest) {
             continue;
           }
 
+          // 5b. Verify this product has selling_address (Flex) location
+          const hasSellingAddress = stockData.locations.some(l => l.type === "selling_address");
+          if (!hasSellingAddress) {
+            const locationTypes = stockData.locations.map(l => l.type).join(", ") || "ninguna";
+            skuErrors.push(`${userProductId} no tiene selling_address (Flex). Locations: ${locationTypes}. Es un item solo Full.`);
+            continue;
+          }
+
           // 6. PUT with version
           let result = await updateFlexStock(userProductId, available, stockData.version);
 
