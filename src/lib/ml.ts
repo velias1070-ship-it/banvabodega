@@ -1028,11 +1028,16 @@ export async function updateFlexStock(
       if (!warehouseLocations || warehouseLocations.length === 0) {
         return { ok: false, error: "seller_warehouse requiere locations con store_id" };
       }
-      body = {
-        locations: warehouseLocations
-          .filter(l => l.type === "seller_warehouse" && l.store_id)
-          .map(l => ({ store_id: l.store_id, quantity })),
-      };
+      // Deduplicate by store_id — ML rejects repeated network_node_id
+      const seen = new Set<string>();
+      const uniqueLocations: { store_id: string; quantity: number }[] = [];
+      for (const l of warehouseLocations) {
+        if (l.type === "seller_warehouse" && l.store_id && !seen.has(l.store_id)) {
+          seen.add(l.store_id);
+          uniqueLocations.push({ store_id: l.store_id, quantity });
+        }
+      }
+      body = { locations: uniqueLocations };
     } else {
       body = { quantity };
     }
