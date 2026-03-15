@@ -1028,12 +1028,14 @@ export async function updateFlexStock(
       if (!warehouseLocations || warehouseLocations.length === 0) {
         return { ok: false, error: "seller_warehouse requiere locations con store_id" };
       }
-      // Deduplicate by store_id — ML rejects repeated network_node_id
+      // Deduplicate by network_node_id — ML rejects repeated network_node_id
       const seen = new Set<string>();
       const uniqueLocations: { store_id: string; quantity: number }[] = [];
       for (const l of warehouseLocations) {
-        if (l.type === "seller_warehouse" && l.store_id && !seen.has(l.store_id)) {
-          seen.add(l.store_id);
+        if (l.type !== "seller_warehouse" || !l.store_id) continue;
+        const key = l.network_node_id || l.store_id;
+        if (!seen.has(key)) {
+          seen.add(key);
           uniqueLocations.push({ store_id: l.store_id, quantity });
         }
       }
