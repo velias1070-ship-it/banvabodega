@@ -12,12 +12,16 @@ export async function POST(req: NextRequest) {
   let body: { recalcular?: boolean } = {};
   try { body = await req.json(); } catch { /* empty body ok */ }
 
+  // Por defecto recalcular=true para que inteligencia se actualice siempre.
+  // El cron pasa recalcular=false porque hace su propio recálculo con snapshot.
+  const shouldRecalc = body.recalcular !== false;
+
   try {
     console.log("[sync-stock-full] Iniciando sincronización...");
     const result = await syncStockFull();
 
-    // Disparar recálculo incremental si se pidió
-    if (body.recalcular && result.stock_actualizado > 0) {
+    // Disparar recálculo de inteligencia cuando hay cambios de stock
+    if (shouldRecalc && result.stock_actualizado > 0) {
       try {
         const baseUrl = process.env.VERCEL_URL
           ? `https://${process.env.VERCEL_URL}`
