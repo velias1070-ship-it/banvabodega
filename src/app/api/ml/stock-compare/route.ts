@@ -160,17 +160,17 @@ export async function POST(req: NextRequest) {
           }
 
           // 6. PUT with version
-          let success = await updateFlexStock(userProductId, available, stockData.version);
+          let result = await updateFlexStock(userProductId, available, stockData.version);
 
           // Retry on version conflict
-          if (!success) {
+          if (!result.ok && result.error === "VERSION_CONFLICT") {
             const freshStock = await getDistributedStock(userProductId);
             if (freshStock) {
-              success = await updateFlexStock(userProductId, available, freshStock.version);
+              result = await updateFlexStock(userProductId, available, freshStock.version);
             }
           }
 
-          if (success) {
+          if (result.ok) {
             await sb.from("ml_items_map").update({
               ultimo_sync: new Date().toISOString(),
               ultimo_stock_enviado: available,
@@ -178,7 +178,7 @@ export async function POST(req: NextRequest) {
             }).eq("id", map.id);
             skuSynced = true;
           } else {
-            skuErrors.push(`Falló PUT a ML para ${userProductId}`);
+            skuErrors.push(`PUT falló para ${userProductId}: ${result.error || "error desconocido"}`);
           }
         }
 

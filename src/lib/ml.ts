@@ -334,11 +334,11 @@ export async function mlPut<T = unknown>(path: string, body: unknown, extraHeade
   if (!resp.ok) {
     const errText = await resp.text();
     console.error(`[ML] PUT ${path} failed:`, resp.status, errText);
-    // Return status info for conflict handling
     if (resp.status === 409) {
       throw new Error(`VERSION_CONFLICT: ${errText}`);
     }
-    return null;
+    // Throw with status + body so callers can get the detail
+    throw new Error(`ML_PUT_ERROR ${resp.status}: ${errText.slice(0, 300)}`);
   }
 
   return resp.json() as Promise<T>;
@@ -1003,13 +1003,21 @@ export async function updateFlexStock(
   userProductId: string,
   quantity: number,
   version: number
-): Promise<boolean> {
-  const result = await mlPut(
-    `/user-products/${userProductId}/stock/type/selling_address`,
-    { quantity },
-    { "x-version": String(version) }
-  );
-  return result !== null;
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const result = await mlPut(
+      `/user-products/${userProductId}/stock/type/selling_address`,
+      { quantity },
+      { "x-version": String(version) }
+    );
+    return result !== null ? { ok: true } : { ok: false, error: "ML respondió con error (ver logs del server)" };
+  } catch (err) {
+    const msg = String(err);
+    if (msg.includes("VERSION_CONFLICT")) {
+      return { ok: false, error: "VERSION_CONFLICT" };
+    }
+    return { ok: false, error: msg };
+  }
 }
 
 /**
@@ -1058,41 +1066,35 @@ export async function syncStockToML(sku: string, availableQty: number): Promise<
       }
 
       // 3. PUT with x-version header
-      const success = await updateFlexStock(userProductId, availableQty, stockData.version);
+      const result = await updateFlexStock(userProductId, availableQty, stockData.version);
 
-      if (success) {
+      if (result.ok) {
         await sb.from("ml_items_map").update({
           ultimo_sync: new Date().toISOString(),
           ultimo_stock_enviado: availableQty,
           stock_version: stockData.version + 1,
         }).eq("id", map.id);
         synced++;
-      }
-    } catch (err) {
-      const errMsg = String(err);
-      if (errMsg.includes("VERSION_CONFLICT")) {
+      } else if (result.error === "VERSION_CONFLICT") {
         // 409: version mismatch — retry once with fresh version
         console.warn(`[ML Stock] Version conflict for ${sku}, retrying...`);
-        try {
-          const userProductId = map.user_product_id!;
-          const freshStock = await getDistributedStock(userProductId);
-          if (freshStock) {
-            const retrySuccess = await updateFlexStock(userProductId, availableQty, freshStock.version);
-            if (retrySuccess) {
-              await sb.from("ml_items_map").update({
-                ultimo_sync: new Date().toISOString(),
-                ultimo_stock_enviado: availableQty,
-                stock_version: freshStock.version + 1,
-              }).eq("id", map.id);
-              synced++;
-            }
+        const freshStock = await getDistributedStock(userProductId);
+        if (freshStock) {
+          const retryResult = await updateFlexStock(userProductId, availableQty, freshStock.version);
+          if (retryResult.ok) {
+            await sb.from("ml_items_map").update({
+              ultimo_sync: new Date().toISOString(),
+              ultimo_stock_enviado: availableQty,
+              stock_version: freshStock.version + 1,
+            }).eq("id", map.id);
+            synced++;
           }
-        } catch (retryErr) {
-          console.error(`[ML Stock] Retry also failed for ${sku}:`, retryErr);
         }
       } else {
-        console.error(`[ML Stock] Error syncing ${sku}:`, err);
+        console.error(`[ML Stock] Error syncing ${sku}:`, result.error);
       }
+    } catch (err) {
+      console.error(`[ML Stock] Error syncing ${sku}:`, err);
     }
   }
 
@@ -1127,10 +1129,12 @@ export async function getFlexConfig(serviceId: string): Promise<unknown> {
 export async function updateFlexConfig(serviceId: string, configData: unknown): Promise<unknown> {
   const config = await getMLConfig();
   if (!config?.seller_id) return null;
-  return mlPut(
-    `/shipping/flex/sites/${SITE_ID}/users/${config.seller_id}/services/${serviceId}/configuration/delivery/custom/v3`,
-    configData
-  );
+  try {
+    return await mlPut(
+      `/shipping/flex/sites/${SITE_ID}/users/${config.seller_id}/services/${serviceId}/configuration/delivery/custom/v3`,
+      configData
+    );
+  } catch { return null; }
 }
 
 /**
@@ -1150,10 +1154,12 @@ export async function getFlexHolidays(serviceId: string): Promise<unknown> {
 export async function updateFlexHolidays(serviceId: string, holidays: unknown): Promise<unknown> {
   const config = await getMLConfig();
   if (!config?.seller_id) return null;
-  return mlPut(
-    `/flex/sites/${SITE_ID}/users/${config.seller_id}/services/${serviceId}/configurations/holidays/v1`,
-    holidays
-  );
+  try {
+    return await mlPut(
+      `/flex/sites/${SITE_ID}/users/${config.seller_id}/services/${serviceId}/configurations/holidays/v1`,
+      holidays
+    );
+  } catch { return null; }
 }
 
 /**
