@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
+import { calcularMargen } from "@/lib/reposicion";
+import type { FinancialAgg } from "@/lib/reposicion";
 
 /**
  * GET /api/intelligence/vista-venta
@@ -19,7 +21,7 @@ export async function GET() {
     // ── Fetch en paralelo ──
     const [intelRes, compRes, prodRes, cacheRes, ordRes] = await Promise.all([
       sb.from("sku_intelligence")
-        .select("sku_origen, nombre, categoria, proveedor, skus_venta, abc, xyz, cuadrante, accion, prioridad, alertas, alertas_count, target_dias_full, stock_bodega, stock_en_transito, mandar_full, pedir_proveedor, evento_activo, multiplicador_evento, liquidacion_accion, dias_en_quiebre, vel_pre_quiebre, es_quiebre_proveedor, abc_pre_quiebre, es_catch_up, venta_perdida_pesos, updated_at")
+        .select("sku_origen, nombre, categoria, proveedor, skus_venta, abc, xyz, cuadrante, accion, prioridad, alertas, alertas_count, target_dias_full, stock_bodega, stock_en_transito, mandar_full, pedir_proveedor, evento_activo, multiplicador_evento, liquidacion_accion, dias_en_quiebre, vel_pre_quiebre, es_quiebre_proveedor, abc_pre_quiebre, es_catch_up, venta_perdida_pesos, updated_at, vel_ponderada")
         .or("vel_ponderada.gt.0,stock_total.gt.0"),
       sb.from("composicion_venta").select("sku_venta, sku_origen, unidades"),
       sb.from("productos").select("sku, sku_venta, nombre, costo, precio"),
@@ -65,8 +67,9 @@ export async function GET() {
     const productoNombres = new Map<string, string>();
     const productoCostos = new Map<string, number>();
     for (const p of productos) {
-      productoNombres.set(p.sku, p.nombre || "");
-      productoCostos.set(p.sku, p.costo || 0);
+      const skuUp = p.sku.toUpperCase();
+      productoNombres.set(skuUp, p.nombre || "");
+      productoCostos.set(skuUp, p.costo || 0);
     }
 
     // ── Agrupar órdenes por SKU Venta (normalizado UPPER) ──
@@ -115,6 +118,20 @@ export async function GET() {
       ventasCountPorOrigen.set(skuOrigen, ventas.length);
     });
 
+    // ── Pre-computar unidades físicas 30d por origen (para distribución proporcional) ──
+    const fisicasPorOrigen = new Map<string, number>();
+    ventasPorOrigen.forEach((ventas, skuOrigen) => {
+      let total = 0;
+      for (const { skuVenta, unidades } of ventas) {
+        const ords = ordenesPorSV.get(skuVenta) || [];
+        for (const o of ords) {
+          const diasAtras = (hoyMs - new Date(o.fecha).getTime()) / 86400000;
+          if (diasAtras <= 30) total += o.cantidad * unidades;
+        }
+      }
+      fisicasPorOrigen.set(skuOrigen, total);
+    });
+
     // ── Generar filas a nivel SKU Venta ──
     const result: Record<string, unknown>[] = [];
 
@@ -122,54 +139,71 @@ export async function GET() {
       const intel = intelMap.get(skuOrigen);
       if (!intel) return;
 
-      for (const { skuVenta, unidades } of ventas) {
-        // Stock Full propio de este SKU Venta
-        const stFull = stockFullMap.get(skuVenta) || 0;
+      const velOrigenPonderada = (intel.vel_ponderada as number) || 0;
+      const totalFisicasOrigen = fisicasPorOrigen.get(skuOrigen) || 0;
+      const costoNeto = productoCostos.get(skuOrigen) || 0;
+      const costoBruto = costoNeto > 0 ? Math.round(costoNeto * 1.19) : 0;
 
-        // Velocidades propias de este SKU Venta (de orders_history)
+      for (const { skuVenta, unidades } of ventas) {
+        const stFull = stockFullMap.get(skuVenta) || 0;
         const ords = ordenesPorSV.get(skuVenta) || [];
-        let qty7 = 0, qty30 = 0, qty60 = 0;
-        let fullQty30 = 0, flexQty30 = 0;
-        let margenFull = 0, margenFlex = 0;
+
+        // Acumular por ventana en unidades físicas + FinancialAgg por canal
+        let fisicas7 = 0, fisicas30 = 0, fisicas60 = 0;
+        let fullFisicas30 = 0, flexFisicas30 = 0;
         let ingreso30 = 0;
-        let ordsFull30 = 0, ordsFlex30 = 0;
         let precioSum = 0, precioCount = 0;
+        const faFull: FinancialAgg = { totalSubtotal: 0, totalComision: 0, totalCostoEnvio: 0, totalIngresoEnvio: 0, totalCantidad: 0 };
+        const faFlex: FinancialAgg = { totalSubtotal: 0, totalComision: 0, totalCostoEnvio: 0, totalIngresoEnvio: 0, totalCantidad: 0 };
 
         for (const o of ords) {
           const diasAtras = (hoyMs - new Date(o.fecha).getTime()) / 86400000;
-          const margen = (o.subtotal || 0) - (o.comision_total || 0) - (o.costo_envio || 0) + (o.ingreso_envio || 0);
-          if (diasAtras <= 7) qty7 += o.cantidad;
+          const udsFisicas = o.cantidad * unidades;
+          if (diasAtras <= 7) fisicas7 += udsFisicas;
           if (diasAtras <= 30) {
-            qty30 += o.cantidad;
+            fisicas30 += udsFisicas;
             ingreso30 += o.total || 0;
-            if (o.canal === "Full") { fullQty30 += o.cantidad; margenFull += margen; ordsFull30++; }
-            else { flexQty30 += o.cantidad; margenFlex += margen; ordsFlex30++; }
+            const fa = o.canal === "Full" ? faFull : faFlex;
+            fa.totalSubtotal += o.subtotal || 0;
+            fa.totalComision += o.comision_total || 0;
+            fa.totalCostoEnvio += o.costo_envio || 0;
+            fa.totalIngresoEnvio += o.ingreso_envio || 0;
+            fa.totalCantidad += o.cantidad || 0;
+            if (o.canal === "Full") fullFisicas30 += udsFisicas;
+            else flexFisicas30 += udsFisicas;
             if (o.total > 0 && o.cantidad > 0) {
               precioSum += o.total;
               precioCount += o.cantidad;
             }
           }
-          if (diasAtras <= 60) qty60 += o.cantidad;
+          if (diasAtras <= 60) fisicas60 += udsFisicas;
         }
 
-        const vel7d = qty7 / 1;
-        const vel30d = qty30 / 4.3;
-        const vel60d = qty60 / 8.6;
-        const velPonderada = vel7d * 0.4 + vel30d * 0.4 + vel60d * 0.2;
-        const totalQty30 = fullQty30 + flexQty30;
-        const pctFull = totalQty30 > 0 ? fullQty30 / totalQty30 : 0.5;
+        // Velocidad: distribuir vel_ponderada del origen proporcionalmente
+        const share = totalFisicasOrigen > 0
+          ? fisicas30 / totalFisicasOrigen
+          : (ventas.length === 1 ? 1 : 0);
+        const velPonderada = velOrigenPonderada * share;
+
+        // Velocidades informativas (uds físicas, división simple)
+        const vel7d = fisicas7 / 1;
+        const vel30d = fisicas30 / 4.3;
+        const vel60d = fisicas60 / 8.6;
+
+        // Split por canal
+        const totalCanal30 = fullFisicas30 + flexFisicas30;
+        const pctFull = totalCanal30 > 0 ? fullFisicas30 / totalCanal30 : 0.5;
         const pctFlex = 1 - pctFull;
         const velFull = velPonderada * pctFull;
         const velFlex = velPonderada * pctFlex;
 
-        // Cobertura propia
+        // Cobertura: stock_full / vel_full × 7
         const cobFull = velFull > 0 ? (stFull / velFull) * 7 : 999;
 
-        // Canal más rentable
-        const mppFull = ordsFull30 > 0 ? margenFull / fullQty30 : 0;
-        const mppFlex = ordsFlex30 > 0 ? margenFlex / flexQty30 : 0;
-        const canalMasRentable = mppFull >= mppFlex ? "Full" : "Flex";
-
+        // Margen por unidad con costo producto (calcularMargen de reposicion.ts)
+        const margenFull30d = calcularMargen(faFull, "full", costoBruto) ?? 0;
+        const margenFlex30d = calcularMargen(faFlex, "flex", costoBruto) ?? 0;
+        const canalMasRentable = margenFull30d >= margenFlex30d ? "Full" : "Flex";
         const precioPromedio = precioCount > 0 ? precioSum / precioCount : 0;
 
         result.push({
@@ -217,8 +251,8 @@ export async function GET() {
           pct_full: Math.round(pctFull * 1000) / 1000,
           pct_flex: Math.round(pctFlex * 1000) / 1000,
           cob_full: Math.round(cobFull * 10) / 10,
-          margen_full_30d: Math.round(margenFull),
-          margen_flex_30d: Math.round(margenFlex),
+          margen_full_30d: Math.round(margenFull30d),
+          margen_flex_30d: Math.round(margenFlex30d),
           ingreso_30d: Math.round(ingreso30),
           canal_mas_rentable: canalMasRentable,
           precio_promedio: Math.round(precioPromedio),
