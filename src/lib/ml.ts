@@ -1344,12 +1344,15 @@ interface MLMarketplaceItem {
   inventory_id?: string;
   available_quantity: number;
   sold_quantity: number;
+  seller_custom_field?: string;
+  user_product_id?: string;
   variations?: Array<{
     id: number;
     inventory_id?: string;
     available_quantity: number;
     sold_quantity: number;
     seller_custom_field?: string;
+    user_product_id?: string;
   }>;
 }
 
@@ -1375,16 +1378,54 @@ export interface SyncStockFullResult {
 }
 
 /**
- * Fetch all seller item IDs using scroll-based search.
+ * Fetch seller items by status using scan pagination.
+ */
+async function fetchSellerItemsByStatus(sellerId: string, status: string): Promise<string[]> {
+  const ids: string[] = [];
+  const url = `/users/${sellerId}/items/search?search_type=scan&limit=100&status=${status}`;
+  const resp = await mlGetRaw(url) as { results?: string[]; scroll_id?: string; paging?: { total: number } } | null;
+  if (!resp?.results || resp.results.length === 0) return ids;
+
+  ids.push(...resp.results);
+
+  // Paginar con scroll_id
+  let scrollId: string | null = resp.scroll_id || null;
+  const total = resp.paging?.total || 0;
+  while (scrollId && ids.length < total) {
+    await delay(500);
+    const sp = await mlGet<{ results: string[]; scroll_id?: string }>(
+      `/users/${sellerId}/items/search?search_type=scan&scroll_id=${scrollId}&limit=100`
+    );
+    if (!sp || sp.results.length === 0) break;
+    ids.push(...sp.results);
+    scrollId = sp.scroll_id || null;
+  }
+  return ids;
+}
+
+/**
+ * Fetch all seller item IDs across all statuses.
  */
 async function fetchAllSellerItems(sellerId: string): Promise<string[]> {
   const allIds: string[] = [];
+  const seen = new Set<string>();
 
-  // Probar múltiples variantes del endpoint
+  // Buscar items en todos los estados: active, paused, closed
+  const statuses = ["active", "paused", "closed"];
+  for (const status of statuses) {
+    const statusIds = await fetchSellerItemsByStatus(sellerId, status);
+    for (const id of statusIds) {
+      if (!seen.has(id)) { seen.add(id); allIds.push(id); }
+    }
+    console.log(`[syncStockFull] status=${status}: ${statusIds.length} items (total acumulado: ${allIds.length})`);
+  }
+
+  if (allIds.length > 0) return allIds;
+
+  // Fallback: probar sin filtro de status
   const urls = [
     `/users/${sellerId}/items/search?search_type=scan&limit=100`,
     `/users/${sellerId}/items/search?limit=50&offset=0`,
-    `/users/${sellerId}/items/search?status=active&limit=50&offset=0`,
   ];
 
   for (const url of urls) {
@@ -1475,7 +1516,8 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     return { ok: false, items_sincronizados: 0, stock_actualizado: 0, sin_inventory_id: 0, errores: ["No ML config o seller_id"], tiempo_ms: Date.now() - start };
   }
 
-  // 1. Obtener mapeo codigo_ml → sku_venta desde composicion_venta
+  // 1. Obtener mapeos para resolver SKU desde múltiples fuentes
+  // a) composicion_venta.codigo_ml → sku_venta
   const { data: compData } = await sb.from("composicion_venta").select("codigo_ml, sku_venta");
   const codigoToSkuVenta = new Map<string, string>();
   for (const row of (compData || [])) {
@@ -1483,14 +1525,50 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
       codigoToSkuVenta.set(row.codigo_ml.toUpperCase(), row.sku_venta);
     }
   }
+  // b) productos.sku set for direct match against seller_custom_field
+  const { data: prodData } = await sb.from("productos").select("sku, sku_venta");
+  const knownSkus = new Set<string>();
+  const skuVentaToSku = new Map<string, string>();
+  for (const p of (prodData || [])) {
+    if (p.sku) knownSkus.add(p.sku.toUpperCase());
+    if (p.sku_venta) {
+      // sku_venta can be comma-separated
+      for (const sv of p.sku_venta.split(",")) {
+        const trimmed = sv.trim().toUpperCase();
+        if (trimmed) {
+          knownSkus.add(trimmed);
+          skuVentaToSku.set(trimmed, p.sku.toUpperCase());
+        }
+      }
+    }
+  }
 
   // 2. Listar todos los items del seller
   console.log(`[syncStockFull] Obteniendo items del seller ${config.seller_id}...`);
-  console.log(`[syncStockFull] Mapeo composicion_venta: ${codigoToSkuVenta.size} codigo_ml encontrados`);
+  console.log(`[syncStockFull] Mapeo composicion_venta: ${codigoToSkuVenta.size} codigo_ml, productos: ${knownSkus.size} SKUs conocidos`);
   const itemIds = await fetchAllSellerItems(config.seller_id);
   console.log(`[syncStockFull] ${itemIds.length} items encontrados${itemIds.length > 0 ? ` (primeros: ${itemIds.slice(0, 3).join(", ")})` : ""}`);
 
-  // 3. Procesar items en batches de 5
+  // Helper: resolve sku_venta from multiple sources
+  // Priority: 1) composicion_venta.codigo_ml, 2) seller_custom_field match, 3) null
+  function resolveSkuVenta(inventoryId: string | null, sellerCustomField: string | null): string | null {
+    // Try composicion_venta mapping first
+    if (inventoryId) {
+      const fromComp = codigoToSkuVenta.get(inventoryId.toUpperCase());
+      if (fromComp) return fromComp;
+    }
+    // Try seller_custom_field — ML sellers often put the WMS SKU here
+    if (sellerCustomField) {
+      const scf = sellerCustomField.toUpperCase().trim();
+      if (knownSkus.has(scf)) return scf;
+      // Check if it maps through sku_venta → sku
+      const mapped = skuVentaToSku.get(scf);
+      if (mapped) return scf;
+    }
+    return null;
+  }
+
+  // 3. Procesar items en batches de 20
   const itemsMapRows: Array<{
     item_id: string;
     inventory_id: string | null;
@@ -1499,6 +1577,7 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     available_quantity: number;
     sold_quantity: number;
     variation_id: string | null;
+    user_product_id: string | null;
   }> = [];
 
   let sinInventoryId = 0;
@@ -1517,7 +1596,7 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
           // Item con variaciones: cada variación tiene su inventory_id
           for (const v of item.variations) {
             const invId = v.inventory_id || null;
-            const skuVenta = invId ? codigoToSkuVenta.get(invId.toUpperCase()) || null : null;
+            const skuVenta = resolveSkuVenta(invId, v.seller_custom_field || null);
             if (!invId) sinInventoryId++;
             itemsMapRows.push({
               item_id: itemId,
@@ -1527,12 +1606,13 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
               available_quantity: v.available_quantity || 0,
               sold_quantity: v.sold_quantity || 0,
               variation_id: String(v.id),
+              user_product_id: v.user_product_id || item.user_product_id || null,
             });
           }
         } else {
           // Item sin variaciones
           const invId = item.inventory_id || null;
-          const skuVenta = invId ? codigoToSkuVenta.get(invId.toUpperCase()) || null : null;
+          const skuVenta = resolveSkuVenta(invId, item.seller_custom_field || null);
           if (!invId) sinInventoryId++;
           itemsMapRows.push({
             item_id: itemId,
@@ -1542,6 +1622,7 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
             available_quantity: item.available_quantity || 0,
             sold_quantity: item.sold_quantity || 0,
             variation_id: null,
+            user_product_id: item.user_product_id || null,
           });
         }
       } catch (err) {
@@ -1576,6 +1657,13 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
   }
 
   // 5. Upsert ml_items_map
+  const mapped = itemsMapRows.filter(r => r.sku_venta);
+  const unmapped = itemsMapRows.filter(r => !r.sku_venta);
+  console.log(`[syncStockFull] ${mapped.length} items con SKU resuelto, ${unmapped.length} sin mapeo`);
+  if (unmapped.length > 0) {
+    console.log(`[syncStockFull] Items sin mapeo (primeros 10): ${unmapped.slice(0, 10).map(r => `${r.item_id}(scf=${r.titulo})`).join(", ")}`);
+  }
+
   const mlItemsUpsert = itemsMapRows.map(r => ({
     sku: r.sku_venta || r.item_id, // fallback a item_id si no hay mapeo
     item_id: r.item_id,
@@ -1585,6 +1673,7 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     titulo: r.titulo,
     available_quantity: r.available_quantity,
     sold_quantity: r.sold_quantity,
+    user_product_id: r.user_product_id,
     activo: true,
     updated_at: new Date().toISOString(),
   }));
