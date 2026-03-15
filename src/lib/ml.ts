@@ -77,6 +77,8 @@ export interface PedidoFlex {
 interface StockLocation {
   type: "meli_facility" | "selling_address" | "seller_warehouse";
   quantity: number;
+  store_id?: string;
+  network_node_id?: string;
 }
 
 interface StockResponse {
@@ -1008,17 +1010,36 @@ export function getSellerStockType(locations: StockLocation[]): "selling_address
  * Update seller-controlled stock using the distributed stock API.
  * Writes to selling_address or seller_warehouse depending on the product's locations.
  * Requires x-version header for optimistic concurrency.
+ *
+ * For selling_address: body = { quantity }
+ * For seller_warehouse: body = { locations: [{ store_id, quantity }, ...] }
  */
 export async function updateFlexStock(
   userProductId: string,
   quantity: number,
   version: number,
-  stockType: "selling_address" | "seller_warehouse" = "selling_address"
+  stockType: "selling_address" | "seller_warehouse" = "selling_address",
+  warehouseLocations?: StockLocation[]
 ): Promise<{ ok: boolean; error?: string }> {
   try {
+    let body: unknown;
+    if (stockType === "seller_warehouse") {
+      // seller_warehouse requires locations array with store_id
+      if (!warehouseLocations || warehouseLocations.length === 0) {
+        return { ok: false, error: "seller_warehouse requiere locations con store_id" };
+      }
+      body = {
+        locations: warehouseLocations
+          .filter(l => l.type === "seller_warehouse" && l.store_id)
+          .map(l => ({ store_id: l.store_id, quantity })),
+      };
+    } else {
+      body = { quantity };
+    }
+
     const result = await mlPut(
       `/user-products/${userProductId}/stock/type/${stockType}`,
-      { quantity },
+      body,
       { "x-version": String(version) }
     );
     return result !== null ? { ok: true } : { ok: false, error: "ML respondió con error (ver logs del server)" };
@@ -1084,7 +1105,7 @@ export async function syncStockToML(sku: string, availableQty: number): Promise<
       }
 
       // 3. PUT with x-version header
-      const result = await updateFlexStock(userProductId, availableQty, stockData.version, stockType);
+      const result = await updateFlexStock(userProductId, availableQty, stockData.version, stockType, stockData.locations);
 
       if (result.ok) {
         await sb.from("ml_items_map").update({
@@ -1098,7 +1119,7 @@ export async function syncStockToML(sku: string, availableQty: number): Promise<
         console.warn(`[ML Stock] Version conflict for ${sku}, retrying...`);
         const freshStock = await getDistributedStock(userProductId);
         if (freshStock) {
-          const retryResult = await updateFlexStock(userProductId, availableQty, freshStock.version, stockType);
+          const retryResult = await updateFlexStock(userProductId, availableQty, freshStock.version, stockType, freshStock.locations);
           if (retryResult.ok) {
             await sb.from("ml_items_map").update({
               ultimo_sync: new Date().toISOString(),
