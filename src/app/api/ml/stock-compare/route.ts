@@ -168,13 +168,13 @@ export async function POST(req: NextRequest) {
           }
 
           // 6. PUT with version
-          let result = await updateFlexStock(userProductId, available, stockData.version, stockType);
+          let result = await updateFlexStock(userProductId, available, stockData.version, stockType, stockData.locations);
 
           // Retry on version conflict
           if (!result.ok && result.error === "VERSION_CONFLICT") {
             const freshStock = await getDistributedStock(userProductId);
             if (freshStock) {
-              result = await updateFlexStock(userProductId, available, freshStock.version, stockType);
+              result = await updateFlexStock(userProductId, available, freshStock.version, stockType, freshStock.locations);
             }
           }
 
