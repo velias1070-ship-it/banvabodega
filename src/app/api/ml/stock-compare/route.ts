@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
-import { getDistributedStock, syncStockToML } from "@/lib/ml";
+import { getDistributedStock, getItemUserProductId, updateFlexStock } from "@/lib/ml";
 
 interface CompareRow {
   sku: string;
@@ -82,9 +82,9 @@ export async function GET() {
 }
 
 /**
- * POST — Sync specific SKUs immediately.
- * Body: { skus: string[], quantities?: Record<string, number> }
- * If quantities provided, use those. Otherwise calculate from WMS stock.
+ * POST — Sync specific SKUs immediately with detailed diagnostics.
+ * Body: { skus: string[], quantities?: Record<string, number>, force?: boolean }
+ * force=true bypasses the safety block (stock >10 → 0).
  */
 export async function POST(req: NextRequest) {
   const sb = getServerSupabase();
@@ -94,48 +94,112 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const skus: string[] = body.skus || [];
     const overrides: Record<string, number> | undefined = body.quantities;
+    const force: boolean = body.force === true;
 
     if (skus.length === 0) {
       return NextResponse.json({ error: "no_skus" }, { status: 400 });
     }
 
     let synced = 0;
-    const errors: string[] = [];
+    const results: Record<string, { ok: boolean; reason: string; qty?: number }> = {};
 
     for (const sku of skus) {
       try {
-        let available: number;
+        // 1. Get mappings for this SKU
+        const { data: mappings } = await sb.from("ml_items_map")
+          .select("*")
+          .eq("sku", sku)
+          .eq("activo", true);
 
+        if (!mappings || mappings.length === 0) {
+          results[sku] = { ok: false, reason: "Sin mapeo en ml_items_map" };
+          continue;
+        }
+
+        // 2. Calculate quantity to send
+        let available: number;
         if (overrides && overrides[sku] !== undefined) {
-          // Use override quantity (what the user wants to set in Flex)
           available = Math.max(0, overrides[sku]);
         } else {
-          // Calculate: total WMS stock - committed
           const { data: stockRows } = await sb.from("stock").select("cantidad").eq("sku", sku);
           const totalStock = (stockRows || []).reduce((s: number, r: { cantidad: number }) => s + r.cantidad, 0);
-
           const { data: pedidos } = await sb.from("pedidos_flex")
             .select("cantidad")
             .eq("sku_venta", sku)
             .in("estado", ["PENDIENTE", "EN_PICKING"]);
           const committed = (pedidos || []).reduce((s: number, p: { cantidad: number }) => s + p.cantidad, 0);
-
           available = Math.max(0, totalStock - committed);
         }
 
-        const count = await syncStockToML(sku, available);
-        if (count > 0) synced++;
+        let skuSynced = false;
+        const skuErrors: string[] = [];
+
+        for (const map of mappings) {
+          // 3. Safety block check (skip if force=true)
+          if (!force && available === 0 && map.ultimo_stock_enviado && map.ultimo_stock_enviado > 10) {
+            skuErrors.push(`Safety block: último envío fue ${map.ultimo_stock_enviado}, ahora sería 0. Usa 'Forzar' para confirmar.`);
+            continue;
+          }
+
+          // 4. Resolve user_product_id
+          let userProductId = map.user_product_id;
+          if (!userProductId) {
+            userProductId = await getItemUserProductId(map.item_id);
+            if (!userProductId) {
+              skuErrors.push(`No se pudo resolver user_product_id para item ${map.item_id}`);
+              continue;
+            }
+            await sb.from("ml_items_map").update({ user_product_id: userProductId }).eq("id", map.id);
+          }
+
+          // 5. GET current stock version
+          const stockData = await getDistributedStock(userProductId);
+          if (!stockData) {
+            skuErrors.push(`No se pudo leer stock de ML para ${userProductId}`);
+            continue;
+          }
+
+          // 6. PUT with version
+          let success = await updateFlexStock(userProductId, available, stockData.version);
+
+          // Retry on version conflict
+          if (!success) {
+            const freshStock = await getDistributedStock(userProductId);
+            if (freshStock) {
+              success = await updateFlexStock(userProductId, available, freshStock.version);
+            }
+          }
+
+          if (success) {
+            await sb.from("ml_items_map").update({
+              ultimo_sync: new Date().toISOString(),
+              ultimo_stock_enviado: available,
+              stock_version: (stockData.version || 0) + 1,
+            }).eq("id", map.id);
+            skuSynced = true;
+          } else {
+            skuErrors.push(`Falló PUT a ML para ${userProductId}`);
+          }
+        }
+
+        if (skuSynced) {
+          synced++;
+          results[sku] = { ok: true, reason: "OK", qty: available };
+        } else {
+          results[sku] = { ok: false, reason: skuErrors.join("; ") || "Error desconocido" };
+        }
       } catch (err) {
-        errors.push(`${sku}: ${String(err)}`);
+        results[sku] = { ok: false, reason: String(err) };
       }
     }
 
     // Clear synced SKUs from queue
-    if (skus.length > 0) {
-      await sb.from("stock_sync_queue").delete().in("sku", skus);
+    const syncedSkus = Object.entries(results).filter(([, r]) => r.ok).map(([sku]) => sku);
+    if (syncedSkus.length > 0) {
+      await sb.from("stock_sync_queue").delete().in("sku", syncedSkus);
     }
 
-    return NextResponse.json({ synced, total: skus.length, errors: errors.length > 0 ? errors : undefined });
+    return NextResponse.json({ synced, total: skus.length, results });
   } catch (err) {
     console.error("[Stock Compare POST] Error:", err);
     return NextResponse.json({ error: String(err) }, { status: 500 });
