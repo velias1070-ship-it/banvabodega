@@ -69,8 +69,45 @@ async function processShipment(shipmentId: number, orderIds: number[]): Promise<
 
 ### Stock sync (distribuido)
 - Usa `user_product_id` del catálogo ML para mapear SKU → item ML
-- Push via PUT a `/users/{seller_id}/items/{item_id}/stock` o API distribuida
 - Cola en `stock_sync_queue` para retry
+- El tipo de depósito es **explícito en la URL**:
+
+```
+PUT /user-products/{userProductId}/stock/type/{TIPO_DEPOSITO}
+Header: x-version: {version}
+Body: { "quantity": N }
+```
+
+#### Tipos de depósito
+| Tipo | Quién controla | Descripción |
+|---|---|---|
+| `selling_address` | **WMS (nosotros)** | Bodega BANVA → stock Flex |
+| `meli_facility` | **MercadoLibre** | Bodega Colina → stock Full (solo lectura para nosotros) |
+| `seller_warehouse` | Vendedor | Multi-origen (no usado actualmente) |
+
+#### Flujo de escritura (WMS → ML)
+- `syncStockToML()` calcula `disponible = stock_bodega - comprometido`
+- Hace `PUT .../stock/type/selling_address` con la cantidad disponible
+- Usa optimistic locking: `GET` obtiene `x-version`, `PUT` lo envía en header
+- Si hay version conflict (409), re-lee y reintenta una vez
+- Safety block: si stock baja de >10 a 0, no sincroniza (requiere revisión manual)
+
+#### Flujo de lectura (ML → WMS)
+- `syncStockFull()` lee stock de `meli_facility` vía API fulfillment
+- Guarda en `stock_full_cache` para visualización y cálculos de inteligencia
+- **Nunca escribe** en `meli_facility` — ML lo gestiona internamente vía inbound
+
+#### Coexistencia Full+Flex
+Para un mismo `user_product_id` con ambos canales:
+```json
+GET /user-products/MLCU123456/stock → {
+  "locations": [
+    { "type": "selling_address", "quantity": 30 },  // Flex - tú lo controlas
+    { "type": "meli_facility", "quantity": 15 }      // Full - ML lo controla
+  ]
+}
+```
+El comprador ve 45 unidades (30+15), pero cada canal se gestiona por separado.
 
 ## Constantes
 ```typescript
