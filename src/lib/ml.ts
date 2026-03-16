@@ -1681,9 +1681,8 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     console.log(`[syncStockFull] Items sin mapeo (primeros 10): ${unmapped.slice(0, 10).map(r => `${r.item_id}(scf=${r.titulo})`).join(", ")}`);
   }
 
-  const dedupMap = new Map<string, typeof mlItemsUpsert[0]>();
   const mlItemsUpsert = itemsMapRows.map(r => ({
-    sku: r.sku_venta || r.item_id, // fallback a item_id si no hay mapeo
+    sku: r.sku_venta || r.item_id,
     item_id: r.item_id,
     variation_id: r.variation_id ? parseInt(r.variation_id) : null,
     inventory_id: r.inventory_id,
@@ -1696,20 +1695,49 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     activo: true,
     updated_at: new Date().toISOString(),
   }));
+
+  // Deduplicar por (sku, item_id) — múltiples variaciones pueden generar la misma PK.
+  // Logear duplicados para diagnóstico.
+  const dedupMap = new Map<string, typeof mlItemsUpsert[0]>();
+  const duplicados: string[] = [];
   for (const row of mlItemsUpsert) {
     const key = `${row.sku}|${row.item_id}`;
     const existing = dedupMap.get(key);
-    // Preferir fila con inventory_id (variación real)
-    if (!existing || (!existing.inventory_id && row.inventory_id)) {
+    if (existing) {
+      duplicados.push(`${key} (var_existente=${existing.variation_id}, var_nueva=${row.variation_id}, inv_existente=${existing.inventory_id}, inv_nueva=${row.inventory_id})`);
+      // Preferir fila con inventory_id (variación real)
+      if (!existing.inventory_id && row.inventory_id) {
+        dedupMap.set(key, row);
+      }
+    } else {
       dedupMap.set(key, row);
     }
   }
+  if (duplicados.length > 0) {
+    console.log(`[syncStockFull] ${duplicados.length} filas duplicadas por (sku,item_id) eliminadas:`);
+    for (const d of duplicados.slice(0, 20)) console.log(`  dup: ${d}`);
+    if (duplicados.length > 20) console.log(`  ... y ${duplicados.length - 20} más`);
+  }
   const dedupedUpsert = Array.from(dedupMap.values());
 
-  for (let i = 0; i < dedupedUpsert.length; i += 500) {
-    const batch = dedupedUpsert.slice(i, i + 500);
-    const { error } = await sb.from("ml_items_map").upsert(batch, { onConflict: "sku,item_id" });
-    if (error) errores.push(`Upsert ml_items_map error: ${error.message}`);
+  // Upsert en chunks de 50 con fallback fila-por-fila si un chunk falla
+  for (let i = 0; i < dedupedUpsert.length; i += 50) {
+    const chunk = dedupedUpsert.slice(i, i + 50);
+    const { error } = await sb.from("ml_items_map").upsert(chunk, { onConflict: "sku,item_id" });
+    if (error) {
+      console.log(`[syncStockFull] Chunk ${i}-${i + chunk.length} falló: ${error.message}. Fallback fila por fila...`);
+      // Logear las claves del chunk para diagnóstico
+      const chunkKeys = chunk.map(r => `${r.sku}|${r.item_id}|var=${r.variation_id}`);
+      console.log(`[syncStockFull] Claves del chunk fallido: ${chunkKeys.join(", ")}`);
+      // Fallback: insertar fila por fila
+      for (const row of chunk) {
+        const { error: rowErr } = await sb.from("ml_items_map").upsert(row, { onConflict: "sku,item_id" });
+        if (rowErr) {
+          errores.push(`Upsert ml_items_map fila sku=${row.sku} item=${row.item_id} var=${row.variation_id}: ${rowErr.message}`);
+          console.log(`[syncStockFull] Fila falló: sku=${row.sku}, item_id=${row.item_id}, variation_id=${row.variation_id}, inv=${row.inventory_id} → ${rowErr.message}`);
+        }
+      }
+    }
   }
 
   // 6. Upsert stock_full_cache — agregar stock fulfillment por sku_venta
