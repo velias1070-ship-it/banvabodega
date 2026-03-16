@@ -1,6 +1,7 @@
 "use client";
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { getSupabase } from "@/lib/supabase";
+import { buildPickingLineasFull, crearPickingSession, skuPositions, getComponentesPorSkuVenta } from "@/lib/store";
 import AdminMLSinVincular from "./AdminMLSinVincular";
 
 // ============================================
@@ -64,6 +65,7 @@ interface IntelRow {
   es_catch_up: boolean;
   vel_objetivo: number;
   gap_vel_pct: number | null;
+  inner_pack: number;
   updated_at: string;
 }
 
@@ -180,6 +182,109 @@ function gapColor(gap: number | null): string {
 }
 
 // ============================================
+// Tipos Envío a Full
+// ============================================
+
+interface EnvioFullItem {
+  skuVenta: string;
+  skuOrigen: string;
+  nombre: string;
+  abc: string;
+  velPonderada: number;
+  velObjetivo: number;
+  velFull: number;
+  stockFull: number;
+  stockBodega: number;
+  cobFull: number;
+  targetDias: number;
+  mandarSugerido: number;
+  mandarEditado: number;
+  innerPack: number;
+  bultos: number;
+  redondeo: "arriba" | "abajo" | "sin_cambio" | null;
+  redondeoRazon: string | null;
+  posicionPrincipal: string;
+  posicionLabel: string;
+  accion: string;
+  margenFull: number;
+  alertas: string[];
+  notas: string[];
+  tipo: "simple" | "pack" | "combo";
+  componentes: { skuOrigen: string; nombreOrigen: string; unidadesPorPack: number; unidadesFisicas: number }[];
+  selected: boolean;
+  eventoActivo: string | null;
+  multiplicadorEvento: number;
+  stockEnTransito: number;
+  velPreQuiebre: number;
+  diasEnQuiebre: number;
+  esQuiebreProveedor: boolean;
+  puntoReorden: number;
+  unidadesPorPack: number;
+}
+
+const ENVIO_ACCION_ORDEN: Record<string, number> = {
+  URGENTE: 0,
+  AGOTADO_PEDIR: 1,
+  MANDAR_FULL: 2,
+  PLANIFICAR: 3,
+  EN_TRANSITO: 4,
+  OK: 5,
+  EXCESO: 6,
+  DEAD_STOCK: 7,
+  INACTIVO: 8,
+};
+
+const ENVIO_ABC_ORDEN: Record<string, number> = { A: 0, B: 1, C: 2 };
+
+// Celda editable para MANDAR cantidad
+function MandarCell({ value, max, onChange }: { value: number; max: number; onChange: (v: number) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [tmp, setTmp] = useState(String(value || ""));
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing && inputRef.current) inputRef.current.focus();
+  }, [editing]);
+
+  const save = () => {
+    setEditing(false);
+    let v = parseInt(tmp) || 0;
+    if (v < 0) v = 0;
+    if (v > max) v = max;
+    if (v !== value) onChange(v);
+  };
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        type="number"
+        step="1"
+        min="0"
+        max={max}
+        value={tmp}
+        onChange={e => setTmp(e.target.value)}
+        onBlur={save}
+        onKeyDown={e => { if (e.key === "Enter") save(); if (e.key === "Escape") setEditing(false); }}
+        className="mono"
+        style={{ width: 56, fontSize: 11, padding: "2px 4px", background: "var(--bg3)", border: "1px solid var(--cyanBd)", borderRadius: 4, color: "var(--txt)", textAlign: "right" }}
+      />
+    );
+  }
+
+  return (
+    <span
+      onClick={() => { setTmp(String(value)); setEditing(true); }}
+      className="mono"
+      style={{ cursor: "pointer", fontSize: 11, color: "var(--blue)", textAlign: "right", display: "block", fontWeight: 600 }}
+      title="Click para editar"
+    >
+      {fmtInt(value)}
+    </span>
+  );
+}
+
+// ============================================
 // Componente de celda editable vel_objetivo
 // ============================================
 
@@ -240,6 +345,14 @@ export default function AdminInteligencia() {
   const [syncingML, setSyncingML] = useState(false);
   const [syncMLResult, setSyncMLResult] = useState<string | null>(null);
   const [vistaOrigen, setVistaOrigen] = useState(false);
+  const [vistaEnvio, setVistaEnvio] = useState(false);
+
+  // Envío a Full
+  const [envioEdits, setEnvioEdits] = useState<Map<string, number>>(new Map());
+  const [envioSelection, setEnvioSelection] = useState<Set<string>>(new Set());
+  const [envioSelAllInit, setEnvioSelAllInit] = useState(false);
+  const [creandoPicking, setCreandoPicking] = useState(false);
+  const [pickingCreado, setPickingCreado] = useState<string | null>(null);
 
   // Filtros
   const [filtroAccion, setFiltroAccion] = useState<string>("todos");
@@ -421,6 +534,305 @@ export default function AdminInteligencia() {
     setModalMasivo(false);
   }, [masivoMode, masivoAbcFilter, masivoCatFilter, masivoMultiplier, rows, cargar]);
 
+  // ── Envío a Full: calcular items ──
+  const envioItems = useMemo((): EnvioFullItem[] => {
+    if (!vistaEnvio || ventaRows.length === 0) return [];
+
+    const COB_MAXIMA = 60;
+    const items: EnvioFullItem[] = [];
+
+    for (const r of ventaRows) {
+      if (r.mandar_full <= 0) continue;
+
+      // Tipo y componentes
+      const comps = getComponentesPorSkuVenta(r.sku_venta);
+      let tipo: "simple" | "pack" | "combo";
+      if (comps.length === 0 || (comps.length === 1 && comps[0].unidades === 1)) tipo = "simple";
+      else if (comps.length === 1 && comps[0].unidades > 1) tipo = "pack";
+      else tipo = "combo";
+
+      const efectivos = comps.length > 0
+        ? comps.map(c => ({ skuOrigen: c.skuOrigen, nombreOrigen: c.skuOrigen, unidadesPorPack: c.unidades }))
+        : [{ skuOrigen: r.sku_origen || r.sku_venta, nombreOrigen: r.nombre || r.sku_venta, unidadesPorPack: 1 }];
+
+      // Descontar tránsito
+      const mandarBase = Math.max(0, r.mandar_full - (r.stock_en_transito > 0 ? r.stock_en_transito : 0));
+      if (mandarBase <= 0) continue;
+
+      // Inner pack del componente principal
+      const compPrincipal = efectivos[0];
+      const innerPack = r.unidades_por_pack > 1 ? r.unidades_por_pack : 1;
+      // We use inner_pack from sku_intelligence if available via the row's data
+      // The inner_pack from the intelligence row is on the origin SKU
+      const ipFromRows = rows.find(o => o.sku_origen === compPrincipal.skuOrigen);
+      const ip = ipFromRows?.inner_pack || 1;
+
+      // Posición principal
+      const posiciones = skuPositions(compPrincipal.skuOrigen);
+      const bestPos = posiciones.length > 0 ? posiciones[0] : null;
+
+      // Redondeo inteligente
+      let mandarRedondeado = mandarBase;
+      let redondeo: "arriba" | "abajo" | "sin_cambio" | null = null;
+      let redondeoRazon: string | null = null;
+      const udsFisicas = mandarBase * compPrincipal.unidadesPorPack;
+      // punto_reorden from IntelRow (origin)
+      const intelOrigen = rows.find(o => o.sku_origen === (compPrincipal.skuOrigen || "").toUpperCase() || o.sku_origen === compPrincipal.skuOrigen);
+      const puntoReorden = intelOrigen?.punto_reorden || 14;
+      const multiplicadorEvento = intelOrigen?.multiplicador_evento || 1;
+
+      if (ip > 1 && udsFisicas % ip !== 0) {
+        const opAbajoFis = Math.floor(udsFisicas / ip) * ip;
+        const opArribaFis = Math.ceil(udsFisicas / ip) * ip;
+        const opAbajo = compPrincipal.unidadesPorPack > 0 ? Math.floor(opAbajoFis / compPrincipal.unidadesPorPack) : opAbajoFis;
+        const opArriba = compPrincipal.unidadesPorPack > 0 ? Math.ceil(opArribaFis / compPrincipal.unidadesPorPack) : opArribaFis;
+
+        const cobAbajo = r.vel_full > 0 ? ((r.stock_full + opAbajo) / r.vel_full) * 7 : 999;
+        const cobArriba = r.vel_full > 0 ? ((r.stock_full + opArriba) / r.vel_full) * 7 : 999;
+
+        const stockBod = bestPos ? posiciones.reduce((s, p) => s + p.qty, 0) : r.stock_bodega;
+        const arribaFis = opArriba * compPrincipal.unidadesPorPack;
+
+        if (opAbajo === 0 && mandarBase > 0 && arribaFis <= stockBod) {
+          redondeo = "arriba"; mandarRedondeado = opArriba;
+          redondeoRazon = `Abajo=0 uds. Enviar bulto completo (${opArriba} uds). Cob: ${Math.round(cobArriba)}d`;
+        } else if (arribaFis > stockBod) {
+          redondeo = "abajo"; mandarRedondeado = opAbajo;
+          redondeoRazon = `Stock insuficiente para bulto completo. Enviar ${opAbajo} uds`;
+        } else if (cobArriba > COB_MAXIMA && opAbajo > 0) {
+          redondeo = "abajo"; mandarRedondeado = opAbajo;
+          redondeoRazon = `${opArriba} uds superaria ${COB_MAXIMA}d max. Enviar ${opAbajo} uds (${Math.round(cobAbajo)}d)`;
+        } else if (cobAbajo < puntoReorden || opAbajo === 0) {
+          redondeo = "arriba"; mandarRedondeado = opArriba;
+          redondeoRazon = opAbajo === 0
+            ? `Abajo=0. Enviar bulto completo (${opArriba} uds)`
+            : `${opAbajo} uds deja ${Math.round(cobAbajo)}d (bajo min ${puntoReorden}d). ${opArriba} uds = ${Math.round(cobArriba)}d`;
+        } else if ((cobArriba - cobAbajo) < 7) {
+          redondeo = "abajo"; mandarRedondeado = opAbajo;
+          redondeoRazon = `${opAbajo} uds = ${Math.round(cobAbajo)}d (suficiente)`;
+        } else {
+          redondeo = "arriba"; mandarRedondeado = opArriba;
+          redondeoRazon = `${opAbajo} uds = ${Math.round(cobAbajo)}d. ${opArriba} uds = ${Math.round(cobArriba)}d (mejor)`;
+        }
+      }
+
+      // Apply any admin edit
+      const editedQty = envioEdits.get(r.sku_venta);
+      const mandarFinal = editedQty !== undefined ? editedQty : mandarRedondeado;
+
+      // Componentes finales
+      const componentesFinal = efectivos.map(c => ({
+        skuOrigen: c.skuOrigen,
+        nombreOrigen: c.nombreOrigen,
+        unidadesPorPack: c.unidadesPorPack,
+        unidadesFisicas: mandarFinal * c.unidadesPorPack,
+      }));
+
+      const bultos = ip > 1 ? Math.ceil((mandarFinal * compPrincipal.unidadesPorPack) / ip) : mandarFinal;
+
+      // Notas contextuales
+      const notas: string[] = [];
+      if (r.stock_bodega < mandarFinal) notas.push(`Stock insuficiente — max ${r.stock_bodega} uds`);
+      if (r.margen_full_30d < 0) notas.push("Margen negativo en Full");
+      if (r.es_quiebre_proveedor) notas.push("Proveedor sin stock");
+      if (r.stock_en_transito > 0) notas.push(`OC en transito: ${r.stock_en_transito} uds`);
+      if (r.evento_activo) notas.push(`Target ajustado por ${r.evento_activo}`);
+      if (r.vel_pre_quiebre > 0 && r.dias_en_quiebre > 14) notas.push("Producto estrella en quiebre");
+
+      items.push({
+        skuVenta: r.sku_venta,
+        skuOrigen: compPrincipal.skuOrigen,
+        nombre: r.nombre || r.sku_venta,
+        abc: r.abc,
+        velPonderada: r.vel_ponderada,
+        velObjetivo: r.vel_objetivo || 0,
+        velFull: r.vel_full,
+        stockFull: r.stock_full,
+        stockBodega: r.stock_bodega,
+        cobFull: r.cob_full,
+        targetDias: r.target_dias_full,
+        mandarSugerido: mandarRedondeado,
+        mandarEditado: mandarFinal,
+        innerPack: ip,
+        bultos,
+        redondeo,
+        redondeoRazon,
+        posicionPrincipal: bestPos?.pos || "?",
+        posicionLabel: bestPos?.label || "Sin pos.",
+        accion: r.accion,
+        margenFull: r.margen_full_30d,
+        alertas: r.alertas || [],
+        notas,
+        tipo,
+        componentes: componentesFinal,
+        selected: true,
+        eventoActivo: r.evento_activo,
+        multiplicadorEvento: multiplicadorEvento,
+        stockEnTransito: r.stock_en_transito,
+        velPreQuiebre: r.vel_pre_quiebre,
+        diasEnQuiebre: r.dias_en_quiebre,
+        esQuiebreProveedor: r.es_quiebre_proveedor,
+        puntoReorden: puntoReorden,
+        unidadesPorPack: compPrincipal.unidadesPorPack,
+      });
+    }
+
+    // Stock compartido detection
+    const porOrigen = new Map<string, { skuVenta: string; uds: number; cobFull: number }[]>();
+    for (const item of items) {
+      for (const c of item.componentes) {
+        const arr = porOrigen.get(c.skuOrigen) || [];
+        arr.push({ skuVenta: item.skuVenta, uds: c.unidadesFisicas, cobFull: item.cobFull });
+        porOrigen.set(c.skuOrigen, arr);
+      }
+    }
+    for (const [skuOr, envios] of Array.from(porOrigen.entries())) {
+      if (envios.length < 2) continue;
+      const totalFis = envios.reduce((s, e) => s + e.uds, 0);
+      const stockBod = skuPositions(skuOr).reduce((s, p) => s + p.qty, 0);
+      if (totalFis > stockBod) {
+        for (const e of envios) {
+          const item = items.find(i => i.skuVenta === e.skuVenta);
+          if (item) item.notas.push(`Stock bodega compartido: ${stockBod} uds entre ${envios.length} formatos`);
+        }
+      }
+    }
+
+    // Sort: ABC A + URGENTE first (lowest cob), then A + MANDAR_FULL, B + URGENTE, etc.
+    items.sort((a, b) => {
+      const abcA = ENVIO_ABC_ORDEN[a.abc] ?? 9;
+      const abcB = ENVIO_ABC_ORDEN[b.abc] ?? 9;
+      if (abcA !== abcB) return abcA - abcB;
+      const accA = ENVIO_ACCION_ORDEN[a.accion] ?? 9;
+      const accB = ENVIO_ACCION_ORDEN[b.accion] ?? 9;
+      if (accA !== accB) return accA - accB;
+      return a.cobFull - b.cobFull;
+    });
+
+    return items;
+  }, [vistaEnvio, ventaRows, rows, envioEdits]);
+
+  // Initialize selection when envioItems changes
+  useEffect(() => {
+    if (envioItems.length > 0 && !envioSelAllInit) {
+      setEnvioSelection(new Set(envioItems.map(i => i.skuVenta)));
+      setEnvioSelAllInit(true);
+    }
+  }, [envioItems, envioSelAllInit]);
+
+  // Reset envioSelAllInit when leaving envio view
+  useEffect(() => {
+    if (!vistaEnvio) setEnvioSelAllInit(false);
+  }, [vistaEnvio]);
+
+  // Envío selected items
+  const envioSelected = useMemo(() => envioItems.filter(i => envioSelection.has(i.skuVenta)), [envioItems, envioSelection]);
+
+  // Envío summary
+  const envioSummary = useMemo(() => {
+    const sel = envioSelected;
+    const totalUdsVenta = sel.reduce((s, i) => s + i.mandarEditado, 0);
+    const totalUdsFisicas = sel.reduce((s, i) => s + i.componentes.reduce((c, comp) => c + comp.unidadesFisicas, 0), 0);
+    const totalBultos = sel.reduce((s, i) => s + i.bultos, 0);
+    const urgentes = sel.filter(i => i.accion === "URGENTE").length;
+    const insuficientes = sel.filter(i => i.stockBodega < i.mandarEditado).length;
+    const margenNeg = sel.filter(i => i.margenFull < 0).length;
+    return { totalUdsVenta, totalUdsFisicas, totalBultos, urgentes, insuficientes, margenNeg };
+  }, [envioSelected]);
+
+  // Crear picking from envío
+  const crearPickingEnvioFull = useCallback(async () => {
+    if (envioSelected.length === 0 || creandoPicking) return;
+    setCreandoPicking(true);
+    setPickingCreado(null);
+
+    try {
+      const source = envioSelected.map(i => ({
+        skuVenta: i.skuVenta,
+        nombre: i.nombre,
+        mandarFull: i.mandarEditado,
+        tipo: i.tipo,
+        componentes: i.componentes,
+      }));
+
+      const { lineas, errors } = buildPickingLineasFull(source);
+
+      if (errors.length > 0) {
+        const continuar = window.confirm(`Advertencias:\n${errors.join("\n")}\n\nCrear picking de todos modos?`);
+        if (!continuar) { setCreandoPicking(false); return; }
+      }
+
+      const fecha = new Date().toISOString().slice(0, 10);
+      const titulo = `Envio a Full — ${fecha}`;
+      const id = await crearPickingSession(fecha, lineas, "envio_full", titulo);
+
+      if (id) {
+        setPickingCreado(id);
+
+        // Log historial
+        const skusEditados = envioSelected.filter(i => envioEdits.has(i.skuVenta)).map(i => i.skuVenta);
+        try {
+          await fetch("/api/intelligence/envio-full-log", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              pickingSessionId: id,
+              totals: {
+                skus: envioSelected.length,
+                udsVenta: envioSummary.totalUdsVenta,
+                udsFisicas: envioSummary.totalUdsFisicas,
+                bultos: envioSummary.totalBultos,
+                eventoActivo: envioSelected.find(i => i.eventoActivo)?.eventoActivo || null,
+                multiplicadorEvento: envioSelected.find(i => i.multiplicadorEvento > 1)?.multiplicadorEvento || 1,
+              },
+              lineas: envioSelected.map(i => ({
+                skuVenta: i.skuVenta,
+                skuOrigen: i.skuOrigen,
+                cantidadSugerida: i.mandarSugerido,
+                cantidadEnviada: i.mandarEditado,
+                fueEditada: envioEdits.has(i.skuVenta),
+                abc: i.abc,
+                velPonderada: i.velPonderada,
+                velObjetivo: i.velObjetivo,
+                stockFullAntes: i.stockFull,
+                stockBodegaAntes: i.stockBodega,
+                cobFullAntes: i.cobFull,
+                targetDias: i.targetDias,
+                margenFull: i.margenFull,
+                innerPack: i.innerPack,
+                redondeo: i.redondeo,
+                alertas: i.alertas,
+                nota: i.notas.join("; "),
+              })),
+              skusEditados,
+            }),
+          });
+        } catch { /* no bloquear */ }
+      } else {
+        alert("Error al crear la sesion de picking.");
+      }
+    } catch (err) {
+      console.error("crearPickingEnvioFull error:", err);
+      alert("Error inesperado al crear picking.");
+    } finally {
+      setCreandoPicking(false);
+    }
+  }, [envioSelected, creandoPicking, envioEdits, envioSummary]);
+
+  // Log envio edit to admin_actions_log
+  const logEnvioEdit = useCallback(async (skuVenta: string, cantidadSistema: number, cantidadAdmin: number, abc: string, cobFull: number) => {
+    try {
+      const sb = getSupabase();
+      if (!sb) return;
+      await sb.from("admin_actions_log").insert({
+        accion: "editar_envio_full",
+        entidad: "inteligencia",
+        entidad_id: skuVenta,
+        detalle: { skuVenta, cantidadSistema, cantidadAdmin, abc, cobFullAntes: cobFull },
+      });
+    } catch { /* silenciar */ }
+  }, []);
+
   // ── Datos activos según vista ──
   const activeRows = vistaOrigen ? rows : ventaRows;
 
@@ -540,11 +952,14 @@ export default function AdminInteligencia() {
         </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
           <div style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--bg4)" }}>
-            <button onClick={() => setVistaOrigen(false)} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: !vistaOrigen ? "var(--cyan)" : "var(--bg3)", color: !vistaOrigen ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+            <button onClick={() => { setVistaOrigen(false); setVistaEnvio(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: !vistaOrigen && !vistaEnvio ? "var(--cyan)" : "var(--bg3)", color: !vistaOrigen && !vistaEnvio ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
               SKU Venta
             </button>
-            <button onClick={() => setVistaOrigen(true)} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaOrigen ? "var(--cyan)" : "var(--bg3)", color: vistaOrigen ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+            <button onClick={() => { setVistaOrigen(true); setVistaEnvio(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaOrigen && !vistaEnvio ? "var(--cyan)" : "var(--bg3)", color: vistaOrigen && !vistaEnvio ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
               SKU Origen
+            </button>
+            <button onClick={() => { setVistaEnvio(true); setVistaOrigen(false); setPickingCreado(null); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaEnvio ? "var(--blue)" : "var(--bg3)", color: vistaEnvio ? "#fff" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+              Envio a Full
             </button>
           </div>
           <button onClick={() => setModalMasivo(true)} style={{ padding: "6px 12px", borderRadius: 6, background: "var(--amberBg)", color: "var(--amber)", fontWeight: 600, fontSize: 11, border: "1px solid var(--amberBd)", cursor: "pointer" }}>
@@ -635,7 +1050,7 @@ export default function AdminInteligencia() {
       )}
 
       {/* ═══ 4. FILTROS ═══ */}
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+      {!vistaEnvio && <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
         <input
           type="text"
           placeholder="Buscar SKU, nombre o ML..."
@@ -687,14 +1102,14 @@ export default function AdminInteligencia() {
           <option value="dio">DIO</option>
           <option value="gap">Gap Vel.Obj</option>
         </select>
-      </div>
+      </div>}
 
-      <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 6 }}>
+      {!vistaEnvio && <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 6 }}>
         {filtered.length} de {vistaOrigen ? totalSkus : totalVentas} {vistaOrigen ? "SKUs Origen" : "SKUs Venta"}
-      </div>
+      </div>}
 
       {/* ═══ 5. TABLA SKU VENTA ═══ */}
-      {!vistaOrigen && (
+      {!vistaOrigen && !vistaEnvio && (
         <div style={{ overflowX: "auto" }}>
           <table className="tbl" style={{ minWidth: 1500 }}>
             <thead>
@@ -793,7 +1208,7 @@ export default function AdminInteligencia() {
       )}
 
       {/* ═══ 5b. TABLA SKU ORIGEN ═══ */}
-      {vistaOrigen && (
+      {vistaOrigen && !vistaEnvio && (
         <div style={{ overflowX: "auto" }}>
           <table className="tbl" style={{ minWidth: 1500 }}>
             <thead>
@@ -878,7 +1293,177 @@ export default function AdminInteligencia() {
         </div>
       )}
 
-      {filtered.length === 0 && <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>No hay datos. Ejecuta &quot;Recalcular&quot; para generar.</div>}
+      {/* ═══ 5c. VISTA ENVÍO A FULL ═══ */}
+      {vistaEnvio && (
+        <div>
+          {/* KPIs envío */}
+          <div style={{ display: "flex", gap: 4, marginBottom: 8, flexWrap: "wrap", fontSize: 11 }}>
+            <KpiBadge label="SKUs a enviar" value={String(envioSelected.length)} color="var(--blue)" />
+            <KpiBadge label="Total uds" value={fmtInt(envioSummary.totalUdsVenta)} color="var(--cyan)" />
+            <KpiBadge label="Urgentes" value={String(envioSummary.urgentes)} color="var(--red)" />
+            <KpiBadge label="Bultos" value={String(envioSummary.totalBultos)} color="var(--txt)" />
+          </div>
+
+          {pickingCreado && (
+            <div style={{ padding: "8px 12px", borderRadius: 6, background: "var(--greenBg)", color: "var(--green)", fontSize: 12, marginBottom: 8, border: "1px solid var(--greenBd)", fontWeight: 600 }}>
+              Picking creado: {pickingCreado}
+            </div>
+          )}
+
+          {envioItems.length === 0 ? (
+            <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>No hay SKUs con mandar_full &gt; 0. Ejecuta &quot;Recalcular&quot;.</div>
+          ) : (
+            <>
+              <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 6 }}>
+                {envioSelected.length} de {envioItems.length} SKUs seleccionados
+              </div>
+
+              <div style={{ overflowX: "auto" }}>
+                <table className="tbl" style={{ minWidth: 1400 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ width: 28 }}>
+                        <input
+                          type="checkbox"
+                          checked={envioSelection.size === envioItems.length}
+                          onChange={e => {
+                            if (e.target.checked) setEnvioSelection(new Set(envioItems.map(i => i.skuVenta)));
+                            else setEnvioSelection(new Set());
+                          }}
+                        />
+                      </th>
+                      <th>SKU Venta</th>
+                      <th>Nombre</th>
+                      <th>ABC</th>
+                      <th style={{ textAlign: "right" }}>Vel/sem</th>
+                      <th style={{ textAlign: "right" }}>St.Full</th>
+                      <th style={{ textAlign: "right" }}>St.Bod</th>
+                      <th style={{ textAlign: "right" }}>Cob Full</th>
+                      <th style={{ textAlign: "right" }}>Target</th>
+                      <th style={{ textAlign: "right" }}>Mandar</th>
+                      <th style={{ textAlign: "right" }}>IP</th>
+                      <th style={{ textAlign: "right" }}>Bultos</th>
+                      <th>Pos.</th>
+                      <th>Estado</th>
+                      <th>Notas</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {envioItems.map(item => {
+                      const sel = envioSelection.has(item.skuVenta);
+                      return (
+                        <tr key={item.skuVenta} style={{ opacity: sel ? 1 : 0.4 }}>
+                          <td>
+                            <input
+                              type="checkbox"
+                              checked={sel}
+                              onChange={e => {
+                                const next = new Set(envioSelection);
+                                if (e.target.checked) next.add(item.skuVenta);
+                                else next.delete(item.skuVenta);
+                                setEnvioSelection(next);
+                              }}
+                            />
+                          </td>
+                          <td className="mono" style={{ fontSize: 11, whiteSpace: "nowrap" }}>
+                            {item.tipo !== "simple" && <span title={item.tipo} style={{ marginRight: 3, color: "var(--amber)", fontSize: 9 }}>{item.tipo === "pack" ? "P" : "C"}</span>}
+                            {item.skuVenta}
+                            {item.unidadesPorPack > 1 && <span style={{ fontSize: 9, color: "var(--txt3)", marginLeft: 3 }}>x{item.unidadesPorPack}</span>}
+                          </td>
+                          <td style={{ fontSize: 11, maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={item.nombre}>{item.nombre}</td>
+                          <td style={{ textAlign: "center" }}>
+                            <span style={{ color: abcColor(item.abc), fontWeight: 700, fontSize: 11 }}>{item.abc}</span>
+                          </td>
+                          <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtN(item.velPonderada)}</td>
+                          <td className="mono" style={{ textAlign: "right", fontSize: 11, color: item.stockFull <= 0 ? "var(--red)" : "var(--txt)" }}>{fmtInt(item.stockFull)}</td>
+                          <td className="mono" style={{ textAlign: "right", fontSize: 11, color: item.stockBodega < item.mandarEditado ? "var(--red)" : "var(--txt3)" }}>{fmtInt(item.stockBodega)}</td>
+                          <td className="mono" style={{ textAlign: "right", fontSize: 11, color: item.cobFull < 14 ? "var(--red)" : item.cobFull < 30 ? "var(--amber)" : "var(--green)" }}>
+                            {item.cobFull >= 999 ? "—" : fmtN(item.cobFull, 0) + "d"}
+                          </td>
+                          <td className="mono" style={{ textAlign: "right", fontSize: 11, color: "var(--txt3)" }}>
+                            {fmtN(item.targetDias, 0)}d
+                            {item.multiplicadorEvento > 1 && <span style={{ color: "var(--amber)", fontSize: 9, marginLeft: 2 }} title={`Evento: ${item.eventoActivo}`}>E</span>}
+                          </td>
+                          <td style={{ textAlign: "right" }}>
+                            <MandarCell
+                              value={item.mandarEditado}
+                              max={item.stockBodega}
+                              onChange={v => {
+                                setEnvioEdits(prev => new Map(prev).set(item.skuVenta, v));
+                                logEnvioEdit(item.skuVenta, item.mandarSugerido, v, item.abc, item.cobFull);
+                              }}
+                            />
+                          </td>
+                          <td className="mono" style={{ textAlign: "right", fontSize: 10, color: "var(--txt3)" }}>{item.innerPack > 1 ? item.innerPack : "—"}</td>
+                          <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>
+                            {item.bultos}
+                            {item.redondeo && item.redondeo !== "sin_cambio" && (
+                              <span
+                                style={{ fontSize: 9, marginLeft: 2, color: item.redondeo === "arriba" ? "var(--amber)" : "var(--green)" }}
+                                title={item.redondeoRazon || ""}
+                              >
+                                {item.redondeo === "arriba" ? "▲" : "▼"}
+                              </span>
+                            )}
+                          </td>
+                          <td className="mono" style={{ fontSize: 10, color: "var(--txt3)", whiteSpace: "nowrap" }} title={item.posicionPrincipal}>{item.posicionLabel}</td>
+                          <td>
+                            <span style={{ padding: "2px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, background: accionColor(item.accion) + "22", color: accionColor(item.accion), border: `1px solid ${accionColor(item.accion)}44` }}>
+                              {item.accion}
+                            </span>
+                          </td>
+                          <td>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 1, maxWidth: 200 }}>
+                              {item.notas.map((n, i) => (
+                                <span key={i} style={{ fontSize: 9, color: n.includes("insuficiente") || n.includes("Margen negativo") ? "var(--red)" : n.includes("transito") ? "var(--blue)" : "var(--txt3)" }}>
+                                  {n}
+                                </span>
+                              ))}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Resumen al pie */}
+              <div style={{ marginTop: 12, padding: "10px 14px", borderRadius: 8, background: "var(--bg2)", border: "1px solid var(--bg4)", fontSize: 11 }}>
+                <div style={{ fontWeight: 700, marginBottom: 6, color: "var(--txt)" }}>Resumen de envio</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 16px", color: "var(--txt2)" }}>
+                  <span>SKUs seleccionados: <b style={{ color: "var(--txt)" }}>{envioSelected.length}</b> de {envioItems.length}</span>
+                  <span>Uds venta: <b style={{ color: "var(--cyan)" }}>{fmtInt(envioSummary.totalUdsVenta)}</b></span>
+                  <span>Uds fisicas: <b style={{ color: "var(--cyan)" }}>{fmtInt(envioSummary.totalUdsFisicas)}</b></span>
+                  <span>Bultos: <b style={{ color: "var(--txt)" }}>{envioSummary.totalBultos}</b></span>
+                  {envioSummary.insuficientes > 0 && <span style={{ color: "var(--red)" }}>Stock insuficiente: {envioSummary.insuficientes}</span>}
+                  {envioSummary.margenNeg > 0 && <span style={{ color: "var(--red)" }}>Margen negativo: {envioSummary.margenNeg}</span>}
+                </div>
+              </div>
+
+              {/* Botón Crear Picking */}
+              <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+                <button
+                  onClick={crearPickingEnvioFull}
+                  disabled={creandoPicking || envioSelected.length === 0 || !!pickingCreado}
+                  style={{
+                    padding: "12px 24px", borderRadius: 8, fontWeight: 700, fontSize: 14,
+                    background: pickingCreado ? "var(--greenBg)" : "var(--blue)",
+                    color: pickingCreado ? "var(--green)" : "#fff",
+                    border: pickingCreado ? "1px solid var(--greenBd)" : "none",
+                    cursor: creandoPicking || !!pickingCreado ? "default" : "pointer",
+                    opacity: creandoPicking ? 0.6 : 1,
+                  }}
+                >
+                  {creandoPicking ? "Creando..." : pickingCreado ? "Picking creado" : `Crear Picking Envio a Full (${envioSelected.length} SKUs, ${fmtInt(envioSummary.totalUdsVenta)} uds)`}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {!vistaEnvio && filtered.length === 0 && <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>No hay datos. Ejecuta &quot;Recalcular&quot; para generar.</div>}
 
       {/* ═══ 7. ML SIN VINCULAR (colapsado al pie) ═══ */}
       {mlSinVincularOpen && <AdminMLSinVincular />}
