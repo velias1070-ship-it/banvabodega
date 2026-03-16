@@ -1247,6 +1247,8 @@ export function generarHistoryRows(
       accion: r.accion,
       alertas: r.alertas,
       venta_perdida_pesos: r.venta_perdida_pesos,
+      vel_objetivo: r.vel_objetivo,
+      gap_vel_pct: r.gap_vel_pct,
     }));
 }
 

@@ -372,7 +372,7 @@ export default function AdminInteligencia() {
       await fetch(`/api/intelligence/sku/${encodeURIComponent(skuOrigen)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ vel_objetivo: velObj }),
+        body: JSON.stringify({ vel_objetivo: velObj, motivo: "Ajuste manual" }),
       });
       // Actualizar localmente
       setRows(prev => prev.map(r => {
@@ -405,11 +405,14 @@ export default function AdminInteligencia() {
     }
 
     if (targets.length > 0) {
+      const motDesc = masivoMode === "abc"
+        ? `Ajuste masivo ABC ${masivoAbcFilter} x${mult}`
+        : `Ajuste masivo cat. ${masivoCatFilter} x${mult}`;
       try {
         await fetch("/api/intelligence/sku/_bulk", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ updates: targets }),
+          body: JSON.stringify({ updates: targets, motivo: motDesc }),
         });
         await cargar();
       } catch { /* silenciar */ }
