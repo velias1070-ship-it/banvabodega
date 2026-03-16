@@ -1700,6 +1700,8 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
 
   // 6. Upsert stock_full_cache — agregar stock fulfillment por sku_venta
   // Agrupar por sku_venta (un sku_venta puede tener múltiples inventory_ids)
+  // IMPORTANTE: deduplicar por inventory_id dentro de cada sku_venta para evitar
+  // contar doble cuando múltiples variaciones comparten el mismo inventory_id
   const stockBySku = new Map<string, {
     cantidad: number;
     stock_no_disponible: number;
@@ -1707,11 +1709,19 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     stock_perdido: number;
     stock_transferencia: number;
   }>();
+  const countedInventoryPerSku = new Map<string, Set<string>>();
 
   for (const row of itemsMapRows) {
     if (!row.sku_venta || !row.inventory_id) continue;
-    const detail = fulfillmentMap.get(row.inventory_id.toUpperCase());
+    const invKey = row.inventory_id.toUpperCase();
+    const detail = fulfillmentMap.get(invKey);
     if (!detail) continue;
+
+    // Solo contar cada inventory_id una vez por sku_venta
+    const counted = countedInventoryPerSku.get(row.sku_venta) || new Set();
+    if (counted.has(invKey)) continue;
+    counted.add(invKey);
+    countedInventoryPerSku.set(row.sku_venta, counted);
 
     const existing = stockBySku.get(row.sku_venta) || {
       cantidad: 0, stock_no_disponible: 0, stock_danado: 0, stock_perdido: 0, stock_transferencia: 0,
