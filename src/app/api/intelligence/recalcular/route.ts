@@ -109,13 +109,18 @@ export async function POST(req: NextRequest) {
     const quiebresInferidos = inferirQuiebresDeOrdenes(ordenes, hoy);
 
     // Combinar quiebres de snapshots + inferidos
+    // Solo snapshots reales se marcan como explícitos — los inferidos son heurísticos
     const quiebresCombinados: QuiebreSnapshot[] = [
       ...snapshots.map(s => ({
         fecha: s.fecha,
         sku_origen: s.sku_origen,
         en_quiebre_full: s.en_quiebre_full,
+        explicito: true as const,
       })),
-      ...quiebresInferidos,
+      ...quiebresInferidos.map(q => ({
+        ...q,
+        explicito: false as const,
+      })),
     ];
 
     // ── Ejecutar recálculo completo ──
