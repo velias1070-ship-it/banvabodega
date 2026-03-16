@@ -4618,7 +4618,23 @@ function Productos({ refresh }: { refresh: () => void }) {
   const [showAdd, setShowAdd] = useState(false);
   const [editSku, setEditSku] = useState<string|null>(null);
   const [q, setQ] = useState("");
+  const [mlItems, setMlItems] = useState<DBMLItemMap[]>([]);
   const s = getStore();
+
+  // Cargar ml_items_map para mostrar capa ML en detalle de producto
+  useEffect(() => { fetchMLItemsMap().then(setMlItems); }, []);
+
+  // Index: sku_venta (upper) → ML items
+  const mlBySkuVenta = React.useMemo(() => {
+    const map: Record<string, DBMLItemMap[]> = {};
+    for (const m of mlItems) {
+      const sv = (m.sku_venta || "").toUpperCase();
+      if (!sv) continue;
+      if (!map[sv]) map[sv] = [];
+      map[sv].push(m);
+    }
+    return map;
+  }, [mlItems]);
   const prods = Object.values(s.products).filter(p=>{
     if(!q)return true;const ql=q.toLowerCase();
     return p.sku.toLowerCase().includes(ql)||p.name.toLowerCase().includes(ql)||p.mlCode.toLowerCase().includes(ql)||p.cat.toLowerCase().includes(ql)||p.prov.toLowerCase().includes(ql);
@@ -4688,17 +4704,29 @@ function Productos({ refresh }: { refresh: () => void }) {
                 <td className="mono" style={{fontWeight:700,fontSize:12}}>{p.sku}</td>
                 <td style={{fontSize:12}}>{p.name}</td>
                 <td style={{fontSize:11}}>
-                  {ventas.length > 0 ? ventas.map((v, i) => (
-                    <div key={i} style={{display:"flex",alignItems:"center",gap:4,marginBottom:i<ventas.length-1?2:0}}>
-                      <span style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:3,whiteSpace:"nowrap",
-                        background:v.unidades>1?"var(--amber)15":"var(--cyan)15",
-                        color:v.unidades>1?"var(--amber)":"var(--cyan)"}}>
-                        {v.unidades>1?`x${v.unidades}`:"x1"}
-                      </span>
-                      <span className="mono" style={{fontSize:10}}>{v.codigoMl}</span>
-                      <span style={{fontSize:9,color:"var(--txt3)"}}>{v.skuVenta}</span>
-                    </div>
-                  )) : <span style={{color:"var(--txt3)"}}>Sin publicación</span>}
+                  {ventas.length > 0 ? ventas.map((v, i) => {
+                    const mlItems4sv = mlBySkuVenta[v.skuVenta.toUpperCase()] || [];
+                    return (
+                    <div key={i} style={{marginBottom:i<ventas.length-1?6:0}}>
+                      <div style={{display:"flex",alignItems:"center",gap:4}}>
+                        <span style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:3,whiteSpace:"nowrap",
+                          background:v.unidades>1?"var(--amber)15":"var(--cyan)15",
+                          color:v.unidades>1?"var(--amber)":"var(--cyan)"}}>
+                          {v.unidades>1?`x${v.unidades}`:"x1"}
+                        </span>
+                        <span className="mono" style={{fontSize:10}}>{v.codigoMl}</span>
+                        <span style={{fontSize:9,color:"var(--txt3)"}}>{v.skuVenta}</span>
+                      </div>
+                      {mlItems4sv.length > 0 && mlItems4sv.map((ml, j) => (
+                        <div key={j} style={{marginLeft:16,marginTop:2,display:"flex",alignItems:"center",gap:4,fontSize:9,color:"var(--txt3)"}}>
+                          <span style={{color:"var(--green)"}}>ML</span>
+                          <span className="mono">{ml.item_id}</span>
+                          {ml.inventory_id && <span className="mono" style={{color:"var(--txt3)"}}>inv:{ml.inventory_id}</span>}
+                          {(ml.available_quantity != null && ml.available_quantity > 0) && <span style={{color:"var(--blue)",fontWeight:600}}>Full:{ml.available_quantity}</span>}
+                        </div>
+                      ))}
+                    </div>);
+                  }) : <span style={{color:"var(--txt3)"}}>Sin publicación</span>}
                 </td>
                 <td><span className="tag">{p.cat}</span></td>
                 <td><span className="tag">{p.prov}</span></td>
@@ -4741,17 +4769,28 @@ function Productos({ refresh }: { refresh: () => void }) {
                     <div style={{fontSize:10,color:"var(--txt3)",fontWeight:600,marginBottom:2}}>Publicaciones:</div>
                     {ventas.map((v, i) => {
                       const sellable = Math.floor(stock / v.unidades);
+                      const mlItems4sv = mlBySkuVenta[v.skuVenta.toUpperCase()] || [];
                       return (
-                        <div key={i} style={{display:"flex",alignItems:"center",gap:4,fontSize:10,marginBottom:1}}>
-                          <span style={{fontWeight:700,padding:"1px 4px",borderRadius:3,
-                            background:v.unidades>1?"var(--amber)15":"var(--cyan)15",
-                            color:v.unidades>1?"var(--amber)":"var(--cyan)"}}>
-                            {v.unidades>1?`Pack x${v.unidades}`:"x1"}
-                          </span>
-                          <span className="mono">{v.codigoMl}</span>
-                          <span style={{color:sellable>0?"var(--green)":"var(--red)",fontWeight:600,marginLeft:"auto"}}>
-                            {sellable} vendibles
-                          </span>
+                        <div key={i} style={{marginBottom:4}}>
+                          <div style={{display:"flex",alignItems:"center",gap:4,fontSize:10}}>
+                            <span style={{fontWeight:700,padding:"1px 4px",borderRadius:3,
+                              background:v.unidades>1?"var(--amber)15":"var(--cyan)15",
+                              color:v.unidades>1?"var(--amber)":"var(--cyan)"}}>
+                              {v.unidades>1?`Pack x${v.unidades}`:"x1"}
+                            </span>
+                            <span className="mono">{v.codigoMl}</span>
+                            <span style={{color:sellable>0?"var(--green)":"var(--red)",fontWeight:600,marginLeft:"auto"}}>
+                              {sellable} vendibles
+                            </span>
+                          </div>
+                          {mlItems4sv.length > 0 && mlItems4sv.map((ml, j) => (
+                            <div key={j} style={{marginLeft:12,marginTop:1,display:"flex",alignItems:"center",gap:4,fontSize:9,color:"var(--txt3)"}}>
+                              <span style={{color:"var(--green)"}}>ML</span>
+                              <span className="mono">{ml.item_id}</span>
+                              {ml.inventory_id && <span className="mono">inv:{ml.inventory_id}</span>}
+                              {(ml.available_quantity != null && ml.available_quantity > 0) && <span style={{color:"var(--blue)",fontWeight:600}}>Full:{ml.available_quantity}</span>}
+                            </div>
+                          ))}
                         </div>
                       );
                     })}

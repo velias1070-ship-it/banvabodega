@@ -1355,9 +1355,18 @@ export interface DBMLItemMap {
   sku: string;
   item_id: string;
   variation_id: number | null;
+  user_product_id: string | null;
+  stock_version: number | null;
+  inventory_id: string | null;
+  sku_venta: string | null;
+  sku_origen: string | null;
+  titulo: string | null;
+  available_quantity: number | null;
+  sold_quantity: number | null;
   activo: boolean;
   ultimo_sync: string | null;
   ultimo_stock_enviado: number | null;
+  updated_at: string | null;
 }
 
 export async function fetchMLItemsMap(): Promise<DBMLItemMap[]> {
