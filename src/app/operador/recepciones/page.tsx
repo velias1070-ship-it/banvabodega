@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { initStore, isStoreReady, getRecepcionesParaOperario, getLineasDeRecepciones, getRecepcionLineas, contarLinea, etiquetarLinea, ubicarLinea, actualizarRecepcion, activePositions, findPosition, bloquearLinea, desbloquearLinea, renovarBloqueo, isLineaBloqueada, getVentasPorSkuOrigen } from "@/lib/store";
+import { initStore, isStoreReady, getRecepcionesParaOperario, getLineasDeRecepciones, getRecepcionLineas, contarLinea, etiquetarLinea, ubicarLinea, actualizarRecepcion, actualizarLineaRecepcion, activePositions, findPosition, bloquearLinea, desbloquearLinea, renovarBloqueo, isLineaBloqueada, getVentasPorSkuOrigen } from "@/lib/store";
 import type { DBRecepcion, DBRecepcionLinea, ComposicionVenta } from "@/lib/store";
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -336,12 +336,38 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, folio, prov
 
   const doContar = async () => {
     setSaving(true);
-    await contarLinea(linea.id!, qtyCaja, operario, recepcionId);
-    const nuevoTotal = prevRecibida + qtyCaja;
-    showToast(`Caja: ${qtyCaja} uds — Total recibido: ${nuevoTotal}/${linea.qty_factura}`);
-    await refreshLinea();
-    setSaving(false);
-    onStepComplete();
+    try {
+      await contarLinea(linea.id!, qtyCaja, operario, recepcionId);
+      const nuevoTotal = prevRecibida + qtyCaja;
+      showToast(`Caja: ${qtyCaja} uds — Total recibido: ${nuevoTotal}/${linea.qty_factura}`);
+      await refreshLinea();
+      onStepComplete();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Error desconocido";
+      showToast(`ERROR al contar: ${msg}`);
+      await refreshLinea();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Cerrar linea cuando no hay mas cajas (recibido < factura)
+  const doCerrarLinea = async () => {
+    if (!window.confirm(`¿Confirmar que no hay mas cajas?\n\nRecibido: ${prevRecibida} de ${linea.qty_factura} facturados.\nSe cerrara la linea con ${prevRecibida} unidades.`)) return;
+    setSaving(true);
+    try {
+      // Ajustar qty_factura al real recibido para que la linea pueda completarse
+      await actualizarLineaRecepcion(linea.id!, { qty_factura: prevRecibida });
+      showToast(`Linea cerrada con ${prevRecibida} unidades recibidas`);
+      await refreshLinea();
+      onStepComplete();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Error desconocido";
+      showToast(`ERROR: ${msg}`);
+      await refreshLinea();
+    } finally {
+      setSaving(false);
+    }
   };
 
   // ---- PASO 2: ETIQUETAR ----
@@ -354,16 +380,23 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, folio, prov
     const newTotal = (linea.qty_etiquetada || 0) + qty;
     const qtyTotal = linea.qty_recibida ?? linea.qty_factura;
     setSaving(true);
-    await etiquetarLinea(linea.id!, newTotal, operario, qtyTotal);
-    showToast(`${qty} unidades etiquetadas (${newTotal}/${qtyTotal})`);
-    await refreshLinea();
-    setSaving(false);
-    setEtiqQty(0);
-    setScanResult(null);
-    setScanCode("");
-    // Renew lock after each labeling action
-    renovarBloqueo(linea.id!, operario);
-    onStepComplete();
+    try {
+      await etiquetarLinea(linea.id!, newTotal, operario, qtyTotal);
+      showToast(`${qty} unidades etiquetadas (${newTotal}/${qtyTotal})`);
+      await refreshLinea();
+      setEtiqQty(0);
+      setScanResult(null);
+      setScanCode("");
+      // Renew lock after each labeling action
+      renovarBloqueo(linea.id!, operario);
+      onStepComplete();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Error desconocido";
+      showToast(`ERROR al etiquetar: ${msg}`);
+      await refreshLinea();
+    } finally {
+      setSaving(false);
+    }
   };
 
   // Get ALL packs/ventas this physical product participates in
@@ -519,6 +552,14 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, folio, prov
               style={{width:"100%",padding:14,borderRadius:10,background:saving||qtyCaja<=0?"var(--bg3)":"var(--green)",color:saving||qtyCaja<=0?"var(--txt3)":"#fff",fontSize:14,fontWeight:700}}>
               {saving ? "Guardando..." : `Confirmar: ${qtyCaja} uds en esta caja`}
             </button>
+            {/* Opcion de cerrar linea cuando ya se recibieron cajas pero faltan vs factura */}
+            {prevRecibida > 0 && (linea.qty_ubicada || 0) > 0 && (
+              <button onClick={doCerrarLinea} disabled={saving}
+                style={{width:"100%",marginTop:8,padding:12,borderRadius:10,background:"var(--bg3)",
+                  color:"var(--amber)",fontSize:13,fontWeight:600,border:"1px solid var(--amberBd)"}}>
+                No hay mas cajas — cerrar con {prevRecibida} recibidas
+              </button>
+            )}
           </div>
         )}
 
