@@ -43,6 +43,7 @@ export async function POST(req: NextRequest) {
     const skusFilter: string[] | undefined = body.skus;
     const full: boolean = body.full === true;
     const doSnapshot: boolean = body.snapshot === true;
+    const debugSku: string | undefined = body.debug_sku;
 
     const sb = getServerSupabase();
     if (!sb) {
@@ -118,7 +119,7 @@ export async function POST(req: NextRequest) {
     ];
 
     // ── Ejecutar recálculo completo ──
-    const resultados = recalcularTodo({
+    const { rows: resultados, debugLog } = recalcularTodo({
       productos,
       composicion,
       ordenes: ordenes as OrdenInput[],
@@ -145,6 +146,7 @@ export async function POST(req: NextRequest) {
       prevIntelligence,
       config: DEFAULT_INTEL_CONFIG,
       hoy,
+      debugSku,
     });
 
     // ── Filtrar si no es full ──
@@ -217,6 +219,7 @@ export async function POST(req: NextRequest) {
         dead_stock: rowsToUpsert.filter(r => r.accion === "DEAD_STOCK").length,
         liquidar: rowsToUpsert.filter(r => r.liquidacion_accion !== null).length,
       },
+      ...(debugLog ? { debug: debugLog } : {}),
     });
   } catch (err) {
     console.error("[intelligence] Error en recálculo:", err);

@@ -268,7 +268,11 @@ export interface RecalculoInput {
   prevIntelligence: Map<string, PrevIntelRow>;
   config: RecalculoConfig;
   hoy: Date;
+  debugSku?: string;
 }
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type DebugSkuLog = Record<string, any>;
 
 /* ═══════════════════════════════════════════════════════════
    HELPERS PUROS
@@ -321,12 +325,15 @@ function zScore(nivel: number): number {
    PASO PRINCIPAL: RECÁLCULO COMPLETO
    ═══════════════════════════════════════════════════════════ */
 
-export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
+export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; debugLog?: DebugSkuLog } {
   const {
     productos, composicion, ordenes, stockBodega, stockFull, stockFullDetail,
     velProfitguard, eventosActivos, quiebres, conteos, movimientos,
     stockEnTransito, ocPendientesPorSku, prevIntelligence, config, hoy,
+    debugSku,
   } = input;
+  const debugSkuUp = debugSku?.toUpperCase();
+  let debugLog: DebugSkuLog | undefined;
 
   const hoyStr = hoy.toISOString().slice(0, 10);
   const hoyMs = hoy.getTime();
@@ -559,6 +566,54 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
       velPG = Math.max(velPG, vpg * va.unidades);
     }
     if (velPG > velPonderada) velPonderada = velPG;
+
+    // ── DEBUG: capturar datos intermedios para un SKU específico ──
+    if (debugSkuUp && skuOrigen.toUpperCase() === debugSkuUp) {
+      // Órdenes encontradas por formato
+      const ordenesPorFormato: Record<string, { count: number; totalQty: number; udsFisicas: number }> = {};
+      for (const va of ventasAsoc) {
+        const ords = ordenesPorSkuVenta.get(va.skuVenta) || [];
+        const totalQty = ords.reduce((s, o) => s + o.cantidad, 0);
+        ordenesPorFormato[va.skuVenta] = {
+          count: ords.length,
+          totalQty,
+          udsFisicas: totalQty * va.unidades,
+        };
+      }
+
+      // Detalle ProfitGuard por formato
+      const pgPorFormato: Record<string, { velPG_raw: number; unidades: number; velPG_fisico: number }> = {};
+      for (const va of ventasAsoc) {
+        const vpg = velProfitguard.get(va.skuVenta) || 0;
+        pgPorFormato[va.skuVenta] = {
+          velPG_raw: vpg,
+          unidades: va.unidades,
+          velPG_fisico: vpg * va.unidades,
+        };
+      }
+
+      debugLog = {
+        sku_origen: skuOrigen,
+        ventasAsoc_count: ventasAsoc.length,
+        ventasAsoc: ventasAsoc.map(v => ({ skuVenta: v.skuVenta, unidades: v.unidades })),
+        ordenes_por_formato: ordenesPorFormato,
+        ordenes_procesadas_total: ordenesYaProcesadas.size,
+        suma_uds_fisicas_7d: sumar(ordenesFisicas7d),
+        suma_uds_fisicas_30d: sumar(ordenesFisicas30d),
+        suma_uds_fisicas_60d: sumar(ordenesFisicas60d),
+        semanas_activas_30d: semanasActivas30d,
+        semanas_activas_60d: semanasActivas60d,
+        vel_7d: round2(vel7d),
+        vel_30d: round2(vel30d),
+        vel_60d: round2(vel60d),
+        vel_ponderada_antes_PG: round2((vel7d * 0.5) + (vel30d * 0.3) + (vel60d * 0.2)),
+        velPG_max: round2(velPG),
+        velPG_por_formato: pgPorFormato,
+        vel_ponderada_final: round2(velPonderada),
+        fullQty30d,
+        flexQty30d,
+      };
+    }
 
     // Distribución por canal
     const totalCanal30d = fullQty30d + flexQty30d;
@@ -1014,7 +1069,7 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
     r.alertas_count = alertas.length;
   }
 
-  return rows;
+  return { rows, debugLog };
 }
 
 /* ═══════════════════════════════════════════════════════════
