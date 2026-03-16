@@ -1734,6 +1734,7 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     stock_danado: s.stock_danado,
     stock_perdido: s.stock_perdido,
     stock_transferencia: s.stock_transferencia,
+    fuente: "ml_sync",
     updated_at: new Date().toISOString(),
   }));
 
@@ -1845,6 +1846,7 @@ export async function syncSingleFulfillmentStock(inventoryId: string): Promise<s
     stock_danado: totalDanado,
     stock_perdido: totalPerdido,
     stock_transferencia: totalTransfer,
+    fuente: "ml_sync",
     updated_at: new Date().toISOString(),
   }, { onConflict: "sku_venta" });
 
