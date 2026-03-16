@@ -209,6 +209,8 @@ export interface QuiebreSnapshot {
   fecha: string;
   sku_origen: string;
   en_quiebre_full: boolean;
+  /** true = viene de stock_snapshots (dato real). false/undefined = inferido */
+  explicito?: boolean;
 }
 
 export interface ConteoInput {
@@ -547,16 +549,26 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       }
     }
 
-    // Detección de quiebres para excluir del promedio
+    // Detección de quiebres para excluir del promedio.
+    // SOLO contar semanas con registro EXPLÍCITO en_quiebre_full = true.
+    // La ausencia de datos en stock_snapshots NO es evidencia de quiebre.
+    // Además, solo excluir si la semana tiene ≥3 días marcados como quiebre
+    // (para evitar que un solo registro afecte toda la semana).
     const quiebresDelSku = quiebresPorSku.get(skuOrigen) || [];
-    const semanasEnQuiebre = new Set<number>();
+    const diasQuiebrePorSemana = new Map<number, number>();
     for (const q of quiebresDelSku) {
-      if (q.en_quiebre_full) {
+      if (q.en_quiebre_full && q.explicito) {
         const fechaMs = new Date(q.fecha).getTime();
         const semIdx = Math.floor((hoyMs - fechaMs) / (7 * 86400000));
-        if (semIdx >= 0 && semIdx < 9) semanasEnQuiebre.add(semIdx);
+        if (semIdx >= 0 && semIdx < 9) {
+          diasQuiebrePorSemana.set(semIdx, (diasQuiebrePorSemana.get(semIdx) || 0) + 1);
+        }
       }
     }
+    const semanasEnQuiebre = new Set<number>();
+    diasQuiebrePorSemana.forEach((dias, sem) => {
+      if (dias >= 3) semanasEnQuiebre.add(sem);
+    });
 
     // Velocidades con exclusión de quiebres
     const vel7d = sumar(ordenesFisicas7d); // 7 días = 1 semana, no se excluye
@@ -607,6 +619,12 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
         };
       }
 
+      // Detalle quiebres
+      const quiebresExplicitos = quiebresDelSku.filter(q => q.explicito && q.en_quiebre_full);
+      const quiebresInferidos = quiebresDelSku.filter(q => !q.explicito && q.en_quiebre_full);
+      const diasQuiebreDebug: Record<number, number> = {};
+      diasQuiebrePorSemana.forEach((dias, sem) => { diasQuiebreDebug[sem] = dias; });
+
       debugLog = {
         sku_origen: skuOrigen,
         ventasAsoc_count: ventasAsoc.length,
@@ -616,6 +634,11 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
         suma_uds_fisicas_7d: sumar(ordenesFisicas7d),
         suma_uds_fisicas_30d: sumar(ordenesFisicas30d),
         suma_uds_fisicas_60d: sumar(ordenesFisicas60d),
+        quiebres_total: quiebresDelSku.length,
+        quiebres_explicitos: quiebresExplicitos.length,
+        quiebres_inferidos_ignorados: quiebresInferidos.length,
+        dias_quiebre_por_semana: diasQuiebreDebug,
+        semanas_en_quiebre: Array.from(semanasEnQuiebre),
         semanas_activas_30d: semanasActivas30d,
         semanas_activas_60d: semanasActivas60d,
         vel_7d: round2(vel7d),
