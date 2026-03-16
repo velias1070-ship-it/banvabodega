@@ -550,11 +550,12 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
     // Velocidad ponderada (Promedio Móvil Ponderado)
     let velPonderada = (vel7d * 0.5) + (vel30d * 0.3) + (vel60d * 0.2);
 
-    // Referencia ProfitGuard: sumar vel_promedio de todos los SKU Venta asociados (en uds físicas)
+    // Referencia ProfitGuard: max (no suma) de vel_promedio de los SKU Venta asociados.
+    // PG reporta velocidad total del listing, no por formato — sumar duplica la velocidad.
     let velPG = 0;
     for (const va of ventasAsoc) {
       const vpg = velProfitguard.get(va.skuVenta) || 0;
-      velPG += vpg * va.unidades;
+      velPG = Math.max(velPG, vpg * va.unidades);
     }
     if (velPG > velPonderada) velPonderada = velPG;
 
