@@ -329,6 +329,19 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, folio, prov
     if (updated) { setLinea(updated); setStep(determineStep(updated)); }
   };
 
+  // Auto-corregir estado inconsistente: si qty_etiquetada >= qtyTotal pero estado no es ETIQUETADA
+  useEffect(() => {
+    if (!linea.requiere_etiqueta) return;
+    const qtyTotal = (linea.qty_recibida || 0) > 0 ? linea.qty_recibida! : linea.qty_factura;
+    const yaEtiquetadas = linea.qty_etiquetada || 0;
+    if (yaEtiquetadas >= qtyTotal && qtyTotal > 0 && linea.estado !== "ETIQUETADA" && linea.estado !== "UBICADA") {
+      // Estado desincronizado: corregir en DB
+      actualizarLineaRecepcion(linea.id!, { estado: "ETIQUETADA", ts_etiquetado: new Date().toISOString() })
+        .then(() => refreshLinea())
+        .catch(() => {});
+    }
+  }, [linea.id, linea.estado, linea.qty_etiquetada, linea.qty_recibida]);
+
   // ---- PASO 1: CONTAR (por caja, acumulativo) ----
   const prevRecibida = linea.qty_recibida || 0;
   const faltanPorRecibir = Math.max(0, linea.qty_factura - prevRecibida);
@@ -757,7 +770,11 @@ function StepPill({ label, active, done }: { label: string; active: boolean; don
 function determineStep(l: DBRecepcionLinea): "contar" | "etiquetar" | "ubicar" {
   if (l.estado === "PENDIENTE") return "contar";
   if (l.estado === "CONTADA" || l.estado === "EN_ETIQUETADO") {
-    return l.requiere_etiqueta ? "etiquetar" : "ubicar";
+    if (!l.requiere_etiqueta) return "ubicar";
+    // Si ya se etiquetaron todas las unidades recibidas, saltar a ubicar
+    const qtyTotal = (l.qty_recibida || 0) > 0 ? l.qty_recibida! : l.qty_factura;
+    if ((l.qty_etiquetada || 0) >= qtyTotal && qtyTotal > 0) return "ubicar";
+    return "etiquetar";
   }
   if (l.estado === "ETIQUETADA") return "ubicar";
   return "ubicar";
