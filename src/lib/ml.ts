@@ -54,6 +54,10 @@ export interface MLItemMap {
   ultimo_sync: string | null;
   ultimo_stock_enviado: number | null;
   stock_version: number | null;
+  inventory_id: string | null;
+  sku_venta: string | null;
+  sku_origen: string | null;
+  titulo: string | null;
 }
 
 export interface PedidoFlex {
@@ -1517,12 +1521,16 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
   }
 
   // 1. Obtener mapeos para resolver SKU desde múltiples fuentes
-  // a) composicion_venta.codigo_ml → sku_venta
-  const { data: compData } = await sb.from("composicion_venta").select("codigo_ml, sku_venta");
+  // a) composicion_venta.codigo_ml → sku_venta + sku_venta → sku_origen
+  const { data: compData } = await sb.from("composicion_venta").select("codigo_ml, sku_venta, sku_origen");
   const codigoToSkuVenta = new Map<string, string>();
+  const skuVentaToSkuOrigen = new Map<string, string>();
   for (const row of (compData || [])) {
     if (row.codigo_ml && row.sku_venta) {
       codigoToSkuVenta.set(row.codigo_ml.toUpperCase(), row.sku_venta);
+    }
+    if (row.sku_venta && row.sku_origen) {
+      skuVentaToSkuOrigen.set(row.sku_venta.toUpperCase(), row.sku_origen);
     }
   }
   // b) productos.sku set for direct match against seller_custom_field
@@ -1573,6 +1581,7 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     item_id: string;
     inventory_id: string | null;
     sku_venta: string | null;
+    sku_origen: string | null;
     titulo: string;
     available_quantity: number;
     sold_quantity: number;
@@ -1597,11 +1606,13 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
           for (const v of item.variations) {
             const invId = v.inventory_id || null;
             const skuVenta = resolveSkuVenta(invId, v.seller_custom_field || null);
+            const skuOrigen = skuVenta ? (skuVentaToSkuOrigen.get(skuVenta.toUpperCase()) || null) : null;
             if (!invId) sinInventoryId++;
             itemsMapRows.push({
               item_id: itemId,
               inventory_id: invId,
               sku_venta: skuVenta,
+              sku_origen: skuOrigen,
               titulo: item.title,
               available_quantity: v.available_quantity || 0,
               sold_quantity: v.sold_quantity || 0,
@@ -1613,11 +1624,13 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
           // Item sin variaciones
           const invId = item.inventory_id || null;
           const skuVenta = resolveSkuVenta(invId, item.seller_custom_field || null);
+          const skuOrigen = skuVenta ? (skuVentaToSkuOrigen.get(skuVenta.toUpperCase()) || null) : null;
           if (!invId) sinInventoryId++;
           itemsMapRows.push({
             item_id: itemId,
             inventory_id: invId,
             sku_venta: skuVenta,
+            sku_origen: skuOrigen,
             titulo: item.title,
             available_quantity: item.available_quantity || 0,
             sold_quantity: item.sold_quantity || 0,
@@ -1670,6 +1683,7 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     variation_id: r.variation_id ? parseInt(r.variation_id) : null,
     inventory_id: r.inventory_id,
     sku_venta: r.sku_venta,
+    sku_origen: r.sku_origen,
     titulo: r.titulo,
     available_quantity: r.available_quantity,
     sold_quantity: r.sold_quantity,
