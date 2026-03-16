@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { getSupabase } from "@/lib/supabase";
 
 // ============================================
@@ -61,6 +61,8 @@ interface IntelRow {
   abc_pre_quiebre: string | null;
   gmroi_potencial: number;
   es_catch_up: boolean;
+  vel_objetivo: number;
+  gap_vel_pct: number | null;
   updated_at: string;
 }
 
@@ -70,7 +72,6 @@ interface VentaRow {
   nombre: string | null;
   unidades_por_pack: number;
   es_pack: boolean;
-  // Heredados del origen
   abc: string;
   xyz: string;
   cuadrante: string;
@@ -95,7 +96,6 @@ interface VentaRow {
   venta_perdida_pesos: number;
   liquidacion_accion: string | null;
   updated_at: string;
-  // Propios del SKU Venta
   stock_full: number;
   stock_danado: number;
   stock_perdido: number;
@@ -114,6 +114,11 @@ interface VentaRow {
   ingreso_30d: number;
   canal_mas_rentable: string | null;
   precio_promedio: number;
+  // Campos heredados del origen para vel_objetivo
+  vel_objetivo: number;
+  gap_vel_pct: number | null;
+  gmroi: number;
+  dio: number;
 }
 
 // ============================================
@@ -123,6 +128,11 @@ interface VentaRow {
 const fmtN = (n: number | null | undefined, d = 1) => n == null ? "—" : Number(n).toFixed(d);
 const fmtInt = (n: number | null | undefined) => n == null ? "—" : Math.round(Number(n)).toLocaleString("es-CL");
 const fmtMoney = (n: number | null | undefined) => n == null ? "—" : "$" + Math.round(Number(n)).toLocaleString("es-CL");
+const fmtK = (n: number) => {
+  if (Math.abs(n) >= 1000000) return "$" + (n / 1000000).toFixed(1) + "M";
+  if (Math.abs(n) >= 1000) return "$" + (n / 1000).toFixed(0) + "K";
+  return "$" + Math.round(n).toLocaleString("es-CL");
+};
 
 function accionColor(a: string): string {
   switch (a) {
@@ -161,6 +171,60 @@ function cuadranteLabel(c: string): string {
   }
 }
 
+function gapColor(gap: number | null): string {
+  if (gap == null) return "var(--txt3)";
+  if (gap >= 0) return "var(--green)";
+  if (gap > -20) return "var(--txt2)";
+  return "var(--red)";
+}
+
+// ============================================
+// Componente de celda editable vel_objetivo
+// ============================================
+
+function VelObjetivoCell({ skuOrigen, value, onChange }: { skuOrigen: string; value: number; onChange: (sku: string, val: number) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [tmp, setTmp] = useState(String(value || ""));
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing && inputRef.current) inputRef.current.focus();
+  }, [editing]);
+
+  const save = () => {
+    setEditing(false);
+    const v = parseFloat(tmp) || 0;
+    if (v !== value) onChange(skuOrigen, v);
+  };
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        type="number"
+        step="0.1"
+        value={tmp}
+        onChange={e => setTmp(e.target.value)}
+        onBlur={save}
+        onKeyDown={e => { if (e.key === "Enter") save(); if (e.key === "Escape") setEditing(false); }}
+        className="mono"
+        style={{ width: 56, fontSize: 11, padding: "2px 4px", background: "var(--bg3)", border: "1px solid var(--cyanBd)", borderRadius: 4, color: "var(--txt)", textAlign: "right" }}
+      />
+    );
+  }
+
+  return (
+    <span
+      onClick={() => { setTmp(String(value || "")); setEditing(true); }}
+      className="mono"
+      style={{ cursor: "pointer", fontSize: 11, color: value > 0 ? "var(--txt)" : "var(--txt3)", textAlign: "right", display: "block" }}
+      title="Click para editar"
+    >
+      {value > 0 ? fmtN(value) : "Definir"}
+    </span>
+  );
+}
+
 // ============================================
 // Componente principal
 // ============================================
@@ -174,7 +238,7 @@ export default function AdminInteligencia() {
   const [recalcResult, setRecalcResult] = useState<string | null>(null);
   const [syncingML, setSyncingML] = useState(false);
   const [syncMLResult, setSyncMLResult] = useState<string | null>(null);
-  const [vistaOrigen, setVistaOrigen] = useState(false); // default SKU Venta
+  const [vistaOrigen, setVistaOrigen] = useState(false);
 
   // Filtros
   const [filtroAccion, setFiltroAccion] = useState<string>("todos");
@@ -184,7 +248,19 @@ export default function AdminInteligencia() {
   const [filtroAlerta, setFiltroAlerta] = useState<string>("todos");
   const [busqueda, setBusqueda] = useState("");
   const [ordenarPor, setOrdenarPor] = useState<string>("prioridad");
-  const [mlItemsMap, setMlItemsMap] = useState<Map<string, string[]>>(new Map()); // sku → item_ids ML
+  const [mlItemsMap, setMlItemsMap] = useState<Map<string, string[]>>(new Map());
+
+  // ML sin vincular
+  const [mlSinVincular, setMlSinVincular] = useState<{ item_id: string; title: string; available_quantity: number }[]>([]);
+  const [mlSinVincularOpen, setMlSinVincularOpen] = useState(false);
+
+  // Modal masivo
+  const [modalMasivo, setModalMasivo] = useState(false);
+  const [masivoMode, setMasivoMode] = useState<"abc" | "categoria" | "manual">("abc");
+  const [masivoMultiplier, setMasivoMultiplier] = useState("1.1");
+  const [masivoAbcFilter, setMasivoAbcFilter] = useState("A");
+  const [masivoCatFilter, setMasivoCatFilter] = useState("");
+  const [masivoSaving, setMasivoSaving] = useState(false);
 
   const cargarOrigen = useCallback(async () => {
     const sb = getSupabase();
@@ -204,9 +280,10 @@ export default function AdminInteligencia() {
       const res = await fetch("/api/intelligence/sku-venta");
       if (res.ok) {
         const json = await res.json();
-        setVentaRows((json.rows || []) as VentaRow[]);
-        if (json.rows?.length > 0 && !lastUpdate) {
-          setLastUpdate(json.rows[0].updated_at);
+        const vRows = (json.rows || []) as VentaRow[];
+        setVentaRows(vRows);
+        if (vRows.length > 0 && !lastUpdate) {
+          setLastUpdate(vRows[0].updated_at);
         }
       }
     } catch { /* silenciar */ }
@@ -223,6 +300,17 @@ export default function AdminInteligencia() {
       map.set(row.sku, arr);
     }
     setMlItemsMap(map);
+
+    // Detectar items ML sin vincular
+    const allSkus = new Set((data || []).map((r: { sku: string }) => r.sku));
+    const { data: mlItems } = await sb.from("ml_items_map").select("item_id, sku, title, available_quantity");
+    const sinVincular: { item_id: string; title: string; available_quantity: number }[] = [];
+    for (const item of (mlItems || [])) {
+      if (!item.sku || item.sku.trim() === "") {
+        sinVincular.push({ item_id: item.item_id, title: item.title || "", available_quantity: item.available_quantity || 0 });
+      }
+    }
+    setMlSinVincular(sinVincular);
   }, []);
 
   const cargar = useCallback(async () => {
@@ -277,11 +365,66 @@ export default function AdminInteligencia() {
     setSyncingML(false);
   }, [cargar]);
 
+  // Guardar vel_objetivo inline
+  const guardarVelObjetivo = useCallback(async (skuOrigen: string, velObj: number) => {
+    try {
+      await fetch(`/api/intelligence/sku/${encodeURIComponent(skuOrigen)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ vel_objetivo: velObj }),
+      });
+      // Actualizar localmente
+      setRows(prev => prev.map(r => {
+        if (r.sku_origen !== skuOrigen) return r;
+        const gap = velObj > 0 ? Math.round(((r.vel_ponderada - velObj) / velObj) * 100 * 100) / 100 : null;
+        return { ...r, vel_objetivo: velObj, gap_vel_pct: gap };
+      }));
+      setVentaRows(prev => prev.map(r => {
+        if (r.sku_origen !== skuOrigen) return r;
+        const gap = velObj > 0 ? Math.round(((r.vel_ponderada - velObj) / velObj) * 100 * 100) / 100 : null;
+        return { ...r, vel_objetivo: velObj, gap_vel_pct: gap };
+      }));
+    } catch { /* silenciar */ }
+  }, []);
+
+  // Guardar masivo
+  const guardarMasivo = useCallback(async () => {
+    setMasivoSaving(true);
+    const mult = parseFloat(masivoMultiplier) || 1;
+    let targets: { sku_origen: string; vel_objetivo: number }[] = [];
+
+    if (masivoMode === "abc") {
+      targets = rows
+        .filter(r => r.abc === masivoAbcFilter && r.vel_ponderada > 0)
+        .map(r => ({ sku_origen: r.sku_origen, vel_objetivo: Math.round(r.vel_ponderada * mult * 10) / 10 }));
+    } else if (masivoMode === "categoria") {
+      targets = rows
+        .filter(r => r.categoria === masivoCatFilter && r.vel_ponderada > 0)
+        .map(r => ({ sku_origen: r.sku_origen, vel_objetivo: Math.round(r.vel_ponderada * mult * 10) / 10 }));
+    }
+
+    if (targets.length > 0) {
+      try {
+        await fetch("/api/intelligence/sku/_bulk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ updates: targets }),
+        });
+        await cargar();
+      } catch { /* silenciar */ }
+    }
+    setMasivoSaving(false);
+    setModalMasivo(false);
+  }, [masivoMode, masivoAbcFilter, masivoCatFilter, masivoMultiplier, rows, cargar]);
+
   // ── Datos activos según vista ──
   const activeRows = vistaOrigen ? rows : ventaRows;
 
-  // Proveedores únicos (desde origen siempre)
+  // Proveedores únicos
   const proveedores = Array.from(new Set(rows.map((r: IntelRow) => r.proveedor).filter(Boolean))) as string[];
+
+  // Categorías únicas
+  const categorias = Array.from(new Set(rows.map((r: IntelRow) => r.categoria).filter(Boolean))) as string[];
 
   // Alertas únicas
   const alertasUnicas: string[] = [];
@@ -308,12 +451,10 @@ export default function AdminInteligencia() {
       if (skuKey.toLowerCase().includes(q)) return true;
       if ((r.nombre || "").toLowerCase().includes(q)) return true;
       if (skuOrigen.toLowerCase().includes(q)) return true;
-      // Buscar en SKUs venta asociados (vista origen)
       if (vistaOrigen) {
         const svs = (r as IntelRow).skus_venta || [];
         if (svs.some(sv => sv.toLowerCase().includes(q))) return true;
       }
-      // Buscar por código ML (item_id)
       const mlIds = mlItemsMap.get(skuOrigen) || [];
       if (mlIds.some(id => id.toLowerCase().includes(q))) return true;
       if (!vistaOrigen) {
@@ -333,14 +474,19 @@ export default function AdminInteligencia() {
       case "ingreso": return b.ingreso_30d - a.ingreso_30d;
       case "venta_perdida": return (b.venta_perdida_pesos || 0) - (a.venta_perdida_pesos || 0);
       case "gmroi": {
-        const ga = vistaOrigen ? (a as IntelRow).gmroi || 0 : 0;
-        const gb = vistaOrigen ? (b as IntelRow).gmroi || 0 : 0;
+        const ga = (a as IntelRow).gmroi || 0;
+        const gb = (b as IntelRow).gmroi || 0;
         return gb - ga;
       }
       case "dio": {
-        const da = vistaOrigen ? (a as IntelRow).dio || 0 : 0;
-        const db = vistaOrigen ? (b as IntelRow).dio || 0 : 0;
+        const da = (a as IntelRow).dio || 0;
+        const db = (b as IntelRow).dio || 0;
         return db - da;
+      }
+      case "gap": {
+        const gapA = a.gap_vel_pct ?? 999;
+        const gapB = b.gap_vel_pct ?? 999;
+        return gapA - gapB;
       }
       default: return 0;
     }
@@ -348,11 +494,8 @@ export default function AdminInteligencia() {
 
   // Exportar CSV
   const exportarCSV = () => {
-    if (vistaOrigen) {
-      exportarCSVOrigen(filtered as IntelRow[]);
-    } else {
-      exportarCSVVenta(filtered as VentaRow[]);
-    }
+    if (vistaOrigen) exportarCSVOrigen(filtered as IntelRow[]);
+    else exportarCSVVenta(filtered as VentaRow[]);
   };
 
   // KPIs (siempre desde origen)
@@ -360,121 +503,144 @@ export default function AdminInteligencia() {
   const totalVentas = ventaRows.length;
   const agotadosFull = rows.filter((r: IntelRow) => r.stock_full <= 0 && r.vel_full > 0).length;
   const urgentes = rows.filter((r: IntelRow) => r.accion === "URGENTE" || r.accion === "PEDIR").length;
-  const totalAlertas = rows.reduce((a: number, r: IntelRow) => a + r.alertas_count, 0);
   const ventaPerdida = rows.reduce((a: number, r: IntelRow) => a + (r.venta_perdida_pesos || 0), 0);
-  const conEvento = rows.filter((r: IntelRow) => r.evento_activo).length;
-  const enTransito = rows.filter((r: IntelRow) => r.stock_en_transito > 0).length;
-  const liquidacion = rows.filter((r: IntelRow) => r.liquidacion_accion).length;
-  const estrellasQuiebre = rows.filter((r: IntelRow) => r.dias_en_quiebre >= 14 && r.vel_pre_quiebre > 2 && (r.abc === "A" || r.abc_pre_quiebre === "A"));
-  const abcA = rows.filter((r: IntelRow) => r.abc === "A").length;
+  const gmroiProm = rows.length > 0 ? rows.reduce((a: number, r: IntelRow) => a + (r.gmroi || 0), 0) / rows.length : 0;
+
+  // KPIs nuevos: % A en meta, % A con stock
+  const skusA = rows.filter((r: IntelRow) => r.abc === "A");
+  const skusAConObj = skusA.filter(r => r.vel_objetivo > 0);
+  const skusAEnMeta = skusAConObj.filter(r => r.vel_ponderada >= r.vel_objetivo);
+  const pctAEnMeta = skusAConObj.length > 0 ? Math.round((skusAEnMeta.length / skusAConObj.length) * 100) : null;
+  const skusAConStock = skusA.filter(r => r.stock_full > 0);
+  const pctAConStock = skusA.length > 0 ? Math.round((skusAConStock.length / skusA.length) * 100) : null;
+
+  const abcA = skusA.length;
   const abcB = rows.filter((r: IntelRow) => r.abc === "B").length;
   const abcC = rows.filter((r: IntelRow) => r.abc === "C").length;
+
+  // Evento activo
+  const eventoActivo = rows.find((r: IntelRow) => r.evento_activo);
+
+  // Estrellas en quiebre
+  const estrellasQuiebre = rows.filter((r: IntelRow) => r.dias_en_quiebre >= 14 && r.vel_pre_quiebre > 2 && (r.abc === "A" || r.abc_pre_quiebre === "A"));
 
   if (loading) return <div style={{ padding: 24, color: "var(--txt3)" }}>Cargando inteligencia...</div>;
 
   return (
     <div style={{ padding: "0 4px" }}>
-      {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Inteligencia de Inventario</h2>
-          {lastUpdate && <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 2 }}>Ultima actualizacion: {new Date(lastUpdate).toLocaleString("es-CL")}</div>}
+      {/* ═══ 1. HEADER + KPIs compactos ═══ */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Inteligencia</h2>
+          {lastUpdate && <span style={{ fontSize: 10, color: "var(--txt3)" }}>{new Date(lastUpdate).toLocaleString("es-CL")}</span>}
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <div style={{ display: "flex", borderRadius: 8, overflow: "hidden", border: "1px solid var(--bg4)" }}>
-            <button onClick={() => setVistaOrigen(false)} style={{ padding: "6px 14px", fontSize: 11, fontWeight: 600, background: !vistaOrigen ? "var(--cyan)" : "var(--bg3)", color: !vistaOrigen ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--bg4)" }}>
+            <button onClick={() => setVistaOrigen(false)} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: !vistaOrigen ? "var(--cyan)" : "var(--bg3)", color: !vistaOrigen ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
               SKU Venta
             </button>
-            <button onClick={() => setVistaOrigen(true)} style={{ padding: "6px 14px", fontSize: 11, fontWeight: 600, background: vistaOrigen ? "var(--cyan)" : "var(--bg3)", color: vistaOrigen ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+            <button onClick={() => setVistaOrigen(true)} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaOrigen ? "var(--cyan)" : "var(--bg3)", color: vistaOrigen ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
               SKU Origen
             </button>
           </div>
-          <button
-            onClick={syncStockML}
-            disabled={syncingML}
-            style={{ padding: "8px 16px", borderRadius: 8, background: "var(--blueBg)", color: "var(--blue)", fontWeight: 600, fontSize: 12, border: "1px solid var(--blueBd)" }}
-          >
-            {syncingML ? "Sincronizando ML..." : "Sync Stock ML"}
+          <button onClick={() => setModalMasivo(true)} style={{ padding: "6px 12px", borderRadius: 6, background: "var(--amberBg)", color: "var(--amber)", fontWeight: 600, fontSize: 11, border: "1px solid var(--amberBd)", cursor: "pointer" }}>
+            Definir objetivos
           </button>
-          <button
-            onClick={recalcular}
-            disabled={recalculando}
-            style={{ padding: "8px 16px", borderRadius: 8, background: "var(--cyanBg)", color: "var(--cyan)", fontWeight: 600, fontSize: 12, border: "1px solid var(--cyanBd)" }}
-          >
-            {recalculando ? "Recalculando..." : "Recalcular Todo"}
+          <button onClick={syncStockML} disabled={syncingML} style={{ padding: "6px 12px", borderRadius: 6, background: "var(--blueBg)", color: "var(--blue)", fontWeight: 600, fontSize: 11, border: "1px solid var(--blueBd)", cursor: "pointer" }}>
+            {syncingML ? "Sync..." : "Sync ML"}
           </button>
-          <button
-            onClick={exportarCSV}
-            disabled={filtered.length === 0}
-            style={{ padding: "8px 16px", borderRadius: 8, background: "var(--greenBg)", color: "var(--green)", fontWeight: 600, fontSize: 12, border: "1px solid var(--greenBd)" }}
-          >
-            Exportar CSV
+          <button onClick={recalcular} disabled={recalculando} style={{ padding: "6px 12px", borderRadius: 6, background: "var(--cyanBg)", color: "var(--cyan)", fontWeight: 600, fontSize: 11, border: "1px solid var(--cyanBd)", cursor: "pointer" }}>
+            {recalculando ? "Recalculando..." : "Recalcular"}
           </button>
-          <button
-            onClick={cargar}
-            style={{ padding: "8px 16px", borderRadius: 8, background: "var(--bg3)", color: "var(--txt2)", fontWeight: 600, fontSize: 12, border: "1px solid var(--bg4)" }}
-          >
+          <button onClick={exportarCSV} disabled={filtered.length === 0} style={{ padding: "6px 12px", borderRadius: 6, background: "var(--greenBg)", color: "var(--green)", fontWeight: 600, fontSize: 11, border: "1px solid var(--greenBd)", cursor: "pointer" }}>
+            CSV
+          </button>
+          <button onClick={cargar} style={{ padding: "6px 12px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt2)", fontWeight: 600, fontSize: 11, border: "1px solid var(--bg4)", cursor: "pointer" }}>
             Refrescar
           </button>
         </div>
       </div>
-      {syncMLResult && <div style={{ padding: "8px 12px", borderRadius: 8, background: "var(--blueBg)", color: "var(--blue)", fontSize: 12, marginBottom: 8, border: "1px solid var(--blueBd)" }}>{syncMLResult}</div>}
-      {recalcResult && <div style={{ padding: "8px 12px", borderRadius: 8, background: "var(--greenBg)", color: "var(--green)", fontSize: 12, marginBottom: 12, border: "1px solid var(--greenBd)" }}>{recalcResult}</div>}
 
-      {/* KPIs */}
-      <div className="kpi-grid" style={{ marginBottom: 16 }}>
-        <div className="kpi"><div className="kpi-value" style={{ color: "var(--cyan)" }}>{vistaOrigen ? totalSkus : totalVentas}</div><div className="kpi-label">{vistaOrigen ? "SKUs Origen" : "SKUs Venta"}</div></div>
-        <div className="kpi"><div className="kpi-value" style={{ color: "var(--red)" }}>{agotadosFull}</div><div className="kpi-label">Agotados Full</div></div>
-        <div className="kpi"><div className="kpi-value" style={{ color: "var(--amber)" }}>{urgentes}</div><div className="kpi-label">Urgentes/Pedir</div></div>
-        <div className="kpi"><div className="kpi-value" style={{ color: "var(--red)" }}>{totalAlertas}</div><div className="kpi-label">Alertas Totales</div></div>
-        <div className="kpi"><div className="kpi-value mono" style={{ color: "var(--red)", fontSize: 14 }}>{fmtMoney(ventaPerdida)}</div><div className="kpi-label">Venta Perdida</div></div>
-        <div className="kpi"><div className="kpi-value" style={{ color: "var(--blue)" }}>{enTransito}</div><div className="kpi-label">Con Stock en Transito</div></div>
-        <div className="kpi"><div className="kpi-value" style={{ color: "var(--amber)" }}>{conEvento}</div><div className="kpi-label">Evento Activo</div></div>
-        <div className="kpi"><div className="kpi-value" style={{ color: "var(--txt3)" }}>{liquidacion}</div><div className="kpi-label">Liquidacion</div></div>
+      {syncMLResult && <div style={{ padding: "6px 10px", borderRadius: 6, background: "var(--blueBg)", color: "var(--blue)", fontSize: 11, marginBottom: 6, border: "1px solid var(--blueBd)" }}>{syncMLResult}</div>}
+      {recalcResult && <div style={{ padding: "6px 10px", borderRadius: 6, background: "var(--greenBg)", color: "var(--green)", fontSize: 11, marginBottom: 6, border: "1px solid var(--greenBd)" }}>{recalcResult}</div>}
+
+      {/* KPIs en una línea compacta */}
+      <div style={{ display: "flex", gap: 4, marginBottom: 8, flexWrap: "wrap", fontSize: 11 }}>
+        <KpiBadge label="SKUs" value={String(vistaOrigen ? totalSkus : totalVentas)} color="var(--cyan)" />
+        <KpiBadge label="Agotados" value={String(agotadosFull)} color="var(--red)" />
+        <KpiBadge label="Urgentes" value={String(urgentes)} color="var(--amber)" />
+        <KpiBadge label="V.Perdida" value={fmtK(ventaPerdida)} color="var(--red)" />
+        <KpiBadge label="GMROI" value={fmtN(gmroiProm, 1)} color="var(--txt)" />
+        <KpiBadge
+          label="A en meta"
+          value={pctAEnMeta !== null ? pctAEnMeta + "%" : "—"}
+          color={pctAEnMeta !== null && pctAEnMeta >= 80 ? "var(--green)" : pctAEnMeta !== null ? "var(--amber)" : "var(--txt3)"}
+          title={pctAEnMeta === null ? "Define vel. objetivo para activar" : `${skusAEnMeta.length}/${skusAConObj.length} SKUs A en meta`}
+        />
+        <KpiBadge
+          label="A c/stock"
+          value={pctAConStock !== null ? pctAConStock + "%" : "—"}
+          color={pctAConStock !== null && pctAConStock >= 97 ? "var(--green)" : pctAConStock !== null ? "var(--amber)" : "var(--txt3)"}
+          title={`${skusAConStock.length}/${skusA.length} SKUs A con stock Full > 0`}
+        />
       </div>
 
-      {/* Estrellas en Quiebre Prolongado */}
+      {/* ═══ 2. BANNER EVENTO ACTIVO ═══ */}
+      {eventoActivo && (
+        <div style={{ padding: "6px 12px", borderRadius: 6, background: "var(--amberBg)", color: "var(--amber)", fontSize: 11, marginBottom: 8, border: "1px solid var(--amberBd)", fontWeight: 600 }}>
+          Preparacion {eventoActivo.evento_activo} (x{eventoActivo.multiplicador_evento}) — Targets ajustados
+        </div>
+      )}
+
+      {/* ═══ 3. BARRA ABC ═══ */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
+        <span style={{ fontSize: 10, fontWeight: 600, color: "var(--txt3)" }}>ABC:</span>
+        <div style={{ flex: 1, display: "flex", height: 18, borderRadius: 5, overflow: "hidden" }}>
+          {abcA > 0 && <div style={{ width: `${(abcA / totalSkus) * 100}%`, background: "var(--green)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700, color: "#000" }}>A ({abcA})</div>}
+          {abcB > 0 && <div style={{ width: `${(abcB / totalSkus) * 100}%`, background: "var(--amber)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700, color: "#000" }}>B ({abcB})</div>}
+          {abcC > 0 && <div style={{ width: `${(abcC / totalSkus) * 100}%`, background: "var(--bg4)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700, color: "var(--txt3)" }}>C ({abcC})</div>}
+        </div>
+      </div>
+
+      {/* Estrellas en quiebre prolongado */}
       {estrellasQuiebre.length > 0 && (
-        <div className="card" style={{ marginBottom: 16, padding: 14, border: "1px solid var(--redBd)", background: "var(--redBg)" }}>
-          <div style={{ fontWeight: 700, fontSize: 13, color: "var(--red)", marginBottom: 8 }}>Productos Estrella en Quiebre ({estrellasQuiebre.length})</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <div style={{ marginBottom: 8, padding: "8px 10px", borderRadius: 6, border: "1px solid var(--redBd)", background: "var(--redBg)" }}>
+          <div style={{ fontWeight: 700, fontSize: 11, color: "var(--red)", marginBottom: 4 }}>Estrellas en Quiebre ({estrellasQuiebre.length})</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             {estrellasQuiebre.map((r: IntelRow) => (
-              <div key={r.sku_origen} style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", padding: "6px 8px", borderRadius: 6, background: "var(--bg2)" }}>
-                <span className="mono" style={{ fontWeight: 700, fontSize: 12, color: "var(--txt)" }}>{r.sku_origen}</span>
-                <span style={{ fontSize: 11, color: "var(--txt2)", flex: 1, minWidth: 120 }}>{r.nombre || ""}</span>
-                <span style={{ fontSize: 10, color: "var(--amber)" }}>ABC: {r.abc_pre_quiebre || r.abc} (pre-quiebre)</span>
-                <span style={{ fontSize: 10, color: "var(--txt2)" }}>Vel pre-quiebre: <span className="mono" style={{ color: "var(--cyan)" }}>{fmtN(r.vel_pre_quiebre)}/sem</span></span>
-                <span style={{ fontSize: 10, color: "var(--red)" }}>Quiebre: <span className="mono">{r.dias_en_quiebre}d</span></span>
-                {r.es_quiebre_proveedor && <span style={{ padding: "1px 6px", borderRadius: 3, fontSize: 9, background: "var(--amberBg)", color: "var(--amber)", border: "1px solid var(--amberBd)" }}>Sin stock proveedor</span>}
-                <span style={{ fontSize: 10, color: "var(--red)" }}>V.perdida: <span className="mono">{fmtMoney(r.venta_perdida_pesos)}</span></span>
-                {r.pedir_proveedor > 0 && <span style={{ fontSize: 10, color: "var(--green)" }}>Pedir: <span className="mono">{fmtInt(r.pedir_proveedor)} uds</span></span>}
+              <div key={r.sku_origen} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", fontSize: 10 }}>
+                <span className="mono" style={{ fontWeight: 700, color: "var(--txt)" }}>{r.sku_origen}</span>
+                <span style={{ color: "var(--txt2)", flex: 1, minWidth: 80 }}>{r.nombre || ""}</span>
+                <span style={{ color: "var(--cyan)" }}>Vel pre: {fmtN(r.vel_pre_quiebre)}/sem</span>
+                <span style={{ color: "var(--red)" }}>{r.dias_en_quiebre}d</span>
+                <span style={{ color: "var(--red)" }}>{fmtMoney(r.venta_perdida_pesos)}</span>
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {/* ABC Distribution Bar */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center" }}>
-        <span style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)" }}>ABC:</span>
-        <div style={{ flex: 1, display: "flex", height: 20, borderRadius: 6, overflow: "hidden" }}>
-          {abcA > 0 && <div style={{ width: `${(abcA / totalSkus) * 100}%`, background: "var(--green)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, color: "#000" }}>A ({abcA})</div>}
-          {abcB > 0 && <div style={{ width: `${(abcB / totalSkus) * 100}%`, background: "var(--amber)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, color: "#000" }}>B ({abcB})</div>}
-          {abcC > 0 && <div style={{ width: `${(abcC / totalSkus) * 100}%`, background: "var(--bg4)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, color: "var(--txt3)" }}>C ({abcC})</div>}
+      {/* ML sin vincular banner */}
+      {mlSinVincular.length > 0 && (
+        <div style={{ padding: "5px 10px", borderRadius: 6, background: "var(--amberBg)", color: "var(--amber)", fontSize: 10, marginBottom: 8, border: "1px solid var(--amberBd)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span>{mlSinVincular.length} items ML sin vincular ({mlSinVincular.reduce((a, i) => a + i.available_quantity, 0)} uds invisibles)</span>
+          <button onClick={() => setMlSinVincularOpen(!mlSinVincularOpen)} style={{ background: "none", border: "none", color: "var(--amber)", fontWeight: 600, fontSize: 10, cursor: "pointer", textDecoration: "underline" }}>
+            {mlSinVincularOpen ? "Ocultar" : "Ver"}
+          </button>
         </div>
-      </div>
+      )}
 
-      {/* Filtros */}
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+      {/* ═══ 4. FILTROS ═══ */}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
         <input
           type="text"
-          placeholder="Buscar SKU, nombre o código ML..."
+          placeholder="Buscar SKU, nombre o ML..."
           value={busqueda}
           onChange={e => setBusqueda(e.target.value)}
           className="form-input"
-          style={{ flex: "1 1 180px", minWidth: 120, fontSize: 12, padding: "6px 10px" }}
+          style={{ flex: "1 1 160px", minWidth: 100, fontSize: 11, padding: "5px 8px" }}
         />
-        <select value={filtroAccion} onChange={e => setFiltroAccion(e.target.value)} className="form-input" style={{ fontSize: 12, padding: "6px 8px" }}>
+        <select value={filtroAccion} onChange={e => setFiltroAccion(e.target.value)} className="form-input" style={{ fontSize: 11, padding: "5px 6px" }}>
           <option value="todos">Accion: Todas</option>
           <option value="URGENTE">URGENTE</option>
           <option value="AGOTADO_PEDIR">AGOTADO PEDIR</option>
@@ -486,46 +652,47 @@ export default function AdminInteligencia() {
           <option value="EXCESO">EXCESO</option>
           <option value="DEAD_STOCK">DEAD STOCK</option>
         </select>
-        <select value={filtroABC} onChange={e => setFiltroABC(e.target.value)} className="form-input" style={{ fontSize: 12, padding: "6px 8px" }}>
+        <select value={filtroABC} onChange={e => setFiltroABC(e.target.value)} className="form-input" style={{ fontSize: 11, padding: "5px 6px" }}>
           <option value="todos">ABC: Todos</option>
           <option value="A">A</option>
           <option value="B">B</option>
           <option value="C">C</option>
         </select>
-        <select value={filtroCuadrante} onChange={e => setFiltroCuadrante(e.target.value)} className="form-input" style={{ fontSize: 12, padding: "6px 8px" }}>
-          <option value="todos">Cuadrante: Todos</option>
+        <select value={filtroCuadrante} onChange={e => setFiltroCuadrante(e.target.value)} className="form-input" style={{ fontSize: 11, padding: "5px 6px" }}>
+          <option value="todos">Cuad: Todos</option>
           <option value="ESTRELLA">Estrella</option>
           <option value="VOLUMEN">Volumen</option>
           <option value="CASHCOW">Cash Cow</option>
           <option value="REVISAR">Revisar</option>
         </select>
-        <select value={filtroProveedor} onChange={e => setFiltroProveedor(e.target.value)} className="form-input" style={{ fontSize: 12, padding: "6px 8px" }}>
-          <option value="todos">Proveedor: Todos</option>
+        <select value={filtroProveedor} onChange={e => setFiltroProveedor(e.target.value)} className="form-input" style={{ fontSize: 11, padding: "5px 6px" }}>
+          <option value="todos">Prov: Todos</option>
           {proveedores.map((p: string) => <option key={p} value={p}>{p}</option>)}
         </select>
-        <select value={filtroAlerta} onChange={e => setFiltroAlerta(e.target.value)} className="form-input" style={{ fontSize: 12, padding: "6px 8px" }}>
+        <select value={filtroAlerta} onChange={e => setFiltroAlerta(e.target.value)} className="form-input" style={{ fontSize: 11, padding: "5px 6px" }}>
           <option value="todos">Alerta: Todas</option>
           {alertasUnicas.map((a: string) => <option key={a} value={a}>{a}</option>)}
         </select>
-        <select value={ordenarPor} onChange={e => setOrdenarPor(e.target.value)} className="form-input" style={{ fontSize: 12, padding: "6px 8px" }}>
-          <option value="prioridad">Ordenar: Prioridad</option>
-          <option value="vel">Ordenar: Velocidad</option>
-          <option value="cob">Ordenar: Cobertura (menor)</option>
-          <option value="ingreso">Ordenar: Ingreso 30d</option>
-          <option value="venta_perdida">Ordenar: Venta Perdida</option>
-          {vistaOrigen && <option value="gmroi">Ordenar: GMROI</option>}
-          {vistaOrigen && <option value="dio">Ordenar: DIO</option>}
+        <select value={ordenarPor} onChange={e => setOrdenarPor(e.target.value)} className="form-input" style={{ fontSize: 11, padding: "5px 6px" }}>
+          <option value="prioridad">Prioridad</option>
+          <option value="vel">Velocidad</option>
+          <option value="cob">Cobertura</option>
+          <option value="ingreso">Ingreso 30d</option>
+          <option value="venta_perdida">V.Perdida</option>
+          <option value="gmroi">GMROI</option>
+          <option value="dio">DIO</option>
+          <option value="gap">Gap Vel.Obj</option>
         </select>
       </div>
 
-      <div style={{ fontSize: 11, color: "var(--txt3)", marginBottom: 8 }}>
+      <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 6 }}>
         {filtered.length} de {vistaOrigen ? totalSkus : totalVentas} {vistaOrigen ? "SKUs Origen" : "SKUs Venta"}
       </div>
 
-      {/* Tabla SKU Venta */}
+      {/* ═══ 5. TABLA SKU VENTA ═══ */}
       {!vistaOrigen && (
         <div style={{ overflowX: "auto" }}>
-          <table className="tbl" style={{ minWidth: 1200 }}>
+          <table className="tbl" style={{ minWidth: 1500 }}>
             <thead>
               <tr>
                 <th>SKU Venta</th>
@@ -533,15 +700,20 @@ export default function AdminInteligencia() {
                 <th>Nombre</th>
                 <th>Accion</th>
                 <th>ABC</th>
-                <th>Cuad.</th>
                 <th style={{ textAlign: "right" }}>Vel/sem</th>
+                <th style={{ textAlign: "right" }}>Vel Obj</th>
+                <th style={{ textAlign: "right" }}>Gap</th>
                 <th style={{ textAlign: "right" }}>St.Full</th>
                 <th style={{ textAlign: "right" }}>St.Bod</th>
                 <th style={{ textAlign: "right" }}>Cob Full</th>
+                <th style={{ textAlign: "right" }}>Target</th>
+                <th style={{ textAlign: "right" }}>Mandar</th>
+                <th style={{ textAlign: "right" }}>Pedir</th>
                 <th style={{ textAlign: "right" }}>Margen F</th>
                 <th style={{ textAlign: "right" }}>Margen Fx</th>
-                <th style={{ textAlign: "right" }}>Ingreso 30d</th>
-                <th style={{ textAlign: "right" }}>Canal</th>
+                <th style={{ textAlign: "right" }}>GMROI</th>
+                <th style={{ textAlign: "right" }}>DIO</th>
+                <th>Cuad.</th>
                 <th>Alertas</th>
               </tr>
             </thead>
@@ -550,52 +722,58 @@ export default function AdminInteligencia() {
                 <tr key={r.sku_venta + ":" + r.sku_origen}>
                   <td className="mono" style={{ fontSize: 11, whiteSpace: "nowrap" }}>
                     {r.es_pack && <span title="Pack/Combo" style={{ marginRight: 3, color: "var(--amber)" }}>P</span>}
-                    {r.es_catch_up && <span title="Catch-up post quiebre" style={{ marginRight: 3, color: "var(--amber)" }}>!</span>}
+                    {r.es_catch_up && <span title="Catch-up" style={{ marginRight: 3, color: "var(--amber)" }}>!</span>}
                     {r.sku_venta}
                     {r.unidades_por_pack > 1 && <span style={{ fontSize: 9, color: "var(--txt3)", marginLeft: 3 }}>x{r.unidades_por_pack}</span>}
                   </td>
                   <td className="mono" style={{ fontSize: 10, color: r.sku_origen !== r.sku_venta ? "var(--txt2)" : "var(--txt3)", whiteSpace: "nowrap" }}>{r.sku_origen || r.sku_venta}</td>
-                  <td style={{ fontSize: 11, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.nombre || ""}>{r.nombre || "—"}</td>
+                  <td style={{ fontSize: 11, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.nombre || ""}>{r.nombre || "—"}</td>
                   <td>
-                    <span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 700, background: accionColor(r.accion) + "22", color: accionColor(r.accion), border: `1px solid ${accionColor(r.accion)}44` }}>
+                    <span style={{ padding: "2px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, background: accionColor(r.accion) + "22", color: accionColor(r.accion), border: `1px solid ${accionColor(r.accion)}44` }}>
                       {r.accion}
                     </span>
                   </td>
                   <td style={{ textAlign: "center" }}>
-                    <span style={{ color: abcColor(r.abc), fontWeight: 700, fontSize: 12 }}>{r.abc}</span>
-                    <span style={{ color: "var(--txt3)", fontSize: 10 }}>{r.xyz}</span>
+                    <span style={{ color: abcColor(r.abc), fontWeight: 700, fontSize: 11 }}>{r.abc}</span>
+                    <span style={{ color: "var(--txt3)", fontSize: 9 }}>{r.xyz}</span>
                   </td>
-                  <td style={{ fontSize: 10, color: "var(--txt2)" }}>{cuadranteLabel(r.cuadrante)}</td>
                   <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtN(r.vel_ponderada)}</td>
+                  <td style={{ textAlign: "right" }}>
+                    <VelObjetivoCell skuOrigen={r.sku_origen} value={r.vel_objetivo || 0} onChange={guardarVelObjetivo} />
+                  </td>
+                  <td className="mono" style={{ textAlign: "right", fontSize: 11, color: gapColor(r.gap_vel_pct) }}>
+                    {r.gap_vel_pct != null ? (r.gap_vel_pct > 0 ? "+" : "") + fmtN(r.gap_vel_pct, 0) + "%" : "—"}
+                  </td>
                   <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.stock_full <= 0 && r.vel_full > 0 ? "var(--red)" : "var(--txt)" }}
                     title={(() => {
                       const d = r.stock_danado || 0;
                       const p = r.stock_perdido || 0;
                       const t = r.stock_transferencia_full || 0;
-                      if (d > 0 || p > 0 || t > 0) {
-                        const total = r.stock_full + d + p + t;
-                        return `${r.stock_full} disponibles${d ? ` + ${d} danados` : ""}${p ? ` + ${p} perdidos` : ""}${t ? ` + ${t} en transferencia` : ""} = ${total} totales en Full`;
-                      }
+                      if (d > 0 || p > 0 || t > 0) return `${r.stock_full} disp${d ? ` + ${d} dan` : ""}${p ? ` + ${p} perd` : ""}${t ? ` + ${t} transf` : ""}`;
                       return undefined;
                     })()}
                   >
                     {fmtInt(r.stock_full)}
                     {(r.stock_danado > 0 || r.stock_perdido > 0) && <span style={{ color: "var(--amber)", fontSize: 9, marginLeft: 2 }}>!</span>}
                   </td>
-                  <td className="mono" style={{ textAlign: "right", fontSize: 11, color: "var(--txt3)" }} title={r.stock_bodega_compartido ? `Stock bodega compartido entre ${r.stock_bodega_formatos} formatos del mismo SKU Origen` : undefined}>
+                  <td className="mono" style={{ textAlign: "right", fontSize: 11, color: "var(--txt3)" }} title={r.stock_bodega_compartido ? `Compartido (${r.stock_bodega_formatos} formatos)` : undefined}>
                     {fmtInt(r.stock_bodega)}{r.stock_bodega_compartido && <span style={{ fontSize: 9, color: "var(--amber)", marginLeft: 2 }}>*</span>}
                   </td>
                   <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.cob_full < 14 ? "var(--red)" : r.cob_full < 30 ? "var(--amber)" : "var(--green)" }}>{r.cob_full >= 999 ? "—" : fmtN(r.cob_full, 0) + "d"}</td>
+                  <td className="mono" style={{ textAlign: "right", fontSize: 11, color: "var(--txt3)" }}>{fmtN(r.target_dias_full, 0)}d</td>
+                  <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.mandar_full > 0 ? "var(--blue)" : "var(--txt3)" }}>{r.mandar_full > 0 ? fmtInt(r.mandar_full) : "—"}</td>
+                  <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.pedir_proveedor > 0 ? "var(--amber)" : "var(--txt3)" }}>{r.pedir_proveedor > 0 ? fmtInt(r.pedir_proveedor) : "—"}</td>
                   <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.margen_full_30d < 0 ? "var(--red)" : "var(--green)" }}>{fmtMoney(r.margen_full_30d)}</td>
                   <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.margen_flex_30d < 0 ? "var(--red)" : r.margen_flex_30d > 0 ? "var(--green)" : "var(--txt3)" }}>{fmtMoney(r.margen_flex_30d)}</td>
-                  <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtMoney(r.ingreso_30d)}</td>
-                  <td style={{ fontSize: 10, textAlign: "center", color: r.canal_mas_rentable === "Full" ? "var(--blue)" : "var(--amber)" }}>{r.canal_mas_rentable}</td>
+                  <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtN(r.gmroi || 0, 1)}</td>
+                  <td className="mono" style={{ textAlign: "right", fontSize: 11, color: (r.dio || 0) > 90 ? "var(--red)" : (r.dio || 0) > 60 ? "var(--amber)" : "var(--txt)" }}>{fmtN(r.dio || 0, 0)}</td>
+                  <td style={{ fontSize: 9, color: "var(--txt2)" }}>{cuadranteLabel(r.cuadrante)}</td>
                   <td>
-                    <div style={{ display: "flex", gap: 2, flexWrap: "wrap", maxWidth: 160 }}>
+                    <div style={{ display: "flex", gap: 2, flexWrap: "wrap", maxWidth: 140 }}>
                       {(r.alertas || []).slice(0, 3).map((a: string, i: number) => (
-                        <span key={i} style={{ padding: "1px 5px", borderRadius: 3, fontSize: 9, background: "var(--redBg)", color: "var(--red)", border: "1px solid var(--redBd)", whiteSpace: "nowrap" }}>{a}</span>
+                        <span key={i} style={{ padding: "1px 4px", borderRadius: 3, fontSize: 8, background: "var(--redBg)", color: "var(--red)", border: "1px solid var(--redBd)", whiteSpace: "nowrap" }}>{a}</span>
                       ))}
-                      {(r.alertas || []).length > 3 && <span style={{ fontSize: 9, color: "var(--txt3)" }}>+{r.alertas.length - 3}</span>}
+                      {(r.alertas || []).length > 3 && <span style={{ fontSize: 8, color: "var(--txt3)" }}>+{r.alertas.length - 3}</span>}
                     </div>
                   </td>
                 </tr>
@@ -603,36 +781,37 @@ export default function AdminInteligencia() {
             </tbody>
           </table>
           {(filtered as VentaRow[]).some(r => r.stock_bodega_compartido) && (
-            <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 6, paddingLeft: 4 }}>
-              <span style={{ color: "var(--amber)" }}>*</span> Stock bodega compartido entre varios formatos del mismo SKU Origen (el total es el mismo, no se suma entre filas)
+            <div style={{ fontSize: 9, color: "var(--txt3)", marginTop: 4, paddingLeft: 4 }}>
+              <span style={{ color: "var(--amber)" }}>*</span> Stock bodega compartido entre formatos
             </div>
           )}
         </div>
       )}
 
-      {/* Tabla SKU Origen */}
+      {/* ═══ 5b. TABLA SKU ORIGEN ═══ */}
       {vistaOrigen && (
         <div style={{ overflowX: "auto" }}>
-          <table className="tbl" style={{ minWidth: 1200 }}>
+          <table className="tbl" style={{ minWidth: 1500 }}>
             <thead>
               <tr>
                 <th>SKU</th>
                 <th>Nombre</th>
                 <th>Accion</th>
                 <th>ABC</th>
-                <th>Cuad.</th>
                 <th style={{ textAlign: "right" }}>Vel/sem</th>
+                <th style={{ textAlign: "right" }}>Vel Obj</th>
+                <th style={{ textAlign: "right" }}>Gap</th>
                 <th style={{ textAlign: "right" }}>St.Full</th>
                 <th style={{ textAlign: "right" }}>St.Bod</th>
-                <th style={{ textAlign: "right" }}>Transito</th>
                 <th style={{ textAlign: "right" }}>Cob Full</th>
                 <th style={{ textAlign: "right" }}>Target</th>
                 <th style={{ textAlign: "right" }}>Mandar</th>
                 <th style={{ textAlign: "right" }}>Pedir</th>
                 <th style={{ textAlign: "right" }}>Margen F</th>
+                <th style={{ textAlign: "right" }}>Margen Fx</th>
                 <th style={{ textAlign: "right" }}>GMROI</th>
                 <th style={{ textAlign: "right" }}>DIO</th>
-                <th style={{ textAlign: "right" }}>V.Perdida</th>
+                <th>Cuad.</th>
                 <th>Alertas</th>
               </tr>
             </thead>
@@ -643,58 +822,48 @@ export default function AdminInteligencia() {
                 <tr key={r.sku_origen} style={esEstrellaQuiebre ? { background: "var(--redBg)" } : undefined}>
                   <td className="mono" style={{ fontSize: 11, whiteSpace: "nowrap" }}>
                     {esEstrellaQuiebre && <span title={`Quiebre ${r.dias_en_quiebre}d`} style={{ marginRight: 3 }}>*</span>}
-                    {r.es_catch_up && <span title="Catch-up post quiebre" style={{ marginRight: 3, color: "var(--amber)" }}>!</span>}
+                    {r.es_catch_up && <span title="Catch-up" style={{ marginRight: 3, color: "var(--amber)" }}>!</span>}
                     {r.sku_origen}
                   </td>
-                  <td style={{ fontSize: 11, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.nombre || ""}>{r.nombre || "—"}</td>
+                  <td style={{ fontSize: 11, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.nombre || ""}>{r.nombre || "—"}</td>
                   <td>
-                    <span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 700, background: accionColor(r.accion) + "22", color: accionColor(r.accion), border: `1px solid ${accionColor(r.accion)}44` }}>
+                    <span style={{ padding: "2px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, background: accionColor(r.accion) + "22", color: accionColor(r.accion), border: `1px solid ${accionColor(r.accion)}44` }}>
                       {r.accion}
                     </span>
-                    {r.dias_en_quiebre > 0 && <div style={{ fontSize: 9, color: "var(--txt3)", marginTop: 1 }}>{r.dias_en_quiebre}d quiebre</div>}
+                    {r.dias_en_quiebre > 0 && <div style={{ fontSize: 8, color: "var(--txt3)", marginTop: 1 }}>{r.dias_en_quiebre}d quiebre</div>}
                   </td>
                   <td style={{ textAlign: "center" }}>
-                    <span style={{ color: abcColor(r.abc), fontWeight: 700, fontSize: 12 }}>{r.abc}</span>
-                    <span style={{ color: "var(--txt3)", fontSize: 10 }}>{r.xyz}</span>
-                    {r.abc_pre_quiebre && r.abc_pre_quiebre !== r.abc && <div style={{ fontSize: 9, color: "var(--amber)" }}>pre:{r.abc_pre_quiebre}</div>}
+                    <span style={{ color: abcColor(r.abc), fontWeight: 700, fontSize: 11 }}>{r.abc}</span>
+                    <span style={{ color: "var(--txt3)", fontSize: 9 }}>{r.xyz}</span>
+                    {r.abc_pre_quiebre && r.abc_pre_quiebre !== r.abc && <div style={{ fontSize: 8, color: "var(--amber)" }}>pre:{r.abc_pre_quiebre}</div>}
                   </td>
-                  <td style={{ fontSize: 10, color: "var(--txt2)" }}>{cuadranteLabel(r.cuadrante)}</td>
                   <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>
                     {fmtN(r.vel_ponderada)}
-                    {esEstrellaQuiebre && <div style={{ fontSize: 9, color: "var(--cyan)" }}>pre:{fmtN(r.vel_pre_quiebre)}</div>}
+                    {esEstrellaQuiebre && <div style={{ fontSize: 8, color: "var(--cyan)" }}>pre:{fmtN(r.vel_pre_quiebre)}</div>}
                   </td>
-                  <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.stock_full <= 0 && r.vel_full > 0 ? "var(--red)" : "var(--txt)" }}
-                    title={(() => {
-                      const vr = r as unknown as VentaRow;
-                      const d = vr.stock_danado || 0;
-                      const p = vr.stock_perdido || 0;
-                      const t = vr.stock_transferencia_full || 0;
-                      if (d > 0 || p > 0 || t > 0) {
-                        const total = r.stock_full + d + p + t;
-                        return `${r.stock_full} disponibles${d > 0 ? ` + ${d} danados` : ""}${p > 0 ? ` + ${p} perdidos` : ""}${t > 0 ? ` + ${t} en transferencia` : ""} = ${total} totales en Full`;
-                      }
-                      return undefined;
-                    })()}
-                  >
-                    {fmtInt(r.stock_full)}
-                    {!vistaOrigen && ((r as unknown as VentaRow).stock_danado > 0 || (r as unknown as VentaRow).stock_perdido > 0) && <span style={{ color: "var(--amber)", fontSize: 9, marginLeft: 2 }}>!</span>}
+                  <td style={{ textAlign: "right" }}>
+                    <VelObjetivoCell skuOrigen={r.sku_origen} value={r.vel_objetivo || 0} onChange={guardarVelObjetivo} />
                   </td>
+                  <td className="mono" style={{ textAlign: "right", fontSize: 11, color: gapColor(r.gap_vel_pct) }}>
+                    {r.gap_vel_pct != null ? (r.gap_vel_pct > 0 ? "+" : "") + fmtN(r.gap_vel_pct, 0) + "%" : "—"}
+                  </td>
+                  <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.stock_full <= 0 && r.vel_full > 0 ? "var(--red)" : "var(--txt)" }}>{fmtInt(r.stock_full)}</td>
                   <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtInt(r.stock_bodega)}</td>
-                  <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.stock_en_transito > 0 ? "var(--blue)" : "var(--txt3)" }}>{r.stock_en_transito > 0 ? fmtInt(r.stock_en_transito) : "—"}</td>
-                  <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.cob_full < 14 ? "var(--red)" : r.cob_full < 30 ? "var(--amber)" : "var(--green)" }}>{fmtN(r.cob_full, 0)}d</td>
+                  <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.cob_full < 14 ? "var(--red)" : r.cob_full < 30 ? "var(--amber)" : "var(--green)" }}>{r.cob_full >= 999 ? "—" : fmtN(r.cob_full, 0) + "d"}</td>
                   <td className="mono" style={{ textAlign: "right", fontSize: 11, color: "var(--txt3)" }}>{fmtN(r.target_dias_full, 0)}d</td>
                   <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.mandar_full > 0 ? "var(--blue)" : "var(--txt3)" }}>{r.mandar_full > 0 ? fmtInt(r.mandar_full) : "—"}</td>
                   <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.pedir_proveedor > 0 ? "var(--amber)" : "var(--txt3)" }}>{r.pedir_proveedor > 0 ? fmtInt(r.pedir_proveedor) : "—"}</td>
                   <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.margen_full_30d < 0 ? "var(--red)" : "var(--green)" }}>{fmtMoney(r.margen_full_30d)}</td>
-                  <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtN(r.gmroi, 2)}</td>
+                  <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.margen_flex_30d < 0 ? "var(--red)" : r.margen_flex_30d > 0 ? "var(--green)" : "var(--txt3)" }}>{fmtMoney(r.margen_flex_30d)}</td>
+                  <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtN(r.gmroi, 1)}</td>
                   <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.dio > 90 ? "var(--red)" : r.dio > 60 ? "var(--amber)" : "var(--txt)" }}>{fmtN(r.dio, 0)}</td>
-                  <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.venta_perdida_pesos > 0 ? "var(--red)" : "var(--txt3)" }}>{r.venta_perdida_pesos > 0 ? fmtMoney(r.venta_perdida_pesos) : "—"}</td>
+                  <td style={{ fontSize: 9, color: "var(--txt2)" }}>{cuadranteLabel(r.cuadrante)}</td>
                   <td>
-                    <div style={{ display: "flex", gap: 2, flexWrap: "wrap", maxWidth: 160 }}>
+                    <div style={{ display: "flex", gap: 2, flexWrap: "wrap", maxWidth: 140 }}>
                       {(r.alertas || []).slice(0, 3).map((a: string, i: number) => (
-                        <span key={i} style={{ padding: "1px 5px", borderRadius: 3, fontSize: 9, background: "var(--redBg)", color: "var(--red)", border: "1px solid var(--redBd)", whiteSpace: "nowrap" }}>{a}</span>
+                        <span key={i} style={{ padding: "1px 4px", borderRadius: 3, fontSize: 8, background: "var(--redBg)", color: "var(--red)", border: "1px solid var(--redBd)", whiteSpace: "nowrap" }}>{a}</span>
                       ))}
-                      {(r.alertas || []).length > 3 && <span style={{ fontSize: 9, color: "var(--txt3)" }}>+{r.alertas.length - 3}</span>}
+                      {(r.alertas || []).length > 3 && <span style={{ fontSize: 8, color: "var(--txt3)" }}>+{r.alertas.length - 3}</span>}
                     </div>
                   </td>
                 </tr>
@@ -705,7 +874,121 @@ export default function AdminInteligencia() {
         </div>
       )}
 
-      {filtered.length === 0 && <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>No hay datos de inteligencia. Ejecuta &quot;Recalcular Todo&quot; para generar.</div>}
+      {filtered.length === 0 && <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>No hay datos. Ejecuta &quot;Recalcular&quot; para generar.</div>}
+
+      {/* ═══ 7. ML SIN VINCULAR (colapsado al pie) ═══ */}
+      {mlSinVincularOpen && mlSinVincular.length > 0 && (
+        <div style={{ marginTop: 24, padding: 12, borderRadius: 8, background: "var(--bg2)", border: "1px solid var(--amberBd)" }}>
+          <div style={{ fontWeight: 700, fontSize: 13, color: "var(--amber)", marginBottom: 8 }}>Items ML sin vincular ({mlSinVincular.length})</div>
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Item ID</th>
+                <th>Titulo</th>
+                <th style={{ textAlign: "right" }}>Stock ML</th>
+              </tr>
+            </thead>
+            <tbody>
+              {mlSinVincular.map((item) => (
+                <tr key={item.item_id}>
+                  <td className="mono" style={{ fontSize: 11 }}>{item.item_id}</td>
+                  <td style={{ fontSize: 11, maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.title}</td>
+                  <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtInt(item.available_quantity)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* ═══ MODAL MASIVO DE VEL OBJETIVO ═══ */}
+      {modalMasivo && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }} onClick={() => setModalMasivo(false)}>
+          <div style={{ background: "var(--bg2)", borderRadius: 12, padding: 24, maxWidth: 480, width: "95%", border: "1px solid var(--bg4)" }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ margin: "0 0 16px", fontSize: 16, fontWeight: 700 }}>Definir velocidades objetivo</h3>
+
+            {/* Tabs */}
+            <div style={{ display: "flex", gap: 4, marginBottom: 16 }}>
+              <button onClick={() => setMasivoMode("abc")} style={{ padding: "6px 14px", borderRadius: 6, fontSize: 12, fontWeight: 600, background: masivoMode === "abc" ? "var(--cyan)" : "var(--bg3)", color: masivoMode === "abc" ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+                Por ABC
+              </button>
+              <button onClick={() => setMasivoMode("categoria")} style={{ padding: "6px 14px", borderRadius: 6, fontSize: 12, fontWeight: 600, background: masivoMode === "categoria" ? "var(--cyan)" : "var(--bg3)", color: masivoMode === "categoria" ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+                Por Categoria
+              </button>
+            </div>
+
+            {masivoMode === "abc" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <div>
+                  <label style={{ fontSize: 12, color: "var(--txt2)", display: "block", marginBottom: 4 }}>Clasificacion ABC</label>
+                  <select value={masivoAbcFilter} onChange={e => setMasivoAbcFilter(e.target.value)} className="form-input" style={{ width: "100%", fontSize: 13 }}>
+                    <option value="A">A ({rows.filter(r => r.abc === "A" && r.vel_ponderada > 0).length} SKUs)</option>
+                    <option value="B">B ({rows.filter(r => r.abc === "B" && r.vel_ponderada > 0).length} SKUs)</option>
+                    <option value="C">C ({rows.filter(r => r.abc === "C" && r.vel_ponderada > 0).length} SKUs)</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, color: "var(--txt2)", display: "block", marginBottom: 4 }}>Multiplicador sobre vel actual</label>
+                  <input type="number" step="0.05" value={masivoMultiplier} onChange={e => setMasivoMultiplier(e.target.value)} className="form-input" style={{ width: "100%", fontSize: 13 }} />
+                  <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 4 }}>
+                    Ej: 1.1 = poner objetivo 10% arriba de la vel. actual
+                  </div>
+                </div>
+                <div style={{ fontSize: 11, color: "var(--txt2)", padding: "8px 10px", background: "var(--bg3)", borderRadius: 6 }}>
+                  Se aplicara a {rows.filter(r => r.abc === masivoAbcFilter && r.vel_ponderada > 0).length} SKUs con velocidad &gt; 0
+                </div>
+              </div>
+            )}
+
+            {masivoMode === "categoria" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <div>
+                  <label style={{ fontSize: 12, color: "var(--txt2)", display: "block", marginBottom: 4 }}>Categoria</label>
+                  <select value={masivoCatFilter} onChange={e => setMasivoCatFilter(e.target.value)} className="form-input" style={{ width: "100%", fontSize: 13 }}>
+                    <option value="">Seleccionar...</option>
+                    {categorias.map(c => <option key={c} value={c}>{c} ({rows.filter(r => r.categoria === c && r.vel_ponderada > 0).length})</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, color: "var(--txt2)", display: "block", marginBottom: 4 }}>Multiplicador sobre vel actual</label>
+                  <input type="number" step="0.05" value={masivoMultiplier} onChange={e => setMasivoMultiplier(e.target.value)} className="form-input" style={{ width: "100%", fontSize: 13 }} />
+                </div>
+                {masivoCatFilter && (
+                  <div style={{ fontSize: 11, color: "var(--txt2)", padding: "8px 10px", background: "var(--bg3)", borderRadius: 6 }}>
+                    Se aplicara a {rows.filter(r => r.categoria === masivoCatFilter && r.vel_ponderada > 0).length} SKUs
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: 8, marginTop: 20, justifyContent: "flex-end" }}>
+              <button onClick={() => setModalMasivo(false)} style={{ padding: "8px 16px", borderRadius: 8, background: "var(--bg3)", color: "var(--txt2)", fontWeight: 600, fontSize: 12, border: "1px solid var(--bg4)", cursor: "pointer" }}>
+                Cancelar
+              </button>
+              <button
+                onClick={guardarMasivo}
+                disabled={masivoSaving || (masivoMode === "categoria" && !masivoCatFilter)}
+                style={{ padding: "8px 20px", borderRadius: 8, background: "var(--cyan)", color: "#000", fontWeight: 700, fontSize: 12, border: "none", cursor: "pointer", opacity: masivoSaving ? 0.6 : 1 }}
+              >
+                {masivoSaving ? "Guardando..." : "Aplicar"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================
+// KPI Badge compacto
+// ============================================
+
+function KpiBadge({ label, value, color, title }: { label: string; value: string; color: string; title?: string }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 8px", borderRadius: 5, background: "var(--bg2)", border: "1px solid var(--bg4)" }} title={title}>
+      <span style={{ fontSize: 10, color: "var(--txt3)" }}>{label}:</span>
+      <span className="mono" style={{ fontSize: 12, fontWeight: 700, color }}>{value}</span>
     </div>
   );
 }
@@ -717,7 +1000,7 @@ export default function AdminInteligencia() {
 function exportarCSVOrigen(filtered: IntelRow[]) {
   const headers = [
     "SKU Origen","Nombre","Accion","ABC","XYZ","Cuadrante",
-    "Vel/Sem","Vel 7d","Vel 30d","Vel 60d","Vel Ponderada",
+    "Vel/Sem","Vel 7d","Vel 30d","Vel 60d","Vel Ponderada","Vel Objetivo","Gap %",
     "%Full","%Flex","Stock Full","Stock Bodega","Stock Total",
     "En Transito","Cob Full (dias)","Cob Total (dias)","Target dias",
     "Mandar Full","Pedir Prov","Margen Full 30d","Margen Flex 30d",
@@ -732,6 +1015,8 @@ function exportarCSVOrigen(filtered: IntelRow[]) {
       r.accion, r.abc, r.xyz, r.cuadrante,
       fmtN(r.vel_ponderada, 2), fmtN(r.vel_7d, 2), fmtN(r.vel_30d, 2),
       fmtN(r.vel_60d, 2), fmtN(r.vel_ponderada, 2),
+      r.vel_objetivo > 0 ? fmtN(r.vel_objetivo, 2) : "",
+      r.gap_vel_pct != null ? fmtN(r.gap_vel_pct, 1) : "",
       fmtN(r.pct_full, 1), fmtN(r.pct_flex, 1),
       fmtInt(r.stock_full), fmtInt(r.stock_bodega), fmtInt(r.stock_total),
       fmtInt(r.stock_en_transito), fmtN(r.cob_full, 1), fmtN(r.cob_total, 1),
@@ -751,11 +1036,12 @@ function exportarCSVVenta(filtered: VentaRow[]) {
   const headers = [
     "SKU Venta","SKU Origen","Nombre","Pack","Uds/Pack",
     "Accion","ABC","XYZ","Cuadrante",
-    "Vel/Sem","Vel 7d","Vel 30d","Vel Full","Vel Flex",
+    "Vel/Sem","Vel 7d","Vel 30d","Vel Full","Vel Flex","Vel Objetivo","Gap %",
     "%Full","%Flex","Stock Full","Stock Bodega","Stock Bod (compartido)",
-    "Cob Full (dias)","Margen Full 30d","Margen Flex 30d",
+    "Cob Full (dias)","Target dias","Mandar Full","Pedir Prov",
+    "Margen Full 30d","Margen Flex 30d",
     "Ingreso 30d","Canal Mas Rentable","Precio Promedio",
-    "Venta Perdida","Alertas","Proveedor",
+    "GMROI","DIO","Venta Perdida","Alertas","Proveedor",
   ];
   const csvRows = [headers.join(";")];
   for (const r of filtered) {
@@ -766,13 +1052,19 @@ function exportarCSVVenta(filtered: VentaRow[]) {
       r.accion, r.abc, r.xyz, r.cuadrante,
       fmtN(r.vel_ponderada, 2), fmtN(r.vel_7d, 2), fmtN(r.vel_30d, 2),
       fmtN(r.vel_full, 2), fmtN(r.vel_flex, 2),
+      r.vel_objetivo > 0 ? fmtN(r.vel_objetivo, 2) : "",
+      r.gap_vel_pct != null ? fmtN(r.gap_vel_pct, 1) : "",
       fmtN(r.pct_full, 1), fmtN(r.pct_flex, 1),
       fmtInt(r.stock_full), fmtInt(r.stock_bodega),
       r.stock_bodega_compartido ? "si" : "no",
       r.cob_full >= 999 ? "" : fmtN(r.cob_full, 1),
+      fmtN(r.target_dias_full, 0),
+      r.mandar_full > 0 ? fmtInt(r.mandar_full) : "",
+      r.pedir_proveedor > 0 ? fmtInt(r.pedir_proveedor) : "",
       Math.round(r.margen_full_30d || 0), Math.round(r.margen_flex_30d || 0),
       Math.round(r.ingreso_30d || 0), r.canal_mas_rentable || "",
       Math.round(r.precio_promedio || 0),
+      fmtN(r.gmroi || 0, 2), fmtN(r.dio || 0, 0),
       Math.round(r.venta_perdida_pesos || 0),
       (r.alertas || []).join(", "), r.proveedor || "",
     ].join(";"));

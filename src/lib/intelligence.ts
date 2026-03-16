@@ -51,7 +51,9 @@ export type AlertaIntel =
   | "estrella_quiebre_prolongado"
   | "proveedor_volvio_stock"
   | "catch_up_post_quiebre"
-  | "stock_danado_full";
+  | "stock_danado_full"
+  | "bajo_meta"
+  | "sobre_meta";
 
 export interface SkuIntelRow {
   sku_origen: string;
@@ -159,6 +161,9 @@ export interface SkuIntelRow {
   gmroi_potencial: number;
   es_catch_up: boolean;
 
+  vel_objetivo: number;
+  gap_vel_pct: number | null;
+
   updated_at: string;
   datos_desde: string | null;
   datos_hasta: string | null;
@@ -224,11 +229,17 @@ export interface MovimientoInput {
 export interface RecalculoConfig {
   cobObjetivo: number;
   cobMaxima: number;
+  targetDiasA: number;
+  targetDiasB: number;
+  targetDiasC: number;
 }
 
 export const DEFAULT_INTEL_CONFIG: RecalculoConfig = {
   cobObjetivo: 40,
   cobMaxima: 60,
+  targetDiasA: 42,
+  targetDiasB: 28,
+  targetDiasC: 14,
 };
 
 /** Datos previos de sku_intelligence para continuidad de quiebre prolongado */
@@ -266,6 +277,7 @@ export interface RecalculoInput {
   stockEnTransito: Map<string, number>;
   ocPendientesPorSku: Map<string, number>;
   prevIntelligence: Map<string, PrevIntelRow>;
+  velObjetivos: Map<string, number>;
   config: RecalculoConfig;
   hoy: Date;
 }
@@ -325,7 +337,7 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
   const {
     productos, composicion, ordenes, stockBodega, stockFull, stockFullDetail,
     velProfitguard, eventosActivos, quiebres, conteos, movimientos,
-    stockEnTransito, ocPendientesPorSku, prevIntelligence, config, hoy,
+    stockEnTransito, ocPendientesPorSku, prevIntelligence, velObjetivos, config, hoy,
   } = input;
 
   const hoyStr = hoy.toISOString().slice(0, 10);
@@ -617,12 +629,15 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
     const canalMasRentable: "full" | "flex" = margenFlex30d > margenFull30d ? "flex" : "full";
     const precioPromedio = precioCnt > 0 ? Math.round(precioTotal / precioCnt) : 0;
 
-    // ── PASO 8: Target dinámico ──
+    // ── PASO 8: Target dinámico (preliminar — se ajusta por ABC después del paso 9) ──
+    // Si Flex > Full, usar regla de margen; sino placeholder que se reemplaza por ABC
     const targetDiasFull = calcularTargetDias(
       margenFlex30d || null,
       margenFull30d || null,
-      config.cobObjetivo,
+      config.cobObjetivo,  // placeholder, se sobreescribe con ABC después
     );
+    // Guardar si el target fue por margen Flex (no se sobreescribe con ABC)
+    const targetPorMargenFlex = (margenFlex30d || 0) > (margenFull30d || 0) && margenFlex30d !== null;
 
     // ── PASO 10 (parcial): XYZ — CV con datos semanales ──
     // Usar solo semanas sin quiebre
@@ -759,6 +774,12 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
     // Ingreso estimado 30d (para ABC)
     const ingreso30d = velPonderada * precioPromedio * 4.3;
 
+    // Vel objetivo
+    const velObj = velObjetivos.get(skuOrigen) || 0;
+    const gapVelPct = velObj > 0
+      ? round2(((velPonderada - velObj) / velObj) * 100)
+      : null;
+
     rows.push({
       sku_origen: skuOrigen,
       nombre, categoria, proveedor,
@@ -866,6 +887,9 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
       gmroi_potencial: gmroiPotencial,
       es_catch_up: esCatchUp,
 
+      vel_objetivo: velObj,
+      gap_vel_pct: gapVelPct,
+
       updated_at: hoy.toISOString(),
       datos_desde: fechaMin ? fechaMin.slice(0, 10) : null,
       datos_hasta: fechaMax ? fechaMax.slice(0, 10) : null,
@@ -906,6 +930,40 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
     if (r.dias_en_quiebre > 0 && !r.abc_pre_quiebre) {
       r.abc_pre_quiebre = r.abc;
     }
+  }
+
+  // ── PASO 8b: Ajustar target de cobertura por ABC ──
+  // Sobreescribe el placeholder SOLO si el target no fue asignado por regla margen Flex>Full
+  for (const r of rows) {
+    // Reconstruir si fue target por margen Flex
+    const mf30 = r.margen_flex_30d || 0;
+    const mfull30 = r.margen_full_30d || 0;
+    const esPorMargenFlex = mf30 > mfull30;
+    if (esPorMargenFlex) continue; // mantener 15d o 25d por regla Flex
+
+    // Asignar target según ABC
+    if (r.abc === "A") r.target_dias_full = config.targetDiasA;
+    else if (r.abc === "B") r.target_dias_full = config.targetDiasB;
+    else r.target_dias_full = config.targetDiasC;
+  }
+
+  // ── Recalcular mandar_full y pedir_proveedor con targets actualizados ──
+  for (const r of rows) {
+    const prod = prodMap.get(r.sku_origen);
+    const innerPack = prod?.inner_pack || 1;
+    const velCalcR = r.multiplicador_evento > 1 ? r.vel_ajustada_evento : r.vel_ponderada;
+    const enQP = r.stock_full === 0 && r.vel_ponderada > 0 && r.dias_en_quiebre >= 14 && r.vel_pre_quiebre > 2;
+    const velParaPedir = enQP ? r.vel_pre_quiebre : velCalcR;
+    const targetFullUds = velParaPedir * r.pct_full * r.target_dias_full / 7;
+    const targetFlexUds = velParaPedir * r.pct_flex * 30 / 7;
+    r.mandar_full = Math.max(0, Math.min(Math.ceil(targetFullUds - r.stock_full), r.stock_bodega));
+    const stProyectado = r.stock_full + r.stock_bodega + r.stock_en_transito;
+    r.pedir_proveedor = Math.max(0, Math.ceil((targetFullUds + targetFlexUds) - stProyectado));
+    r.pedir_proveedor_bultos = innerPack > 1 && r.pedir_proveedor > 0 ? Math.ceil(r.pedir_proveedor / innerPack) : r.pedir_proveedor;
+
+    // Recalcular cobertura
+    const velFullCalcR = velCalcR * r.pct_full;
+    r.cob_full = round2(calcularCobertura(r.stock_full, velFullCalcR));
   }
 
   // ── PASO 11: Cuadrante (mediana vel × margen) ──
@@ -1001,6 +1059,10 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
       alertas.push("estrella_quiebre_prolongado");
     }
     if (r.es_catch_up) alertas.push("catch_up_post_quiebre");
+
+    // Alertas de velocidad vs objetivo
+    if (r.vel_objetivo > 0 && r.vel_ponderada < r.vel_objetivo * 0.8) alertas.push("bajo_meta");
+    if (r.vel_objetivo > 0 && r.vel_ponderada > r.vel_objetivo * 1.3) alertas.push("sobre_meta");
 
     // Proveedor volvió a tener stock (antes no tenía, ahora sí)
     const prev2 = prevIntelligence.get(r.sku_origen);

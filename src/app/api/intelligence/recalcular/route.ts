@@ -17,6 +17,8 @@ import {
   queryPrevIntelligence,
   queryVelProfitguard,
   queryStockFullDetail,
+  queryVelObjetivos,
+  queryIntelConfig,
   type SkuIntelligenceUpsert,
 } from "@/lib/intelligence-queries";
 import {
@@ -78,6 +80,12 @@ export async function POST(req: NextRequest) {
       queryPrevIntelligence(),
       queryVelProfitguard(),
       queryStockFullDetail(),
+    ]);
+
+    // Fetch vel_objetivo y config de targets ABC (no bloquean el paralelo principal)
+    const [velObjetivos, intelConfig] = await Promise.all([
+      queryVelObjetivos(),
+      queryIntelConfig(),
     ]);
 
     // Eventos activos para hoy
@@ -143,7 +151,13 @@ export async function POST(req: NextRequest) {
       stockEnTransito,
       ocPendientesPorSku,
       prevIntelligence,
-      config: DEFAULT_INTEL_CONFIG,
+      velObjetivos,
+      config: {
+        ...DEFAULT_INTEL_CONFIG,
+        targetDiasA: intelConfig.target_dias_a,
+        targetDiasB: intelConfig.target_dias_b,
+        targetDiasC: intelConfig.target_dias_c,
+      },
       hoy,
     });
 
@@ -386,6 +400,8 @@ function rowToUpsert(r: SkuIntelRow): SkuIntelligenceUpsert {
     abc_pre_quiebre: r.abc_pre_quiebre,
     gmroi_potencial: r.gmroi_potencial,
     es_catch_up: r.es_catch_up,
+    vel_objetivo: r.vel_objetivo,
+    gap_vel_pct: r.gap_vel_pct,
     updated_at: r.updated_at,
     datos_desde: r.datos_desde,
     datos_hasta: r.datos_hasta,
