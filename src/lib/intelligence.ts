@@ -490,11 +490,27 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
     // Para XYZ: ventas semanales últimas 8.6 semanas
     const ventasSemana = new Array(9).fill(0); // 9 semanas para cubrir 60d
 
+    // Lookup rápido: skuVenta → unidades físicas por formato
+    const unidadesPorSkuVenta = new Map<string, number>();
+    for (const va of ventasAsoc) {
+      unidadesPorSkuVenta.set(va.skuVenta, va.unidades);
+    }
+
+    // Recolectar órdenes de todos los SKU Venta asociados SIN duplicar.
+    // Cada orden se procesa una sola vez con el multiplicador de SU formato.
+    const ordenesYaProcesadas = new Set<OrdenInput>();
     for (const va of ventasAsoc) {
       const ords = ordenesPorSkuVenta.get(va.skuVenta) || [];
       for (const o of ords) {
+        if (ordenesYaProcesadas.has(o)) continue;
+        ordenesYaProcesadas.add(o);
+
+        // Usar el multiplicador del formato que coincide con el sku_venta de la orden
+        const svUp = o.sku_venta.toUpperCase();
+        const unidades = unidadesPorSkuVenta.get(svUp) ?? va.unidades;
+
         const fechaMs = new Date(o.fecha).getTime();
-        const udsFisicas = o.cantidad * va.unidades;
+        const udsFisicas = o.cantidad * unidades;
         const esFull = o.canal === "Full";
 
         // Precio promedio
