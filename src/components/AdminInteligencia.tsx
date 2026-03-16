@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { getSupabase } from "@/lib/supabase";
+import AdminMLSinVincular from "./AdminMLSinVincular";
 
 // ============================================
 // Tipos
@@ -877,29 +878,7 @@ export default function AdminInteligencia() {
       {filtered.length === 0 && <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>No hay datos. Ejecuta &quot;Recalcular&quot; para generar.</div>}
 
       {/* ═══ 7. ML SIN VINCULAR (colapsado al pie) ═══ */}
-      {mlSinVincularOpen && mlSinVincular.length > 0 && (
-        <div style={{ marginTop: 24, padding: 12, borderRadius: 8, background: "var(--bg2)", border: "1px solid var(--amberBd)" }}>
-          <div style={{ fontWeight: 700, fontSize: 13, color: "var(--amber)", marginBottom: 8 }}>Items ML sin vincular ({mlSinVincular.length})</div>
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th>Item ID</th>
-                <th>Titulo</th>
-                <th style={{ textAlign: "right" }}>Stock ML</th>
-              </tr>
-            </thead>
-            <tbody>
-              {mlSinVincular.map((item) => (
-                <tr key={item.item_id}>
-                  <td className="mono" style={{ fontSize: 11 }}>{item.item_id}</td>
-                  <td style={{ fontSize: 11, maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.title}</td>
-                  <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtInt(item.available_quantity)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      {mlSinVincularOpen && <AdminMLSinVincular />}
 
       {/* ═══ MODAL MASIVO DE VEL OBJETIVO ═══ */}
       {modalMasivo && (

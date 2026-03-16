@@ -45,6 +45,7 @@ export async function POST(req: NextRequest) {
     const skusFilter: string[] | undefined = body.skus;
     const full: boolean = body.full === true;
     const doSnapshot: boolean = body.snapshot === true;
+    const debugSku: string | undefined = body.debug_sku;
 
     const sb = getServerSupabase();
     if (!sb) {
@@ -116,17 +117,22 @@ export async function POST(req: NextRequest) {
     const quiebresInferidos = inferirQuiebresDeOrdenes(ordenes, hoy);
 
     // Combinar quiebres de snapshots + inferidos
+    // Solo snapshots reales se marcan como explícitos — los inferidos son heurísticos
     const quiebresCombinados: QuiebreSnapshot[] = [
       ...snapshots.map(s => ({
         fecha: s.fecha,
         sku_origen: s.sku_origen,
         en_quiebre_full: s.en_quiebre_full,
+        explicito: true as const,
       })),
-      ...quiebresInferidos,
+      ...quiebresInferidos.map(q => ({
+        ...q,
+        explicito: false as const,
+      })),
     ];
 
     // ── Ejecutar recálculo completo ──
-    const resultados = recalcularTodo({
+    const { rows: resultados, debugLog } = recalcularTodo({
       productos,
       composicion,
       ordenes: ordenes as OrdenInput[],
@@ -159,6 +165,7 @@ export async function POST(req: NextRequest) {
         targetDiasC: intelConfig.target_dias_c,
       },
       hoy,
+      debugSku,
     });
 
     // ── Filtrar si no es full ──
@@ -231,6 +238,7 @@ export async function POST(req: NextRequest) {
         dead_stock: rowsToUpsert.filter(r => r.accion === "DEAD_STOCK").length,
         liquidar: rowsToUpsert.filter(r => r.liquidacion_accion !== null).length,
       },
+      ...(debugLog ? { debug: debugLog } : {}),
     });
   } catch (err) {
     console.error("[intelligence] Error en recálculo:", err);

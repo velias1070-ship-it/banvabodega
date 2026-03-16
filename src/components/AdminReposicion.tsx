@@ -1080,19 +1080,51 @@ export default function AdminReposicion() {
       setVelocidades(parsed);
 
       // Persistir stock Full en stock_full_cache para que intelligence lo lea server-side
+      // ProfitGuard NO sobreescribe cantidad si ML sync la actualizó en las últimas 24h
       const sb = getSupabase();
       if (sb && parsed.length > 0) {
-        const rows = parsed.map(v => ({
-          sku_venta: v.skuVenta.toUpperCase().trim(),
-          cantidad: v.stockFull,
-          nombre: v.nombre,
-          vel_promedio: v.promedioSemanal,
-          updated_at: new Date().toISOString(),
-        }));
-        for (let i = 0; i < rows.length; i += 500) {
-          await sb.from("stock_full_cache").upsert(rows.slice(i, i + 500), { onConflict: "sku_venta" });
+        const skus = parsed.map(v => v.skuVenta.toUpperCase().trim());
+        // Leer filas existentes para determinar cuáles tienen fuente ml_sync reciente
+        const { data: existing } = await sb
+          .from("stock_full_cache")
+          .select("sku_venta, fuente, updated_at")
+          .in("sku_venta", skus);
+
+        const mlRecent = new Set<string>();
+        const hace24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+        for (const row of (existing || [])) {
+          if (row.fuente === "ml_sync" && row.updated_at > hace24h) {
+            mlRecent.add(row.sku_venta);
+          }
         }
-        console.log(`[AdminReposicion] stock_full_cache actualizado: ${rows.length} SKUs`);
+
+        // Separar en dos grupos: los que ML ya actualizó (solo escribir vel_promedio/nombre)
+        // y los que no (escribir todo incluyendo cantidad como fallback)
+        const rowsPartial: Array<{ sku_venta: string; nombre: string; vel_promedio: number; updated_at: string }> = [];
+        const rowsFull: Array<{ sku_venta: string; cantidad: number; nombre: string; vel_promedio: number; fuente: string; updated_at: string }> = [];
+        const now = new Date().toISOString();
+
+        for (const v of parsed) {
+          const sku = v.skuVenta.toUpperCase().trim();
+          if (mlRecent.has(sku)) {
+            rowsPartial.push({ sku_venta: sku, nombre: v.nombre, vel_promedio: v.promedioSemanal, updated_at: now });
+          } else {
+            rowsFull.push({ sku_venta: sku, cantidad: v.stockFull, nombre: v.nombre, vel_promedio: v.promedioSemanal, fuente: "profitguard", updated_at: now });
+          }
+        }
+
+        // Upsert filas completas (SKUs sin ML sync reciente)
+        for (let i = 0; i < rowsFull.length; i += 500) {
+          await sb.from("stock_full_cache").upsert(rowsFull.slice(i, i + 500), { onConflict: "sku_venta" });
+        }
+        // Update parcial: solo vel_promedio y nombre para SKUs con ML sync reciente
+        for (const row of rowsPartial) {
+          await sb.from("stock_full_cache")
+            .update({ nombre: row.nombre, vel_promedio: row.vel_promedio })
+            .eq("sku_venta", row.sku_venta);
+        }
+
+        console.log(`[AdminReposicion] stock_full_cache actualizado: ${rowsFull.length} completos, ${rowsPartial.length} parciales (ML sync reciente)`);
       }
     };
     reader.readAsArrayBuffer(file);

@@ -54,6 +54,10 @@ export interface MLItemMap {
   ultimo_sync: string | null;
   ultimo_stock_enviado: number | null;
   stock_version: number | null;
+  inventory_id: string | null;
+  sku_venta: string | null;
+  sku_origen: string | null;
+  titulo: string | null;
 }
 
 export interface PedidoFlex {
@@ -77,6 +81,8 @@ export interface PedidoFlex {
 interface StockLocation {
   type: "meli_facility" | "selling_address" | "seller_warehouse";
   quantity: number;
+  store_id?: string;
+  network_node_id?: string;
 }
 
 interface StockResponse {
@@ -257,14 +263,15 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string): 
     }
 
     const data = await resp.json();
+    console.log("[ML] OAuth response keys:", Object.keys(data), "has refresh_token:", !!data.refresh_token, "user_id:", data.user_id);
     await saveMLConfig({
       access_token: data.access_token,
-      refresh_token: data.refresh_token,
+      refresh_token: data.refresh_token || "",
       token_expires_at: new Date(Date.now() + data.expires_in * 1000).toISOString(),
       seller_id: String(data.user_id),
     });
 
-    console.log("[ML] OAuth complete, seller_id:", data.user_id);
+    console.log("[ML] OAuth complete, seller_id:", data.user_id, "refresh_token saved:", !!data.refresh_token);
     return true;
   } catch (err) {
     console.error("[ML] Code exchange error:", err);
@@ -293,6 +300,44 @@ export async function mlGet<T = unknown>(path: string, extraHeaders?: Record<str
   return resp.json() as Promise<T>;
 }
 
+/** mlGet that also returns response headers (for x-version etc.) */
+async function mlGetWithHeaders<T = unknown>(path: string): Promise<{ data: T; headers: Headers } | null> {
+  const token = await ensureValidToken();
+  if (!token) return null;
+
+  const resp = await fetch(`${ML_API}${path}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (!resp.ok) {
+    console.error(`[ML] GET ${path} failed:`, resp.status);
+    return null;
+  }
+
+  const data = await resp.json() as T;
+  return { data, headers: resp.headers };
+}
+
+/**
+ * Make authenticated GET, return raw JSON (for debugging)
+ */
+async function mlGetRaw(path: string): Promise<unknown | null> {
+  const token = await ensureValidToken();
+  if (!token) return null;
+
+  const resp = await fetch(`${ML_API}${path}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => "");
+    console.error(`[ML] GET ${path} failed: ${resp.status} ${body.slice(0, 200)}`);
+    return null;
+  }
+
+  return resp.json();
+}
+
 /**
  * Make authenticated PUT request to ML API
  */
@@ -313,11 +358,11 @@ export async function mlPut<T = unknown>(path: string, body: unknown, extraHeade
   if (!resp.ok) {
     const errText = await resp.text();
     console.error(`[ML] PUT ${path} failed:`, resp.status, errText);
-    // Return status info for conflict handling
     if (resp.status === 409) {
       throw new Error(`VERSION_CONFLICT: ${errText}`);
     }
-    return null;
+    // Throw with status + body so callers can get the detail
+    throw new Error(`ML_PUT_ERROR ${resp.status}: ${errText.slice(0, 300)}`);
   }
 
   return resp.json() as Promise<T>;
@@ -962,33 +1007,83 @@ export async function getItemUserProductId(itemId: string): Promise<string | nul
  * Returns locations with quantities and the version for optimistic concurrency.
  */
 export async function getDistributedStock(userProductId: string): Promise<StockResponse | null> {
-  const data = await mlGet<StockResponse>(`/user-products/${userProductId}/stock`);
-  if (!data) return null;
+  const result = await mlGetWithHeaders<{ locations?: StockLocation[] }>(`/user-products/${userProductId}/stock`);
+  if (!result) return null;
 
-  // Extract version from response
+  // ML returns version in x-version response header, not in JSON body
+  const headerVersion = parseInt(result.headers.get("x-version") || "0", 10);
+
   return {
     user_product_id: userProductId,
-    locations: data.locations || [],
-    version: data.version || 0,
+    locations: result.data.locations || [],
+    version: headerVersion,
   };
 }
 
 /**
- * Update Flex stock (selling_address) using the distributed stock API.
+ * Determine which stock location type the seller controls.
+ * Priority: selling_address (Flex) > seller_warehouse (multi-origin) > null (Full-only)
+ */
+export function getSellerStockType(locations: StockLocation[]): "selling_address" | "seller_warehouse" | null {
+  if (locations.some(l => l.type === "selling_address")) return "selling_address";
+  if (locations.some(l => l.type === "seller_warehouse")) return "seller_warehouse";
+  return null;
+}
+
+/**
+ * Update seller-controlled stock using the distributed stock API.
+ * Writes to selling_address or seller_warehouse depending on the product's locations.
  * Requires x-version header for optimistic concurrency.
- * Returns true on success, throws on version conflict (409).
+ *
+ * For selling_address: body = { quantity }
+ * For seller_warehouse: body = { locations: [{ store_id, quantity }, ...] }
  */
 export async function updateFlexStock(
   userProductId: string,
   quantity: number,
-  version: number
-): Promise<boolean> {
-  const result = await mlPut(
-    `/user-products/${userProductId}/stock/type/selling_address`,
-    { quantity },
-    { "x-version": String(version) }
-  );
-  return result !== null;
+  version: number,
+  stockType: "selling_address" | "seller_warehouse" = "selling_address",
+  warehouseLocations?: StockLocation[]
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    let body: unknown;
+    if (stockType === "seller_warehouse") {
+      // seller_warehouse requires locations array with store_id
+      if (!warehouseLocations || warehouseLocations.length === 0) {
+        return { ok: false, error: "seller_warehouse requiere locations con store_id" };
+      }
+      // Deduplicate by network_node_id — ML rejects repeated network_node_id
+      // Each location needs store_id + network_node_id per ML docs
+      const seen = new Set<string>();
+      const uniqueLocations: { store_id: string; network_node_id: string; quantity: number }[] = [];
+      for (const l of warehouseLocations) {
+        if (l.type !== "seller_warehouse" || !l.store_id || !l.network_node_id) continue;
+        if (!seen.has(l.network_node_id)) {
+          seen.add(l.network_node_id);
+          uniqueLocations.push({ store_id: l.store_id, network_node_id: l.network_node_id, quantity });
+        }
+      }
+      if (uniqueLocations.length === 0) {
+        return { ok: false, error: "seller_warehouse locations sin network_node_id válido" };
+      }
+      body = { locations: uniqueLocations };
+    } else {
+      body = { quantity };
+    }
+
+    const result = await mlPut(
+      `/user-products/${userProductId}/stock/type/${stockType}`,
+      body,
+      { "x-version": String(version) }
+    );
+    return result !== null ? { ok: true } : { ok: false, error: "ML respondió con error (ver logs del server)" };
+  } catch (err) {
+    const msg = String(err);
+    if (msg.includes("VERSION_CONFLICT")) {
+      return { ok: false, error: "VERSION_CONFLICT" };
+    }
+    return { ok: false, error: msg };
+  }
 }
 
 /**
@@ -1036,42 +1131,55 @@ export async function syncStockToML(sku: string, availableQty: number): Promise<
         continue;
       }
 
-      // 3. PUT with x-version header
-      const success = await updateFlexStock(userProductId, availableQty, stockData.version);
+      // 2b. Determine seller-controlled stock type
+      const stockType = getSellerStockType(stockData.locations);
+      if (!stockType) {
+        console.warn(`[ML Stock] ${userProductId} has no seller-controlled location — Full-only item, skipping`);
+        continue;
+      }
 
-      if (success) {
+      // 3. PUT with x-version header
+      const result = await updateFlexStock(userProductId, availableQty, stockData.version, stockType, stockData.locations);
+
+      if (result.ok) {
         await sb.from("ml_items_map").update({
           ultimo_sync: new Date().toISOString(),
           ultimo_stock_enviado: availableQty,
           stock_version: stockData.version + 1,
         }).eq("id", map.id);
         synced++;
-      }
-    } catch (err) {
-      const errMsg = String(err);
-      if (errMsg.includes("VERSION_CONFLICT")) {
-        // 409: version mismatch — retry once with fresh version
-        console.warn(`[ML Stock] Version conflict for ${sku}, retrying...`);
-        try {
-          const userProductId = map.user_product_id!;
+      } else if (result.error === "VERSION_CONFLICT") {
+        // 409: version mismatch — retry up to 3 times with delay
+        let retried = false;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          console.warn(`[ML Stock] Version conflict for ${sku}, retry ${attempt}/3...`);
+          await new Promise(r => setTimeout(r, attempt * 500)); // 500ms, 1s, 1.5s
           const freshStock = await getDistributedStock(userProductId);
-          if (freshStock) {
-            const retrySuccess = await updateFlexStock(userProductId, availableQty, freshStock.version);
-            if (retrySuccess) {
-              await sb.from("ml_items_map").update({
-                ultimo_sync: new Date().toISOString(),
-                ultimo_stock_enviado: availableQty,
-                stock_version: freshStock.version + 1,
-              }).eq("id", map.id);
-              synced++;
-            }
+          if (!freshStock) break;
+          const retryResult = await updateFlexStock(userProductId, availableQty, freshStock.version, stockType, freshStock.locations);
+          if (retryResult.ok) {
+            await sb.from("ml_items_map").update({
+              ultimo_sync: new Date().toISOString(),
+              ultimo_stock_enviado: availableQty,
+              stock_version: freshStock.version + 1,
+            }).eq("id", map.id);
+            synced++;
+            retried = true;
+            break;
           }
-        } catch (retryErr) {
-          console.error(`[ML Stock] Retry also failed for ${sku}:`, retryErr);
+          if (retryResult.error !== "VERSION_CONFLICT") {
+            console.error(`[ML Stock] Retry ${attempt} for ${sku} failed:`, retryResult.error);
+            break;
+          }
+        }
+        if (!retried) {
+          console.error(`[ML Stock] All retries failed for ${sku} (VERSION_CONFLICT)`);
         }
       } else {
-        console.error(`[ML Stock] Error syncing ${sku}:`, err);
+        console.error(`[ML Stock] Error syncing ${sku}:`, result.error);
       }
+    } catch (err) {
+      console.error(`[ML Stock] Error syncing ${sku}:`, err);
     }
   }
 
@@ -1106,10 +1214,12 @@ export async function getFlexConfig(serviceId: string): Promise<unknown> {
 export async function updateFlexConfig(serviceId: string, configData: unknown): Promise<unknown> {
   const config = await getMLConfig();
   if (!config?.seller_id) return null;
-  return mlPut(
-    `/shipping/flex/sites/${SITE_ID}/users/${config.seller_id}/services/${serviceId}/configuration/delivery/custom/v3`,
-    configData
-  );
+  try {
+    return await mlPut(
+      `/shipping/flex/sites/${SITE_ID}/users/${config.seller_id}/services/${serviceId}/configuration/delivery/custom/v3`,
+      configData
+    );
+  } catch { return null; }
 }
 
 /**
@@ -1129,10 +1239,12 @@ export async function getFlexHolidays(serviceId: string): Promise<unknown> {
 export async function updateFlexHolidays(serviceId: string, holidays: unknown): Promise<unknown> {
   const config = await getMLConfig();
   if (!config?.seller_id) return null;
-  return mlPut(
-    `/flex/sites/${SITE_ID}/users/${config.seller_id}/services/${serviceId}/configurations/holidays/v1`,
-    holidays
-  );
+  try {
+    return await mlPut(
+      `/flex/sites/${SITE_ID}/users/${config.seller_id}/services/${serviceId}/configurations/holidays/v1`,
+      holidays
+    );
+  } catch { return null; }
 }
 
 /**
@@ -1236,12 +1348,15 @@ interface MLMarketplaceItem {
   inventory_id?: string;
   available_quantity: number;
   sold_quantity: number;
+  seller_custom_field?: string;
+  user_product_id?: string;
   variations?: Array<{
     id: number;
     inventory_id?: string;
     available_quantity: number;
     sold_quantity: number;
     seller_custom_field?: string;
+    user_product_id?: string;
   }>;
 }
 
@@ -1267,32 +1382,102 @@ export interface SyncStockFullResult {
 }
 
 /**
- * Fetch all seller item IDs using scroll-based search.
+ * Fetch seller items by status using scan pagination.
+ */
+async function fetchSellerItemsByStatus(sellerId: string, status: string): Promise<string[]> {
+  const ids: string[] = [];
+  const url = `/users/${sellerId}/items/search?search_type=scan&limit=100&status=${status}`;
+  const resp = await mlGetRaw(url) as { results?: string[]; scroll_id?: string; paging?: { total: number } } | null;
+  if (!resp?.results || resp.results.length === 0) return ids;
+
+  ids.push(...resp.results);
+
+  // Paginar con scroll_id
+  let scrollId: string | null = resp.scroll_id || null;
+  const total = resp.paging?.total || 0;
+  while (scrollId && ids.length < total) {
+    await delay(500);
+    const sp = await mlGet<{ results: string[]; scroll_id?: string }>(
+      `/users/${sellerId}/items/search?search_type=scan&scroll_id=${scrollId}&limit=100`
+    );
+    if (!sp || sp.results.length === 0) break;
+    ids.push(...sp.results);
+    scrollId = sp.scroll_id || null;
+  }
+  return ids;
+}
+
+/**
+ * Fetch all seller item IDs across all statuses.
  */
 async function fetchAllSellerItems(sellerId: string): Promise<string[]> {
   const allIds: string[] = [];
-  let scrollId: string | null = null;
+  const seen = new Set<string>();
 
-  // Primera página con search_type=scan para obtener scroll_id
-  const first = await mlGet<{ results: string[]; scroll_id?: string; paging: { total: number } }>(
-    `/users/${sellerId}/items/search?search_type=scan&limit=100`
-  );
-  if (!first) return [];
-
-  allIds.push(...first.results);
-  scrollId = first.scroll_id || null;
-
-  // Paginar con scroll_id
-  while (scrollId && allIds.length < first.paging.total) {
-    await delay(500);
-    const page = await mlGet<{ results: string[]; scroll_id?: string }>(
-      `/users/${sellerId}/items/search?search_type=scan&scroll_id=${scrollId}&limit=100`
-    );
-    if (!page || page.results.length === 0) break;
-    allIds.push(...page.results);
-    scrollId = page.scroll_id || null;
+  // Buscar items en todos los estados: active, paused, closed
+  const statuses = ["active", "paused", "closed"];
+  for (const status of statuses) {
+    const statusIds = await fetchSellerItemsByStatus(sellerId, status);
+    for (const id of statusIds) {
+      if (!seen.has(id)) { seen.add(id); allIds.push(id); }
+    }
+    console.log(`[syncStockFull] status=${status}: ${statusIds.length} items (total acumulado: ${allIds.length})`);
   }
 
+  if (allIds.length > 0) return allIds;
+
+  // Fallback: probar sin filtro de status
+  const urls = [
+    `/users/${sellerId}/items/search?search_type=scan&limit=100`,
+    `/users/${sellerId}/items/search?limit=50&offset=0`,
+  ];
+
+  for (const url of urls) {
+    console.log(`[syncStockFull] Probando: GET ${url}`);
+    const resp = await mlGetRaw(url);
+    if (resp) {
+      console.log(`[syncStockFull] Response: ${JSON.stringify(resp).slice(0, 500)}`);
+      const data = resp as { results?: string[]; scroll_id?: string; paging?: { total: number } };
+      if (data.results && data.results.length > 0) {
+        allIds.push(...data.results);
+
+        // Si fue scan, paginar con scroll_id
+        if (url.includes("search_type=scan") && data.scroll_id && data.paging) {
+          let scrollId: string | null = data.scroll_id;
+          while (scrollId && allIds.length < data.paging.total) {
+            await delay(500);
+            const sp: { results: string[]; scroll_id?: string } | null = await mlGet(
+              `/users/${sellerId}/items/search?search_type=scan&scroll_id=${scrollId}&limit=100`
+            );
+            if (!sp || sp.results.length === 0) break;
+            allIds.push(...sp.results);
+            scrollId = sp.scroll_id || null;
+          }
+        }
+        // Si fue offset, paginar
+        else if (data.paging && data.paging.total > allIds.length) {
+          let offset = allIds.length;
+          const baseUrl = url.replace(/offset=\d+/, "");
+          while (offset < data.paging.total && offset < 1000) {
+            await delay(500);
+            const op: { results: string[]; paging: { total: number } } | null = await mlGet(
+              `${baseUrl}offset=${offset}&limit=50`
+            );
+            if (!op || op.results.length === 0) break;
+            allIds.push(...op.results);
+            offset += op.results.length;
+          }
+        }
+
+        console.log(`[syncStockFull] Éxito con ${url}: ${allIds.length} items totales`);
+        return allIds;
+      }
+    } else {
+      console.log(`[syncStockFull] ${url} devolvió null (error HTTP)`);
+    }
+  }
+
+  console.log("[syncStockFull] Ningún endpoint devolvió items");
   return allIds;
 }
 
@@ -1335,35 +1520,79 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     return { ok: false, items_sincronizados: 0, stock_actualizado: 0, sin_inventory_id: 0, errores: ["No ML config o seller_id"], tiempo_ms: Date.now() - start };
   }
 
-  // 1. Obtener mapeo codigo_ml → sku_venta desde composicion_venta
-  const { data: compData } = await sb.from("composicion_venta").select("codigo_ml, sku_venta");
+  // 1. Obtener mapeos para resolver SKU desde múltiples fuentes
+  // a) composicion_venta.codigo_ml → sku_venta + sku_venta → sku_origen
+  const { data: compData } = await sb.from("composicion_venta").select("codigo_ml, sku_venta, sku_origen");
   const codigoToSkuVenta = new Map<string, string>();
+  const skuVentaToSkuOrigen = new Map<string, string>();
   for (const row of (compData || [])) {
     if (row.codigo_ml && row.sku_venta) {
       codigoToSkuVenta.set(row.codigo_ml.toUpperCase(), row.sku_venta);
+    }
+    if (row.sku_venta && row.sku_origen) {
+      skuVentaToSkuOrigen.set(row.sku_venta.toUpperCase(), row.sku_origen);
+    }
+  }
+  // b) productos.sku set for direct match against seller_custom_field
+  const { data: prodData } = await sb.from("productos").select("sku, sku_venta");
+  const knownSkus = new Set<string>();
+  const skuVentaToSku = new Map<string, string>();
+  for (const p of (prodData || [])) {
+    if (p.sku) knownSkus.add(p.sku.toUpperCase());
+    if (p.sku_venta) {
+      // sku_venta can be comma-separated
+      for (const sv of p.sku_venta.split(",")) {
+        const trimmed = sv.trim().toUpperCase();
+        if (trimmed) {
+          knownSkus.add(trimmed);
+          skuVentaToSku.set(trimmed, p.sku.toUpperCase());
+        }
+      }
     }
   }
 
   // 2. Listar todos los items del seller
   console.log(`[syncStockFull] Obteniendo items del seller ${config.seller_id}...`);
+  console.log(`[syncStockFull] Mapeo composicion_venta: ${codigoToSkuVenta.size} codigo_ml, productos: ${knownSkus.size} SKUs conocidos`);
   const itemIds = await fetchAllSellerItems(config.seller_id);
-  console.log(`[syncStockFull] ${itemIds.length} items encontrados`);
+  console.log(`[syncStockFull] ${itemIds.length} items encontrados${itemIds.length > 0 ? ` (primeros: ${itemIds.slice(0, 3).join(", ")})` : ""}`);
 
-  // 3. Procesar items en batches de 5
+  // Helper: resolve sku_venta from multiple sources
+  // Priority: 1) composicion_venta.codigo_ml, 2) seller_custom_field match, 3) null
+  function resolveSkuVenta(inventoryId: string | null, sellerCustomField: string | null): string | null {
+    // Try composicion_venta mapping first
+    if (inventoryId) {
+      const fromComp = codigoToSkuVenta.get(inventoryId.toUpperCase());
+      if (fromComp) return fromComp;
+    }
+    // Try seller_custom_field — ML sellers often put the WMS SKU here
+    if (sellerCustomField) {
+      const scf = sellerCustomField.toUpperCase().trim();
+      if (knownSkus.has(scf)) return scf;
+      // Check if it maps through sku_venta → sku
+      const mapped = skuVentaToSku.get(scf);
+      if (mapped) return scf;
+    }
+    return null;
+  }
+
+  // 3. Procesar items en batches de 20
   const itemsMapRows: Array<{
     item_id: string;
     inventory_id: string | null;
     sku_venta: string | null;
+    sku_origen: string | null;
     titulo: string;
     available_quantity: number;
     sold_quantity: number;
     variation_id: string | null;
+    user_product_id: string | null;
   }> = [];
 
   let sinInventoryId = 0;
 
-  for (let i = 0; i < itemIds.length; i += 5) {
-    const batch = itemIds.slice(i, i + 5);
+  for (let i = 0; i < itemIds.length; i += 20) {
+    const batch = itemIds.slice(i, i + 20);
     const promises = batch.map(async (itemId) => {
       try {
         const item = await fetchMarketplaceItem(itemId);
@@ -1376,31 +1605,37 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
           // Item con variaciones: cada variación tiene su inventory_id
           for (const v of item.variations) {
             const invId = v.inventory_id || null;
-            const skuVenta = invId ? codigoToSkuVenta.get(invId.toUpperCase()) || null : null;
+            const skuVenta = resolveSkuVenta(invId, v.seller_custom_field || null);
+            const skuOrigen = skuVenta ? (skuVentaToSkuOrigen.get(skuVenta.toUpperCase()) || null) : null;
             if (!invId) sinInventoryId++;
             itemsMapRows.push({
               item_id: itemId,
               inventory_id: invId,
               sku_venta: skuVenta,
+              sku_origen: skuOrigen,
               titulo: item.title,
               available_quantity: v.available_quantity || 0,
               sold_quantity: v.sold_quantity || 0,
               variation_id: String(v.id),
+              user_product_id: v.user_product_id || item.user_product_id || null,
             });
           }
         } else {
           // Item sin variaciones
           const invId = item.inventory_id || null;
-          const skuVenta = invId ? codigoToSkuVenta.get(invId.toUpperCase()) || null : null;
+          const skuVenta = resolveSkuVenta(invId, item.seller_custom_field || null);
+          const skuOrigen = skuVenta ? (skuVentaToSkuOrigen.get(skuVenta.toUpperCase()) || null) : null;
           if (!invId) sinInventoryId++;
           itemsMapRows.push({
             item_id: itemId,
             inventory_id: invId,
             sku_venta: skuVenta,
+            sku_origen: skuOrigen,
             titulo: item.title,
             available_quantity: item.available_quantity || 0,
             sold_quantity: item.sold_quantity || 0,
             variation_id: null,
+            user_product_id: item.user_product_id || null,
           });
         }
       } catch (err) {
@@ -1408,7 +1643,7 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
       }
     });
     await Promise.all(promises);
-    if (i + 5 < itemIds.length) await delay(500);
+    if (i + 20 < itemIds.length) await delay(100);
   }
 
   // 4. Obtener stock fulfillment detallado para items con inventory_id
@@ -1418,8 +1653,8 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
   // Mapeo inventory_id → fulfillment detail
   const fulfillmentMap = new Map<string, FulfillmentStockDetail>();
 
-  for (let i = 0; i < inventoryIds.length; i += 5) {
-    const batch = inventoryIds.slice(i, i + 5);
+  for (let i = 0; i < inventoryIds.length; i += 20) {
+    const batch = inventoryIds.slice(i, i + 20);
     const promises = batch.map(async (invId) => {
       try {
         const detail = await fetchFulfillmentStock(invId, config.seller_id);
@@ -1431,31 +1666,84 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
       }
     });
     await Promise.all(promises);
-    if (i + 5 < inventoryIds.length) await delay(500);
+    if (i + 20 < inventoryIds.length) await delay(100);
   }
 
   // 5. Upsert ml_items_map
+  // Deduplicar por (sku, item_id) — para items con variaciones, múltiples variaciones
+  // pueden resolver al mismo sku_venta, generando filas con la misma PK en el batch.
+  // PostgreSQL no permite que un upsert toque la misma fila dos veces.
+  // Preferimos la fila con inventory_id (variación real sobre padre).
+  const mapped = itemsMapRows.filter(r => r.sku_venta);
+  const unmapped = itemsMapRows.filter(r => !r.sku_venta);
+  console.log(`[syncStockFull] ${mapped.length} items con SKU resuelto, ${unmapped.length} sin mapeo`);
+  if (unmapped.length > 0) {
+    console.log(`[syncStockFull] Items sin mapeo (primeros 10): ${unmapped.slice(0, 10).map(r => `${r.item_id}(scf=${r.titulo})`).join(", ")}`);
+  }
+
   const mlItemsUpsert = itemsMapRows.map(r => ({
-    sku: r.sku_venta || r.item_id, // fallback a item_id si no hay mapeo
+    sku: r.sku_venta || r.item_id,
     item_id: r.item_id,
     variation_id: r.variation_id ? parseInt(r.variation_id) : null,
     inventory_id: r.inventory_id,
     sku_venta: r.sku_venta,
+    sku_origen: r.sku_origen,
     titulo: r.titulo,
     available_quantity: r.available_quantity,
     sold_quantity: r.sold_quantity,
+    user_product_id: r.user_product_id,
     activo: true,
     updated_at: new Date().toISOString(),
   }));
 
-  for (let i = 0; i < mlItemsUpsert.length; i += 500) {
-    const batch = mlItemsUpsert.slice(i, i + 500);
-    const { error } = await sb.from("ml_items_map").upsert(batch, { onConflict: "sku,item_id" });
-    if (error) errores.push(`Upsert ml_items_map error: ${error.message}`);
+  // Deduplicar por (sku, item_id) — múltiples variaciones pueden generar la misma PK.
+  // Logear duplicados para diagnóstico.
+  const dedupMap = new Map<string, typeof mlItemsUpsert[0]>();
+  const duplicados: string[] = [];
+  for (const row of mlItemsUpsert) {
+    const key = `${row.sku}|${row.item_id}`;
+    const existing = dedupMap.get(key);
+    if (existing) {
+      duplicados.push(`${key} (var_existente=${existing.variation_id}, var_nueva=${row.variation_id}, inv_existente=${existing.inventory_id}, inv_nueva=${row.inventory_id})`);
+      // Preferir fila con inventory_id (variación real)
+      if (!existing.inventory_id && row.inventory_id) {
+        dedupMap.set(key, row);
+      }
+    } else {
+      dedupMap.set(key, row);
+    }
+  }
+  if (duplicados.length > 0) {
+    console.log(`[syncStockFull] ${duplicados.length} filas duplicadas por (sku,item_id) eliminadas:`);
+    for (const d of duplicados.slice(0, 20)) console.log(`  dup: ${d}`);
+    if (duplicados.length > 20) console.log(`  ... y ${duplicados.length - 20} más`);
+  }
+  const dedupedUpsert = Array.from(dedupMap.values());
+
+  // Upsert en chunks de 50 con fallback fila-por-fila si un chunk falla
+  for (let i = 0; i < dedupedUpsert.length; i += 50) {
+    const chunk = dedupedUpsert.slice(i, i + 50);
+    const { error } = await sb.from("ml_items_map").upsert(chunk, { onConflict: "sku,item_id" });
+    if (error) {
+      console.log(`[syncStockFull] Chunk ${i}-${i + chunk.length} falló: ${error.message}. Fallback fila por fila...`);
+      // Logear las claves del chunk para diagnóstico
+      const chunkKeys = chunk.map(r => `${r.sku}|${r.item_id}|var=${r.variation_id}`);
+      console.log(`[syncStockFull] Claves del chunk fallido: ${chunkKeys.join(", ")}`);
+      // Fallback: insertar fila por fila
+      for (const row of chunk) {
+        const { error: rowErr } = await sb.from("ml_items_map").upsert(row, { onConflict: "sku,item_id" });
+        if (rowErr) {
+          errores.push(`Upsert ml_items_map fila sku=${row.sku} item=${row.item_id} var=${row.variation_id}: ${rowErr.message}`);
+          console.log(`[syncStockFull] Fila falló: sku=${row.sku}, item_id=${row.item_id}, variation_id=${row.variation_id}, inv=${row.inventory_id} → ${rowErr.message}`);
+        }
+      }
+    }
   }
 
   // 6. Upsert stock_full_cache — agregar stock fulfillment por sku_venta
   // Agrupar por sku_venta (un sku_venta puede tener múltiples inventory_ids)
+  // IMPORTANTE: deduplicar por inventory_id dentro de cada sku_venta para evitar
+  // contar doble cuando múltiples variaciones comparten el mismo inventory_id
   const stockBySku = new Map<string, {
     cantidad: number;
     stock_no_disponible: number;
@@ -1463,11 +1751,19 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     stock_perdido: number;
     stock_transferencia: number;
   }>();
+  const countedInventoryPerSku = new Map<string, Set<string>>();
 
   for (const row of itemsMapRows) {
     if (!row.sku_venta || !row.inventory_id) continue;
-    const detail = fulfillmentMap.get(row.inventory_id.toUpperCase());
+    const invKey = row.inventory_id.toUpperCase();
+    const detail = fulfillmentMap.get(invKey);
     if (!detail) continue;
+
+    // Solo contar cada inventory_id una vez por sku_venta
+    const counted = countedInventoryPerSku.get(row.sku_venta) || new Set();
+    if (counted.has(invKey)) continue;
+    counted.add(invKey);
+    countedInventoryPerSku.set(row.sku_venta, counted);
 
     const existing = stockBySku.get(row.sku_venta) || {
       cantidad: 0, stock_no_disponible: 0, stock_danado: 0, stock_perdido: 0, stock_transferencia: 0,
@@ -1490,6 +1786,7 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     stock_danado: s.stock_danado,
     stock_perdido: s.stock_perdido,
     stock_transferencia: s.stock_transferencia,
+    fuente: "ml_sync",
     updated_at: new Date().toISOString(),
   }));
 
@@ -1601,6 +1898,7 @@ export async function syncSingleFulfillmentStock(inventoryId: string): Promise<s
     stock_danado: totalDanado,
     stock_perdido: totalPerdido,
     stock_transferencia: totalTransfer,
+    fuente: "ml_sync",
     updated_at: new Date().toISOString(),
   }, { onConflict: "sku_venta" });
 

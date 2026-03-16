@@ -214,6 +214,8 @@ export interface QuiebreSnapshot {
   fecha: string;
   sku_origen: string;
   en_quiebre_full: boolean;
+  /** true = viene de stock_snapshots (dato real). false/undefined = inferido */
+  explicito?: boolean;
 }
 
 export interface ConteoInput {
@@ -280,7 +282,11 @@ export interface RecalculoInput {
   velObjetivos: Map<string, number>;
   config: RecalculoConfig;
   hoy: Date;
+  debugSku?: string;
 }
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type DebugSkuLog = Record<string, any>;
 
 /* ═══════════════════════════════════════════════════════════
    HELPERS PUROS
@@ -333,12 +339,15 @@ function zScore(nivel: number): number {
    PASO PRINCIPAL: RECÁLCULO COMPLETO
    ═══════════════════════════════════════════════════════════ */
 
-export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
+export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; debugLog?: DebugSkuLog } {
   const {
     productos, composicion, ordenes, stockBodega, stockFull, stockFullDetail,
     velProfitguard, eventosActivos, quiebres, conteos, movimientos,
     stockEnTransito, ocPendientesPorSku, prevIntelligence, velObjetivos, config, hoy,
+    debugSku,
   } = input;
+  const debugSkuUp = debugSku?.toUpperCase();
+  let debugLog: DebugSkuLog | undefined;
 
   const hoyStr = hoy.toISOString().slice(0, 10);
   const hoyMs = hoy.getTime();
@@ -502,11 +511,27 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
     // Para XYZ: ventas semanales últimas 8.6 semanas
     const ventasSemana = new Array(9).fill(0); // 9 semanas para cubrir 60d
 
+    // Lookup rápido: skuVenta → unidades físicas por formato
+    const unidadesPorSkuVenta = new Map<string, number>();
+    for (const va of ventasAsoc) {
+      unidadesPorSkuVenta.set(va.skuVenta, va.unidades);
+    }
+
+    // Recolectar órdenes de todos los SKU Venta asociados SIN duplicar.
+    // Cada orden se procesa una sola vez con el multiplicador de SU formato.
+    const ordenesYaProcesadas = new Set<OrdenInput>();
     for (const va of ventasAsoc) {
       const ords = ordenesPorSkuVenta.get(va.skuVenta) || [];
       for (const o of ords) {
+        if (ordenesYaProcesadas.has(o)) continue;
+        ordenesYaProcesadas.add(o);
+
+        // Usar el multiplicador del formato que coincide con el sku_venta de la orden
+        const svUp = o.sku_venta.toUpperCase();
+        const unidades = unidadesPorSkuVenta.get(svUp) ?? va.unidades;
+
         const fechaMs = new Date(o.fecha).getTime();
-        const udsFisicas = o.cantidad * va.unidades;
+        const udsFisicas = o.cantidad * unidades;
         const esFull = o.canal === "Full";
 
         // Precio promedio
@@ -536,16 +561,26 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
       }
     }
 
-    // Detección de quiebres para excluir del promedio
+    // Detección de quiebres para excluir del promedio.
+    // SOLO contar semanas con registro EXPLÍCITO en_quiebre_full = true.
+    // La ausencia de datos en stock_snapshots NO es evidencia de quiebre.
+    // Además, solo excluir si la semana tiene ≥3 días marcados como quiebre
+    // (para evitar que un solo registro afecte toda la semana).
     const quiebresDelSku = quiebresPorSku.get(skuOrigen) || [];
-    const semanasEnQuiebre = new Set<number>();
+    const diasQuiebrePorSemana = new Map<number, number>();
     for (const q of quiebresDelSku) {
-      if (q.en_quiebre_full) {
+      if (q.en_quiebre_full && q.explicito) {
         const fechaMs = new Date(q.fecha).getTime();
         const semIdx = Math.floor((hoyMs - fechaMs) / (7 * 86400000));
-        if (semIdx >= 0 && semIdx < 9) semanasEnQuiebre.add(semIdx);
+        if (semIdx >= 0 && semIdx < 9) {
+          diasQuiebrePorSemana.set(semIdx, (diasQuiebrePorSemana.get(semIdx) || 0) + 1);
+        }
       }
     }
+    const semanasEnQuiebre = new Set<number>();
+    diasQuiebrePorSemana.forEach((dias, sem) => {
+      if (dias >= 3) semanasEnQuiebre.add(sem);
+    });
 
     // Velocidades con exclusión de quiebres
     const vel7d = sumar(ordenesFisicas7d); // 7 días = 1 semana, no se excluye
@@ -562,13 +597,73 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
     // Velocidad ponderada (Promedio Móvil Ponderado)
     let velPonderada = (vel7d * 0.5) + (vel30d * 0.3) + (vel60d * 0.2);
 
-    // Referencia ProfitGuard: sumar vel_promedio de todos los SKU Venta asociados (en uds físicas)
+    // Referencia ProfitGuard: max (no suma) de vel_promedio de los SKU Venta asociados.
+    // PG reporta velocidad total del listing, no por formato — sumar duplica la velocidad.
     let velPG = 0;
     for (const va of ventasAsoc) {
       const vpg = velProfitguard.get(va.skuVenta) || 0;
-      velPG += vpg * va.unidades;
+      velPG = Math.max(velPG, vpg * va.unidades);
     }
     if (velPG > velPonderada) velPonderada = velPG;
+
+    // ── DEBUG: capturar datos intermedios para un SKU específico ──
+    if (debugSkuUp && skuOrigen.toUpperCase() === debugSkuUp) {
+      // Órdenes encontradas por formato
+      const ordenesPorFormato: Record<string, { count: number; totalQty: number; udsFisicas: number }> = {};
+      for (const va of ventasAsoc) {
+        const ords = ordenesPorSkuVenta.get(va.skuVenta) || [];
+        const totalQty = ords.reduce((s, o) => s + o.cantidad, 0);
+        ordenesPorFormato[va.skuVenta] = {
+          count: ords.length,
+          totalQty,
+          udsFisicas: totalQty * va.unidades,
+        };
+      }
+
+      // Detalle ProfitGuard por formato
+      const pgPorFormato: Record<string, { velPG_raw: number; unidades: number; velPG_fisico: number }> = {};
+      for (const va of ventasAsoc) {
+        const vpg = velProfitguard.get(va.skuVenta) || 0;
+        pgPorFormato[va.skuVenta] = {
+          velPG_raw: vpg,
+          unidades: va.unidades,
+          velPG_fisico: vpg * va.unidades,
+        };
+      }
+
+      // Detalle quiebres
+      const quiebresExplicitos = quiebresDelSku.filter(q => q.explicito && q.en_quiebre_full);
+      const quiebresInferidos = quiebresDelSku.filter(q => !q.explicito && q.en_quiebre_full);
+      const diasQuiebreDebug: Record<number, number> = {};
+      diasQuiebrePorSemana.forEach((dias, sem) => { diasQuiebreDebug[sem] = dias; });
+
+      debugLog = {
+        sku_origen: skuOrigen,
+        ventasAsoc_count: ventasAsoc.length,
+        ventasAsoc: ventasAsoc.map(v => ({ skuVenta: v.skuVenta, unidades: v.unidades })),
+        ordenes_por_formato: ordenesPorFormato,
+        ordenes_procesadas_total: ordenesYaProcesadas.size,
+        suma_uds_fisicas_7d: sumar(ordenesFisicas7d),
+        suma_uds_fisicas_30d: sumar(ordenesFisicas30d),
+        suma_uds_fisicas_60d: sumar(ordenesFisicas60d),
+        quiebres_total: quiebresDelSku.length,
+        quiebres_explicitos: quiebresExplicitos.length,
+        quiebres_inferidos_ignorados: quiebresInferidos.length,
+        dias_quiebre_por_semana: diasQuiebreDebug,
+        semanas_en_quiebre: Array.from(semanasEnQuiebre),
+        semanas_activas_30d: semanasActivas30d,
+        semanas_activas_60d: semanasActivas60d,
+        vel_7d: round2(vel7d),
+        vel_30d: round2(vel30d),
+        vel_60d: round2(vel60d),
+        vel_ponderada_antes_PG: round2((vel7d * 0.5) + (vel30d * 0.3) + (vel60d * 0.2)),
+        velPG_max: round2(velPG),
+        velPG_por_formato: pgPorFormato,
+        vel_ponderada_final: round2(velPonderada),
+        fullQty30d,
+        flexQty30d,
+      };
+    }
 
     // Distribución por canal
     const totalCanal30d = fullQty30d + flexQty30d;
@@ -1074,7 +1169,7 @@ export function recalcularTodo(input: RecalculoInput): SkuIntelRow[] {
     r.alertas_count = alertas.length;
   }
 
-  return rows;
+  return { rows, debugLog };
 }
 
 /* ═══════════════════════════════════════════════════════════
