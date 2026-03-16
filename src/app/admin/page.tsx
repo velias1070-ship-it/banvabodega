@@ -7359,6 +7359,10 @@ function AdminStockML() {
       || (prod?.name || "").toLowerCase().includes(ql);
   });
 
+  // Separar vinculados vs sin vincular (SKU = item_id de ML = sin mapeo real)
+  const vinculados = filtered.filter(r => r.sku !== r.item_id && !r.sku.startsWith("MLC"));
+  const sinVincular = filtered.filter(r => r.sku === r.item_id || r.sku.startsWith("MLC"));
+
   const syncOne = async (sku: string, force = false) => {
     const qty = parseInt(overrides[sku] || "0", 10);
     if (isNaN(qty) || qty < 0) return;
@@ -7387,11 +7391,11 @@ function AdminStockML() {
   };
 
   const syncAll = async (force = false) => {
-    if (!confirm(`Sincronizar ${filtered.length} SKUs a MercadoLibre?`)) return;
+    if (!confirm(`Sincronizar ${vinculados.length} SKUs vinculados a MercadoLibre?`)) return;
     setSyncAllLoading(true);
     const quantities: Record<string, number> = {};
     const skus: string[] = [];
-    for (const r of filtered) {
+    for (const r of vinculados) {
       const qty = parseInt(overrides[r.sku] || "0", 10);
       quantities[r.sku] = isNaN(qty) ? r.stock_wms : qty;
       skus.push(r.sku);
@@ -7426,11 +7430,11 @@ function AdminStockML() {
     }
   };
 
-  // KPIs
-  const totalWms = filtered.reduce((s, r) => s + r.stock_wms, 0);
-  const totalFlex = filtered.reduce((s, r) => s + r.stock_flex_ml, 0);
-  const totalFull = filtered.reduce((s, r) => s + r.stock_full_ml, 0);
-  const desincronizados = filtered.filter(r => {
+  // KPIs (solo vinculados)
+  const totalWms = vinculados.reduce((s, r) => s + r.stock_wms, 0);
+  const totalFlex = vinculados.reduce((s, r) => s + r.stock_flex_ml, 0);
+  const totalFull = vinculados.reduce((s, r) => s + r.stock_full_ml, 0);
+  const desincronizados = vinculados.filter(r => {
     const deseado = parseInt(overrides[r.sku] || "0", 10);
     return r.stock_flex_ml !== deseado;
   }).length;
@@ -7444,9 +7448,9 @@ function AdminStockML() {
             style={{padding:"8px 16px",borderRadius:8,background:"var(--bg3)",color:"var(--txt)",border:"1px solid var(--bg4)",fontWeight:600,fontSize:12,cursor:"pointer"}}>
             {loading ? "Cargando..." : "🔄 Refrescar"}
           </button>
-          <button onClick={() => syncAll()} disabled={syncAllLoading || filtered.length === 0}
+          <button onClick={() => syncAll()} disabled={syncAllLoading || vinculados.length === 0}
             style={{padding:"8px 16px",borderRadius:8,background:"var(--cyan)",color:"#000",border:"none",fontWeight:700,fontSize:12,cursor:"pointer"}}>
-            {syncAllLoading ? "Sincronizando..." : `⚡ Sync Todo (${filtered.length})`}
+            {syncAllLoading ? "Sincronizando..." : `⚡ Sync Todo (${vinculados.length})`}
           </button>
         </div>
       </div>
@@ -7456,8 +7460,9 @@ function AdminStockML() {
       {/* KPIs */}
       <div className="kpi-grid" style={{gridTemplateColumns:"repeat(4, 1fr)"}}>
         <div className="kpi">
-          <div style={{fontSize:10,color:"var(--txt3)",textTransform:"uppercase",letterSpacing:1}}>SKUs Mapeados</div>
-          <div style={{fontSize:24,fontWeight:700,fontFamily:"var(--font-mono)"}}>{filtered.length}</div>
+          <div style={{fontSize:10,color:"var(--txt3)",textTransform:"uppercase",letterSpacing:1}}>SKUs Vinculados</div>
+          <div style={{fontSize:24,fontWeight:700,fontFamily:"var(--font-mono)"}}>{vinculados.length}</div>
+          {sinVincular.length > 0 && <div style={{fontSize:10,color:"var(--amber)",marginTop:2}}>{sinVincular.length} sin vincular</div>}
         </div>
         <div className="kpi">
           <div style={{fontSize:10,color:"var(--txt3)",textTransform:"uppercase",letterSpacing:1}}>Stock WMS</div>
@@ -7479,9 +7484,11 @@ function AdminStockML() {
 
       {loading ? (
         <div style={{padding:40,textAlign:"center",color:"var(--txt3)"}}>Consultando stock en MercadoLibre...</div>
-      ) : filtered.length === 0 ? (
+      ) : vinculados.length === 0 && sinVincular.length === 0 ? (
         <div style={{padding:40,textAlign:"center",color:"var(--txt3)"}}>No hay SKUs mapeados a ML. Configura los mapeos en la pestaña Config.</div>
       ) : (
+        <>
+        {vinculados.length > 0 && (
         <div style={{overflowX:"auto"}}>
           <table className="tbl" style={{width:"100%",fontSize:12}}>
             <thead>
@@ -7497,7 +7504,7 @@ function AdminStockML() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map(r => {
+              {vinculados.map(r => {
                 const prod = s.products[r.sku];
                 const deseado = parseInt(overrides[r.sku] || "0", 10);
                 const diff = r.stock_flex_ml !== deseado;
@@ -7544,6 +7551,38 @@ function AdminStockML() {
             </tbody>
           </table>
         </div>
+        )}
+
+        {/* Sin vincular */}
+        {sinVincular.length > 0 && (
+          <div className="card" style={{marginTop:8}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+              <div>
+                <div style={{fontWeight:700,fontSize:14,color:"var(--amber)"}}>Sin vincular ({sinVincular.length})</div>
+                <div style={{fontSize:11,color:"var(--txt3)"}}>Items en tu cuenta ML que no están vinculados a un producto del WMS. Vinculalos desde Productos para que el sistema pueda sincronizar stock.</div>
+              </div>
+            </div>
+            <table className="tbl" style={{width:"100%",fontSize:12}}>
+              <thead>
+                <tr>
+                  <th style={{textAlign:"left"}}>Item ID</th>
+                  <th style={{textAlign:"right"}}>Flex ML</th>
+                  <th style={{textAlign:"right"}}>Full ML</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sinVincular.map(r => (
+                  <tr key={r.sku + r.item_id} style={{opacity:0.7}}>
+                    <td className="mono" style={{fontWeight:600,color:"var(--amber)"}}>{r.item_id}</td>
+                    <td style={{textAlign:"right",fontFamily:"var(--font-mono)"}}>{r.stock_flex_ml}</td>
+                    <td style={{textAlign:"right",fontFamily:"var(--font-mono)"}}>{r.stock_full_ml}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        </>
       )}
 
       <div className="card" style={{padding:12,fontSize:11,color:"var(--txt3)"}}>
