@@ -326,6 +326,42 @@ export async function queryPrevIntelligence(): Promise<Map<string, {
   return map;
 }
 
+/** Velocidad objetivo por SKU Origen */
+export async function queryVelObjetivos(): Promise<Map<string, number>> {
+  const sb = getServerSupabase();
+  if (!sb) return new Map();
+  const data = await paginatedSelect(() =>
+    sb.from("sku_intelligence")
+      .select("sku_origen, vel_objetivo")
+      .gt("vel_objetivo", 0)
+  );
+  const map = new Map<string, number>();
+  for (const row of data) {
+    map.set(row.sku_origen as string, (row.vel_objetivo as number) || 0);
+  }
+  return map;
+}
+
+/** Config de targets ABC desde intel_config */
+export async function queryIntelConfig(): Promise<{
+  target_dias_a: number;
+  target_dias_b: number;
+  target_dias_c: number;
+}> {
+  const sb = getServerSupabase();
+  if (!sb) return { target_dias_a: 42, target_dias_b: 28, target_dias_c: 14 };
+  const { data } = await sb.from("intel_config")
+    .select("target_dias_a, target_dias_b, target_dias_c")
+    .eq("id", "main")
+    .single();
+  if (!data) return { target_dias_a: 42, target_dias_b: 28, target_dias_c: 14 };
+  return {
+    target_dias_a: (data.target_dias_a as number) || 42,
+    target_dias_b: (data.target_dias_b as number) || 28,
+    target_dias_c: (data.target_dias_c as number) || 14,
+  };
+}
+
 /* ───── Upserts ───── */
 
 export interface SkuIntelligenceUpsert {

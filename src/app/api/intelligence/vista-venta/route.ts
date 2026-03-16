@@ -21,7 +21,7 @@ export async function GET() {
     // ── Fetch en paralelo ──
     const [intelRes, compRes, prodRes, cacheRes, ordRes] = await Promise.all([
       sb.from("sku_intelligence")
-        .select("sku_origen, nombre, categoria, proveedor, skus_venta, abc, xyz, cuadrante, accion, prioridad, alertas, alertas_count, target_dias_full, stock_bodega, stock_en_transito, mandar_full, pedir_proveedor, evento_activo, multiplicador_evento, liquidacion_accion, dias_en_quiebre, vel_pre_quiebre, es_quiebre_proveedor, abc_pre_quiebre, es_catch_up, venta_perdida_pesos, updated_at, vel_ponderada")
+        .select("sku_origen, nombre, categoria, proveedor, skus_venta, abc, xyz, cuadrante, accion, prioridad, alertas, alertas_count, target_dias_full, stock_bodega, stock_en_transito, mandar_full, pedir_proveedor, evento_activo, multiplicador_evento, liquidacion_accion, dias_en_quiebre, vel_pre_quiebre, es_quiebre_proveedor, abc_pre_quiebre, es_catch_up, venta_perdida_pesos, updated_at, vel_ponderada, vel_objetivo, gap_vel_pct, gmroi, dio")
         .or("vel_ponderada.gt.0,stock_total.gt.0"),
       sb.from("composicion_venta").select("sku_venta, sku_origen, unidades"),
       sb.from("productos").select("sku, sku_venta, nombre, costo, precio"),
@@ -236,6 +236,10 @@ export async function GET() {
           es_catch_up: intel.es_catch_up,
           venta_perdida_pesos: intel.venta_perdida_pesos,
           liquidacion_accion: intel.liquidacion_accion,
+          vel_objetivo: (intel.vel_objetivo as number) || 0,
+          gap_vel_pct: intel.gap_vel_pct ?? null,
+          gmroi: (intel.gmroi as number) || 0,
+          dio: (intel.dio as number) || 0,
           updated_at: intel.updated_at,
           // Propios del SKU Venta
           stock_full: stFull,
