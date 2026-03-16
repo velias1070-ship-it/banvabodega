@@ -1670,6 +1670,10 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
   }
 
   // 5. Upsert ml_items_map
+  // Deduplicar por (sku, item_id) — para items con variaciones, múltiples variaciones
+  // pueden resolver al mismo sku_venta, generando filas con la misma PK en el batch.
+  // PostgreSQL no permite que un upsert toque la misma fila dos veces.
+  // Preferimos la fila con inventory_id (variación real sobre padre).
   const mapped = itemsMapRows.filter(r => r.sku_venta);
   const unmapped = itemsMapRows.filter(r => !r.sku_venta);
   console.log(`[syncStockFull] ${mapped.length} items con SKU resuelto, ${unmapped.length} sin mapeo`);
@@ -1677,6 +1681,7 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     console.log(`[syncStockFull] Items sin mapeo (primeros 10): ${unmapped.slice(0, 10).map(r => `${r.item_id}(scf=${r.titulo})`).join(", ")}`);
   }
 
+  const dedupMap = new Map<string, typeof mlItemsUpsert[0]>();
   const mlItemsUpsert = itemsMapRows.map(r => ({
     sku: r.sku_venta || r.item_id, // fallback a item_id si no hay mapeo
     item_id: r.item_id,
@@ -1691,9 +1696,18 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     activo: true,
     updated_at: new Date().toISOString(),
   }));
+  for (const row of mlItemsUpsert) {
+    const key = `${row.sku}|${row.item_id}`;
+    const existing = dedupMap.get(key);
+    // Preferir fila con inventory_id (variación real)
+    if (!existing || (!existing.inventory_id && row.inventory_id)) {
+      dedupMap.set(key, row);
+    }
+  }
+  const dedupedUpsert = Array.from(dedupMap.values());
 
-  for (let i = 0; i < mlItemsUpsert.length; i += 500) {
-    const batch = mlItemsUpsert.slice(i, i + 500);
+  for (let i = 0; i < dedupedUpsert.length; i += 500) {
+    const batch = dedupedUpsert.slice(i, i + 500);
     const { error } = await sb.from("ml_items_map").upsert(batch, { onConflict: "sku,item_id" });
     if (error) errores.push(`Upsert ml_items_map error: ${error.message}`);
   }
