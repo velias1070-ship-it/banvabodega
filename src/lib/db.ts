@@ -179,7 +179,9 @@ export interface DBDiscrepanciaQty {
 // Strip auto-generated fields (created_at, updated_at) that Supabase rejects on upsert
 function cleanProduct(p: DBProduct): DBProduct {
   return {
-    sku: p.sku, sku_venta: p.sku_venta, codigo_ml: p.codigo_ml,
+    sku: (p.sku || "").toUpperCase().trim(),
+    sku_venta: p.sku_venta ? p.sku_venta.split(",").map(s => s.trim().toUpperCase()).filter(Boolean).join(",") : p.sku_venta,
+    codigo_ml: p.codigo_ml,
     nombre: p.nombre, categoria: p.categoria, proveedor: p.proveedor,
     costo: p.costo, precio: p.precio, reorder: p.reorder,
     requiere_etiqueta: p.requiere_etiqueta, tamano: p.tamano, color: p.color,
@@ -208,7 +210,7 @@ export async function upsertProductos(prods: DBProduct[]) {
 
 export async function deleteProducto(sku: string) {
   const sb = getSupabase(); if (!sb) return;
-  await sb.from("productos").delete().eq("sku", sku);
+  await sb.from("productos").delete().eq("sku", sku.toUpperCase().trim());
 }
 
 // ==================== POSICIONES ====================
@@ -241,12 +243,16 @@ export async function fetchStock(): Promise<DBStock[]> {
 }
 
 export async function updateStock(sku: string, posicion_id: string, delta: number, sku_venta?: string | null) {
+  sku = sku.toUpperCase().trim();
+  if (sku_venta) sku_venta = sku_venta.toUpperCase().trim();
   const sb = getSupabase(); if (!sb) return;
   const { error } = await sb.rpc("update_stock", { p_sku: sku, p_posicion: posicion_id, p_delta: delta, p_sku_venta: sku_venta ?? null });
   if (error) throw new Error(`updateStock failed for ${sku}: ${error.message}`);
 }
 
 export async function setStock(sku: string, posicion_id: string, cantidad: number, sku_venta?: string | null) {
+  sku = sku.toUpperCase().trim();
+  if (sku_venta) sku_venta = sku_venta.toUpperCase().trim();
   const sb = getSupabase(); if (!sb) return;
   const sv = sku_venta ?? null;
   if (cantidad <= 0) {
@@ -263,7 +269,7 @@ export async function setStock(sku: string, posicion_id: string, cantidad: numbe
 
 export async function deleteStockBySku(sku: string) {
   const sb = getSupabase(); if (!sb) return;
-  await sb.from("stock").delete().eq("sku", sku);
+  await sb.from("stock").delete().eq("sku", sku.toUpperCase().trim());
 }
 
 // ==================== MOVIMIENTOS ====================
@@ -290,7 +296,7 @@ export async function fetchAllMovimientos(): Promise<DBMovimiento[]> {
 
 export async function fetchMovimientosBySku(sku: string): Promise<DBMovimiento[]> {
   const sb = getSupabase(); if (!sb) return [];
-  const { data } = await sb.from("movimientos").select("*").eq("sku", sku).order("created_at", { ascending: false });
+  const { data } = await sb.from("movimientos").select("*").eq("sku", sku.toUpperCase().trim()).order("created_at", { ascending: false });
   return data || [];
 }
 
@@ -302,7 +308,7 @@ export async function fetchMovimientosByRecepcion(recepcionId: string): Promise<
 
 export async function insertMovimiento(m: Omit<DBMovimiento, "id" | "created_at">) {
   const sb = getSupabase(); if (!sb) return;
-  const { error } = await sb.from("movimientos").insert(m);
+  const { error } = await sb.from("movimientos").insert({ ...m, sku: (m.sku || "").toUpperCase().trim() });
   if (error) throw new Error(`insertMovimiento failed for ${m.sku}: ${error.message}`);
 }
 
@@ -401,7 +407,7 @@ export async function deleteDiscrepanciasPendientes(recepcionId: string) {
 
 export async function updateProductoCosto(sku: string, nuevoCosto: number) {
   const sb = getSupabase(); if (!sb) return;
-  const { error } = await sb.from("productos").update({ costo: nuevoCosto }).eq("sku", sku);
+  const { error } = await sb.from("productos").update({ costo: nuevoCosto }).eq("sku", sku.toUpperCase().trim());
   if (error) console.error("updateProductoCosto error:", error.message, { sku, nuevoCosto });
 }
 
@@ -560,6 +566,12 @@ export async function fetchComposicionVenta(): Promise<DBComposicionVenta[]> {
 
 export async function upsertComposicionVenta(items: DBComposicionVenta[]) {
   const sb = getSupabase(); if (!sb) return;
+  // Normalizar SKUs a UPPER
+  items = items.map(it => ({
+    ...it,
+    sku_venta: (it.sku_venta || "").toUpperCase().trim(),
+    sku_origen: (it.sku_origen || "").toUpperCase().trim(),
+  }));
   for (let i = 0; i < items.length; i += 500) {
     const batch = items.slice(i, i + 500);
     const { error } = await sb.from("composicion_venta").upsert(batch, { onConflict: "sku_venta,sku_origen" });
@@ -585,7 +597,7 @@ export async function getComponentesVenta(codigoMl: string): Promise<DBComposici
 // Dado un SKU venta, ¿qué SKUs físicos necesito?
 export async function getComponentesPorSkuVenta(skuVenta: string): Promise<DBComposicionVenta[]> {
   const sb = getSupabase(); if (!sb) return [];
-  const { data } = await sb.from("composicion_venta").select("*").eq("sku_venta", skuVenta);
+  const { data } = await sb.from("composicion_venta").select("*").eq("sku_venta", skuVenta.toUpperCase().trim());
   return data || [];
 }
 
@@ -1343,9 +1355,18 @@ export interface DBMLItemMap {
   sku: string;
   item_id: string;
   variation_id: number | null;
+  user_product_id: string | null;
+  stock_version: number | null;
+  inventory_id: string | null;
+  sku_venta: string | null;
+  sku_origen: string | null;
+  titulo: string | null;
+  available_quantity: number | null;
+  sold_quantity: number | null;
   activo: boolean;
   ultimo_sync: string | null;
   ultimo_stock_enviado: number | null;
+  updated_at: string | null;
 }
 
 export async function fetchMLItemsMap(): Promise<DBMLItemMap[]> {
@@ -1399,7 +1420,7 @@ export async function getStockSyncQueue(): Promise<string[]> {
 
 export async function addToStockSyncQueue(skus: string[]): Promise<void> {
   const sb = getSupabase(); if (!sb) return;
-  const rows = skus.map(sku => ({ sku, created_at: new Date().toISOString() }));
+  const rows = skus.map(sku => ({ sku: sku.toUpperCase().trim(), created_at: new Date().toISOString() }));
   await sb.from("stock_sync_queue").upsert(rows, { onConflict: "sku" });
 }
 
@@ -1452,6 +1473,8 @@ export interface DBRcvVenta {
   tipo_doc: string;
   nro: string | null;
   rut_emisor: string | null;
+  rut_receptor: string | null;
+  razon_social: string | null;
   folio: string | null;
   fecha_docto: string | null;
   monto_neto: number;
@@ -1460,6 +1483,7 @@ export interface DBRcvVenta {
   monto_total: number;
   fecha_recepcion: string | null;
   evento_receptor: string | null;
+  estado: string | null;
   created_at?: string;
 }
 
@@ -1641,6 +1665,11 @@ export async function fetchSyncLog(empresaId: string): Promise<DBSyncLog[]> {
   const sb = getSupabase(); if (!sb) return [];
   const { data } = await sb.from("sync_log").select("*").eq("empresa_id", empresaId).order("synced_at", { ascending: false });
   return (data || []) as DBSyncLog[];
+}
+
+export async function insertSyncLog(log: Omit<DBSyncLog, "id" | "synced_at">): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("sync_log").insert(log);
 }
 
 // ==================== CONCILIADOR — RCV COMPRAS ====================

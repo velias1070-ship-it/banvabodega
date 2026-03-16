@@ -11,7 +11,8 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const from = searchParams.get("from");
     const to = searchParams.get("to");
-    const sku = searchParams.get("sku");
+    const skuRaw = searchParams.get("sku");
+    const sku = skuRaw ? skuRaw.toUpperCase().trim() : null;
     const canal = searchParams.get("canal");
     const estado = searchParams.get("estado") || "Pagada";
     const groupBy = searchParams.get("group_by"); // 'sku', 'sku_canal', 'dia', 'semana'

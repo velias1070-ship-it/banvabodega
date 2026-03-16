@@ -25,7 +25,10 @@ interface OrderRow {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const ordenes: OrderRow[] = body.ordenes;
+    const ordenes: OrderRow[] = (body.ordenes || []).map((o: OrderRow) => ({
+      ...o,
+      sku_venta: (o.sku_venta || "").toUpperCase().trim(),
+    }));
     const fuente: string = body.fuente || "manual";
 
     if (!Array.isArray(ordenes) || ordenes.length === 0) {
@@ -131,6 +134,19 @@ export async function POST(req: NextRequest) {
       ordenes_sin_cambio: sinCambio,
       ordenes_total: ordenes.length,
     });
+
+    // Disparar recálculo de inteligencia con los SKUs afectados (fire and forget)
+    if (nuevas > 0 || actualizadas > 0) {
+      const skusAfectados = Array.from(new Set(toUpsert.map(o => o.sku_venta)));
+      const baseUrl = process.env.VERCEL_URL
+        ? `https://${process.env.VERCEL_URL}`
+        : "http://localhost:3000";
+      fetch(`${baseUrl}/api/intelligence/recalcular`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ skus: skusAfectados }),
+      }).catch(err => console.error("[orders/import] Error disparando recálculo intelligence:", err));
+    }
 
     return NextResponse.json({
       ok: true,

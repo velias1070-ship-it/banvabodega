@@ -220,7 +220,7 @@ function parseOrdenes(wb: XLSX.WorkBook): OrdenRaw[] {
     if (!row || !Array.isArray(row)) continue;
     const estado = String(row[iEstado] || "").trim();
     if (estado !== "Pagada") continue;
-    const sku = String(row[iSku] || "").trim();
+    const sku = String(row[iSku] || "").trim().toUpperCase();
     if (!sku) continue;
     const cantidad = Number(row[iCantidad]) || 0;
     if (cantidad <= 0) continue;
@@ -259,7 +259,7 @@ function parseVelocidad(wb: XLSX.WorkBook): VelocidadRaw[] {
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
     if (!row || !Array.isArray(row)) continue;
-    const skuVenta = String(row[0] || "").trim();
+    const skuVenta = String(row[0] || "").trim().toUpperCase();
     if (!skuVenta) continue;
     const nombre = String(row[1] || "").trim();
     const promedioSemanal = Number(row[10]) || 0;
@@ -867,9 +867,9 @@ export default function AdminReposicion() {
   const persistirOrdenes = useCallback(async (ordenesArr: OrdenRaw[], fuente: string) => {
     try {
       const mapped = ordenesArr.map(o => ({
-        order_id: `manual-${o.fecha.toISOString().slice(0,10)}-${o.sku}`,
+        order_id: `manual-${o.fecha.toISOString().slice(0,10)}-${o.sku.toUpperCase().trim()}`,
         fecha: o.fecha.toISOString(),
-        sku_venta: o.sku,
+        sku_venta: o.sku.toUpperCase().trim(),
         cantidad: o.cantidad,
         canal: o.canal === "full" ? "Full" : "Flex",
         precio_unitario: o.subtotal > 0 && o.cantidad > 0 ? Math.round(o.subtotal / o.cantidad) : 0,
@@ -1073,10 +1073,27 @@ export default function AdminReposicion() {
     if (!file) return;
     setFileNameVelocidad(file.name);
     const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = async (ev) => {
       const data = new Uint8Array(ev.target?.result as ArrayBuffer);
       const wb = XLSX.read(data, { type: "array" });
-      setVelocidades(parseVelocidad(wb));
+      const parsed = parseVelocidad(wb);
+      setVelocidades(parsed);
+
+      // Persistir stock Full en stock_full_cache para que intelligence lo lea server-side
+      const sb = getSupabase();
+      if (sb && parsed.length > 0) {
+        const rows = parsed.map(v => ({
+          sku_venta: v.skuVenta.toUpperCase().trim(),
+          cantidad: v.stockFull,
+          nombre: v.nombre,
+          vel_promedio: v.promedioSemanal,
+          updated_at: new Date().toISOString(),
+        }));
+        for (let i = 0; i < rows.length; i += 500) {
+          await sb.from("stock_full_cache").upsert(rows.slice(i, i + 500), { onConflict: "sku_venta" });
+        }
+        console.log(`[AdminReposicion] stock_full_cache actualizado: ${rows.length} SKUs`);
+      }
     };
     reader.readAsArrayBuffer(file);
   }, []);

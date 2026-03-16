@@ -52,6 +52,18 @@ export async function dispararTriggerServer(evento: string, datos?: Record<strin
     }
 
     console.log(`[trigger-server] Evento '${evento}' disparó ${matching.length} agente(s): ${matching.map((t: { agente: string }) => t.agente).join(", ")}`);
+
+    // Disparar recálculo de inteligencia para eventos relevantes
+    const eventosIntelligence = ["ordenes_importadas", "picking_completado", "recepcion_cerrada", "proveedor_cargado"];
+    if (eventosIntelligence.includes(evento)) {
+      const skus = datos?.skus as string[] | undefined;
+      const isFull = evento === "proveedor_cargado" || evento === "ordenes_importadas";
+      fetch(`${baseUrl}/api/intelligence/recalcular`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(isFull ? { full: true } : skus ? { skus } : { full: true }),
+      }).catch(err => console.error(`[trigger-server] Error disparando intelligence:`, err));
+    }
   } catch (err) {
     console.error(`[trigger-server] Error procesando evento '${evento}':`, err);
   }

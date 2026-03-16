@@ -5,13 +5,15 @@ import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, s
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
-import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, fetchAllPedidosFlex, fetchPedidosFlexByEstado, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku } from "@/lib/db";
+import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, fetchAllPedidosFlex, fetchPedidosFlexByEstado, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal } from "@/lib/db";
 import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap, ShipmentWithItems } from "@/lib/db";
 import { getOAuthUrl } from "@/lib/ml";
 import Link from "next/link";
 import SheetSync from "@/components/SheetSync";
 import AdminReposicion from "@/components/AdminReposicion";
 import AdminAgentes from "@/components/AdminAgentes";
+import AdminInteligencia from "@/components/AdminInteligencia";
+import AdminEventos from "@/components/AdminEventos";
 
 const ADMIN_PIN = "1234"; // Change this
 const AUTH_KEY = "banva_admin_auth";
@@ -59,7 +61,7 @@ function LoginGate({ onLogin }: { onLogin: (pin: string) => boolean }) {
 }
 
 export default function AdminPage() {
-  const [tab, setTab] = useState<"dash"|"rec"|"picking"|"pedidos"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"agentes"|"config">("dash");
+  const [tab, setTab] = useState<"dash"|"rec"|"picking"|"pedidos"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"intel"|"eventos"|"agentes"|"stockml"|"config">("dash");
   const [,setTick] = useState(0);
   const r = useCallback(()=>setTick(t=>t+1),[]);
   const [mounted, setMounted] = useState(false);
@@ -91,7 +93,7 @@ export default function AdminPage() {
       <SheetSync onSynced={r}/>
       <div className="admin-layout">
         <nav className="admin-sidebar">
-          {([["dash","Dashboard","📊"],["rec","Recepciones","📦"],["picking","Picking Flex","🏷️"],["pedidos","Pedidos ML","🛒"],["ops","Operaciones","⚡"],["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["reposicion","Reposición","🔄"],["agentes","Agentes IA","🤖"],["config","Configuración","⚙️"]] as const).map(([key,label,icon])=>(
+          {([["dash","Dashboard","📊"],["rec","Recepciones","📦"],["picking","Picking Flex","🏷️"],["pedidos","Pedidos ML","🛒"],["ops","Operaciones","⚡"],["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["reposicion","Reposición","🔄"],["intel","Inteligencia","🧠"],["eventos","Eventos","📅"],["agentes","Agentes IA","🤖"],["stockml","Stock ML","📡"],["config","Configuración","⚙️"]] as const).map(([key,label,icon])=>(
             <button key={key} className={`sidebar-btn ${tab===key?"active":""}`} onClick={()=>setTab(key as any)}>
               <span className="sidebar-icon">{icon}</span>
               <span className="sidebar-label">{label}</span>
@@ -106,7 +108,7 @@ export default function AdminPage() {
         <main className="admin-main">
           {/* Mobile tabs fallback */}
           <div className="admin-mobile-tabs">
-            {([["dash","Dashboard"],["rec","Recepción"],["picking","Picking"],["pedidos","Pedidos ML"],["ops","Ops"],["inv","Inventario"],["mov","Movim."],["prod","Productos"],["reposicion","Reposición"],["agentes","Agentes IA"],["config","Config"]] as const).map(([key,label])=>(
+            {([["dash","Dashboard"],["rec","Recepción"],["picking","Picking"],["pedidos","Pedidos ML"],["ops","Ops"],["inv","Inventario"],["mov","Movim."],["prod","Productos"],["reposicion","Reposición"],["intel","Inteligencia"],["eventos","Eventos"],["agentes","Agentes IA"],["stockml","Stock ML"],["config","Config"]] as const).map(([key,label])=>(
               <button key={key} className={`tab ${tab===key?"active-cyan":""}`} onClick={()=>setTab(key as any)}>{label}</button>
             ))}
           </div>
@@ -120,7 +122,10 @@ export default function AdminPage() {
             {tab==="mov"&&<Movimientos/>}
             {tab==="prod"&&<Productos refresh={r}/>}
             {tab==="reposicion"&&<AdminReposicion/>}
+            {tab==="intel"&&<AdminInteligencia/>}
+            {tab==="eventos"&&<AdminEventos/>}
             {tab==="agentes"&&<AdminAgentes/>}
+            {tab==="stockml"&&<AdminStockML/>}
             {tab==="config"&&<Configuracion refresh={r}/>}
           </div>
         </main>
@@ -212,6 +217,10 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   const [newCostoNeto, setNewCostoNeto] = useState(0);
   const [newIva, setNewIva] = useState(0);
   const [newCostoBruto, setNewCostoBruto] = useState(0);
+
+  // Edit factura original
+  const [editingFactura, setEditingFactura] = useState(false);
+  const [editFacturaLineas, setEditFacturaLineas] = useState<{sku:string;nombre:string;cantidad:number;costo_unitario:number}[]>([]);
 
   // Add line to existing
   const [addSku, setAddSku] = useState("");
@@ -652,10 +661,13 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
 
             return (facturaOrig || netoAjustado > 0) ? (
               <div style={{marginTop:10}}>
-                {/* Bloque 1: Factura Original */}
-                {facturaOrig && (
+                {/* Bloque 1: Factura Original (editable) */}
+                {facturaOrig && !editingFactura && (
                   <div style={{...costBlockStyle,background:"var(--bg3)"}}>
-                    <div style={{fontSize:11,fontWeight:700,color:"var(--txt2)",marginBottom:8}}>Factura Original (N° {selRec.folio} — {selRec.proveedor})</div>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                      <span style={{fontSize:11,fontWeight:700,color:"var(--txt2)"}}>Factura Original (N° {selRec.folio} — {selRec.proveedor})</span>
+                      {isEditable && <button onClick={() => { setEditFacturaLineas(facturaOrig.lineas.map(l => ({...l}))); setEditingFactura(true); }} style={{padding:"3px 8px",borderRadius:4,background:"var(--bg4)",color:"var(--cyan)",fontSize:10,fontWeight:700,border:"1px solid var(--bg4)",cursor:"pointer"}}>Editar</button>}
+                    </div>
                     <div style={{marginBottom:8}}>
                       {facturaOrig.lineas.map((fl, i) => (
                         <div key={i} style={{display:"flex",justifyContent:"space-between",fontSize:11,padding:"2px 0",color:"var(--txt2)"}}>
@@ -666,11 +678,113 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                         </div>
                       ))}
                     </div>
-                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,fontSize:12,padding:"6px 0",borderTop:"1px solid var(--bg4)"}}>
-                      <div><span style={{color:"var(--txt3)",fontSize:10}}>Neto:</span> <strong>{fmtMoney(facturaOrig.neto)}</strong></div>
-                      <div><span style={{color:"var(--txt3)",fontSize:10}}>IVA:</span> <strong>{fmtMoney(facturaOrig.iva)}</strong></div>
-                      <div><span style={{color:"var(--txt3)",fontSize:10}}>Bruto:</span> <strong style={{color:"var(--cyan)"}}>{fmtMoney(facturaOrig.bruto)}</strong></div>
+                    {(() => {
+                      const netoCalc = facturaOrig.lineas.reduce((s, l) => s + l.cantidad * l.costo_unitario, 0);
+                      const brutoCalc = Math.round(netoCalc * 1.19);
+                      const ivaCalc = brutoCalc - netoCalc;
+                      const diffNeto = netoCalc - facturaOrig.neto;
+                      return (<>
+                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,fontSize:12,padding:"6px 0",borderTop:"1px solid var(--bg4)"}}>
+                          <div><span style={{color:"var(--txt3)",fontSize:10}}>Neto (app):</span> <strong>{fmtMoney(facturaOrig.neto)}</strong></div>
+                          <div><span style={{color:"var(--txt3)",fontSize:10}}>IVA (app):</span> <strong>{fmtMoney(facturaOrig.iva)}</strong></div>
+                          <div><span style={{color:"var(--txt3)",fontSize:10}}>Bruto (app):</span> <strong style={{color:"var(--cyan)"}}>{fmtMoney(facturaOrig.bruto)}</strong></div>
+                        </div>
+                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,fontSize:12,padding:"4px 0 0",borderTop:"1px dashed var(--bg4)"}}>
+                          <div><span style={{color:"var(--txt3)",fontSize:10}}>Neto (calc):</span> <strong style={{color: diffNeto !== 0 ? "var(--amber)" : "var(--txt)"}}>{fmtMoney(netoCalc)}</strong></div>
+                          <div><span style={{color:"var(--txt3)",fontSize:10}}>IVA (calc):</span> <strong style={{color: diffNeto !== 0 ? "var(--amber)" : "var(--txt)"}}>{fmtMoney(ivaCalc)}</strong></div>
+                          <div><span style={{color:"var(--txt3)",fontSize:10}}>Bruto (calc):</span> <strong style={{color: diffNeto !== 0 ? "var(--amber)" : "var(--cyan)"}}>{fmtMoney(brutoCalc)}</strong></div>
+                        </div>
+                        {diffNeto !== 0 && (
+                          <div style={{fontSize:10,color:"var(--amber)",marginTop:4,textAlign:"right"}}>
+                            Diferencia neto: {diffNeto > 0 ? "+" : ""}{fmtMoney(diffNeto)}
+                          </div>
+                        )}
+                      </>);
+                    })()}
+                  </div>
+                )}
+                {/* Bloque 1b: Factura Original — modo edición */}
+                {facturaOrig && editingFactura && (
+                  <div style={{...costBlockStyle,background:"var(--bg3)",border:"1px solid var(--cyan)"}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                      <span style={{fontSize:11,fontWeight:700,color:"var(--cyan)"}}>Editando Factura Original</span>
+                      <div style={{display:"flex",gap:4}}>
+                        <button onClick={() => setEditingFactura(false)} style={{padding:"3px 8px",borderRadius:4,background:"var(--bg4)",color:"var(--txt3)",fontSize:10,fontWeight:700,border:"none",cursor:"pointer"}}>Cancelar</button>
+                        <button onClick={async () => {
+                          const neto = editFacturaLineas.reduce((s, l) => s + l.cantidad * l.costo_unitario, 0);
+                          const iva = Math.round(neto * 0.19);
+                          const bruto = neto + iva;
+                          const newFactura: FacturaOriginal = { lineas: editFacturaLineas, neto, iva, bruto };
+                          setLoading(true);
+                          await updateRecepcionFacturaOriginal(selRec.id!, newFactura);
+                          // Sync qty_factura y costo_unitario en recepcion_lineas; crear línea si es nueva
+                          for (const fl of editFacturaLineas) {
+                            const match = lineas.find(l => l.sku === fl.sku);
+                            if (match) {
+                              await actualizarLineaRecepcion(match.id!, { qty_factura: fl.cantidad, costo_unitario: fl.costo_unitario });
+                            } else {
+                              await agregarLineaRecepcion(selRec.id!, { sku: fl.sku, nombre: fl.nombre, codigoML: "", cantidad: fl.cantidad, costo: fl.costo_unitario, requiereEtiqueta: false });
+                            }
+                          }
+                          // Sync costos en encabezado
+                          await actualizarRecepcion(selRec.id!, { costo_neto: neto, iva, costo_bruto: bruto });
+                          setEditingFactura(false);
+                          await refreshDetail();
+                          setLoading(false);
+                        }} style={{padding:"3px 8px",borderRadius:4,background:"var(--cyan)",color:"#000",fontSize:10,fontWeight:700,border:"none",cursor:"pointer"}}>Guardar</button>
+                      </div>
                     </div>
+                    <div style={{marginBottom:8}}>
+                      {editFacturaLineas.map((fl, i) => (
+                        <div key={i} style={{display:"flex",alignItems:"center",gap:4,fontSize:11,padding:"3px 0",color:"var(--txt2)"}}>
+                          <span className="mono" style={{flex:1}}>{fl.sku}</span>
+                          <span style={{fontSize:9,color:"var(--txt3)"}}>×</span>
+                          <input type="number" value={fl.cantidad} onChange={e => { const v = [...editFacturaLineas]; v[i] = {...v[i], cantidad: Number(e.target.value)||0}; setEditFacturaLineas(v); }}
+                            style={{width:50,padding:"2px 4px",borderRadius:4,background:"var(--bg2)",color:"var(--txt)",border:"1px solid var(--bg4)",fontSize:11,textAlign:"right",fontFamily:"var(--font-mono)"}} />
+                          <span style={{fontSize:9,color:"var(--txt3)"}}>@$</span>
+                          <input type="number" value={fl.costo_unitario} onChange={e => { const v = [...editFacturaLineas]; v[i] = {...v[i], costo_unitario: Number(e.target.value)||0}; setEditFacturaLineas(v); }}
+                            style={{width:70,padding:"2px 4px",borderRadius:4,background:"var(--bg2)",color:"var(--txt)",border:"1px solid var(--bg4)",fontSize:11,textAlign:"right",fontFamily:"var(--font-mono)"}} />
+                          <span className="mono" style={{width:90,textAlign:"right",fontWeight:700}}>{fmtMoney(fl.cantidad * fl.costo_unitario)}</span>
+                          <button onClick={() => { const v = editFacturaLineas.filter((_, j) => j !== i); setEditFacturaLineas(v); }}
+                            style={{padding:"1px 5px",borderRadius:4,background:"var(--redBg)",color:"var(--red)",fontSize:10,fontWeight:700,border:"1px solid var(--redBd)",cursor:"pointer",lineHeight:1}}>×</button>
+                        </div>
+                      ))}
+                      {/* Agregar línea */}
+                      <div style={{display:"flex",alignItems:"center",gap:4,fontSize:11,padding:"5px 0",borderTop:"1px dashed var(--bg4)",marginTop:4}}>
+                        <input placeholder="SKU"
+                          id="factura-orig-new-sku"
+                          style={{flex:1,padding:"2px 4px",borderRadius:4,background:"var(--bg2)",color:"var(--txt)",border:"1px solid var(--bg4)",fontSize:11,fontFamily:"var(--font-mono)"}} />
+                        <span style={{fontSize:9,color:"var(--txt3)"}}>×</span>
+                        <input placeholder="Qty" type="number" id="factura-orig-new-qty"
+                          style={{width:50,padding:"2px 4px",borderRadius:4,background:"var(--bg2)",color:"var(--txt)",border:"1px solid var(--bg4)",fontSize:11,textAlign:"right",fontFamily:"var(--font-mono)"}} />
+                        <span style={{fontSize:9,color:"var(--txt3)"}}>@$</span>
+                        <input placeholder="Costo" type="number" id="factura-orig-new-costo"
+                          style={{width:70,padding:"2px 4px",borderRadius:4,background:"var(--bg2)",color:"var(--txt)",border:"1px solid var(--bg4)",fontSize:11,textAlign:"right",fontFamily:"var(--font-mono)"}} />
+                        <button onClick={() => {
+                          const skuEl = document.getElementById("factura-orig-new-sku") as HTMLInputElement;
+                          const qtyEl = document.getElementById("factura-orig-new-qty") as HTMLInputElement;
+                          const costoEl = document.getElementById("factura-orig-new-costo") as HTMLInputElement;
+                          const sku = skuEl?.value?.trim().toUpperCase(); const qty = Number(qtyEl?.value) || 0; const costo = Number(costoEl?.value) || 0;
+                          if (!sku) return;
+                          const prod = findProduct(sku).find(p => p.sku === sku);
+                          setEditFacturaLineas([...editFacturaLineas, { sku, nombre: prod?.name || sku, cantidad: qty, costo_unitario: costo }]);
+                          if (skuEl) skuEl.value = ""; if (qtyEl) qtyEl.value = ""; if (costoEl) costoEl.value = "";
+                          skuEl?.focus();
+                        }} style={{padding:"2px 8px",borderRadius:4,background:"var(--greenBg)",color:"var(--green)",fontSize:10,fontWeight:700,border:"1px solid var(--greenBd)",cursor:"pointer"}}>+</button>
+                      </div>
+                    </div>
+                    {(() => {
+                      const neto = editFacturaLineas.reduce((s, l) => s + l.cantidad * l.costo_unitario, 0);
+                      const iva = Math.round(neto * 0.19);
+                      const bruto = neto + iva;
+                      return (
+                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,fontSize:12,padding:"6px 0",borderTop:"1px solid var(--cyan)"}}>
+                          <div><span style={{color:"var(--txt3)",fontSize:10}}>Neto:</span> <strong>{fmtMoney(neto)}</strong></div>
+                          <div><span style={{color:"var(--txt3)",fontSize:10}}>IVA:</span> <strong>{fmtMoney(iva)}</strong></div>
+                          <div><span style={{color:"var(--txt3)",fontSize:10}}>Bruto:</span> <strong style={{color:"var(--cyan)"}}>{fmtMoney(bruto)}</strong></div>
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
 
@@ -4504,7 +4618,23 @@ function Productos({ refresh }: { refresh: () => void }) {
   const [showAdd, setShowAdd] = useState(false);
   const [editSku, setEditSku] = useState<string|null>(null);
   const [q, setQ] = useState("");
+  const [mlItems, setMlItems] = useState<DBMLItemMap[]>([]);
   const s = getStore();
+
+  // Cargar ml_items_map para mostrar capa ML en detalle de producto
+  useEffect(() => { fetchMLItemsMap().then(setMlItems); }, []);
+
+  // Index: sku_venta (upper) → ML items
+  const mlBySkuVenta = React.useMemo(() => {
+    const map: Record<string, DBMLItemMap[]> = {};
+    for (const m of mlItems) {
+      const sv = (m.sku_venta || "").toUpperCase();
+      if (!sv) continue;
+      if (!map[sv]) map[sv] = [];
+      map[sv].push(m);
+    }
+    return map;
+  }, [mlItems]);
   const prods = Object.values(s.products).filter(p=>{
     if(!q)return true;const ql=q.toLowerCase();
     return p.sku.toLowerCase().includes(ql)||p.name.toLowerCase().includes(ql)||p.mlCode.toLowerCase().includes(ql)||p.cat.toLowerCase().includes(ql)||p.prov.toLowerCase().includes(ql);
@@ -4574,17 +4704,29 @@ function Productos({ refresh }: { refresh: () => void }) {
                 <td className="mono" style={{fontWeight:700,fontSize:12}}>{p.sku}</td>
                 <td style={{fontSize:12}}>{p.name}</td>
                 <td style={{fontSize:11}}>
-                  {ventas.length > 0 ? ventas.map((v, i) => (
-                    <div key={i} style={{display:"flex",alignItems:"center",gap:4,marginBottom:i<ventas.length-1?2:0}}>
-                      <span style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:3,whiteSpace:"nowrap",
-                        background:v.unidades>1?"var(--amber)15":"var(--cyan)15",
-                        color:v.unidades>1?"var(--amber)":"var(--cyan)"}}>
-                        {v.unidades>1?`x${v.unidades}`:"x1"}
-                      </span>
-                      <span className="mono" style={{fontSize:10}}>{v.codigoMl}</span>
-                      <span style={{fontSize:9,color:"var(--txt3)"}}>{v.skuVenta}</span>
-                    </div>
-                  )) : <span style={{color:"var(--txt3)"}}>Sin publicación</span>}
+                  {ventas.length > 0 ? ventas.map((v, i) => {
+                    const mlItems4sv = mlBySkuVenta[v.skuVenta.toUpperCase()] || [];
+                    return (
+                    <div key={i} style={{marginBottom:i<ventas.length-1?6:0}}>
+                      <div style={{display:"flex",alignItems:"center",gap:4}}>
+                        <span style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:3,whiteSpace:"nowrap",
+                          background:v.unidades>1?"var(--amber)15":"var(--cyan)15",
+                          color:v.unidades>1?"var(--amber)":"var(--cyan)"}}>
+                          {v.unidades>1?`x${v.unidades}`:"x1"}
+                        </span>
+                        <span className="mono" style={{fontSize:10}}>{v.codigoMl}</span>
+                        <span style={{fontSize:9,color:"var(--txt3)"}}>{v.skuVenta}</span>
+                      </div>
+                      {mlItems4sv.length > 0 && mlItems4sv.map((ml, j) => (
+                        <div key={j} style={{marginLeft:16,marginTop:2,display:"flex",alignItems:"center",gap:4,fontSize:9,color:"var(--txt3)"}}>
+                          <span style={{color:"var(--green)"}}>ML</span>
+                          <span className="mono">{ml.item_id}</span>
+                          {ml.inventory_id && <span className="mono" style={{color:"var(--txt3)"}}>inv:{ml.inventory_id}</span>}
+                          {(ml.available_quantity != null && ml.available_quantity > 0) && <span style={{color:"var(--blue)",fontWeight:600}}>Full:{ml.available_quantity}</span>}
+                        </div>
+                      ))}
+                    </div>);
+                  }) : <span style={{color:"var(--txt3)"}}>Sin publicación</span>}
                 </td>
                 <td><span className="tag">{p.cat}</span></td>
                 <td><span className="tag">{p.prov}</span></td>
@@ -4627,17 +4769,28 @@ function Productos({ refresh }: { refresh: () => void }) {
                     <div style={{fontSize:10,color:"var(--txt3)",fontWeight:600,marginBottom:2}}>Publicaciones:</div>
                     {ventas.map((v, i) => {
                       const sellable = Math.floor(stock / v.unidades);
+                      const mlItems4sv = mlBySkuVenta[v.skuVenta.toUpperCase()] || [];
                       return (
-                        <div key={i} style={{display:"flex",alignItems:"center",gap:4,fontSize:10,marginBottom:1}}>
-                          <span style={{fontWeight:700,padding:"1px 4px",borderRadius:3,
-                            background:v.unidades>1?"var(--amber)15":"var(--cyan)15",
-                            color:v.unidades>1?"var(--amber)":"var(--cyan)"}}>
-                            {v.unidades>1?`Pack x${v.unidades}`:"x1"}
-                          </span>
-                          <span className="mono">{v.codigoMl}</span>
-                          <span style={{color:sellable>0?"var(--green)":"var(--red)",fontWeight:600,marginLeft:"auto"}}>
-                            {sellable} vendibles
-                          </span>
+                        <div key={i} style={{marginBottom:4}}>
+                          <div style={{display:"flex",alignItems:"center",gap:4,fontSize:10}}>
+                            <span style={{fontWeight:700,padding:"1px 4px",borderRadius:3,
+                              background:v.unidades>1?"var(--amber)15":"var(--cyan)15",
+                              color:v.unidades>1?"var(--amber)":"var(--cyan)"}}>
+                              {v.unidades>1?`Pack x${v.unidades}`:"x1"}
+                            </span>
+                            <span className="mono">{v.codigoMl}</span>
+                            <span style={{color:sellable>0?"var(--green)":"var(--red)",fontWeight:600,marginLeft:"auto"}}>
+                              {sellable} vendibles
+                            </span>
+                          </div>
+                          {mlItems4sv.length > 0 && mlItems4sv.map((ml, j) => (
+                            <div key={j} style={{marginLeft:12,marginTop:1,display:"flex",alignItems:"center",gap:4,fontSize:9,color:"var(--txt3)"}}>
+                              <span style={{color:"var(--green)"}}>ML</span>
+                              <span className="mono">{ml.item_id}</span>
+                              {ml.inventory_id && <span className="mono">inv:{ml.inventory_id}</span>}
+                              {(ml.available_quantity != null && ml.available_quantity > 0) && <span style={{color:"var(--blue)",fontWeight:600}}>Full:{ml.available_quantity}</span>}
+                            </div>
+                          ))}
                         </div>
                       );
                     })}
@@ -5888,9 +6041,13 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
           <div style={{display:"flex",gap:8,marginTop:12}}>
             <button onClick={doSaveConfig} style={{padding:"8px 16px",borderRadius:8,background:"var(--green)",color:"#fff",fontWeight:700,fontSize:13}}>Guardar Config</button>
             {configForm.client_id && (
-              <a href={authUrl} style={{padding:"8px 16px",borderRadius:8,background:"#3483fa",color:"#fff",fontWeight:700,fontSize:13,textDecoration:"none",display:"inline-flex",alignItems:"center"}}>
+              <button onClick={() => {
+                const url = getOAuthUrl(configForm.client_id, `${window.location.origin}/api/ml/auth`);
+                console.log("[ML] OAuth URL:", url);
+                window.location.href = url;
+              }} style={{padding:"8px 16px",borderRadius:8,background:"#3483fa",color:"#fff",fontWeight:700,fontSize:13,border:"none",cursor:"pointer",display:"inline-flex",alignItems:"center"}}>
                 🔗 Vincular cuenta ML
-              </a>
+              </button>
             )}
           </div>
         </div>
@@ -7143,6 +7300,256 @@ function DiccionarioConfig() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ==================== STOCK ML ====================
+interface StockCompareRow {
+  sku: string;
+  item_id: string;
+  user_product_id: string | null;
+  stock_wms: number;
+  stock_flex_ml: number;
+  stock_full_ml: number;
+  ultimo_sync: string | null;
+  ultimo_stock_enviado: number | null;
+}
+
+function AdminStockML() {
+  const [rows, setRows] = useState<StockCompareRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [q, setQ] = useState("");
+  const [overrides, setOverrides] = useState<Record<string, string>>({});
+  const [syncing, setSyncing] = useState<Record<string, boolean>>({});
+  const [syncResult, setSyncResult] = useState<Record<string, string>>({});
+  const [syncAllLoading, setSyncAllLoading] = useState(false);
+  const s = getStore();
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const resp = await fetch("/api/ml/stock-compare");
+      const json = await resp.json();
+      if (json.error) { setError(json.error); return; }
+      setRows(json.rows || []);
+      // Pre-fill overrides with WMS stock (default: sync all WMS stock to Flex)
+      const ov: Record<string, string> = {};
+      for (const r of json.rows || []) {
+        ov[r.sku] = String(r.stock_wms);
+      }
+      setOverrides(ov);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  const filtered = rows.filter(r => {
+    if (!q) return true;
+    const ql = q.toLowerCase();
+    const prod = s.products[r.sku];
+    return r.sku.toLowerCase().includes(ql)
+      || r.item_id.toLowerCase().includes(ql)
+      || (prod?.name || "").toLowerCase().includes(ql);
+  });
+
+  const syncOne = async (sku: string, force = false) => {
+    const qty = parseInt(overrides[sku] || "0", 10);
+    if (isNaN(qty) || qty < 0) return;
+    setSyncing(p => ({ ...p, [sku]: true }));
+    setSyncResult(p => ({ ...p, [sku]: "" }));
+    try {
+      const resp = await fetch("/api/ml/stock-compare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ skus: [sku], quantities: { [sku]: qty }, force }),
+      });
+      const json = await resp.json();
+      if (json.error) {
+        setSyncResult(p => ({ ...p, [sku]: `Error: ${json.error}` }));
+      } else if (json.results?.[sku]?.ok) {
+        setSyncResult(p => ({ ...p, [sku]: "OK" }));
+      } else {
+        const reason = json.results?.[sku]?.reason || "Error desconocido";
+        setSyncResult(p => ({ ...p, [sku]: reason }));
+      }
+    } catch (err) {
+      setSyncResult(p => ({ ...p, [sku]: String(err) }));
+    } finally {
+      setSyncing(p => ({ ...p, [sku]: false }));
+    }
+  };
+
+  const syncAll = async (force = false) => {
+    if (!confirm(`Sincronizar ${filtered.length} SKUs a MercadoLibre?`)) return;
+    setSyncAllLoading(true);
+    const quantities: Record<string, number> = {};
+    const skus: string[] = [];
+    for (const r of filtered) {
+      const qty = parseInt(overrides[r.sku] || "0", 10);
+      quantities[r.sku] = isNaN(qty) ? r.stock_wms : qty;
+      skus.push(r.sku);
+    }
+    try {
+      const resp = await fetch("/api/ml/stock-compare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ skus, quantities, force }),
+      });
+      const json = await resp.json();
+      if (json.error) {
+        alert(`Error: ${json.error}`);
+      } else {
+        // Show per-SKU results
+        const failed = Object.entries(json.results || {}).filter(([, r]: [string, any]) => !r.ok);
+        let msg = `Sync completado: ${json.synced}/${json.total} SKUs sincronizados`;
+        if (failed.length > 0) {
+          msg += `\n\nFallaron ${failed.length}:\n` + failed.map(([sku, r]: [string, any]) => `• ${sku}: ${r.reason}`).join("\n");
+        }
+        alert(msg);
+        // Update per-row results in UI
+        for (const [sku, r] of Object.entries(json.results || {}) as [string, any][]) {
+          setSyncResult(p => ({ ...p, [sku]: r.ok ? "OK" : r.reason }));
+        }
+        loadData();
+      }
+    } catch (err) {
+      alert(`Error: ${String(err)}`);
+    } finally {
+      setSyncAllLoading(false);
+    }
+  };
+
+  // KPIs
+  const totalWms = filtered.reduce((s, r) => s + r.stock_wms, 0);
+  const totalFlex = filtered.reduce((s, r) => s + r.stock_flex_ml, 0);
+  const totalFull = filtered.reduce((s, r) => s + r.stock_full_ml, 0);
+  const desincronizados = filtered.filter(r => {
+    const deseado = parseInt(overrides[r.sku] || "0", 10);
+    return r.stock_flex_ml !== deseado;
+  }).length;
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:16}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
+        <h2 style={{margin:0,fontSize:18}}>Stock ML — WMS vs Flex</h2>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={loadData} disabled={loading}
+            style={{padding:"8px 16px",borderRadius:8,background:"var(--bg3)",color:"var(--txt)",border:"1px solid var(--bg4)",fontWeight:600,fontSize:12,cursor:"pointer"}}>
+            {loading ? "Cargando..." : "🔄 Refrescar"}
+          </button>
+          <button onClick={() => syncAll()} disabled={syncAllLoading || filtered.length === 0}
+            style={{padding:"8px 16px",borderRadius:8,background:"var(--cyan)",color:"#000",border:"none",fontWeight:700,fontSize:12,cursor:"pointer"}}>
+            {syncAllLoading ? "Sincronizando..." : `⚡ Sync Todo (${filtered.length})`}
+          </button>
+        </div>
+      </div>
+
+      {error && <div style={{padding:12,borderRadius:8,background:"var(--redBg)",border:"1px solid var(--redBd)",color:"var(--red)",fontSize:12}}>{error}</div>}
+
+      {/* KPIs */}
+      <div className="kpi-grid" style={{gridTemplateColumns:"repeat(4, 1fr)"}}>
+        <div className="kpi">
+          <div style={{fontSize:10,color:"var(--txt3)",textTransform:"uppercase",letterSpacing:1}}>SKUs Mapeados</div>
+          <div style={{fontSize:24,fontWeight:700,fontFamily:"var(--font-mono)"}}>{filtered.length}</div>
+        </div>
+        <div className="kpi">
+          <div style={{fontSize:10,color:"var(--txt3)",textTransform:"uppercase",letterSpacing:1}}>Stock WMS</div>
+          <div style={{fontSize:24,fontWeight:700,fontFamily:"var(--font-mono)",color:"var(--cyan)"}}>{totalWms}</div>
+        </div>
+        <div className="kpi">
+          <div style={{fontSize:10,color:"var(--txt3)",textTransform:"uppercase",letterSpacing:1}}>Stock Flex ML</div>
+          <div style={{fontSize:24,fontWeight:700,fontFamily:"var(--font-mono)",color:"var(--green)"}}>{totalFlex}</div>
+        </div>
+        <div className="kpi">
+          <div style={{fontSize:10,color:"var(--txt3)",textTransform:"uppercase",letterSpacing:1}}>Desincronizados</div>
+          <div style={{fontSize:24,fontWeight:700,fontFamily:"var(--font-mono)",color:desincronizados>0?"var(--amber)":"var(--green)"}}>{desincronizados}</div>
+        </div>
+      </div>
+
+      {/* Search */}
+      <input className="form-input" placeholder="Buscar SKU, item ID, nombre..." value={q} onChange={e=>setQ(e.target.value)}
+        style={{maxWidth:400}} />
+
+      {loading ? (
+        <div style={{padding:40,textAlign:"center",color:"var(--txt3)"}}>Consultando stock en MercadoLibre...</div>
+      ) : filtered.length === 0 ? (
+        <div style={{padding:40,textAlign:"center",color:"var(--txt3)"}}>No hay SKUs mapeados a ML. Configura los mapeos en la pestaña Config.</div>
+      ) : (
+        <div style={{overflowX:"auto"}}>
+          <table className="tbl" style={{width:"100%",fontSize:12}}>
+            <thead>
+              <tr>
+                <th style={{textAlign:"left"}}>SKU</th>
+                <th style={{textAlign:"left"}}>Producto</th>
+                <th style={{textAlign:"right"}}>Stock WMS</th>
+                <th style={{textAlign:"right"}}>Flex ML</th>
+                <th style={{textAlign:"right"}}>Full ML</th>
+                <th style={{textAlign:"center",minWidth:100}}>Enviar a Flex</th>
+                <th style={{textAlign:"center"}}>Sync</th>
+                <th style={{textAlign:"left"}}>Último sync</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map(r => {
+                const prod = s.products[r.sku];
+                const deseado = parseInt(overrides[r.sku] || "0", 10);
+                const diff = r.stock_flex_ml !== deseado;
+                const isSyncing = syncing[r.sku];
+                const result = syncResult[r.sku];
+                return (
+                  <tr key={r.sku + r.item_id} style={{background: diff ? "var(--amberBg)" : undefined}}>
+                    <td style={{fontFamily:"var(--font-mono)",fontWeight:600}}>{r.sku}</td>
+                    <td style={{color:"var(--txt2)",maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{prod?.name || "—"}</td>
+                    <td style={{textAlign:"right",fontFamily:"var(--font-mono)",fontWeight:700,color:"var(--cyan)"}}>{r.stock_wms}</td>
+                    <td style={{textAlign:"right",fontFamily:"var(--font-mono)",fontWeight:700,color:"var(--green)"}}>{r.stock_flex_ml}</td>
+                    <td style={{textAlign:"right",fontFamily:"var(--font-mono)",color:"var(--txt3)"}}>{r.stock_full_ml}</td>
+                    <td style={{textAlign:"center"}}>
+                      <input
+                        type="number"
+                        min={0}
+                        value={overrides[r.sku] ?? ""}
+                        onChange={e => setOverrides(p => ({ ...p, [r.sku]: e.target.value }))}
+                        style={{width:70,textAlign:"center",padding:"4px 6px",borderRadius:6,background:"var(--bg3)",border:"1px solid var(--bg4)",color:"var(--txt)",fontFamily:"var(--font-mono)",fontSize:12,fontWeight:700}}
+                        inputMode="numeric"
+                      />
+                    </td>
+                    <td style={{textAlign:"center"}}>
+                      <button onClick={() => syncOne(r.sku)} disabled={isSyncing}
+                        style={{padding:"4px 10px",borderRadius:6,background: result === "OK" ? "var(--green)" : "var(--cyan)",color:"#000",border:"none",fontWeight:700,fontSize:11,cursor:"pointer",opacity:isSyncing?0.5:1}}>
+                        {isSyncing ? "..." : result === "OK" ? "✓" : "Sync"}
+                      </button>
+                      {result && result !== "OK" && (
+                        <div style={{marginTop:2}}>
+                          <div style={{fontSize:10,color:"var(--red)",maxWidth:140,overflow:"hidden",textOverflow:"ellipsis"}} title={result}>{result}</div>
+                          {result.includes("Safety block") && (
+                            <button onClick={() => syncOne(r.sku, true)} disabled={isSyncing}
+                              style={{marginTop:2,padding:"2px 8px",borderRadius:4,background:"var(--amber)",color:"#000",border:"none",fontWeight:700,fontSize:10,cursor:"pointer"}}>
+                              Forzar
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </td>
+                    <td style={{fontSize:10,color:"var(--txt3)",whiteSpace:"nowrap"}}>{r.ultimo_sync ? fmtDate(r.ultimo_sync) + " " + fmtTime(r.ultimo_sync) : "Nunca"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="card" style={{padding:12,fontSize:11,color:"var(--txt3)"}}>
+        <strong>Nota:</strong> La columna "Enviar a Flex" permite ajustar la cantidad antes de sincronizar. Por defecto usa el stock total del WMS.
+        En días de mucho movimiento, revisa las cantidades antes de hacer Sync. El sistema bloquea automáticamente si el stock baja de &gt;10 a 0 (safety block).
+      </div>
     </div>
   );
 }
