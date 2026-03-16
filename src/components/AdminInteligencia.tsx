@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
 import { getSupabase } from "@/lib/supabase";
+import AdminMLSinVincular from "./AdminMLSinVincular";
 
 // ============================================
 // Tipos
@@ -374,6 +375,9 @@ export default function AdminInteligencia() {
 
   return (
     <div style={{ padding: "0 4px" }}>
+      {/* Items ML sin vincular */}
+      <AdminMLSinVincular />
+
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
         <div>
