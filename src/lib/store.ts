@@ -1925,6 +1925,44 @@ export async function pickearComponente(
   return true;
 }
 
+// Revertir un componente pickeado — devuelve stock a la posición original
+export async function despickearComponente(
+  sessionId: string, lineaId: string, compIdx: number, operario: string,
+  session: db.DBPickingSession
+): Promise<boolean> {
+  const linea = session.lineas.find(l => l.id === lineaId);
+  if (!linea) return false;
+  const comp = linea.componentes[compIdx];
+  if (!comp || comp.estado !== "PICKEADO") return false;
+
+  // Revertir stock: registrar entrada
+  const pos = comp.posicion;
+  if (pos && pos !== "?") {
+    recordMovement({
+      ts: new Date().toISOString(), type: "in", reason: "ajuste_entrada" as InReason,
+      sku: comp.skuOrigen, pos, qty: comp.unidades,
+      who: operario, note: `Reversión picking Flex: ${linea.skuVenta} ×${comp.unidades} (despick)`,
+    });
+  }
+
+  // Revertir estado del componente
+  comp.estado = "PENDIENTE";
+  comp.pickedAt = null;
+  comp.operario = null;
+
+  // Revertir estado de la línea
+  linea.estado = "PENDIENTE";
+
+  // La sesión no puede estar completada si hay pendientes
+  await db.updatePickingSession(sessionId, {
+    lineas: session.lineas,
+    estado: "EN_PROCESO",
+    completed_at: null,
+  });
+
+  return true;
+}
+
 // Pick a component in envio_full session + decrement stock
 // Uses same structure as Flex: each line has componentes[0]
 export async function pickearLineaFull(

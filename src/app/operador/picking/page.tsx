@@ -1,6 +1,6 @@
 "use client";
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
-import { initStore, refreshStore, isSupabaseConfigured, getActivePickings, pickearComponente, pickearLineaFull, marcarArmadoFull, verificarScanPicking, activePositions, posContents, getMapConfig, calcularRutaPicking, agruparPorPosicion, getNotasOperativas } from "@/lib/store";
+import { initStore, refreshStore, isSupabaseConfigured, getActivePickings, pickearComponente, pickearLineaFull, marcarArmadoFull, verificarScanPicking, activePositions, posContents, getMapConfig, calcularRutaPicking, agruparPorPosicion, getNotasOperativas, despickearComponente } from "@/lib/store";
 import { fetchBultosSession, crearBulto, agregarLineaBulto, eliminarLineasBulto } from "@/lib/db";
 import type { DBPickingBulto, DBPickingBultoLinea } from "@/lib/db";
 import type { DBPickingSession, PickingLinea, PickingComponente } from "@/lib/store";
@@ -87,7 +87,7 @@ export default function PickingPage() {
       </div>
       <div style={{padding:12}}>
         {screen==="list"&&<SessionList sessions={sessions} onSelect={s=>{setActiveSes(s);setScreen("session");}} onRefresh={loadSessions}/>}
-        {screen==="session"&&activeSes&&!isEnvioFull&&<SessionDetail session={activeSes} onPickComp={(l,i)=>{setActiveLinea(l);setActiveCompIdx(i);setScreen("pick");}} onRefresh={async()=>{
+        {screen==="session"&&activeSes&&!isEnvioFull&&<SessionDetail session={activeSes} operario={operario} onPickComp={(l,i)=>{setActiveLinea(l);setActiveCompIdx(i);setScreen("pick");}} onRefresh={async()=>{
           const fresh=await getActivePickings();const u=fresh.find(s=>s.id===activeSes.id);
           if(u)setActiveSes(u);setSessions(fresh);
         }}/>}
@@ -163,10 +163,19 @@ function SessionList({sessions,onSelect,onRefresh}:{sessions:DBPickingSession[];
 }
 
 // ==================== SESSION DETAIL (Flex — con agrupación por posición) ====================
-function SessionDetail({session,onPickComp,onRefresh}:{session:DBPickingSession;onPickComp:(l:PickingLinea,i:number)=>void;onRefresh:()=>void}) {
+function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickingSession;operario:string;onPickComp:(l:PickingLinea,i:number)=>void;onRefresh:()=>void}) {
   const tc=session.lineas.reduce((s,l)=>s+l.componentes.length,0);
   const dc=session.lineas.reduce((s,l)=>s+l.componentes.filter(c=>c.estado==="PICKEADO").length,0);
   const pct=tc>0?Math.round((dc/tc)*100):0;
+  const [resetting,setResetting]=useState(false);
+
+  const handleDespick = async (linea: PickingLinea, idx: number) => {
+    if (!confirm(`¿Reiniciar pick de ${linea.componentes[idx].nombre}?\n\nSe devolverá el stock a la posición ${linea.componentes[idx].posicion}.`)) return;
+    setResetting(true);
+    await despickearComponente(session.id!, linea.id, idx, operario, session);
+    await onRefresh();
+    setResetting(false);
+  };
 
   // Aplicar ruta inteligente y agrupación por posición para Flex también
   const posicionesNecesarias = useMemo(() => {
@@ -243,7 +252,7 @@ function SessionDetail({session,onPickComp,onRefresh}:{session:DBPickingSession;
                 style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",marginTop:4,borderRadius:8,
                   background:comp.estado==="PICKEADO"?"#10b98118":"var(--bg3)",
                   border:`1px solid ${comp.estado==="PICKEADO"?"#10b98133":"var(--bg4)"}`,
-                  cursor:comp.estado==="PICKEADO"?"default":"pointer",opacity:comp.estado==="PICKEADO"?0.6:1}}>
+                  cursor:comp.estado==="PICKEADO"?"default":"pointer",opacity:comp.estado==="PICKEADO"?0.7:1}}>
                 <div style={{width:36,height:36,borderRadius:8,background:comp.estado==="PICKEADO"?"#10b98122":"#3b82f622",
                   display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
                   {comp.estado==="PICKEADO"?<span style={{fontSize:18}}>✅</span>:
@@ -256,6 +265,12 @@ function SessionDetail({session,onPickComp,onRefresh}:{session:DBPickingSession;
                   </div>
                 </div>
                 {comp.estado!=="PICKEADO"&&<span style={{fontSize:18,color:"#3b82f6"}}>→</span>}
+                {comp.estado==="PICKEADO"&&(
+                  <button onClick={(e)=>{e.stopPropagation();handleDespick(linea,idx);}} disabled={resetting}
+                    style={{padding:"6px 12px",borderRadius:6,background:"var(--amberBg)",color:"var(--amber)",fontSize:10,fontWeight:700,border:"1px solid var(--amberBd)",cursor:"pointer",flexShrink:0}}>
+                    {resetting?"...":"↩ Reiniciar"}
+                  </button>
+                )}
               </div>
             ))}
           </div>
