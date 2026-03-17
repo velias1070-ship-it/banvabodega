@@ -1974,7 +1974,10 @@ function PickingProductSearch({ onAdd }: { onAdd: (skuVenta: string, qty: number
         <div style={{display:"flex",alignItems:"center",gap:4,background:"var(--bg3)",borderRadius:8,padding:"0 8px",border:"1px solid var(--bg4)"}}>
           <button onClick={() => setQty(Math.max(1, qty - 1))}
             style={{width:24,height:24,borderRadius:4,background:"var(--bg4)",color:"var(--txt2)",fontSize:14,fontWeight:700,border:"none",cursor:"pointer",lineHeight:"22px"}}>−</button>
-          <span className="mono" style={{fontSize:14,fontWeight:700,color:"var(--blue)",minWidth:24,textAlign:"center"}}>{qty}</span>
+          <input type="number" inputMode="numeric" min={1} className="mono" value={qty}
+            onFocus={e => e.target.select()}
+            onChange={e => { const v = parseInt(e.target.value); setQty(v > 0 ? v : 1); }}
+            style={{width:40,fontSize:14,fontWeight:700,color:"var(--blue)",textAlign:"center",background:"transparent",border:"none",outline:"none",padding:0}}/>
           <button onClick={() => setQty(qty + 1)}
             style={{width:24,height:24,borderRadius:4,background:"var(--bg4)",color:"var(--txt2)",fontSize:14,fontWeight:700,border:"none",cursor:"pointer",lineHeight:"22px"}}>+</button>
         </div>
