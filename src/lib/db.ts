@@ -624,10 +624,23 @@ export async function getComponentesPorSkuVenta(skuVenta: string): Promise<DBCom
 export async function upsertNotasOperativas(items: { sku_venta: string; sku_origen: string; nota_operativa: string | null }[]) {
   const sb = getSupabase(); if (!sb) return;
   for (const item of items) {
-    await sb.from("composicion_venta")
+    // Intentar update primero
+    const { data } = await sb.from("composicion_venta")
       .update({ nota_operativa: item.nota_operativa })
       .eq("sku_venta", item.sku_venta)
-      .eq("sku_origen", item.sku_origen);
+      .eq("sku_origen", item.sku_origen)
+      .select("id");
+    // Si no existe registro (producto simple), crear uno auto-mapeado
+    if (!data || data.length === 0) {
+      await sb.from("composicion_venta").upsert({
+        sku_venta: item.sku_venta,
+        codigo_ml: "",
+        sku_origen: item.sku_origen,
+        unidades: 1,
+        tipo_relacion: "componente",
+        nota_operativa: item.nota_operativa,
+      }, { onConflict: "sku_venta,sku_origen" });
+    }
   }
 }
 
