@@ -2324,6 +2324,73 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
     if (result.errors.length > 0) alert("Advertencias:\n" + result.errors.join("\n"));
   };
 
+  // Reparar posiciones: reasignar posiciones reales a líneas pendientes con "?"
+  const repararPosiciones = async () => {
+    await refreshStore();
+    const pendientesSinPos = session.lineas.filter(l => l.estado !== "PICKEADO" && l.componentes[0]?.posicion === "?");
+    if (pendientesSinPos.length === 0) { showToast("No hay líneas con posición '?' para reparar"); return; }
+
+    let reparadas = 0;
+    let sinStock = 0;
+    const newLineas = [...session.lineas];
+    // Track stock consumed per position to avoid double-assigning
+    const consumido = new Map<string, number>();
+
+    for (const linea of newLineas) {
+      if (linea.estado === "PICKEADO" || linea.componentes[0]?.posicion !== "?") continue;
+      const comp = linea.componentes[0];
+      if (!comp) continue;
+
+      // Buscar posiciones del SKU principal + alternativos
+      const skusToCheck = [comp.skuOrigen];
+      const compsVenta = getComponentesPorSkuVenta(linea.skuVenta);
+      const alts = compsVenta.filter(c => c.tipoRelacion === "alternativo").map(c => c.skuOrigen);
+      skusToCheck.push(...alts);
+
+      let found = false;
+      for (const sku of skusToCheck) {
+        const posiciones = skuPositions(sku).filter(p => p.qty > 0);
+        for (const posInfo of posiciones) {
+          const key = `${sku}:${posInfo.pos}`;
+          const usado = consumido.get(key) || 0;
+          const disponible = posInfo.qty - usado;
+          if (disponible >= comp.unidades) {
+            comp.skuOrigen = sku;
+            comp.nombre = getStore().products[sku]?.name || sku;
+            comp.posicion = posInfo.pos;
+            comp.posLabel = posInfo.label;
+            comp.stockDisponible = posInfo.qty;
+            consumido.set(key, usado + comp.unidades);
+            reparadas++;
+            found = true;
+            break;
+          } else if (disponible > 0) {
+            comp.skuOrigen = sku;
+            comp.nombre = getStore().products[sku]?.name || sku;
+            comp.posicion = posInfo.pos;
+            comp.posLabel = posInfo.label;
+            comp.stockDisponible = posInfo.qty;
+            consumido.set(key, usado + comp.unidades);
+            reparadas++;
+            found = true;
+            break;
+          }
+        }
+        if (found) break;
+      }
+      if (!found) sinStock++;
+    }
+
+    if (reparadas === 0) { showToast("No se encontró stock disponible para reasignar posiciones"); return; }
+
+    setSaving(true);
+    await actualizarPicking(session.id!, { lineas: newLineas });
+    setSession({ ...session, lineas: newLineas });
+    setSaving(false);
+    const msg = `${reparadas} líneas reparadas con posiciones reales` + (sinStock > 0 ? ` · ${sinStock} sin stock disponible` : "");
+    showToast(msg);
+  };
+
   // Remove a single line
   const removeLine = async (lineaId: string) => {
     const linea = session.lineas.find(l => l.id === lineaId);
@@ -2437,6 +2504,11 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
           {editing && <button onClick={regenerarLineas} disabled={saving} style={{padding:"6px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--blue)",fontSize:11,fontWeight:600,border:"1px solid var(--blue)33",cursor:"pointer"}}>
             🔄 Regenerar posiciones
           </button>}
+          {editing && session.lineas.some(l => l.estado !== "PICKEADO" && l.componentes[0]?.posicion === "?") && (
+            <button onClick={repararPosiciones} disabled={saving} style={{padding:"6px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--amber)",fontSize:11,fontWeight:600,border:"1px solid var(--amber)33",cursor:"pointer"}}>
+              🔧 Reparar posiciones (?)
+            </button>
+          )}
           <button onClick={doDelete} style={{padding:"6px 14px",borderRadius:6,background:"var(--redBg)",color:"var(--red)",fontSize:11,fontWeight:600,border:"1px solid var(--red)33"}}>Eliminar</button>
         </div>
       </div>
