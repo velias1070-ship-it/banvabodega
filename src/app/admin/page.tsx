@@ -2305,7 +2305,7 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
     }
 
     const orders = Array.from(skuMap.entries()).map(([skuVenta, qty]) => ({ skuVenta, qty }));
-    const result = buildPickingLineas(orders);
+    const result = buildPickingLineas(orders, isFull ? { skipAlternativos: true } : undefined);
 
     // Re-numerar desde el máximo existente
     const prefix = isFull ? "F" : "P";
@@ -2598,7 +2598,7 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
       await refreshStore();
       const newLineas = session.lineas.map(l => {
         if (l.id !== lineaId) return l;
-        const result = buildPickingLineas([{ skuVenta: l.skuVenta, qty: newQty }]);
+        const result = buildPickingLineas([{ skuVenta: l.skuVenta, qty: newQty }], isFull ? { skipAlternativos: true } : undefined);
         if (result.lineas.length === 0) return l;
         // Preserve Full-specific fields
         const rebuilt = result.lineas[0];
@@ -2674,7 +2674,7 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
       if (sku) orders.push({ skuVenta: sku, qty });
     }
 
-    const result = buildPickingLineas(orders);
+    const result = buildPickingLineas(orders, isFull ? { skipAlternativos: true } : undefined);
     if (result.lineas.length === 0) {
       showToast("No se pudo agregar ninguna línea");
       return;

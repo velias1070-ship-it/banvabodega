@@ -1514,7 +1514,7 @@ export async function guardarOperario(o: db.DBOperario) { return db.upsertOperar
 export type { PickingLinea, PickingComponente, PickingLineaFullLegacy, PickingTipo, DBPickingSession } from "./db";
 
 // Build picking session from pasted orders
-export function buildPickingLineas(orders: { skuVenta: string; qty: number }[]): { lineas: db.PickingLinea[]; errors: string[] } {
+export function buildPickingLineas(orders: { skuVenta: string; qty: number }[], opts?: { skipAlternativos?: boolean }): { lineas: db.PickingLinea[]; errors: string[] } {
   const lineas: db.PickingLinea[] = [];
   const errors: string[] = [];
 
@@ -1522,7 +1522,7 @@ export function buildPickingLineas(orders: { skuVenta: string; qty: number }[]):
     const { skuVenta, qty } = orders[i];
     const compsAll = getComponentesPorSkuVenta(skuVenta);
     const comps = compsAll.filter(c => c.tipoRelacion !== "alternativo");
-    const alternativos = compsAll.filter(c => c.tipoRelacion === "alternativo");
+    const alternativos = opts?.skipAlternativos ? [] : compsAll.filter(c => c.tipoRelacion === "alternativo");
 
     if (comps.length === 0) {
       // Try finding by SKU directly (maybe it's a simple product, not a pack)
