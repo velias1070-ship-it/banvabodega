@@ -1754,7 +1754,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                   <th>SKU</th><th>Producto</th>
                   <th style={{textAlign:"right"}}>Factura</th><th style={{textAlign:"right"}}>Recibido</th>
                   <th style={{textAlign:"right"}}>Etiq.</th><th style={{textAlign:"right"}}>Ubic.</th>
-                  <th>Estado</th><th>Operario</th><th></th>
+                  <th>Estado</th><th>Operario</th><th>Factura</th><th></th>
                 </tr></thead>
                 <tbody>{dayLineasFiltradas.map(l => {
                   const lock = isLineaBloqueada(l, "__admin__");
@@ -1778,6 +1778,17 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                         ) : (
                           <span style={{color:"var(--txt3)"}}>—</span>
                         )}
+                      </td>
+                      <td style={{fontSize:11}}>
+                        {(() => {
+                          const rec = recs.find(r => r.id === l.recepcion_id);
+                          return rec ? (
+                            <button onClick={() => openRec(rec)}
+                              style={{padding:"2px 8px",borderRadius:4,background:"var(--bg3)",color:"var(--cyan)",fontSize:10,fontWeight:600,border:"1px solid var(--bg4)",cursor:"pointer",whiteSpace:"nowrap"}}>
+                              📄 {rec.folio}
+                            </button>
+                          ) : <span style={{color:"var(--txt3)"}}>—</span>;
+                        })()}
                       </td>
                       <td>
                         {lock.blocked && (
