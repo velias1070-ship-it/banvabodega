@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { getSupabase } from "@/lib/supabase";
-import { buildPickingLineasFull, crearPickingSession, skuPositions, getComponentesPorSkuVenta, getSkusVenta, getNotasOperativas } from "@/lib/store";
+import { buildPickingLineasFull, crearPickingSession, skuPositions, getComponentesPorSkuVenta, getSkusVenta, getNotasOperativas, getSkuFisicoPorSkuVenta } from "@/lib/store";
 import { upsertNotasOperativas } from "@/lib/db";
 import AdminMLSinVincular from "./AdminMLSinVincular";
 
@@ -1624,11 +1624,20 @@ export default function AdminInteligencia() {
                   const updates: { sku_venta: string; sku_origen: string; nota_operativa: string | null }[] = [];
                   Array.from(notasEdits.entries()).forEach(([skuVenta, nota]) => {
                     const comps = getComponentesPorSkuVenta(skuVenta);
-                    for (const c of comps) {
-                      updates.push({ sku_venta: c.skuVenta, sku_origen: c.skuOrigen, nota_operativa: nota.trim() || null });
+                    if (comps.length > 0) {
+                      for (const c of comps) {
+                        updates.push({ sku_venta: c.skuVenta, sku_origen: c.skuOrigen, nota_operativa: nota.trim() || null });
+                      }
+                    } else {
+                      // Producto simple sin composición — usar skuVenta como sku_origen
+                      const skuFisico = getSkuFisicoPorSkuVenta(skuVenta) || skuVenta;
+                      updates.push({ sku_venta: skuVenta, sku_origen: skuFisico, nota_operativa: nota.trim() || null });
                     }
                   });
                   await upsertNotasOperativas(updates);
+                  // Refrescar cache para que las notas aparezcan inmediatamente
+                  const { refreshStore } = await import("@/lib/store");
+                  await refreshStore();
                   setNotasSaving(false);
                   setNotasEdits(new Map());
                   setModalNotas(false);
