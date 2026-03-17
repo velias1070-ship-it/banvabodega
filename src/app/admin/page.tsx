@@ -2585,23 +2585,74 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
     showToast(`Línea ${lineaId} eliminada`);
   };
 
-  // Change quantity of a pending line
+  // Change quantity of a line (pending: rebuild components, picked: adjust qty directly)
   const changeQty = async (lineaId: string, newQty: number) => {
     if (newQty < 1) return;
-    await refreshStore(); // Refrescar stock antes de recalcular posiciones
+    const linea = session.lineas.find(l => l.id === lineaId);
+    if (!linea) return;
+
+    if (linea.estado === "PICKEADO") {
+      // For picked lines: adjust qty/unidades directly without rebuilding
+      const newLineas = session.lineas.map(l => {
+        if (l.id !== lineaId) return l;
+        const comp = { ...l.componentes[0] };
+        if (comp) comp.unidades = newQty;
+        return { ...l, qtyPedida: newQty, qtyFisica: newQty, componentes: comp ? [comp, ...l.componentes.slice(1)] : l.componentes };
+      });
+      setSaving(true);
+      await actualizarPicking(session.id!, { lineas: newLineas });
+      setSession({ ...session, lineas: newLineas });
+      setSaving(false);
+      showToast(`Cantidad ajustada a ${newQty}`);
+    } else {
+      // For pending lines: rebuild components with new positions
+      await refreshStore();
+      const newLineas = session.lineas.map(l => {
+        if (l.id !== lineaId) return l;
+        const result = buildPickingLineas([{ skuVenta: l.skuVenta, qty: newQty }]);
+        if (result.lineas.length === 0) return l;
+        // Preserve Full-specific fields
+        const rebuilt = result.lineas[0];
+        if (isFull) {
+          rebuilt.tipoFull = l.tipoFull;
+          rebuilt.qtyVenta = l.qtyVenta;
+          rebuilt.unidadesPorPack = l.unidadesPorPack;
+          rebuilt.instruccionArmado = l.instruccionArmado;
+          rebuilt.estadoArmado = l.estadoArmado;
+          rebuilt.posicionOrden = l.posicionOrden;
+        }
+        return { ...rebuilt, id: l.id };
+      });
+      setSaving(true);
+      await actualizarPicking(session.id!, { lineas: newLineas });
+      setSession({ ...session, lineas: newLineas });
+      setSaving(false);
+      showToast("Cantidad actualizada");
+    }
+  };
+
+  // Change bultos count on a picked Full line
+  const changeBultos = async (lineaId: string, bultos: number) => {
     const newLineas = session.lineas.map(l => {
       if (l.id !== lineaId) return l;
-      if (l.estado === "PICKEADO") return l; // can't change picked
-      // Rebuild components with new qty
-      const result = buildPickingLineas([{ skuVenta: l.skuVenta, qty: newQty }]);
-      if (result.lineas.length === 0) return l;
-      return { ...result.lineas[0], id: l.id };
+      return { ...l, bultos };
     });
     setSaving(true);
     await actualizarPicking(session.id!, { lineas: newLineas });
     setSession({ ...session, lineas: newLineas });
     setSaving(false);
-    showToast("Cantidad actualizada");
+  };
+
+  // Change bultoCompartido on a line
+  const changeBultoCompartido = async (lineaId: string, bultoCompartido: string | null) => {
+    const newLineas = session.lineas.map(l => {
+      if (l.id !== lineaId) return l;
+      return { ...l, bultoCompartido };
+    });
+    setSaving(true);
+    await actualizarPicking(session.id!, { lineas: newLineas });
+    setSession({ ...session, lineas: newLineas });
+    setSaving(false);
   };
 
   // Reset a picked component (reverse stock)
@@ -2806,16 +2857,16 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
                       </span>
                     )}
                     <br/>
-                    {editing && !isPicked && !isFull ? (
+                    {editing ? (
                       <div style={{display:"flex",alignItems:"center",gap:4,marginTop:4}}>
-                        <button onClick={() => changeQty(linea.id, linea.qtyPedida - 1)} disabled={linea.qtyPedida <= 1 || saving}
+                        <button onClick={() => changeQty(linea.id, (linea.qtyFisica || linea.qtyPedida) - 1)} disabled={(linea.qtyFisica || linea.qtyPedida) <= 1 || saving}
                           style={{width:22,height:22,borderRadius:4,background:"var(--bg3)",color:"var(--txt2)",fontSize:12,fontWeight:700,border:"1px solid var(--bg4)",cursor:"pointer",lineHeight:"20px"}}>−</button>
-                        <span style={{fontSize:13,fontWeight:700,color:"var(--blue)",minWidth:20,textAlign:"center"}}>{linea.qtyPedida}</span>
-                        <button onClick={() => changeQty(linea.id, linea.qtyPedida + 1)} disabled={saving}
+                        <span style={{fontSize:13,fontWeight:700,color:isPicked?"var(--green)":"var(--blue)",minWidth:20,textAlign:"center"}}>{linea.qtyFisica || linea.qtyPedida}</span>
+                        <button onClick={() => changeQty(linea.id, (linea.qtyFisica || linea.qtyPedida) + 1)} disabled={saving}
                           style={{width:22,height:22,borderRadius:4,background:"var(--bg3)",color:"var(--txt2)",fontSize:12,fontWeight:700,border:"1px solid var(--bg4)",cursor:"pointer",lineHeight:"20px"}}>+</button>
                       </div>
                     ) : (
-                      <span style={{fontSize:10,color:"var(--txt3)"}}>×{linea.qtyPedida}{isFull && linea.qtyVenta !== undefined && linea.qtyVenta !== linea.qtyPedida ? ` (${linea.qtyVenta} venta)` : ""}</span>
+                      <span style={{fontSize:10,color:"var(--txt3)"}}>×{linea.qtyFisica || linea.qtyPedida}{isFull && linea.qtyVenta !== undefined && linea.qtyVenta !== linea.qtyPedida ? ` (${linea.qtyVenta} venta)` : ""}</span>
                     )}
                   </td>
                 )}
@@ -2859,18 +2910,38 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
                 )}
                 {isFull && ci === 0 && (
                   <td rowSpan={linea.componentes.length} style={{textAlign:"center",padding:"8px 6px",verticalAlign:"top",fontSize:11}}>
-                    {linea.bultos !== null && linea.bultos !== undefined ? (
-                      <div>
-                        <span className="mono" style={{fontWeight:700,color:"var(--cyan)"}}>{linea.bultos}</span>
-                        {linea.bultos === 0 && linea.bultoCompartido && (
-                          <div style={{fontSize:9,color:"var(--amber)",marginTop:2}}>→ {linea.bultoCompartido}</div>
-                        )}
-                        {linea.bultos === 0 && !linea.bultoCompartido && (
-                          <div style={{fontSize:9,color:"var(--txt3)",marginTop:2}}>suelto</div>
+                    {editing ? (
+                      <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
+                        <div style={{display:"flex",alignItems:"center",gap:3}}>
+                          <button onClick={() => changeBultos(linea.id, Math.max(0, (linea.bultos || 0) - 1))} disabled={saving || (linea.bultos || 0) <= 0}
+                            style={{width:20,height:20,borderRadius:4,background:"var(--bg3)",color:"var(--txt2)",fontSize:11,fontWeight:700,border:"1px solid var(--bg4)",cursor:"pointer",lineHeight:"18px",padding:0}}>−</button>
+                          <span className="mono" style={{fontWeight:700,color:"var(--cyan)",minWidth:16,textAlign:"center"}}>{linea.bultos ?? "—"}</span>
+                          <button onClick={() => changeBultos(linea.id, (linea.bultos || 0) + 1)} disabled={saving}
+                            style={{width:20,height:20,borderRadius:4,background:"var(--bg3)",color:"var(--txt2)",fontSize:11,fontWeight:700,border:"1px solid var(--bg4)",cursor:"pointer",lineHeight:"18px",padding:0}}>+</button>
+                        </div>
+                        {linea.bultos === 0 && (
+                          <input
+                            type="text" placeholder="comp. con..."
+                            value={linea.bultoCompartido || ""}
+                            onChange={e => changeBultoCompartido(linea.id, e.target.value || null)}
+                            style={{width:70,fontSize:9,padding:"2px 4px",background:"var(--bg3)",border:"1px solid var(--bg4)",borderRadius:4,color:"var(--amber)",textAlign:"center"}}
+                          />
                         )}
                       </div>
                     ) : (
-                      <span style={{color:"var(--txt3)"}}>—</span>
+                      linea.bultos !== null && linea.bultos !== undefined ? (
+                        <div>
+                          <span className="mono" style={{fontWeight:700,color:"var(--cyan)"}}>{linea.bultos}</span>
+                          {linea.bultos === 0 && linea.bultoCompartido && (
+                            <div style={{fontSize:9,color:"var(--amber)",marginTop:2}}>→ {linea.bultoCompartido}</div>
+                          )}
+                          {linea.bultos === 0 && !linea.bultoCompartido && (
+                            <div style={{fontSize:9,color:"var(--txt3)",marginTop:2}}>suelto</div>
+                          )}
+                        </div>
+                      ) : (
+                        <span style={{color:"var(--txt3)"}}>—</span>
+                      )
                     )}
                   </td>
                 )}
