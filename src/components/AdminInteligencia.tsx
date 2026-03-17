@@ -210,7 +210,7 @@ interface EnvioFullItem {
   alertas: string[];
   notas: string[];
   tipo: "simple" | "pack" | "combo";
-  componentes: { skuOrigen: string; nombreOrigen: string; unidadesPorPack: number; unidadesFisicas: number }[];
+  componentes: { skuOrigen: string; nombreOrigen: string; unidadesPorPack: number; unidadesFisicas: number; alternativos?: string[] }[];
   selected: boolean;
   eventoActivo: string | null;
   multiplicadorEvento: number;
@@ -545,15 +545,18 @@ export default function AdminInteligencia() {
       if (r.mandar_full <= 0) continue;
 
       // Tipo y componentes
-      const comps = getComponentesPorSkuVenta(r.sku_venta);
+      const compsAll = getComponentesPorSkuVenta(r.sku_venta);
+      // Solo componentes principales (no alternativos) para determinar tipo
+      const comps = compsAll.filter(c => c.tipoRelacion !== "alternativo");
+      const alternativos = compsAll.filter(c => c.tipoRelacion === "alternativo");
       let tipo: "simple" | "pack" | "combo";
       if (comps.length === 0 || (comps.length === 1 && comps[0].unidades === 1)) tipo = "simple";
       else if (comps.length === 1 && comps[0].unidades > 1) tipo = "pack";
       else tipo = "combo";
 
       const efectivos = comps.length > 0
-        ? comps.map(c => ({ skuOrigen: c.skuOrigen, nombreOrigen: c.skuOrigen, unidadesPorPack: c.unidades }))
-        : [{ skuOrigen: r.sku_origen || r.sku_venta, nombreOrigen: r.nombre || r.sku_venta, unidadesPorPack: 1 }];
+        ? comps.map(c => ({ skuOrigen: c.skuOrigen, nombreOrigen: c.skuOrigen, unidadesPorPack: c.unidades, alternativos: alternativos.filter(a => a.unidades === c.unidades).map(a => a.skuOrigen) }))
+        : [{ skuOrigen: r.sku_origen || r.sku_venta, nombreOrigen: r.nombre || r.sku_venta, unidadesPorPack: 1, alternativos: [] as string[] }];
 
       // Descontar tránsito
       const mandarBase = Math.max(0, r.mandar_full - (r.stock_en_transito > 0 ? r.stock_en_transito : 0));
@@ -626,6 +629,7 @@ export default function AdminInteligencia() {
         nombreOrigen: c.nombreOrigen,
         unidadesPorPack: c.unidadesPorPack,
         unidadesFisicas: mandarFinal * c.unidadesPorPack,
+        alternativos: c.alternativos,
       }));
 
       const bultos = ip > 1 ? Math.ceil((mandarFinal * compPrincipal.unidadesPorPack) / ip) : mandarFinal;

@@ -45,7 +45,7 @@ export async function GET(request: Request) {
       paginate(() => sb.from("sku_intelligence")
         .select("sku_origen, nombre, categoria, proveedor, abc, xyz, cuadrante, accion, prioridad, alertas, alertas_count, target_dias_full, stock_bodega, stock_en_transito, mandar_full, pedir_proveedor, evento_activo, liquidacion_accion, dias_en_quiebre, vel_pre_quiebre, es_quiebre_proveedor, abc_pre_quiebre, es_catch_up, venta_perdida_pesos, updated_at, vel_ponderada, stock_total, vel_objetivo, gap_vel_pct, gmroi, dio")
         .or("vel_ponderada.gt.0,stock_total.gt.0")),
-      paginate(() => sb.from("composicion_venta").select("sku_venta, sku_origen, unidades")),
+      paginate(() => sb.from("composicion_venta").select("sku_venta, sku_origen, unidades, tipo_relacion")),
       paginate(() => sb.from("stock_full_cache").select("sku_venta, cantidad")),
       paginate(() => sb.from("orders_history")
         .select("sku_venta, cantidad, canal, fecha, subtotal, comision_total, costo_envio, ingreso_envio, total")
@@ -53,7 +53,7 @@ export async function GET(request: Request) {
         .gte("fecha", fechaDesde)
         .order("fecha", { ascending: false })),
       paginate(() => sb.from("productos").select("sku, costo")),
-    ]) as [Record<string, unknown>[], { sku_venta: string; sku_origen: string; unidades: number }[], { sku_venta: string; cantidad: number }[], { sku_venta: string; cantidad: number; canal: string; fecha: string; subtotal: number; comision_total: number; costo_envio: number; ingreso_envio: number; total: number }[], { sku: string; costo: number }[]];
+    ]) as [Record<string, unknown>[], { sku_venta: string; sku_origen: string; unidades: number; tipo_relacion?: string }[], { sku_venta: string; cantidad: number }[], { sku_venta: string; cantidad: number; canal: string; fecha: string; subtotal: number; comision_total: number; costo_envio: number; ingreso_envio: number; total: number }[], { sku: string; costo: number }[]];
 
     // Debug log collector
     const debugLog: string[] = [];
@@ -125,10 +125,11 @@ export async function GET(request: Request) {
       });
     }
 
-    // ── Composición: SKU Origen → formatos de venta (UPPER, deduplicado) ──
+    // ── Composición: SKU Origen → formatos de venta (UPPER, deduplicado, sin alternativos) ──
     const allSkusVentaComp = new Set<string>();
     const ventasPorOrigen = new Map<string, { skuVenta: string; unidades: number }[]>();
     for (const c of composicion) {
+      if (c.tipo_relacion === "alternativo") continue;
       const svUp = c.sku_venta.toUpperCase();
       const soUp = c.sku_origen.toUpperCase();
       allSkusVentaComp.add(svUp);

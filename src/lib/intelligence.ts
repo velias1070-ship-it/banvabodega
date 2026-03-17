@@ -202,6 +202,7 @@ export interface ComposicionInput {
   sku_venta: string;
   sku_origen: string;
   unidades: number;
+  tipo_relacion?: "componente" | "alternativo";
 }
 
 export interface EventoInput {
@@ -356,13 +357,33 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
   const prodMap = new Map<string, ProductoInput>();
   for (const p of productos) prodMap.set(p.sku.toUpperCase(), p);
 
-  // SKU Origen → SKU Ventas asociados — SOLO desde composicion_venta
+  // SKU Origen → SKU Ventas asociados — SOLO desde composicion_venta (excluyendo alternativos)
   const ventasPorOrigen = new Map<string, { skuVenta: string; unidades: number }[]>();
+
+  // SKU Origen principal → SKUs Origen alternativos (por SKU Venta)
+  // Ejemplo: RAPAC50X70AFA → [TX2ALIMFP5070]
+  const alternativosPorOrigen = new Map<string, string[]>();
 
   // Construir ventasPorOrigen SOLO desde composicion_venta, normalizado y deduplicado
   for (const c of composicion) {
     const svUp = c.sku_venta.toUpperCase();
     const soUp = c.sku_origen.toUpperCase();
+    const esAlternativo = c.tipo_relacion === "alternativo";
+
+    if (esAlternativo) {
+      // Buscar el principal de este sku_venta para asociar el alternativo
+      const principal = composicion.find(
+        p => p.sku_venta.toUpperCase() === svUp && (p.tipo_relacion || "componente") === "componente"
+      );
+      if (principal) {
+        const principalUp = principal.sku_origen.toUpperCase();
+        if (!alternativosPorOrigen.has(principalUp)) alternativosPorOrigen.set(principalUp, []);
+        const alts = alternativosPorOrigen.get(principalUp)!;
+        if (!alts.includes(soUp)) alts.push(soUp);
+      }
+      continue; // No agregar alternativos a ventasPorOrigen
+    }
+
     if (!ventasPorOrigen.has(soUp)) ventasPorOrigen.set(soUp, []);
     const existing = ventasPorOrigen.get(soUp)!;
     // Deduplicar por UPPER
@@ -690,7 +711,14 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     const velAjustadaEvento = velPonderada * multiplicadorEvento;
 
     // ── PASO 5: Stock ──
-    const stBodega = stockBodegaN.get(skuOrigen) || 0;
+    // Sumar stock del principal + alternativos
+    let stBodega = stockBodegaN.get(skuOrigen) || 0;
+    const alts = alternativosPorOrigen.get(skuOrigen);
+    if (alts) {
+      for (const altSku of alts) {
+        stBodega += stockBodegaN.get(altSku) || 0;
+      }
+    }
     // Stock Full: sumar de todos los SKU Venta asociados (convertir a físico)
     let stFull = 0;
     for (const va of ventasAsoc) {

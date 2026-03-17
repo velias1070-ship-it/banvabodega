@@ -25,6 +25,7 @@ export interface DBComposicionVenta {
   codigo_ml: string;
   sku_origen: string;
   unidades: number;
+  tipo_relacion?: "componente" | "alternativo";
 }
 
 export interface DBPosition {

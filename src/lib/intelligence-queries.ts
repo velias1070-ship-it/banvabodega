@@ -25,6 +25,7 @@ export interface ComposicionRow {
   sku_venta: string;
   sku_origen: string;
   unidades: number;
+  tipo_relacion?: "componente" | "alternativo";
 }
 
 export interface OrdenHistoryRow {
@@ -127,7 +128,7 @@ export async function queryStockPorSku(): Promise<Map<string, number>> {
 export async function queryComposicion(): Promise<ComposicionRow[]> {
   const sb = getServerSupabase();
   if (!sb) return [];
-  const data = await paginatedSelect(() => sb.from("composicion_venta").select("sku_venta, sku_origen, unidades"));
+  const data = await paginatedSelect(() => sb.from("composicion_venta").select("sku_venta, sku_origen, unidades, tipo_relacion"));
   return data as unknown as ComposicionRow[];
 }
 
