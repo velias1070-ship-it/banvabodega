@@ -2159,3 +2159,204 @@ export async function updateRecepcionFacturaOriginal(id: string, facturaOriginal
   await sb.from("recepciones").update({ factura_original: facturaOriginal as unknown as Record<string, unknown> }).eq("id", id);
 }
 
+// ==================== PROVEEDOR CATÁLOGO ====================
+
+export interface DBProveedorCatalogo {
+  id?: string;
+  proveedor: string;
+  sku_origen: string;
+  nombre?: string | null;
+  inner_pack: number;
+  precio_neto: number;
+  stock_disponible: number;
+  updated_at?: string;
+}
+
+export interface DBProveedorImport {
+  id?: string;
+  proveedor: string;
+  archivo_nombre?: string | null;
+  skus_total: number;
+  skus_con_stock: number;
+  skus_sin_stock: number;
+  skus_nuevos: number;
+  created_at?: string;
+}
+
+export interface DBCostoHistorial {
+  id?: string;
+  sku_origen: string;
+  costo_anterior: number;
+  costo_nuevo: number;
+  diferencia_pct: number;
+  fuente: string;
+  created_at?: string;
+}
+
+export async function upsertProveedorCatalogo(items: Omit<DBProveedorCatalogo, "id">[]) {
+  const sb = getSupabase(); if (!sb) return;
+  const now = new Date().toISOString();
+  const rows = items.map(it => ({ ...it, sku_origen: (it.sku_origen || "").toUpperCase().trim(), updated_at: now }));
+  for (let i = 0; i < rows.length; i += 500) {
+    await sb.from("proveedor_catalogo").upsert(rows.slice(i, i + 500), { onConflict: "proveedor,sku_origen" });
+  }
+}
+
+export async function fetchProveedorCatalogo(proveedor?: string): Promise<DBProveedorCatalogo[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  let q = sb.from("proveedor_catalogo").select("*");
+  if (proveedor) q = q.eq("proveedor", proveedor);
+  const { data } = await q.order("sku_origen");
+  return data || [];
+}
+
+export async function insertProveedorImport(registro: Omit<DBProveedorImport, "id" | "created_at">) {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("proveedor_imports").insert(registro);
+}
+
+export async function fetchProveedorImports(): Promise<DBProveedorImport[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("proveedor_imports").select("*").order("created_at", { ascending: false }).limit(50);
+  return data || [];
+}
+
+export async function insertCostosHistorial(items: Omit<DBCostoHistorial, "id" | "created_at">[]) {
+  const sb = getSupabase(); if (!sb) return;
+  if (items.length === 0) return;
+  for (let i = 0; i < items.length; i += 500) {
+    await sb.from("costos_historial").insert(items.slice(i, i + 500));
+  }
+}
+
+// ==================== ORDENES DE COMPRA ====================
+
+export type OCEstado = "BORRADOR" | "PENDIENTE" | "EN_TRANSITO" | "RECIBIDA_PARCIAL" | "RECIBIDA" | "CERRADA" | "ANULADA";
+
+export interface DBOrdenCompra {
+  id?: string;
+  numero: string;
+  proveedor: string;
+  fecha_emision?: string;
+  fecha_esperada?: string | null;
+  fecha_recepcion?: string | null;
+  estado: OCEstado;
+  notas?: string | null;
+  total_neto: number;
+  total_bruto: number;
+  recepcion_id?: string | null;
+  lead_time_real?: number | null;
+  total_recibido?: number | null;
+  pct_cumplimiento?: number | null;
+  created_at?: string;
+}
+
+export interface DBOrdenCompraLinea {
+  id?: string;
+  orden_id: string;
+  sku_origen: string;
+  nombre?: string | null;
+  cantidad_pedida: number;
+  cantidad_recibida?: number;
+  costo_unitario: number;
+  inner_pack: number;
+  bultos: number;
+  estado?: string;
+  abc?: string | null;
+  vel_ponderada?: number | null;
+  cob_total_al_pedir?: number | null;
+  stock_full_al_pedir?: number | null;
+  stock_bodega_al_pedir?: number | null;
+  accion_al_pedir?: string | null;
+  created_at?: string;
+}
+
+export async function fetchOrdenesCompra(estado?: OCEstado): Promise<DBOrdenCompra[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  let q = sb.from("ordenes_compra").select("*");
+  if (estado) q = q.eq("estado", estado);
+  const { data } = await q.order("created_at", { ascending: false });
+  return (data || []) as DBOrdenCompra[];
+}
+
+export async function fetchOrdenCompra(id: string): Promise<DBOrdenCompra | null> {
+  const sb = getSupabase(); if (!sb) return null;
+  const { data } = await sb.from("ordenes_compra").select("*").eq("id", id).single();
+  return data as DBOrdenCompra | null;
+}
+
+export async function insertOrdenCompra(oc: Omit<DBOrdenCompra, "id" | "created_at">): Promise<string | null> {
+  const sb = getSupabase(); if (!sb) return null;
+  const { data } = await sb.from("ordenes_compra").insert(oc).select("id").single();
+  return data?.id || null;
+}
+
+export async function updateOrdenCompra(id: string, fields: Partial<DBOrdenCompra>) {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("ordenes_compra").update(fields).eq("id", id);
+}
+
+export async function deleteOrdenCompra(id: string) {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("ordenes_compra").delete().eq("id", id);
+}
+
+export async function insertOrdenCompraLineas(lineas: Omit<DBOrdenCompraLinea, "id" | "created_at">[]) {
+  const sb = getSupabase(); if (!sb) return;
+  for (let i = 0; i < lineas.length; i += 500) {
+    await sb.from("ordenes_compra_lineas").insert(lineas.slice(i, i + 500));
+  }
+}
+
+export async function fetchOrdenCompraLineas(ordenId: string): Promise<DBOrdenCompraLinea[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("ordenes_compra_lineas").select("*").eq("orden_id", ordenId).order("sku_origen");
+  return (data || []) as DBOrdenCompraLinea[];
+}
+
+export async function updateOrdenCompraLinea(id: string, fields: Partial<DBOrdenCompraLinea>) {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("ordenes_compra_lineas").update(fields).eq("id", id);
+}
+
+/** Generar siguiente número de OC */
+export async function nextOCNumero(): Promise<string> {
+  const sb = getSupabase(); if (!sb) return "OC-001";
+  const { data } = await sb.from("ordenes_compra").select("numero").order("created_at", { ascending: false }).limit(1);
+  if (!data || data.length === 0) return "OC-001";
+  const last = data[0].numero || "OC-000";
+  const num = parseInt(last.replace(/\D/g, "")) || 0;
+  return `OC-${String(num + 1).padStart(3, "0")}`;
+}
+
+/** Vincular recepción a OC */
+export async function vincularRecepcionOC(recepcionId: string, ordenCompraId: string) {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("recepciones").update({ orden_compra_id: ordenCompraId }).eq("id", recepcionId);
+}
+
+/** Fetch recepciones vinculadas a una OC */
+export async function fetchRecepcionesDeOC(ordenCompraId: string): Promise<DBRecepcion[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("recepciones").select("*").eq("orden_compra_id", ordenCompraId).order("created_at", { ascending: false });
+  return (data || []) as DBRecepcion[];
+}
+
+/** Fetch recepciones recientes de un proveedor sin OC vinculada */
+export async function fetchRecepcionesSinOC(proveedor: string): Promise<DBRecepcion[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("recepciones").select("*")
+    .eq("proveedor", proveedor)
+    .is("orden_compra_id", null)
+    .in("estado", ["CREADA", "EN_PROCESO", "COMPLETADA", "CERRADA"])
+    .order("created_at", { ascending: false })
+    .limit(20);
+  return (data || []) as DBRecepcion[];
+}
+
+/** Insertar log de acción admin */
+export async function insertAdminActionLog(accion: string, entidad: string, entidadId: string, detalle: Record<string, unknown>) {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("admin_actions_log").insert({ accion, entidad, entidad_id: entidadId, detalle });
+}
+

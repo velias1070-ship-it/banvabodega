@@ -19,6 +19,7 @@ import {
   queryStockFullDetail,
   queryVelObjetivos,
   queryIntelConfig,
+  queryProveedorCatalogo,
   type SkuIntelligenceUpsert,
 } from "@/lib/intelligence-queries";
 import {
@@ -68,6 +69,7 @@ export async function POST(req: NextRequest) {
       prevIntelligence,
       velProfitguard,
       stockFullDetail,
+      proveedorCatalogo,
     ] = await Promise.all([
       queryStockPorSku(),
       queryComposicion(),
@@ -81,6 +83,7 @@ export async function POST(req: NextRequest) {
       queryPrevIntelligence(),
       queryVelProfitguard(),
       queryStockFullDetail(),
+      queryProveedorCatalogo(),
     ]);
 
     // Fetch vel_objetivo y config de targets ABC (no bloquean el paralelo principal)
@@ -158,6 +161,7 @@ export async function POST(req: NextRequest) {
       ocPendientesPorSku,
       prevIntelligence,
       velObjetivos,
+      proveedorCatalogo,
       config: {
         ...DEFAULT_INTEL_CONFIG,
         targetDiasA: intelConfig.target_dias_a,

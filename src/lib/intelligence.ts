@@ -265,6 +265,15 @@ export interface StockFullDetailRow {
   stock_transferencia: number;
 }
 
+export interface ProveedorCatalogoInput {
+  sku_origen: string;
+  proveedor: string;
+  inner_pack: number;
+  precio_neto: number;
+  stock_disponible: number;
+  updated_at: string;
+}
+
 export interface RecalculoInput {
   productos: ProductoInput[];
   composicion: ComposicionInput[];
@@ -281,6 +290,7 @@ export interface RecalculoInput {
   ocPendientesPorSku: Map<string, number>;
   prevIntelligence: Map<string, PrevIntelRow>;
   velObjetivos: Map<string, number>;
+  proveedorCatalogo?: Map<string, ProveedorCatalogoInput>;
   config: RecalculoConfig;
   hoy: Date;
   debugSku?: string;
@@ -344,7 +354,8 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
   const {
     productos, composicion, ordenes, stockBodega, stockFull, stockFullDetail,
     velProfitguard, eventosActivos, quiebres, conteos, movimientos,
-    stockEnTransito, ocPendientesPorSku, prevIntelligence, velObjetivos, config, hoy,
+    stockEnTransito, ocPendientesPorSku, prevIntelligence, velObjetivos,
+    proveedorCatalogo, config, hoy,
     debugSku,
   } = input;
   const debugSkuUp = debugSku?.toUpperCase();
@@ -503,14 +514,17 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     const ventasAsoc = ventasPorOrigen.get(skuOrigen) || [];
     const skusVenta = ventasAsoc.map(v => v.skuVenta);
 
-    // ── PASO 1: Identidad ──
+    // ── PASO 1: Identidad (con datos de proveedor_catalogo si disponible) ──
+    const provCat = proveedorCatalogo?.get(skuOrigen);
     const nombre = prod?.nombre || null;
     const categoria = prod?.categoria || null;
-    const proveedor = prod?.proveedor || null;
-    const costoNeto = prod?.costo || 0;
+    const proveedor = prod?.proveedor || provCat?.proveedor || null;
+    const costoNeto = provCat?.precio_neto || prod?.costo || 0;
     const costoBruto = costoNeto > 0 ? Math.round(costoNeto * 1.19) : 0;
     const leadTimeDias = prod?.lead_time_dias || 7;
-    const innerPack = prod?.inner_pack || 1;
+    const innerPack = provCat?.inner_pack || prod?.inner_pack || 1;
+    const stockProveedor = provCat?.stock_disponible ?? -1;
+    const tieneStockProv = stockProveedor === -1 ? true : stockProveedor > 0;
 
     // ── PASO 2: Demanda (velocidades en unidades físicas) ──
     // Recolectar órdenes de todos los SKU Venta asociados, convertidas a unidades físicas
@@ -932,8 +946,8 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       stock_bodega: stBodega,
       stock_total: stTotal,
       stock_sin_etiquetar: 0, // TODO: cuando se implemente etiquetado
-      stock_proveedor: -1,    // se llena desde cache de proveedor
-      tiene_stock_prov: true,
+      stock_proveedor: stockProveedor,
+      tiene_stock_prov: tieneStockProv,
       inner_pack: innerPack,
       stock_en_transito: stEnTransito,
       stock_proyectado: stProyectado,
@@ -1073,7 +1087,8 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
   // ── Recalcular mandar_full y pedir_proveedor con targets actualizados ──
   for (const r of rows) {
     const prod = prodMap.get(r.sku_origen);
-    const innerPack = prod?.inner_pack || 1;
+    const provCatR = proveedorCatalogo?.get(r.sku_origen);
+    const innerPack = provCatR?.inner_pack || prod?.inner_pack || 1;
     const velCalcR = r.multiplicador_evento > 1 ? r.vel_ajustada_evento : r.vel_ponderada;
     const enQP = r.stock_full === 0 && r.vel_ponderada > 0 && r.dias_en_quiebre >= 14 && r.vel_pre_quiebre > 2;
     const velParaPedir = enQP ? r.vel_pre_quiebre : velCalcR;

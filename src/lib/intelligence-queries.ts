@@ -408,3 +408,52 @@ export async function upsertStockSnapshots(rows: Record<string, unknown>[]): Pro
     await sb.from("stock_snapshots").upsert(chunk, { onConflict: "fecha,sku_origen" });
   }
 }
+
+/* ───── Proveedor Catálogo (server-side) ───── */
+
+export interface ProveedorCatalogoRow {
+  sku_origen: string;
+  proveedor: string;
+  inner_pack: number;
+  precio_neto: number;
+  stock_disponible: number;
+  updated_at: string;
+}
+
+/** Catálogo completo de proveedores — paginado */
+export async function queryProveedorCatalogo(): Promise<Map<string, ProveedorCatalogoRow>> {
+  const sb = getServerSupabase();
+  if (!sb) return new Map();
+  const data = await paginatedSelect(() =>
+    sb.from("proveedor_catalogo").select("sku_origen, proveedor, inner_pack, precio_neto, stock_disponible, updated_at")
+  );
+  const map = new Map<string, ProveedorCatalogoRow>();
+  for (const row of data) {
+    const sku = (row.sku_origen as string).toUpperCase();
+    // Si hay duplicados (múltiples proveedores), quedarse con el más reciente
+    const existing = map.get(sku);
+    if (!existing || (row.updated_at as string) > existing.updated_at) {
+      map.set(sku, {
+        sku_origen: sku,
+        proveedor: (row.proveedor as string) || "",
+        inner_pack: (row.inner_pack as number) || 1,
+        precio_neto: (row.precio_neto as number) || 0,
+        stock_disponible: (row.stock_disponible as number) ?? -1,
+        updated_at: (row.updated_at as string) || "",
+      });
+    }
+  }
+  return map;
+}
+
+/** Fecha de última importación de proveedor */
+export async function queryUltimaImportacionProveedor(): Promise<string | null> {
+  const sb = getServerSupabase();
+  if (!sb) return null;
+  const { data } = await sb.from("proveedor_imports")
+    .select("created_at")
+    .order("created_at", { ascending: false })
+    .limit(1);
+  if (!data || data.length === 0) return null;
+  return data[0].created_at as string;
+}
