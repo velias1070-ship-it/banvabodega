@@ -16,6 +16,7 @@ export default function PickingPage() {
   const [activeLinea, setActiveLinea] = useState<PickingLinea | null>(null);
   const [activeCompIdx, setActiveCompIdx] = useState(-1);
   const [screen, setScreen] = useState<"list" | "session" | "pick" | "pickFull">("list");
+  const [editBultosMode, setEditBultosMode] = useState(false);
   const [operario, setOperario] = useState("");
 
   useEffect(() => {
@@ -69,7 +70,7 @@ export default function PickingPage() {
   );
 
   const goBack = () => {
-    if (screen==="pick" || screen==="pickFull"){setScreen("session");setActiveLinea(null);setActiveCompIdx(-1);}
+    if (screen==="pick" || screen==="pickFull"){setScreen("session");setActiveLinea(null);setActiveCompIdx(-1);setEditBultosMode(false);}
     else if(screen==="session"){setScreen("list");setActiveSes(null);loadSessions();}
   };
 
@@ -91,7 +92,7 @@ export default function PickingPage() {
           const fresh=await getActivePickings();const u=fresh.find(s=>s.id===activeSes.id);
           if(u)setActiveSes(u);setSessions(fresh);
         }}/>}
-        {screen==="session"&&activeSes&&isEnvioFull&&<SessionDetailFull session={activeSes} onPickLine={(linea)=>{setActiveLinea(linea);setScreen("pickFull");}} operario={operario} onRefresh={async()=>{
+        {screen==="session"&&activeSes&&isEnvioFull&&<SessionDetailFull session={activeSes} onPickLine={(linea)=>{setEditBultosMode(false);setActiveLinea(linea);setScreen("pickFull");}} onEditBultos={(linea)=>{setEditBultosMode(true);setActiveLinea(linea);setScreen("pickFull");}} operario={operario} onRefresh={async()=>{
           const fresh=await getActivePickings();const u=fresh.find(s=>s.id===activeSes.id);
           if(u)setActiveSes(u);setSessions(fresh);
         }}/>}
@@ -100,7 +101,7 @@ export default function PickingPage() {
           if(u){setActiveSes(u);setSessions(fresh);}
           setScreen("session");setActiveLinea(null);setActiveCompIdx(-1);
         }}/>}
-        {screen==="pickFull"&&activeSes&&activeLinea&&<PickFlowFull session={activeSes} linea={activeLinea} operario={operario} onDone={async()=>{
+        {screen==="pickFull"&&activeSes&&activeLinea&&<PickFlowFull session={activeSes} linea={activeLinea} operario={operario} editBultos={editBultosMode} onDone={async()=>{
           const fresh=await getActivePickings();const u=fresh.find(s=>s.id===activeSes.id);
           if(u){setActiveSes(u);setSessions(fresh);}
           setScreen("session");setActiveLinea(null);
@@ -281,7 +282,7 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
 }
 
 // ==================== SESSION DETAIL FULL (3 fases: Recolección, Armado, Resumen) ====================
-function SessionDetailFull({session,onPickLine,operario,onRefresh}:{session:DBPickingSession;onPickLine:(linea:PickingLinea)=>void;operario:string;onRefresh:()=>void}) {
+function SessionDetailFull({session,onPickLine,onEditBultos,operario,onRefresh}:{session:DBPickingSession;onPickLine:(linea:PickingLinea)=>void;onEditBultos:(linea:PickingLinea)=>void;operario:string;onRefresh:()=>void}) {
   const lineas = session.lineas;
   const [fase, setFase] = useState<"recoleccion"|"armado"|"resumen">("recoleccion");
   const [bultosData, setBultosData] = useState<{ bultos: DBPickingBulto[]; lineas: DBPickingBultoLinea[] }>({ bultos: [], lineas: [] });
@@ -463,11 +464,17 @@ function SessionDetailFull({session,onPickLine,operario,onRefresh}:{session:DBPi
 
           {/* Already picked items */}
           {lineas.filter(l => l.estado === "PICKEADO").length > 0 && (
-            <div style={{padding:14,marginTop:8,borderRadius:10,background:"#10b98110",border:"1px solid #10b98133",opacity:0.6}}>
+            <div style={{padding:14,marginTop:8,borderRadius:10,background:"#10b98110",border:"1px solid #10b98133"}}>
               <div style={{fontSize:12,fontWeight:700,color:"#10b981",marginBottom:8}}>✅ Ya recolectados ({lineas.filter(l => l.estado === "PICKEADO").length})</div>
               {lineas.filter(l => l.estado === "PICKEADO").map(item => (
-                <div key={item.id} style={{fontSize:11,color:"#94a3b8",padding:"2px 0"}}>
-                  <span className="mono">{item.componentes[0]?.skuOrigen}</span> — {item.componentes[0]?.unidades} uds de {item.componentes[0]?.posLabel}
+                <div key={item.id} onClick={()=>onEditBultos(item)}
+                  style={{display:"flex",alignItems:"center",justifyContent:"space-between",fontSize:11,color:"#94a3b8",padding:"6px 4px",cursor:"pointer",borderRadius:6,marginBottom:2,background:"transparent"}}
+                >
+                  <div>
+                    <span className="mono">{item.componentes[0]?.skuOrigen}</span> — {item.componentes[0]?.unidades} uds de {item.componentes[0]?.posLabel}
+                    {item.bultos != null && <span style={{marginLeft:6,color:"#3b82f6",fontWeight:600}}>📦 {item.bultos} bulto{item.bultos!==1?"s":""}{item.bultoCompartido ? ` (con ${item.bultoCompartido})` : ""}</span>}
+                  </div>
+                  <span style={{fontSize:10,color:"#64748b",flexShrink:0,marginLeft:8}}>editar 📦</span>
                 </div>
               ))}
             </div>
@@ -573,6 +580,30 @@ function SessionDetailFull({session,onPickLine,operario,onRefresh}:{session:DBPi
               </div>
             </div>
           )}
+
+          {/* Editar bultos por línea */}
+          <div style={{padding:16,background:"var(--bg2)",borderRadius:12,border:"1px solid var(--bg3)",marginBottom:12}}>
+            <div style={{fontSize:14,fontWeight:700,marginBottom:12}}>📦 Bultos por línea</div>
+            {lineas.map(item => (
+              <div key={item.id} onClick={()=>onEditBultos(item)}
+                style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 10px",marginBottom:4,borderRadius:8,background:"var(--bg3)",border:"1px solid var(--bg4)",cursor:"pointer"}}>
+                <div>
+                  <div style={{fontSize:12,fontWeight:600}}><span className="mono">{item.componentes[0]?.skuOrigen}</span> · {item.componentes[0]?.unidades} uds</div>
+                  <div style={{fontSize:11,color:"#94a3b8"}}>{item.componentes[0]?.posLabel}</div>
+                </div>
+                <div style={{textAlign:"right"}}>
+                  {item.bultos != null ? (
+                    <div style={{fontSize:12,fontWeight:700,color:"#3b82f6"}}>
+                      {item.bultos === 0 ? `Compartido${item.bultoCompartido ? ` (${item.bultoCompartido})` : ""}` : `${item.bultos} bulto${item.bultos!==1?"s":""}`}
+                    </div>
+                  ) : (
+                    <div style={{fontSize:11,color:"#f59e0b",fontWeight:600}}>Sin asignar</div>
+                  )}
+                  <div style={{fontSize:10,color:"#64748b",marginTop:2}}>editar</div>
+                </div>
+              </div>
+            ))}
+          </div>
 
           <div style={{textAlign:"center",padding:16,background:"#10b98115",borderRadius:12,border:"1px solid #10b98144",fontSize:13,color:"#10b981",fontWeight:600}}>
             Todo está listo para embalar y enviar a ML Full.
@@ -771,11 +802,11 @@ function PickFlow({session,linea,compIdx,operario,onDone}:{
 }
 
 // ==================== PICK FLOW FULL (envio_full — con mapa, usa PickingLinea unificada) ====================
-function PickFlowFull({session,linea,operario,onDone}:{
-  session:DBPickingSession;linea:PickingLinea;operario:string;onDone:()=>void;
+function PickFlowFull({session,linea,operario,onDone,editBultos}:{
+  session:DBPickingSession;linea:PickingLinea;operario:string;onDone:()=>void;editBultos?:boolean;
 }) {
   const comp = linea.componentes[0];
-  const [phase,setPhase]=useState<"locate"|"scan"|"bulto"|"bulto_compartido"|"bulto_custom"|"done">("locate");
+  const [phase,setPhase]=useState<"locate"|"scan"|"bulto"|"bulto_compartido"|"bulto_custom"|"done">(editBultos?"bulto":"locate");
   const [scanResult,setScanResult]=useState<"ok"|"error"|null>(null);
   const [scanCode,setScanCode]=useState("");
   const [saving,setSaving]=useState(false);
