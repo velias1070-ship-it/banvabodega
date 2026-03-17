@@ -1821,35 +1821,74 @@ export function buildPickingLineasFull(
 
       for (const fuente of fuentes) {
         const prod = _cache.products[fuente.sku];
-        const bestPos = fuente.positions.length > 0 ? fuente.positions[0] : null;
-        idx++;
 
-        lineas.push({
-          id: `F${String(idx).padStart(3, "0")}`,
-          skuVenta: envio.skuVenta,
-          qtyPedida: fuente.qty,
-          estado: "PENDIENTE",
-          componentes: [{
-            skuOrigen: fuente.sku,
-            codigoMl: prod?.mlCode || "",
-            nombre: prod?.name || fuente.sku,
-            unidades: fuente.qty,
-            posicion: bestPos?.pos || "?",
-            posLabel: bestPos?.label || "Sin posición",
-            stockDisponible: bestPos?.qty || 0,
+        // Multi-posición: generar una línea por cada posición necesaria
+        let restanteFuente = fuente.qty;
+        const posiciones = fuente.positions.filter(p => p.qty > 0);
+
+        if (posiciones.length === 0 || restanteFuente <= 0) {
+          // Sin stock o sin posiciones — generar línea con posición "?"
+          idx++;
+          lineas.push({
+            id: `F${String(idx).padStart(3, "0")}`,
+            skuVenta: envio.skuVenta,
+            qtyPedida: fuente.qty,
             estado: "PENDIENTE",
-            pickedAt: null,
-            operario: null,
-          }],
-          skuOrigen: fuente.sku,
-          tipoFull: envio.tipo,
-          qtyFisica: fuente.qty,
-          qtyVenta: envio.mandarFull,
-          unidadesPorPack: comp.unidadesPorPack,
-          posicionOrden: 0,
-          instruccionArmado: instruccion,
-          estadoArmado: envio.tipo === "simple" ? null : "PENDIENTE",
-        });
+            componentes: [{
+              skuOrigen: fuente.sku,
+              codigoMl: prod?.mlCode || "",
+              nombre: prod?.name || fuente.sku,
+              unidades: fuente.qty,
+              posicion: "?",
+              posLabel: "Sin posición",
+              stockDisponible: 0,
+              estado: "PENDIENTE",
+              pickedAt: null,
+              operario: null,
+            }],
+            skuOrigen: fuente.sku,
+            tipoFull: envio.tipo,
+            qtyFisica: fuente.qty,
+            qtyVenta: envio.mandarFull,
+            unidadesPorPack: comp.unidadesPorPack,
+            posicionOrden: 0,
+            instruccionArmado: instruccion,
+            estadoArmado: envio.tipo === "simple" ? null : "PENDIENTE",
+          });
+        } else {
+          for (const posInfo of posiciones) {
+            if (restanteFuente <= 0) break;
+            const tomar = Math.min(posInfo.qty, restanteFuente);
+            idx++;
+            lineas.push({
+              id: `F${String(idx).padStart(3, "0")}`,
+              skuVenta: envio.skuVenta,
+              qtyPedida: tomar,
+              estado: "PENDIENTE",
+              componentes: [{
+                skuOrigen: fuente.sku,
+                codigoMl: prod?.mlCode || "",
+                nombre: prod?.name || fuente.sku,
+                unidades: tomar,
+                posicion: posInfo.pos,
+                posLabel: posInfo.label,
+                stockDisponible: posInfo.qty,
+                estado: "PENDIENTE",
+                pickedAt: null,
+                operario: null,
+              }],
+              skuOrigen: fuente.sku,
+              tipoFull: envio.tipo,
+              qtyFisica: tomar,
+              qtyVenta: envio.mandarFull,
+              unidadesPorPack: comp.unidadesPorPack,
+              posicionOrden: 0,
+              instruccionArmado: instruccion,
+              estadoArmado: envio.tipo === "simple" ? null : "PENDIENTE",
+            });
+            restanteFuente -= tomar;
+          }
+        }
       }
 
       // Verificar stock total (principal + alternativos)
@@ -2005,6 +2044,20 @@ export async function pickearLineaFull(
     import("./agents-triggers").then(m => m.dispararTrigger("picking_completado", { session_id: sessionId, tipo: "envio_full" })).catch(() => {});
   }
 
+  return true;
+}
+
+// Guardar info de bultos en una línea de picking
+export async function guardarBultosLinea(
+  sessionId: string, lineaId: string,
+  bultos: number, bultoCompartido: string | null,
+  session: db.DBPickingSession
+): Promise<boolean> {
+  const linea = session.lineas.find(l => l.id === lineaId);
+  if (!linea) return false;
+  linea.bultos = bultos;
+  linea.bultoCompartido = bultoCompartido;
+  await db.updatePickingSession(sessionId, { lineas: session.lineas });
   return true;
 }
 

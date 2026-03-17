@@ -959,6 +959,10 @@ export interface PickingLinea {
   posicionOrden?: number;
   instruccionArmado?: string | null;
   estadoArmado?: "PENDIENTE" | "COMPLETADO" | null;
+  // Bultos cerrados en este pick (0 = fue a bulto abierto/compartido)
+  bultos?: number | null;
+  // SKU con el que comparte bulto (si bultos === 0)
+  bultoCompartido?: string | null;
   // Legacy — solo para migración de sesiones viejas
   lineasFull?: PickingLineaFullLegacy[];
 }

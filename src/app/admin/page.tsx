@@ -2511,6 +2511,7 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
             <th style={{textAlign:"center",padding:"8px 6px",color:"var(--txt3)"}}>Qty</th>
             <th style={{textAlign:"center",padding:"8px 6px",color:"var(--txt3)"}}>Estado</th>
             {isFull && <th style={{textAlign:"center",padding:"8px 6px",color:"var(--txt3)"}}>Armado</th>}
+            {isFull && <th style={{textAlign:"center",padding:"8px 6px",color:"var(--txt3)"}}>Bultos</th>}
             <th style={{textAlign:"left",padding:"8px 6px",color:"var(--txt3)"}}>Operario</th>
             {editing && <th style={{textAlign:"center",padding:"8px 6px",color:"var(--txt3)",width:80}}>Acciones</th>}
           </tr>
@@ -2580,6 +2581,23 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
                     )}
                   </td>
                 )}
+                {isFull && ci === 0 && (
+                  <td rowSpan={linea.componentes.length} style={{textAlign:"center",padding:"8px 6px",verticalAlign:"top",fontSize:11}}>
+                    {linea.bultos !== null && linea.bultos !== undefined ? (
+                      <div>
+                        <span className="mono" style={{fontWeight:700,color:"var(--cyan)"}}>{linea.bultos}</span>
+                        {linea.bultos === 0 && linea.bultoCompartido && (
+                          <div style={{fontSize:9,color:"var(--amber)",marginTop:2}}>→ {linea.bultoCompartido}</div>
+                        )}
+                        {linea.bultos === 0 && !linea.bultoCompartido && (
+                          <div style={{fontSize:9,color:"var(--txt3)",marginTop:2}}>suelto</div>
+                        )}
+                      </div>
+                    ) : (
+                      <span style={{color:"var(--txt3)"}}>—</span>
+                    )}
+                  </td>
+                )}
                 <td style={{padding:"8px 6px",fontSize:11,color:"var(--txt3)"}}>{comp.operario || "—"}</td>
                 {editing && ci === 0 && (
                   <td rowSpan={linea.componentes.length} style={{textAlign:"center",padding:"8px 6px",verticalAlign:"top"}}>
@@ -2595,16 +2613,46 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
         </tbody>
       </table>
 
-      {isFull && session.lineas.length > 0 && (
-        <div style={{padding:12,background:"var(--bg2)",borderRadius:8,border:"1px solid var(--bg3)",marginTop:12,fontSize:12,color:"var(--txt3)"}}>
-          <strong>Resumen:</strong> {session.lineas.length} SKUs · {session.lineas.reduce((s, l) => s + (l.qtyFisica || l.qtyPedida), 0)} uds físicas · {new Set(session.lineas.map(l => l.skuVenta)).size} SKUs Venta
-        </div>
-      )}
+      {isFull && session.lineas.length > 0 && (() => {
+        const totalBultos = session.lineas.reduce((s, l) => s + (l.bultos || 0), 0);
+        const compartidas = session.lineas.filter(l => l.bultos === 0 && l.bultoCompartido);
+        const sueltas = session.lineas.filter(l => l.bultos === 0 && !l.bultoCompartido && l.estado === "PICKEADO");
+        // Agrupar por SKU para resumen
+        const skuMap = new Map<string, number>();
+        for (const l of session.lineas) {
+          skuMap.set(l.skuVenta, (skuMap.get(l.skuVenta) || 0) + (l.qtyFisica || l.qtyPedida));
+        }
+        return (
+          <div style={{padding:12,background:"var(--bg2)",borderRadius:8,border:"1px solid var(--bg3)",marginTop:12,fontSize:12,color:"var(--txt3)"}}>
+            <strong>Resumen:</strong> {session.lineas.length} líneas · {session.lineas.reduce((s, l) => s + (l.qtyFisica || l.qtyPedida), 0)} uds físicas · {new Set(session.lineas.map(l => l.skuVenta)).size} SKUs Venta
+            {totalBultos > 0 && <span style={{color:"var(--cyan)",fontWeight:700}}> · 📦 {totalBultos} bultos</span>}
+            {compartidas.length > 0 && <span style={{color:"var(--amber)"}}> · {compartidas.length} compartidas</span>}
+            {sueltas.length > 0 && <span style={{color:"var(--txt3)"}}> · {sueltas.length} sueltas</span>}
+            {/* Detalle por SKU */}
+            {skuMap.size > 0 && (
+              <div style={{marginTop:8}}>
+                {Array.from(skuMap.entries()).map(([sku, qty]) => {
+                  const lineasSku = session.lineas.filter(l => l.skuVenta === sku);
+                  const bultosTotal = lineasSku.reduce((s, l) => s + (l.bultos || 0), 0);
+                  const compartido = lineasSku.filter(l => l.bultos === 0 && l.bultoCompartido);
+                  return (
+                    <div key={sku} style={{fontSize:11,marginTop:2}}>
+                      <span className="mono" style={{fontWeight:700}}>{sku}</span>: {qty} uds
+                      {bultosTotal > 0 && <span style={{color:"var(--cyan)"}}> · {bultosTotal} bultos</span>}
+                      {compartido.length > 0 && <span style={{color:"var(--amber)"}}> ({compartido.map(l => `→${l.bultoCompartido}`).join(", ")})</span>}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
-      {/* Bultos summary */}
+      {/* Legacy bultos summary (DB-backed) */}
       {isFull && bultosData.bultos.length > 0 && (
         <div style={{padding:12,background:"var(--bg2)",borderRadius:8,border:"1px solid var(--bg3)",marginTop:12,fontSize:12}}>
-          <strong style={{color:"var(--txt2)"}}>📦 {bultosData.bultos.length} bultos armados:</strong>
+          <strong style={{color:"var(--txt2)"}}>📦 {bultosData.bultos.length} bultos armados (legacy):</strong>
           {bultosData.bultos.map(bulto => {
             const lineasB = bultosData.lineas.filter(l => l.bulto_id === bulto.id);
             const totalUds = lineasB.reduce((s, l) => s + l.cantidad, 0);
