@@ -1528,27 +1528,36 @@ export function buildPickingLineas(orders: { skuVenta: string; qty: number }[]):
       // Try finding by SKU directly (maybe it's a simple product, not a pack)
       const prod = _cache.products[skuVenta];
       if (prod) {
-        // It's a product used directly as SKU Venta
-        const positions = skuPositions(skuVenta);
-        const bestPos = positions.length > 0 ? positions[0] : null;
-        lineas.push({
-          id: `P${String(i + 1).padStart(3, "0")}`,
-          skuVenta,
-          qtyPedida: qty,
-          estado: "PENDIENTE",
-          componentes: [{
-            skuOrigen: skuVenta,
-            codigoMl: prod.mlCode || "",
-            nombre: prod.name,
-            unidades: qty,
-            posicion: bestPos?.pos || "?",
-            posLabel: bestPos?.label || "Sin posición",
-            stockDisponible: bestPos?.qty || 0,
-            estado: "PENDIENTE",
-            pickedAt: null,
-            operario: null,
-          }],
-        });
+        // Multi-posición: generar una línea por cada posición necesaria
+        const positions = skuPositions(skuVenta).filter(p => p.qty > 0);
+        let restante = qty;
+
+        if (positions.length === 0) {
+          lineas.push({
+            id: `P${String(lineas.length + 1).padStart(3, "0")}`,
+            skuVenta, qtyPedida: qty, estado: "PENDIENTE",
+            componentes: [{
+              skuOrigen: skuVenta, codigoMl: prod.mlCode || "", nombre: prod.name,
+              unidades: qty, posicion: "?", posLabel: "Sin posición", stockDisponible: 0,
+              estado: "PENDIENTE", pickedAt: null, operario: null,
+            }],
+          });
+        } else {
+          for (const posInfo of positions) {
+            if (restante <= 0) break;
+            const tomar = Math.min(posInfo.qty, restante);
+            lineas.push({
+              id: `P${String(lineas.length + 1).padStart(3, "0")}`,
+              skuVenta, qtyPedida: tomar, estado: "PENDIENTE",
+              componentes: [{
+                skuOrigen: skuVenta, codigoMl: prod.mlCode || "", nombre: prod.name,
+                unidades: tomar, posicion: posInfo.pos, posLabel: posInfo.label, stockDisponible: posInfo.qty,
+                estado: "PENDIENTE", pickedAt: null, operario: null,
+              }],
+            });
+            restante -= tomar;
+          }
+        }
       } else {
         errors.push(`Línea ${i + 1}: SKU Venta "${skuVenta}" no encontrado en diccionario`);
       }
@@ -1556,28 +1565,45 @@ export function buildPickingLineas(orders: { skuVenta: string; qty: number }[]):
     }
 
     // Decompose into physical components (con soporte para alternativos)
-    const componentes: db.PickingComponente[] = [];
     for (const comp of comps) {
       const totalNeeded = comp.unidades * qty;
-      // Buscar alternativos que tengan las mismas unidades (mismo tipo de producto)
       const altSkus = alternativos.filter(a => a.unidades === comp.unidades).map(a => a.skuOrigen);
       const fuentes = _planificarFuentes(comp.skuOrigen, altSkus, totalNeeded);
 
       for (const fuente of fuentes) {
         const prod = _cache.products[fuente.sku];
-        const bestPos = fuente.positions.length > 0 ? fuente.positions[0] : null;
-        componentes.push({
-          skuOrigen: fuente.sku,
-          codigoMl: comp.codigoMl || prod?.mlCode || "",
-          nombre: prod?.name || fuente.sku,
-          unidades: fuente.qty,
-          posicion: bestPos?.pos || "?",
-          posLabel: bestPos?.label || "Sin posición",
-          stockDisponible: bestPos?.qty || 0,
-          estado: "PENDIENTE",
-          pickedAt: null,
-          operario: null,
-        });
+        // Multi-posición: generar una línea por cada posición necesaria
+        let restanteFuente = fuente.qty;
+        const posiciones = fuente.positions.filter(p => p.qty > 0);
+
+        if (posiciones.length === 0 || restanteFuente <= 0) {
+          lineas.push({
+            id: `P${String(lineas.length + 1).padStart(3, "0")}`,
+            skuVenta, qtyPedida: fuente.qty, estado: "PENDIENTE",
+            componentes: [{
+              skuOrigen: fuente.sku, codigoMl: comp.codigoMl || prod?.mlCode || "",
+              nombre: prod?.name || fuente.sku, unidades: fuente.qty,
+              posicion: "?", posLabel: "Sin posición", stockDisponible: 0,
+              estado: "PENDIENTE", pickedAt: null, operario: null,
+            }],
+          });
+        } else {
+          for (const posInfo of posiciones) {
+            if (restanteFuente <= 0) break;
+            const tomar = Math.min(posInfo.qty, restanteFuente);
+            lineas.push({
+              id: `P${String(lineas.length + 1).padStart(3, "0")}`,
+              skuVenta, qtyPedida: tomar, estado: "PENDIENTE",
+              componentes: [{
+                skuOrigen: fuente.sku, codigoMl: comp.codigoMl || prod?.mlCode || "",
+                nombre: prod?.name || fuente.sku, unidades: tomar,
+                posicion: posInfo.pos, posLabel: posInfo.label, stockDisponible: posInfo.qty,
+                estado: "PENDIENTE", pickedAt: null, operario: null,
+              }],
+            });
+            restanteFuente -= tomar;
+          }
+        }
       }
 
       // Verificar stock total (principal + alternativos)
@@ -1587,14 +1613,6 @@ export function buildPickingLineas(orders: { skuVenta: string; qty: number }[]):
         errors.push(`⚠️ ${comp.skuOrigen}: necesitas ${totalNeeded}, disponible ${totalDisponible} en ${detalle || "ninguna posición"}`);
       }
     }
-
-    lineas.push({
-      id: `P${String(i + 1).padStart(3, "0")}`,
-      skuVenta,
-      qtyPedida: qty,
-      estado: "PENDIENTE",
-      componentes,
-    });
   }
 
   return { lineas, errors };

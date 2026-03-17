@@ -1,7 +1,7 @@
 "use client";
 /* v3.1 — conteos + pedidos ML + cron fix */
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote, reconciliarStock, aplicarReconciliacion, editarStockVariante, sustituirProducto, getRecepcionAjustes, registrarAjuste, backfillFacturaOriginal, getNotasOperativas, despickearComponente } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote, reconciliarStock, aplicarReconciliacion, editarStockVariante, sustituirProducto, getRecepcionAjustes, registrarAjuste, backfillFacturaOriginal, getNotasOperativas, despickearComponente, buildPickingLineasFull, getSkuFisicoPorSkuVenta } from "@/lib/store";
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
@@ -2361,11 +2361,12 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
     }
 
     // Re-number new lines to continue from existing
+    const prefix = isFull ? "F" : "P";
     const maxNum = session.lineas.reduce((max, l) => {
-      const n = parseInt(l.id.replace("P", "")) || 0;
+      const n = parseInt(l.id.replace(/^[A-Z]/, "")) || 0;
       return Math.max(max, n);
     }, 0);
-    const newLineas = result.lineas.map((l, i) => ({ ...l, id: `P${String(maxNum + i + 1).padStart(3, "0")}` }));
+    const newLineas = result.lineas.map((l, i) => ({ ...l, id: `${prefix}${String(maxNum + i + 1).padStart(3, "0")}` }));
 
     const allLineas = [...session.lineas, ...newLineas];
     setSaving(true);
@@ -2448,12 +2449,13 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
                 showToast("Producto no encontrado en diccionario");
                 return;
               }
-              // Re-number
+              // Re-number with correct prefix
+              const prefix = isFull ? "F" : "P";
               const maxNum = session.lineas.reduce((max, l) => {
-                const n = parseInt(l.id.replace("P", "")) || 0;
+                const n = parseInt(l.id.replace(/^[A-Z]/, "")) || 0;
                 return Math.max(max, n);
               }, 0);
-              const newLineas = result.lineas.map((l, i) => ({ ...l, id: `P${String(maxNum + i + 1).padStart(3, "0")}` }));
+              const newLineas = result.lineas.map((l, i) => ({ ...l, id: `${prefix}${String(maxNum + i + 1).padStart(3, "0")}` }));
               const allLineas = [...session.lineas, ...newLineas];
               setSaving(true);
               actualizarPicking(session.id!, { lineas: allLineas, estado: "ABIERTA" }).then(() => {
