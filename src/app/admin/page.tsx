@@ -2336,32 +2336,70 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
   };
 
   // Reparar posiciones: reasignar posiciones reales a líneas pendientes con "?"
-  // Si no hay stock, marcar como PICKEADO (ya fueron pickeadas, el stock ya se descontó)
+  // Busca en movimientos si el SKU ya fue pickeado (salida venta_flex) y restaura info real
   const repararPosiciones = async () => {
     await refreshStore();
     const pendientesSinPos = session.lineas.filter(l => l.estado !== "PICKEADO" && l.componentes[0]?.posicion === "?");
     if (pendientesSinPos.length === 0) { showToast("No hay líneas con posición '?' para reparar"); return; }
 
-    let reparadas = 0;
-    let marcadasPickeado = 0;
-    const newLineas = [...session.lineas];
-    const consumido = new Map<string, number>();
-    const lineasSinStock: string[] = [];
+    setSaving(true);
 
-    // Build map of picked lines by skuVenta to copy position info from
-    const pickedBySkuVenta = new Map<string, typeof session.lineas[0]>();
-    for (const l of session.lineas) {
-      if (l.estado === "PICKEADO" && !pickedBySkuVenta.has(l.skuVenta)) {
-        pickedBySkuVenta.set(l.skuVenta, l);
+    // 1. Collect unique SKUs to search movements for
+    const skusToSearch = new Set<string>();
+    for (const l of pendientesSinPos) {
+      const comp = l.componentes[0];
+      if (comp) {
+        skusToSearch.add(comp.skuOrigen);
+        // Also check alternatives
+        const compsVenta = getComponentesPorSkuVenta(l.skuVenta);
+        for (const c of compsVenta) {
+          if (c.tipoRelacion === "alternativo") skusToSearch.add(c.skuOrigen);
+        }
       }
     }
+
+    // 2. Fetch movements for those SKUs (venta_flex salidas)
+    const movsBySkuVenta = new Map<string, { sku: string; pos: string; qty: number; operario: string; ts: string }[]>();
+    for (const sku of Array.from(skusToSearch)) {
+      const movs = await fetchMovimientosBySku(sku);
+      for (const m of movs) {
+        if (m.tipo !== "salida" || m.motivo !== "venta_flex") continue;
+        // nota format: "Picking Flex: SKUVENTA ×QTY"
+        const match = m.nota?.match(/Picking Flex:\s*(\S+)/);
+        if (!match) continue;
+        const skuVenta = match[1];
+        if (!movsBySkuVenta.has(skuVenta)) movsBySkuVenta.set(skuVenta, []);
+        movsBySkuVenta.get(skuVenta)!.push({
+          sku: m.sku, pos: m.posicion_id, qty: m.cantidad,
+          operario: m.operario, ts: m.created_at || "",
+        });
+      }
+    }
+
+    // 3. Track which movements have been "consumed" by already-picked lines
+    const movUsado = new Map<string, number>(); // key = "skuVenta:sku:pos" → units already accounted for
+    for (const l of session.lineas) {
+      if (l.estado === "PICKEADO") {
+        const comp = l.componentes[0];
+        if (comp) {
+          const key = `${l.skuVenta}:${comp.skuOrigen}:${comp.posicion}`;
+          movUsado.set(key, (movUsado.get(key) || 0) + comp.unidades);
+        }
+      }
+    }
+
+    let reparadas = 0;
+    let reparadasStock = 0;
+    let sinEvidencia = 0;
+    const newLineas = [...session.lineas];
+    const consumido = new Map<string, number>();
 
     for (const linea of newLineas) {
       if (linea.estado === "PICKEADO" || linea.componentes[0]?.posicion !== "?") continue;
       const comp = linea.componentes[0];
       if (!comp) continue;
 
-      // Try to find stock in real positions
+      // A) First try: find available stock in real positions
       const skusToCheck = [comp.skuOrigen];
       const compsVenta = getComponentesPorSkuVenta(linea.skuVenta);
       const alts = compsVenta.filter(c => c.tipoRelacion === "alternativo").map(c => c.skuOrigen);
@@ -2373,79 +2411,63 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
         for (const posInfo of posiciones) {
           const key = `${sku}:${posInfo.pos}`;
           const usado = consumido.get(key) || 0;
-          const disponible = posInfo.qty - usado;
-          if (disponible >= comp.unidades) {
+          if (posInfo.qty - usado >= comp.unidades) {
             comp.skuOrigen = sku;
             comp.nombre = getStore().products[sku]?.name || sku;
             comp.posicion = posInfo.pos;
             comp.posLabel = posInfo.label;
             comp.stockDisponible = posInfo.qty;
             consumido.set(key, usado + comp.unidades);
-            reparadas++;
-            found = true;
-            break;
-          } else if (disponible > 0) {
-            comp.skuOrigen = sku;
-            comp.nombre = getStore().products[sku]?.name || sku;
-            comp.posicion = posInfo.pos;
-            comp.posLabel = posInfo.label;
-            comp.stockDisponible = posInfo.qty;
-            consumido.set(key, usado + comp.unidades);
-            reparadas++;
+            reparadasStock++;
             found = true;
             break;
           }
         }
         if (found) break;
       }
-      if (!found) {
-        lineasSinStock.push(linea.id);
-      }
-    }
+      if (found) continue;
 
-    // Lines with no stock: mark as PICKEADO (stock was already consumed by previous picks)
-    if (lineasSinStock.length > 0) {
-      if (!confirm(`${reparadas > 0 ? `${reparadas} líneas reparadas con stock real.\n\n` : ""}${lineasSinStock.length} líneas no tienen stock (ya fue descontado por picks anteriores).\n\n¿Marcar estas ${lineasSinStock.length} líneas como PICKEADO?`)) {
-        if (reparadas === 0) return;
-      } else {
-        for (const lineaId of lineasSinStock) {
-          const linea = newLineas.find(l => l.id === lineaId);
-          if (!linea) continue;
-          const comp = linea.componentes[0];
-          if (!comp) continue;
-
-          // Copy position info from a picked line of the same SKU if available
-          const pickedRef = pickedBySkuVenta.get(linea.skuVenta);
-          if (pickedRef?.componentes[0]) {
-            const refComp = pickedRef.componentes[0];
-            comp.posicion = refComp.posicion;
-            comp.posLabel = refComp.posLabel;
-            comp.skuOrigen = refComp.skuOrigen;
-            comp.nombre = refComp.nombre;
-          }
-
+      // B) No stock → check movements to see if it was already picked
+      const movs = movsBySkuVenta.get(linea.skuVenta) || [];
+      let foundMov = false;
+      for (const mov of movs) {
+        const usadoKey = `${linea.skuVenta}:${mov.sku}:${mov.pos}`;
+        const yaUsado = movUsado.get(usadoKey) || 0;
+        if (mov.qty - yaUsado >= comp.unidades) {
+          // This movement covers this line — mark as PICKEADO with real data
+          const posObj = getStore().positions.find(p => p.id === mov.pos);
+          comp.skuOrigen = mov.sku;
+          comp.nombre = getStore().products[mov.sku]?.name || mov.sku;
+          comp.posicion = mov.pos;
+          comp.posLabel = posObj?.label || mov.pos;
           comp.estado = "PICKEADO";
-          comp.pickedAt = new Date().toISOString();
-          comp.operario = "admin-reparacion";
+          comp.pickedAt = mov.ts;
+          comp.operario = mov.operario;
           linea.estado = "PICKEADO";
-          marcadasPickeado++;
+          movUsado.set(usadoKey, yaUsado + comp.unidades);
+          reparadas++;
+          foundMov = true;
+          break;
         }
       }
+      if (!foundMov) sinEvidencia++;
     }
 
-    if (reparadas === 0 && marcadasPickeado === 0) {
-      showToast("No se pudo reparar ninguna línea");
+    const total = reparadas + reparadasStock;
+    if (total === 0 && sinEvidencia > 0) {
+      setSaving(false);
+      showToast(`No se encontró evidencia de pick en movimientos para ${sinEvidencia} líneas`);
       return;
     }
 
-    setSaving(true);
     const allDone = newLineas.length > 0 && newLineas.every(l => l.estado === "PICKEADO");
     await actualizarPicking(session.id!, { lineas: newLineas, ...(allDone ? { estado: "COMPLETADO", completado_at: new Date().toISOString() } : {}) });
     setSession({ ...session, lineas: newLineas, ...(allDone ? { estado: "COMPLETADO" } : {}) });
     setSaving(false);
     const parts: string[] = [];
-    if (reparadas > 0) parts.push(`${reparadas} reparadas con stock`);
-    if (marcadasPickeado > 0) parts.push(`${marcadasPickeado} marcadas como pickeado`);
+    if (reparadasStock > 0) parts.push(`${reparadasStock} con stock real`);
+    if (reparadas > 0) parts.push(`${reparadas} recuperadas de movimientos`);
+    if (sinEvidencia > 0) parts.push(`${sinEvidencia} sin evidencia`);
     if (allDone) parts.push("Sesión completada");
     showToast(parts.join(" · "));
   };
