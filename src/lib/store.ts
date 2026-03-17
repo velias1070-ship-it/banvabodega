@@ -1514,15 +1514,28 @@ export async function guardarOperario(o: db.DBOperario) { return db.upsertOperar
 export type { PickingLinea, PickingComponente, PickingLineaFullLegacy, PickingTipo, DBPickingSession } from "./db";
 
 // Build picking session from pasted orders
-export function buildPickingLineas(orders: { skuVenta: string; qty: number }[], opts?: { skipAlternativos?: boolean }): { lineas: db.PickingLinea[]; errors: string[] } {
+export function buildPickingLineas(orders: { skuVenta: string; qty: number }[]): { lineas: db.PickingLinea[]; errors: string[] } {
   const lineas: db.PickingLinea[] = [];
   const errors: string[] = [];
 
   for (let i = 0; i < orders.length; i++) {
     const { skuVenta, qty } = orders[i];
     const compsAll = getComponentesPorSkuVenta(skuVenta);
-    const comps = compsAll.filter(c => c.tipoRelacion !== "alternativo");
-    const alternativos = opts?.skipAlternativos ? [] : compsAll.filter(c => c.tipoRelacion === "alternativo");
+    let comps = compsAll.filter(c => c.tipoRelacion !== "alternativo");
+    let alternativos = compsAll.filter(c => c.tipoRelacion === "alternativo");
+
+    // Fix: si hay un componente cuyo skuOrigen === skuVenta con unidades=1,
+    // los demás componentes con unidades=1 son alternativos (no un combo real)
+    if (comps.length > 1) {
+      const principal = comps.find(c => c.skuOrigen === skuVenta || c.skuOrigen === skuVenta.toUpperCase());
+      if (principal && principal.unidades === 1) {
+        const otros = comps.filter(c => c !== principal && c.unidades === principal.unidades);
+        if (otros.length > 0) {
+          comps = [principal];
+          alternativos = [...alternativos, ...otros];
+        }
+      }
+    }
 
     if (comps.length === 0) {
       // Try finding by SKU directly (maybe it's a simple product, not a pack)
