@@ -562,7 +562,7 @@ export default function AdminInteligencia() {
 
       const efectivos = comps.length > 0
         ? comps.map(c => ({ skuOrigen: c.skuOrigen, nombreOrigen: c.skuOrigen, unidadesPorPack: c.unidades, alternativos: alternativos.filter(a => a.unidades === c.unidades).map(a => a.skuOrigen) }))
-        : [{ skuOrigen: r.sku_origen || r.sku_venta, nombreOrigen: r.nombre || r.sku_venta, unidadesPorPack: 1, alternativos: [] as string[] }];
+        : [{ skuOrigen: r.sku_origen || r.sku_venta, nombreOrigen: r.nombre || r.sku_venta, unidadesPorPack: 1, alternativos: alternativos.map(a => a.skuOrigen) }];
 
       // Descontar tránsito
       const mandarBase = Math.max(0, r.mandar_full - (r.stock_en_transito > 0 ? r.stock_en_transito : 0));

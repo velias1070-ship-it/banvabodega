@@ -123,6 +123,7 @@ interface EnvioComponenteDetalle {
   stockTotal: number;
   alcanza: boolean;
   maxPacks: number; // máximo de packs armables con stock disponible
+  alternativos?: string[];
 }
 
 interface RedondeoInfo {
@@ -1260,7 +1261,9 @@ export default function AdminReposicion() {
       .filter(r => r.mandarFull > 0)
       .sort((a, b) => ACCION_ORDEN[a.accion] - ACCION_ORDEN[b.accion])
       .map(r => {
-        const comps = getComponentesPorSkuVenta(r.skuVenta);
+        const compsAll = getComponentesPorSkuVenta(r.skuVenta);
+        const comps = compsAll.filter(c => c.tipoRelacion !== "alternativo");
+        const alternativos = compsAll.filter(c => c.tipoRelacion === "alternativo");
 
         // Determinar tipo
         let tipo: EnvioTipo;
@@ -1367,8 +1370,15 @@ export default function AdminReposicion() {
           const faltanParaBulto = ip && sueltas > 0 ? ip - sueltas : 0;
           const sueltasEnPacks = c.unidades > 0 ? Math.floor(sueltas / c.unidades) : 0;
 
+          // Stock principal + alternativos
+          const altSkus = comps.length > 0
+            ? alternativos.filter(a => a.unidades === c.unidades).map(a => a.skuOrigen)
+            : alternativos.map(a => a.skuOrigen);
           const posiciones = skuPositions(c.skuOrigen);
-          const stockTotal = posiciones.reduce((s, p) => s + p.qty, 0);
+          let stockTotal = posiciones.reduce((s, p) => s + p.qty, 0);
+          for (const altSku of altSkus) {
+            stockTotal += skuPositions(altSku).reduce((s, p) => s + p.qty, 0);
+          }
           const alcanza = stockTotal >= unidadesFisicas;
           const maxPacks = c.unidades > 0 ? Math.floor(stockTotal / c.unidades) : 0;
 
@@ -1386,6 +1396,7 @@ export default function AdminReposicion() {
             stockTotal,
             alcanza,
             maxPacks,
+            alternativos: altSkus,
           };
         });
 
@@ -1698,14 +1709,14 @@ export default function AdminReposicion() {
 
   // Build final envio list combining original + edits + added - removed
   const envioFinal = useMemo(() => {
-    const items: { skuVenta: string; nombre: string; mandarFull: number; tipo: EnvioTipo; componentes: { skuOrigen: string; nombreOrigen: string; unidadesPorPack: number; unidadesFisicas: number }[]; fromOriginal: boolean }[] = [];
+    const items: { skuVenta: string; nombre: string; mandarFull: number; tipo: EnvioTipo; componentes: { skuOrigen: string; nombreOrigen: string; unidadesPorPack: number; unidadesFisicas: number; alternativos?: string[] }[]; fromOriginal: boolean }[] = [];
     for (const d of envioDetalles) {
       if (envioRemoved.has(d.skuVenta)) continue;
       const qty = envioEditable.has(d.skuVenta) ? envioEditable.get(d.skuVenta)! : d.mandarFull;
       if (qty <= 0) continue;
       items.push({
         skuVenta: d.skuVenta, nombre: d.nombre, mandarFull: qty, tipo: d.tipo, fromOriginal: true,
-        componentes: d.componentes.map(c => ({ skuOrigen: c.skuOrigen, nombreOrigen: c.nombreOrigen, unidadesPorPack: c.unidadesPorPack, unidadesFisicas: qty * c.unidadesPorPack })),
+        componentes: d.componentes.map(c => ({ skuOrigen: c.skuOrigen, nombreOrigen: c.nombreOrigen, unidadesPorPack: c.unidadesPorPack, unidadesFisicas: qty * c.unidadesPorPack, alternativos: c.alternativos })),
       });
     }
     for (const a of envioAdded) {
@@ -1723,7 +1734,7 @@ export default function AdminReposicion() {
   const crearPickingEnvioFull = useCallback(async () => {
     const source = envioEditMode ? envioFinal : envioDetalles.map(d => ({
       skuVenta: d.skuVenta, nombre: d.nombre, mandarFull: d.mandarFull, tipo: d.tipo,
-      componentes: d.componentes.map(c => ({ skuOrigen: c.skuOrigen, nombreOrigen: c.nombreOrigen, unidadesPorPack: c.unidadesPorPack, unidadesFisicas: c.unidadesFisicas })),
+      componentes: d.componentes.map(c => ({ skuOrigen: c.skuOrigen, nombreOrigen: c.nombreOrigen, unidadesPorPack: c.unidadesPorPack, unidadesFisicas: c.unidadesFisicas, alternativos: c.alternativos })),
     }));
     if (!source.length || creandoPicking) return;
     setCreandoPicking(true);
