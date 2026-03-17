@@ -2335,27 +2335,33 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
     if (result.errors.length > 0) alert("Advertencias:\n" + result.errors.join("\n"));
   };
 
-  // Reparar posiciones: reasignar posiciones reales a líneas con "?"
-  // Estrategia dual:
-  // 1. Busca en OTRAS sesiones de picking completadas del mismo tipo que tengan las mismas líneas
-  //    (incluye posición, bultos, estadoArmado, operario, pickedAt)
-  // 2. Fallback: busca en movimientos (salida venta_flex/envio_full)
+  // Reparar datos de picking: restaura posiciones "?", cantidades 0, bultos y armado faltantes
+  // Fuentes de datos:
+  // 1. Otras sesiones de picking completadas del mismo tipo (tiene bultos, armado, etc)
+  // 2. Movimientos de salida (venta_flex / envio_full) — tiene posición, qty, operario
   const repararPosiciones = async () => {
     await refreshStore();
-    const lineasConSigno = session.lineas.filter(l =>
-      l.componentes[0]?.posicion === "?" ||
-      (l.estado === "PICKEADO" && l.componentes[0]?.posicion !== "?" && isFull && (l.bultos === undefined || l.bultos === null))
-    );
-    const lineasSoloPosicion = session.lineas.filter(l => l.componentes[0]?.posicion === "?");
-    if (lineasSoloPosicion.length === 0 && lineasConSigno.length === 0) { showToast("No hay líneas para reparar"); return; }
+
+    // Detect lines that need repair: position "?", qty 0, missing bultos/armado
+    const needsRepair = (l: PickingLinea) => {
+      const comp = l.componentes[0];
+      if (!comp) return false;
+      if (comp.posicion === "?") return true;
+      if (comp.unidades === 0 || l.qtyPedida === 0) return true;
+      if (isFull && (l.bultos === undefined || l.bultos === null)) return true;
+      if (isFull && l.tipoFull && l.tipoFull !== "simple" && (!l.estadoArmado || l.estadoArmado === "PENDIENTE") && l.estado === "PICKEADO") return true;
+      return false;
+    };
+
+    const lineasParaReparar = session.lineas.filter(needsRepair);
+    if (lineasParaReparar.length === 0) { showToast("No hay líneas para reparar"); return; }
 
     setSaving(true);
 
-    // --- Strategy 1: Search completed picking sessions for matching line data ---
+    // --- Source 1: Other completed picking sessions ---
     const sb = (await import("@/lib/supabase")).getSupabase();
-    let otherSessionLines: PickingLinea[] = [];
+    const otherSessionLines: PickingLinea[] = [];
     if (sb) {
-      // Fetch completed sessions of the same tipo (excluding this session)
       const { data: otherSessions } = await sb
         .from("picking_sessions")
         .select("id, lineas, tipo")
@@ -2377,19 +2383,15 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
       }
     }
 
-    // Index other session lines by skuVenta+skuOrigen for fast lookup
-    const sessionLineMap = new Map<string, PickingLinea[]>();
+    // Index by skuVenta for lookup
+    const sessionLinesBySkuVenta = new Map<string, PickingLinea[]>();
     for (const l of otherSessionLines) {
-      const comp = l.componentes[0];
-      if (!comp) continue;
-      const key = `${l.skuVenta}:${comp.skuOrigen}`;
-      if (!sessionLineMap.has(key)) sessionLineMap.set(key, []);
-      sessionLineMap.get(key)!.push(l);
+      if (!sessionLinesBySkuVenta.has(l.skuVenta)) sessionLinesBySkuVenta.set(l.skuVenta, []);
+      sessionLinesBySkuVenta.get(l.skuVenta)!.push(l);
     }
-    // Track which session lines have been consumed
-    const sessionLineUsado = new Set<string>();
+    const sessionLineUsado = new Set<number>(); // index-based tracking
 
-    // --- Strategy 2: Search movements as fallback ---
+    // --- Source 2: Movements ---
     const skusToSearch = new Set<string>();
     for (const l of session.lineas) {
       const comp = l.componentes[0];
@@ -2400,7 +2402,8 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
       }
     }
 
-    const allMovs: { sku: string; pos: string; qty: number; operario: string; ts: string; skuVenta: string }[] = [];
+    const allMovs: { sku: string; pos: string; qty: number; operario: string; ts: string; skuVenta: string; idx: number }[] = [];
+    let movIdx = 0;
     for (const sku of Array.from(skusToSearch)) {
       const movs = await fetchMovimientosBySku(sku);
       for (const m of movs) {
@@ -2415,16 +2418,17 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
         allMovs.push({
           sku: m.sku, pos: m.posicion_id, qty: Math.abs(m.cantidad),
           operario: m.operario, ts: m.created_at || "",
-          skuVenta,
+          skuVenta, idx: movIdx++,
         });
       }
     }
 
+    // Track which movements are consumed by lines that are already OK (not needing repair)
     const movUsado = new Map<string, number>();
     for (const l of session.lineas) {
-      if (l.estado === "PICKEADO" && l.componentes[0]?.posicion !== "?") {
+      if (!needsRepair(l) && l.estado === "PICKEADO" && l.componentes[0]?.posicion !== "?") {
         const comp = l.componentes[0];
-        if (comp) {
+        if (comp && comp.unidades > 0) {
           const key = `${l.skuVenta}:${comp.skuOrigen}:${comp.posicion}`;
           movUsado.set(key, (movUsado.get(key) || 0) + comp.unidades);
         }
@@ -2436,24 +2440,31 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
     const newLineas = [...session.lineas];
 
     for (const linea of newLineas) {
+      if (!needsRepair(linea)) continue;
       const comp = linea.componentes[0];
       if (!comp) continue;
 
       const needsPos = comp.posicion === "?";
-      const needsBultos = isFull && (linea.bultos === undefined || linea.bultos === null);
-      if (!needsPos && !needsBultos) continue;
+      const needsQty = comp.unidades === 0 || linea.qtyPedida === 0;
 
-      // Strategy 1: Try to find in other completed sessions
+      // Strategy 1: Try matching line from other completed sessions
       let foundInSession = false;
-      const skuKey = `${linea.skuVenta}:${comp.skuOrigen}`;
-      const candidates = sessionLineMap.get(skuKey) || [];
-      for (const cand of candidates) {
+      const sessionCandidates = sessionLinesBySkuVenta.get(linea.skuVenta) || [];
+      for (let si = 0; si < sessionCandidates.length; si++) {
+        const globalIdx = otherSessionLines.indexOf(sessionCandidates[si]);
+        if (sessionLineUsado.has(globalIdx)) continue;
+        const cand = sessionCandidates[si];
         const candComp = cand.componentes[0];
         if (!candComp) continue;
-        const candId = `${cand.skuVenta}:${candComp.skuOrigen}:${candComp.posicion}:${candComp.pickedAt || ""}`;
-        if (sessionLineUsado.has(candId)) continue;
 
-        // Copy all data from the matching line
+        // If we need position, candidate must have a matching sku
+        if (needsPos && candComp.skuOrigen !== comp.skuOrigen) {
+          // Also check if it matches any component
+          const compsVenta = getComponentesPorSkuVenta(linea.skuVenta);
+          if (!compsVenta.some(c => c.skuOrigen === candComp.skuOrigen)) continue;
+        }
+
+        // Copy position data
         if (needsPos) {
           const posObj = getStore().positions.find(p => p.id === candComp.posicion);
           comp.skuOrigen = candComp.skuOrigen;
@@ -2465,20 +2476,28 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
           comp.operario = candComp.operario;
           linea.estado = "PICKEADO";
         }
-        // Always restore Full-specific fields from session data
+        // Copy qty if missing
+        if (needsQty && candComp.unidades > 0) {
+          comp.unidades = candComp.unidades;
+          linea.qtyPedida = cand.qtyPedida || candComp.unidades;
+          if (isFull) linea.qtyFisica = cand.qtyFisica || candComp.unidades;
+        }
+        // Copy Full-specific fields
         if (isFull) {
           if (cand.bultos !== undefined && cand.bultos !== null) linea.bultos = cand.bultos;
           if (cand.bultoCompartido !== undefined) linea.bultoCompartido = cand.bultoCompartido;
           if (cand.estadoArmado) linea.estadoArmado = cand.estadoArmado;
-          if (cand.qtyFisica) linea.qtyFisica = cand.qtyFisica;
-          if (cand.qtyVenta) linea.qtyVenta = cand.qtyVenta;
+          if (cand.qtyFisica && cand.qtyFisica > 0) linea.qtyFisica = cand.qtyFisica;
+          if (cand.qtyVenta && cand.qtyVenta > 0) linea.qtyVenta = cand.qtyVenta;
           if (cand.tipoFull) linea.tipoFull = cand.tipoFull;
           if (cand.unidadesPorPack) linea.unidadesPorPack = cand.unidadesPorPack;
           if (cand.posicionOrden !== undefined) linea.posicionOrden = cand.posicionOrden;
           if (cand.instruccionArmado !== undefined) linea.instruccionArmado = cand.instruccionArmado;
         }
+        // Copy operario if missing
+        if (!comp.operario && candComp.operario) comp.operario = candComp.operario;
 
-        sessionLineUsado.add(candId);
+        sessionLineUsado.add(globalIdx);
         reparadas++;
         foundInSession = true;
         break;
@@ -2486,15 +2505,19 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
 
       if (foundInSession) continue;
 
-      // Strategy 2: Fallback to movements (only if position is "?")
-      if (!needsPos) continue;
+      // Strategy 2: Fallback to movements
       const movs = allMovs.filter(m => m.skuVenta === linea.skuVenta);
       let foundMov = false;
       for (const mov of movs) {
         const usadoKey = `${linea.skuVenta}:${mov.sku}:${mov.pos}`;
         const yaUsado = movUsado.get(usadoKey) || 0;
-        if (mov.qty - yaUsado >= comp.unidades) {
-          const posObj = getStore().positions.find(p => p.id === mov.pos);
+        const disponible = mov.qty - yaUsado;
+        if (disponible <= 0) continue;
+
+        const posObj = getStore().positions.find(p => p.id === mov.pos);
+
+        // Restore position
+        if (needsPos || comp.posicion === mov.pos) {
           comp.skuOrigen = mov.sku;
           comp.nombre = getStore().products[mov.sku]?.name || mov.sku;
           comp.posicion = mov.pos;
@@ -2503,18 +2526,29 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
           comp.pickedAt = mov.ts;
           comp.operario = mov.operario;
           linea.estado = "PICKEADO";
-          movUsado.set(usadoKey, yaUsado + comp.unidades);
-          reparadas++;
-          foundMov = true;
-          break;
         }
+
+        // Restore qty from movement
+        if (needsQty) {
+          comp.unidades = mov.qty;
+          linea.qtyPedida = mov.qty;
+          if (isFull) linea.qtyFisica = mov.qty;
+        }
+
+        // Restore operario
+        if (!comp.operario) comp.operario = mov.operario;
+
+        movUsado.set(usadoKey, yaUsado + (comp.unidades || mov.qty));
+        reparadas++;
+        foundMov = true;
+        break;
       }
       if (!foundMov) sinEvidencia++;
     }
 
     if (reparadas === 0 && sinEvidencia > 0) {
       setSaving(false);
-      const skuList = lineasSoloPosicion.map(l => l.skuVenta).join(", ");
+      const skuList = lineasParaReparar.map(l => l.skuVenta).join(", ");
       showToast(`No se encontró evidencia para ${sinEvidencia} líneas`);
       alert(`No se encontraron datos en sesiones ni movimientos para:\n${skuList}\n\nSesiones consultadas: ${otherSessionLines.length} líneas\nMovimientos encontrados: ${allMovs.length}`);
       return;
@@ -2646,7 +2680,12 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
           {editing && <button onClick={regenerarLineas} disabled={saving} style={{padding:"6px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--blue)",fontSize:11,fontWeight:600,border:"1px solid var(--blue)33",cursor:"pointer"}}>
             🔄 Regenerar posiciones
           </button>}
-          {editing && (session.lineas.some(l => l.componentes[0]?.posicion === "?") || (isFull && session.lineas.some(l => l.estado === "PICKEADO" && (l.bultos === undefined || l.bultos === null)))) && (
+          {editing && session.lineas.some(l => {
+            const c = l.componentes[0];
+            if (!c) return false;
+            return c.posicion === "?" || c.unidades === 0 || l.qtyPedida === 0
+              || (isFull && (l.bultos === undefined || l.bultos === null));
+          }) && (
             <button onClick={repararPosiciones} disabled={saving} style={{padding:"6px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--amber)",fontSize:11,fontWeight:600,border:"1px solid var(--amber)33",cursor:"pointer"}}>
               🔧 Reparar datos picking
             </button>
