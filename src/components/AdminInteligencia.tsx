@@ -1,7 +1,8 @@
 "use client";
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { getSupabase } from "@/lib/supabase";
-import { buildPickingLineasFull, crearPickingSession, skuPositions, getComponentesPorSkuVenta } from "@/lib/store";
+import { buildPickingLineasFull, crearPickingSession, skuPositions, getComponentesPorSkuVenta, getSkusVenta, getNotasOperativas } from "@/lib/store";
+import { upsertNotasOperativas } from "@/lib/db";
 import AdminMLSinVincular from "./AdminMLSinVincular";
 
 // ============================================
@@ -370,6 +371,11 @@ export default function AdminInteligencia() {
 
   // Modal masivo
   const [modalMasivo, setModalMasivo] = useState(false);
+  // Modal notas operativas
+  const [modalNotas, setModalNotas] = useState(false);
+  const [notasEdits, setNotasEdits] = useState<Map<string, string>>(new Map());
+  const [notasBusqueda, setNotasBusqueda] = useState("");
+  const [notasSaving, setNotasSaving] = useState(false);
   const [masivoMode, setMasivoMode] = useState<"abc" | "categoria" | "manual">("abc");
   const [masivoMultiplier, setMasivoMultiplier] = useState("1.1");
   const [masivoAbcFilter, setMasivoAbcFilter] = useState("A");
@@ -969,6 +975,9 @@ export default function AdminInteligencia() {
           <button onClick={() => setModalMasivo(true)} style={{ padding: "6px 12px", borderRadius: 6, background: "var(--amberBg)", color: "var(--amber)", fontWeight: 600, fontSize: 11, border: "1px solid var(--amberBd)", cursor: "pointer" }}>
             Definir objetivos
           </button>
+          <button onClick={() => setModalNotas(true)} style={{ padding: "6px 12px", borderRadius: 6, background: "var(--amberBg)", color: "var(--amber)", fontWeight: 600, fontSize: 11, border: "1px solid var(--amberBd)", cursor: "pointer" }}>
+            Notas operativas
+          </button>
           <button onClick={syncStockML} disabled={syncingML} style={{ padding: "6px 12px", borderRadius: 6, background: "var(--blueBg)", color: "var(--blue)", fontWeight: 600, fontSize: 11, border: "1px solid var(--blueBd)", cursor: "pointer" }}>
             {syncingML ? "Sync..." : "Sync ML"}
           </button>
@@ -1542,6 +1551,92 @@ export default function AdminInteligencia() {
                 style={{ padding: "8px 20px", borderRadius: 8, background: "var(--cyan)", color: "#000", fontWeight: 700, fontSize: 12, border: "none", cursor: "pointer", opacity: masivoSaving ? 0.6 : 1 }}
               >
                 {masivoSaving ? "Guardando..." : "Aplicar"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══ MODAL NOTAS OPERATIVAS ═══ */}
+      {modalNotas && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }} onClick={() => setModalNotas(false)}>
+          <div style={{ background: "var(--bg2)", borderRadius: 12, padding: 24, maxWidth: 700, width: "95%", maxHeight: "85vh", overflow: "auto", border: "1px solid var(--bg4)" }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ margin: "0 0 12px", fontSize: 16, fontWeight: 700 }}>Notas operativas por SKU Venta</h3>
+            <input
+              type="text"
+              placeholder="Filtrar por SKU, nombre, categoria..."
+              value={notasBusqueda}
+              onChange={e => setNotasBusqueda(e.target.value)}
+              className="form-input"
+              style={{ width: "100%", fontSize: 12, padding: "6px 10px", marginBottom: 12 }}
+            />
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+              <thead>
+                <tr style={{ borderBottom: "2px solid var(--bg3)" }}>
+                  <th style={{ textAlign: "left", padding: "6px 4px", color: "var(--txt3)" }}>SKU Venta</th>
+                  <th style={{ textAlign: "left", padding: "6px 4px", color: "var(--txt3)" }}>Nombre</th>
+                  <th style={{ textAlign: "left", padding: "6px 4px", color: "var(--txt3)", width: "40%" }}>Nota operativa</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(() => {
+                  const skusVenta = getSkusVenta();
+                  const q = notasBusqueda.toLowerCase();
+                  const filtered = q ? skusVenta.filter(s => {
+                    const nombre = ventaRows.find(v => v.sku_venta === s.skuVenta)?.nombre || "";
+                    const cat = ventaRows.find(v => v.sku_venta === s.skuVenta)?.proveedor || "";
+                    return s.skuVenta.toLowerCase().includes(q) || nombre.toLowerCase().includes(q) || cat.toLowerCase().includes(q);
+                  }) : skusVenta;
+                  return filtered.slice(0, 100).map(s => {
+                    const currentNotas = getNotasOperativas(s.skuVenta);
+                    const currentNota = currentNotas.join(" | ");
+                    const edited = notasEdits.get(s.skuVenta);
+                    const displayVal = edited !== undefined ? edited : currentNota;
+                    const nombre = ventaRows.find(v => v.sku_venta === s.skuVenta)?.nombre || "";
+                    return (
+                      <tr key={s.skuVenta} style={{ borderBottom: "1px solid var(--bg3)" }}>
+                        <td className="mono" style={{ padding: "4px", fontWeight: 600, fontSize: 10 }}>{s.skuVenta}</td>
+                        <td style={{ padding: "4px", fontSize: 10, color: "var(--txt2)" }}>{nombre.slice(0, 30)}</td>
+                        <td style={{ padding: "4px" }}>
+                          <input
+                            type="text"
+                            value={displayVal}
+                            onChange={e => setNotasEdits(prev => { const m = new Map(prev); m.set(s.skuVenta, e.target.value); return m; })}
+                            placeholder="Ej: Pack de 2. Armar antes de enviar."
+                            className="form-input"
+                            style={{ width: "100%", fontSize: 10, padding: "3px 6px" }}
+                          />
+                        </td>
+                      </tr>
+                    );
+                  });
+                })()}
+              </tbody>
+            </table>
+            <div style={{ display: "flex", gap: 8, marginTop: 16, justifyContent: "flex-end" }}>
+              <button onClick={() => { setModalNotas(false); setNotasEdits(new Map()); }} style={{ padding: "8px 16px", borderRadius: 8, background: "var(--bg3)", color: "var(--txt2)", fontWeight: 600, fontSize: 12, border: "1px solid var(--bg4)", cursor: "pointer" }}>
+                Cancelar
+              </button>
+              <button
+                onClick={async () => {
+                  if (notasEdits.size === 0) { setModalNotas(false); return; }
+                  setNotasSaving(true);
+                  const updates: { sku_venta: string; sku_origen: string; nota_operativa: string | null }[] = [];
+                  Array.from(notasEdits.entries()).forEach(([skuVenta, nota]) => {
+                    const comps = getComponentesPorSkuVenta(skuVenta);
+                    for (const c of comps) {
+                      updates.push({ sku_venta: c.skuVenta, sku_origen: c.skuOrigen, nota_operativa: nota.trim() || null });
+                    }
+                  });
+                  await upsertNotasOperativas(updates);
+                  setNotasSaving(false);
+                  setNotasEdits(new Map());
+                  setModalNotas(false);
+                }}
+                disabled={notasSaving || notasEdits.size === 0}
+                style={{ padding: "8px 20px", borderRadius: 8, background: "var(--cyan)", color: "#000", fontWeight: 700, fontSize: 12, border: "none", cursor: "pointer", opacity: notasSaving || notasEdits.size === 0 ? 0.6 : 1 }}
+              >
+                {notasSaving ? "Guardando..." : `Guardar todo (${notasEdits.size} cambios)`}
               </button>
             </div>
           </div>

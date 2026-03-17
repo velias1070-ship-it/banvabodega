@@ -1,6 +1,8 @@
 "use client";
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
-import { initStore, refreshStore, isSupabaseConfigured, getActivePickings, pickearComponente, pickearLineaFull, marcarArmadoFull, verificarScanPicking, activePositions, posContents, getMapConfig, calcularRutaPicking, agruparPorPosicion } from "@/lib/store";
+import { initStore, refreshStore, isSupabaseConfigured, getActivePickings, pickearComponente, pickearLineaFull, marcarArmadoFull, verificarScanPicking, activePositions, posContents, getMapConfig, calcularRutaPicking, agruparPorPosicion, getNotasOperativas } from "@/lib/store";
+import { fetchBultosSession, crearBulto, agregarLineaBulto, eliminarLineasBulto } from "@/lib/db";
+import type { DBPickingBulto, DBPickingBultoLinea } from "@/lib/db";
 import type { DBPickingSession, PickingLinea, PickingComponente } from "@/lib/store";
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -267,6 +269,14 @@ function SessionDetail({session,onPickComp,onRefresh}:{session:DBPickingSession;
 function SessionDetailFull({session,onPickLine,operario,onRefresh}:{session:DBPickingSession;onPickLine:(linea:PickingLinea)=>void;operario:string;onRefresh:()=>void}) {
   const lineas = session.lineas;
   const [fase, setFase] = useState<"recoleccion"|"armado"|"resumen">("recoleccion");
+  const [bultosData, setBultosData] = useState<{ bultos: DBPickingBulto[]; lineas: DBPickingBultoLinea[] }>({ bultos: [], lineas: [] });
+
+  // Cargar bultos cuando se entra en resumen
+  useEffect(() => {
+    if (fase === "resumen" && session.id) {
+      fetchBultosSession(session.id).then(setBultosData);
+    }
+  }, [fase, session.id]);
 
   const allPicked = lineas.every(l => l.estado === "PICKEADO");
   const allArmado = lineas.every(l => !l.estadoArmado || l.estadoArmado === "COMPLETADO");
@@ -426,6 +436,9 @@ function SessionDetailFull({session,onPickLine,operario,onRefresh}:{session:DBPi
                       <span className="mono">{comp?.skuOrigen}</span> · {comp?.unidades} uds
                       {item.tipoFull && item.tipoFull !== "simple" && <span style={{color:"#f59e0b",marginLeft:6}}>→ {item.skuVenta}</span>}
                     </div>
+                    {(() => { const notas = getNotasOperativas(item.skuVenta); return notas.length > 0 ? (
+                      <div style={{fontSize:11,color:"#f59e0b",fontWeight:600,marginTop:2}}>⚠ {notas.join(" | ")}</div>
+                    ) : null; })()}
                   </div>
                   {item.estado!=="PICKEADO"&&<span style={{fontSize:18,color:"#3b82f6"}}>→</span>}
                 </div>
@@ -521,6 +534,30 @@ function SessionDetailFull({session,onPickLine,operario,onRefresh}:{session:DBPi
               <span className="mono" style={{color:"#10b981"}}>{resumen.length}</span>
             </div>
           </div>
+
+          {/* Bultos summary */}
+          {bultosData.bultos.length > 0 && (
+            <div style={{padding:16,background:"var(--bg2)",borderRadius:12,border:"1px solid var(--bg3)",marginBottom:12}}>
+              <div style={{fontSize:14,fontWeight:700,marginBottom:12}}>📦 {bultosData.bultos.length} bultos armados:</div>
+              {bultosData.bultos.map(bulto => {
+                const lineasB = bultosData.lineas.filter(l => l.bulto_id === bulto.id);
+                const totalUds = lineasB.reduce((s, l) => s + l.cantidad, 0);
+                return (
+                  <div key={bulto.id} style={{padding:"8px 12px",marginBottom:6,borderRadius:8,background:"var(--bg3)",border:"1px solid var(--bg4)"}}>
+                    <div style={{fontWeight:700,color:"#3b82f6",fontSize:12}}>Bulto {bulto.numero_bulto} ({totalUds} uds)</div>
+                    {lineasB.map((lb, i) => (
+                      <div key={i} style={{fontSize:11,color:"#94a3b8",marginTop:2}}>
+                        <span className="mono">{lb.sku_venta}</span> ×{lb.cantidad}
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+              <div style={{marginTop:8,fontSize:14,fontWeight:800,color:"#10b981",textAlign:"center"}}>
+                Total: {bultosData.lineas.reduce((s, l) => s + l.cantidad, 0)} unidades en {bultosData.bultos.length} bultos ✅
+              </div>
+            </div>
+          )}
 
           <div style={{textAlign:"center",padding:16,background:"#10b98115",borderRadius:12,border:"1px solid #10b98144",fontSize:13,color:"#10b981",fontWeight:600}}>
             Todo está listo para embalar y enviar a ML Full.
@@ -723,10 +760,28 @@ function PickFlowFull({session,linea,operario,onDone}:{
   session:DBPickingSession;linea:PickingLinea;operario:string;onDone:()=>void;
 }) {
   const comp = linea.componentes[0];
-  const [phase,setPhase]=useState<"locate"|"scan"|"done">("locate");
+  const [phase,setPhase]=useState<"locate"|"scan"|"bulto"|"done">("locate");
   const [scanResult,setScanResult]=useState<"ok"|"error"|null>(null);
   const [scanCode,setScanCode]=useState("");
   const [saving,setSaving]=useState(false);
+
+  // Bulto state
+  const [bultos,setBultos]=useState<DBPickingBulto[]>([]);
+  const [bultosLineas,setBultosLineas]=useState<DBPickingBultoLinea[]>([]);
+  const [bultoAsignaciones,setBultoAsignaciones]=useState<Map<string,number>>(new Map()); // bultoId → qty
+  const [loadingBultos,setLoadingBultos]=useState(false);
+
+  const qtyPickeada = comp?.unidades || 0;
+  const totalAsignado = Array.from(bultoAsignaciones.values()).reduce((s,v)=>s+v, 0);
+
+  const loadBultos = useCallback(async () => {
+    if (!session.id) return;
+    setLoadingBultos(true);
+    const data = await fetchBultosSession(session.id);
+    setBultos(data.bultos);
+    setBultosLineas(data.lineas);
+    setLoadingBultos(false);
+  }, [session.id]);
 
   const cfg=getMapConfig();
   const positions=activePositions().filter(p=>p.active&&p.mx!==undefined);
@@ -742,23 +797,55 @@ function PickFlowFull({session,linea,operario,onDone}:{
   const targetPos=comp?.posicion || "?";
   const posItems=targetPos?posContents(targetPos):[];
 
-  const doConfirm=useCallback(async()=>{
+  const goToBultoPhase = useCallback(async () => {
     setSaving(true);
     await pickearLineaFull(session.id!,linea.id,operario,session);
-    setSaving(false);setPhase("done");
+    setSaving(false);
     if(navigator.vibrate)navigator.vibrate([100,50,100]);
-    setTimeout(onDone,1200);
-  },[session,linea,operario,onDone]);
+    await loadBultos();
+    // Si solo hay 1 unidad, pre-asignar: si no hay bultos, crear uno automáticamente
+    setPhase("bulto");
+  }, [session,linea,operario,loadBultos]);
+
+  const doConfirm=useCallback(async()=>{
+    goToBultoPhase();
+  },[goToBultoPhase]);
+
+  // Confirm bulto assignment
+  const confirmarBultos = useCallback(async () => {
+    setSaving(true);
+    for (const entry of Array.from(bultoAsignaciones.entries())) {
+      if (entry[1] > 0) {
+        await agregarLineaBulto(entry[0], linea.skuVenta, linea.skuOrigen || comp?.skuOrigen || null, entry[1]);
+      }
+    }
+    setSaving(false);
+    setPhase("done");
+    setTimeout(onDone, 800);
+  }, [bultoAsignaciones, linea, comp, onDone]);
+
+  const crearNuevoBulto = useCallback(async () => {
+    const nextNum = bultos.length > 0 ? Math.max(...bultos.map(b => b.numero_bulto)) + 1 : 1;
+    const id = await crearBulto(session.id!, nextNum);
+    if (id) {
+      await loadBultos();
+      // Asignar todo lo restante al nuevo bulto
+      const restante = qtyPickeada - totalAsignado;
+      if (restante > 0) {
+        setBultoAsignaciones(prev => { const m = new Map(prev); m.set(id, restante); return m; });
+      }
+    }
+  }, [bultos, session.id, loadBultos, qtyPickeada, totalAsignado]);
 
   // Verify scan: use the standard verificarScanPicking function
   const handleScan=useCallback((code:string)=>{
     setScanCode(code);
     if (comp && verificarScanPicking(code, comp, linea.skuVenta)) {
-      setScanResult("ok"); doConfirm();
+      setScanResult("ok"); goToBultoPhase();
     } else {
       setScanResult("error"); if(navigator.vibrate)navigator.vibrate([200,100,200]);
     }
-  },[comp,linea.skuVenta,doConfirm]);
+  },[comp,linea.skuVenta,goToBultoPhase]);
 
   if (!comp) return null;
 
@@ -767,6 +854,122 @@ function PickFlowFull({session,linea,operario,onDone}:{
       <div style={{fontSize:64,marginBottom:16}}>✅</div>
       <div style={{fontSize:20,fontWeight:800,color:"#10b981"}}>¡Recolectado!</div>
       <div style={{fontSize:14,color:"#94a3b8",marginTop:8}}>{comp.unidades}× {comp.nombre}</div>
+    </div>
+  );
+
+  // BULTO ASSIGNMENT PHASE
+  if(phase==="bulto")return(
+    <div>
+      <div style={{padding:16,background:"#3b82f615",border:"2px solid #3b82f644",borderRadius:14,marginBottom:12}}>
+        <div style={{fontSize:15,fontWeight:700,color:"#3b82f6",marginBottom:4}}>📦 ¿En qué bulto va?</div>
+        <div style={{fontSize:12,color:"#94a3b8"}}>
+          <span className="mono" style={{fontWeight:700}}>{linea.skuVenta}</span> — {qtyPickeada} uds pickeadas
+        </div>
+      </div>
+
+      {loadingBultos ? (
+        <div style={{textAlign:"center",padding:20,color:"#94a3b8"}}>Cargando bultos...</div>
+      ) : (
+        <div>
+          {/* Bultos existentes */}
+          {bultos.map(bulto => {
+            const lineasB = bultosLineas.filter(l => l.bulto_id === bulto.id);
+            const totalBulto = lineasB.reduce((s,l)=>s+l.cantidad, 0);
+            const asignado = bultoAsignaciones.get(bulto.id!) || 0;
+            const restante = qtyPickeada - totalAsignado;
+
+            if (qtyPickeada <= 1 || (qtyPickeada > 1 && bultos.length >= 2)) {
+              // Para qty > 1 con múltiples bultos: mostrar input de cantidad
+              return (
+                <div key={bulto.id} style={{padding:14,marginBottom:8,borderRadius:12,
+                  background:asignado > 0 ? "#3b82f618" : "var(--bg2)",
+                  border:`2px solid ${asignado > 0 ? "#3b82f6" : "var(--bg4)"}`,
+                }}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                    <div>
+                      <span style={{fontSize:16,fontWeight:800,color:"#3b82f6"}}>📦 Bulto {bulto.numero_bulto}</span>
+                      <span style={{fontSize:11,color:"#94a3b8",marginLeft:8}}>({totalBulto} uds)</span>
+                    </div>
+                  </div>
+                  {qtyPickeada > 1 ? (
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <button onClick={() => setBultoAsignaciones(prev => {
+                        const m = new Map(prev); const v = m.get(bulto.id!) || 0;
+                        if (v > 0) m.set(bulto.id!, v - 1); return m;
+                      })} disabled={asignado <= 0}
+                        style={{width:44,height:44,borderRadius:10,background:"var(--bg3)",color:"var(--txt)",fontSize:20,fontWeight:800,border:"1px solid var(--bg4)",cursor:asignado>0?"pointer":"default",opacity:asignado>0?1:0.3}}>
+                        −
+                      </button>
+                      <span className="mono" style={{fontSize:24,fontWeight:800,color:"#3b82f6",minWidth:40,textAlign:"center"}}>{asignado}</span>
+                      <button onClick={() => setBultoAsignaciones(prev => {
+                        const m = new Map(prev); const v = m.get(bulto.id!) || 0;
+                        if (totalAsignado < qtyPickeada) m.set(bulto.id!, v + 1); return m;
+                      })} disabled={totalAsignado >= qtyPickeada}
+                        style={{width:44,height:44,borderRadius:10,background:"var(--bg3)",color:"var(--txt)",fontSize:20,fontWeight:800,border:"1px solid var(--bg4)",cursor:totalAsignado<qtyPickeada?"pointer":"default",opacity:totalAsignado<qtyPickeada?1:0.3}}>
+                        +
+                      </button>
+                    </div>
+                  ) : (
+                    <button onClick={() => {
+                      setBultoAsignaciones(new Map([[bulto.id!, qtyPickeada]]));
+                      // Auto-confirm when single qty
+                      setTimeout(async () => {
+                        setSaving(true);
+                        await agregarLineaBulto(bulto.id!, linea.skuVenta, linea.skuOrigen || comp.skuOrigen || null, qtyPickeada);
+                        setSaving(false); setPhase("done"); setTimeout(onDone, 800);
+                      }, 100);
+                    }}
+                      style={{width:"100%",padding:16,borderRadius:10,fontWeight:700,fontSize:16,color:"#fff",
+                        background:"linear-gradient(135deg,#2563eb,#3b82f6)",cursor:"pointer",border:"none"}}>
+                      📦 Bulto {bulto.numero_bulto} ({totalBulto} uds)
+                    </button>
+                  )}
+                </div>
+              );
+            } else {
+              // Single qty + single bulto: show as button
+              return (
+                <button key={bulto.id} onClick={() => {
+                  setBultoAsignaciones(new Map([[bulto.id!, qtyPickeada]]));
+                  setTimeout(async () => {
+                    setSaving(true);
+                    await agregarLineaBulto(bulto.id!, linea.skuVenta, linea.skuOrigen || comp.skuOrigen || null, qtyPickeada);
+                    setSaving(false); setPhase("done"); setTimeout(onDone, 800);
+                  }, 100);
+                }}
+                  style={{width:"100%",padding:18,marginBottom:8,borderRadius:12,fontWeight:700,fontSize:16,color:"#fff",
+                    background:"linear-gradient(135deg,#2563eb,#3b82f6)",cursor:"pointer",border:"none",boxShadow:"0 4px 20px #3b82f633"}}>
+                  📦 Bulto {bulto.numero_bulto} ({totalBulto} uds)
+                </button>
+              );
+            }
+          })}
+
+          {/* Nuevo bulto */}
+          <button onClick={crearNuevoBulto}
+            style={{width:"100%",padding:18,marginBottom:8,borderRadius:12,fontWeight:700,fontSize:16,color:"#3b82f6",
+              background:"var(--bg2)",cursor:"pointer",border:"2px dashed #3b82f644",boxShadow:"none"}}>
+            + Nuevo bulto
+          </button>
+
+          {/* Confirmar si qty > 1 */}
+          {qtyPickeada > 1 && (
+            <div style={{marginTop:12}}>
+              <div style={{textAlign:"center",marginBottom:8,fontSize:13,fontWeight:700,
+                color:totalAsignado===qtyPickeada?"#10b981":"#f59e0b"}}>
+                Total asignado: {totalAsignado}/{qtyPickeada} {totalAsignado===qtyPickeada?"✅":""}
+              </div>
+              <button onClick={confirmarBultos} disabled={saving || totalAsignado !== qtyPickeada}
+                style={{width:"100%",padding:16,borderRadius:12,fontWeight:700,fontSize:16,color:"#fff",
+                  background:totalAsignado===qtyPickeada?"linear-gradient(135deg,#059669,#10b981)":"var(--bg3)",
+                  cursor:totalAsignado===qtyPickeada?"pointer":"default",border:"none",
+                  opacity:totalAsignado===qtyPickeada?1:0.4}}>
+                {saving ? "Guardando..." : "Confirmar asignación"}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 
@@ -783,6 +986,11 @@ function PickFlowFull({session,linea,operario,onDone}:{
           )}
         </div>
         <div style={{fontSize:18,fontWeight:800,color:"#fff",marginBottom:4}}>{comp.nombre}</div>
+        {(() => { const notas = getNotasOperativas(linea.skuVenta); return notas.length > 0 ? (
+          <div style={{padding:"6px 10px",borderRadius:6,background:"#f59e0b22",border:"1px solid #f59e0b44",marginBottom:6}}>
+            <div style={{fontSize:12,fontWeight:700,color:"#f59e0b"}}>⚠ {notas.join(" | ")}</div>
+          </div>
+        ) : null; })()}
         <div style={{display:"flex",gap:12,alignItems:"center",marginTop:8}}>
           <div style={{padding:"8px 20px",background:"#3b82f633",borderRadius:10,border:"2px solid #3b82f6"}}>
             <div style={{fontSize:28,fontWeight:800,color:"#3b82f6",textAlign:"center"}}>{comp.unidades}</div>
@@ -895,7 +1103,7 @@ function PickFlowFull({session,linea,operario,onDone}:{
           </div>
         )}
 
-        <button onClick={async()=>{setSaving(true);await pickearLineaFull(session.id!,linea.id,operario,session);setSaving(false);setPhase("done");setTimeout(onDone,800);}} disabled={saving}
+        <button onClick={goToBultoPhase} disabled={saving}
           style={{width:"100%",marginTop:16,padding:10,borderRadius:8,background:"transparent",color:"#64748b",fontSize:11,border:"1px dashed #64748b44"}}>
           Confirmar sin escanear
         </button>
