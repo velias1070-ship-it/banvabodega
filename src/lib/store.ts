@@ -26,6 +26,7 @@ export interface ComposicionVenta {
   skuOrigen: string;
   unidades: number;
   tipoRelacion: "componente" | "alternativo";
+  notaOperativa?: string | null;
 }
 
 export interface Position {
@@ -187,6 +188,7 @@ export async function initStore(): Promise<void> {
       skuVenta: c.sku_venta, codigoMl: c.codigo_ml,
       skuOrigen: c.sku_origen, unidades: c.unidades,
       tipoRelacion: c.tipo_relacion || "componente",
+      notaOperativa: c.nota_operativa || null,
     }));
 
     _cache = { products, positions, stock, stockDetalle, movements, movCounter: movements.length, mapConfig, composicion, skuVentaToFisico };
@@ -426,6 +428,15 @@ export function getComponentesPorSkuVenta(skuVenta: string): ComposicionVenta[] 
 // Dado un SKU Origen (físico), en qué packs/ventas participa
 export function getVentasPorSkuOrigen(skuOrigen: string): ComposicionVenta[] {
   return _cache.composicion.filter(c => c.skuOrigen === skuOrigen);
+}
+
+// Obtener notas operativas para un SKU Venta (puede haber varias si es combo)
+export function getNotasOperativas(skuVenta: string): string[] {
+  const svUpper = skuVenta.toUpperCase();
+  const notas = _cache.composicion
+    .filter(c => (c.skuVenta === skuVenta || c.skuVenta.toUpperCase() === svUpper) && c.notaOperativa)
+    .map(c => c.notaOperativa!);
+  return Array.from(new Set(notas));
 }
 
 // Dado un SKU Venta, busca el SKU físico en la tabla de productos (para productos simples sin composicion_venta)
@@ -824,6 +835,7 @@ export async function syncFromSheet(): Promise<{ added: number; updated: number;
     skuVenta: c.sku_venta, codigoMl: c.codigo_ml,
     skuOrigen: c.sku_origen, unidades: c.unidades,
     tipoRelacion: c.tipo_relacion || "componente",
+    notaOperativa: c.nota_operativa || null,
   }));
 
   console.log(`[sync] composicion from CSV: ${result.composicion.total}, from DB: ${compVenta.length}, cache: ${_cache.composicion.length}`);

@@ -1,11 +1,11 @@
 "use client";
 /* v3.1 — conteos + pedidos ML + cron fix */
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote, reconciliarStock, aplicarReconciliacion, editarStockVariante, sustituirProducto, getRecepcionAjustes, registrarAjuste, backfillFacturaOriginal } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote, reconciliarStock, aplicarReconciliacion, editarStockVariante, sustituirProducto, getRecepcionAjustes, registrarAjuste, backfillFacturaOriginal, getNotasOperativas } from "@/lib/store";
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
-import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, fetchAllPedidosFlex, fetchPedidosFlexByEstado, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal } from "@/lib/db";
+import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, fetchAllPedidosFlex, fetchPedidosFlexByEstado, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, fetchBultosSession, upsertNotasOperativas } from "@/lib/db";
 import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap, ShipmentWithItems } from "@/lib/db";
 import { getOAuthUrl } from "@/lib/ml";
 import Link from "next/link";
@@ -2238,13 +2238,57 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
   const [addMode, setAddMode] = useState<"search" | "text">("search");
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState("");
+  const [bultosData, setBultosData] = useState<{ bultos: import("@/lib/db").DBPickingBulto[]; lineas: import("@/lib/db").DBPickingBultoLinea[] }>({ bultos: [], lineas: [] });
 
   const isFull = session.tipo === "envio_full";
   const totalComps = session.lineas.reduce((s, l) => s + l.componentes.length, 0);
   const doneComps = session.lineas.reduce((s, l) => s + l.componentes.filter(c => c.estado === "PICKEADO").length, 0);
   const pct = totalComps > 0 ? Math.round((doneComps / totalComps) * 100) : 0;
 
+  // Cargar bultos para sesión envio_full
+  useEffect(() => {
+    if (isFull && session.id) {
+      fetchBultosSession(session.id).then(setBultosData);
+    }
+  }, [isFull, session.id]);
+
   const showToast = (m: string) => { setToast(m); setTimeout(() => setToast(""), 2500); };
+
+  // Exportar CSV para envio_full
+  const exportCSV = () => {
+    // Agrupar por SKU Venta con unidades de venta
+    const skuMap = new Map<string, number>();
+    for (const l of session.lineas) {
+      const qty = l.qtyVenta || l.qtyPedida;
+      skuMap.set(l.skuVenta, (skuMap.get(l.skuVenta) || 0) + qty);
+    }
+
+    let csv = "SKU Venta;Unidades\n";
+    Array.from(skuMap.entries()).forEach(([sku, qty]) => {
+      csv += `${sku};${qty}\n`;
+    });
+
+    // Si hay bultos, agregar sección
+    if (bultosData.bultos.length > 0) {
+      csv += "\nBulto;SKU Venta;Unidades\n";
+      for (const bulto of bultosData.bultos) {
+        const lineasBulto = bultosData.lineas.filter(l => l.bulto_id === bulto.id);
+        for (const lb of lineasBulto) {
+          csv += `${bulto.numero_bulto};${lb.sku_venta};${lb.cantidad}\n`;
+        }
+      }
+    }
+
+    const fecha = new Date().toISOString().slice(0, 10);
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `envio_full_${fecha}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast("CSV exportado");
+  };
 
   const doDelete = async () => {
     if (!confirm("¿Eliminar esta sesión de picking completa?")) return;
@@ -2352,6 +2396,11 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
         <div style={{display:"flex",alignItems:"center",gap:8}}>
           <div style={{fontSize:16,fontWeight:700}}>{isFull ? (session.titulo || "Envío a Full") : `Picking ${session.fecha}`}</div>
           {isFull && <span style={{padding:"2px 6px",borderRadius:4,fontSize:9,fontWeight:800,background:"#3b82f622",color:"#3b82f6",border:"1px solid #3b82f644"}}>FULL</span>}
+          {isFull && (
+            <button onClick={exportCSV} style={{padding:"4px 10px",borderRadius:6,background:"var(--bg3)",color:"var(--cyan)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)",cursor:"pointer",marginLeft:4}}>
+              📥 Exportar CSV
+            </button>
+          )}
         </div>
         <div style={{fontSize:12,color:"var(--txt3)"}}>Estado: <strong>{session.estado}</strong> · {session.lineas.length} {isFull ? "productos" : "pedidos"} · {doneComps}/{totalComps} items ({pct}%)</div>
         <div style={{marginTop:8,background:"var(--bg3)",borderRadius:4,height:6,overflow:"hidden"}}>
@@ -2428,6 +2477,7 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
         <thead>
           <tr style={{borderBottom:"2px solid var(--bg3)"}}>
             <th style={{textAlign:"left",padding:"8px 6px",color:"var(--txt3)"}}>SKU Venta</th>
+            {isFull && <th style={{textAlign:"left",padding:"8px 6px",color:"var(--txt3)"}}>Nota</th>}
             <th style={{textAlign:"left",padding:"8px 6px",color:"var(--txt3)"}}>Componente</th>
             <th style={{textAlign:"center",padding:"8px 6px",color:"var(--txt3)"}}>Pos</th>
             <th style={{textAlign:"center",padding:"8px 6px",color:"var(--txt3)"}}>Qty</th>
@@ -2462,6 +2512,13 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
                     ) : (
                       <span style={{fontSize:10,color:"var(--txt3)"}}>×{linea.qtyPedida}{isFull && linea.qtyVenta !== undefined && linea.qtyVenta !== linea.qtyPedida ? ` (${linea.qtyVenta} venta)` : ""}</span>
                     )}
+                  </td>
+                )}
+                {isFull && ci === 0 && (
+                  <td rowSpan={linea.componentes.length} style={{padding:"8px 6px",verticalAlign:"top",maxWidth:120}}>
+                    {(() => { const notas = getNotasOperativas(linea.skuVenta); return notas.length > 0 ? (
+                      <span style={{fontSize:10,color:"var(--amber)",fontWeight:600}}>{notas.join(" | ")}</span>
+                    ) : <span style={{fontSize:10,color:"var(--txt3)"}}>—</span>; })()}
                   </td>
                 )}
                 <td style={{padding:"8px 6px"}}>{comp.nombre?.slice(0, 30) || comp.skuOrigen}</td>
@@ -2505,6 +2562,30 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
       {isFull && session.lineas.length > 0 && (
         <div style={{padding:12,background:"var(--bg2)",borderRadius:8,border:"1px solid var(--bg3)",marginTop:12,fontSize:12,color:"var(--txt3)"}}>
           <strong>Resumen:</strong> {session.lineas.length} SKUs · {session.lineas.reduce((s, l) => s + (l.qtyFisica || l.qtyPedida), 0)} uds físicas · {new Set(session.lineas.map(l => l.skuVenta)).size} SKUs Venta
+        </div>
+      )}
+
+      {/* Bultos summary */}
+      {isFull && bultosData.bultos.length > 0 && (
+        <div style={{padding:12,background:"var(--bg2)",borderRadius:8,border:"1px solid var(--bg3)",marginTop:12,fontSize:12}}>
+          <strong style={{color:"var(--txt2)"}}>📦 {bultosData.bultos.length} bultos armados:</strong>
+          {bultosData.bultos.map(bulto => {
+            const lineasB = bultosData.lineas.filter(l => l.bulto_id === bulto.id);
+            const totalUds = lineasB.reduce((s, l) => s + l.cantidad, 0);
+            return (
+              <div key={bulto.id} style={{marginTop:6,padding:"6px 8px",background:"var(--bg3)",borderRadius:6}}>
+                <div style={{fontWeight:700,color:"var(--cyan)",fontSize:11}}>Bulto {bulto.numero_bulto} ({totalUds} uds)</div>
+                {lineasB.map((lb, i) => (
+                  <div key={i} style={{fontSize:11,color:"var(--txt3)"}}>
+                    <span className="mono">{lb.sku_venta}</span> ×{lb.cantidad}
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+          <div style={{marginTop:8,fontWeight:700,color:"var(--green)"}}>
+            Total: {bultosData.lineas.reduce((s, l) => s + l.cantidad, 0)} unidades en {bultosData.bultos.length} bultos
+          </div>
         </div>
       )}
 
@@ -4706,6 +4787,7 @@ function Productos({ refresh }: { refresh: () => void }) {
                 <td style={{fontSize:11}}>
                   {ventas.length > 0 ? ventas.map((v, i) => {
                     const mlItems4sv = mlBySkuVenta[v.skuVenta.toUpperCase()] || [];
+                    const notas = getNotasOperativas(v.skuVenta);
                     return (
                     <div key={i} style={{marginBottom:i<ventas.length-1?6:0}}>
                       <div style={{display:"flex",alignItems:"center",gap:4}}>
@@ -4717,6 +4799,9 @@ function Productos({ refresh }: { refresh: () => void }) {
                         <span className="mono" style={{fontSize:10}}>{v.codigoMl}</span>
                         <span style={{fontSize:9,color:"var(--txt3)"}}>{v.skuVenta}</span>
                       </div>
+                      {notas.length > 0 && (
+                        <div style={{fontSize:9,color:"var(--amber)",fontWeight:600,marginTop:1}}>⚠ {notas.join(" | ")}</div>
+                      )}
                       {mlItems4sv.length > 0 && mlItems4sv.map((ml, j) => (
                         <div key={j} style={{marginLeft:16,marginTop:2,display:"flex",alignItems:"center",gap:4,fontSize:9,color:"var(--txt3)"}}>
                           <span style={{color:"var(--green)"}}>ML</span>

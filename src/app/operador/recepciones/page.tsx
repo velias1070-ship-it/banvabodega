@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { initStore, isStoreReady, getRecepcionesParaOperario, getLineasDeRecepciones, getRecepcionLineas, contarLinea, etiquetarLinea, ubicarLinea, actualizarRecepcion, actualizarLineaRecepcion, activePositions, findPosition, bloquearLinea, desbloquearLinea, renovarBloqueo, isLineaBloqueada, getVentasPorSkuOrigen } from "@/lib/store";
+import { initStore, isStoreReady, getRecepcionesParaOperario, getLineasDeRecepciones, getRecepcionLineas, contarLinea, etiquetarLinea, ubicarLinea, actualizarRecepcion, actualizarLineaRecepcion, activePositions, findPosition, bloquearLinea, desbloquearLinea, renovarBloqueo, isLineaBloqueada, getVentasPorSkuOrigen, getNotasOperativas } from "@/lib/store";
 import type { DBRecepcion, DBRecepcionLinea, ComposicionVenta } from "@/lib/store";
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -508,6 +508,11 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, folio, prov
         {/* Product info */}
         <div style={{padding:"12px 14px",borderRadius:8,background:"var(--bg2)",border:"1px solid var(--bg3)",marginBottom:12}}>
           <div style={{fontSize:14,fontWeight:700}}>{linea.nombre}</div>
+          {(() => { const notas = getNotasOperativas(linea.sku); return notas.length > 0 ? (
+            <div style={{padding:"4px 8px",borderRadius:4,background:"#f59e0b15",border:"1px solid #f59e0b33",marginTop:4}}>
+              <div style={{fontSize:11,fontWeight:700,color:"#f59e0b"}}>⚠ {notas.join(" | ")}</div>
+            </div>
+          ) : null; })()}
           <div style={{fontSize:11,color:"var(--txt3)",marginTop:2}}>
             {linea.codigo_ml && <span>ML: <strong>{linea.codigo_ml}</strong> · </span>}
             Factura: <strong>{linea.qty_factura}</strong>

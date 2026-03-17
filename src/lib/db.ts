@@ -26,6 +26,24 @@ export interface DBComposicionVenta {
   sku_origen: string;
   unidades: number;
   tipo_relacion?: "componente" | "alternativo";
+  nota_operativa?: string | null;
+}
+
+// ==================== PICKING BULTOS ====================
+export interface DBPickingBulto {
+  id?: string;
+  picking_session_id: string;
+  numero_bulto: number;
+  created_at?: string;
+}
+
+export interface DBPickingBultoLinea {
+  id?: string;
+  bulto_id: string;
+  sku_venta: string;
+  sku_origen?: string | null;
+  cantidad: number;
+  created_at?: string;
 }
 
 export interface DBPosition {
@@ -600,6 +618,48 @@ export async function getComponentesPorSkuVenta(skuVenta: string): Promise<DBCom
   const sb = getSupabase(); if (!sb) return [];
   const { data } = await sb.from("composicion_venta").select("*").eq("sku_venta", skuVenta.toUpperCase().trim());
   return data || [];
+}
+
+// ==================== NOTAS OPERATIVAS ====================
+export async function upsertNotasOperativas(items: { sku_venta: string; sku_origen: string; nota_operativa: string | null }[]) {
+  const sb = getSupabase(); if (!sb) return;
+  for (const item of items) {
+    await sb.from("composicion_venta")
+      .update({ nota_operativa: item.nota_operativa })
+      .eq("sku_venta", item.sku_venta)
+      .eq("sku_origen", item.sku_origen);
+  }
+}
+
+// ==================== PICKING BULTOS ====================
+export async function fetchBultosSession(pickingSessionId: string): Promise<{ bultos: DBPickingBulto[]; lineas: DBPickingBultoLinea[] }> {
+  const sb = getSupabase(); if (!sb) return { bultos: [], lineas: [] };
+  const { data: bultos } = await sb.from("picking_bultos").select("*").eq("picking_session_id", pickingSessionId).order("numero_bulto");
+  if (!bultos || bultos.length === 0) return { bultos: [], lineas: [] };
+  const bultoIds = bultos.map(b => b.id);
+  const { data: lineas } = await sb.from("picking_bultos_lineas").select("*").in("bulto_id", bultoIds);
+  return { bultos: bultos || [], lineas: lineas || [] };
+}
+
+export async function crearBulto(pickingSessionId: string, numeroBulto: number): Promise<string | null> {
+  const sb = getSupabase(); if (!sb) return null;
+  const { data, error } = await sb.from("picking_bultos").insert({ picking_session_id: pickingSessionId, numero_bulto: numeroBulto }).select("id").single();
+  if (error) { console.error("[bultos] crear error:", error.message); return null; }
+  return data?.id || null;
+}
+
+export async function agregarLineaBulto(bultoId: string, skuVenta: string, skuOrigen: string | null, cantidad: number): Promise<boolean> {
+  const sb = getSupabase(); if (!sb) return false;
+  const { error } = await sb.from("picking_bultos_lineas").insert({ bulto_id: bultoId, sku_venta: skuVenta, sku_origen: skuOrigen, cantidad });
+  if (error) { console.error("[bultos] agregar linea error:", error.message); return false; }
+  return true;
+}
+
+export async function eliminarLineasBulto(bultoId: string, skuVenta: string): Promise<boolean> {
+  const sb = getSupabase(); if (!sb) return false;
+  const { error } = await sb.from("picking_bultos_lineas").delete().eq("bulto_id", bultoId).eq("sku_venta", skuVenta);
+  if (error) { console.error("[bultos] eliminar lineas error:", error.message); return false; }
+  return true;
 }
 
 // ==================== SYNC DICCIONARIO FROM SHEET ====================
