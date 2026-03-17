@@ -4,6 +4,8 @@ import * as XLSX from "xlsx";
 import { skuTotal, skuPositions, getStore, getComponentesPorSkuVenta, getVentasPorSkuOrigen, getSkuFisicoPorSkuVenta, buildPickingLineasFull, crearPickingSession, findSkuVenta } from "@/lib/store";
 import type { ComposicionVenta } from "@/lib/store";
 import { getSupabase } from "@/lib/supabase";
+import { upsertProveedorCatalogo, insertProveedorImport, insertCostosHistorial, fetchProveedorCatalogo } from "@/lib/db";
+import type { DBProveedorCatalogo } from "@/lib/db";
 
 /* ───── Tipos ───── */
 interface OrdenRaw {
@@ -1131,11 +1133,15 @@ export default function AdminReposicion() {
     reader.readAsArrayBuffer(file);
   }, []);
 
-  // Parsear archivo de proveedor y persistir innerPack en DB
+  // Estado para resultado de importación proveedor
+  const [proveedorImportResult, setProveedorImportResult] = useState<string | null>(null);
+
+  // Parsear archivo de proveedor y persistir en DB
   const handleProveedor = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setFileNameProveedor(file.name);
+    setProveedorImportResult(null);
     const reader = new FileReader();
     reader.onload = async (ev) => {
       const data = new Uint8Array(ev.target?.result as ArrayBuffer);
@@ -1143,24 +1149,93 @@ export default function AdminReposicion() {
       const provData = parseProveedor(wb);
       setProveedor(provData);
 
-      // Persistir inner_pack en tabla productos y en cache del store
       const sb = getSupabase();
-      if (sb && provData.length > 0) {
-        const store = getStore();
-        for (let i = 0; i < provData.length; i += 500) {
-          const batch = provData.slice(i, i + 500);
-          for (const p of batch) {
-            if (p.innerPack > 1) {
-              // Actualizar en DB
-              await sb.from("productos").update({ inner_pack: p.innerPack }).eq("sku", p.skuOrigen);
-              // Actualizar cache del store
-              if (store.products[p.skuOrigen]) {
-                store.products[p.skuOrigen].innerPack = p.innerPack;
-              }
+      if (!sb || provData.length === 0) return;
+
+      const store = getStore();
+
+      // Detectar nombre proveedor del primer producto con match en diccionario
+      let proveedorNombre = "Proveedor";
+      for (const p of provData) {
+        const prod = store.products[p.skuOrigen] || store.products[p.skuOrigen.toUpperCase()];
+        if (prod?.prov) { proveedorNombre = prod.prov; break; }
+      }
+
+      // 1. Fetch existing catálogo para detectar SKUs nuevos
+      const existentes = await fetchProveedorCatalogo(proveedorNombre);
+      const existenteSet = new Set(existentes.map(e => e.sku_origen.toUpperCase()));
+
+      // 2. Upsert masivo a proveedor_catalogo
+      const catalogoRows = provData.map(p => ({
+        proveedor: proveedorNombre,
+        sku_origen: p.skuOrigen.toUpperCase().trim(),
+        nombre: p.nombre || null,
+        inner_pack: p.innerPack,
+        precio_neto: p.precioNeto,
+        stock_disponible: p.stock,
+      }));
+      await upsertProveedorCatalogo(catalogoRows);
+
+      // 3. Actualizar inner_pack en productos y detectar cambios de precio
+      const costosChanged: { sku_origen: string; costo_anterior: number; costo_nuevo: number; diferencia_pct: number }[] = [];
+
+      for (let i = 0; i < provData.length; i += 500) {
+        const batch = provData.slice(i, i + 500);
+        for (const p of batch) {
+          const skuUp = p.skuOrigen.toUpperCase().trim();
+          const prod = store.products[skuUp];
+          // Actualizar inner_pack si cambió
+          if (p.innerPack > 1) {
+            await sb.from("productos").update({ inner_pack: p.innerPack }).eq("sku", skuUp);
+            if (prod) prod.innerPack = p.innerPack;
+          }
+          // Detectar cambio de precio > 5%
+          if (prod && prod.cost > 0 && p.precioNeto > 0) {
+            const diffPct = Math.abs((p.precioNeto - prod.cost) / prod.cost) * 100;
+            if (diffPct > 5) {
+              costosChanged.push({
+                sku_origen: skuUp,
+                costo_anterior: prod.cost,
+                costo_nuevo: p.precioNeto,
+                diferencia_pct: Math.round(diffPct * 10) / 10,
+              });
             }
           }
         }
       }
+
+      // 4. Registrar cambios de precio en costos_historial
+      if (costosChanged.length > 0) {
+        await insertCostosHistorial(costosChanged.map(c => ({
+          sku_origen: c.sku_origen,
+          costo_anterior: c.costo_anterior,
+          costo_nuevo: c.costo_nuevo,
+          diferencia_pct: c.diferencia_pct,
+          fuente: "lista_proveedor",
+        })));
+      }
+
+      // 5. Calcular conteos para proveedor_imports
+      const skusTotal = provData.length;
+      const skusConStock = provData.filter(p => p.stock > 0).length;
+      const skusSinStock = skusTotal - skusConStock;
+      const skusNuevos = provData.filter(p => !existenteSet.has(p.skuOrigen.toUpperCase())).length;
+
+      await insertProveedorImport({
+        proveedor: proveedorNombre,
+        archivo_nombre: file.name,
+        skus_total: skusTotal,
+        skus_con_stock: skusConStock,
+        skus_sin_stock: skusSinStock,
+        skus_nuevos: skusNuevos,
+      });
+
+      // 6. Mostrar resultado
+      const msg = `${skusTotal} productos — ${skusConStock} con stock, ${skusSinStock} sin stock${skusNuevos > 0 ? `, ${skusNuevos} nuevos` : ""}${costosChanged.length > 0 ? `, ${costosChanged.length} precios cambiaron` : ""}`;
+      setProveedorImportResult(msg);
+
+      // 7. Disparar recálculo de inteligencia
+      try { await fetch("/api/intelligence/recalcular", { method: "POST" }); } catch { /* silenciar */ }
     };
     reader.readAsArrayBuffer(file);
   }, []);
@@ -1902,6 +1977,7 @@ export default function AdminReposicion() {
             <input type="file" accept=".xlsx,.xls" onChange={handleProveedor} style={{ display:"none" }} />
           </label>
           {proveedor && <div style={{ marginTop:8, fontSize:11, color:"var(--green)" }}>{proveedor.length} productos cargados</div>}
+          {proveedorImportResult && <div style={{ marginTop:6, fontSize:10, color:"var(--cyan)", lineHeight:1.4 }}>{proveedorImportResult}</div>}
         </div>
       </div>
 

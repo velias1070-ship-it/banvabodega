@@ -2,7 +2,8 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { buildPickingLineasFull, crearPickingSession, skuPositions, getComponentesPorSkuVenta, getSkusVenta, getNotasOperativas, getSkuFisicoPorSkuVenta } from "@/lib/store";
-import { upsertNotasOperativas } from "@/lib/db";
+import { upsertNotasOperativas, insertOrdenCompra, insertOrdenCompraLineas, nextOCNumero, insertAdminActionLog } from "@/lib/db";
+import type { DBOrdenCompraLinea } from "@/lib/db";
 import AdminMLSinVincular from "./AdminMLSinVincular";
 
 // ============================================
@@ -67,6 +68,8 @@ interface IntelRow {
   vel_objetivo: number;
   gap_vel_pct: number | null;
   inner_pack: number;
+  stock_proveedor: number;
+  tiene_stock_prov: boolean;
   updated_at: string;
 }
 
@@ -223,6 +226,31 @@ interface EnvioFullItem {
   unidadesPorPack: number;
 }
 
+// ============================================
+// Tipos Pedido a Proveedor
+// ============================================
+
+interface PedidoProveedorItem {
+  skuOrigen: string;
+  nombre: string;
+  abc: string;
+  velPonderada: number;
+  stockFull: number;
+  stockBodega: number;
+  stockEnTransito: number;
+  cobTotal: number;
+  pedirSugerido: number;
+  pedirEditado: number;
+  innerPack: number;
+  bultos: number;
+  costoUnit: number;
+  subtotal: number;
+  stockProveedor: number;
+  proveedor: string;
+  alertas: string[];
+  accion: string;
+}
+
 const ENVIO_ACCION_ORDEN: Record<string, number> = {
   URGENTE: 0,
   AGOTADO_PEDIR: 1,
@@ -347,6 +375,15 @@ export default function AdminInteligencia() {
   const [syncMLResult, setSyncMLResult] = useState<string | null>(null);
   const [vistaOrigen, setVistaOrigen] = useState(false);
   const [vistaEnvio, setVistaEnvio] = useState(false);
+  const [vistaPedido, setVistaPedido] = useState(false);
+
+  // Pedido a Proveedor
+  const [pedidoEdits, setPedidoEdits] = useState<Map<string, number>>(new Map());
+  const [pedidoSelection, setPedidoSelection] = useState<Set<string>>(new Set());
+  const [pedidoCollapsed, setPedidoCollapsed] = useState<Set<string>>(new Set());
+  const [modalOC, setModalOC] = useState<{ proveedor: string; lineas: PedidoProveedorItem[] } | null>(null);
+  const [creandoOC, setCreandoOC] = useState(false);
+  const [ocCreada, setOcCreada] = useState<string | null>(null);
 
   // Envío a Full
   const [envioEdits, setEnvioEdits] = useState<Map<string, number>>(new Map());
@@ -735,6 +772,73 @@ export default function AdminInteligencia() {
     if (!vistaEnvio) setEnvioSelAllInit(false);
   }, [vistaEnvio]);
 
+  // ── Pedido a Proveedor: compute items from rows ──
+  const pedidoItems = useMemo((): PedidoProveedorItem[] => {
+    if (!vistaPedido || rows.length === 0) return [];
+    return rows
+      .filter(r => r.pedir_proveedor > 0)
+      .map(r => {
+        const edited = pedidoEdits.get(r.sku_origen);
+        const pedir = edited !== undefined ? edited : r.pedir_proveedor;
+        const ip = r.inner_pack || 1;
+        const costo = r.costo_bruto > 0 ? Math.round(r.costo_bruto / 1.19) : 0;
+        return {
+          skuOrigen: r.sku_origen,
+          nombre: r.nombre || "",
+          abc: r.abc || "C",
+          velPonderada: r.vel_ponderada,
+          stockFull: r.stock_full,
+          stockBodega: r.stock_bodega,
+          stockEnTransito: r.stock_en_transito,
+          cobTotal: r.cob_total,
+          pedirSugerido: r.pedir_proveedor,
+          pedirEditado: pedir,
+          innerPack: ip,
+          bultos: ip > 1 ? Math.ceil(pedir / ip) : pedir,
+          costoUnit: costo,
+          subtotal: pedir * costo,
+          stockProveedor: r.stock_proveedor ?? -1,
+          proveedor: r.proveedor || "Sin proveedor",
+          alertas: r.alertas || [],
+          accion: r.accion,
+        };
+      })
+      .sort((a, b) => a.proveedor.localeCompare(b.proveedor) || b.velPonderada - a.velPonderada);
+  }, [vistaPedido, rows, pedidoEdits]);
+
+  // Grouped by proveedor
+  const pedidoPorProveedor = useMemo(() => {
+    const map = new Map<string, PedidoProveedorItem[]>();
+    for (const item of pedidoItems) {
+      const arr = map.get(item.proveedor) || [];
+      arr.push(item);
+      map.set(item.proveedor, arr);
+    }
+    return map;
+  }, [pedidoItems]);
+
+  // Initialize pedido selection
+  useEffect(() => {
+    if (vistaPedido && pedidoItems.length > 0 && pedidoSelection.size === 0) {
+      const sel = new Set<string>();
+      for (const item of pedidoItems) {
+        if (item.stockProveedor !== 0) sel.add(item.skuOrigen);
+      }
+      setPedidoSelection(sel);
+    }
+  }, [vistaPedido, pedidoItems, pedidoSelection.size]);
+
+  // Pedido KPIs
+  const pedidoKpis = useMemo(() => {
+    const selected = pedidoItems.filter(i => pedidoSelection.has(i.skuOrigen));
+    return {
+      skus: selected.length,
+      totalUds: selected.reduce((s, i) => s + i.pedirEditado, 0),
+      proveedores: new Set(selected.map(i => i.proveedor)).size,
+      montoEstimado: selected.reduce((s, i) => s + i.subtotal, 0),
+    };
+  }, [pedidoItems, pedidoSelection]);
+
   // Envío selected items
   const envioSelected = useMemo(() => envioItems.filter(i => envioSelection.has(i.skuVenta)), [envioItems, envioSelection]);
 
@@ -842,6 +946,84 @@ export default function AdminInteligencia() {
       });
     } catch { /* silenciar */ }
   }, []);
+
+  // ── Crear OC desde modal ──
+  const crearOCDesdeModal = useCallback(async (estado: "BORRADOR" | "PENDIENTE") => {
+    if (!modalOC || creandoOC) return;
+    setCreandoOC(true);
+    try {
+      const { proveedor, lineas } = modalOC;
+      const totalNeto = lineas.reduce((s, l) => s + l.subtotal, 0);
+      const totalBruto = Math.round(totalNeto * 1.19);
+      const totalUds = lineas.reduce((s, l) => s + l.pedirEditado, 0);
+      const numero = await nextOCNumero();
+
+      const ocId = await insertOrdenCompra({
+        numero,
+        proveedor,
+        estado,
+        total_neto: totalNeto,
+        total_bruto: totalBruto,
+        notas: `Creada desde Inteligencia — ${lineas.length} SKUs`,
+      });
+
+      if (!ocId) { alert("Error al crear OC"); return; }
+
+      // Insertar líneas con snapshot
+      const ocLineas: Omit<DBOrdenCompraLinea, "id" | "created_at">[] = lineas.map(l => {
+        const row = rows.find(r => r.sku_origen === l.skuOrigen);
+        return {
+          orden_id: ocId,
+          sku_origen: l.skuOrigen,
+          nombre: l.nombre,
+          cantidad_pedida: l.pedirEditado,
+          costo_unitario: l.costoUnit,
+          inner_pack: l.innerPack,
+          bultos: l.bultos,
+          abc: l.abc,
+          vel_ponderada: l.velPonderada,
+          cob_total_al_pedir: row?.cob_total ?? null,
+          stock_full_al_pedir: l.stockFull,
+          stock_bodega_al_pedir: l.stockBodega,
+          accion_al_pedir: l.accion,
+        };
+      });
+      await insertOrdenCompraLineas(ocLineas);
+
+      // Log admin
+      await insertAdminActionLog("crear_oc", "ordenes_compra", ocId, {
+        oc_id: ocId, numero, proveedor, lineas: lineas.length,
+        total_neto: totalNeto, total_uds: totalUds, fuente: "inteligencia",
+      });
+
+      // Si PENDIENTE, descargar CSV
+      if (estado === "PENDIENTE") {
+        const csvHeaders = "Código;Descripción;Cantidad;Inner Pack;Bultos;Precio Neto;Subtotal";
+        const csvRows = lineas.map(l =>
+          `${l.skuOrigen};${(l.nombre || "").replace(/;/g, ",")};${l.pedirEditado};${l.innerPack};${l.bultos};$${l.costoUnit.toLocaleString("es-CL")};$${l.subtotal.toLocaleString("es-CL")}`
+        );
+        const bom = "\uFEFF";
+        const blob = new Blob([bom + csvHeaders + "\n" + csvRows.join("\n")], { type: "text/csv;charset=utf-8;" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `OC_${proveedor.replace(/\s+/g, "_")}_${new Date().toISOString().slice(0, 10)}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+
+      setOcCreada(`${numero} — ${proveedor} (${estado})`);
+      setModalOC(null);
+
+      // Disparar recálculo
+      try { await fetch("/api/intelligence/recalcular", { method: "POST" }); } catch { /* silenciar */ }
+    } catch (err) {
+      console.error("crearOCDesdeModal error:", err);
+      alert("Error al crear OC");
+    } finally {
+      setCreandoOC(false);
+    }
+  }, [modalOC, creandoOC, rows]);
 
   // ── Datos activos según vista ──
   const activeRows = vistaOrigen ? rows : ventaRows;
@@ -962,14 +1144,17 @@ export default function AdminInteligencia() {
         </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
           <div style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--bg4)" }}>
-            <button onClick={() => { setVistaOrigen(false); setVistaEnvio(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: !vistaOrigen && !vistaEnvio ? "var(--cyan)" : "var(--bg3)", color: !vistaOrigen && !vistaEnvio ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+            <button onClick={() => { setVistaOrigen(false); setVistaEnvio(false); setVistaPedido(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: !vistaOrigen && !vistaEnvio && !vistaPedido ? "var(--cyan)" : "var(--bg3)", color: !vistaOrigen && !vistaEnvio && !vistaPedido ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
               SKU Venta
             </button>
-            <button onClick={() => { setVistaOrigen(true); setVistaEnvio(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaOrigen && !vistaEnvio ? "var(--cyan)" : "var(--bg3)", color: vistaOrigen && !vistaEnvio ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+            <button onClick={() => { setVistaOrigen(true); setVistaEnvio(false); setVistaPedido(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaOrigen && !vistaEnvio && !vistaPedido ? "var(--cyan)" : "var(--bg3)", color: vistaOrigen && !vistaEnvio && !vistaPedido ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
               SKU Origen
             </button>
-            <button onClick={() => { setVistaEnvio(true); setVistaOrigen(false); setPickingCreado(null); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaEnvio ? "var(--blue)" : "var(--bg3)", color: vistaEnvio ? "#fff" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+            <button onClick={() => { setVistaEnvio(true); setVistaOrigen(false); setVistaPedido(false); setPickingCreado(null); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaEnvio ? "var(--blue)" : "var(--bg3)", color: vistaEnvio ? "#fff" : "var(--txt3)", border: "none", cursor: "pointer" }}>
               Envio a Full
+            </button>
+            <button onClick={() => { setVistaPedido(true); setVistaEnvio(false); setVistaOrigen(false); setOcCreada(null); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaPedido ? "var(--amber)" : "var(--bg3)", color: vistaPedido ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+              Pedido a Proveedor
             </button>
           </div>
           <button onClick={() => setModalMasivo(true)} style={{ padding: "6px 12px", borderRadius: 6, background: "var(--amberBg)", color: "var(--amber)", fontWeight: 600, fontSize: 11, border: "1px solid var(--amberBd)", cursor: "pointer" }}>
@@ -1063,7 +1248,7 @@ export default function AdminInteligencia() {
       )}
 
       {/* ═══ 4. FILTROS ═══ */}
-      {!vistaEnvio && <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+      {!vistaEnvio && !vistaPedido && <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
         <input
           type="text"
           placeholder="Buscar SKU, nombre o ML..."
@@ -1117,12 +1302,12 @@ export default function AdminInteligencia() {
         </select>
       </div>}
 
-      {!vistaEnvio && <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 6 }}>
+      {!vistaEnvio && !vistaPedido && <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 6 }}>
         {filtered.length} de {vistaOrigen ? totalSkus : totalVentas} {vistaOrigen ? "SKUs Origen" : "SKUs Venta"}
       </div>}
 
       {/* ═══ 5. TABLA SKU VENTA ═══ */}
-      {!vistaOrigen && !vistaEnvio && (
+      {!vistaOrigen && !vistaEnvio && !vistaPedido && (
         <div style={{ overflowX: "auto" }}>
           <table className="tbl" style={{ minWidth: 1500 }}>
             <thead>
@@ -1221,7 +1406,7 @@ export default function AdminInteligencia() {
       )}
 
       {/* ═══ 5b. TABLA SKU ORIGEN ═══ */}
-      {vistaOrigen && !vistaEnvio && (
+      {vistaOrigen && !vistaEnvio && !vistaPedido && (
         <div style={{ overflowX: "auto" }}>
           <table className="tbl" style={{ minWidth: 1500 }}>
             <thead>
@@ -1476,7 +1661,232 @@ export default function AdminInteligencia() {
         </div>
       )}
 
-      {!vistaEnvio && filtered.length === 0 && <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>No hay datos. Ejecuta &quot;Recalcular&quot; para generar.</div>}
+      {/* ═══ PEDIDO A PROVEEDOR ═══ */}
+      {vistaPedido && (
+        <div>
+          {/* KPIs pedido */}
+          <div style={{ display: "flex", gap: 4, marginBottom: 8, flexWrap: "wrap", fontSize: 11 }}>
+            <KpiBadge label="SKUs a pedir" value={String(pedidoKpis.skus)} color="var(--amber)" />
+            <KpiBadge label="Total uds" value={fmtInt(pedidoKpis.totalUds)} color="var(--cyan)" />
+            <KpiBadge label="Proveedores" value={String(pedidoKpis.proveedores)} color="var(--txt)" />
+            <KpiBadge label="Monto estimado" value={fmtK(pedidoKpis.montoEstimado)} color="var(--green)" />
+          </div>
+
+          {ocCreada && (
+            <div style={{ padding: "8px 12px", borderRadius: 6, background: "var(--greenBg)", color: "var(--green)", fontSize: 12, marginBottom: 8, border: "1px solid var(--greenBd)", fontWeight: 600 }}>
+              OC creada: {ocCreada}
+            </div>
+          )}
+
+          {pedidoItems.length === 0 ? (
+            <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>No hay SKUs con pedir_proveedor &gt; 0. Ejecuta &quot;Recalcular&quot;.</div>
+          ) : (
+            Array.from(pedidoPorProveedor.entries()).map(([prov, items]) => {
+              const collapsed = pedidoCollapsed.has(prov);
+              const selectedItems = items.filter(i => pedidoSelection.has(i.skuOrigen));
+              const montoGrupo = selectedItems.reduce((s, i) => s + i.subtotal, 0);
+              const udsGrupo = selectedItems.reduce((s, i) => s + i.pedirEditado, 0);
+              return (
+                <div key={prov} style={{ marginBottom: 16 }}>
+                  <div
+                    onClick={() => { const next = new Set(pedidoCollapsed); if (collapsed) next.delete(prov); else next.add(prov); setPedidoCollapsed(next); }}
+                    style={{ padding: "8px 12px", borderRadius: "8px 8px 0 0", background: "var(--bg3)", border: "1px solid var(--bg4)", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}
+                  >
+                    <span style={{ fontWeight: 700, fontSize: 13 }}>
+                      {collapsed ? "▶" : "▼"} {prov} ({items.length} SKUs — {fmtK(montoGrupo)} estimado)
+                    </span>
+                    <span style={{ fontSize: 10, color: "var(--txt3)" }}>{selectedItems.length} seleccionados</span>
+                  </div>
+
+                  {!collapsed && (
+                    <>
+                      <div style={{ overflowX: "auto", border: "1px solid var(--bg4)", borderTop: "none" }}>
+                        <table className="tbl" style={{ minWidth: 1400 }}>
+                          <thead>
+                            <tr>
+                              <th style={{ width: 28 }}>
+                                <input type="checkbox"
+                                  checked={items.every(i => pedidoSelection.has(i.skuOrigen))}
+                                  onChange={e => {
+                                    const next = new Set(pedidoSelection);
+                                    for (const i of items) { if (e.target.checked) next.add(i.skuOrigen); else next.delete(i.skuOrigen); }
+                                    setPedidoSelection(next);
+                                  }}
+                                />
+                              </th>
+                              <th>SKU Origen</th>
+                              <th>Nombre</th>
+                              <th>ABC</th>
+                              <th style={{ textAlign: "right" }}>Vel/sem</th>
+                              <th style={{ textAlign: "right" }}>St.Full</th>
+                              <th style={{ textAlign: "right" }}>St.Bod</th>
+                              <th style={{ textAlign: "right" }}>En Tránsito</th>
+                              <th style={{ textAlign: "right" }}>Cob Total</th>
+                              <th style={{ textAlign: "right" }}>Pedir</th>
+                              <th style={{ textAlign: "right" }}>IP</th>
+                              <th style={{ textAlign: "right" }}>Bultos</th>
+                              <th style={{ textAlign: "right" }}>Costo Unit</th>
+                              <th style={{ textAlign: "right" }}>Subtotal</th>
+                              <th style={{ textAlign: "right" }}>Stock Prov</th>
+                              <th>Notas</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {items.map(item => {
+                              const sel = pedidoSelection.has(item.skuOrigen);
+                              const sinStockProv = item.stockProveedor === 0;
+                              return (
+                                <tr key={item.skuOrigen} style={{ opacity: sel ? 1 : 0.4, background: sinStockProv ? "var(--redBg)" : undefined }}>
+                                  <td><input type="checkbox" checked={sel} onChange={e => { const next = new Set(pedidoSelection); if (e.target.checked) next.add(item.skuOrigen); else next.delete(item.skuOrigen); setPedidoSelection(next); }} /></td>
+                                  <td className="mono" style={{ fontSize: 11, whiteSpace: "nowrap" }}>{item.skuOrigen}</td>
+                                  <td style={{ fontSize: 11, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={item.nombre}>{item.nombre}</td>
+                                  <td style={{ textAlign: "center" }}><span style={{ color: abcColor(item.abc), fontWeight: 700, fontSize: 11 }}>{item.abc}</span></td>
+                                  <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtN(item.velPonderada)}</td>
+                                  <td className="mono" style={{ textAlign: "right", fontSize: 11, color: item.stockFull <= 0 ? "var(--red)" : "var(--txt)" }}>{fmtInt(item.stockFull)}</td>
+                                  <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtInt(item.stockBodega)}</td>
+                                  <td className="mono" style={{ textAlign: "right", fontSize: 11, color: item.stockEnTransito > 0 ? "var(--blue)" : "var(--txt3)" }}>{item.stockEnTransito > 0 ? fmtInt(item.stockEnTransito) : "—"}</td>
+                                  <td className="mono" style={{ textAlign: "right", fontSize: 11, color: item.cobTotal < 14 ? "var(--red)" : item.cobTotal < 30 ? "var(--amber)" : "var(--green)" }}>
+                                    {item.cobTotal >= 999 ? "—" : fmtN(item.cobTotal, 0) + "d"}
+                                  </td>
+                                  <td style={{ textAlign: "right" }}>
+                                    <input
+                                      type="number"
+                                      value={item.pedirEditado}
+                                      onChange={e => {
+                                        const v = Math.max(0, parseInt(e.target.value) || 0);
+                                        setPedidoEdits(prev => new Map(prev).set(item.skuOrigen, v));
+                                      }}
+                                      style={{ width: 60, textAlign: "right", padding: "2px 4px", fontSize: 11, background: "var(--bg3)", border: "1px solid var(--bg4)", borderRadius: 4, color: "var(--txt)" }}
+                                    />
+                                  </td>
+                                  <td className="mono" style={{ textAlign: "right", fontSize: 10, color: "var(--txt3)" }}>{item.innerPack > 1 ? item.innerPack : "—"}</td>
+                                  <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{item.bultos}</td>
+                                  <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtMoney(item.costoUnit)}</td>
+                                  <td className="mono" style={{ textAlign: "right", fontSize: 11, fontWeight: 600 }}>{fmtMoney(item.subtotal)}</td>
+                                  <td className="mono" style={{ textAlign: "right", fontSize: 11, color: sinStockProv ? "var(--red)" : item.stockProveedor < 0 ? "var(--txt3)" : "var(--green)" }}>
+                                    {item.stockProveedor < 0 ? "—" : fmtInt(item.stockProveedor)}
+                                  </td>
+                                  <td>
+                                    <div style={{ display: "flex", flexDirection: "column", gap: 1, maxWidth: 160 }}>
+                                      {sinStockProv && <span style={{ fontSize: 9, color: "var(--red)", fontWeight: 600 }}>Sin stock proveedor</span>}
+                                      {item.accion === "URGENTE" && <span style={{ fontSize: 9, color: "var(--red)" }}>URGENTE</span>}
+                                      {item.alertas.includes("estrella_en_quiebre") && <span style={{ fontSize: 9, color: "var(--amber)" }}>Estrella en quiebre</span>}
+                                    </div>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      {/* Botón crear OC por proveedor */}
+                      <div style={{ padding: "10px 12px", background: "var(--bg2)", borderRadius: "0 0 8px 8px", border: "1px solid var(--bg4)", borderTop: "none" }}>
+                        <button
+                          onClick={() => {
+                            const lineasSel = items.filter(i => pedidoSelection.has(i.skuOrigen));
+                            if (lineasSel.length === 0) return;
+                            setModalOC({ proveedor: prov, lineas: lineasSel });
+                          }}
+                          disabled={selectedItems.length === 0}
+                          style={{ padding: "10px 20px", borderRadius: 8, fontWeight: 700, fontSize: 12, background: selectedItems.length > 0 ? "var(--amber)" : "var(--bg3)", color: selectedItems.length > 0 ? "#000" : "var(--txt3)", border: "none", cursor: selectedItems.length > 0 ? "pointer" : "default" }}
+                        >
+                          Crear OC para {prov} ({selectedItems.length} SKUs, {fmtInt(udsGrupo)} uds, {fmtK(montoGrupo)} neto)
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+
+      {/* ═══ MODAL CREAR OC ═══ */}
+      {modalOC && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+          onClick={() => !creandoOC && setModalOC(null)}>
+          <div style={{ background: "var(--bg2)", borderRadius: 12, border: "1px solid var(--bg4)", maxWidth: 800, width: "100%", maxHeight: "80vh", overflow: "auto", padding: 24 }}
+            onClick={e => e.stopPropagation()}>
+            <h3 style={{ margin: "0 0 4px", fontSize: 16, fontWeight: 700 }}>Crear Orden de Compra</h3>
+            <div style={{ fontSize: 12, color: "var(--txt3)", marginBottom: 16 }}>
+              {modalOC.proveedor} — {new Date().toLocaleDateString("es-CL")}
+            </div>
+
+            <div style={{ overflowX: "auto", marginBottom: 16 }}>
+              <table className="tbl" style={{ minWidth: 600 }}>
+                <thead>
+                  <tr>
+                    <th>SKU Origen</th>
+                    <th>Nombre</th>
+                    <th style={{ textAlign: "right" }}>Cantidad</th>
+                    <th style={{ textAlign: "right" }}>IP</th>
+                    <th style={{ textAlign: "right" }}>Bultos</th>
+                    <th style={{ textAlign: "right" }}>Precio Neto</th>
+                    <th style={{ textAlign: "right" }}>Subtotal</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {modalOC.lineas.map(l => (
+                    <tr key={l.skuOrigen}>
+                      <td className="mono" style={{ fontSize: 11 }}>{l.skuOrigen}</td>
+                      <td style={{ fontSize: 11, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.nombre}</td>
+                      <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtInt(l.pedirEditado)}</td>
+                      <td className="mono" style={{ textAlign: "right", fontSize: 10, color: "var(--txt3)" }}>{l.innerPack > 1 ? l.innerPack : "—"}</td>
+                      <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{l.bultos}</td>
+                      <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtMoney(l.costoUnit)}</td>
+                      <td className="mono" style={{ textAlign: "right", fontSize: 11, fontWeight: 600 }}>{fmtMoney(l.subtotal)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Totales */}
+            {(() => {
+              const totalUds = modalOC.lineas.reduce((s, l) => s + l.pedirEditado, 0);
+              const totalBultos = modalOC.lineas.reduce((s, l) => s + l.bultos, 0);
+              const totalNeto = modalOC.lineas.reduce((s, l) => s + l.subtotal, 0);
+              const iva = Math.round(totalNeto * 0.19);
+              const totalBruto = totalNeto + iva;
+              return (
+                <div style={{ padding: "12px 14px", borderRadius: 8, background: "var(--bg3)", marginBottom: 16, fontSize: 12 }}>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 20px", color: "var(--txt2)" }}>
+                    <span>Líneas: <b style={{ color: "var(--txt)" }}>{modalOC.lineas.length}</b></span>
+                    <span>Unidades: <b style={{ color: "var(--cyan)" }}>{fmtInt(totalUds)}</b></span>
+                    <span>Bultos: <b>{totalBultos}</b></span>
+                    <span>Neto: <b style={{ color: "var(--txt)" }}>{fmtMoney(totalNeto)}</b></span>
+                    <span>IVA 19%: <b>{fmtMoney(iva)}</b></span>
+                    <span>Bruto: <b style={{ color: "var(--green)" }}>{fmtMoney(totalBruto)}</b></span>
+                  </div>
+                </div>
+              );
+            })()}
+
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={() => setModalOC(null)} disabled={creandoOC}
+                style={{ padding: "10px 20px", borderRadius: 8, background: "var(--bg3)", color: "var(--txt3)", fontWeight: 600, fontSize: 12, border: "1px solid var(--bg4)", cursor: "pointer" }}>
+                Cancelar
+              </button>
+              <button
+                onClick={() => crearOCDesdeModal("BORRADOR")}
+                disabled={creandoOC}
+                style={{ padding: "10px 20px", borderRadius: 8, background: "var(--bg3)", color: "var(--txt)", fontWeight: 700, fontSize: 12, border: "1px solid var(--bg4)", cursor: "pointer" }}>
+                {creandoOC ? "Creando..." : "Guardar borrador"}
+              </button>
+              <button
+                onClick={() => crearOCDesdeModal("PENDIENTE")}
+                disabled={creandoOC}
+                style={{ padding: "10px 20px", borderRadius: 8, background: "var(--amber)", color: "#000", fontWeight: 700, fontSize: 12, border: "none", cursor: "pointer" }}>
+                {creandoOC ? "Creando..." : "Confirmar y descargar CSV"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!vistaEnvio && !vistaPedido && filtered.length === 0 && <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>No hay datos. Ejecuta &quot;Recalcular&quot; para generar.</div>}
 
       {/* ═══ 7. ML SIN VINCULAR (colapsado al pie) ═══ */}
       {mlSinVincularOpen && <AdminMLSinVincular />}
