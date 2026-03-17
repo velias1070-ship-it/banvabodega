@@ -1559,8 +1559,9 @@ export function buildPickingLineas(orders: { skuVenta: string; qty: number }[]):
         operario: null,
       });
 
-      if (!bestPos || bestPos.qty < totalNeeded) {
-        errors.push(`⚠️ ${comp.skuOrigen}: necesitas ${totalNeeded}, disponible ${bestPos?.qty || 0} en ${bestPos?.pos || "ninguna posición"}`);
+      const totalStock = positions.reduce((s, p) => s + p.qty, 0);
+      if (totalStock < totalNeeded) {
+        errors.push(`⚠️ ${comp.skuOrigen}: necesitas ${totalNeeded}, disponible ${totalStock} en ${positions.length > 0 ? positions.map(p => `${p.pos}(${p.qty})`).join("+") : "ninguna posición"}`);
       }
     }
 
@@ -1782,8 +1783,9 @@ export function buildPickingLineasFull(
         estadoArmado: envio.tipo === "simple" ? null : "PENDIENTE",
       });
 
-      if (!bestPos || bestPos.qty < comp.unidadesFisicas) {
-        errors.push(`⚠️ ${comp.skuOrigen}: necesitas ${comp.unidadesFisicas}, disponible ${bestPos?.qty || 0} en ${bestPos?.pos || "ninguna posición"}`);
+      const totalStock = positions.reduce((s, p) => s + p.qty, 0);
+      if (totalStock < comp.unidadesFisicas) {
+        errors.push(`⚠️ ${comp.skuOrigen}: necesitas ${comp.unidadesFisicas}, disponible ${totalStock} en ${positions.length > 0 ? positions.map(p => `${p.pos}(${p.qty})`).join("+") : "ninguna posición"}`);
       }
     }
   }
