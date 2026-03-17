@@ -5,7 +5,7 @@ import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, s
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
-import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, fetchAllPedidosFlex, fetchPedidosFlexByEstado, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, fetchBultosSession, upsertNotasOperativas } from "@/lib/db";
+import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, fetchAllPedidosFlex, fetchPedidosFlexByEstado, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas } from "@/lib/db";
 import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap, ShipmentWithItems } from "@/lib/db";
 import { getOAuthUrl } from "@/lib/ml";
 import Link from "next/link";
@@ -2249,19 +2249,10 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
   const [addMode, setAddMode] = useState<"search" | "text">("search");
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState("");
-  const [bultosData, setBultosData] = useState<{ bultos: import("@/lib/db").DBPickingBulto[]; lineas: import("@/lib/db").DBPickingBultoLinea[] }>({ bultos: [], lineas: [] });
-
   const isFull = session.tipo === "envio_full";
   const totalComps = session.lineas.reduce((s, l) => s + l.componentes.length, 0);
   const doneComps = session.lineas.reduce((s, l) => s + l.componentes.filter(c => c.estado === "PICKEADO").length, 0);
   const pct = totalComps > 0 ? Math.round((doneComps / totalComps) * 100) : 0;
-
-  // Cargar bultos para sesión envio_full
-  useEffect(() => {
-    if (isFull && session.id) {
-      fetchBultosSession(session.id).then(setBultosData);
-    }
-  }, [isFull, session.id]);
 
   const showToast = (m: string) => { setToast(m); setTimeout(() => setToast(""), 2500); };
 
@@ -2279,14 +2270,12 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
       csv += `${sku};${qty}\n`;
     });
 
-    // Si hay bultos, agregar sección
-    if (bultosData.bultos.length > 0) {
-      csv += "\nBulto;SKU Venta;Unidades\n";
-      for (const bulto of bultosData.bultos) {
-        const lineasBulto = bultosData.lineas.filter(l => l.bulto_id === bulto.id);
-        for (const lb of lineasBulto) {
-          csv += `${bulto.numero_bulto};${lb.sku_venta};${lb.cantidad}\n`;
-        }
+    // Agregar sección de bultos desde líneas inline
+    const lineasConBultos = session.lineas.filter(l => l.bultos !== null && l.bultos !== undefined);
+    if (lineasConBultos.length > 0) {
+      csv += "\nSKU Venta;Posición;Uds;Bultos Cerrados;Compartido Con\n";
+      for (const l of lineasConBultos) {
+        csv += `${l.skuVenta};${l.componentes[0]?.posicion || "?"};${l.qtyFisica || l.qtyPedida};${l.bultos};${l.bultoCompartido || ""}\n`;
       }
     }
 
@@ -2648,30 +2637,6 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
           </div>
         );
       })()}
-
-      {/* Legacy bultos summary (DB-backed) */}
-      {isFull && bultosData.bultos.length > 0 && (
-        <div style={{padding:12,background:"var(--bg2)",borderRadius:8,border:"1px solid var(--bg3)",marginTop:12,fontSize:12}}>
-          <strong style={{color:"var(--txt2)"}}>📦 {bultosData.bultos.length} bultos armados (legacy):</strong>
-          {bultosData.bultos.map(bulto => {
-            const lineasB = bultosData.lineas.filter(l => l.bulto_id === bulto.id);
-            const totalUds = lineasB.reduce((s, l) => s + l.cantidad, 0);
-            return (
-              <div key={bulto.id} style={{marginTop:6,padding:"6px 8px",background:"var(--bg3)",borderRadius:6}}>
-                <div style={{fontWeight:700,color:"var(--cyan)",fontSize:11}}>Bulto {bulto.numero_bulto} ({totalUds} uds)</div>
-                {lineasB.map((lb, i) => (
-                  <div key={i} style={{fontSize:11,color:"var(--txt3)"}}>
-                    <span className="mono">{lb.sku_venta}</span> ×{lb.cantidad}
-                  </div>
-                ))}
-              </div>
-            );
-          })}
-          <div style={{marginTop:8,fontWeight:700,color:"var(--green)"}}>
-            Total: {bultosData.lineas.reduce((s, l) => s + l.cantidad, 0)} unidades en {bultosData.bultos.length} bultos
-          </div>
-        </div>
-      )}
 
       {session.lineas.length === 0 && (
         <div style={{textAlign:"center",padding:24,color:"var(--txt3)",fontSize:13}}>
