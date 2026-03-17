@@ -2325,6 +2325,7 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
   };
 
   // Reparar posiciones: reasignar posiciones reales a líneas pendientes con "?"
+  // Si no hay stock, elimina líneas duplicadas que ya fueron cubiertas por líneas pickeadas
   const repararPosiciones = async () => {
     await refreshStore();
     const pendientesSinPos = session.lineas.filter(l => l.estado !== "PICKEADO" && l.componentes[0]?.posicion === "?");
@@ -2332,9 +2333,23 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
 
     let reparadas = 0;
     let sinStock = 0;
-    const newLineas = [...session.lineas];
-    // Track stock consumed per position to avoid double-assigning
+    let newLineas = [...session.lineas];
     const consumido = new Map<string, number>();
+    const lineasAEliminar: string[] = [];
+
+    // Calcular cuánto ya fue pickeado por skuVenta
+    const pickeadoPorSku = new Map<string, number>();
+    for (const l of session.lineas) {
+      if (l.estado === "PICKEADO") {
+        pickeadoPorSku.set(l.skuVenta, (pickeadoPorSku.get(l.skuVenta) || 0) + (l.qtyFisica || l.qtyPedida));
+      }
+    }
+
+    // Calcular cuánto se necesita en total por skuVenta (pickeado + pendiente)
+    const totalPorSku = new Map<string, number>();
+    for (const l of session.lineas) {
+      totalPorSku.set(l.skuVenta, (totalPorSku.get(l.skuVenta) || 0) + (l.qtyFisica || l.qtyPedida));
+    }
 
     for (const linea of newLineas) {
       if (linea.estado === "PICKEADO" || linea.componentes[0]?.posicion !== "?") continue;
@@ -2378,17 +2393,42 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
         }
         if (found) break;
       }
-      if (!found) sinStock++;
+      if (!found) {
+        // No stock → check if this line is a duplicate (already covered by picked lines)
+        sinStock++;
+        lineasAEliminar.push(linea.id);
+      }
     }
 
-    if (reparadas === 0) { showToast("No se encontró stock disponible para reasignar posiciones"); return; }
+    // Remove lines that have no stock and are duplicates of already-picked items
+    if (lineasAEliminar.length > 0 && reparadas === 0) {
+      // All broken lines have no stock - ask to remove them
+      if (!confirm(`No se encontró stock para ${lineasAEliminar.length} líneas con "?".\n\nEstas líneas probablemente son duplicados de items ya pickeados (el stock ya fue descontado).\n\n¿Eliminar estas ${lineasAEliminar.length} líneas sin stock?`)) {
+        return;
+      }
+      newLineas = newLineas.filter(l => !lineasAEliminar.includes(l.id));
+    } else if (lineasAEliminar.length > 0) {
+      // Some repaired, some not - offer to remove the broken ones
+      if (confirm(`${reparadas} líneas reparadas, pero ${lineasAEliminar.length} no tienen stock.\n\n¿Eliminar las ${lineasAEliminar.length} líneas sin stock?`)) {
+        newLineas = newLineas.filter(l => !lineasAEliminar.includes(l.id));
+      }
+    }
+
+    if (reparadas === 0 && lineasAEliminar.length === 0) {
+      showToast("No se encontró stock disponible para reasignar posiciones");
+      return;
+    }
 
     setSaving(true);
-    await actualizarPicking(session.id!, { lineas: newLineas });
-    setSession({ ...session, lineas: newLineas });
+    const allDone = newLineas.length > 0 && newLineas.every(l => l.estado === "PICKEADO");
+    await actualizarPicking(session.id!, { lineas: newLineas, ...(allDone ? { estado: "COMPLETADO", completado_at: new Date().toISOString() } : {}) });
+    setSession({ ...session, lineas: newLineas, ...(allDone ? { estado: "COMPLETADO" } : {}) });
     setSaving(false);
-    const msg = `${reparadas} líneas reparadas con posiciones reales` + (sinStock > 0 ? ` · ${sinStock} sin stock disponible` : "");
-    showToast(msg);
+    const parts: string[] = [];
+    if (reparadas > 0) parts.push(`${reparadas} reparadas`);
+    if (lineasAEliminar.length > 0) parts.push(`${lineasAEliminar.length} eliminadas (sin stock)`);
+    if (allDone) parts.push("✅ Sesión completada");
+    showToast(parts.join(" · "));
   };
 
   // Remove a single line
