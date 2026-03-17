@@ -1952,6 +1952,7 @@ export async function despickearComponente(
 
   // Revertir estado de la línea
   linea.estado = "PENDIENTE";
+  linea.estadoArmado = null;
 
   // La sesión no puede estar completada si hay pendientes
   await db.updatePickingSession(sessionId, {
