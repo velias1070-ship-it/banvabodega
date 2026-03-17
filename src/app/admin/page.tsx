@@ -2359,19 +2359,26 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
       }
     }
 
-    // 2. Fetch ALL venta_flex movements for those SKUs
+    // 2. Fetch ALL picking movements (venta_flex + envio_full) for those SKUs
     const allMovs: { sku: string; pos: string; qty: number; operario: string; ts: string; skuVenta: string }[] = [];
     for (const sku of Array.from(skusToSearch)) {
       const movs = await fetchMovimientosBySku(sku);
       for (const m of movs) {
-        if (m.tipo !== "salida" || m.motivo !== "venta_flex") continue;
-        // nota format: "Picking Flex: SKUVENTA ×QTY"
-        const match = m.nota?.match(/Picking Flex:\s*(\S+)/);
-        if (!match) continue;
+        if (m.tipo !== "salida") continue;
+        if (m.motivo !== "venta_flex" && m.motivo !== "envio_full") continue;
+        // Parse skuVenta from nota:
+        // Flex format: "Picking Flex: SKUVENTA ×QTY"
+        // Full format: "Envío Full: SKUVENTA (X uds SKUORIGEN)"
+        let skuVenta: string | null = null;
+        const matchFlex = m.nota?.match(/Picking Flex:\s*(\S+)/);
+        const matchFull = m.nota?.match(/Envío Full:\s*(\S+)/);
+        if (matchFlex) skuVenta = matchFlex[1];
+        else if (matchFull) skuVenta = matchFull[1];
+        if (!skuVenta) continue;
         allMovs.push({
-          sku: m.sku, pos: m.posicion_id, qty: m.cantidad,
+          sku: m.sku, pos: m.posicion_id, qty: Math.abs(m.cantidad),
           operario: m.operario, ts: m.created_at || "",
-          skuVenta: match[1],
+          skuVenta,
         });
       }
     }
