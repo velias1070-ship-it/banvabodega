@@ -1,7 +1,7 @@
 "use client";
 /* v3.1 — conteos + pedidos ML + cron fix */
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote, reconciliarStock, aplicarReconciliacion, editarStockVariante, sustituirProducto, getRecepcionAjustes, registrarAjuste, backfillFacturaOriginal, getNotasOperativas } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote, reconciliarStock, aplicarReconciliacion, editarStockVariante, sustituirProducto, getRecepcionAjustes, registrarAjuste, backfillFacturaOriginal, getNotasOperativas, despickearComponente } from "@/lib/store";
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
@@ -2332,6 +2332,23 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
     showToast("Cantidad actualizada");
   };
 
+  // Reset a picked component (reverse stock)
+  const resetComp = async (lineaId: string, compIdx: number) => {
+    const linea = session.lineas.find(l => l.id === lineaId);
+    if (!linea) return;
+    const comp = linea.componentes[compIdx];
+    if (!comp || comp.estado !== "PICKEADO") return;
+    if (!confirm(`¿Reiniciar pick de ${comp.nombre || comp.skuOrigen}?\n\nSe devolverá ${comp.unidades} uds de stock a posición ${comp.posicion}.`)) return;
+    setSaving(true);
+    await despickearComponente(session.id!, lineaId, compIdx, "admin", session);
+    // Refresh session
+    const fresh = await getActivePickings();
+    const updated = fresh.find(s => s.id === session.id);
+    if (updated) setSession(updated);
+    setSaving(false);
+    showToast(`Pick reiniciado — stock devuelto a ${comp.posicion}`);
+  };
+
   // Add new lines from text input
   const addLines = async () => {
     const lines = addRaw.trim().split("\n").filter(l => l.trim());
@@ -2525,11 +2542,19 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
                 <td style={{textAlign:"center",padding:"8px 6px"}}><span className="mono" style={{fontWeight:700,color:"var(--green)"}}>{comp.posicion}</span></td>
                 <td style={{textAlign:"center",padding:"8px 6px"}} className="mono">{comp.unidades}</td>
                 <td style={{textAlign:"center",padding:"8px 6px"}}>
-                  <span style={{padding:"2px 8px",borderRadius:4,fontSize:10,fontWeight:700,
-                    background:comp.estado==="PICKEADO"?"var(--greenBg)":"var(--amberBg)",
-                    color:comp.estado==="PICKEADO"?"var(--green)":"var(--amber)"}}>
-                    {comp.estado === "PICKEADO" ? "✅" : "⏳"}
-                  </span>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:4}}>
+                    <span style={{padding:"2px 8px",borderRadius:4,fontSize:10,fontWeight:700,
+                      background:comp.estado==="PICKEADO"?"var(--greenBg)":"var(--amberBg)",
+                      color:comp.estado==="PICKEADO"?"var(--green)":"var(--amber)"}}>
+                      {comp.estado === "PICKEADO" ? "✅" : "⏳"}
+                    </span>
+                    {editing && comp.estado==="PICKEADO" && (
+                      <button onClick={()=>resetComp(linea.id,ci)} disabled={saving} title="Reiniciar pick (devuelve stock)"
+                        style={{padding:"2px 6px",borderRadius:4,background:"var(--amberBg)",color:"var(--amber)",fontSize:9,fontWeight:700,border:"1px solid var(--amberBd)",cursor:"pointer"}}>
+                        ↩
+                      </button>
+                    )}
+                  </div>
                 </td>
                 {isFull && ci === 0 && (
                   <td rowSpan={linea.componentes.length} style={{textAlign:"center",padding:"8px 6px",verticalAlign:"top"}}>
