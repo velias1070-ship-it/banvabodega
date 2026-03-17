@@ -2893,34 +2893,110 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
         const totalBultos = session.lineas.reduce((s, l) => s + (l.bultos || 0), 0);
         const compartidas = session.lineas.filter(l => l.bultos === 0 && l.bultoCompartido);
         const sueltas = session.lineas.filter(l => l.bultos === 0 && !l.bultoCompartido && l.estado === "PICKEADO");
-        // Agrupar por SKU para resumen
-        const skuMap = new Map<string, number>();
+
+        // Agrupar por SKU venta: pedido vs pickeado
+        const skuResumen = new Map<string, { pedido: number; pickeado: number; bultos: number; compartidas: string[]; tipoFull?: string; armadoPendiente: number; armadoCompletado: number }>();
         for (const l of session.lineas) {
-          skuMap.set(l.skuVenta, (skuMap.get(l.skuVenta) || 0) + (l.qtyFisica || l.qtyPedida));
+          const existing = skuResumen.get(l.skuVenta) || { pedido: 0, pickeado: 0, bultos: 0, compartidas: [], armadoPendiente: 0, armadoCompletado: 0 };
+          const qty = l.qtyFisica || l.qtyPedida || l.componentes[0]?.unidades || 0;
+          existing.pedido += qty;
+          if (l.estado === "PICKEADO") existing.pickeado += qty;
+          existing.bultos += (l.bultos || 0);
+          if (l.bultos === 0 && l.bultoCompartido) existing.compartidas.push(l.bultoCompartido);
+          if (l.tipoFull) existing.tipoFull = l.tipoFull;
+          if (l.estadoArmado === "COMPLETADO") existing.armadoCompletado++;
+          else if (l.estadoArmado === "PENDIENTE") existing.armadoPendiente++;
+          skuResumen.set(l.skuVenta, existing);
         }
+
+        const totalPedido = session.lineas.reduce((s, l) => s + (l.qtyFisica || l.qtyPedida || l.componentes[0]?.unidades || 0), 0);
+        const totalPickeado = session.lineas.filter(l => l.estado === "PICKEADO").reduce((s, l) => s + (l.qtyFisica || l.qtyPedida || l.componentes[0]?.unidades || 0), 0);
+        const totalFalta = totalPedido - totalPickeado;
+        const pctDone = totalPedido > 0 ? Math.round((totalPickeado / totalPedido) * 100) : 0;
+
         return (
-          <div style={{padding:12,background:"var(--bg2)",borderRadius:8,border:"1px solid var(--bg3)",marginTop:12,fontSize:12,color:"var(--txt3)"}}>
-            <strong>Resumen:</strong> {session.lineas.length} líneas · {session.lineas.reduce((s, l) => s + (l.qtyFisica || l.qtyPedida), 0)} uds físicas · {new Set(session.lineas.map(l => l.skuVenta)).size} SKUs Venta
-            {totalBultos > 0 && <span style={{color:"var(--cyan)",fontWeight:700}}> · 📦 {totalBultos} bultos</span>}
-            {compartidas.length > 0 && <span style={{color:"var(--amber)"}}> · {compartidas.length} compartidas</span>}
-            {sueltas.length > 0 && <span style={{color:"var(--txt3)"}}> · {sueltas.length} sueltas</span>}
-            {/* Detalle por SKU */}
-            {skuMap.size > 0 && (
-              <div style={{marginTop:8}}>
-                {Array.from(skuMap.entries()).map(([sku, qty]) => {
-                  const lineasSku = session.lineas.filter(l => l.skuVenta === sku);
-                  const bultosTotal = lineasSku.reduce((s, l) => s + (l.bultos || 0), 0);
-                  const compartido = lineasSku.filter(l => l.bultos === 0 && l.bultoCompartido);
+          <div style={{padding:14,background:"var(--bg2)",borderRadius:10,border:"1px solid var(--bg3)",marginTop:14}}>
+            {/* Barra de progreso */}
+            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+              <strong style={{fontSize:13,color:"var(--txt)"}}>Progreso</strong>
+              <div style={{flex:1,height:8,background:"var(--bg4)",borderRadius:4,overflow:"hidden"}}>
+                <div style={{width:`${pctDone}%`,height:"100%",background:pctDone===100?"var(--green)":"var(--cyan)",borderRadius:4,transition:"width 0.3s"}} />
+              </div>
+              <span className="mono" style={{fontSize:12,fontWeight:700,color:pctDone===100?"var(--green)":"var(--cyan)"}}>{pctDone}%</span>
+            </div>
+
+            {/* Resumen general */}
+            <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:10,fontSize:11}}>
+              <span>{session.lineas.length} líneas</span>
+              <span>·</span>
+              <span>{new Set(session.lineas.map(l => l.skuVenta)).size} SKUs</span>
+              <span>·</span>
+              <span style={{color:"var(--green)",fontWeight:700}}>{totalPickeado} pickeadas</span>
+              {totalFalta > 0 && <><span>·</span><span style={{color:"var(--amber)",fontWeight:700}}>{totalFalta} faltan</span></>}
+              {totalBultos > 0 && <><span>·</span><span style={{color:"var(--cyan)",fontWeight:700}}>📦 {totalBultos} bultos</span></>}
+              {compartidas.length > 0 && <><span>·</span><span style={{color:"var(--amber)"}}>{compartidas.length} compartidas</span></>}
+              {sueltas.length > 0 && <><span>·</span><span style={{color:"var(--txt3)"}}>{sueltas.length} sueltas</span></>}
+            </div>
+
+            {/* Tabla por SKU */}
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+              <thead>
+                <tr style={{borderBottom:"2px solid var(--bg4)"}}>
+                  <th style={{textAlign:"left",padding:"4px 6px",color:"var(--txt3)",fontWeight:600,textTransform:"uppercase",fontSize:10}}>SKU Venta</th>
+                  <th style={{textAlign:"center",padding:"4px 6px",color:"var(--txt3)",fontWeight:600,textTransform:"uppercase",fontSize:10}}>Tipo</th>
+                  <th style={{textAlign:"center",padding:"4px 6px",color:"var(--txt3)",fontWeight:600,textTransform:"uppercase",fontSize:10}}>Pedido</th>
+                  <th style={{textAlign:"center",padding:"4px 6px",color:"var(--green)",fontWeight:600,textTransform:"uppercase",fontSize:10}}>Pickeado</th>
+                  <th style={{textAlign:"center",padding:"4px 6px",color:"var(--amber)",fontWeight:600,textTransform:"uppercase",fontSize:10}}>Falta</th>
+                  <th style={{textAlign:"center",padding:"4px 6px",color:"var(--cyan)",fontWeight:600,textTransform:"uppercase",fontSize:10}}>Bultos</th>
+                  <th style={{textAlign:"center",padding:"4px 6px",color:"var(--txt3)",fontWeight:600,textTransform:"uppercase",fontSize:10}}>Armado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Array.from(skuResumen.entries()).map(([sku, r]) => {
+                  const falta = r.pedido - r.pickeado;
+                  const done = falta === 0;
                   return (
-                    <div key={sku} style={{fontSize:11,marginTop:2}}>
-                      <span className="mono" style={{fontWeight:700}}>{sku}</span>: {qty} uds
-                      {bultosTotal > 0 && <span style={{color:"var(--cyan)"}}> · {bultosTotal} bultos</span>}
-                      {compartido.length > 0 && <span style={{color:"var(--amber)"}}> ({compartido.map(l => `→${l.bultoCompartido}`).join(", ")})</span>}
-                    </div>
+                    <tr key={sku} style={{borderBottom:"1px solid var(--bg3)",background:done?"var(--greenBg)":"transparent"}}>
+                      <td className="mono" style={{padding:"5px 6px",fontWeight:700}}>{sku}</td>
+                      <td style={{textAlign:"center",padding:"5px 6px",fontSize:10,color:"var(--txt3)"}}>
+                        {r.tipoFull === "pack" ? <span style={{color:"var(--amber)",fontWeight:700}}>PACK</span>
+                          : r.tipoFull === "combo" ? <span style={{color:"var(--blue)",fontWeight:700}}>COMBO</span>
+                          : "simple"}
+                      </td>
+                      <td className="mono" style={{textAlign:"center",padding:"5px 6px",fontWeight:600}}>{r.pedido}</td>
+                      <td className="mono" style={{textAlign:"center",padding:"5px 6px",fontWeight:700,color:"var(--green)"}}>{r.pickeado}</td>
+                      <td className="mono" style={{textAlign:"center",padding:"5px 6px",fontWeight:700,color:falta > 0 ? "var(--amber)" : "var(--green)"}}>
+                        {falta > 0 ? falta : "✓"}
+                      </td>
+                      <td className="mono" style={{textAlign:"center",padding:"5px 6px",fontWeight:700,color:"var(--cyan)"}}>
+                        {r.bultos > 0 ? r.bultos : "—"}
+                        {r.compartidas.length > 0 && <span style={{fontSize:9,color:"var(--amber)",marginLeft:4}}>+{r.compartidas.length}comp</span>}
+                      </td>
+                      <td style={{textAlign:"center",padding:"5px 6px"}}>
+                        {(r.armadoPendiente + r.armadoCompletado) > 0 ? (
+                          <span style={{fontSize:10,fontWeight:700,color:r.armadoPendiente === 0 ? "var(--green)" : "var(--amber)"}}>
+                            {r.armadoCompletado}/{r.armadoPendiente + r.armadoCompletado}
+                          </span>
+                        ) : <span style={{color:"var(--txt3)"}}>—</span>}
+                      </td>
+                    </tr>
                   );
                 })}
-              </div>
-            )}
+              </tbody>
+              <tfoot>
+                <tr style={{borderTop:"2px solid var(--bg4)"}}>
+                  <td style={{padding:"6px",fontWeight:700,fontSize:11}}>TOTAL</td>
+                  <td></td>
+                  <td className="mono" style={{textAlign:"center",padding:"6px",fontWeight:700}}>{totalPedido}</td>
+                  <td className="mono" style={{textAlign:"center",padding:"6px",fontWeight:700,color:"var(--green)"}}>{totalPickeado}</td>
+                  <td className="mono" style={{textAlign:"center",padding:"6px",fontWeight:700,color:totalFalta > 0 ? "var(--amber)" : "var(--green)"}}>
+                    {totalFalta > 0 ? totalFalta : "✓"}
+                  </td>
+                  <td className="mono" style={{textAlign:"center",padding:"6px",fontWeight:700,color:"var(--cyan)"}}>{totalBultos > 0 ? totalBultos : "—"}</td>
+                  <td></td>
+                </tr>
+              </tfoot>
+            </table>
           </div>
         );
       })()}
