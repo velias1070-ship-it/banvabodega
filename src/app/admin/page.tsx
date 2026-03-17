@@ -1,7 +1,7 @@
 "use client";
 /* v3.1 — conteos + pedidos ML + cron fix */
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote, reconciliarStock, aplicarReconciliacion, editarStockVariante, sustituirProducto, getRecepcionAjustes, registrarAjuste, backfillFacturaOriginal, getNotasOperativas, despickearComponente } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote, reconciliarStock, aplicarReconciliacion, editarStockVariante, sustituirProducto, getRecepcionAjustes, registrarAjuste, backfillFacturaOriginal, getNotasOperativas, despickearComponente, buildPickingLineasFull, getSkuFisicoPorSkuVenta } from "@/lib/store";
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
@@ -2299,6 +2299,39 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
     onBack();
   };
 
+  // Regenerar líneas pendientes con multi-posición
+  const regenerarLineas = async () => {
+    // Agrupar SKUs pendientes por skuVenta sumando cantidades
+    const pendientes = session.lineas.filter(l => l.estado !== "PICKEADO");
+    const pickeadas = session.lineas.filter(l => l.estado === "PICKEADO");
+    if (pendientes.length === 0) { showToast("No hay líneas pendientes para regenerar"); return; }
+
+    const skuMap = new Map<string, number>();
+    for (const l of pendientes) {
+      const key = l.skuVenta;
+      skuMap.set(key, (skuMap.get(key) || 0) + (l.qtyFisica || l.qtyPedida));
+    }
+
+    const orders = Array.from(skuMap.entries()).map(([skuVenta, qty]) => ({ skuVenta, qty }));
+    const result = buildPickingLineas(orders);
+
+    // Re-numerar desde el máximo existente
+    const prefix = isFull ? "F" : "P";
+    const maxNum = pickeadas.reduce((max, l) => {
+      const n = parseInt(l.id.replace(/^[A-Z]/, "")) || 0;
+      return Math.max(max, n);
+    }, 0);
+    const newLineas = result.lineas.map((l, i) => ({ ...l, id: `${prefix}${String(maxNum + i + 1).padStart(3, "0")}` }));
+
+    const allLineas = [...pickeadas, ...newLineas];
+    setSaving(true);
+    await actualizarPicking(session.id!, { lineas: allLineas });
+    setSession({ ...session, lineas: allLineas });
+    setSaving(false);
+    showToast(`Regeneradas ${newLineas.length} líneas (${pendientes.length} → ${newLineas.length} con multi-posición)`);
+    if (result.errors.length > 0) alert("Advertencias:\n" + result.errors.join("\n"));
+  };
+
   // Remove a single line
   const removeLine = async (lineaId: string) => {
     const linea = session.lineas.find(l => l.id === lineaId);
@@ -2372,11 +2405,12 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
     }
 
     // Re-number new lines to continue from existing
+    const prefix = isFull ? "F" : "P";
     const maxNum = session.lineas.reduce((max, l) => {
-      const n = parseInt(l.id.replace("P", "")) || 0;
+      const n = parseInt(l.id.replace(/^[A-Z]/, "")) || 0;
       return Math.max(max, n);
     }, 0);
-    const newLineas = result.lineas.map((l, i) => ({ ...l, id: `P${String(maxNum + i + 1).padStart(3, "0")}` }));
+    const newLineas = result.lineas.map((l, i) => ({ ...l, id: `${prefix}${String(maxNum + i + 1).padStart(3, "0")}` }));
 
     const allLineas = [...session.lineas, ...newLineas];
     setSaving(true);
@@ -2407,6 +2441,9 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
           <button onClick={() => setEditing(!editing)} style={{padding:"6px 14px",borderRadius:6,background:editing?"var(--amberBg)":"var(--bg3)",color:editing?"var(--amber)":"var(--cyan)",fontSize:11,fontWeight:600,border:`1px solid ${editing?"var(--amber)33":"var(--bg4)"}`}}>
             {editing ? "✕ Cerrar edición" : "✏️ Editar"}
           </button>
+          {editing && <button onClick={regenerarLineas} disabled={saving} style={{padding:"6px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--blue)",fontSize:11,fontWeight:600,border:"1px solid var(--blue)33",cursor:"pointer"}}>
+            🔄 Regenerar posiciones
+          </button>}
           <button onClick={doDelete} style={{padding:"6px 14px",borderRadius:6,background:"var(--redBg)",color:"var(--red)",fontSize:11,fontWeight:600,border:"1px solid var(--red)33"}}>Eliminar</button>
         </div>
       </div>
@@ -2459,12 +2496,13 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
                 showToast("Producto no encontrado en diccionario");
                 return;
               }
-              // Re-number
+              // Re-number with correct prefix
+              const prefix = isFull ? "F" : "P";
               const maxNum = session.lineas.reduce((max, l) => {
-                const n = parseInt(l.id.replace("P", "")) || 0;
+                const n = parseInt(l.id.replace(/^[A-Z]/, "")) || 0;
                 return Math.max(max, n);
               }, 0);
-              const newLineas = result.lineas.map((l, i) => ({ ...l, id: `P${String(maxNum + i + 1).padStart(3, "0")}` }));
+              const newLineas = result.lineas.map((l, i) => ({ ...l, id: `${prefix}${String(maxNum + i + 1).padStart(3, "0")}` }));
               const allLineas = [...session.lineas, ...newLineas];
               setSaving(true);
               actualizarPicking(session.id!, { lineas: allLineas, estado: "ABIERTA" }).then(() => {
