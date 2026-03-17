@@ -1521,8 +1521,21 @@ export function buildPickingLineas(orders: { skuVenta: string; qty: number }[]):
   for (let i = 0; i < orders.length; i++) {
     const { skuVenta, qty } = orders[i];
     const compsAll = getComponentesPorSkuVenta(skuVenta);
-    const comps = compsAll.filter(c => c.tipoRelacion !== "alternativo");
-    const alternativos = compsAll.filter(c => c.tipoRelacion === "alternativo");
+    let comps = compsAll.filter(c => c.tipoRelacion !== "alternativo");
+    let alternativos = compsAll.filter(c => c.tipoRelacion === "alternativo");
+
+    // Fix: si hay un componente cuyo skuOrigen === skuVenta con unidades=1,
+    // los demás componentes con unidades=1 son alternativos (no un combo real)
+    if (comps.length > 1) {
+      const principal = comps.find(c => c.skuOrigen === skuVenta || c.skuOrigen === skuVenta.toUpperCase());
+      if (principal && principal.unidades === 1) {
+        const otros = comps.filter(c => c !== principal && c.unidades === principal.unidades);
+        if (otros.length > 0) {
+          comps = [principal];
+          alternativos = [...alternativos, ...otros];
+        }
+      }
+    }
 
     if (comps.length === 0) {
       // Try finding by SKU directly (maybe it's a simple product, not a pack)
