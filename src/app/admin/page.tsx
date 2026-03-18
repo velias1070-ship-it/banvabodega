@@ -6510,9 +6510,20 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
 
   useEffect(() => { loadPedidos(); loadConfig(); }, [loadPedidos, loadConfig]);
 
-  // Auto-refresh every 30 seconds
+  // Auto-refresh UI cada 30 segundos
   useEffect(() => {
     const iv = setInterval(loadPedidos, 30_000);
+    return () => clearInterval(iv);
+  }, [loadPedidos]);
+
+  // Auto-sync con ML cada 5 minutos (trae órdenes nuevas sin esperar al cron)
+  useEffect(() => {
+    const iv = setInterval(async () => {
+      try {
+        await fetch("/api/ml/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
+        loadPedidos();
+      } catch { /* silencioso */ }
+    }, 5 * 60_000);
     return () => clearInterval(iv);
   }, [loadPedidos]);
 
@@ -8170,6 +8181,12 @@ function AdminStockML() {
   }, []);
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  // Auto-refresh cada 60 segundos para mantener datos en vivo
+  useEffect(() => {
+    const iv = setInterval(loadData, 60_000);
+    return () => clearInterval(iv);
+  }, [loadData]);
 
   const filtered = rows.filter(r => {
     if (!q) return true;
