@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
-import { getDistributedStock, getItemUserProductId, getSellerStockType, updateFlexStock } from "@/lib/ml";
+import { getDistributedStock, getDistributedStockDiagnostic, getItemUserProductId, getSellerStockType, updateFlexStock } from "@/lib/ml";
 
 interface CompareRow {
   sku: string;
@@ -40,21 +40,14 @@ export async function GET() {
       wmsStock[r.sku] = (wmsStock[r.sku] || 0) + r.cantidad;
     }
 
-    // 3. For each mapping, get ML distributed stock
-    const rows: CompareRow[] = [];
+    // 3. Resolver user_product_id faltantes (secuencial porque escribe en DB)
     const diagnostics: string[] = [];
-
     for (const map of mappings) {
-      let upId = map.user_product_id;
-      let flexQty = 0;
-      let fullQty = 0;
-
-      // Resolver user_product_id si falta
-      if (!upId) {
+      if (!map.user_product_id) {
         try {
-          upId = await getItemUserProductId(map.item_id);
+          const upId = await getItemUserProductId(map.item_id);
           if (upId) {
-            // Guardar para no resolver de nuevo
+            map.user_product_id = upId;
             await sb.from("ml_items_map").update({ user_product_id: upId }).eq("id", map.id);
             diagnostics.push(`${map.sku}: user_product_id resuelto → ${upId}`);
           } else {
@@ -64,36 +57,80 @@ export async function GET() {
           diagnostics.push(`${map.sku}: error resolviendo user_product_id: ${String(err)}`);
         }
       }
+    }
 
-      if (upId) {
+    // 4. Consultar stock ML en paralelo (batches de 10)
+    const BATCH_SIZE = 10;
+    type MlResult = { sku: string; flexQty: number; fullQty: number; upId: string | null; error?: string };
+    const mlResults: MlResult[] = [];
+    let firstError: string | null = null;
+
+    for (let i = 0; i < mappings.length; i += BATCH_SIZE) {
+      const batch = mappings.slice(i, i + BATCH_SIZE);
+      const promises = batch.map(async (map): Promise<MlResult> => {
+        const upId = map.user_product_id;
+        if (!upId) return { sku: map.sku, flexQty: 0, fullQty: 0, upId: null };
+
         try {
-          const stockData = await getDistributedStock(upId);
-          if (stockData) {
-            if (stockData.locations.length === 0) {
-              diagnostics.push(`${map.sku}: API respondió OK pero locations vacío para ${upId}`);
-            }
-            for (const loc of stockData.locations) {
+          const result = await getDistributedStockDiagnostic(upId);
+          if (result.stock) {
+            let flexQty = 0, fullQty = 0;
+            for (const loc of result.stock.locations) {
               if (loc.type === "selling_address") flexQty = loc.quantity;
               if (loc.type === "meli_facility") fullQty = loc.quantity;
             }
+            if (result.stock.locations.length === 0) {
+              return { sku: map.sku, flexQty: 0, fullQty: 0, upId, error: `locations vacío` };
+            }
+            return { sku: map.sku, flexQty, fullQty, upId };
           } else {
-            diagnostics.push(`${map.sku}: getDistributedStock(${upId}) retornó null (token inválido o API error)`);
+            return { sku: map.sku, flexQty: 0, fullQty: 0, upId, error: result.error };
           }
         } catch (err) {
-          diagnostics.push(`${map.sku}: error consultando stock ML: ${String(err)}`);
+          return { sku: map.sku, flexQty: 0, fullQty: 0, upId, error: String(err) };
+        }
+      });
+      const batchResults = await Promise.all(promises);
+      mlResults.push(...batchResults);
+
+      // Si el primer batch falla todo con el mismo error, probablemente es token → no seguir
+      if (i === 0) {
+        const errors = batchResults.filter(r => r.error);
+        if (errors.length === batchResults.length && batchResults.length > 0) {
+          firstError = errors[0].error || "error desconocido";
+          // Llenar el resto con el mismo error sin hacer más llamadas
+          for (let j = i + BATCH_SIZE; j < mappings.length; j++) {
+            const m = mappings[j];
+            mlResults.push({ sku: m.sku, flexQty: 0, fullQty: 0, upId: m.user_product_id || null, error: firstError });
+          }
+          break;
         }
       }
+    }
 
-      rows.push({
+    // 5. Armar rows
+    const rows: CompareRow[] = mappings.map((map, idx) => {
+      const ml = mlResults[idx];
+      if (ml?.error) {
+        // Solo agregar al diagnóstico si no es error repetido
+        if (!firstError || idx < BATCH_SIZE) {
+          diagnostics.push(`${map.sku}: ${ml.error}`);
+        }
+      }
+      return {
         sku: map.sku,
         item_id: map.item_id,
-        user_product_id: upId || null,
+        user_product_id: ml?.upId || map.user_product_id || null,
         stock_wms: wmsStock[map.sku] || 0,
-        stock_flex_ml: flexQty,
-        stock_full_ml: fullQty,
+        stock_flex_ml: ml?.flexQty || 0,
+        stock_full_ml: ml?.fullQty || 0,
         ultimo_sync: map.ultimo_sync || null,
         ultimo_stock_enviado: map.ultimo_stock_enviado ?? null,
-      });
+      };
+    });
+
+    if (firstError) {
+      diagnostics.unshift(`⛔ Todas las consultas fallaron con el mismo error (se abortó después del primer batch): ${firstError}`);
     }
 
     return NextResponse.json({ rows, diagnostics: diagnostics.length > 0 ? diagnostics : undefined });

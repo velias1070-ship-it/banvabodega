@@ -335,6 +335,24 @@ async function mlGetWithHeaders<T = unknown>(path: string): Promise<{ data: T; h
   return { data, headers: resp.headers };
 }
 
+/** mlGet con info de error detallada para diagnóstico */
+async function mlGetDiagnostic<T = unknown>(path: string): Promise<{ ok: true; data: T; headers: Headers } | { ok: false; status: number; body: string }> {
+  const token = await ensureValidToken();
+  if (!token) return { ok: false, status: 0, body: "No hay token válido (ensureValidToken retornó null)" };
+
+  const resp = await fetch(`${ML_API}${path}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => "");
+    return { ok: false, status: resp.status, body };
+  }
+
+  const data = await resp.json() as T;
+  return { ok: true, data, headers: resp.headers };
+}
+
 /**
  * Make authenticated GET, return raw JSON (for debugging)
  */
@@ -1034,6 +1052,23 @@ export async function getDistributedStock(userProductId: string): Promise<StockR
     user_product_id: userProductId,
     locations: result.data.locations || [],
     version: headerVersion,
+  };
+}
+
+/** Versión con diagnóstico para stock-compare */
+export async function getDistributedStockDiagnostic(userProductId: string): Promise<{ stock: StockResponse | null; error?: string }> {
+  const result = await mlGetDiagnostic<{ locations?: StockLocation[] }>(`/user-products/${userProductId}/stock`);
+  if (!result.ok) {
+    return { stock: null, error: `HTTP ${result.status}: ${result.body.substring(0, 200)}` };
+  }
+
+  const headerVersion = parseInt(result.headers.get("x-version") || "0", 10);
+  return {
+    stock: {
+      user_product_id: userProductId,
+      locations: result.data.locations || [],
+      version: headerVersion,
+    },
   };
 }
 
