@@ -3085,6 +3085,221 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
 
 // ==================== ADMIN ETIQUETAS ====================
 function AdminEtiquetas() {
+  const [subTab, setSubTab] = useState<"productos"|"bultos">("productos");
+
+  return (
+    <div>
+      <div style={{display:"flex",gap:8,marginBottom:16}}>
+        <button onClick={()=>setSubTab("productos")} style={{padding:"8px 18px",borderRadius:8,background:subTab==="productos"?"var(--cyan)":"var(--bg3)",color:subTab==="productos"?"#fff":"var(--txt2)",fontWeight:subTab==="productos"?700:500,fontSize:13,border:subTab==="productos"?"none":"1px solid var(--bg4)",cursor:"pointer"}}>🏷️ Productos</button>
+        <button onClick={()=>setSubTab("bultos")} style={{padding:"8px 18px",borderRadius:8,background:subTab==="bultos"?"var(--cyan)":"var(--bg3)",color:subTab==="bultos"?"#fff":"var(--txt2)",fontWeight:subTab==="bultos"?700:500,fontSize:13,border:subTab==="bultos"?"none":"1px solid var(--bg4)",cursor:"pointer"}}>📦 Bultos</button>
+      </div>
+      {subTab==="productos" && <EtiquetasProductos/>}
+      {subTab==="bultos" && <EtiquetasBultos/>}
+    </div>
+  );
+}
+
+function EtiquetasBultos() {
+  const [file, setFile] = useState<File|null>(null);
+  const [previews, setPreviews] = useState<string[]>([]);
+  const [generating, setGenerating] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [labelCount, setLabelCount] = useState(0);
+  const [cols, setCols] = useState(3);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const processFile = async (f: File) => {
+    setFile(f);
+    setPreviews([]);
+    setLabelCount(0);
+    setGenerating(true);
+    setProgress(0);
+    try {
+      const pdfjsLib = await import("pdfjs-dist");
+      pdfjsLib.GlobalWorkerOptions.workerSrc = "";
+      const arrayBuf = await f.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuf, disableAutoFetch: true, isEvalSupported: false }).promise;
+      const numPages = pdf.numPages;
+      const prevs: string[] = [];
+      let total = 0;
+
+      for (let p = 1; p <= numPages; p++) {
+        const page = await pdf.getPage(p);
+        const vp = page.getViewport({ scale: 2 });
+        const canvas = document.createElement("canvas");
+        canvas.width = vp.width;
+        canvas.height = vp.height;
+        const ctx = canvas.getContext("2d")!;
+        await page.render({ canvasContext: ctx, viewport: vp }).promise;
+
+        // Split into `cols` columns
+        const colW = Math.floor(canvas.width / cols);
+        for (let c = 0; c < cols; c++) {
+          const crop = document.createElement("canvas");
+          crop.width = colW;
+          crop.height = canvas.height;
+          const cctx = crop.getContext("2d")!;
+          cctx.drawImage(canvas, c * colW, 0, colW, canvas.height, 0, 0, colW, canvas.height);
+
+          // Check if this crop has content (not just white)
+          const imgData = cctx.getImageData(0, 0, crop.width, crop.height);
+          let nonWhite = 0;
+          for (let i = 0; i < imgData.data.length; i += 16) {
+            if (imgData.data[i] < 240 || imgData.data[i+1] < 240 || imgData.data[i+2] < 240) {
+              nonWhite++;
+              if (nonWhite > 100) break;
+            }
+          }
+          if (nonWhite > 100) {
+            prevs.push(crop.toDataURL("image/jpeg", 0.85));
+            total++;
+          }
+        }
+        setProgress(Math.round((p / numPages) * 50));
+      }
+      setPreviews(prevs);
+      setLabelCount(total);
+    } catch (e) {
+      alert("Error procesando PDF: " + e);
+    }
+    setGenerating(false);
+    setProgress(0);
+  };
+
+  const generatePDF = async () => {
+    if (previews.length === 0) return;
+    setGenerating(true);
+    setProgress(0);
+    try {
+      // @ts-ignore
+      const { jsPDF } = await import("jspdf");
+      // 10cm x 15cm = 100mm x 150mm, portrait
+      const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: [100, 150] });
+
+      for (let i = 0; i < previews.length; i++) {
+        if (i > 0) doc.addPage([100, 150], "portrait");
+
+        const img = new Image();
+        img.src = previews[i];
+        await new Promise<void>((resolve) => {
+          if (img.complete) { resolve(); return; }
+          img.onload = () => resolve();
+        });
+
+        // Fit image into 10x15cm maintaining aspect ratio
+        const imgAspect = img.width / img.height;
+        const pageAspect = 100 / 150;
+        let w: number, h: number, x: number, y: number;
+
+        if (imgAspect > pageAspect) {
+          // Image is wider proportionally — fit to width
+          w = 96; // 2mm margin each side
+          h = w / imgAspect;
+          x = 2;
+          y = (150 - h) / 2;
+        } else {
+          // Image is taller — fit to height
+          h = 146; // 2mm margin top/bottom
+          w = h * imgAspect;
+          x = (100 - w) / 2;
+          y = 2;
+        }
+
+        doc.addImage(previews[i], "JPEG", x, y, w, h);
+        setProgress(Math.round(((i + 1) / previews.length) * 100));
+      }
+      doc.save("etiquetas_bultos_10x15.pdf");
+    } catch (e) {
+      alert("Error generando PDF: " + e);
+    }
+    setGenerating(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    const f = e.dataTransfer.files[0];
+    if (f && f.type === "application/pdf") processFile(f);
+  };
+
+  return (
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+        <div>
+          <h2 style={{fontSize:18,fontWeight:700,margin:0}}>📦 Etiquetas de Bultos</h2>
+          <p style={{fontSize:12,color:"var(--txt3)",margin:0}}>Sube el PDF de MercadoLibre y genera etiquetas individuales de 10×15 cm</p>
+        </div>
+      </div>
+
+      {/* Config: columns per page */}
+      <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16,padding:12,background:"var(--bg2)",borderRadius:10,border:"1px solid var(--bg3)"}}>
+        <span style={{fontSize:12,fontWeight:600,color:"var(--txt2)"}}>Etiquetas por fila en PDF original:</span>
+        {[2,3,4].map(n=>(
+          <button key={n} onClick={()=>{setCols(n);if(file)processFile(file);}}
+            style={{padding:"6px 14px",borderRadius:6,background:cols===n?"var(--cyan)":"var(--bg3)",color:cols===n?"#fff":"var(--txt2)",fontSize:13,fontWeight:cols===n?700:500,border:cols===n?"none":"1px solid var(--bg4)",cursor:"pointer"}}>
+            {n}
+          </button>
+        ))}
+      </div>
+
+      {/* Upload zone */}
+      <div
+        onDrop={handleDrop}
+        onDragOver={e=>e.preventDefault()}
+        onClick={()=>fileRef.current?.click()}
+        style={{padding:40,textAlign:"center",border:"2px dashed var(--bg4)",borderRadius:14,cursor:"pointer",background:"var(--bg2)",marginBottom:16,transition:"border-color 0.2s"}}
+        onDragEnter={e=>{e.preventDefault();(e.currentTarget as HTMLElement).style.borderColor="var(--cyan)";}}
+        onDragLeave={e=>{(e.currentTarget as HTMLElement).style.borderColor="var(--bg4)";}}
+      >
+        <input ref={fileRef} type="file" accept=".pdf" style={{display:"none"}} onChange={e=>{
+          const f = e.target.files?.[0];
+          if (f) processFile(f);
+        }}/>
+        <div style={{fontSize:40,marginBottom:8}}>📄</div>
+        <div style={{fontSize:14,fontWeight:600,color:"var(--txt)"}}>
+          {file ? file.name : "Arrastra o haz clic para subir el PDF de MercadoLibre"}
+        </div>
+        <div style={{fontSize:11,color:"var(--txt3)",marginTop:4}}>Solo archivos PDF</div>
+      </div>
+
+      {/* Progress bar */}
+      {generating && (
+        <div style={{marginBottom:16}}>
+          <div style={{background:"var(--bg3)",borderRadius:8,height:8,overflow:"hidden"}}>
+            <div style={{width:`${progress}%`,height:"100%",background:"var(--cyan)",borderRadius:8,transition:"width 0.2s"}}/>
+          </div>
+          <div style={{fontSize:11,color:"var(--txt3)",marginTop:4,textAlign:"center"}}>Procesando... {progress}%</div>
+        </div>
+      )}
+
+      {/* Preview */}
+      {previews.length > 0 && (
+        <div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+            <div style={{fontSize:14,fontWeight:700}}>
+              Vista previa — {labelCount} etiquetas detectadas
+            </div>
+            <button onClick={generatePDF} disabled={generating}
+              style={{padding:"12px 24px",borderRadius:10,background:"var(--green)",color:"#fff",fontSize:14,fontWeight:700,border:"none",cursor:"pointer",opacity:generating?0.5:1}}>
+              {generating ? `Generando... ${progress}%` : `📄 Descargar PDF 10×15 — ${labelCount} páginas`}
+            </button>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill, minmax(140px, 1fr))",gap:8,maxHeight:500,overflow:"auto",padding:4}}>
+            {previews.map((src, i) => (
+              <div key={i} style={{background:"#fff",borderRadius:8,overflow:"hidden",border:"1px solid var(--bg4)",position:"relative"}}>
+                <img src={src} alt={`Etiqueta ${i+1}`} style={{width:"100%",display:"block"}}/>
+                <div style={{position:"absolute",bottom:4,right:4,background:"rgba(0,0,0,0.7)",color:"#fff",padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:700}}>
+                  {i+1}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EtiquetasProductos() {
   const [q, setQ] = useState("");
   const [queue, setQueue] = useState<{ code: string; name: string; sku: string; qty: number }[]>([]);
   const [generating, setGenerating] = useState(false);
