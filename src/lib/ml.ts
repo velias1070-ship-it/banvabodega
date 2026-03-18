@@ -306,6 +306,11 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string): 
 
     const data = await resp.json();
     console.log("[ML] OAuth response keys:", Object.keys(data), "has refresh_token:", !!data.refresh_token, "user_id:", data.user_id);
+
+    if (!data.refresh_token) {
+      console.warn("[ML] ⚠️ OAuth response NO incluye refresh_token. El token expirará en ~6h sin posibilidad de renovar. Asegurarse de usar scope=offline_access en la URL de autorización.");
+    }
+
     await saveMLConfig({
       access_token: data.access_token,
       refresh_token: data.refresh_token || "",
@@ -1986,5 +1991,5 @@ export async function syncSingleFulfillmentStock(inventoryId: string): Promise<s
 // ==================== OAUTH URL ====================
 
 export function getOAuthUrl(clientId: string, redirectUri: string): string {
-  return `${ML_AUTH}/authorization?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+  return `${ML_AUTH}/authorization?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=offline_access`;
 }
