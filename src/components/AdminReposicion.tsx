@@ -1166,14 +1166,17 @@ export default function AdminReposicion() {
       const existenteSet = new Set(existentes.map(e => e.sku_origen.toUpperCase()));
 
       // 2. Upsert masivo a proveedor_catalogo
-      const catalogoRows = provData.map(p => ({
-        proveedor: proveedorNombre,
-        sku_origen: p.skuOrigen.toUpperCase().trim(),
-        nombre: p.nombre || null,
-        inner_pack: p.innerPack,
-        precio_neto: p.precioNeto,
-        stock_disponible: p.stock,
-      }));
+      const catalogoRows = provData
+        .filter(p => p.skuOrigen && p.skuOrigen.trim().length > 0)
+        .map(p => ({
+          proveedor: proveedorNombre,
+          sku_origen: p.skuOrigen.toUpperCase().trim(),
+          nombre: (p.nombre || "").substring(0, 500) || null,
+          inner_pack: Number(p.innerPack) || 1,
+          precio_neto: Number(p.precioNeto) || 0,
+          stock_disponible: Number(p.stock) ?? -1,
+        }));
+      console.log(`[importProveedor] ${catalogoRows.length} filas a upsert (de ${provData.length} parseadas)`);
       await upsertProveedorCatalogo(catalogoRows);
 
       // 3. Actualizar inner_pack en productos y detectar cambios de precio

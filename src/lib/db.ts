@@ -2196,9 +2196,21 @@ export interface DBCostoHistorial {
 export async function upsertProveedorCatalogo(items: Omit<DBProveedorCatalogo, "id">[]) {
   const sb = getSupabase(); if (!sb) return;
   const now = new Date().toISOString();
-  const rows = items.map(it => ({ ...it, sku_origen: (it.sku_origen || "").toUpperCase().trim(), updated_at: now }));
+  const rows = items.map(it => ({
+    ...it,
+    sku_origen: (it.sku_origen || "").toUpperCase().trim(),
+    precio_neto: Number(it.precio_neto) || 0,
+    inner_pack: Number(it.inner_pack) || 1,
+    stock_disponible: Number(it.stock_disponible) ?? -1,
+    updated_at: now,
+  })).filter(r => r.sku_origen.length > 0);
   for (let i = 0; i < rows.length; i += 500) {
-    await sb.from("proveedor_catalogo").upsert(rows.slice(i, i + 500), { onConflict: "proveedor,sku_origen" });
+    const chunk = rows.slice(i, i + 500);
+    const { error } = await sb.from("proveedor_catalogo").upsert(chunk, { onConflict: "proveedor,sku_origen" });
+    if (error) {
+      console.error(`[upsertProveedorCatalogo] chunk ${i / 500 + 1} falló:`, error.message, error.details, error.hint);
+      console.error(`[upsertProveedorCatalogo] primeras 3 filas del chunk:`, JSON.stringify(chunk.slice(0, 3), null, 2));
+    }
   }
 }
 
