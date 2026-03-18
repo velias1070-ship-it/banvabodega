@@ -198,34 +198,51 @@ export async function ensureValidToken(): Promise<string | null> {
         return null;
       }
 
-      const resp = await fetch(`${ML_API}/oauth/token`, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
-        body: new URLSearchParams({
-          grant_type: "refresh_token",
-          client_id: cfg.client_id,
-          client_secret: cfg.client_secret,
-          refresh_token: cfg.refresh_token,
-        }),
-      });
+      // Reintentar hasta 3 veces con backoff en caso de error de red
+      let lastError = "";
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const resp = await fetch(`${ML_API}/oauth/token`, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+            body: new URLSearchParams({
+              grant_type: "refresh_token",
+              client_id: cfg.client_id,
+              client_secret: cfg.client_secret,
+              refresh_token: cfg.refresh_token,
+            }),
+          });
 
-      if (!resp.ok) {
-        const err = await resp.text();
-        console.error("[ML] Token refresh failed:", resp.status, err);
-        return null;
+          if (resp.ok) {
+            const data = await resp.json();
+            const newExpiry = new Date(Date.now() + data.expires_in * 1000).toISOString();
+
+            await saveMLConfig({
+              access_token: data.access_token,
+              refresh_token: data.refresh_token || cfg.refresh_token,
+              token_expires_at: newExpiry,
+            });
+
+            console.log("[ML] Token refreshed successfully, expires:", newExpiry);
+            return data.access_token;
+          }
+
+          lastError = await resp.text();
+          // Si es error 4xx (credenciales inválidas), no reintentar
+          if (resp.status >= 400 && resp.status < 500) {
+            console.error(`[ML] Token refresh failed (${resp.status}):`, lastError);
+            return null;
+          }
+          console.warn(`[ML] Token refresh attempt ${attempt + 1} failed (${resp.status}), retrying...`);
+        } catch (fetchErr) {
+          lastError = String(fetchErr);
+          console.warn(`[ML] Token refresh attempt ${attempt + 1} network error:`, lastError);
+        }
+        // Backoff: 1s, 2s, 4s
+        if (attempt < 2) await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
       }
-
-      const data = await resp.json();
-      const newExpiry = new Date(Date.now() + data.expires_in * 1000).toISOString();
-
-      await saveMLConfig({
-        access_token: data.access_token,
-        refresh_token: data.refresh_token,
-        token_expires_at: newExpiry,
-      });
-
-      console.log("[ML] Token refreshed successfully, expires:", newExpiry);
-      return data.access_token;
+      console.error("[ML] Token refresh failed after 3 attempts:", lastError);
+      return null;
     } catch (err) {
       console.error("[ML] Token refresh error:", err);
       return null;
