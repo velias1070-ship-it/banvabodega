@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
 
+export const dynamic = "force-dynamic";
+
 export async function GET(req: NextRequest) {
   try {
     const sb = getServerSupabase();
@@ -8,7 +10,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Sin conexión a Supabase" }, { status: 500 });
     }
 
-    const { searchParams } = new URL(req.url);
+    const { searchParams } = req.nextUrl;
     const from = searchParams.get("from");
     const to = searchParams.get("to");
     const skuRaw = searchParams.get("sku");

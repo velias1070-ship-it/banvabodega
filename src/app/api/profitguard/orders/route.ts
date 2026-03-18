@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 30;
+export const dynamic = "force-dynamic";
 
 const PG_API = "https://app.profitguard.cl/api/v1/orders";
 
@@ -177,7 +178,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "PROFITGUARD_API_KEY no configurada" }, { status: 500 });
   }
 
-  const { searchParams } = new URL(req.url);
+  const { searchParams } = req.nextUrl;
   const from = searchParams.get("from");
   const to = searchParams.get("to");
 
