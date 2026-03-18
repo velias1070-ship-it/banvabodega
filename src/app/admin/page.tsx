@@ -6516,14 +6516,20 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
     return () => clearInterval(iv);
   }, [loadPedidos]);
 
-  // Auto-sync con ML cada 5 minutos (trae órdenes nuevas sin esperar al cron)
+  // Auto-sync con ML: inmediato al abrir + cada 5 minutos
+  // Reemplaza el cron de Vercel (plan Hobby solo permite 1x/día)
   useEffect(() => {
-    const iv = setInterval(async () => {
+    const doAutoSync = async () => {
       try {
+        // Sync órdenes recientes
         await fetch("/api/ml/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
+        // Procesar cola de stock pendiente
+        await fetch("/api/ml/stock-sync", { method: "POST" }).catch(() => {});
         loadPedidos();
       } catch { /* silencioso */ }
-    }, 5 * 60_000);
+    };
+    doAutoSync(); // sync inmediato al abrir el tab
+    const iv = setInterval(doAutoSync, 5 * 60_000);
     return () => clearInterval(iv);
   }, [loadPedidos]);
 

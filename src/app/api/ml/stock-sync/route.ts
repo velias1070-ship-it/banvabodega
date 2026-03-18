@@ -12,12 +12,14 @@ export async function POST(req: NextRequest) {
   const sb = getServerSupabase();
   if (!sb) return NextResponse.json({ error: "no_db" }, { status: 500 });
 
-  // Verify authorization
+  // Verificar autorización: cron de Vercel, dev local, o llamada interna desde admin
   const authHeader = req.headers.get("authorization");
   const isVercelCron = authHeader === `Bearer ${process.env.CRON_SECRET}`;
   const isLocalDev = process.env.NODE_ENV === "development";
+  const referer = req.headers.get("referer") || "";
+  const isAdminCall = referer.includes("/admin");
 
-  if (!isVercelCron && !isLocalDev) {
+  if (!isVercelCron && !isLocalDev && !isAdminCall) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
