@@ -154,6 +154,31 @@ export async function saveMLConfig(updates: Partial<MLConfig>): Promise<void> {
 }
 
 /**
+ * Diagnóstico del estado del token para mostrar en UI
+ */
+export async function diagnoseToken(): Promise<string> {
+  const sb = getServerSupabase();
+  if (!sb) return "❌ No hay conexión a Supabase (getServerSupabase retornó null)";
+
+  const { data: config, error } = await sb.from("ml_config").select("*").eq("id", "main").single();
+  if (error || !config) return `❌ No hay registro en ml_config (${error?.message || "tabla vacía"})`;
+  if (!config.access_token) return "❌ access_token está vacío en ml_config";
+  if (!config.refresh_token) return "⚠️ refresh_token está vacío — no se puede refrescar el token expirado";
+  if (!config.client_id) return "❌ client_id está vacío en ml_config";
+  if (!config.client_secret) return "❌ client_secret está vacío en ml_config";
+
+  const expiresAt = new Date(config.token_expires_at).getTime();
+  const now = Date.now();
+  const diffMin = Math.round((expiresAt - now) / 60000);
+
+  if (now < expiresAt - 5 * 60 * 1000) {
+    return `✅ Token válido (expira en ${diffMin} min)`;
+  }
+
+  return `⚠️ Token expirado hace ${-diffMin} min — se intentará refrescar automáticamente. Si falla, re-autorizar desde Config ML.`;
+}
+
+/**
  * Ensures we have a valid access token. Refreshes if expired.
  * Returns the valid access_token or null if refresh fails.
  * Uses a singleton promise to prevent race conditions when multiple
