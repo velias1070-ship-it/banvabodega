@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
-import { getDistributedStock, getDistributedStockDiagnostic, getItemUserProductId, getSellerStockType, updateFlexStock } from "@/lib/ml";
+import { diagnoseToken, getDistributedStock, getDistributedStockDiagnostic, getItemUserProductId, getSellerStockType, updateFlexStock } from "@/lib/ml";
 
 interface CompareRow {
   sku: string;
@@ -130,7 +130,10 @@ export async function GET() {
     });
 
     if (firstError) {
-      diagnostics.unshift(`⛔ Todas las consultas fallaron con el mismo error (se abortó después del primer batch): ${firstError}`);
+      // Si el error es de token, dar diagnóstico detallado
+      const tokenDiag = await diagnoseToken();
+      diagnostics.unshift(`⛔ Todas las consultas fallaron: ${firstError}`);
+      diagnostics.unshift(`🔑 Estado del token: ${tokenDiag}`);
     }
 
     return NextResponse.json({ rows, diagnostics: diagnostics.length > 0 ? diagnostics : undefined });
