@@ -42,23 +42,45 @@ export async function GET() {
 
     // 3. For each mapping, get ML distributed stock
     const rows: CompareRow[] = [];
+    const diagnostics: string[] = [];
 
     for (const map of mappings) {
-      const upId = map.user_product_id;
+      let upId = map.user_product_id;
       let flexQty = 0;
       let fullQty = 0;
+
+      // Resolver user_product_id si falta
+      if (!upId) {
+        try {
+          upId = await getItemUserProductId(map.item_id);
+          if (upId) {
+            // Guardar para no resolver de nuevo
+            await sb.from("ml_items_map").update({ user_product_id: upId }).eq("id", map.id);
+            diagnostics.push(`${map.sku}: user_product_id resuelto → ${upId}`);
+          } else {
+            diagnostics.push(`${map.sku}: no se pudo resolver user_product_id para item ${map.item_id}`);
+          }
+        } catch (err) {
+          diagnostics.push(`${map.sku}: error resolviendo user_product_id: ${String(err)}`);
+        }
+      }
 
       if (upId) {
         try {
           const stockData = await getDistributedStock(upId);
           if (stockData) {
+            if (stockData.locations.length === 0) {
+              diagnostics.push(`${map.sku}: API respondió OK pero locations vacío para ${upId}`);
+            }
             for (const loc of stockData.locations) {
               if (loc.type === "selling_address") flexQty = loc.quantity;
               if (loc.type === "meli_facility") fullQty = loc.quantity;
             }
+          } else {
+            diagnostics.push(`${map.sku}: getDistributedStock(${upId}) retornó null (token inválido o API error)`);
           }
-        } catch {
-          // If ML API fails for this item, show 0
+        } catch (err) {
+          diagnostics.push(`${map.sku}: error consultando stock ML: ${String(err)}`);
         }
       }
 
@@ -74,7 +96,7 @@ export async function GET() {
       });
     }
 
-    return NextResponse.json({ rows });
+    return NextResponse.json({ rows, diagnostics: diagnostics.length > 0 ? diagnostics : undefined });
   } catch (err) {
     console.error("[Stock Compare] Error:", err);
     return NextResponse.json({ error: String(err) }, { status: 500 });
