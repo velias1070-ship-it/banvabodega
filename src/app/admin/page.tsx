@@ -3106,6 +3106,8 @@ function EtiquetasBultos() {
   const [progress, setProgress] = useState(0);
   const [labelCount, setLabelCount] = useState(0);
   const [cols, setCols] = useState(3);
+  const [rangeFrom, setRangeFrom] = useState("");
+  const [rangeTo, setRangeTo] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
   const processFile = async (f: File) => {
@@ -3166,8 +3168,18 @@ function EtiquetasBultos() {
     setProgress(0);
   };
 
+  const getFilteredPreviews = () => {
+    const from = rangeFrom ? Math.max(1, parseInt(rangeFrom)) : 1;
+    const to = rangeTo ? Math.min(previews.length, parseInt(rangeTo)) : previews.length;
+    if (isNaN(from) || isNaN(to) || from > to || from > previews.length) return [];
+    return previews.slice(from - 1, to);
+  };
+
+  const filteredCount = getFilteredPreviews().length;
+
   const generatePDF = async () => {
-    if (previews.length === 0) return;
+    const filtered = getFilteredPreviews();
+    if (filtered.length === 0) return;
     setGenerating(true);
     setProgress(0);
     try {
@@ -3176,11 +3188,11 @@ function EtiquetasBultos() {
       // 10cm x 15cm = 100mm x 150mm, portrait
       const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: [100, 150] });
 
-      for (let i = 0; i < previews.length; i++) {
+      for (let i = 0; i < filtered.length; i++) {
         if (i > 0) doc.addPage([100, 150], "portrait");
 
         const img = new Image();
-        img.src = previews[i];
+        img.src = filtered[i];
         await new Promise<void>((resolve) => {
           if (img.complete) { resolve(); return; }
           img.onload = () => resolve();
@@ -3205,10 +3217,13 @@ function EtiquetasBultos() {
           y = 2;
         }
 
-        doc.addImage(previews[i], "JPEG", x, y, w, h);
-        setProgress(Math.round(((i + 1) / previews.length) * 100));
+        doc.addImage(filtered[i], "JPEG", x, y, w, h);
+        setProgress(Math.round(((i + 1) / filtered.length) * 100));
       }
-      doc.save("etiquetas_bultos_10x15.pdf");
+      const fromLabel = rangeFrom ? parseInt(rangeFrom) : 1;
+      const toLabel = rangeTo ? parseInt(rangeTo) : previews.length;
+      const suffix = (rangeFrom || rangeTo) ? `_${fromLabel}-${toLabel}` : "";
+      doc.save(`etiquetas_bultos_10x15${suffix}.pdf`);
     } catch (e) {
       alert("Error generando PDF: " + e);
     }
@@ -3274,24 +3289,45 @@ function EtiquetasBultos() {
       {/* Preview */}
       {previews.length > 0 && (
         <div>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}}>
             <div style={{fontSize:14,fontWeight:700}}>
               Vista previa — {labelCount} etiquetas detectadas
             </div>
-            <button onClick={generatePDF} disabled={generating}
-              style={{padding:"12px 24px",borderRadius:10,background:"var(--green)",color:"#fff",fontSize:14,fontWeight:700,border:"none",cursor:"pointer",opacity:generating?0.5:1}}>
-              {generating ? `Generando... ${progress}%` : `📄 Descargar PDF 10×15 — ${labelCount} páginas`}
-            </button>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <div style={{display:"flex",alignItems:"center",gap:6,padding:"6px 10px",background:"var(--bg2)",borderRadius:8,border:"1px solid var(--bg3)"}}>
+                <span style={{fontSize:11,color:"var(--txt3)",whiteSpace:"nowrap"}}>Rango:</span>
+                <input type="text" inputMode="numeric" placeholder="1" value={rangeFrom} onChange={e=>setRangeFrom(e.target.value.replace(/\D/g,""))}
+                  style={{width:42,padding:"4px 6px",background:"var(--bg3)",border:"1px solid var(--bg4)",borderRadius:5,color:"var(--txt)",fontSize:12,textAlign:"center"}}/>
+                <span style={{fontSize:11,color:"var(--txt3)"}}>a</span>
+                <input type="text" inputMode="numeric" placeholder={String(previews.length)} value={rangeTo} onChange={e=>setRangeTo(e.target.value.replace(/\D/g,""))}
+                  style={{width:42,padding:"4px 6px",background:"var(--bg3)",border:"1px solid var(--bg4)",borderRadius:5,color:"var(--txt)",fontSize:12,textAlign:"center"}}/>
+                {(rangeFrom || rangeTo) && (
+                  <button onClick={()=>{setRangeFrom("");setRangeTo("");}}
+                    style={{padding:"2px 6px",background:"none",border:"none",color:"var(--txt3)",cursor:"pointer",fontSize:12}}>✕</button>
+                )}
+              </div>
+              <button onClick={generatePDF} disabled={generating || filteredCount === 0}
+                style={{padding:"12px 24px",borderRadius:10,background:filteredCount===0?"var(--bg4)":"var(--green)",color:"#fff",fontSize:14,fontWeight:700,border:"none",cursor:"pointer",opacity:generating?0.5:1}}>
+                {generating ? `Generando... ${progress}%` : `📄 Descargar PDF 10×15 — ${filteredCount} página${filteredCount!==1?"s":""}`}
+              </button>
+            </div>
           </div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill, minmax(140px, 1fr))",gap:8,maxHeight:500,overflow:"auto",padding:4}}>
-            {previews.map((src, i) => (
-              <div key={i} style={{background:"#fff",borderRadius:8,overflow:"hidden",border:"1px solid var(--bg4)",position:"relative"}}>
-                <img src={src} alt={`Etiqueta ${i+1}`} style={{width:"100%",display:"block"}}/>
-                <div style={{position:"absolute",bottom:4,right:4,background:"rgba(0,0,0,0.7)",color:"#fff",padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:700}}>
-                  {i+1}
+            {previews.map((src, i) => {
+              const num = i + 1;
+              const from = rangeFrom ? Math.max(1, parseInt(rangeFrom)) : 1;
+              const to = rangeTo ? Math.min(previews.length, parseInt(rangeTo)) : previews.length;
+              const inRange = !rangeFrom && !rangeTo ? true : (num >= from && num <= to);
+              return (
+              <div key={i} onClick={()=>{if(!rangeFrom){setRangeFrom(String(num));setRangeTo(String(num));}else if(rangeFrom && rangeTo===rangeFrom){setRangeTo(String(num));}else{setRangeFrom(String(num));setRangeTo("");}}}
+                style={{background:"#fff",borderRadius:8,overflow:"hidden",border:inRange?"2px solid var(--cyan)":"1px solid var(--bg4)",opacity:inRange?1:0.4,position:"relative",cursor:"pointer",transition:"opacity 0.15s, border 0.15s"}}>
+                <img src={src} alt={`Etiqueta ${num}`} style={{width:"100%",display:"block"}}/>
+                <div style={{position:"absolute",bottom:4,right:4,background:inRange?"var(--cyan)":"rgba(0,0,0,0.7)",color:"#fff",padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:700}}>
+                  {num}
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
