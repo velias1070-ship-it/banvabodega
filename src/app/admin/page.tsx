@@ -3116,7 +3116,7 @@ function EtiquetasBultos() {
     setProgress(0);
     try {
       const pdfjsLib = await import("pdfjs-dist");
-      pdfjsLib.GlobalWorkerOptions.workerSrc = "";
+      pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.js";
       const arrayBuf = await f.arrayBuffer();
       const pdf = await pdfjsLib.getDocument({ data: arrayBuf, disableAutoFetch: true, isEvalSupported: false }).promise;
       const numPages = pdf.numPages;
