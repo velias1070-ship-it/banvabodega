@@ -8163,6 +8163,7 @@ function AdminStockML() {
   const [syncing, setSyncing] = useState<Record<string, boolean>>({});
   const [syncResult, setSyncResult] = useState<Record<string, string>>({});
   const [syncAllLoading, setSyncAllLoading] = useState(false);
+  const [diagnostics, setDiagnostics] = useState<string[]>([]);
   const s = getStore();
 
   const loadData = useCallback(async () => {
@@ -8173,6 +8174,7 @@ function AdminStockML() {
       const json = await resp.json();
       if (json.error) { setError(json.error); return; }
       setRows(json.rows || []);
+      setDiagnostics(json.diagnostics || []);
       // Pre-fill overrides with WMS stock (default: sync all WMS stock to Flex)
       const ov: Record<string, string> = {};
       for (const r of json.rows || []) {
@@ -8300,6 +8302,15 @@ function AdminStockML() {
       </div>
 
       {error && <div style={{padding:12,borderRadius:8,background:"var(--redBg)",border:"1px solid var(--redBd)",color:"var(--red)",fontSize:12}}>{error}</div>}
+
+      {diagnostics.length > 0 && (
+        <details style={{padding:12,borderRadius:8,background:"var(--amberBg)",border:"1px solid var(--amberBd)"}}>
+          <summary style={{fontSize:12,fontWeight:600,color:"var(--amber)",cursor:"pointer"}}>⚠️ Diagnóstico ({diagnostics.length} avisos)</summary>
+          <div style={{marginTop:8,fontSize:11,color:"var(--txt2)",fontFamily:"var(--font-mono)"}}>
+            {diagnostics.map((d, i) => <div key={i} style={{padding:"2px 0"}}>• {d}</div>)}
+          </div>
+        </details>
+      )}
 
       {/* KPIs */}
       <div className="kpi-grid" style={{gridTemplateColumns:"repeat(4, 1fr)"}}>
