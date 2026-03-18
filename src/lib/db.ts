@@ -2204,8 +2204,14 @@ export async function upsertProveedorCatalogo(items: Omit<DBProveedorCatalogo, "
     stock_disponible: Number(it.stock_disponible) ?? -1,
     updated_at: now,
   })).filter(r => r.sku_origen.length > 0);
-  for (let i = 0; i < rows.length; i += 500) {
-    const chunk = rows.slice(i, i + 500);
+  // Deduplicar por (proveedor, sku_origen) — quedarse con la última ocurrencia
+  const dedup = new Map<string, typeof rows[number]>();
+  for (const r of rows) dedup.set(`${r.proveedor}||${r.sku_origen}`, r);
+  const uniqueRows = Array.from(dedup.values());
+  const dupes = rows.length - uniqueRows.length;
+  if (dupes > 0) console.log(`[upsertProveedorCatalogo] ${dupes} duplicados eliminados (de ${rows.length} filas)`);
+  for (let i = 0; i < uniqueRows.length; i += 500) {
+    const chunk = uniqueRows.slice(i, i + 500);
     const { error } = await sb.from("proveedor_catalogo").upsert(chunk, { onConflict: "proveedor,sku_origen" });
     if (error) {
       console.error(`[upsertProveedorCatalogo] chunk ${i / 500 + 1} falló:`, error.message, error.details, error.hint);
