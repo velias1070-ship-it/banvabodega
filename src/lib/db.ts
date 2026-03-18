@@ -1419,6 +1419,15 @@ export async function fetchMLConfig(): Promise<DBMLConfig | null> {
 
 export async function upsertMLConfig(config: Partial<DBMLConfig>): Promise<boolean> {
   const sb = getSupabase(); if (!sb) return false;
+  // Usar UPDATE parcial para no pisar campos existentes (access_token, refresh_token, etc.)
+  const { data: existing } = await sb.from("ml_config").select("id").eq("id", "main").single();
+  if (existing) {
+    const { error } = await sb.from("ml_config").update(
+      { ...config, updated_at: new Date().toISOString() }
+    ).eq("id", "main");
+    return !error;
+  }
+  // Solo usar upsert si no existe el registro aún (primera vez)
   const { error } = await sb.from("ml_config").upsert(
     { id: "main", ...config, updated_at: new Date().toISOString() },
     { onConflict: "id" }
