@@ -2008,10 +2008,8 @@ export async function pickearComponente(
     ...(allDone ? { completed_at: new Date().toISOString() } : {}),
   });
 
-  // When picking is fully completed, mark linked pedidos_flex as DESPACHADO
+  // Trigger: picking completado
   if (allDone && sessionId) {
-    db.updatePedidosFlexByPickingSession(sessionId, "DESPACHADO").catch(console.error);
-    // Trigger: picking completado
     import("./agents-triggers").then(m => m.dispararTrigger("picking_completado", { session_id: sessionId, tipo: "flex" })).catch(() => {});
   }
 
