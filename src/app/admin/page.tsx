@@ -205,7 +205,7 @@ const ESTADO_LABELS_A: Record<string, string> = {
 };
 
 type RecFilter = "activas"|"pausadas"|"completadas"|"anuladas"|"todas";
-type RecView = "dia"|"facturas";
+type RecView = "dia"|"recepcion_dia"|"facturas";
 
 const LINEA_ESTADO_COLORS: Record<string, string> = {
   PENDIENTE: "var(--red)", CONTADA: "var(--amber)", EN_ETIQUETADO: "var(--blue)",
@@ -232,6 +232,11 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   // Day view state
   const [dayLineas, setDayLineas] = useState<DBRecepcionLinea[]>([]);
   const [dayFilter, setDayFilter] = useState<"todas"|"pendientes"|"diferencia">("todas");
+
+  // Recepcion del dia state
+  const [recDiaFecha, setRecDiaFecha] = useState(() => new Date().toISOString().slice(0, 10));
+  const [recDiaLineas, setRecDiaLineas] = useState<DBRecepcionLinea[]>([]);
+  const [recDiaExpanded, setRecDiaExpanded] = useState<string|null>(null);
 
   // Edit state
   const [editing, setEditing] = useState(false);
@@ -301,6 +306,19 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
     setLoading(false);
   };
   useEffect(() => { loadRecs(); }, []);
+
+  // Load lines for recepcion_dia when date or recs change
+  useEffect(() => {
+    (async () => {
+      const recsDelDia = recs.filter(r => r.created_at?.slice(0, 10) === recDiaFecha && r.estado !== "ANULADA");
+      const ids = recsDelDia.map(r => r.id!).filter(Boolean);
+      if (ids.length > 0) {
+        setRecDiaLineas(await getLineasDeRecepciones(ids));
+      } else {
+        setRecDiaLineas([]);
+      }
+    })();
+  }, [recs, recDiaFecha]);
 
   const counts: Record<RecFilter, number> = {
     activas: recs.filter(r=>["CREADA","EN_PROCESO"].includes(r.estado)).length,
@@ -1766,6 +1784,12 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
             border:`1px solid ${view==="dia"?"var(--cyan)":"var(--bg4)"}`}}>
           📅 Dia
         </button>
+        <button onClick={()=>setView("recepcion_dia")}
+          style={{padding:"8px 16px",borderRadius:"0",fontSize:12,fontWeight:700,cursor:"pointer",
+            background:view==="recepcion_dia"?"var(--cyan)":"var(--bg3)",color:view==="recepcion_dia"?"#000":"var(--txt2)",
+            border:`1px solid ${view==="recepcion_dia"?"var(--cyan)":"var(--bg4)"}`,borderLeft:"none"}}>
+          📦 Recepcion del Dia
+        </button>
         <button onClick={()=>setView("facturas")}
           style={{padding:"8px 16px",borderRadius:"0 6px 6px 0",fontSize:12,fontWeight:700,cursor:"pointer",
             background:view==="facturas"?"var(--cyan)":"var(--bg3)",color:view==="facturas"?"#000":"var(--txt2)",
@@ -1866,6 +1890,179 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
           )}
         </div>
       )}
+
+      {/* ==================== RECEPCION DEL DIA VIEW ==================== */}
+      {view === "recepcion_dia" && (() => {
+        const recsDelDia = recs.filter(r => r.created_at?.slice(0, 10) === recDiaFecha && r.estado !== "ANULADA");
+        // Group by proveedor
+        const porProveedor: Record<string, { recs: DBRecepcion[]; lineas: DBRecepcionLinea[] }> = {};
+        for (const r of recsDelDia) {
+          const prov = r.proveedor || "Sin proveedor";
+          if (!porProveedor[prov]) porProveedor[prov] = { recs: [], lineas: [] };
+          porProveedor[prov].recs.push(r);
+        }
+        for (const l of recDiaLineas) {
+          const rec = recsDelDia.find(r => r.id === l.recepcion_id);
+          const prov = rec?.proveedor || "Sin proveedor";
+          if (porProveedor[prov]) porProveedor[prov].lineas.push(l);
+        }
+        const proveedores = Object.keys(porProveedor).sort();
+        const totalLineas = recDiaLineas.length;
+        const totalUbicadas = recDiaLineas.filter(l => l.estado === "UBICADA").length;
+        const totalRecibidas = recDiaLineas.filter(l => (l.qty_recibida || 0) > 0).length;
+        const progressGlobal = totalLineas > 0 ? Math.round((totalUbicadas / totalLineas) * 100) : 0;
+
+        return (
+          <div>
+            {/* Date picker + summary */}
+            <div className="card" style={{marginBottom:12}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                <span style={{fontSize:14,fontWeight:700}}>Recepcion del dia</span>
+                <input type="date" value={recDiaFecha} onChange={e => setRecDiaFecha(e.target.value)}
+                  style={{padding:"6px 10px",borderRadius:6,background:"var(--bg3)",border:"1px solid var(--bg4)",color:"var(--txt)",fontSize:12,fontFamily:"var(--font-mono)"}} />
+              </div>
+              {recsDelDia.length > 0 && (<>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,marginBottom:10}}>
+                  <div style={{padding:"8px 10px",borderRadius:6,background:"var(--bg3)",textAlign:"center"}}>
+                    <div style={{fontSize:20,fontWeight:800,color:"var(--cyan)"}}>{recsDelDia.length}</div>
+                    <div style={{fontSize:10,color:"var(--txt3)"}}>Facturas</div>
+                  </div>
+                  <div style={{padding:"8px 10px",borderRadius:6,background:"var(--bg3)",textAlign:"center"}}>
+                    <div style={{fontSize:20,fontWeight:800,color:"var(--txt)"}}>{proveedores.length}</div>
+                    <div style={{fontSize:10,color:"var(--txt3)"}}>Proveedores</div>
+                  </div>
+                  <div style={{padding:"8px 10px",borderRadius:6,background:"var(--bg3)",textAlign:"center"}}>
+                    <div style={{fontSize:20,fontWeight:800,color:"var(--amber)"}}>{totalLineas}</div>
+                    <div style={{fontSize:10,color:"var(--txt3)"}}>Lineas</div>
+                  </div>
+                  <div style={{padding:"8px 10px",borderRadius:6,background:"var(--bg3)",textAlign:"center"}}>
+                    <div style={{fontSize:20,fontWeight:800,color:progressGlobal===100?"var(--green)":"var(--blue)"}}>{progressGlobal}%</div>
+                    <div style={{fontSize:10,color:"var(--txt3)"}}>Completado</div>
+                  </div>
+                </div>
+                <div style={{background:"var(--bg3)",borderRadius:6,height:10,overflow:"hidden"}}>
+                  <div style={{width:`${progressGlobal}%`,height:"100%",background:progressGlobal===100?"var(--green)":"var(--blue)",borderRadius:6,transition:"width 0.3s"}}/>
+                </div>
+              </>)}
+              {recsDelDia.length === 0 && (
+                <div style={{textAlign:"center",padding:20,color:"var(--txt3)",fontSize:13}}>Sin recepciones para este dia.</div>
+              )}
+            </div>
+
+            {/* Per-proveedor cards */}
+            {proveedores.map(prov => {
+              const grupo = porProveedor[prov];
+              const isExpanded = recDiaExpanded === prov;
+              // Consolidate SKUs across invoices
+              const skuMap: Record<string, {
+                nombre: string; totalFactura: number; totalRecibido: number; totalUbicado: number;
+                porFactura: { folio: string; recId: string; qty_factura: number; qty_recibida: number; qty_ubicada: number; estado: string }[];
+              }> = {};
+              for (const l of grupo.lineas) {
+                const rec = grupo.recs.find(r => r.id === l.recepcion_id);
+                if (!skuMap[l.sku]) skuMap[l.sku] = { nombre: l.nombre, totalFactura: 0, totalRecibido: 0, totalUbicado: 0, porFactura: [] };
+                const entry = skuMap[l.sku];
+                entry.totalFactura += l.qty_factura;
+                entry.totalRecibido += (l.qty_recibida || 0);
+                entry.totalUbicado += (l.qty_ubicada || 0);
+                entry.porFactura.push({
+                  folio: rec?.folio || "?", recId: rec?.id || "",
+                  qty_factura: l.qty_factura, qty_recibida: l.qty_recibida || 0,
+                  qty_ubicada: l.qty_ubicada || 0, estado: l.estado,
+                });
+              }
+              const skus = Object.keys(skuMap).sort();
+              const skusEnMultiples = skus.filter(s => skuMap[s].porFactura.length > 1);
+              const provUbicadas = grupo.lineas.filter(l => l.estado === "UBICADA").length;
+              const provTotal = grupo.lineas.length;
+              const provProgress = provTotal > 0 ? Math.round((provUbicadas / provTotal) * 100) : 0;
+
+              return (
+                <div key={prov} className="card" style={{marginBottom:10}}>
+                  {/* Proveedor header */}
+                  <div onClick={() => setRecDiaExpanded(isExpanded ? null : prov)}
+                    style={{cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <div>
+                      <div style={{fontSize:14,fontWeight:700}}>{prov}</div>
+                      <div style={{fontSize:11,color:"var(--txt3)",marginTop:2}}>
+                        {grupo.recs.length} factura{grupo.recs.length > 1 ? "s" : ""}
+                        <span style={{margin:"0 6px"}}>·</span>
+                        {skus.length} SKU{skus.length > 1 ? "s" : ""}
+                        {skusEnMultiples.length > 0 && (
+                          <span style={{color:"var(--amber)",fontWeight:600}}>
+                            <span style={{margin:"0 6px"}}>·</span>
+                            {skusEnMultiples.length} en multiples facturas
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div style={{display:"flex",alignItems:"center",gap:10}}>
+                      <span style={{fontSize:12,fontWeight:700,color:provProgress===100?"var(--green)":"var(--blue)"}}>{provProgress}%</span>
+                      <span style={{fontSize:16,color:"var(--txt3)",transition:"transform 0.2s",transform:isExpanded?"rotate(180deg)":"rotate(0)"}}>▼</span>
+                    </div>
+                  </div>
+                  {/* Progress bar */}
+                  <div style={{background:"var(--bg3)",borderRadius:4,height:6,overflow:"hidden",marginTop:8}}>
+                    <div style={{width:`${provProgress}%`,height:"100%",background:provProgress===100?"var(--green)":"var(--blue)",borderRadius:4}}/>
+                  </div>
+                  {/* Folios */}
+                  <div style={{display:"flex",gap:4,marginTop:8,flexWrap:"wrap"}}>
+                    {grupo.recs.map(r => (
+                      <button key={r.id} onClick={(e) => { e.stopPropagation(); openRec(r); }}
+                        style={{padding:"3px 10px",borderRadius:4,background:"var(--bg3)",color:"var(--cyan)",fontSize:10,fontWeight:600,border:"1px solid var(--bg4)",cursor:"pointer"}}>
+                        📄 {r.folio}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Expanded: consolidated SKU table */}
+                  {isExpanded && (
+                    <div style={{marginTop:12,overflowX:"auto"}}>
+                      <table className="tbl">
+                        <thead><tr>
+                          <th>SKU</th><th>Producto</th>
+                          <th style={{textAlign:"right"}}>Total Fact.</th>
+                          <th style={{textAlign:"right"}}>Recibido</th>
+                          <th style={{textAlign:"right"}}>Ubicado</th>
+                          <th>Desglose por factura</th>
+                        </tr></thead>
+                        <tbody>{skus.map(sku => {
+                          const s = skuMap[sku];
+                          const enMultiples = s.porFactura.length > 1;
+                          const diffRecibido = s.totalRecibido > 0 && s.totalRecibido !== s.totalFactura;
+                          return (
+                            <tr key={sku} style={{background:s.totalUbicado >= s.totalFactura && s.totalFactura > 0 ?"var(--greenBg)":"transparent"}}>
+                              <td className="mono" style={{fontSize:11,fontWeight:700}}>{sku}</td>
+                              <td style={{fontSize:11,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.nombre}</td>
+                              <td className="mono" style={{textAlign:"right",fontWeight:700}}>{s.totalFactura}</td>
+                              <td className="mono" style={{textAlign:"right",color:s.totalRecibido>0?(diffRecibido?"var(--amber)":"var(--green)"):"var(--txt3)",fontWeight:diffRecibido?700:400}}>
+                                {s.totalRecibido || "—"}
+                              </td>
+                              <td className="mono" style={{textAlign:"right",color:s.totalUbicado>0?"var(--green)":"var(--txt3)"}}>
+                                {s.totalUbicado || "—"}
+                              </td>
+                              <td style={{fontSize:10}}>
+                                {s.porFactura.map((f, i) => (
+                                  <span key={i} style={{display:"inline-block",padding:"1px 6px",marginRight:4,marginBottom:2,borderRadius:4,
+                                    background:enMultiples?"var(--amberBg)":"var(--bg3)",
+                                    border:`1px solid ${enMultiples?"var(--amberBd)":"var(--bg4)"}`,
+                                    color:f.estado==="UBICADA"?"var(--green)":f.qty_recibida>0?"var(--amber)":"var(--txt2)"}}>
+                                    <span style={{fontWeight:600}}>{f.folio}</span>: {f.qty_recibida > 0 ? `${f.qty_recibida}/${f.qty_factura}` : f.qty_factura}
+                                  </span>
+                                ))}
+                              </td>
+                            </tr>
+                          );
+                        })}</tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
 
       {/* ==================== FACTURAS VIEW (existing) ==================== */}
       {view === "facturas" && (<>
