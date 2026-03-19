@@ -350,14 +350,22 @@ export function findProduct(query: string): Product[] {
     const mlN = normalize(p.mlCode || "");
     const catN = normalize(p.cat || "");
     const provN = normalize(p.prov || "");
-    const haystack = `${skuN} ${nameN} ${mlN} ${catN} ${provN}`;
-    
+    const skuVentaN = normalize(p.skuVenta || "");
+    const haystack = `${skuN} ${nameN} ${mlN} ${catN} ${provN} ${skuVentaN}`;
+
     let score = 0;
     let allMatch = true;
-    
+
     for (const w of words) {
       // Exact SKU match = high score
       if (skuN === w) { score += 100; continue; }
+      // Exact SKU venta match (comma-separated)
+      if (skuVentaN) {
+        const ventaList = skuVentaN.split(",").map(s => s.trim()).filter(Boolean);
+        if (ventaList.includes(w)) { score += 90; continue; }
+        if (ventaList.some(sv => sv.startsWith(w))) { score += 45; continue; }
+        if (ventaList.some(sv => sv.includes(w))) { score += 30; continue; }
+      }
       // SKU starts with word
       if (skuN.startsWith(w)) { score += 50; continue; }
       // SKU contains
