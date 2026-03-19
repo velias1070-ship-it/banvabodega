@@ -64,6 +64,7 @@ interface MappedOrder {
   ingreso_envio: number;
   ingreso_adicional_tc: number;
   total: number;
+  total_neto: number;
   logistic_type: string;
   estado: string;
   fuente: string;
@@ -254,10 +255,12 @@ export async function GET(req: NextRequest) {
         const ingresoEnvio = Math.round(billingData.ingreso_envio * prorateRatio);
         const ingresoTC = Math.round(billingData.ingreso_adicional_tc * prorateRatio);
 
-        // Total neto = subtotal - comision - costo_envio + ingreso_envio + ingreso_tc
         const precioUnit = Math.round(item.unit_price);
         const subtotal = Math.round(itemSubtotal);
-        const total = subtotal - comisionTotal - costoEnvio + ingresoEnvio + ingresoTC;
+        // total = ingreso bruto (como ProfitGuard netTotal)
+        const total = subtotal;
+        // total_neto = ingreso real después de comisiones y envío
+        const totalNeto = subtotal - comisionTotal - costoEnvio + ingresoEnvio + ingresoTC;
 
         ordenes.push({
           order_id: String(order.id),
@@ -275,6 +278,7 @@ export async function GET(req: NextRequest) {
           ingreso_envio: ingresoEnvio,
           ingreso_adicional_tc: ingresoTC,
           total,
+          total_neto: totalNeto,
           logistic_type: logisticType,
           estado: mapEstado(order.status),
           fuente: "ml_directo",
