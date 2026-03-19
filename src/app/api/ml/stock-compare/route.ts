@@ -72,8 +72,7 @@ export async function GET(req: NextRequest) {
             let flex = 0, full = 0;
             for (const loc of result.stock.locations) {
               if (loc.type === "selling_address") flex = loc.quantity;
-              // seller_warehouse = stock multi-origen (depósitos del seller)
-              if (loc.type === "seller_warehouse") flex = Math.max(flex, loc.quantity);
+              // seller_warehouse = stock multi-origen, NO es Flex
               if (loc.type === "meli_facility") full = loc.quantity;
             }
             results[map.sku] = { flex, full, upId };
@@ -164,7 +163,7 @@ export async function GET(req: NextRequest) {
             let flexQty = 0, fullQty = 0;
             for (const loc of result.stock.locations) {
               if (loc.type === "selling_address") flexQty = loc.quantity;
-              if (loc.type === "seller_warehouse") flexQty = Math.max(flexQty, loc.quantity);
+              // seller_warehouse = stock multi-origen, NO es Flex
               if (loc.type === "meli_facility") fullQty = loc.quantity;
             }
             // Save to cache
