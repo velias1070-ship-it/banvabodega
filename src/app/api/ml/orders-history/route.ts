@@ -250,9 +250,8 @@ export async function GET(req: NextRequest) {
         packIngresoTC += billingData.ingreso_adicional_tc;
       }
 
-      // Calculate total pack value for proration
-      const packTotal = packOrders.reduce((s, o) =>
-        s + o.order_items.reduce((s2, item) => s2 + (item.unit_price * item.quantity), 0), 0);
+      // Count total items in pack for equal split (like ProfitGuard)
+      const packItemCount = packOrders.reduce((s, o) => s + o.order_items.length, 0);
 
       for (const order of packOrders) {
         const billing = billingMap.get(order.id);
@@ -268,16 +267,14 @@ export async function GET(req: NextRequest) {
         for (const item of order.order_items) {
           const skuVenta = (item.item.seller_sku || `ML-${item.item.id}`).toUpperCase();
           const itemSubtotal = item.unit_price * item.quantity;
-          // Prorate shipping across entire pack by subtotal proportion
-          const prorateRatio = packTotal > 0 ? itemSubtotal / packTotal : 1;
 
           const comisionUnitaria = Math.round(item.sale_fee || 0);
           const comisionTotal = comisionUnitaria * item.quantity;
 
-          // Shipping prorated across all items in the pack (like ProfitGuard)
-          const costoEnvio = Math.round(packCostoEnvio * prorateRatio);
-          const ingresoEnvio = Math.round(packIngresoEnvio * prorateRatio);
-          const ingresoTC = Math.round(packIngresoTC * prorateRatio);
+          // Shipping split equally across all items in the pack (like ProfitGuard)
+          const costoEnvio = Math.round(packCostoEnvio / packItemCount);
+          const ingresoEnvio = Math.round(packIngresoEnvio / packItemCount);
+          const ingresoTC = Math.round(packIngresoTC / packItemCount);
 
           const precioUnit = Math.round(item.unit_price);
           const subtotal = Math.round(itemSubtotal);
