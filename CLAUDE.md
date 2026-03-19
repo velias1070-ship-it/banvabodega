@@ -32,6 +32,10 @@ supabase-v*.sql      → Migraciones SQL incrementales
 - Interfaces `DB*` en `db.ts` para tipos de Supabase; interfaces sin prefijo en `store.ts`
 - Batch upserts en chunks de 500 registros
 
+## MercadoLibre API
+
+Ante cualquier duda sobre endpoints, parámetros, respuestas o flujos de la API de MercadoLibre, consultar la documentación oficial: https://developers.mercadolibre.cl
+
 ## Reglas detalladas
 
 Ver `.claude/rules/` para reglas por dominio:
