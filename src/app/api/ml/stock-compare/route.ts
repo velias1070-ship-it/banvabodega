@@ -14,19 +14,80 @@ interface CompareRow {
 }
 
 /**
- * GET — Compare WMS stock vs ML stock for all mapped SKUs.
- * ?phase=wms  → fast: returns WMS data + last cached ML data from DB (no ML API calls)
- * ?phase=ml   → slow: fetches live ML stock for all SKUs
- * (no phase)  → legacy: does everything in one call
+ * GET — Compare WMS stock vs ML stock.
+ *
+ * ?phase=wms     → fast: WMS data + cached ML data from DB (no ML API calls)
+ * ?phase=ml&skus=SKU1,SKU2,SKU3  → fetch live ML stock for specific SKUs (max ~5 per call)
+ * (no phase)     → legacy: does everything in one call (may timeout with many SKUs)
  */
 export async function GET(req: NextRequest) {
   const sb = getServerSupabase();
   if (!sb) return NextResponse.json({ error: "no_db" }, { status: 500 });
 
   const phase = req.nextUrl.searchParams.get("phase");
+  const skusParam = req.nextUrl.searchParams.get("skus");
 
   try {
-    // 1. Fetch all active ML item mappings
+    // Phase ML batch: fetch live ML stock for specific SKUs only
+    if (phase === "ml" && skusParam) {
+      const targetSkus = skusParam.split(",").filter(Boolean);
+      if (targetSkus.length === 0) return NextResponse.json({ results: {} });
+
+      // Get mappings for requested SKUs
+      const { data: mappings } = await sb.from("ml_items_map")
+        .select("*")
+        .in("sku", targetSkus)
+        .eq("activo", true);
+
+      if (!mappings || mappings.length === 0) {
+        return NextResponse.json({ results: {} });
+      }
+
+      const diagnostics: string[] = [];
+      const results: Record<string, { flex: number; full: number; upId: string | null; error?: string }> = {};
+
+      // Resolve missing user_product_ids
+      for (const map of mappings) {
+        if (!map.user_product_id) {
+          try {
+            const upId = await getItemUserProductId(map.item_id);
+            if (upId) {
+              map.user_product_id = upId;
+              await sb.from("ml_items_map").update({ user_product_id: upId }).eq("id", map.id);
+            }
+          } catch { /* ignore */ }
+        }
+      }
+
+      // Fetch ML stock in parallel (small batch, should be fast)
+      await Promise.all(mappings.map(async (map) => {
+        const upId = map.user_product_id;
+        if (!upId) {
+          results[map.sku] = { flex: 0, full: 0, upId: null, error: `Sin user_product_id` };
+          return;
+        }
+
+        try {
+          const result = await getDistributedStockDiagnostic(upId);
+          if (result.stock) {
+            let flex = 0, full = 0;
+            for (const loc of result.stock.locations) {
+              if (loc.type === "selling_address") flex = loc.quantity;
+              if (loc.type === "meli_facility") full = loc.quantity;
+            }
+            results[map.sku] = { flex, full, upId };
+          } else {
+            results[map.sku] = { flex: 0, full: 0, upId, error: result.error };
+          }
+        } catch (err) {
+          results[map.sku] = { flex: 0, full: 0, upId, error: String(err) };
+        }
+      }));
+
+      return NextResponse.json({ results, diagnostics: diagnostics.length > 0 ? diagnostics : undefined });
+    }
+
+    // Phase WMS or legacy: fetch all mappings + WMS stock
     const { data: mappings } = await sb.from("ml_items_map")
       .select("*")
       .eq("activo", true)
@@ -36,7 +97,6 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ rows: [], message: "No hay SKUs mapeados a ML" });
     }
 
-    // 2. Fetch WMS stock for all SKUs
     const skus = Array.from(new Set(mappings.map((m: { sku: string }) => m.sku)));
     const { data: stockRows } = await sb.from("stock").select("sku, cantidad").in("sku", skus);
     const wmsStock: Record<string, number> = {};
@@ -44,25 +104,23 @@ export async function GET(req: NextRequest) {
       wmsStock[r.sku] = (wmsStock[r.sku] || 0) + r.cantidad;
     }
 
-    // Phase WMS: return instantly with cached ML data (ultimo_stock_enviado)
+    // Phase WMS: return instantly with cached ML data
     if (phase === "wms") {
       const rows: CompareRow[] = mappings.map((map) => ({
         sku: map.sku,
         item_id: map.item_id,
         user_product_id: map.user_product_id || null,
         stock_wms: wmsStock[map.sku] || 0,
-        stock_flex_ml: map.ultimo_stock_enviado ?? -1, // -1 = no data yet
-        stock_full_ml: 0,
+        stock_flex_ml: -1, // -1 = not yet loaded from ML
+        stock_full_ml: -1,
         ultimo_sync: map.ultimo_sync || null,
         ultimo_stock_enviado: map.ultimo_stock_enviado ?? null,
       }));
       return NextResponse.json({ rows, phase: "wms" });
     }
 
-    // Phase ML (or legacy): fetch live stock from ML API
+    // Legacy (no phase): full fetch — may timeout with many SKUs
     const diagnostics: string[] = [];
-
-    // 3. Resolver user_product_id faltantes (en paralelo, batches de 5)
     const needsResolution = mappings.filter((m: { user_product_id: string | null }) => !m.user_product_id);
     if (needsResolution.length > 0) {
       const RESOLVE_BATCH = 5;
@@ -75,17 +133,12 @@ export async function GET(req: NextRequest) {
               map.user_product_id = upId;
               await sb.from("ml_items_map").update({ user_product_id: upId }).eq("id", map.id);
               diagnostics.push(`${map.sku}: user_product_id resuelto → ${upId}`);
-            } else {
-              diagnostics.push(`${map.sku}: no se pudo resolver user_product_id para item ${map.item_id}`);
             }
-          } catch (err) {
-            diagnostics.push(`${map.sku}: error resolviendo user_product_id: ${String(err)}`);
-          }
+          } catch { /* ignore */ }
         }));
       }
     }
 
-    // 4. Consultar stock ML en paralelo (batches de 5 para no saturar)
     const BATCH_SIZE = 5;
     type MlResult = { sku: string; flexQty: number; fullQty: number; upId: string | null; error?: string };
     const mlResults: MlResult[] = [];
@@ -96,7 +149,6 @@ export async function GET(req: NextRequest) {
       const promises = batch.map(async (map): Promise<MlResult> => {
         const upId = map.user_product_id;
         if (!upId) return { sku: map.sku, flexQty: 0, fullQty: 0, upId: null };
-
         try {
           const result = await getDistributedStockDiagnostic(upId);
           if (result.stock) {
@@ -104,9 +156,6 @@ export async function GET(req: NextRequest) {
             for (const loc of result.stock.locations) {
               if (loc.type === "selling_address") flexQty = loc.quantity;
               if (loc.type === "meli_facility") fullQty = loc.quantity;
-            }
-            if (result.stock.locations.length === 0) {
-              return { sku: map.sku, flexQty: 0, fullQty: 0, upId, error: `locations vacío` };
             }
             return { sku: map.sku, flexQty, fullQty, upId };
           } else {
@@ -119,7 +168,6 @@ export async function GET(req: NextRequest) {
       const batchResults = await Promise.all(promises);
       mlResults.push(...batchResults);
 
-      // Si el primer batch falla todo con el mismo error, probablemente es token → no seguir
       if (i === 0) {
         const errors = batchResults.filter(r => r.error);
         if (errors.length === batchResults.length && batchResults.length > 0) {
@@ -133,13 +181,10 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // 5. Armar rows
     const rows: CompareRow[] = mappings.map((map, idx) => {
       const ml = mlResults[idx];
-      if (ml?.error) {
-        if (!firstError || idx < BATCH_SIZE) {
-          diagnostics.push(`${map.sku}: ${ml.error}`);
-        }
+      if (ml?.error && (!firstError || idx < BATCH_SIZE)) {
+        diagnostics.push(`${map.sku}: ${ml.error}`);
       }
       return {
         sku: map.sku,
@@ -156,7 +201,7 @@ export async function GET(req: NextRequest) {
     if (firstError) {
       const tokenDiag = await diagnoseToken();
       diagnostics.unshift(`⛔ Todas las consultas fallaron: ${firstError}`);
-      diagnostics.unshift(`🔑 Estado del token: ${tokenDiag}`);
+      diagnostics.unshift(`Estado del token: ${tokenDiag}`);
     }
 
     return NextResponse.json({ rows, phase: "ml", diagnostics: diagnostics.length > 0 ? diagnostics : undefined });
@@ -190,10 +235,8 @@ export async function POST(req: NextRequest) {
 
     for (let idx = 0; idx < skus.length; idx++) {
       const sku = skus[idx];
-      // Throttle: wait 1s between SKUs to avoid ML rate limits
       if (idx > 0) await new Promise(r => setTimeout(r, 1000));
       try {
-        // 1. Get mappings for this SKU
         const { data: mappings } = await sb.from("ml_items_map")
           .select("*")
           .eq("sku", sku)
@@ -204,7 +247,6 @@ export async function POST(req: NextRequest) {
           continue;
         }
 
-        // 2. Calculate quantity to send
         let available: number;
         if (overrides && overrides[sku] !== undefined) {
           available = Math.max(0, overrides[sku]);
@@ -223,13 +265,11 @@ export async function POST(req: NextRequest) {
         const skuErrors: string[] = [];
 
         for (const map of mappings) {
-          // 3. Safety block check (skip if force=true)
           if (!force && available === 0 && map.ultimo_stock_enviado && map.ultimo_stock_enviado > 10) {
             skuErrors.push(`Safety block: último envío fue ${map.ultimo_stock_enviado}, ahora sería 0. Usa 'Forzar' para confirmar.`);
             continue;
           }
 
-          // 4. Resolve user_product_id
           let userProductId = map.user_product_id;
           if (!userProductId) {
             userProductId = await getItemUserProductId(map.item_id);
@@ -240,14 +280,12 @@ export async function POST(req: NextRequest) {
             await sb.from("ml_items_map").update({ user_product_id: userProductId }).eq("id", map.id);
           }
 
-          // 5. GET current stock version
           const stockData = await getDistributedStock(userProductId);
           if (!stockData) {
             skuErrors.push(`No se pudo leer stock de ML para ${userProductId}`);
             continue;
           }
 
-          // 5b. Determine seller-controlled stock type
           const stockType = getSellerStockType(stockData.locations);
           if (!stockType) {
             const locationTypes = stockData.locations.map(l => l.type).join(", ") || "ninguna";
@@ -255,10 +293,8 @@ export async function POST(req: NextRequest) {
             continue;
           }
 
-          // 6. PUT with version
           let result = await updateFlexStock(userProductId, available, stockData.version, stockType, stockData.locations);
 
-          // Retry on version conflict
           if (!result.ok && result.error === "VERSION_CONFLICT") {
             const freshStock = await getDistributedStock(userProductId);
             if (freshStock) {
@@ -289,7 +325,6 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Clear synced SKUs from queue
     const syncedSkus = Object.entries(results).filter(([, r]) => r.ok).map(([sku]) => sku);
     if (syncedSkus.length > 0) {
       await sb.from("stock_sync_queue").delete().in("sku", syncedSkus);
