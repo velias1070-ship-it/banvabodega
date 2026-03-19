@@ -23,6 +23,7 @@ interface MLOrderFull {
     sale_fee: number;
   }>;
   shipping: { id: number; logistic_type?: string };
+  shipping_cost: number | null;
   pack_id: number | null;
   buyer: { id: number; nickname: string };
   total_amount: number;
@@ -219,70 +220,89 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // 4. Map to MappedOrder format
+    // 4. Group orders by pack_id to handle shared shipping costs
+    const packGroups = new Map<string, MLOrderFull[]>(); // pack_id → orders
+    for (const order of orders) {
+      if (!order.order_items || order.order_items.length === 0) continue;
+      const key = order.pack_id ? String(order.pack_id) : `solo_${order.id}`;
+      const group = packGroups.get(key) || [];
+      group.push(order);
+      packGroups.set(key, group);
+    }
+
+    // 5. Map to MappedOrder format, prorate shipping across pack
     const ordenes: MappedOrder[] = [];
     const debugData: Array<{ order_id: number; billing: BillingOrderDetail | undefined; order: MLOrderFull }> = [];
 
-    for (const order of orders) {
-      if (!order.order_items || order.order_items.length === 0) continue;
-
-      const billing = billingMap.get(order.id);
-      const billingData = extractBillingData(billing);
-      // Resolve logistic_type: order → ml_shipments → billing marketplace
-      const logisticType = order.shipping?.logistic_type
-        || shipmentLogisticMap.get(order.shipping?.id)
-        || (billing?.details?.[0]?.marketplace_info?.marketplace === "SHIPPING" ? "self_service" : "")
-        || "";
-
-      if (debug) {
-        debugData.push({ order_id: order.id, billing, order });
+    for (const [, packOrders] of Array.from(packGroups.entries())) {
+      // Aggregate billing for all orders in the pack
+      let packCostoEnvio = 0;
+      let packIngresoEnvio = 0;
+      let packIngresoTC = 0;
+      for (const order of packOrders) {
+        const billing = billingMap.get(order.id);
+        const billingData = extractBillingData(billing);
+        packCostoEnvio += billingData.costo_envio;
+        packIngresoEnvio += billingData.ingreso_envio;
+        packIngresoTC += billingData.ingreso_adicional_tc;
       }
 
-      // Calculate total order value for proration
-      const orderTotal = order.order_items.reduce((s, item) => s + (item.unit_price * item.quantity), 0);
+      // Calculate total pack value for proration
+      const packTotal = packOrders.reduce((s, o) =>
+        s + o.order_items.reduce((s2, item) => s2 + (item.unit_price * item.quantity), 0), 0);
 
-      for (const item of order.order_items) {
-        const skuVenta = (item.item.seller_sku || `ML-${item.item.id}`).toUpperCase();
-        const itemSubtotal = item.unit_price * item.quantity;
-        const prorateRatio = orderTotal > 0 ? itemSubtotal / orderTotal : 1 / order.order_items.length;
+      for (const order of packOrders) {
+        const billing = billingMap.get(order.id);
+        const logisticType = order.shipping?.logistic_type
+          || shipmentLogisticMap.get(order.shipping?.id)
+          || (billing?.details?.[0]?.marketplace_info?.marketplace === "SHIPPING" ? "self_service" : "")
+          || "";
 
-        // Comision: sale_fee is per-unit, multiply by quantity (matches PG commission)
-        const comisionUnitaria = Math.round(item.sale_fee || 0);
-        const comisionTotal = comisionUnitaria * item.quantity;
+        if (debug) {
+          debugData.push({ order_id: order.id, billing, order });
+        }
 
-        // Shipping: prorate across items (billing amounts already in CLP pesos)
-        const costoEnvio = Math.round(billingData.costo_envio * prorateRatio);
-        const ingresoEnvio = Math.round(billingData.ingreso_envio * prorateRatio);
-        const ingresoTC = Math.round(billingData.ingreso_adicional_tc * prorateRatio);
+        for (const item of order.order_items) {
+          const skuVenta = (item.item.seller_sku || `ML-${item.item.id}`).toUpperCase();
+          const itemSubtotal = item.unit_price * item.quantity;
+          // Prorate shipping across entire pack by subtotal proportion
+          const prorateRatio = packTotal > 0 ? itemSubtotal / packTotal : 1;
 
-        const precioUnit = Math.round(item.unit_price);
-        const subtotal = Math.round(itemSubtotal);
-        // total = ingreso bruto (como ProfitGuard netTotal)
-        const total = subtotal;
-        // total_neto = ingreso real después de comisiones y envío
-        const totalNeto = subtotal - comisionTotal - costoEnvio + ingresoEnvio + ingresoTC;
+          const comisionUnitaria = Math.round(item.sale_fee || 0);
+          const comisionTotal = comisionUnitaria * item.quantity;
 
-        ordenes.push({
-          order_id: String(order.id),
-          order_number: String(order.id),
-          fecha: order.date_created,
-          sku_venta: skuVenta,
-          nombre_producto: item.item.title,
-          cantidad: item.quantity,
-          canal: mapCanal(logisticType),
-          precio_unitario: precioUnit,
-          subtotal,
-          comision_unitaria: comisionUnitaria,
-          comision_total: comisionTotal,
-          costo_envio: costoEnvio,
-          ingreso_envio: ingresoEnvio,
-          ingreso_adicional_tc: ingresoTC,
-          total,
-          total_neto: totalNeto,
-          logistic_type: logisticType,
-          estado: mapEstado(order.status),
-          fuente: "ml_directo",
-        });
+          // Shipping prorated across all items in the pack (like ProfitGuard)
+          const costoEnvio = Math.round(packCostoEnvio * prorateRatio);
+          const ingresoEnvio = Math.round(packIngresoEnvio * prorateRatio);
+          const ingresoTC = Math.round(packIngresoTC * prorateRatio);
+
+          const precioUnit = Math.round(item.unit_price);
+          const subtotal = Math.round(itemSubtotal);
+          const total = subtotal;
+          const totalNeto = subtotal - comisionTotal - costoEnvio + ingresoEnvio + ingresoTC;
+
+          ordenes.push({
+            order_id: String(order.id),
+            order_number: String(order.pack_id || order.id),
+            fecha: order.date_created,
+            sku_venta: skuVenta,
+            nombre_producto: item.item.title,
+            cantidad: item.quantity,
+            canal: mapCanal(logisticType),
+            precio_unitario: precioUnit,
+            subtotal,
+            comision_unitaria: comisionUnitaria,
+            comision_total: comisionTotal,
+            costo_envio: costoEnvio,
+            ingreso_envio: ingresoEnvio,
+            ingreso_adicional_tc: ingresoTC,
+            total,
+            total_neto: totalNeto,
+            logistic_type: logisticType,
+            estado: mapEstado(order.status),
+            fuente: "ml_directo",
+          });
+        }
       }
     }
 
