@@ -155,9 +155,11 @@ function extractBillingData(billing: BillingOrderDetail | undefined) {
   if (billing.details) {
     for (const detail of billing.details) {
       const subType = detail.charge_info?.detail_sub_type || "";
+      const marketplace = detail.marketplace_info?.marketplace || "";
 
       // CFF / CXD = Cargo por envíos — use detail_amount (net, post-bonificación)
-      if (subType === "CFF" || subType === "CXD") {
+      // Also catch any SHIPPING marketplace charge not caught by sub_type
+      if (subType === "CFF" || subType === "CXD" || (marketplace === "SHIPPING" && detail.charge_info?.detail_type === "CHARGE")) {
         data.costo_envio += Math.abs(detail.charge_info?.detail_amount || 0);
       }
 
@@ -220,22 +222,23 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // 4. Group orders by pack_id to handle shared shipping costs
-    const packGroups = new Map<string, MLOrderFull[]>(); // pack_id → orders
+    // 4. Group orders by shipping_id to handle shared shipping costs
+    //    Orders in same pack share shipping_id. Billing CFF only appears on one order.
+    const shipGroups = new Map<string, MLOrderFull[]>();
     for (const order of orders) {
       if (!order.order_items || order.order_items.length === 0) continue;
-      const key = order.pack_id ? String(order.pack_id) : `solo_${order.id}`;
-      const group = packGroups.get(key) || [];
+      const key = order.shipping?.id ? String(order.shipping.id) : `solo_${order.id}`;
+      const group = shipGroups.get(key) || [];
       group.push(order);
-      packGroups.set(key, group);
+      shipGroups.set(key, group);
     }
 
     // 5. Map to MappedOrder format, prorate shipping across pack
     const ordenes: MappedOrder[] = [];
     const debugData: Array<{ order_id: number; billing: BillingOrderDetail | undefined; order: MLOrderFull }> = [];
 
-    for (const [, packOrders] of Array.from(packGroups.entries())) {
-      // Aggregate billing for all orders in the pack
+    for (const [, packOrders] of Array.from(shipGroups.entries())) {
+      // Aggregate billing for all orders sharing this shipment
       let packCostoEnvio = 0;
       let packIngresoEnvio = 0;
       let packIngresoTC = 0;
