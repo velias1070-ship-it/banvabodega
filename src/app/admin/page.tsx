@@ -8070,46 +8070,53 @@ function AdminStockML() {
       setOverrides(ov);
       setLoading(false);
 
-      // Phase 2: cargar stock live de ML en batches de 3 SKUs
+      // Phase 2: cargar stock live de ML en batches de 10 SKUs
       // Cada batch es una llamada API separada → no excede timeout de Vercel
-      const skusWithUpId = wmsRows.filter(r => r.user_product_id);
-      if (skusWithUpId.length === 0 && wmsRows.length > 0) {
-        // Intentar resolver todos (puede que no tengan user_product_id aún)
-        // Usar todos los SKUs para el primer intento
-      }
+      // Las filas se actualizan progresivamente conforme llegan los datos
       const allSkus = wmsRows.map(r => r.sku);
       if (allSkus.length === 0) return;
 
       setMlLoading(true);
-      const ML_BATCH = 3;
+      const ML_BATCH = 10;
       const allDiags: string[] = [];
-      const mlData: Record<string, { flex: number; full: number; upId: string | null; error?: string }> = {};
       let tokenFailed = false;
+      let loaded = 0;
 
       for (let i = 0; i < allSkus.length; i += ML_BATCH) {
         if (tokenFailed) break;
         const batchSkus = allSkus.slice(i, i + ML_BATCH);
-        setMlProgress(`Consultando ML ${Math.min(i + ML_BATCH, allSkus.length)}/${allSkus.length}...`);
+        loaded = Math.min(i + ML_BATCH, allSkus.length);
+        setMlProgress(`Consultando ML ${loaded}/${allSkus.length}...`);
 
         try {
-          const resp = await fetch(`/api/ml/stock-compare?phase=ml&skus=${batchSkus.join(",")}`);
+          const resp = await fetch(`/api/ml/stock-compare?phase=ml&skus=${encodeURIComponent(batchSkus.join(","))}`);
           if (!resp.ok) {
-            // Vercel timeout or server error — stop making more calls
             const text = await resp.text().catch(() => "");
-            allDiags.push(`Error ${resp.status} consultando ML (SKUs: ${batchSkus.join(",")}): ${text.substring(0, 100)}`);
-            // If first batch fails, likely token issue — don't keep trying
+            allDiags.push(`Error ${resp.status} consultando ML: ${text.substring(0, 100)}`);
             if (i === 0) tokenFailed = true;
             continue;
           }
           const json = await resp.json();
-          if (json.results) {
-            for (const [sku, data] of Object.entries(json.results)) {
-              mlData[sku] = data as { flex: number; full: number; upId: string | null; error?: string };
-            }
+
+          // Actualizar filas INMEDIATAMENTE con los datos de este batch
+          if (json.results && Object.keys(json.results).length > 0) {
+            const batchData = json.results as Record<string, { flex: number; full: number; upId: string | null; error?: string }>;
+            setRows(prev => prev.map(row => {
+              const ml = batchData[row.sku];
+              if (ml) {
+                return {
+                  ...row,
+                  stock_flex_ml: ml.error ? 0 : ml.flex,
+                  stock_full_ml: ml.error ? 0 : ml.full,
+                  user_product_id: ml.upId || row.user_product_id,
+                };
+              }
+              return row;
+            }));
           }
           if (json.diagnostics) allDiags.push(...json.diagnostics);
 
-          // Check if first batch all errored → token issue, stop
+          // Si el primer batch falla todo → problema de token, no seguir
           if (i === 0) {
             const batchResults = Object.values(json.results || {}) as { error?: string }[];
             if (batchResults.length > 0 && batchResults.every(r => r.error)) {
@@ -8123,19 +8130,6 @@ function AdminStockML() {
         }
       }
 
-      // Merge ML data into rows
-      setRows(prev => prev.map(row => {
-        const ml = mlData[row.sku];
-        if (ml) {
-          return {
-            ...row,
-            stock_flex_ml: ml.flex,
-            stock_full_ml: ml.full,
-            user_product_id: ml.upId || row.user_product_id,
-          };
-        }
-        return row;
-      }));
       if (allDiags.length > 0) setDiagnostics(allDiags);
       setMlProgress("");
       setMlLoading(false);
@@ -8297,7 +8291,19 @@ function AdminStockML() {
         style={{maxWidth:400}} />
 
       {mlLoading && rows.length > 0 && (
-        <div style={{padding:"8px 16px",textAlign:"center",color:"var(--cyan)",fontSize:12,opacity:0.8}}>{mlProgress || "Consultando stock en vivo de MercadoLibre..."}</div>
+        <div style={{padding:"8px 16px",textAlign:"center",fontSize:12}}>
+          <div style={{color:"var(--cyan)",marginBottom:6}}>{mlProgress || "Consultando stock en vivo de MercadoLibre..."}</div>
+          {(() => {
+            const total = rows.length;
+            const done = rows.filter(r => r.stock_flex_ml >= 0).length;
+            const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+            return (
+              <div style={{maxWidth:400,margin:"0 auto",height:6,borderRadius:3,background:"var(--bg4)",overflow:"hidden"}}>
+                <div style={{height:"100%",width:`${pct}%`,background:"var(--cyan)",borderRadius:3,transition:"width 0.3s ease"}} />
+              </div>
+            );
+          })()}
+        </div>
       )}
 
       {loading && rows.length === 0 ? (
