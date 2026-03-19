@@ -59,8 +59,8 @@ export async function GET() {
       }
     }
 
-    // 4. Consultar stock ML en paralelo (batches de 10)
-    const BATCH_SIZE = 10;
+    // 4. Consultar stock ML en batches (máx 5 paralelos, con delay entre batches para evitar 429)
+    const BATCH_SIZE = 5;
     type MlResult = { sku: string; flexQty: number; fullQty: number; upId: string | null; error?: string };
     const mlResults: MlResult[] = [];
     let firstError: string | null = null;
@@ -92,6 +92,11 @@ export async function GET() {
       });
       const batchResults = await Promise.all(promises);
       mlResults.push(...batchResults);
+
+      // Throttle: wait 1s between batches to avoid ML rate limits
+      if (i + BATCH_SIZE < mappings.length) {
+        await new Promise(r => setTimeout(r, 1000));
+      }
 
       // Si el primer batch falla todo con el mismo error, probablemente es token → no seguir
       if (i === 0) {
@@ -165,7 +170,10 @@ export async function POST(req: NextRequest) {
     let synced = 0;
     const results: Record<string, { ok: boolean; reason: string; qty?: number }> = {};
 
-    for (const sku of skus) {
+    for (let idx = 0; idx < skus.length; idx++) {
+      const sku = skus[idx];
+      // Throttle: wait 1s between SKUs to avoid ML rate limits
+      if (idx > 0) await new Promise(r => setTimeout(r, 1000));
       try {
         // 1. Get mappings for this SKU
         const { data: mappings } = await sb.from("ml_items_map")
