@@ -211,7 +211,7 @@ export default function AdminVentasML() {
             <tbody>
               {mlOrders.map((o, i) => (
                 <tr key={i}>
-                  <td className="mono" style={{ fontSize: 10 }}>{o.order_id.slice(-8)}</td>
+                  <td className="mono" style={{ fontSize: 10 }}>{o.order_id}</td>
                   <td style={{ maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.sku_venta}</td>
                   <td style={{ textAlign: "center" }}>{o.cantidad}</td>
                   <td><span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: o.canal === "Full" ? "var(--blueBg)" : "var(--cyanBg)", color: o.canal === "Full" ? "var(--blue)" : "var(--cyan)" }}>{o.canal}</span></td>
@@ -251,7 +251,7 @@ export default function AdminVentasML() {
                 const envMatch = pg.costo_envio === ml.costo_envio;
                 return (
                   <tr key={i}>
-                    <td className="mono" style={{ fontSize: 10 }}>{r.order_id.slice(-8)}</td>
+                    <td className="mono" style={{ fontSize: 10 }}>{r.order_id}</td>
                     <td style={{ maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.sku_venta}</td>
                     <td className="mono" style={{ textAlign: "right" }}>{fmt(pg.precio_unitario)}</td>
                     <td className="mono" style={{ textAlign: "right", color: comMatch ? "var(--txt)" : "var(--amber)" }}>{fmt(pg.comision_total)}</td>
