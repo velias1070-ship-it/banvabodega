@@ -399,7 +399,7 @@ async function mlGetDiagnostic<T = unknown>(path: string): Promise<{ ok: true; d
 /**
  * Make authenticated GET, return raw JSON (for debugging)
  */
-async function mlGetRaw(path: string): Promise<unknown | null> {
+export async function mlGetRaw(path: string): Promise<unknown | null> {
   const token = await ensureValidToken();
   if (!token) return null;
 
