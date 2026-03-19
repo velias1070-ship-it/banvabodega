@@ -4733,6 +4733,121 @@ function Inventario() {
     URL.revokeObjectURL(url);
   };
 
+  const [exportingFlex, setExportingFlex] = useState(false);
+  const doExportFlex = async () => {
+    setExportingFlex(true);
+    try {
+      const s = getStore();
+      // 1. Build stock per sku_venta (same logic as Exportar Full)
+      const skuVentaQty: Record<string, number> = {};
+      const skuVentaNombre: Record<string, string> = {};
+      const origenToVentas: Record<string, string[]> = {};
+
+      for (const sku of Object.keys(s.products)) {
+        const ventas = getVentasPorSkuOrigen(sku);
+        if (ventas.length > 0) origenToVentas[sku] = ventas.map(v => v.skuVenta);
+      }
+
+      for (const [skuOrigen, svMap] of Object.entries(s.stockDetalle)) {
+        for (const [sv, posMap] of Object.entries(svMap)) {
+          if (sv === SIN_ETIQUETAR) continue;
+          const qty = Object.values(posMap).reduce((a, b) => a + b, 0);
+          if (qty <= 0) continue;
+          skuVentaQty[sv] = (skuVentaQty[sv] || 0) + qty;
+          if (!skuVentaNombre[sv]) {
+            const prod = s.products[skuOrigen];
+            skuVentaNombre[sv] = prod?.name || skuOrigen;
+          }
+        }
+      }
+
+      for (const [skuOrigen, svMap] of Object.entries(s.stockDetalle)) {
+        const sinEtiq = svMap[SIN_ETIQUETAR];
+        if (!sinEtiq) continue;
+        const qty = Object.values(sinEtiq).reduce((a, b) => a + b, 0);
+        if (qty <= 0) continue;
+        const ventas = origenToVentas[skuOrigen];
+        if (ventas && ventas.length === 1) {
+          skuVentaQty[ventas[0]] = (skuVentaQty[ventas[0]] || 0) + qty;
+        } else if (!ventas || ventas.length === 0) {
+          skuVentaQty[skuOrigen] = (skuVentaQty[skuOrigen] || 0) + qty;
+          if (!skuVentaNombre[skuOrigen]) {
+            const prod = s.products[skuOrigen];
+            skuVentaNombre[skuOrigen] = prod?.name || "";
+          }
+        }
+      }
+
+      for (const [skuOrigen, posMap] of Object.entries(s.stock)) {
+        if (s.stockDetalle[skuOrigen]) continue;
+        const qty = Object.values(posMap).reduce((a, b) => a + b, 0);
+        if (qty <= 0) continue;
+        const ventas = origenToVentas[skuOrigen];
+        if (ventas && ventas.length === 1) {
+          skuVentaQty[ventas[0]] = (skuVentaQty[ventas[0]] || 0) + qty;
+          if (!skuVentaNombre[ventas[0]]) {
+            const prod = s.products[skuOrigen];
+            skuVentaNombre[ventas[0]] = prod?.name || "";
+          }
+        } else {
+          skuVentaQty[skuOrigen] = (skuVentaQty[skuOrigen] || 0) + qty;
+          if (!skuVentaNombre[skuOrigen]) {
+            const prod = s.products[skuOrigen];
+            skuVentaNombre[skuOrigen] = prod?.name || "";
+          }
+        }
+      }
+
+      // 2. Fetch committed stock from pedidos_flex (PENDIENTE + EN_PICKING)
+      const allPedidos = await fetchAllPedidosFlex(10000);
+      const comprometidoPorSku: Record<string, number> = {};
+      for (const p of allPedidos) {
+        if (p.estado === "PENDIENTE" || p.estado === "EN_PICKING") {
+          comprometidoPorSku[p.sku_venta] = (comprometidoPorSku[p.sku_venta] || 0) + p.cantidad;
+        }
+      }
+
+      // 3. Generate CSV: sku_venta, nombre, stock_bodega, comprometido, disponible_flex
+      const rows: string[] = [];
+      rows.push(["sku_venta","nombre","stock_bodega","comprometido","disponible_flex"].join(","));
+      const sorted = Object.entries(skuVentaQty).sort((a, b) => b[1] - a[1]);
+      for (const [sv, stockBodega] of sorted) {
+        const comp = comprometidoPorSku[sv] || 0;
+        const disponible = Math.max(0, stockBodega - comp);
+        rows.push([
+          csvEscape(sv),
+          csvEscape(skuVentaNombre[sv] || ""),
+          String(stockBodega),
+          String(comp),
+          String(disponible),
+        ].join(","));
+      }
+
+      // Include SKUs with committed stock but 0 in warehouse
+      for (const [sv, comp] of Object.entries(comprometidoPorSku)) {
+        if (skuVentaQty[sv]) continue; // already included
+        rows.push([
+          csvEscape(sv),
+          csvEscape(skuVentaNombre[sv] || ""),
+          "0",
+          String(comp),
+          "0",
+        ].join(","));
+      }
+
+      const csv = rows.join("\n");
+      const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `banva_stock_flex_${new Date().toISOString().slice(0,10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setExportingFlex(false);
+    }
+  };
+
   return (
     <div>
       <div className="card">
@@ -4759,6 +4874,10 @@ function Inventario() {
           <button onClick={doExportFull} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
             background:"var(--bg3)",color:"var(--cyan)",border:"1px solid var(--cyanBd)",cursor:"pointer"}}>
             Exportar Full
+          </button>
+          <button onClick={doExportFlex} disabled={exportingFlex} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
+            background:"var(--bg3)",color:"var(--blue)",border:"1px solid var(--bg4)",cursor:exportingFlex?"wait":"pointer",opacity:exportingFlex?0.6:1}}>
+            {exportingFlex ? "Exportando..." : "Exportar Flex"}
           </button>
           <button onClick={doReclasificar} disabled={reclasificando} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
             background:reclasificando?"var(--bg3)":"var(--amberBg)",color:reclasificando?"var(--txt3)":"var(--amber)",border:"1px solid var(--amberBd)",cursor:reclasificando?"wait":"pointer",opacity:reclasificando?0.6:1}}>
