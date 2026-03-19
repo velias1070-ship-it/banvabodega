@@ -1,0 +1,317 @@
+import { NextRequest, NextResponse } from "next/server";
+import { mlGet, getMLConfig } from "@/lib/ml";
+
+export const maxDuration = 60;
+export const dynamic = "force-dynamic";
+
+/* ───── Tipos ML API ───── */
+
+interface MLSearchResult {
+  results: MLOrderFull[];
+  paging: { total: number; offset: number; limit: number };
+}
+
+interface MLOrderFull {
+  id: number;
+  date_created: string;
+  status: string;
+  order_items: Array<{
+    item: { id: string; title: string; seller_sku: string | null; variation_id?: number };
+    quantity: number;
+    unit_price: number;
+    sale_fee: number;
+  }>;
+  shipping: { id: number; logistic_type?: string };
+  pack_id: number | null;
+  buyer: { id: number; nickname: string };
+  total_amount: number;
+  currency_id: string;
+}
+
+interface BillingOrderDetail {
+  order_id: number;
+  sale_fee?: { gross: number; net: number; rebate: number };
+  details?: Array<{
+    charge_info?: { detail_amount: number; detail_sub_type: string; transaction_detail: string };
+    sales_info?: Array<{ order_id: number; transaction_amount: number; sale_fee?: { gross: number; net: number; rebate: number } }>;
+    shipping_info?: { shipping_id: string; receiver_shipping_cost: number };
+    items_info?: Array<{ item_id: string; item_price: number; item_amount: number }>;
+  }>;
+}
+
+interface BillingResponse {
+  results: BillingOrderDetail[];
+}
+
+/* ───── Helpers ───── */
+
+interface MappedOrder {
+  order_id: string;
+  order_number: string;
+  fecha: string;
+  sku_venta: string;
+  nombre_producto: string;
+  cantidad: number;
+  canal: string;
+  precio_unitario: number;
+  subtotal: number;
+  comision_unitaria: number;
+  comision_total: number;
+  costo_envio: number;
+  ingreso_envio: number;
+  ingreso_adicional_tc: number;
+  total: number;
+  logistic_type: string;
+  estado: string;
+  fuente: string;
+}
+
+function mapCanal(logisticType: string | undefined): string {
+  if (!logisticType) return "Flex";
+  if (logisticType === "fulfillment" || logisticType === "xd_drop_off") return "Full";
+  return "Flex";
+}
+
+function mapEstado(status: string): string {
+  switch (status) {
+    case "paid": return "Pagada";
+    case "cancelled": return "Cancelada";
+    default: return status;
+  }
+}
+
+/** Fetch all paid orders in date range with pagination */
+async function fetchOrdersInRange(sellerId: string, from: string, to: string): Promise<MLOrderFull[]> {
+  const fromISO = new Date(from + "T00:00:00-04:00").toISOString(); // Chile timezone approx
+  const toISO = new Date(to + "T23:59:59-04:00").toISOString();
+
+  const allOrders: MLOrderFull[] = [];
+  let offset = 0;
+  const limit = 50;
+  const maxPages = 40; // Safety: max 2000 orders
+
+  for (let page = 0; page < maxPages; page++) {
+    const url = `/orders/search?seller=${sellerId}&order.status=paid&sort=date_desc&order.date_created.from=${encodeURIComponent(fromISO)}&order.date_created.to=${encodeURIComponent(toISO)}&limit=${limit}&offset=${offset}`;
+    const result = await mlGet<MLSearchResult>(url);
+    if (!result || !result.results || result.results.length === 0) break;
+
+    allOrders.push(...result.results);
+    offset += limit;
+    if (offset >= result.paging.total) break;
+
+    // Rate limiting
+    await new Promise(r => setTimeout(r, 100));
+  }
+
+  return allOrders;
+}
+
+/** Fetch billing details for a batch of order IDs */
+async function fetchBillingForOrders(orderIds: number[]): Promise<Map<number, BillingOrderDetail>> {
+  const map = new Map<number, BillingOrderDetail>();
+  if (orderIds.length === 0) return map;
+
+  // Batch in groups of 20
+  for (let i = 0; i < orderIds.length; i += 20) {
+    const batch = orderIds.slice(i, i + 20);
+    const idsParam = batch.join(",");
+
+    try {
+      const result = await mlGet<BillingResponse>(
+        `/billing/integration/group/ML/order/details?order_ids=${idsParam}`
+      );
+      if (result?.results) {
+        for (const detail of result.results) {
+          if (detail.order_id) map.set(detail.order_id, detail);
+        }
+      }
+    } catch (err) {
+      console.warn(`[ML Orders History] Billing fetch failed for batch: ${err}`);
+    }
+
+    if (i + 20 < orderIds.length) {
+      await new Promise(r => setTimeout(r, 200));
+    }
+  }
+
+  return map;
+}
+
+/** Extract financial data from billing detail */
+function extractBillingData(billing: BillingOrderDetail | undefined) {
+  const data = {
+    comision_gross: 0,
+    comision_net: 0,
+    comision_rebate: 0,
+    costo_envio: 0,
+    ingreso_envio: 0,
+    ingreso_adicional_tc: 0,
+  };
+
+  if (!billing) return data;
+
+  // Top-level sale_fee
+  if (billing.sale_fee) {
+    data.comision_gross = Math.abs(billing.sale_fee.gross || 0);
+    data.comision_net = Math.abs(billing.sale_fee.net || 0);
+    data.comision_rebate = Math.abs(billing.sale_fee.rebate || 0);
+  }
+
+  // Parse details for shipping and other charges
+  if (billing.details) {
+    for (const detail of billing.details) {
+      const subType = detail.charge_info?.detail_sub_type || "";
+      const amount = detail.charge_info?.detail_amount || 0;
+
+      // CXD = cargo por envío
+      if (subType === "CXD") {
+        data.costo_envio += Math.abs(amount);
+      }
+      // BXD = bonificación por envío (ingreso_envio)
+      if (subType === "BXD") {
+        data.ingreso_envio += Math.abs(amount);
+      }
+
+      // Shipping info
+      if (detail.shipping_info?.receiver_shipping_cost) {
+        // This is what the buyer paid for shipping
+        data.ingreso_envio = Math.max(data.ingreso_envio, Math.abs(detail.shipping_info.receiver_shipping_cost));
+      }
+
+      // Sale fee from details (more granular)
+      if (subType === "CV" && detail.sales_info) {
+        for (const si of detail.sales_info) {
+          if (si.sale_fee) {
+            data.comision_gross = Math.abs(si.sale_fee.gross || 0);
+            data.comision_net = Math.abs(si.sale_fee.net || 0);
+            data.comision_rebate = Math.abs(si.sale_fee.rebate || 0);
+          }
+        }
+      }
+    }
+  }
+
+  return data;
+}
+
+/* ───── Route Handler ───── */
+
+export async function GET(req: NextRequest) {
+  const config = await getMLConfig();
+  if (!config || !config.seller_id) {
+    return NextResponse.json({ error: "ML no configurado o sin seller_id" }, { status: 500 });
+  }
+
+  const { searchParams } = req.nextUrl;
+  const from = searchParams.get("from");
+  const to = searchParams.get("to");
+  const debug = searchParams.get("debug") === "true";
+
+  if (!from || !to) {
+    return NextResponse.json({ error: "Parámetros 'from' y 'to' son requeridos (YYYY-MM-DD)" }, { status: 400 });
+  }
+
+  try {
+    // 1. Fetch all paid orders in range
+    console.log(`[ML Orders History] Fetching orders ${from} → ${to}`);
+    const orders = await fetchOrdersInRange(config.seller_id, from, to);
+    console.log(`[ML Orders History] ${orders.length} orders found`);
+
+    if (orders.length === 0) {
+      return NextResponse.json({ ordenes: [], total: 0, total_raw: 0 });
+    }
+
+    // 2. Fetch billing details
+    const orderIds = orders.map(o => o.id);
+    console.log(`[ML Orders History] Fetching billing for ${orderIds.length} orders`);
+    const billingMap = await fetchBillingForOrders(orderIds);
+    console.log(`[ML Orders History] Got billing for ${billingMap.size} orders`);
+
+    // 3. Map to MappedOrder format
+    const ordenes: MappedOrder[] = [];
+    const debugData: Array<{ order_id: number; billing: BillingOrderDetail | undefined; order: MLOrderFull }> = [];
+
+    for (const order of orders) {
+      if (!order.order_items || order.order_items.length === 0) continue;
+
+      const billing = billingMap.get(order.id);
+      const billingData = extractBillingData(billing);
+      const logisticType = order.shipping?.logistic_type || "";
+
+      if (debug) {
+        debugData.push({ order_id: order.id, billing, order });
+      }
+
+      // Calculate total order value for proration
+      const orderTotal = order.order_items.reduce((s, item) => s + (item.unit_price * item.quantity), 0);
+
+      for (const item of order.order_items) {
+        const skuVenta = (item.item.seller_sku || `ML-${item.item.id}`).toUpperCase();
+        const itemSubtotal = item.unit_price * item.quantity;
+        const prorateRatio = orderTotal > 0 ? itemSubtotal / orderTotal : 1 / order.order_items.length;
+
+        // Comision: use per-item sale_fee if available, otherwise prorate billing
+        let comisionTotal: number;
+        if (item.sale_fee != null && item.sale_fee > 0) {
+          comisionTotal = Math.round(item.sale_fee * 100);
+        } else if (billingData.comision_net > 0) {
+          comisionTotal = Math.round(billingData.comision_net * prorateRatio * 100);
+        } else {
+          comisionTotal = 0;
+        }
+
+        const comisionUnitaria = item.quantity > 0 ? Math.round(comisionTotal / item.quantity) : 0;
+
+        // Shipping: prorate across items
+        const costoEnvio = Math.round(billingData.costo_envio * prorateRatio * 100);
+        const ingresoEnvio = Math.round(billingData.ingreso_envio * prorateRatio * 100);
+        const ingresoTC = Math.round(billingData.ingreso_adicional_tc * prorateRatio * 100);
+
+        // Total neto = subtotal - comision - costo_envio + ingreso_envio + ingreso_tc
+        const precioUnit = Math.round(item.unit_price * 100);
+        const subtotal = Math.round(itemSubtotal * 100);
+        const total = subtotal - comisionTotal - costoEnvio + ingresoEnvio + ingresoTC;
+
+        ordenes.push({
+          order_id: String(order.id),
+          order_number: String(order.id),
+          fecha: order.date_created,
+          sku_venta: skuVenta,
+          nombre_producto: item.item.title,
+          cantidad: item.quantity,
+          canal: mapCanal(logisticType),
+          precio_unitario: precioUnit,
+          subtotal,
+          comision_unitaria: comisionUnitaria,
+          comision_total: comisionTotal,
+          costo_envio: costoEnvio,
+          ingreso_envio: ingresoEnvio,
+          ingreso_adicional_tc: ingresoTC,
+          total,
+          logistic_type: logisticType,
+          estado: mapEstado(order.status),
+          fuente: "ml_directo",
+        });
+      }
+    }
+
+    console.log(`[ML Orders History] ${ordenes.length} items mapped from ${orders.length} orders`);
+
+    const response: Record<string, unknown> = {
+      ordenes,
+      total: ordenes.length,
+      total_raw: orders.length,
+      billing_coverage: `${billingMap.size}/${orders.length}`,
+    };
+
+    if (debug && debugData.length > 0) {
+      response.debug = debugData.slice(0, 5); // First 5 for inspection
+    }
+
+    return NextResponse.json(response);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Error desconocido";
+    console.error("[ML Orders History] Error:", msg);
+    return NextResponse.json({ error: msg }, { status: 502 });
+  }
+}
