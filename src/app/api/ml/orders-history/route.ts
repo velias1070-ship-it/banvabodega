@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { mlGet, getMLConfig } from "@/lib/ml";
+import { getServerSupabase } from "@/lib/supabase-server";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -30,12 +31,14 @@ interface MLOrderFull {
 
 interface BillingOrderDetail {
   order_id: number;
-  sale_fee?: { gross: number; net: number; rebate: number };
+  sale_fee?: { gross: number; net: number; rebate: number } | null;
   details?: Array<{
-    charge_info?: { detail_amount: number; detail_sub_type: string; transaction_detail: string };
+    charge_info?: { detail_amount: number; detail_sub_type: string; detail_type: string; transaction_detail: string };
+    discount_info?: { charge_amount_without_discount: number; discount_amount: number; discount_reason: string };
     sales_info?: Array<{ order_id: number; transaction_amount: number; sale_fee?: { gross: number; net: number; rebate: number } }>;
-    shipping_info?: { shipping_id: string; receiver_shipping_cost: number };
+    shipping_info?: { shipping_id: string; pack_id?: string; receiver_shipping_cost: number };
     items_info?: Array<{ item_id: string; item_price: number; item_amount: number }>;
+    marketplace_info?: { marketplace: string };
   }>;
 }
 
@@ -143,50 +146,59 @@ function extractBillingData(billing: BillingOrderDetail | undefined) {
     comision_gross: 0,
     comision_net: 0,
     comision_rebate: 0,
-    costo_envio: 0,
-    ingreso_envio: 0,
+    costo_envio: 0,      // Cargo bruto por envío (antes de bonificación)
+    ingreso_envio: 0,     // Bonificación/descuento en envío
     ingreso_adicional_tc: 0,
   };
 
   if (!billing) return data;
 
-  // Top-level sale_fee
+  // Top-level sale_fee (may be null)
   if (billing.sale_fee) {
     data.comision_gross = Math.abs(billing.sale_fee.gross || 0);
     data.comision_net = Math.abs(billing.sale_fee.net || 0);
     data.comision_rebate = Math.abs(billing.sale_fee.rebate || 0);
   }
 
-  // Parse details for shipping and other charges
+  // Parse details for charges
   if (billing.details) {
     for (const detail of billing.details) {
       const subType = detail.charge_info?.detail_sub_type || "";
-      const amount = detail.charge_info?.detail_amount || 0;
 
-      // CXD = cargo por envío
-      if (subType === "CXD") {
-        data.costo_envio += Math.abs(amount);
-      }
-      // BXD = bonificación por envío (ingreso_envio)
-      if (subType === "BXD") {
-        data.ingreso_envio += Math.abs(amount);
-      }
-
-      // Shipping info
-      if (detail.shipping_info?.receiver_shipping_cost) {
-        // This is what the buyer paid for shipping
-        data.ingreso_envio = Math.max(data.ingreso_envio, Math.abs(detail.shipping_info.receiver_shipping_cost));
+      // CFF / CXD = Cargo por envíos de Mercado Libre (shipping charge)
+      if (subType === "CFF" || subType === "CXD") {
+        // Costo bruto = charge_amount_without_discount (antes de bonificación)
+        // Bonificación = discount_amount
+        if (detail.discount_info) {
+          data.costo_envio += Math.abs(detail.discount_info.charge_amount_without_discount || 0);
+          data.ingreso_envio += Math.abs(detail.discount_info.discount_amount || 0);
+        } else {
+          // Sin descuento: el detail_amount es el costo total
+          data.costo_envio += Math.abs(detail.charge_info?.detail_amount || 0);
+        }
       }
 
-      // Sale fee from details (more granular)
-      if (subType === "CV" && detail.sales_info) {
-        for (const si of detail.sales_info) {
-          if (si.sale_fee) {
-            data.comision_gross = Math.abs(si.sale_fee.gross || 0);
-            data.comision_net = Math.abs(si.sale_fee.net || 0);
-            data.comision_rebate = Math.abs(si.sale_fee.rebate || 0);
+      // CV = Cargo por venta (sale commission)
+      if (subType === "CV") {
+        if (detail.discount_info) {
+          data.comision_gross = Math.abs(detail.discount_info.charge_amount_without_discount || 0);
+          data.ingreso_adicional_tc += Math.abs(detail.discount_info.discount_amount || 0);
+        }
+        // Also check sales_info for per-order sale_fee
+        if (detail.sales_info) {
+          for (const si of detail.sales_info) {
+            if (si.sale_fee) {
+              data.comision_gross = Math.abs(si.sale_fee.gross || 0);
+              data.comision_net = Math.abs(si.sale_fee.net || 0);
+              data.comision_rebate = Math.abs(si.sale_fee.rebate || 0);
+            }
           }
         }
+      }
+
+      // BXD = Bonificación explícita
+      if (subType === "BXD") {
+        data.ingreso_envio += Math.abs(detail.charge_info?.detail_amount || 0);
       }
     }
   }
@@ -227,7 +239,23 @@ export async function GET(req: NextRequest) {
     const billingMap = await fetchBillingForOrders(orderIds);
     console.log(`[ML Orders History] Got billing for ${billingMap.size} orders`);
 
-    // 3. Map to MappedOrder format
+    // 3. Resolve logistic_type from ml_shipments (order search doesn't include it)
+    const shipmentLogisticMap = new Map<number, string>(); // shipping_id → logistic_type
+    const sb = getServerSupabase();
+    if (sb) {
+      const shippingIds = Array.from(new Set(orders.map(o => o.shipping?.id).filter(Boolean)));
+      for (let i = 0; i < shippingIds.length; i += 500) {
+        const chunk = shippingIds.slice(i, i + 500);
+        const { data } = await sb.from("ml_shipments").select("shipment_id, logistic_type").in("shipment_id", chunk);
+        if (data) {
+          for (const row of data as { shipment_id: number; logistic_type: string }[]) {
+            shipmentLogisticMap.set(row.shipment_id, row.logistic_type);
+          }
+        }
+      }
+    }
+
+    // 4. Map to MappedOrder format
     const ordenes: MappedOrder[] = [];
     const debugData: Array<{ order_id: number; billing: BillingOrderDetail | undefined; order: MLOrderFull }> = [];
 
@@ -236,7 +264,11 @@ export async function GET(req: NextRequest) {
 
       const billing = billingMap.get(order.id);
       const billingData = extractBillingData(billing);
-      const logisticType = order.shipping?.logistic_type || "";
+      // Resolve logistic_type: order → ml_shipments → billing marketplace
+      const logisticType = order.shipping?.logistic_type
+        || shipmentLogisticMap.get(order.shipping?.id)
+        || (billing?.details?.[0]?.marketplace_info?.marketplace === "SHIPPING" ? "self_service" : "")
+        || "";
 
       if (debug) {
         debugData.push({ order_id: order.id, billing, order });
