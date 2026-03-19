@@ -5,8 +5,8 @@ import { syncStockToML } from "@/lib/ml";
 /**
  * Stock sync endpoint — pushes WMS stock to MercadoLibre using distributed stock API.
  * Uses PUT /user-products/$UP_ID/stock/type/selling_address with x-version header.
- * Processes the stock_sync_queue: for each pending SKU, calculates
- * available stock (total - committed) and sends to ML.
+ * Processes the stock_sync_queue: for each pending SKU, reads
+ * WMS stock and sends directly to ML.
  */
 export async function POST(req: NextRequest) {
   const sb = getServerSupabase();
@@ -42,19 +42,9 @@ export async function POST(req: NextRequest) {
       // Throttle: wait 1s between SKUs to avoid ML rate limits
       if (idx > 0) await new Promise(r => setTimeout(r, 1000));
       try {
-        // 2. Calculate total stock in WMS
+        // 2. Calculate total stock in WMS (= lo que se publica en ML)
         const { data: stockRows } = await sb.from("stock").select("cantidad").eq("sku", sku);
-        const totalStock = (stockRows || []).reduce((s: number, r: { cantidad: number }) => s + r.cantidad, 0);
-
-        // 3. Calculate committed stock (PENDIENTE + EN_PICKING pedidos)
-        const { data: pedidos } = await sb.from("pedidos_flex")
-          .select("cantidad")
-          .eq("sku_venta", sku)
-          .in("estado", ["PENDIENTE", "EN_PICKING"]);
-        const committed = (pedidos || []).reduce((s: number, p: { cantidad: number }) => s + p.cantidad, 0);
-
-        // 4. Available = total - committed (Flex stock at selling_address)
-        const available = Math.max(0, totalStock - committed);
+        const available = Math.max(0, (stockRows || []).reduce((s: number, r: { cantidad: number }) => s + r.cantidad, 0));
 
         // 5. Send to ML via distributed stock API
         const count = await syncStockToML(sku, available);

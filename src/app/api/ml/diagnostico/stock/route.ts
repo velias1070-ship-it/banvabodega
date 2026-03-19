@@ -67,7 +67,6 @@ export async function GET(req: NextRequest) {
 
     // 4. Consultar stock en WMS para comparar
     let stockWMS: { posicion_id: string; cantidad: number }[] = [];
-    let stockComprometido = 0;
     const skuBuscar = sku?.toUpperCase() || (mapInfo as { sku?: string })?.sku;
 
     if (sb && skuBuscar) {
@@ -75,16 +74,9 @@ export async function GET(req: NextRequest) {
         .select("posicion_id, cantidad")
         .eq("sku", skuBuscar);
       stockWMS = stockRows || [];
-
-      const { data: pedidos } = await sb.from("pedidos_flex")
-        .select("cantidad")
-        .eq("sku_venta", skuBuscar)
-        .in("estado", ["PENDIENTE", "EN_PICKING"]);
-      stockComprometido = (pedidos || []).reduce((s: number, p: { cantidad: number }) => s + p.cantidad, 0);
     }
 
     const totalWMS = stockWMS.reduce((s, r) => s + r.cantidad, 0);
-    const disponibleWMS = Math.max(0, totalWMS - stockComprometido);
 
     // 5. Parsear locations de ML
     const mlLocations = (stockML?.locations || []).map((loc: { type: string; quantity: number }) => ({

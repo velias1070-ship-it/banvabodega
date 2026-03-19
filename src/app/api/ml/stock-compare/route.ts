@@ -268,13 +268,7 @@ export async function POST(req: NextRequest) {
           available = Math.max(0, overrides[sku]);
         } else {
           const { data: stockRows } = await sb.from("stock").select("cantidad").eq("sku", sku);
-          const totalStock = (stockRows || []).reduce((s: number, r: { cantidad: number }) => s + r.cantidad, 0);
-          const { data: pedidos } = await sb.from("pedidos_flex")
-            .select("cantidad")
-            .eq("sku_venta", sku)
-            .in("estado", ["PENDIENTE", "EN_PICKING"]);
-          const committed = (pedidos || []).reduce((s: number, p: { cantidad: number }) => s + p.cantidad, 0);
-          available = Math.max(0, totalStock - committed);
+          available = Math.max(0, (stockRows || []).reduce((s: number, r: { cantidad: number }) => s + r.cantidad, 0));
         }
 
         let skuSynced = false;
