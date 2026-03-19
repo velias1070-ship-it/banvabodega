@@ -1153,9 +1153,11 @@ export async function updateFlexStock(
       const uniqueLocations: { store_id: string; network_node_id: string; quantity: number }[] = [];
       for (const l of warehouseLocations) {
         if (l.type !== "seller_warehouse" || !l.store_id || !l.network_node_id) continue;
-        if (!seen.has(l.network_node_id)) {
-          seen.add(l.network_node_id);
-          uniqueLocations.push({ store_id: l.store_id, network_node_id: l.network_node_id, quantity });
+        const nodeId = l.network_node_id;
+        const storeId = l.store_id;
+        if (!seen.has(nodeId)) {
+          seen.add(nodeId);
+          uniqueLocations.push({ store_id: storeId, network_node_id: nodeId, quantity });
         }
       }
       if (uniqueLocations.length === 0) {
