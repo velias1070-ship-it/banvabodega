@@ -1140,6 +1140,9 @@ export async function updateFlexStock(
   stockType: "selling_address" | "seller_warehouse" = "selling_address",
   warehouseLocations?: StockLocation[]
 ): Promise<{ ok: boolean; error?: string }> {
+  // DESACTIVADO: No enviar stock a MercadoLibre
+  console.warn(`[ML Stock] DESACTIVADO — updateFlexStock(${userProductId}, qty=${quantity}) bloqueado`);
+  return { ok: false, error: "Sync a ML desactivado" };
   try {
     let body: unknown;
     if (stockType === "seller_warehouse") {
@@ -1307,14 +1310,9 @@ export async function getFlexConfig(serviceId: string): Promise<unknown> {
  * PUT /shipping/flex/sites/MLC/users/$USER_ID/services/$SERVICE_ID/configuration/delivery/custom/v3
  */
 export async function updateFlexConfig(serviceId: string, configData: unknown): Promise<unknown> {
-  const config = await getMLConfig();
-  if (!config?.seller_id) return null;
-  try {
-    return await mlPut(
-      `/shipping/flex/sites/${SITE_ID}/users/${config.seller_id}/services/${serviceId}/configuration/delivery/custom/v3`,
-      configData
-    );
-  } catch { return null; }
+  // DESACTIVADO: No enviar config a MercadoLibre
+  console.warn(`[ML Flex] DESACTIVADO — updateFlexConfig(${serviceId}) bloqueado`);
+  return null;
 }
 
 /**
@@ -1332,14 +1330,9 @@ export async function getFlexHolidays(serviceId: string): Promise<unknown> {
  * PUT /flex/sites/MLC/users/$USER_ID/services/$SERVICE_ID/configurations/holidays/v1
  */
 export async function updateFlexHolidays(serviceId: string, holidays: unknown): Promise<unknown> {
-  const config = await getMLConfig();
-  if (!config?.seller_id) return null;
-  try {
-    return await mlPut(
-      `/flex/sites/${SITE_ID}/users/${config.seller_id}/services/${serviceId}/configurations/holidays/v1`,
-      holidays
-    );
-  } catch { return null; }
+  // DESACTIVADO: No enviar holidays a MercadoLibre
+  console.warn(`[ML Flex] DESACTIVADO — updateFlexHolidays(${serviceId}) bloqueado`);
+  return null;
 }
 
 /**
@@ -1347,8 +1340,9 @@ export async function updateFlexHolidays(serviceId: string, holidays: unknown): 
  * POST /flex/sites/MLC/items/$ITEM_ID/v2
  */
 export async function activateFlexItem(itemId: string): Promise<boolean> {
-  const result = await mlPost(`/flex/sites/${SITE_ID}/items/${itemId}/v2`);
-  return result !== null;
+  // DESACTIVADO: No activar items en MercadoLibre
+  console.warn(`[ML Flex] DESACTIVADO — activateFlexItem(${itemId}) bloqueado`);
+  return false;
 }
 
 /**
@@ -1356,7 +1350,9 @@ export async function activateFlexItem(itemId: string): Promise<boolean> {
  * DELETE /flex/sites/MLC/items/$ITEM_ID/v2
  */
 export async function deactivateFlexItem(itemId: string): Promise<boolean> {
-  return mlDelete(`/flex/sites/${SITE_ID}/items/${itemId}/v2`);
+  // DESACTIVADO: No desactivar items en MercadoLibre
+  console.warn(`[ML Flex] DESACTIVADO — deactivateFlexItem(${itemId}) bloqueado`);
+  return false;
 }
 
 // ==================== SHIPPING LABELS ====================
