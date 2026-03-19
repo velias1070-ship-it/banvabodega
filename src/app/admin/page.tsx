@@ -107,11 +107,22 @@ export default function AdminPage() {
       <SheetSync onSynced={r}/>
       <div className="admin-layout">
         <nav className="admin-sidebar">
-          {([["dash","Dashboard","📊"],["rec","Recepciones","📦"],["picking","Picking Flex","🏷️"],["pedidos","Pedidos ML","🛒"],["ops","Operaciones","⚡"],["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["reposicion","Reposición","🔄"],["intel","Inteligencia","🧠"],["compras","Compras","🛒"],["eventos","Eventos","📅"],["agentes","Agentes IA","🤖"],["stockml","Stock ML","📡"],["config","Configuración","⚙️"]] as const).map(([key,label,icon])=>(
-            <button key={key} className={`sidebar-btn ${tab===key?"active":""}`} onClick={()=>setTab(key as any)}>
-              <span className="sidebar-icon">{icon}</span>
-              <span className="sidebar-label">{label}</span>
-            </button>
+          {([
+            {section:"RESUMEN",items:[["dash","Dashboard","📊"]]},
+            {section:"OPERACIONES",items:[["rec","Recepciones","📦"],["picking","Picking Flex","🏷️"],["pedidos","Pedidos ML","🛒"],["ops","Operaciones","⚡"],["reposicion","Reposición","🔄"]]},
+            {section:"INVENTARIO",items:[["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["stockml","Stock ML","📡"]]},
+            {section:"INTELIGENCIA",items:[["intel","Inteligencia","🧠"],["compras","Compras","🛒"],["eventos","Eventos","📅"]]},
+            {section:"SISTEMA",items:[["agentes","Agentes IA","🤖"],["config","Configuración","⚙️"]]},
+          ] as const).map((group,gi)=>(
+            <div key={group.section}>
+              <div className="sidebar-section" style={gi>0?{marginTop:12}:undefined}>{group.section}</div>
+              {group.items.map(([key,label,icon])=>(
+                <button key={key} className={`sidebar-btn ${tab===key?"active":""}`} onClick={()=>setTab(key as any)}>
+                  <span className="sidebar-icon">{icon}</span>
+                  <span className="sidebar-label">{label}</span>
+                </button>
+              ))}
+            </div>
           ))}
           <div style={{flex:1}}/>
 
