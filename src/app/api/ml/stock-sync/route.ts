@@ -37,7 +37,10 @@ export async function POST(req: NextRequest) {
     let synced = 0;
     const errors: string[] = [];
 
-    for (const sku of uniqueSkus) {
+    for (let idx = 0; idx < uniqueSkus.length; idx++) {
+      const sku = uniqueSkus[idx];
+      // Throttle: wait 1s between SKUs to avoid ML rate limits
+      if (idx > 0) await new Promise(r => setTimeout(r, 1000));
       try {
         // 2. Calculate total stock in WMS
         const { data: stockRows } = await sb.from("stock").select("cantidad").eq("sku", sku);

@@ -10,6 +10,19 @@ const ML_API = "https://api.mercadolibre.com";
 const ML_AUTH = "https://auth.mercadolibre.cl"; // Chile
 const SITE_ID = "MLC";
 
+/** Helper: fetch with automatic retry on 429 (rate limit) */
+async function fetchWithRateLimit(url: string, init: RequestInit, maxRetries = 3): Promise<Response> {
+  let resp = await fetch(url, init);
+  for (let attempt = 1; attempt <= maxRetries && resp.status === 429; attempt++) {
+    const retryAfter = resp.headers.get("retry-after");
+    const waitMs = retryAfter ? Math.min(parseInt(retryAfter, 10) * 1000, 10000) : attempt * 2000;
+    console.warn(`[ML] 429 rate limit on ${init.method || "GET"} ${url.replace(ML_API, "")}, waiting ${waitMs}ms (retry ${attempt}/${maxRetries})`);
+    await new Promise(r => setTimeout(r, waitMs));
+    resp = await fetch(url, init);
+  }
+  return resp;
+}
+
 // ==================== TYPES ====================
 
 export interface MLConfig {
@@ -335,7 +348,7 @@ export async function mlGet<T = unknown>(path: string, extraHeaders?: Record<str
   const token = await ensureValidToken();
   if (!token) return null;
 
-  const resp = await fetch(`${ML_API}${path}`, {
+  const resp = await fetchWithRateLimit(`${ML_API}${path}`, {
     headers: { Authorization: `Bearer ${token}`, ...extraHeaders },
   });
 
@@ -352,7 +365,7 @@ async function mlGetWithHeaders<T = unknown>(path: string): Promise<{ data: T; h
   const token = await ensureValidToken();
   if (!token) return null;
 
-  const resp = await fetch(`${ML_API}${path}`, {
+  const resp = await fetchWithRateLimit(`${ML_API}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
 
@@ -370,7 +383,7 @@ async function mlGetDiagnostic<T = unknown>(path: string): Promise<{ ok: true; d
   const token = await ensureValidToken();
   if (!token) return { ok: false, status: 0, body: "No hay token válido (ensureValidToken retornó null)" };
 
-  const resp = await fetch(`${ML_API}${path}`, {
+  const resp = await fetchWithRateLimit(`${ML_API}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
 
@@ -390,7 +403,7 @@ async function mlGetRaw(path: string): Promise<unknown | null> {
   const token = await ensureValidToken();
   if (!token) return null;
 
-  const resp = await fetch(`${ML_API}${path}`, {
+  const resp = await fetchWithRateLimit(`${ML_API}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
 
@@ -410,7 +423,7 @@ export async function mlPut<T = unknown>(path: string, body: unknown, extraHeade
   const token = await ensureValidToken();
   if (!token) return null;
 
-  const resp = await fetch(`${ML_API}${path}`, {
+  const resp = await fetchWithRateLimit(`${ML_API}${path}`, {
     method: "PUT",
     headers: {
       Authorization: `Bearer ${token}`,
@@ -440,7 +453,7 @@ export async function mlPost<T = unknown>(path: string, body?: unknown): Promise
   const token = await ensureValidToken();
   if (!token) return null;
 
-  const resp = await fetch(`${ML_API}${path}`, {
+  const resp = await fetchWithRateLimit(`${ML_API}${path}`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
@@ -464,7 +477,7 @@ export async function mlDelete(path: string): Promise<boolean> {
   const token = await ensureValidToken();
   if (!token) return false;
 
-  const resp = await fetch(`${ML_API}${path}`, {
+  const resp = await fetchWithRateLimit(`${ML_API}${path}`, {
     method: "DELETE",
     headers: { Authorization: `Bearer ${token}` },
   });
