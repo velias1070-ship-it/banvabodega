@@ -67,10 +67,23 @@ export default function AdminPage() {
   const r = useCallback(()=>setTick(t=>t+1),[]);
   const [mounted, setMounted] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [mlAuthReturn, setMlAuthReturn] = useState(false);
   const auth = useAuth();
   useEffect(()=>{
     setMounted(true);
     initStore().then(()=>setLoading(false));
+    // Si volvemos de OAuth ML, ir directo a Config > ML
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("ml_auth") === "success" || params.get("ml_error")) {
+      setTab("config");
+      setMlAuthReturn(true);
+      window.history.replaceState({}, "", window.location.pathname);
+      if (params.get("ml_auth") === "success") {
+        setTimeout(() => alert("Cuenta MercadoLibre vinculada exitosamente."), 500);
+      } else if (params.get("ml_error")) {
+        setTimeout(() => alert("Error al vincular MercadoLibre: " + params.get("ml_error")), 500);
+      }
+    }
   },[]);
   if(!mounted) return null;
   if(!auth.ok) return <LoginGate onLogin={auth.login}/>;
@@ -128,7 +141,7 @@ export default function AdminPage() {
             {tab==="eventos"&&<AdminEventos/>}
             {tab==="agentes"&&<AdminAgentes/>}
             {tab==="stockml"&&<AdminStockML/>}
-            {tab==="config"&&<Configuracion refresh={r}/>}
+            {tab==="config"&&<Configuracion refresh={r} initialSubTab={mlAuthReturn ? "ml" : undefined}/>}
           </div>
         </main>
       </div>
@@ -8474,8 +8487,8 @@ function ConfigML() {
 }
 
 // ==================== CONFIGURACIÓN ====================
-function Configuracion({ refresh }: { refresh: () => void }) {
-  const [configTab, setConfigTab] = useState<"general"|"posiciones"|"mapa"|"etiquetas"|"carga_stock"|"conteos"|"conciliador"|"diccionario"|"ml">("general");
+function Configuracion({ refresh, initialSubTab }: { refresh: () => void; initialSubTab?: string }) {
+  const [configTab, setConfigTab] = useState<"general"|"posiciones"|"mapa"|"etiquetas"|"carga_stock"|"conteos"|"conciliador"|"diccionario"|"ml">(initialSubTab === "ml" ? "ml" : "general");
   const [conciliadorPin, setConciliadorPin] = useState("");
   const [conciliadorAuth, setConciliadorAuth] = useState(false);
   const CONCILIADOR_PIN = "9461";
