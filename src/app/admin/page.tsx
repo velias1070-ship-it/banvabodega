@@ -8365,7 +8365,7 @@ function ConfigML() {
 
   const tokenValid = mlConfig?.token_expires_at && new Date(mlConfig.token_expires_at) > new Date();
   const hasRefreshToken = !!mlConfig?.refresh_token;
-  const authUrl = configForm.client_id ? getOAuthUrl(configForm.client_id, `${typeof window !== "undefined" ? window.location.origin : ""}/api/ml/auth`) : "";
+  const authUrl = configForm.client_id && typeof window !== "undefined" ? getOAuthUrl(configForm.client_id, `${window.location.origin}/api/ml/auth`) : "";
 
   if (loading) return <div className="card" style={{textAlign:"center",padding:40,color:"var(--txt3)"}}>Cargando configuración...</div>;
 
@@ -8425,10 +8425,10 @@ function ConfigML() {
         </div>
         <div style={{display:"flex",gap:8,marginTop:16}}>
           <button onClick={doSaveConfig} style={{padding:"10px 20px",borderRadius:8,background:"var(--green)",color:"#fff",fontWeight:700,fontSize:13,border:"none",cursor:"pointer"}}>Guardar Credenciales</button>
-          {configForm.client_id && (
-            <button onClick={() => { window.location.href = authUrl; }} style={{padding:"10px 20px",borderRadius:8,background:"#3483fa",color:"#fff",fontWeight:700,fontSize:13,border:"none",cursor:"pointer"}}>
+          {configForm.client_id && authUrl && (
+            <a href={authUrl} style={{padding:"10px 20px",borderRadius:8,background:"#3483fa",color:"#fff",fontWeight:700,fontSize:13,border:"none",cursor:"pointer",textDecoration:"none",display:"inline-flex",alignItems:"center"}}>
               🔗 Vincular cuenta ML
-            </button>
+            </a>
           )}
         </div>
       </div>
