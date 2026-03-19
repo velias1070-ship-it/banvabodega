@@ -63,6 +63,29 @@ function LoginGate({ onLogin }: { onLogin: (pin: string) => boolean }) {
 
 export default function AdminPage() {
   const [tab, setTab] = useState<"dash"|"rec"|"picking"|"pedidos"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"intel"|"compras"|"eventos"|"agentes"|"stockml"|"config">("dash");
+  const SIDEBAR_GROUPS = [
+    {section:"OPERACIONES",icon:"⚡",items:[["rec","Recepciones","📦"],["picking","Picking Flex","🏷️"],["pedidos","Pedidos ML","🛒"],["ops","Operaciones","⚡"],["reposicion","Reposición","🔄"]] as const},
+    {section:"INVENTARIO",icon:"📦",items:[["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["stockml","Stock ML","📡"]] as const},
+    {section:"INTELIGENCIA",icon:"🧠",items:[["intel","Inteligencia","🧠"],["compras","Compras","🛒"],["eventos","Eventos","📅"]] as const},
+    {section:"SISTEMA",icon:"⚙️",items:[["agentes","Agentes IA","🤖"],["config","Configuración","⚙️"]] as const},
+  ] as const;
+  const [openSections, setOpenSections] = useState<Record<string,boolean>>(()=>{
+    const init: Record<string,boolean> = {};
+    for (const g of SIDEBAR_GROUPS) {
+      init[g.section] = g.items.some(([k])=>k==="rec"); // open OPERACIONES by default
+    }
+    return init;
+  });
+  const toggleSection = (section: string) => setOpenSections(prev=>({...prev,[section]:!prev[section]}));
+  // Auto-open section when tab changes
+  useEffect(()=>{
+    for (const g of SIDEBAR_GROUPS) {
+      if (g.items.some(([k])=>k===tab)) {
+        setOpenSections(prev=>prev[g.section]?prev:{...prev,[g.section]:true});
+        break;
+      }
+    }
+  },[tab]);
   const [,setTick] = useState(0);
   const r = useCallback(()=>setTick(t=>t+1),[]);
   const [mounted, setMounted] = useState(false);
@@ -107,23 +130,32 @@ export default function AdminPage() {
       <SheetSync onSynced={r}/>
       <div className="admin-layout">
         <nav className="admin-sidebar">
-          {([
-            {section:"RESUMEN",items:[["dash","Dashboard","📊"]]},
-            {section:"OPERACIONES",items:[["rec","Recepciones","📦"],["picking","Picking Flex","🏷️"],["pedidos","Pedidos ML","🛒"],["ops","Operaciones","⚡"],["reposicion","Reposición","🔄"]]},
-            {section:"INVENTARIO",items:[["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["stockml","Stock ML","📡"]]},
-            {section:"INTELIGENCIA",items:[["intel","Inteligencia","🧠"],["compras","Compras","🛒"],["eventos","Eventos","📅"]]},
-            {section:"SISTEMA",items:[["agentes","Agentes IA","🤖"],["config","Configuración","⚙️"]]},
-          ] as const).map((group,gi)=>(
-            <div key={group.section}>
-              <div className="sidebar-section" style={gi>0?{marginTop:12}:undefined}>{group.section}</div>
-              {group.items.map(([key,label,icon])=>(
-                <button key={key} className={`sidebar-btn ${tab===key?"active":""}`} onClick={()=>setTab(key as any)}>
-                  <span className="sidebar-icon">{icon}</span>
-                  <span className="sidebar-label">{label}</span>
+          {/* Dashboard — always visible */}
+          <button className={`sidebar-btn ${tab==="dash"?"active":""}`} onClick={()=>setTab("dash")}>
+            <span className="sidebar-icon">📊</span>
+            <span className="sidebar-label">Dashboard</span>
+          </button>
+
+          {/* Collapsible groups */}
+          {SIDEBAR_GROUPS.map((group)=>{
+            const isOpen = openSections[group.section];
+            const hasActive = group.items.some(([k])=>k===tab);
+            return (
+              <div key={group.section} className="sidebar-group">
+                <button className={`sidebar-section-btn${hasActive?" has-active":""}`} onClick={()=>toggleSection(group.section)}>
+                  <span className="sidebar-section-icon">{group.icon}</span>
+                  <span className="sidebar-section-label">{group.section}</span>
+                  <span className={`sidebar-chevron${isOpen?" open":""}`}>&#9206;</span>
                 </button>
-              ))}
-            </div>
-          ))}
+                {isOpen && group.items.map(([key,label,icon])=>(
+                  <button key={key} className={`sidebar-btn sidebar-child ${tab===key?"active":""}`} onClick={()=>setTab(key as any)}>
+                    <span className="sidebar-icon">{icon}</span>
+                    <span className="sidebar-label">{label}</span>
+                  </button>
+                ))}
+              </div>
+            );
+          })}
           <div style={{flex:1}}/>
 
           <Link href="/admin/qr-codes"><button className="sidebar-btn"><span className="sidebar-icon">🖨️</span><span className="sidebar-label">Imprimir QRs</span></button></Link>
