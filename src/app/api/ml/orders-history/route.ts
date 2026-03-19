@@ -285,23 +285,23 @@ export async function GET(req: NextRequest) {
         // Comision: use per-item sale_fee if available, otherwise prorate billing
         let comisionTotal: number;
         if (item.sale_fee != null && item.sale_fee > 0) {
-          comisionTotal = Math.round(item.sale_fee * 100);
+          comisionTotal = Math.round(item.sale_fee);
         } else if (billingData.comision_net > 0) {
-          comisionTotal = Math.round(billingData.comision_net * prorateRatio * 100);
+          comisionTotal = Math.round(billingData.comision_net * prorateRatio);
         } else {
           comisionTotal = 0;
         }
 
         const comisionUnitaria = item.quantity > 0 ? Math.round(comisionTotal / item.quantity) : 0;
 
-        // Shipping: prorate across items
-        const costoEnvio = Math.round(billingData.costo_envio * prorateRatio * 100);
-        const ingresoEnvio = Math.round(billingData.ingreso_envio * prorateRatio * 100);
-        const ingresoTC = Math.round(billingData.ingreso_adicional_tc * prorateRatio * 100);
+        // Shipping: prorate across items (billing amounts already in CLP pesos)
+        const costoEnvio = Math.round(billingData.costo_envio * prorateRatio);
+        const ingresoEnvio = Math.round(billingData.ingreso_envio * prorateRatio);
+        const ingresoTC = Math.round(billingData.ingreso_adicional_tc * prorateRatio);
 
         // Total neto = subtotal - comision - costo_envio + ingreso_envio + ingreso_tc
-        const precioUnit = Math.round(item.unit_price * 100);
-        const subtotal = Math.round(itemSubtotal * 100);
+        const precioUnit = Math.round(item.unit_price);
+        const subtotal = Math.round(itemSubtotal);
         const total = subtotal - comisionTotal - costoEnvio + ingresoEnvio + ingresoTC;
 
         ordenes.push({
