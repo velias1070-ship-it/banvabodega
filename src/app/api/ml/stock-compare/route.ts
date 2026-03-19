@@ -11,14 +11,15 @@ interface CompareRow {
   stock_full_ml: number;
   ultimo_sync: string | null;
   ultimo_stock_enviado: number | null;
+  cache_updated_at: string | null;
 }
 
 /**
  * GET — Compare WMS stock vs ML stock.
  *
- * ?phase=wms     → fast: WMS data + cached ML data from DB (no ML API calls)
- * ?phase=ml&skus=SKU1,SKU2,SKU3  → fetch live ML stock for specific SKUs (max ~5 per call)
- * (no phase)     → legacy: does everything in one call (may timeout with many SKUs)
+ * ?phase=wms     → INSTANT: WMS data + cached ML stock from DB (no ML API calls)
+ * ?phase=ml&skus=SKU1,SKU2,...  → fetch live ML stock for specific SKUs, save to cache
+ * (no phase)     → legacy: does everything in one call (may timeout)
  */
 export async function GET(req: NextRequest) {
   const sb = getServerSupabase();
@@ -28,12 +29,11 @@ export async function GET(req: NextRequest) {
   const skusParam = req.nextUrl.searchParams.get("skus");
 
   try {
-    // Phase ML batch: fetch live ML stock for specific SKUs only
+    // ── Phase ML batch: fetch live ML stock for specific SKUs + save to cache ──
     if (phase === "ml" && skusParam) {
       const targetSkus = skusParam.split(",").filter(Boolean);
       if (targetSkus.length === 0) return NextResponse.json({ results: {} });
 
-      // Get mappings for requested SKUs
       const { data: mappings } = await sb.from("ml_items_map")
         .select("*")
         .in("sku", targetSkus)
@@ -43,7 +43,6 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ results: {} });
       }
 
-      const diagnostics: string[] = [];
       const results: Record<string, { flex: number; full: number; upId: string | null; error?: string }> = {};
 
       // Resolve missing user_product_ids
@@ -59,7 +58,7 @@ export async function GET(req: NextRequest) {
         }
       }
 
-      // Fetch ML stock in parallel (small batch, should be fast)
+      // Fetch ML stock in parallel
       await Promise.all(mappings.map(async (map) => {
         const upId = map.user_product_id;
         if (!upId) {
@@ -76,6 +75,13 @@ export async function GET(req: NextRequest) {
               if (loc.type === "meli_facility") full = loc.quantity;
             }
             results[map.sku] = { flex, full, upId };
+
+            // ✅ Guardar en cache para que la próxima carga sea instantánea
+            await sb.from("ml_items_map").update({
+              stock_flex_cache: flex,
+              stock_full_cache: full,
+              cache_updated_at: new Date().toISOString(),
+            }).eq("id", map.id);
           } else {
             results[map.sku] = { flex: 0, full: 0, upId, error: result.error };
           }
@@ -84,10 +90,10 @@ export async function GET(req: NextRequest) {
         }
       }));
 
-      return NextResponse.json({ results, diagnostics: diagnostics.length > 0 ? diagnostics : undefined });
+      return NextResponse.json({ results });
     }
 
-    // Phase WMS or legacy: fetch all mappings + WMS stock
+    // ── Fetch all mappings + WMS stock (shared by wms phase and legacy) ──
     const { data: mappings } = await sb.from("ml_items_map")
       .select("*")
       .eq("activo", true)
@@ -104,22 +110,24 @@ export async function GET(req: NextRequest) {
       wmsStock[r.sku] = (wmsStock[r.sku] || 0) + r.cantidad;
     }
 
-    // Phase WMS: return instantly with cached ML data
+    // ── Phase WMS: return INSTANTLY with cached ML data from DB ──
     if (phase === "wms") {
       const rows: CompareRow[] = mappings.map((map) => ({
         sku: map.sku,
         item_id: map.item_id,
         user_product_id: map.user_product_id || null,
         stock_wms: wmsStock[map.sku] || 0,
-        stock_flex_ml: -1, // -1 = not yet loaded from ML
-        stock_full_ml: -1,
+        // Usar cache si existe, sino -1 (no data)
+        stock_flex_ml: map.stock_flex_cache ?? map.ultimo_stock_enviado ?? -1,
+        stock_full_ml: map.stock_full_cache ?? 0,
         ultimo_sync: map.ultimo_sync || null,
         ultimo_stock_enviado: map.ultimo_stock_enviado ?? null,
+        cache_updated_at: map.cache_updated_at || null,
       }));
       return NextResponse.json({ rows, phase: "wms" });
     }
 
-    // Legacy (no phase): full fetch — may timeout with many SKUs
+    // ── Legacy (no phase): full fetch — may timeout with many SKUs ──
     const diagnostics: string[] = [];
     const needsResolution = mappings.filter((m: { user_product_id: string | null }) => !m.user_product_id);
     if (needsResolution.length > 0) {
@@ -132,7 +140,6 @@ export async function GET(req: NextRequest) {
             if (upId) {
               map.user_product_id = upId;
               await sb.from("ml_items_map").update({ user_product_id: upId }).eq("id", map.id);
-              diagnostics.push(`${map.sku}: user_product_id resuelto → ${upId}`);
             }
           } catch { /* ignore */ }
         }));
@@ -157,6 +164,12 @@ export async function GET(req: NextRequest) {
               if (loc.type === "selling_address") flexQty = loc.quantity;
               if (loc.type === "meli_facility") fullQty = loc.quantity;
             }
+            // Save to cache
+            await sb.from("ml_items_map").update({
+              stock_flex_cache: flexQty,
+              stock_full_cache: fullQty,
+              cache_updated_at: new Date().toISOString(),
+            }).eq("id", map.id);
             return { sku: map.sku, flexQty, fullQty, upId };
           } else {
             return { sku: map.sku, flexQty: 0, fullQty: 0, upId, error: result.error };
@@ -195,12 +208,13 @@ export async function GET(req: NextRequest) {
         stock_full_ml: ml?.fullQty || 0,
         ultimo_sync: map.ultimo_sync || null,
         ultimo_stock_enviado: map.ultimo_stock_enviado ?? null,
+        cache_updated_at: map.cache_updated_at || null,
       };
     });
 
     if (firstError) {
       const tokenDiag = await diagnoseToken();
-      diagnostics.unshift(`⛔ Todas las consultas fallaron: ${firstError}`);
+      diagnostics.unshift(`Todas las consultas fallaron: ${firstError}`);
       diagnostics.unshift(`Estado del token: ${tokenDiag}`);
     }
 
@@ -303,10 +317,13 @@ export async function POST(req: NextRequest) {
           }
 
           if (result.ok) {
+            // Actualizar sync info + cache al mismo tiempo
             await sb.from("ml_items_map").update({
               ultimo_sync: new Date().toISOString(),
               ultimo_stock_enviado: available,
+              stock_flex_cache: available, // Lo que acabamos de enviar = stock actual en ML
               stock_version: (stockData.version || 0) + 1,
+              cache_updated_at: new Date().toISOString(),
             }).eq("id", map.id);
             skuSynced = true;
           } else {

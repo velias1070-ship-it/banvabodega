@@ -8030,6 +8030,7 @@ interface StockCompareRow {
   stock_full_ml: number;
   ultimo_sync: string | null;
   ultimo_stock_enviado: number | null;
+  cache_updated_at: string | null;
 }
 
 function AdminStockML() {
@@ -8046,107 +8047,107 @@ function AdminStockML() {
   const [diagnostics, setDiagnostics] = useState<string[]>([]);
   const s = getStore();
 
-  const loadData = useCallback(async () => {
+  // Carga rápida: WMS + cache ML desde DB (instantáneo, sin llamar a ML API)
+  const loadWms = useCallback(async () => {
     setLoading(true);
     setError("");
-    setDiagnostics([]);
     try {
-      // Phase 1: cargar datos WMS rápido (sin llamar a ML API)
-      const wmsResp = await fetch("/api/ml/stock-compare?phase=wms");
-      if (!wmsResp.ok) {
-        const text = await wmsResp.text();
-        setError(`Error ${wmsResp.status}: ${text.substring(0, 200)}`);
-        setLoading(false);
+      const resp = await fetch("/api/ml/stock-compare?phase=wms");
+      if (!resp.ok) {
+        const text = await resp.text();
+        setError(`Error ${resp.status}: ${text.substring(0, 200)}`);
         return;
       }
-      const wmsJson = await wmsResp.json();
-      if (wmsJson.error) { setError(wmsJson.error); setLoading(false); return; }
-      const wmsRows: StockCompareRow[] = wmsJson.rows || [];
+      const json = await resp.json();
+      if (json.error) { setError(json.error); return; }
+      const wmsRows: StockCompareRow[] = json.rows || [];
       setRows(wmsRows);
       const ov: Record<string, string> = {};
-      for (const r of wmsRows) {
-        ov[r.sku] = String(r.stock_wms);
-      }
+      for (const r of wmsRows) ov[r.sku] = String(r.stock_wms);
       setOverrides(ov);
-      setLoading(false);
-
-      // Phase 2: cargar stock live de ML en batches de 10 SKUs
-      // Cada batch es una llamada API separada → no excede timeout de Vercel
-      // Las filas se actualizan progresivamente conforme llegan los datos
-      const allSkus = wmsRows.map(r => r.sku);
-      if (allSkus.length === 0) return;
-
-      setMlLoading(true);
-      const ML_BATCH = 10;
-      const allDiags: string[] = [];
-      let tokenFailed = false;
-      let loaded = 0;
-
-      for (let i = 0; i < allSkus.length; i += ML_BATCH) {
-        if (tokenFailed) break;
-        const batchSkus = allSkus.slice(i, i + ML_BATCH);
-        loaded = Math.min(i + ML_BATCH, allSkus.length);
-        setMlProgress(`Consultando ML ${loaded}/${allSkus.length}...`);
-
-        try {
-          const resp = await fetch(`/api/ml/stock-compare?phase=ml&skus=${encodeURIComponent(batchSkus.join(","))}`);
-          if (!resp.ok) {
-            const text = await resp.text().catch(() => "");
-            allDiags.push(`Error ${resp.status} consultando ML: ${text.substring(0, 100)}`);
-            if (i === 0) tokenFailed = true;
-            continue;
-          }
-          const json = await resp.json();
-
-          // Actualizar filas INMEDIATAMENTE con los datos de este batch
-          if (json.results && Object.keys(json.results).length > 0) {
-            const batchData = json.results as Record<string, { flex: number; full: number; upId: string | null; error?: string }>;
-            setRows(prev => prev.map(row => {
-              const ml = batchData[row.sku];
-              if (ml) {
-                return {
-                  ...row,
-                  stock_flex_ml: ml.error ? 0 : ml.flex,
-                  stock_full_ml: ml.error ? 0 : ml.full,
-                  user_product_id: ml.upId || row.user_product_id,
-                };
-              }
-              return row;
-            }));
-          }
-          if (json.diagnostics) allDiags.push(...json.diagnostics);
-
-          // Si el primer batch falla todo → problema de token, no seguir
-          if (i === 0) {
-            const batchResults = Object.values(json.results || {}) as { error?: string }[];
-            if (batchResults.length > 0 && batchResults.every(r => r.error)) {
-              tokenFailed = true;
-              allDiags.push(`Todas las consultas ML fallaron. Posible problema de token.`);
-            }
-          }
-        } catch (fetchErr) {
-          allDiags.push(`Error de red consultando ML: ${String(fetchErr)}`);
-          if (i === 0) tokenFailed = true;
-        }
-      }
-
-      if (allDiags.length > 0) setDiagnostics(allDiags);
-      setMlProgress("");
-      setMlLoading(false);
     } catch (err) {
       setError(String(err));
+    } finally {
       setLoading(false);
-      setMlLoading(false);
     }
   }, []);
 
-  useEffect(() => { loadData(); }, [loadData]);
+  // Consulta en vivo a ML API: actualiza cache en DB + filas en pantalla progresivamente
+  const refreshMl = useCallback(async () => {
+    if (mlLoading) return;
+    setMlLoading(true);
+    setDiagnostics([]);
+    const allDiags: string[] = [];
 
-  // Auto-refresh cada 90 segundos
+    // Leer SKUs actuales del state
+    let currentRows: StockCompareRow[] = [];
+    setRows(prev => { currentRows = prev; return prev; });
+    const allSkus = currentRows.map(r => r.sku);
+    if (allSkus.length === 0) { setMlLoading(false); return; }
+
+    const ML_BATCH = 10;
+    let tokenFailed = false;
+
+    for (let i = 0; i < allSkus.length; i += ML_BATCH) {
+      if (tokenFailed) break;
+      const batchSkus = allSkus.slice(i, i + ML_BATCH);
+      setMlProgress(`Consultando ML ${Math.min(i + ML_BATCH, allSkus.length)}/${allSkus.length}...`);
+
+      try {
+        const resp = await fetch(`/api/ml/stock-compare?phase=ml&skus=${encodeURIComponent(batchSkus.join(","))}`);
+        if (!resp.ok) {
+          const text = await resp.text().catch(() => "");
+          allDiags.push(`Error ${resp.status}: ${text.substring(0, 100)}`);
+          if (i === 0) tokenFailed = true;
+          continue;
+        }
+        const json = await resp.json();
+
+        // Actualizar filas INMEDIATAMENTE con los datos de este batch
+        if (json.results && Object.keys(json.results).length > 0) {
+          const batchData = json.results as Record<string, { flex: number; full: number; upId: string | null; error?: string }>;
+          setRows(prev => prev.map(row => {
+            const ml = batchData[row.sku];
+            if (ml && !ml.error) {
+              return {
+                ...row,
+                stock_flex_ml: ml.flex,
+                stock_full_ml: ml.full,
+                user_product_id: ml.upId || row.user_product_id,
+                cache_updated_at: new Date().toISOString(),
+              };
+            }
+            return row;
+          }));
+        }
+        if (json.diagnostics) allDiags.push(...json.diagnostics);
+
+        if (i === 0) {
+          const batchResults = Object.values(json.results || {}) as { error?: string }[];
+          if (batchResults.length > 0 && batchResults.every(r => r.error)) {
+            tokenFailed = true;
+            allDiags.push(`Todas las consultas ML fallaron. Posible problema de token.`);
+          }
+        }
+      } catch (fetchErr) {
+        allDiags.push(`Error de red: ${String(fetchErr)}`);
+        if (i === 0) tokenFailed = true;
+      }
+    }
+
+    if (allDiags.length > 0) setDiagnostics(allDiags);
+    setMlProgress("");
+    setMlLoading(false);
+  }, [mlLoading]);
+
+  // Al montar: cargar WMS (instantáneo con cache ML)
+  useEffect(() => { loadWms(); }, [loadWms]);
+
+  // Auto-refresh WMS cada 30 segundos (solo DB, no ML API)
   useEffect(() => {
-    const iv = setInterval(loadData, 90_000);
+    const iv = setInterval(loadWms, 30_000);
     return () => clearInterval(iv);
-  }, [loadData]);
+  }, [loadWms]);
 
   const filtered = rows.filter(r => {
     if (!q) return true;
@@ -8181,6 +8182,8 @@ function AdminStockML() {
         const reason = json.results?.[sku]?.reason || "Error desconocido";
         setSyncResult(p => ({ ...p, [sku]: reason }));
       }
+      // Refrescar WMS para ver cache actualizado
+      loadWms();
     } catch (err) {
       setSyncResult(p => ({ ...p, [sku]: String(err) }));
     } finally {
@@ -8219,7 +8222,7 @@ function AdminStockML() {
         for (const [sku, r] of Object.entries(json.results || {}) as [string, any][]) {
           setSyncResult(p => ({ ...p, [sku]: r.ok ? "OK" : r.reason }));
         }
-        loadData();
+        loadWms();
       }
     } catch (err) {
       alert(`Error: ${String(err)}`);
@@ -8242,14 +8245,18 @@ function AdminStockML() {
     <div style={{display:"flex",flexDirection:"column",gap:16}}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
         <h2 style={{margin:0,fontSize:18}}>Stock ML — WMS vs Flex</h2>
-        <div style={{display:"flex",gap:8}}>
-          <button onClick={loadData} disabled={loading || mlLoading}
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          <button onClick={loadWms} disabled={loading}
             style={{padding:"8px 16px",borderRadius:8,background:"var(--bg3)",color:"var(--txt)",border:"1px solid var(--bg4)",fontWeight:600,fontSize:12,cursor:"pointer"}}>
-            {loading ? "Cargando..." : mlLoading ? "Consultando ML..." : "Refrescar"}
+            {loading ? "Cargando..." : "Refrescar WMS"}
+          </button>
+          <button onClick={refreshMl} disabled={mlLoading}
+            style={{padding:"8px 16px",borderRadius:8,background:mlLoading?"var(--bg3)":"var(--greenBg)",color:mlLoading?"var(--txt3)":"var(--green)",border:`1px solid ${mlLoading?"var(--bg4)":"var(--greenBd)"}`,fontWeight:600,fontSize:12,cursor:"pointer"}}>
+            {mlLoading ? "Consultando ML..." : "Refrescar ML"}
           </button>
           <button onClick={() => syncAll()} disabled={syncAllLoading || vinculados.length === 0}
             style={{padding:"8px 16px",borderRadius:8,background:"var(--cyan)",color:"#000",border:"none",fontWeight:700,fontSize:12,cursor:"pointer"}}>
-            {syncAllLoading ? "Sincronizando..." : `⚡ Sync Todo (${vinculados.length})`}
+            {syncAllLoading ? "Sincronizando..." : `Sync Todo (${vinculados.length})`}
           </button>
         </div>
       </div>
@@ -8286,7 +8293,30 @@ function AdminStockML() {
         </div>
       </div>
 
-      {/* Search */}
+      {/* Cache freshness + search */}
+      {(() => {
+        const cached = rows.filter(r => r.cache_updated_at);
+        if (cached.length > 0) {
+          const oldest = cached.reduce((min, r) => {
+            const t = new Date(r.cache_updated_at!).getTime();
+            return t < min ? t : min;
+          }, Infinity);
+          const ageMin = Math.round((Date.now() - oldest) / 60000);
+          const ageText = ageMin < 1 ? "< 1 min" : ageMin < 60 ? `${ageMin} min` : `${Math.round(ageMin / 60)}h`;
+          const fresh = ageMin < 10;
+          return (
+            <div style={{fontSize:11,color:fresh?"var(--green)":"var(--amber)",display:"flex",alignItems:"center",gap:6}}>
+              <span style={{width:8,height:8,borderRadius:"50%",background:fresh?"var(--green)":"var(--amber)",display:"inline-block"}} />
+              Stock ML cache: {cached.length}/{rows.length} SKUs — antigüedad: {ageText}
+              {!mlLoading && ageMin >= 5 && <span style={{color:"var(--txt3)",marginLeft:4}}>(click Refrescar ML para actualizar)</span>}
+            </div>
+          );
+        }
+        if (!mlLoading && rows.length > 0) {
+          return <div style={{fontSize:11,color:"var(--txt3)"}}>Sin cache ML — click &quot;Refrescar ML&quot; para cargar stock de MercadoLibre</div>;
+        }
+        return null;
+      })()}
       <input className="form-input" placeholder="Buscar SKU, item ID, nombre..." value={q} onChange={e=>setQ(e.target.value)}
         style={{maxWidth:400}} />
 

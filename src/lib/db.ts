@@ -1453,6 +1453,9 @@ export interface DBMLItemMap {
   activo: boolean;
   ultimo_sync: string | null;
   ultimo_stock_enviado: number | null;
+  stock_flex_cache: number | null;
+  stock_full_cache: number | null;
+  cache_updated_at: string | null;
   updated_at: string | null;
 }
 
