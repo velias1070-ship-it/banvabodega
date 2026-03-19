@@ -88,7 +88,7 @@ export default function AdminVentasML() {
   const mlMap = new Map<string, OrderRow>();
   for (const o of mlOrders) mlMap.set(`${o.order_id}|${o.sku_venta}`, o);
 
-  const allKeys = new Set([...pgMap.keys(), ...mlMap.keys()]);
+  const allKeys = new Set([...Array.from(pgMap.keys()), ...Array.from(mlMap.keys())]);
   const rows: ComparisonRow[] = Array.from(allKeys).map(key => {
     const pg = pgMap.get(key) || null;
     const ml = mlMap.get(key) || null;
