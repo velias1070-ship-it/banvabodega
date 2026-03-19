@@ -129,6 +129,16 @@ function ProductSearch({ onSelect, placeholder }: { onSelect: (p: Product) => vo
 
   const select = (p: Product) => { setQ(""); setOpen(false); onSelect(p); };
 
+  // Detectar si el query matchea un SKU venta del producto
+  const qNorm = q.trim().toLowerCase();
+  const matchedSkuVenta = (p: Product): string | null => {
+    if (!p.skuVenta) return null;
+    const ventaList = p.skuVenta.split(",").map(s => s.trim()).filter(Boolean);
+    const match = ventaList.find(sv => sv.toLowerCase() === qNorm || sv.toLowerCase().includes(qNorm));
+    // Solo mostrar si el match NO es por el SKU origen (para evitar redundancia)
+    return match && match.toLowerCase() !== p.sku.toLowerCase() ? match : null;
+  };
+
   return (
     <div style={{position:"relative"}}>
       <input className="form-input" value={q} onChange={e=>setQ(e.target.value)}
@@ -141,6 +151,7 @@ function ProductSearch({ onSelect, placeholder }: { onSelect: (p: Product) => vo
           {results.map(p => {
             const ventas = getVentasPorSkuOrigen(p.sku);
             const hasPacks = ventas.length > 1 || ventas.some(v => v.unidades > 1);
+            const svMatch = matchedSkuVenta(p);
             return (
               <div key={p.sku} onClick={()=>select(p)} style={{padding:"12px 14px",borderBottom:"1px solid var(--bg3)",cursor:"pointer"}}
                 onMouseEnter={e=>(e.currentTarget.style.background="var(--bg3)")}
@@ -148,6 +159,11 @@ function ProductSearch({ onSelect, placeholder }: { onSelect: (p: Product) => vo
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                   <div style={{flex:1,minWidth:0}}>
                     <div className="mono" style={{fontWeight:700,fontSize:14}}>{p.sku}</div>
+                    {svMatch && (
+                      <div style={{fontSize:10,color:"#06b6d4",fontWeight:600,marginTop:1}}>
+                        SKU venta: {svMatch}
+                      </div>
+                    )}
                     <div style={{fontSize:12,color:"var(--txt2)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</div>
                     {hasPacks && (
                       <div style={{fontSize:10,color:"#f59e0b",fontWeight:600,marginTop:2}}>
