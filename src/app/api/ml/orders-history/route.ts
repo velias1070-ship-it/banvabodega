@@ -140,65 +140,28 @@ async function fetchBillingForOrders(orderIds: number[]): Promise<Map<number, Bi
   return map;
 }
 
-/** Extract financial data from billing detail */
+/** Extract financial data from billing detail (matches ProfitGuard structure) */
 function extractBillingData(billing: BillingOrderDetail | undefined) {
   const data = {
-    comision_gross: 0,
-    comision_net: 0,
-    comision_rebate: 0,
-    costo_envio: 0,      // Cargo bruto por envío (antes de bonificación)
-    ingreso_envio: 0,     // Bonificación/descuento en envío
+    costo_envio: 0,           // Net shipping cost (after bonificación, like PG shippingCost)
+    ingreso_envio: 0,         // What buyer paid for shipping (like PG shippingRevenue)
     ingreso_adicional_tc: 0,
   };
 
   if (!billing) return data;
 
-  // Top-level sale_fee (may be null)
-  if (billing.sale_fee) {
-    data.comision_gross = Math.abs(billing.sale_fee.gross || 0);
-    data.comision_net = Math.abs(billing.sale_fee.net || 0);
-    data.comision_rebate = Math.abs(billing.sale_fee.rebate || 0);
-  }
-
-  // Parse details for charges
   if (billing.details) {
     for (const detail of billing.details) {
       const subType = detail.charge_info?.detail_sub_type || "";
 
-      // CFF / CXD = Cargo por envíos de Mercado Libre (shipping charge)
+      // CFF / CXD = Cargo por envíos — use detail_amount (net, post-bonificación)
       if (subType === "CFF" || subType === "CXD") {
-        // Costo bruto = charge_amount_without_discount (antes de bonificación)
-        // Bonificación = discount_amount
-        if (detail.discount_info) {
-          data.costo_envio += Math.abs(detail.discount_info.charge_amount_without_discount || 0);
-          data.ingreso_envio += Math.abs(detail.discount_info.discount_amount || 0);
-        } else {
-          // Sin descuento: el detail_amount es el costo total
-          data.costo_envio += Math.abs(detail.charge_info?.detail_amount || 0);
-        }
+        data.costo_envio += Math.abs(detail.charge_info?.detail_amount || 0);
       }
 
-      // CV = Cargo por venta (sale commission)
-      if (subType === "CV") {
-        if (detail.discount_info) {
-          data.comision_gross = Math.abs(detail.discount_info.charge_amount_without_discount || 0);
-          data.ingreso_adicional_tc += Math.abs(detail.discount_info.discount_amount || 0);
-        }
-        // Also check sales_info for per-order sale_fee
-        if (detail.sales_info) {
-          for (const si of detail.sales_info) {
-            if (si.sale_fee) {
-              data.comision_gross = Math.abs(si.sale_fee.gross || 0);
-              data.comision_net = Math.abs(si.sale_fee.net || 0);
-              data.comision_rebate = Math.abs(si.sale_fee.rebate || 0);
-            }
-          }
-        }
-      }
-
-      // BXD = Bonificación explícita
-      if (subType === "BXD") {
-        data.ingreso_envio += Math.abs(detail.charge_info?.detail_amount || 0);
+      // Shipping revenue: what the buyer paid for shipping
+      if (detail.shipping_info?.receiver_shipping_cost) {
+        data.ingreso_envio += Math.abs(detail.shipping_info.receiver_shipping_cost);
       }
     }
   }
@@ -282,17 +245,9 @@ export async function GET(req: NextRequest) {
         const itemSubtotal = item.unit_price * item.quantity;
         const prorateRatio = orderTotal > 0 ? itemSubtotal / orderTotal : 1 / order.order_items.length;
 
-        // Comision: use per-item sale_fee if available, otherwise prorate billing
-        let comisionTotal: number;
-        if (item.sale_fee != null && item.sale_fee > 0) {
-          comisionTotal = Math.round(item.sale_fee);
-        } else if (billingData.comision_net > 0) {
-          comisionTotal = Math.round(billingData.comision_net * prorateRatio);
-        } else {
-          comisionTotal = 0;
-        }
-
-        const comisionUnitaria = item.quantity > 0 ? Math.round(comisionTotal / item.quantity) : 0;
+        // Comision: sale_fee is per-unit, multiply by quantity (matches PG commission)
+        const comisionUnitaria = Math.round(item.sale_fee || 0);
+        const comisionTotal = comisionUnitaria * item.quantity;
 
         // Shipping: prorate across items (billing amounts already in CLP pesos)
         const costoEnvio = Math.round(billingData.costo_envio * prorateRatio);
