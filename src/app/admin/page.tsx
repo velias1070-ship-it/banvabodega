@@ -8215,9 +8215,13 @@ function AdminStockML() {
       <input className="form-input" placeholder="Buscar SKU, item ID, nombre..." value={q} onChange={e=>setQ(e.target.value)}
         style={{maxWidth:400}} />
 
-      {loading ? (
+      {loading && rows.length > 0 && (
+        <div style={{padding:"8px 16px",textAlign:"center",color:"var(--cyan)",fontSize:12,opacity:0.8}}>Actualizando datos de MercadoLibre...</div>
+      )}
+
+      {loading && rows.length === 0 ? (
         <div style={{padding:40,textAlign:"center",color:"var(--txt3)"}}>Consultando stock en MercadoLibre...</div>
-      ) : vinculados.length === 0 && sinVincular.length === 0 ? (
+      ) : !loading && vinculados.length === 0 && sinVincular.length === 0 ? (
         <div style={{padding:40,textAlign:"center",color:"var(--txt3)"}}>No hay SKUs mapeados a ML. Configura los mapeos en la pestaña Config.</div>
       ) : (
         <>

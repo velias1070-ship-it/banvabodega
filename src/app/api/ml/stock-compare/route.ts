@@ -40,27 +40,32 @@ export async function GET() {
       wmsStock[r.sku] = (wmsStock[r.sku] || 0) + r.cantidad;
     }
 
-    // 3. Resolver user_product_id faltantes (secuencial porque escribe en DB)
+    // 3. Resolver user_product_id faltantes (en paralelo, batches de 10)
     const diagnostics: string[] = [];
-    for (const map of mappings) {
-      if (!map.user_product_id) {
-        try {
-          const upId = await getItemUserProductId(map.item_id);
-          if (upId) {
-            map.user_product_id = upId;
-            await sb.from("ml_items_map").update({ user_product_id: upId }).eq("id", map.id);
-            diagnostics.push(`${map.sku}: user_product_id resuelto → ${upId}`);
-          } else {
-            diagnostics.push(`${map.sku}: no se pudo resolver user_product_id para item ${map.item_id}`);
+    const needsResolution = mappings.filter((m: { user_product_id: string | null }) => !m.user_product_id);
+    if (needsResolution.length > 0) {
+      const RESOLVE_BATCH = 10;
+      for (let i = 0; i < needsResolution.length; i += RESOLVE_BATCH) {
+        const batch = needsResolution.slice(i, i + RESOLVE_BATCH);
+        await Promise.all(batch.map(async (map) => {
+          try {
+            const upId = await getItemUserProductId(map.item_id);
+            if (upId) {
+              map.user_product_id = upId;
+              await sb.from("ml_items_map").update({ user_product_id: upId }).eq("id", map.id);
+              diagnostics.push(`${map.sku}: user_product_id resuelto → ${upId}`);
+            } else {
+              diagnostics.push(`${map.sku}: no se pudo resolver user_product_id para item ${map.item_id}`);
+            }
+          } catch (err) {
+            diagnostics.push(`${map.sku}: error resolviendo user_product_id: ${String(err)}`);
           }
-        } catch (err) {
-          diagnostics.push(`${map.sku}: error resolviendo user_product_id: ${String(err)}`);
-        }
+        }));
       }
     }
 
-    // 4. Consultar stock ML en batches (máx 5 paralelos, con delay entre batches para evitar 429)
-    const BATCH_SIZE = 5;
+    // 4. Consultar stock ML en paralelo (batches de 10, fetchWithRateLimit maneja 429 automáticamente)
+    const BATCH_SIZE = 10;
     type MlResult = { sku: string; flexQty: number; fullQty: number; upId: string | null; error?: string };
     const mlResults: MlResult[] = [];
     let firstError: string | null = null;
@@ -92,11 +97,6 @@ export async function GET() {
       });
       const batchResults = await Promise.all(promises);
       mlResults.push(...batchResults);
-
-      // Throttle: wait 1s between batches to avoid ML rate limits
-      if (i + BATCH_SIZE < mappings.length) {
-        await new Promise(r => setTimeout(r, 1000));
-      }
 
       // Si el primer batch falla todo con el mismo error, probablemente es token → no seguir
       if (i === 0) {
