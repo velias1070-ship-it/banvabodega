@@ -23,7 +23,8 @@ export type AccionIntel =
   | "EN_TRANSITO"
   | "PLANIFICAR"
   | "OK"
-  | "EXCESO";
+  | "EXCESO"
+  | "NUEVO";
 
 export type TendenciaVel = "subiendo" | "bajando" | "estable";
 export type ClaseABC = "A" | "B" | "C";
@@ -864,6 +865,9 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     }
 
     // ── PASO 15: Acción y prioridad ──
+    const ultimoMov = ultimoMovPorSku.get(skuOrigen) || null;
+    const diasSinMov = ultimoMov ? Math.floor((hoyMs - new Date(ultimoMov).getTime()) / 86400000) : 999;
+
     // Usar velEfectiva para pedir (vel_pre_quiebre si en quiebre prolongado)
     const velParaPedir = enQuiebreProlongado ? velPreQuiebre : (multiplicadorEvento > 1 ? velAjustadaEvento : velPonderada);
     const velTarget = multiplicadorEvento > 1 ? velAjustadaEvento : velPonderada;
@@ -876,6 +880,7 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     let accion: AccionIntel;
     let prioridad: number;
     if (velPonderada === 0 && velPreQuiebre === 0 && stTotal === 0) { accion = "INACTIVO"; prioridad = 99; }
+    else if (velPonderada === 0 && velPreQuiebre === 0 && stTotal > 0 && diasSinMov <= 30) { accion = "NUEVO"; prioridad = 50; }
     else if (velPonderada === 0 && velPreQuiebre === 0 && stTotal > 0) { accion = "DEAD_STOCK"; prioridad = 80; }
     else if (stFull === 0 && (velFull > 0 || enQuiebreProlongado) && stBodega > 0) { accion = "MANDAR_FULL"; prioridad = 10; }
     else if (stFull === 0 && (velFull > 0 || enQuiebreProlongado) && stBodega === 0 && (esQuiebreProveedor || !tieneStockProv)) { accion = "AGOTADO_SIN_PROVEEDOR"; prioridad = 3; }
@@ -904,9 +909,6 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     const ultimoConteo = conteoInfo?.ultimoConteo || null;
     const diasSinConteo = ultimoConteo ? Math.floor((hoyMs - new Date(ultimoConteo).getTime()) / 86400000) : 999;
     const diferenciasConteo = conteoInfo?.diferencias || 0;
-
-    const ultimoMov = ultimoMovPorSku.get(skuOrigen) || null;
-    const diasSinMov = ultimoMov ? Math.floor((hoyMs - new Date(ultimoMov).getTime()) / 86400000) : 999;
 
     // Ingreso estimado 30d (para ABC)
     const ingreso30d = velPonderada * precioPromedio * 4.3;
