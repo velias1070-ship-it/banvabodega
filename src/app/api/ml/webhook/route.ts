@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fetchAndProcessOrder, processShipment, mlGet, MLOrder, syncSingleFulfillmentStock } from "@/lib/ml";
-import { getServerSupabase } from "@/lib/supabase-server";
 
 /**
  * MercadoLibre webhook endpoint.
@@ -44,34 +43,6 @@ export async function POST(req: NextRequest) {
       // Also process via legacy path
       const count = await fetchAndProcessOrder(orderId);
       console.log(`[ML Webhook] Order ${orderId}: ${count} legacy items processed`);
-
-      // Invalidar cache de stock ML para los SKUs vendidos
-      if (order?.order_items) {
-        try {
-          const sb = getServerSupabase();
-          if (sb) {
-            for (const item of order.order_items) {
-              const itemId = item.item?.id;
-              if (itemId) {
-                // Decrementar stock_flex_cache por la cantidad vendida
-                const { data: maps } = await sb.from("ml_items_map")
-                  .select("id, stock_flex_cache")
-                  .eq("item_id", itemId)
-                  .eq("activo", true);
-                for (const m of maps || []) {
-                  const newCache = Math.max(0, (m.stock_flex_cache || 0) - (item.quantity || 1));
-                  await sb.from("ml_items_map").update({
-                    stock_flex_cache: newCache,
-                    cache_updated_at: new Date().toISOString(),
-                  }).eq("id", m.id);
-                }
-              }
-            }
-          }
-        } catch (e) {
-          console.warn("[ML Webhook] Error updating stock cache:", e);
-        }
-      }
 
       return NextResponse.json({ status: "ok", order_id: orderId });
     }
