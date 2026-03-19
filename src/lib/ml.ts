@@ -1138,13 +1138,13 @@ export async function updateFlexStock(
   quantity: number,
   version: number,
   stockType: "selling_address" | "seller_warehouse" = "selling_address",
-  warehouseLocations?: StockLocation[]
+  warehouseLocations: StockLocation[] = []
 ): Promise<{ ok: boolean; error?: string }> {
   try {
     let body: unknown;
     if (stockType === "seller_warehouse") {
       // seller_warehouse requires locations array with store_id
-      if (!warehouseLocations || warehouseLocations.length === 0) {
+      if (warehouseLocations.length === 0) {
         return { ok: false, error: "seller_warehouse requiere locations con store_id" };
       }
       // Deduplicate by network_node_id — ML rejects repeated network_node_id
