@@ -269,11 +269,17 @@ export async function POST(req: NextRequest) {
         } else {
           const { data: stockRows } = await sb.from("stock").select("cantidad").eq("sku", sku);
           const totalStock = (stockRows || []).reduce((s: number, r: { cantidad: number }) => s + r.cantidad, 0);
-          const { data: pedidos } = await sb.from("pedidos_flex")
-            .select("cantidad")
-            .eq("sku_venta", sku)
-            .in("estado", ["PENDIENTE", "EN_PICKING"]);
-          const committed = (pedidos || []).reduce((s: number, p: { cantidad: number }) => s + p.cantidad, 0);
+          // Calculate committed from active shipments (ml_shipments + ml_shipment_items)
+          const { data: activeShipments } = await sb.from("ml_shipments").select("shipment_id")
+            .neq("logistic_type", "fulfillment")
+            .in("status", ["ready_to_ship", "pending"]);
+          let committed = 0;
+          if (activeShipments && activeShipments.length > 0) {
+            const sids = (activeShipments as { shipment_id: number }[]).map(s => s.shipment_id);
+            const { data: commitItems } = await sb.from("ml_shipment_items").select("quantity")
+              .in("shipment_id", sids).eq("seller_sku", sku);
+            committed = (commitItems || []).reduce((s: number, i: { quantity: number }) => s + i.quantity, 0);
+          }
           available = Math.max(0, totalStock - committed);
         }
 

@@ -696,43 +696,13 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
 
 /**
  * Process a single ML order: extract shipment_id, delegate to processShipment.
- * Also upserts to legacy pedidos_flex for backward compat.
+ * Data goes to ml_shipments + ml_shipment_items only.
  */
 export async function processOrder(order: MLOrder, config: MLConfig): Promise<number> {
   if (order.status !== "paid") return 0;
   if (!order.shipping?.id) return 0;
 
-  // Process via new shipment-centric system (returns shipInfo to avoid redundant API call)
-  const { items: shipmentItems, shipInfo } = await processShipment(order.shipping.id, [order.id]);
-
-  // Also upsert to legacy pedidos_flex for backward compat
-  if (shipInfo.logistic_type !== "fulfillment" && shipInfo.logistic_type !== "unknown") {
-    const sb = getServerSupabase();
-    if (sb) {
-      const fechaArmado = shipInfo.handling_limit_date
-        || calcFechaArmado(order.date_created, config.hora_corte_lv, config.hora_corte_sab);
-
-      for (const item of order.order_items) {
-        const skuVenta = item.item.seller_sku || `ML-${item.item.id}`;
-        await sb.from("pedidos_flex").upsert({
-          order_id: order.id,
-          fecha_venta: order.date_created,
-          fecha_armado: fechaArmado,
-          estado: "PENDIENTE",
-          sku_venta: skuVenta.toUpperCase(),
-          nombre_producto: item.item.title,
-          cantidad: item.quantity,
-          shipping_id: order.shipping.id,
-          pack_id: order.pack_id,
-          buyer_nickname: order.buyer?.nickname || "",
-          raw_data: order,
-          picking_session_id: null,
-          etiqueta_url: null,
-        }, { onConflict: "order_id,sku_venta" });
-      }
-    }
-  }
-
+  const { items: shipmentItems } = await processShipment(order.shipping.id, [order.id]);
   return shipmentItems;
 }
 
@@ -768,40 +738,14 @@ async function processOrderBatch(orders: MLOrder[], config: MLConfig): Promise<{
   let skipped = 0;
   let items = 0;
 
-  // Process each shipment and collect shipInfo for legacy compat
-  const shipInfoCache = new Map<number, ShipmentFlexInfo>();
   const entries = Array.from(shipmentMap.entries());
   for (const entry of entries) {
     const result = await processShipment(entry[0], entry[1]);
-    shipInfoCache.set(entry[0], result.shipInfo);
     if (result.items > 0) {
       processed++;
       items += result.items;
     } else {
       skipped++;
-    }
-  }
-
-  // Also process via legacy path for backward compat (reusing cached shipInfo)
-  const sb = getServerSupabase();
-  if (sb) {
-    for (const order of orders) {
-      if (order.status !== "paid" || !order.shipping?.id) continue;
-      const shipInfo = shipInfoCache.get(order.shipping.id);
-      if (shipInfo && shipInfo.logistic_type !== "fulfillment" && shipInfo.logistic_type !== "unknown") {
-        const fechaArmado = shipInfo.handling_limit_date
-          || calcFechaArmado(order.date_created, config.hora_corte_lv, config.hora_corte_sab);
-        for (const item of order.order_items) {
-          const skuVenta = item.item.seller_sku || `ML-${item.item.id}`;
-          await sb.from("pedidos_flex").upsert({
-            order_id: order.id, fecha_venta: order.date_created, fecha_armado: fechaArmado,
-            estado: "PENDIENTE", sku_venta: skuVenta.toUpperCase(), nombre_producto: item.item.title,
-            cantidad: item.quantity, shipping_id: order.shipping.id, pack_id: order.pack_id,
-            buyer_nickname: order.buyer?.nickname || "", raw_data: order,
-            picking_session_id: null, etiqueta_url: null,
-          }, { onConflict: "order_id,sku_venta" });
-        }
-      }
     }
   }
 

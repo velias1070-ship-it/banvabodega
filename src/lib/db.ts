@@ -1380,6 +1380,68 @@ export async function fetchAllShipments(limit = 100, storeId?: number | null): P
 }
 
 /**
+ * Calculate committed stock per seller_sku from active shipments.
+ * Active = status IN (ready_to_ship, pending) AND logistic_type != fulfillment.
+ * Returns { [seller_sku]: total_committed_qty }
+ */
+export async function fetchCommittedStockFromShipments(): Promise<Record<string, number>> {
+  const sb = getSupabase(); if (!sb) return {};
+
+  // 1. Get active shipment IDs
+  const { data: shipments } = await sb.from("ml_shipments").select("shipment_id")
+    .neq("logistic_type", "fulfillment")
+    .in("status", ["ready_to_ship", "pending"]);
+  if (!shipments || shipments.length === 0) return {};
+
+  // 2. Get items for those shipments (in chunks)
+  const shipmentIds = (shipments as { shipment_id: number }[]).map(s => s.shipment_id);
+  const committed: Record<string, number> = {};
+
+  for (let i = 0; i < shipmentIds.length; i += 500) {
+    const chunk = shipmentIds.slice(i, i + 500);
+    const { data: items } = await sb.from("ml_shipment_items").select("seller_sku, quantity")
+      .in("shipment_id", chunk);
+    if (items) {
+      for (const item of items as { seller_sku: string; quantity: number }[]) {
+        const sku = item.seller_sku.toUpperCase();
+        committed[sku] = (committed[sku] || 0) + item.quantity;
+      }
+    }
+  }
+
+  return committed;
+}
+
+/**
+ * Calculate committed stock for a single SKU from active shipments.
+ */
+export async function fetchCommittedStockForSku(sku: string): Promise<number> {
+  const sb = getSupabase(); if (!sb) return 0;
+
+  const { data: shipments } = await sb.from("ml_shipments").select("shipment_id")
+    .neq("logistic_type", "fulfillment")
+    .in("status", ["ready_to_ship", "pending"]);
+  if (!shipments || shipments.length === 0) return 0;
+
+  const shipmentIds = (shipments as { shipment_id: number }[]).map(s => s.shipment_id);
+  let total = 0;
+
+  for (let i = 0; i < shipmentIds.length; i += 500) {
+    const chunk = shipmentIds.slice(i, i + 500);
+    const { data: items } = await sb.from("ml_shipment_items").select("quantity")
+      .in("shipment_id", chunk)
+      .eq("seller_sku", sku);
+    if (items) {
+      for (const item of items as { quantity: number }[]) {
+        total += item.quantity;
+      }
+    }
+  }
+
+  return total;
+}
+
+/**
  * Fetch distinct store_ids from ml_shipments for the store filter dropdown.
  */
 export async function fetchStoreIds(): Promise<{ store_id: number; count: number }[]> {

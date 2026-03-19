@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fetchAndProcessOrder, processShipment, mlGet, MLOrder, syncSingleFulfillmentStock } from "@/lib/ml";
+import { processShipment, mlGet, MLOrder, syncSingleFulfillmentStock } from "@/lib/ml";
 
 /**
  * MercadoLibre webhook endpoint.
@@ -39,10 +39,6 @@ export async function POST(req: NextRequest) {
         const result = await processShipment(order.shipping.id, orderIds);
         console.log(`[ML Webhook] Shipment ${order.shipping.id}: ${result.items} items processed`);
       }
-
-      // Also process via legacy path
-      const count = await fetchAndProcessOrder(orderId);
-      console.log(`[ML Webhook] Order ${orderId}: ${count} legacy items processed`);
 
       return NextResponse.json({ status: "ok", order_id: orderId });
     }

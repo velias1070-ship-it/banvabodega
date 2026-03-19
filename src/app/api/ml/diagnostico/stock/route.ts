@@ -76,11 +76,16 @@ export async function GET(req: NextRequest) {
         .eq("sku", skuBuscar);
       stockWMS = stockRows || [];
 
-      const { data: pedidos } = await sb.from("pedidos_flex")
-        .select("cantidad")
-        .eq("sku_venta", skuBuscar)
-        .in("estado", ["PENDIENTE", "EN_PICKING"]);
-      stockComprometido = (pedidos || []).reduce((s: number, p: { cantidad: number }) => s + p.cantidad, 0);
+      // Calculate committed from active shipments
+      const { data: activeShip } = await sb.from("ml_shipments").select("shipment_id")
+        .neq("logistic_type", "fulfillment")
+        .in("status", ["ready_to_ship", "pending"]);
+      if (activeShip && activeShip.length > 0) {
+        const sids = (activeShip as { shipment_id: number }[]).map(s => s.shipment_id);
+        const { data: commitItems } = await sb.from("ml_shipment_items").select("quantity")
+          .in("shipment_id", sids).eq("seller_sku", skuBuscar);
+        stockComprometido = (commitItems || []).reduce((s: number, i: { quantity: number }) => s + i.quantity, 0);
+      }
     }
 
     const totalWMS = stockWMS.reduce((s, r) => s + r.cantidad, 0);
