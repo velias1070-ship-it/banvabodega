@@ -832,7 +832,7 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
         diasEnQuiebre = diasQuiebre > 0 ? diasQuiebre : 1;
         velPreQuiebre = velPonderada;
         abcPreQuiebre = null; // Se asigna después del paso ABC global
-        esQuiebreProveedor = !prod || prod.estado_sku === "sin_stock_proveedor";
+        esQuiebreProveedor = !tieneStockProv || (!prod || prod.estado_sku === "sin_stock_proveedor");
       }
     } else if (prev && prev.dias_en_quiebre > 0 && stFull > 0) {
       // SKU se repuso — verificar catch-up
@@ -878,7 +878,7 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     if (velPonderada === 0 && velPreQuiebre === 0 && stTotal === 0) { accion = "INACTIVO"; prioridad = 99; }
     else if (velPonderada === 0 && velPreQuiebre === 0 && stTotal > 0) { accion = "DEAD_STOCK"; prioridad = 80; }
     else if (stFull === 0 && (velFull > 0 || enQuiebreProlongado) && stBodega > 0) { accion = "MANDAR_FULL"; prioridad = 10; }
-    else if (stFull === 0 && (velFull > 0 || enQuiebreProlongado) && stBodega === 0 && esQuiebreProveedor) { accion = "AGOTADO_SIN_PROVEEDOR"; prioridad = 3; }
+    else if (stFull === 0 && (velFull > 0 || enQuiebreProlongado) && stBodega === 0 && (esQuiebreProveedor || !tieneStockProv)) { accion = "AGOTADO_SIN_PROVEEDOR"; prioridad = 3; }
     else if (stFull === 0 && (velFull > 0 || enQuiebreProlongado) && stBodega === 0) { accion = "AGOTADO_PEDIR"; prioridad = 5; }
     else if (cobFull < puntoReorden && cobFull < 999) { accion = "URGENTE"; prioridad = 15; }
     else if (cobFull < 30) { accion = "PLANIFICAR"; prioridad = 40; }
