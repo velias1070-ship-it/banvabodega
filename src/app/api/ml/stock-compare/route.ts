@@ -15,11 +15,15 @@ interface CompareRow {
 
 /**
  * GET — Compare WMS stock vs ML stock for all mapped SKUs.
- * Returns array of { sku, item_id, stock_wms, stock_flex_ml, stock_full_ml, ... }
+ * ?phase=wms  → fast: returns WMS data + last cached ML data from DB (no ML API calls)
+ * ?phase=ml   → slow: fetches live ML stock for all SKUs
+ * (no phase)  → legacy: does everything in one call
  */
-export async function GET() {
+export async function GET(req: NextRequest) {
   const sb = getServerSupabase();
   if (!sb) return NextResponse.json({ error: "no_db" }, { status: 500 });
+
+  const phase = req.nextUrl.searchParams.get("phase");
 
   try {
     // 1. Fetch all active ML item mappings
@@ -40,11 +44,28 @@ export async function GET() {
       wmsStock[r.sku] = (wmsStock[r.sku] || 0) + r.cantidad;
     }
 
-    // 3. Resolver user_product_id faltantes (en paralelo, batches de 10)
+    // Phase WMS: return instantly with cached ML data (ultimo_stock_enviado)
+    if (phase === "wms") {
+      const rows: CompareRow[] = mappings.map((map) => ({
+        sku: map.sku,
+        item_id: map.item_id,
+        user_product_id: map.user_product_id || null,
+        stock_wms: wmsStock[map.sku] || 0,
+        stock_flex_ml: map.ultimo_stock_enviado ?? -1, // -1 = no data yet
+        stock_full_ml: 0,
+        ultimo_sync: map.ultimo_sync || null,
+        ultimo_stock_enviado: map.ultimo_stock_enviado ?? null,
+      }));
+      return NextResponse.json({ rows, phase: "wms" });
+    }
+
+    // Phase ML (or legacy): fetch live stock from ML API
     const diagnostics: string[] = [];
+
+    // 3. Resolver user_product_id faltantes (en paralelo, batches de 5)
     const needsResolution = mappings.filter((m: { user_product_id: string | null }) => !m.user_product_id);
     if (needsResolution.length > 0) {
-      const RESOLVE_BATCH = 10;
+      const RESOLVE_BATCH = 5;
       for (let i = 0; i < needsResolution.length; i += RESOLVE_BATCH) {
         const batch = needsResolution.slice(i, i + RESOLVE_BATCH);
         await Promise.all(batch.map(async (map) => {
@@ -64,8 +85,8 @@ export async function GET() {
       }
     }
 
-    // 4. Consultar stock ML en paralelo (batches de 10, fetchWithRateLimit maneja 429 automáticamente)
-    const BATCH_SIZE = 10;
+    // 4. Consultar stock ML en paralelo (batches de 5 para no saturar)
+    const BATCH_SIZE = 5;
     type MlResult = { sku: string; flexQty: number; fullQty: number; upId: string | null; error?: string };
     const mlResults: MlResult[] = [];
     let firstError: string | null = null;
@@ -103,7 +124,6 @@ export async function GET() {
         const errors = batchResults.filter(r => r.error);
         if (errors.length === batchResults.length && batchResults.length > 0) {
           firstError = errors[0].error || "error desconocido";
-          // Llenar el resto con el mismo error sin hacer más llamadas
           for (let j = i + BATCH_SIZE; j < mappings.length; j++) {
             const m = mappings[j];
             mlResults.push({ sku: m.sku, flexQty: 0, fullQty: 0, upId: m.user_product_id || null, error: firstError });
@@ -117,7 +137,6 @@ export async function GET() {
     const rows: CompareRow[] = mappings.map((map, idx) => {
       const ml = mlResults[idx];
       if (ml?.error) {
-        // Solo agregar al diagnóstico si no es error repetido
         if (!firstError || idx < BATCH_SIZE) {
           diagnostics.push(`${map.sku}: ${ml.error}`);
         }
@@ -135,13 +154,12 @@ export async function GET() {
     });
 
     if (firstError) {
-      // Si el error es de token, dar diagnóstico detallado
       const tokenDiag = await diagnoseToken();
       diagnostics.unshift(`⛔ Todas las consultas fallaron: ${firstError}`);
       diagnostics.unshift(`🔑 Estado del token: ${tokenDiag}`);
     }
 
-    return NextResponse.json({ rows, diagnostics: diagnostics.length > 0 ? diagnostics : undefined });
+    return NextResponse.json({ rows, phase: "ml", diagnostics: diagnostics.length > 0 ? diagnostics : undefined });
   } catch (err) {
     console.error("[Stock Compare] Error:", err);
     return NextResponse.json({ error: String(err) }, { status: 500 });

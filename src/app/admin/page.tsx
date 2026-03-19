@@ -8035,6 +8035,7 @@ interface StockCompareRow {
 function AdminStockML() {
   const [rows, setRows] = useState<StockCompareRow[]>([]);
   const [loading, setLoading] = useState(false);
+  const [mlLoading, setMlLoading] = useState(false);
   const [error, setError] = useState("");
   const [q, setQ] = useState("");
   const [overrides, setOverrides] = useState<Record<string, string>>({});
@@ -8048,29 +8049,59 @@ function AdminStockML() {
     setLoading(true);
     setError("");
     try {
-      const resp = await fetch("/api/ml/stock-compare");
-      const json = await resp.json();
-      if (json.error) { setError(json.error); return; }
-      setRows(json.rows || []);
-      setDiagnostics(json.diagnostics || []);
-      // Pre-fill overrides with WMS stock (default: sync all WMS stock to Flex)
+      // Phase 1: cargar datos WMS rápido (sin llamar a ML API)
+      const wmsResp = await fetch("/api/ml/stock-compare?phase=wms");
+      const wmsJson = await wmsResp.json();
+      if (wmsJson.error) { setError(wmsJson.error); return; }
+      setRows(wmsJson.rows || []);
       const ov: Record<string, string> = {};
-      for (const r of json.rows || []) {
+      for (const r of wmsJson.rows || []) {
         ov[r.sku] = String(r.stock_wms);
       }
       setOverrides(ov);
+      setLoading(false);
+
+      // Phase 2: cargar stock live de ML (puede tardar)
+      setMlLoading(true);
+      try {
+        const mlResp = await fetch("/api/ml/stock-compare?phase=ml");
+        const mlJson = await mlResp.json();
+        if (!mlJson.error && mlJson.rows) {
+          setRows(mlJson.rows);
+          setDiagnostics(mlJson.diagnostics || []);
+          // Update overrides with fresh WMS data
+          const freshOv: Record<string, string> = {};
+          for (const r of mlJson.rows || []) {
+            freshOv[r.sku] = String(r.stock_wms);
+          }
+          setOverrides(prev => {
+            // Keep user-modified values, update rest
+            const merged = { ...freshOv };
+            for (const [sku, val] of Object.entries(prev)) {
+              if (val !== String(ov[sku])) merged[sku] = val; // user changed it
+            }
+            return merged;
+          });
+        } else if (mlJson.diagnostics) {
+          setDiagnostics(mlJson.diagnostics);
+        }
+      } catch (mlErr) {
+        // ML phase failed but WMS data is still shown
+        setDiagnostics([`Error consultando ML: ${String(mlErr)}. Datos WMS son correctos, stock ML puede estar desactualizado.`]);
+      } finally {
+        setMlLoading(false);
+      }
     } catch (err) {
       setError(String(err));
-    } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => { loadData(); }, [loadData]);
 
-  // Auto-refresh cada 60 segundos para mantener datos en vivo
+  // Auto-refresh cada 90 segundos
   useEffect(() => {
-    const iv = setInterval(loadData, 60_000);
+    const iv = setInterval(loadData, 90_000);
     return () => clearInterval(iv);
   }, [loadData]);
 
@@ -8168,9 +8199,9 @@ function AdminStockML() {
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
         <h2 style={{margin:0,fontSize:18}}>Stock ML — WMS vs Flex</h2>
         <div style={{display:"flex",gap:8}}>
-          <button onClick={loadData} disabled={loading}
+          <button onClick={loadData} disabled={loading || mlLoading}
             style={{padding:"8px 16px",borderRadius:8,background:"var(--bg3)",color:"var(--txt)",border:"1px solid var(--bg4)",fontWeight:600,fontSize:12,cursor:"pointer"}}>
-            {loading ? "Cargando..." : "🔄 Refrescar"}
+            {loading ? "Cargando..." : mlLoading ? "Consultando ML..." : "Refrescar"}
           </button>
           <button onClick={() => syncAll()} disabled={syncAllLoading || vinculados.length === 0}
             style={{padding:"8px 16px",borderRadius:8,background:"var(--cyan)",color:"#000",border:"none",fontWeight:700,fontSize:12,cursor:"pointer"}}>
@@ -8215,13 +8246,13 @@ function AdminStockML() {
       <input className="form-input" placeholder="Buscar SKU, item ID, nombre..." value={q} onChange={e=>setQ(e.target.value)}
         style={{maxWidth:400}} />
 
-      {loading && rows.length > 0 && (
-        <div style={{padding:"8px 16px",textAlign:"center",color:"var(--cyan)",fontSize:12,opacity:0.8}}>Actualizando datos de MercadoLibre...</div>
+      {mlLoading && rows.length > 0 && (
+        <div style={{padding:"8px 16px",textAlign:"center",color:"var(--cyan)",fontSize:12,opacity:0.8}}>Consultando stock en vivo de MercadoLibre...</div>
       )}
 
       {loading && rows.length === 0 ? (
-        <div style={{padding:40,textAlign:"center",color:"var(--txt3)"}}>Consultando stock en MercadoLibre...</div>
-      ) : !loading && vinculados.length === 0 && sinVincular.length === 0 ? (
+        <div style={{padding:40,textAlign:"center",color:"var(--txt3)"}}>Cargando datos...</div>
+      ) : !loading && !mlLoading && vinculados.length === 0 && sinVincular.length === 0 ? (
         <div style={{padding:40,textAlign:"center",color:"var(--txt3)"}}>No hay SKUs mapeados a ML. Configura los mapeos en la pestaña Config.</div>
       ) : (
         <>
