@@ -10,12 +10,12 @@ const ML_API = "https://api.mercadolibre.com";
 const ML_AUTH = "https://auth.mercadolibre.cl"; // Chile
 const SITE_ID = "MLC";
 
-/** Helper: fetch with automatic retry on 429 (rate limit) */
-async function fetchWithRateLimit(url: string, init: RequestInit, maxRetries = 3): Promise<Response> {
+/** Helper: fetch with automatic retry on 429 (rate limit). Short waits to stay within Vercel timeout. */
+async function fetchWithRateLimit(url: string, init: RequestInit, maxRetries = 2): Promise<Response> {
   let resp = await fetch(url, init);
   for (let attempt = 1; attempt <= maxRetries && resp.status === 429; attempt++) {
     const retryAfter = resp.headers.get("retry-after");
-    const waitMs = retryAfter ? Math.min(parseInt(retryAfter, 10) * 1000, 10000) : attempt * 2000;
+    const waitMs = retryAfter ? Math.min(parseInt(retryAfter, 10) * 1000, 5000) : attempt * 1000;
     console.warn(`[ML] 429 rate limit on ${init.method || "GET"} ${url.replace(ML_API, "")}, waiting ${waitMs}ms (retry ${attempt}/${maxRetries})`);
     await new Promise(r => setTimeout(r, waitMs));
     resp = await fetch(url, init);
