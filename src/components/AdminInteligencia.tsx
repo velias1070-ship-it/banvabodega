@@ -153,6 +153,7 @@ function accionColor(a: string): string {
     case "EN_TRANSITO": return "var(--blue)";
     case "OK": return "var(--green)";
     case "EXCESO": return "var(--cyan)";
+    case "NUEVO": return "var(--cyan)";
     case "DEAD_STOCK": return "var(--txt3)";
     case "INACTIVO": return "var(--txt3)";
     default: return "var(--txt3)";
@@ -259,8 +260,9 @@ const ENVIO_ACCION_ORDEN: Record<string, number> = {
   EN_TRANSITO: 4,
   OK: 5,
   EXCESO: 6,
-  DEAD_STOCK: 7,
-  INACTIVO: 8,
+  NUEVO: 7,
+  DEAD_STOCK: 8,
+  INACTIVO: 9,
 };
 
 const ENVIO_ABC_ORDEN: Record<string, number> = { A: 0, B: 1, C: 2 };
@@ -1267,6 +1269,7 @@ export default function AdminInteligencia() {
           <option value="EN_TRANSITO">EN TRANSITO</option>
           <option value="OK">OK</option>
           <option value="EXCESO">EXCESO</option>
+          <option value="NUEVO">NUEVO</option>
           <option value="DEAD_STOCK">DEAD STOCK</option>
         </select>
         <select value={filtroABC} onChange={e => setFiltroABC(e.target.value)} className="form-input" style={{ fontSize: 11, padding: "5px 6px" }}>

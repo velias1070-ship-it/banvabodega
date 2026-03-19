@@ -239,6 +239,7 @@ export async function POST(req: NextRequest) {
         agotados: rowsToUpsert.filter(r => r.accion === "AGOTADO_PEDIR").length,
         mandar_full: rowsToUpsert.filter(r => r.accion === "MANDAR_FULL").length,
         en_transito: rowsToUpsert.filter(r => r.accion === "EN_TRANSITO").length,
+        nuevos: rowsToUpsert.filter(r => r.accion === "NUEVO").length,
         dead_stock: rowsToUpsert.filter(r => r.accion === "DEAD_STOCK").length,
         liquidar: rowsToUpsert.filter(r => r.liquidacion_accion !== null).length,
       },
