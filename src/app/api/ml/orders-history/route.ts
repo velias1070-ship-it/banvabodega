@@ -316,7 +316,12 @@ export async function GET(req: NextRequest) {
     };
 
     if (debug && debugData.length > 0) {
-      response.debug = debugData.slice(0, 5); // First 5 for inspection
+      const debugFilter = req.nextUrl.searchParams.get("debug_order");
+      if (debugFilter) {
+        response.debug = debugData.filter(d => String(d.order_id) === debugFilter);
+      } else {
+        response.debug = debugData.slice(0, 5);
+      }
     }
 
     return NextResponse.json(response);
