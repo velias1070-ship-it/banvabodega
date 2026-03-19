@@ -16,37 +16,12 @@ export async function POST(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
   const isVercelCron = authHeader === `Bearer ${process.env.CRON_SECRET}`;
   const isLocalDev = process.env.NODE_ENV === "development";
-  // Allow calls from admin panel (no auth on API routes per project convention)
-  const manualSku = req.nextUrl.searchParams.get("sku");
 
-  if (!isVercelCron && !isLocalDev && !manualSku) {
+  if (!isVercelCron && !isLocalDev) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
   try {
-    // Manual single-SKU sync
-    if (manualSku) {
-      const { data: stockRows } = await sb.from("stock").select("cantidad").eq("sku", manualSku);
-      const totalStock = (stockRows || []).reduce((s: number, r: { cantidad: number }) => s + r.cantidad, 0);
-
-      const { data: pedidos } = await sb.from("pedidos_flex")
-        .select("cantidad")
-        .eq("sku_venta", manualSku)
-        .in("estado", ["PENDIENTE", "EN_PICKING"]);
-      const committed = (pedidos || []).reduce((s: number, p: { cantidad: number }) => s + p.cantidad, 0);
-
-      const available = Math.max(0, totalStock - committed);
-      const count = await syncStockToML(manualSku, available);
-      return NextResponse.json({
-        status: "ok",
-        sku: manualSku,
-        stock_total: totalStock,
-        comprometido: committed,
-        disponible: available,
-        synced: count > 0,
-      });
-    }
-
     // 1. Read the sync queue
     const { data: queue } = await sb.from("stock_sync_queue").select("sku").order("created_at");
     const skus = (queue || []).map((d: { sku: string }) => d.sku);
