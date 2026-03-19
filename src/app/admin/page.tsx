@@ -8072,7 +8072,6 @@ interface StockCompareRow {
   stock_flex_ml: number;
   stock_full_ml: number;
   ultimo_sync: string | null;
-  ultimo_stock_enviado: number | null;
   cache_updated_at: string | null;
 }
 

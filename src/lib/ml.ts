@@ -65,7 +65,7 @@ export interface MLItemMap {
   user_product_id: string | null;
   activo: boolean;
   ultimo_sync: string | null;
-  ultimo_stock_enviado: number | null;
+  stock_flex_cache: number | null;
   stock_version: number | null;
   inventory_id: string | null;
   sku_venta: string | null;
@@ -1150,8 +1150,8 @@ export async function syncStockToML(sku: string, availableQty: number): Promise<
 
   for (const map of mappings as MLItemMap[]) {
     // Safety: if stock is 0 but last sent was >10, skip auto-sync (needs manual review)
-    if (availableQty === 0 && map.ultimo_stock_enviado && map.ultimo_stock_enviado > 10) {
-      console.warn(`[ML Stock] Safety block: ${sku} → 0 (was ${map.ultimo_stock_enviado}). Skipping.`);
+    if (availableQty === 0 && map.stock_flex_cache && map.stock_flex_cache > 10) {
+      console.warn(`[ML Stock] Safety block: ${sku} → 0 (was ${map.stock_flex_cache}). Skipping.`);
       continue;
     }
 
@@ -1188,7 +1188,7 @@ export async function syncStockToML(sku: string, availableQty: number): Promise<
       if (result.ok) {
         await sb.from("ml_items_map").update({
           ultimo_sync: new Date().toISOString(),
-          ultimo_stock_enviado: availableQty,
+          stock_flex_cache: availableQty,
           stock_version: stockData.version + 1,
         }).eq("id", map.id);
         synced++;
@@ -1204,7 +1204,7 @@ export async function syncStockToML(sku: string, availableQty: number): Promise<
           if (retryResult.ok) {
             await sb.from("ml_items_map").update({
               ultimo_sync: new Date().toISOString(),
-              ultimo_stock_enviado: availableQty,
+              stock_flex_cache: availableQty,
               stock_version: freshStock.version + 1,
             }).eq("id", map.id);
             synced++;

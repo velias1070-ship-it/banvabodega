@@ -10,7 +10,6 @@ interface CompareRow {
   stock_flex_ml: number;
   stock_full_ml: number;
   ultimo_sync: string | null;
-  ultimo_stock_enviado: number | null;
   cache_updated_at: string | null;
 }
 
@@ -119,10 +118,9 @@ export async function GET(req: NextRequest) {
         user_product_id: map.user_product_id || null,
         stock_wms: wmsStock[map.sku] || 0,
         // Usar cache si existe, sino -1 (no data)
-        stock_flex_ml: map.stock_flex_cache ?? map.ultimo_stock_enviado ?? -1,
+        stock_flex_ml: map.stock_flex_cache ?? -1,
         stock_full_ml: map.stock_full_cache ?? 0,
         ultimo_sync: map.ultimo_sync || null,
-        ultimo_stock_enviado: map.ultimo_stock_enviado ?? null,
         cache_updated_at: map.cache_updated_at || null,
       }));
       return NextResponse.json({ rows, phase: "wms" });
@@ -209,7 +207,6 @@ export async function GET(req: NextRequest) {
         stock_flex_ml: ml?.flexQty || 0,
         stock_full_ml: ml?.fullQty || 0,
         ultimo_sync: map.ultimo_sync || null,
-        ultimo_stock_enviado: map.ultimo_stock_enviado ?? null,
         cache_updated_at: map.cache_updated_at || null,
       };
     });
@@ -287,8 +284,8 @@ export async function POST(req: NextRequest) {
         const skuErrors: string[] = [];
 
         for (const map of mappings) {
-          if (!force && available === 0 && map.ultimo_stock_enviado && map.ultimo_stock_enviado > 10) {
-            skuErrors.push(`Safety block: último envío fue ${map.ultimo_stock_enviado}, ahora sería 0. Usa 'Forzar' para confirmar.`);
+          if (!force && available === 0 && map.stock_flex_cache && map.stock_flex_cache > 10) {
+            skuErrors.push(`Safety block: último stock Flex fue ${map.stock_flex_cache}, ahora sería 0. Usa 'Forzar' para confirmar.`);
             continue;
           }
 
@@ -328,8 +325,7 @@ export async function POST(req: NextRequest) {
             // Actualizar sync info + cache al mismo tiempo
             await sb.from("ml_items_map").update({
               ultimo_sync: new Date().toISOString(),
-              ultimo_stock_enviado: available,
-              stock_flex_cache: available, // Lo que acabamos de enviar = stock actual en ML
+              stock_flex_cache: available,
               stock_version: (stockData.version || 0) + 1,
               cache_updated_at: new Date().toISOString(),
             }).eq("id", map.id);
