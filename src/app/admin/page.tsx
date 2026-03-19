@@ -8035,6 +8035,15 @@ interface StockCompareRow {
 
 function AdminStockML() {
   const [rows, setRows] = useState<StockCompareRow[]>([]);
+  const rowsRef = useRef<StockCompareRow[]>([]);
+  // Mantener ref sincronizado con state
+  const updateRows = useCallback((updater: StockCompareRow[] | ((prev: StockCompareRow[]) => StockCompareRow[])) => {
+    setRows(prev => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      rowsRef.current = next;
+      return next;
+    });
+  }, []);
   const [loading, setLoading] = useState(false);
   const [mlLoading, setMlLoading] = useState(false);
   const [mlProgress, setMlProgress] = useState("");
@@ -8061,7 +8070,7 @@ function AdminStockML() {
       const json = await resp.json();
       if (json.error) { setError(json.error); return; }
       const wmsRows: StockCompareRow[] = json.rows || [];
-      setRows(wmsRows);
+      updateRows(wmsRows);
       const ov: Record<string, string> = {};
       for (const r of wmsRows) ov[r.sku] = String(r.stock_wms);
       setOverrides(ov);
@@ -8070,7 +8079,7 @@ function AdminStockML() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [updateRows]);
 
   // Consulta en vivo a ML API: actualiza cache en DB + filas en pantalla progresivamente
   const refreshMl = useCallback(async () => {
@@ -8079,10 +8088,8 @@ function AdminStockML() {
     setDiagnostics([]);
     const allDiags: string[] = [];
 
-    // Leer SKUs actuales del state
-    let currentRows: StockCompareRow[] = [];
-    setRows(prev => { currentRows = prev; return prev; });
-    const allSkus = currentRows.map(r => r.sku);
+    // Leer SKUs actuales del ref (siempre sincronizado)
+    const allSkus = rowsRef.current.map(r => r.sku);
     if (allSkus.length === 0) { setMlLoading(false); return; }
 
     const ML_BATCH = 10;
@@ -8106,7 +8113,7 @@ function AdminStockML() {
         // Actualizar filas INMEDIATAMENTE con los datos de este batch
         if (json.results && Object.keys(json.results).length > 0) {
           const batchData = json.results as Record<string, { flex: number; full: number; upId: string | null; error?: string }>;
-          setRows(prev => prev.map(row => {
+          updateRows(prev => prev.map(row => {
             const ml = batchData[row.sku];
             if (ml && !ml.error) {
               return {
@@ -8138,7 +8145,7 @@ function AdminStockML() {
     if (allDiags.length > 0) setDiagnostics(allDiags);
     setMlProgress("");
     setMlLoading(false);
-  }, [mlLoading]);
+  }, [mlLoading, updateRows]);
 
   // Al montar: cargar WMS (instantáneo con cache ML)
   useEffect(() => { loadWms(); }, [loadWms]);
