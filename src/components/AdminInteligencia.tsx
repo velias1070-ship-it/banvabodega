@@ -553,8 +553,21 @@ export default function AdminInteligencia() {
       // Tipo y componentes
       const compsAll = getComponentesPorSkuVenta(r.sku_venta);
       // Solo componentes principales (no alternativos) para determinar tipo
-      const comps = compsAll.filter(c => c.tipoRelacion !== "alternativo");
-      const alternativos = compsAll.filter(c => c.tipoRelacion === "alternativo");
+      let comps = compsAll.filter(c => c.tipoRelacion !== "alternativo");
+      let alternativos = compsAll.filter(c => c.tipoRelacion === "alternativo");
+
+      // Fix: si hay un componente cuyo skuOrigen === sku_venta con unidades=1,
+      // los demás con mismas unidades son alternativos (no un combo real)
+      if (comps.length > 1) {
+        const principal = comps.find(c => c.skuOrigen === r.sku_venta || c.skuOrigen === (r.sku_venta || "").toUpperCase());
+        if (principal && principal.unidades === 1) {
+          const otros = comps.filter(c => c !== principal && c.unidades === principal.unidades);
+          if (otros.length > 0) {
+            comps = [principal];
+            alternativos = [...alternativos, ...otros];
+          }
+        }
+      }
       let tipo: "simple" | "pack" | "combo";
       if (comps.length === 0 || (comps.length === 1 && comps[0].unidades === 1)) tipo = "simple";
       else if (comps.length === 1 && comps[0].unidades > 1) tipo = "pack";

@@ -1262,8 +1262,21 @@ export default function AdminReposicion() {
       .sort((a, b) => ACCION_ORDEN[a.accion] - ACCION_ORDEN[b.accion])
       .map(r => {
         const compsAll = getComponentesPorSkuVenta(r.skuVenta);
-        const comps = compsAll.filter(c => c.tipoRelacion !== "alternativo");
-        const alternativos = compsAll.filter(c => c.tipoRelacion === "alternativo");
+        let comps = compsAll.filter(c => c.tipoRelacion !== "alternativo");
+        let alternativos = compsAll.filter(c => c.tipoRelacion === "alternativo");
+
+        // Fix: si hay un componente cuyo skuOrigen === skuVenta con unidades=1,
+        // los demás con mismas unidades son alternativos (no un combo real)
+        if (comps.length > 1) {
+          const principal = comps.find(c => c.skuOrigen === r.skuVenta || c.skuOrigen === (r.skuVenta || "").toUpperCase());
+          if (principal && principal.unidades === 1) {
+            const otros = comps.filter(c => c !== principal && c.unidades === principal.unidades);
+            if (otros.length > 0) {
+              comps = [principal];
+              alternativos = [...alternativos, ...otros];
+            }
+          }
+        }
 
         // Determinar tipo
         let tipo: EnvioTipo;
