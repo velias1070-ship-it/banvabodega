@@ -333,6 +333,7 @@ function calcularReposicion(
   config: Config,
   sinStockProv: Set<string>,
   proveedorData?: ProveedorRaw[],
+  stockFullML?: Record<string, number>,
 ): { ventaRows: SkuVentaRow[]; origenRows: SkuOrigenRow[] } {
   // 1. Últimas 6 semanas desde fecha más reciente
   const fechas = ordenes.map(o => o.fecha.getTime());
@@ -427,8 +428,8 @@ function calcularReposicion(
     const velFull = velTotal * pctFull;
     const velFlex = velTotal * pctFlex;
 
-    // Stock Full viene de ProfitGuard
-    const stockFull = pg?.stockFull || 0;
+    // Stock Full: prioridad API ML > ProfitGuard
+    const stockFull = (stockFullML && stockFullML[skuVenta] !== undefined) ? stockFullML[skuVenta] : (pg?.stockFull || 0);
 
     // Stock bodega: necesitamos mapear SKU Venta → SKU Origen
     const componentes = getComponentesPorSkuVenta(skuVenta);
@@ -533,7 +534,7 @@ function calcularReposicion(
     p("% Full", `${(ord.full * 6).toFixed(0)} / (${(ord.full * 6).toFixed(0)} + ${(ord.flex * 6).toFixed(0)})`, `${(pctFull * 100).toFixed(1)}%`);
     p("Vel Full", `${velTotal.toFixed(2)} × ${(pctFull * 100).toFixed(1)}%`, `${velFull.toFixed(2)} uds/sem`);
     p("Vel Flex", `${velTotal.toFixed(2)} × ${(pctFlex * 100).toFixed(1)}%`, `${velFlex.toFixed(2)} uds/sem`);
-    p("Stock Full", `ProfitGuard`, `${stockFull} uds`);
+    p("Stock Full", (stockFullML && stockFullML[skuVenta] !== undefined) ? "API MercadoLibre" : "ProfitGuard", `${stockFull} uds`);
     p("Stock Bodega", componentes.length > 0 ? `min(stock_origen / unidades_pack)` : `skuTotal(${skuOrigenPrincipal})`, `${stockBodega} uds`);
     p("Stock Total", `${stockFull} + ${stockBodega}`, `${stockTotal} uds`);
     p("Cob Full (días)", velFull > 0 ? `(${stockFull} / ${velFull.toFixed(2)}) × 7` : `sin ventas Full → ∞`, `${Math.round(cobFull)}d`);
@@ -826,6 +827,16 @@ export default function AdminReposicion() {
   });
   const [pgRangoHasta, setPgRangoHasta] = useState(() => new Date().toISOString().slice(0, 10));
 
+  // Stock Full desde API MercadoLibre
+  const [stockFullML, setStockFullML] = useState<Record<string, number> | null>(() => {
+    try {
+      const saved = localStorage.getItem("banva_reposicion_stock_full_ml");
+      return saved ? JSON.parse(saved) : null;
+    } catch { return null; }
+  });
+  const [stockFullMLLoading, setStockFullMLLoading] = useState(false);
+  const [stockFullMLDate, setStockFullMLDate] = useState(() => localStorage.getItem("banva_reposicion_stock_full_ml_date") || "");
+
   // Modal detalle de cálculo
   const [detalleSkuVenta, setDetalleSkuVenta] = useState<string | null>(null);
 
@@ -858,6 +869,36 @@ export default function AdminReposicion() {
     localStorage.setItem("banva_reposicion_fn_velocidad", fileNameVelocidad);
     localStorage.setItem("banva_reposicion_fn_proveedor", fileNameProveedor);
   }, [fileNameOrdenes, fileNameVelocidad, fileNameProveedor]);
+
+  useEffect(() => {
+    if (stockFullML) {
+      localStorage.setItem("banva_reposicion_stock_full_ml", JSON.stringify(stockFullML));
+      const now = new Date().toLocaleString("es-CL");
+      setStockFullMLDate(now);
+      localStorage.setItem("banva_reposicion_stock_full_ml_date", now);
+    } else {
+      localStorage.removeItem("banva_reposicion_stock_full_ml");
+      localStorage.removeItem("banva_reposicion_stock_full_ml_date");
+    }
+  }, [stockFullML]);
+
+  const cargarStockFullML = useCallback(async () => {
+    setStockFullMLLoading(true);
+    try {
+      const res = await fetch("/api/ml/stock-full");
+      const json = await res.json();
+      if (json.stock) {
+        setStockFullML(json.stock);
+      } else {
+        alert("Error al obtener stock Full de MercadoLibre");
+      }
+    } catch (err) {
+      console.error("Error stock Full ML:", err);
+      alert("Error de conexión con MercadoLibre");
+    } finally {
+      setStockFullMLLoading(false);
+    }
+  }, []);
 
   // ── Verificar historial al montar ──
   useEffect(() => {
@@ -1246,8 +1287,8 @@ export default function AdminReposicion() {
   // Calcular
   const resultado = useMemo(() => {
     if (!velocidades) return null;
-    return calcularReposicion(ordenes || [], velocidades, config, sinStockProv, proveedor || undefined);
-  }, [ordenes, velocidades, config, sinStockProv, proveedor]);
+    return calcularReposicion(ordenes || [], velocidades, config, sinStockProv, proveedor || undefined, stockFullML || undefined);
+  }, [ordenes, velocidades, config, sinStockProv, proveedor, stockFullML]);
 
   // Filtrar y ordenar filas SKU Venta
   const filasVenta = useMemo(() => {
@@ -1964,12 +2005,25 @@ export default function AdminReposicion() {
         <div className="card" style={{ textAlign:"center", padding:20 }}>
           <div style={{ fontSize:24, marginBottom:8 }}>📊</div>
           <div style={{ fontSize:13, fontWeight:600, marginBottom:4 }}>Velocidad y Stock Full</div>
-          <div style={{ fontSize:11, color:"var(--txt3)", marginBottom:12 }}>Export ProfitGuard — Velocidad</div>
-          <label style={{ display:"inline-block", padding:"8px 20px", borderRadius:8, background:"var(--bg3)", border:"1px solid var(--bg4)", cursor:"pointer", fontSize:12, fontWeight:600, color:"var(--cyan)" }}>
+          <div style={{ fontSize:11, color:"var(--txt3)", marginBottom:8 }}>Velocidad desde ProfitGuard</div>
+          <label style={{ display:"inline-block", padding:"8px 20px", borderRadius:8, background:"var(--bg3)", border:"1px solid var(--bg4)", cursor:"pointer", fontSize:12, fontWeight:600, color:"var(--cyan)", marginBottom:8 }}>
             {fileNameVelocidad || "Seleccionar archivo"}
             <input type="file" accept=".xlsx,.xls,.csv" onChange={handleVelocidad} style={{ display:"none" }} />
           </label>
-          {velocidades && <div style={{ marginTop:8, fontSize:11, color:"var(--green)" }}>{velocidades.length} SKUs cargados</div>}
+          {velocidades && <div style={{ marginTop:4, fontSize:11, color:"var(--green)" }}>{velocidades.length} SKUs cargados</div>}
+          <div style={{ borderTop:"1px solid var(--bg4)", margin:"10px 0", paddingTop:10 }}>
+            <div style={{ fontSize:11, color:"var(--txt2)", marginBottom:6 }}>Stock Full desde MercadoLibre</div>
+            <button onClick={cargarStockFullML} disabled={stockFullMLLoading}
+              style={{ width:"100%", padding:"6px 0", borderRadius:6, background:"var(--blueBg)", border:"1px solid var(--blueBd)", color:"var(--blue)", fontSize:11, fontWeight:600, cursor:"pointer" }}>
+              {stockFullMLLoading ? "Consultando ML..." : "Cargar Stock Full desde ML"}
+            </button>
+            {stockFullML && (
+              <div style={{ marginTop:4, fontSize:10, color:"var(--green)" }}>
+                {Object.keys(stockFullML).length} SKUs con stock Full
+                {stockFullMLDate && <span style={{ color:"var(--txt3)" }}> ({stockFullMLDate})</span>}
+              </div>
+            )}
+          </div>
         </div>
         <div className="card" style={{ textAlign:"center", padding:20 }}>
           <div style={{ fontSize:24, marginBottom:8 }}>🏭</div>

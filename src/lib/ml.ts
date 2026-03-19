@@ -1230,6 +1230,54 @@ export async function syncStockToML(sku: string, availableQty: number): Promise<
   return synced;
 }
 
+// ==================== STOCK FULL QUERY ====================
+
+/**
+ * Get fulfillment (Full) stock for all active SKUs in ml_items_map.
+ * Queries the distributed stock API for each SKU and returns the
+ * quantity at meli_facility locations.
+ * Returns a map of SKU → stock quantity in Full.
+ */
+export async function getFullStockForAllSkus(): Promise<Record<string, number>> {
+  const sb = getServerSupabase();
+  if (!sb) return {};
+
+  const { data: mappings } = await sb.from("ml_items_map")
+    .select("sku, item_id, user_product_id")
+    .eq("activo", true);
+
+  if (!mappings || mappings.length === 0) return {};
+
+  const result: Record<string, number> = {};
+
+  for (const map of mappings as { sku: string; item_id: string; user_product_id: string | null }[]) {
+    try {
+      let userProductId = map.user_product_id;
+      if (!userProductId) {
+        userProductId = await getItemUserProductId(map.item_id);
+        if (!userProductId) continue;
+        // Save for future calls
+        await sb.from("ml_items_map").update({ user_product_id: userProductId })
+          .eq("item_id", map.item_id).eq("sku", map.sku);
+      }
+
+      const stockData = await getDistributedStock(userProductId);
+      if (!stockData) continue;
+
+      const fullQty = stockData.locations
+        .filter(l => l.type === "meli_facility")
+        .reduce((sum, l) => sum + l.quantity, 0);
+
+      // Accumulate — a SKU may have multiple item_ids
+      result[map.sku] = (result[map.sku] || 0) + fullQty;
+    } catch (err) {
+      console.error(`[ML StockFull] Error fetching stock for ${map.sku}:`, err);
+    }
+  }
+
+  return result;
+}
+
 // ==================== FLEX MANAGEMENT ====================
 
 /**
