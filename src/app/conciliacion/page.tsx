@@ -429,7 +429,7 @@ function Dashboard({ empresa, periodo, onChangePeriodo }: { empresa: DBEmpresa; 
         const res = await fetch("/api/sii/sync", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ periodo: per, tipo }),
+          body: JSON.stringify({ periodo: per, tipo, solo_registro: true }),
         });
         const data = await res.json();
         if (data.error) { errores++; continue; }

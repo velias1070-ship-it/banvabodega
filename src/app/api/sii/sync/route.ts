@@ -15,9 +15,9 @@ export const maxDuration = 300; // 5 minutos (Vercel Pro)
 const SII_SERVER_URL = process.env.SII_SERVER_URL || "http://localhost:8080";
 const SII_API_KEY = process.env.SII_API_KEY || "banva-rcv-2026";
 
-async function syncTipo(periodo: string, tipo: string): Promise<{ compras: number; ventas: number; log?: string[] }> {
-  const siiUrl = `${SII_SERVER_URL}/sync-supabase?periodo=${periodo}&tipo=${tipo}&key=${SII_API_KEY}`;
-  console.log(`[SII Sync] Llamando a Railway: periodo=${periodo} tipo=${tipo}`);
+async function syncTipo(periodo: string, tipo: string, soloRegistro = false): Promise<{ compras: number; ventas: number; log?: string[] }> {
+  const siiUrl = `${SII_SERVER_URL}/sync-supabase?periodo=${periodo}&tipo=${tipo}&key=${SII_API_KEY}${soloRegistro ? "&solo_registro=true" : ""}`;
+  console.log(`[SII Sync] Llamando a Railway: periodo=${periodo} tipo=${tipo} solo_registro=${soloRegistro}`);
 
   const siiRes = await fetch(siiUrl, { signal: AbortSignal.timeout(240000) }); // 4 min timeout
   if (!siiRes.ok) {
@@ -35,7 +35,7 @@ async function syncTipo(periodo: string, tipo: string): Promise<{ compras: numbe
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { periodo, tipo = "ambos" } = body as { periodo?: string; tipo?: string };
+    const { periodo, tipo = "ambos", solo_registro = false } = body as { periodo?: string; tipo?: string; solo_registro?: boolean };
 
     if (!periodo || !/^\d{6}$/.test(periodo)) {
       return NextResponse.json({ error: "Periodo inválido (YYYYMM)" }, { status: 400 });
@@ -45,9 +45,8 @@ export async function POST(req: NextRequest) {
     }
 
     if (tipo === "ambos") {
-      // Hacer compras y ventas en secuencia para evitar sobrecargar Railway
-      const resCompras = await syncTipo(periodo, "compras");
-      const resVentas = await syncTipo(periodo, "ventas");
+      const resCompras = await syncTipo(periodo, "compras", solo_registro);
+      const resVentas = await syncTipo(periodo, "ventas", solo_registro);
       const result = {
         compras: resCompras.compras || 0,
         ventas: resVentas.ventas || 0,
@@ -57,7 +56,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(result);
     }
 
-    const result = await syncTipo(periodo, tipo);
+    const result = await syncTipo(periodo, tipo, solo_registro);
     console.log(`[SII Sync] OK — compras: ${result.compras || 0}, ventas: ${result.ventas || 0}`);
     return NextResponse.json(result);
 
