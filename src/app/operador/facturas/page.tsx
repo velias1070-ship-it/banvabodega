@@ -243,7 +243,7 @@ export default function FacturasOperador() {
           const items = porCategoria[cat].filter(s => !checks[s.sku]);
           if (items.length === 0) return null;
           const catTotal = items.reduce((s, x) => s + x.totalFactura, 0);
-          const isCollapsed = collapsed[cat] === true;
+          const isCollapsed = collapsed[cat] !== false;
 
           // Sub-group by tamano within category
           const subgrupos: { label: string; items: SkuConsolidado[] }[] = [];
@@ -262,16 +262,26 @@ export default function FacturasOperador() {
           return (
             <div key={cat} style={{marginBottom:12}}>
               {/* Category header */}
-              <div onClick={() => setCollapsed(c => ({...c, [cat]: !c[cat]}))}
+              <div onClick={() => setCollapsed(c => ({...c, [cat]: c[cat] === false ? true : false}))}
                 style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",
                   borderRadius:isCollapsed?"8px":"8px 8px 0 0",background:"var(--bg2)",border:"1px solid var(--bg3)",cursor:"pointer"}}>
-                <div style={{display:"flex",alignItems:"center",gap:8}}>
-                  <span style={{fontSize:14,fontWeight:800}}>{cat}</span>
-                  <span style={{fontSize:11,color:"var(--txt3)"}}>{items.length} SKU{items.length > 1 ? "s" : ""}</span>
-                </div>
-                <div style={{display:"flex",alignItems:"center",gap:8}}>
-                  <span className="mono" style={{fontSize:14,fontWeight:700,color:"var(--cyan)"}}>{catTotal}</span>
-                  <span style={{fontSize:12,color:"var(--txt3)",transition:"transform 0.2s",transform:isCollapsed?"rotate(-90deg)":"rotate(0)"}}>&#9660;</span>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <span style={{fontSize:14,fontWeight:800}}>{cat}</span>
+                    <span style={{fontSize:11,color:"var(--txt3)"}}>{items.length} SKU{items.length > 1 ? "s" : ""}</span>
+                    <span className="mono" style={{fontSize:14,fontWeight:700,color:"var(--cyan)",marginLeft:"auto"}}>{catTotal}</span>
+                    <span style={{fontSize:12,color:"var(--txt3)",transition:"transform 0.2s",transform:isCollapsed?"rotate(-90deg)":"rotate(0)"}}>&#9660;</span>
+                  </div>
+                  {isCollapsed && (
+                    <div style={{fontSize:10,color:"var(--txt3)",marginTop:4,lineHeight:1.5}}>
+                      {items.map((s, i) => (
+                        <span key={s.sku}>
+                          {i > 0 && <span style={{margin:"0 3px"}}>·</span>}
+                          <span style={{color:"var(--txt2)"}}>{s.nombre}</span> <span className="mono" style={{fontWeight:700,color:"var(--cyan)"}}>{s.totalFactura}</span>
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
 
