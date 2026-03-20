@@ -1568,6 +1568,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                                 const val = e.target.value;
                                 const info = ventas.find(v => v.skuVenta === val);
                                 const prodVenta = val ? getStore().products[val] : null;
+                                const prodOrigen = getStore().products[l.sku];
                                 const updates: Partial<DBRecepcionLinea> = {
                                   sku_venta: val || undefined,
                                   requiere_etiqueta: !!val,
@@ -1577,6 +1578,11 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                                 }
                                 if (prodVenta) {
                                   updates.nombre = prodVenta.name;
+                                } else if (val && info) {
+                                  const baseName = prodOrigen?.name || l.nombre;
+                                  updates.nombre = info.unidades > 1 ? `${baseName} (Pack x${info.unidades})` : baseName;
+                                } else if (!val && prodOrigen) {
+                                  updates.nombre = prodOrigen.name;
                                 }
                                 await actualizarLineaRecepcion(l.id!, updates);
                                 setLineas(await getRecepcionLineas(selRec!.id!));
