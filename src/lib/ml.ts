@@ -1825,12 +1825,13 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     }
   }
 
-  // 6. Upsert stock_full_cache — agregar stock fulfillment por sku_venta
-  // Agrupar por sku_venta (un sku_venta puede tener múltiples inventory_ids)
-  // IMPORTANTE: deduplicar por inventory_id dentro de cada sku_venta para evitar
-  // contar doble cuando múltiples variaciones comparten el mismo inventory_id
-  const stockBySku = new Map<string, {
-    cantidad: number;
+  // 6. Obtener cantidad real desde API distribuida (fuente de verdad)
+  // La API de fulfillment inventory puede dar valores incorrectos (doble conteo).
+  // Usamos /user-products/{id}/stock → meli_facility como fuente de verdad para cantidad.
+  // La fulfillment API solo se usa para detalle (dañado, perdido, transferencia).
+
+  // 6a. Detalle de fulfillment por sku_venta (solo campos de detalle)
+  const detailBySku = new Map<string, {
     stock_no_disponible: number;
     stock_danado: number;
     stock_perdido: number;
@@ -1844,36 +1845,91 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     const detail = fulfillmentMap.get(invKey);
     if (!detail) continue;
 
-    // Solo contar cada inventory_id una vez por sku_venta
     const counted = countedInventoryPerSku.get(row.sku_venta) || new Set();
     if (counted.has(invKey)) continue;
     counted.add(invKey);
     countedInventoryPerSku.set(row.sku_venta, counted);
 
-    const existing = stockBySku.get(row.sku_venta) || {
-      cantidad: 0, stock_no_disponible: 0, stock_danado: 0, stock_perdido: 0, stock_transferencia: 0,
+    const existing = detailBySku.get(row.sku_venta) || {
+      stock_no_disponible: 0, stock_danado: 0, stock_perdido: 0, stock_transferencia: 0,
     };
 
     const nad = detail.not_available_detail || {};
-    existing.cantidad += detail.available_quantity || 0;
     existing.stock_no_disponible += detail.not_available_quantity || 0;
     existing.stock_danado += nad.damaged || 0;
     existing.stock_perdido += nad.lost || 0;
     existing.stock_transferencia += nad.in_transfer || 0;
 
-    stockBySku.set(row.sku_venta, existing);
+    detailBySku.set(row.sku_venta, existing);
   }
 
-  const stockUpsert = Array.from(stockBySku.entries()).map(([sku_venta, s]) => ({
-    sku_venta,
-    cantidad: s.cantidad,
-    stock_no_disponible: s.stock_no_disponible,
-    stock_danado: s.stock_danado,
-    stock_perdido: s.stock_perdido,
-    stock_transferencia: s.stock_transferencia,
-    fuente: "ml_sync",
-    updated_at: new Date().toISOString(),
-  }));
+  // 6b. Cantidad real desde API distribuida por user_product_id
+  // Agrupar: sku_venta → user_product_id (deduplicado)
+  const skuToUserProductIds = new Map<string, Set<string>>();
+  for (const row of itemsMapRows) {
+    if (!row.sku_venta || !row.user_product_id) continue;
+    if (!skuToUserProductIds.has(row.sku_venta)) skuToUserProductIds.set(row.sku_venta, new Set());
+    skuToUserProductIds.get(row.sku_venta)!.add(row.user_product_id);
+  }
+
+  const uniqueUserProductIds = new Set<string>();
+  skuToUserProductIds.forEach(ids => ids.forEach(id => uniqueUserProductIds.add(id)));
+  const upIds = Array.from(uniqueUserProductIds);
+  console.log(`[syncStockFull] Consultando API distribuida para ${upIds.length} user_product_ids...`);
+
+  // Consultar en batches de 10 con delay para evitar rate limiting
+  const distributedResults = new Map<string, number>();
+  for (let i = 0; i < upIds.length; i += 10) {
+    const batch = upIds.slice(i, i + 10);
+    const promises = batch.map(async (upId) => {
+      try {
+        const stockData = await getDistributedStock(upId);
+        if (stockData) {
+          const fullQty = stockData.locations
+            .filter(l => l.type === "meli_facility")
+            .reduce((sum, l) => sum + l.quantity, 0);
+          distributedResults.set(upId, fullQty);
+        }
+      } catch (err) {
+        errores.push(`Distributed stock ${upId}: ${err}`);
+      }
+    });
+    await Promise.all(promises);
+    if (i + 10 < upIds.length) await delay(300);
+  }
+
+  // Mapear user_product_id → sku_venta y sumar cantidades
+  const stockBySku = new Map<string, number>();
+  skuToUserProductIds.forEach((upIdSet, skuVenta) => {
+    let total = 0;
+    const counted = new Set<string>();
+    Array.from(upIdSet).forEach(upId => {
+      if (counted.has(upId)) return;
+      counted.add(upId);
+      total += distributedResults.get(upId) || 0;
+    });
+    stockBySku.set(skuVenta, total);
+  });
+
+  console.log(`[syncStockFull] ${stockBySku.size} SKUs con stock distribuido obtenido`);
+
+  // 6c. Upsert stock_full_cache combinando cantidad distribuida + detalle fulfillment
+  const allSkus = new Set([...Array.from(stockBySku.keys()), ...Array.from(detailBySku.keys())]);
+  const stockUpsert = Array.from(allSkus).map(sku_venta => {
+    const detail = detailBySku.get(sku_venta) || {
+      stock_no_disponible: 0, stock_danado: 0, stock_perdido: 0, stock_transferencia: 0,
+    };
+    return {
+      sku_venta,
+      cantidad: stockBySku.get(sku_venta) || 0,
+      stock_no_disponible: detail.stock_no_disponible,
+      stock_danado: detail.stock_danado,
+      stock_perdido: detail.stock_perdido,
+      stock_transferencia: detail.stock_transferencia,
+      fuente: "ml_distributed",
+      updated_at: new Date().toISOString(),
+    };
+  });
 
   for (let i = 0; i < stockUpsert.length; i += 500) {
     const batch = stockUpsert.slice(i, i + 500);
@@ -1881,43 +1937,10 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     if (error) errores.push(`Upsert stock_full_cache error: ${error.message}`);
   }
 
-  // 7. Corregir cantidades con la API distribuida (fuente de verdad)
-  // La API de fulfillment inventory puede contar doble; la distribuida es precisa.
-  console.log("[syncStockFull] Corrigiendo cantidades con API distribuida...");
-  let correciones = 0;
-  try {
-    const distributedStock = await getFullStockForAllSkus();
-    const corrections: { sku_venta: string; cantidad: number }[] = [];
-    for (const [sku, qty] of Object.entries(distributedStock)) {
-      const cached = stockBySku.get(sku);
-      if (cached && cached.cantidad !== qty) {
-        corrections.push({ sku_venta: sku, cantidad: qty });
-      } else if (!cached && qty > 0) {
-        corrections.push({ sku_venta: sku, cantidad: qty });
-      }
-    }
-    if (corrections.length > 0) {
-      for (let i = 0; i < corrections.length; i += 500) {
-        const batch = corrections.slice(i, i + 500).map(c => ({
-          sku_venta: c.sku_venta,
-          cantidad: c.cantidad,
-          fuente: "ml_distributed",
-          updated_at: new Date().toISOString(),
-        }));
-        await sb.from("stock_full_cache").upsert(batch, { onConflict: "sku_venta" });
-      }
-      correciones = corrections.length;
-      console.log(`[syncStockFull] ${correciones} SKUs corregidos con API distribuida`);
-    }
-  } catch (err) {
-    console.error("[syncStockFull] Error en corrección distribuida:", err);
-    errores.push(`Corrección distribuida: ${err}`);
-  }
-
   const result: SyncStockFullResult = {
     ok: errores.length === 0,
     items_sincronizados: itemsMapRows.length,
-    stock_actualizado: stockBySku.size,
+    stock_actualizado: allSkus.size,
     sin_inventory_id: sinInventoryId,
     errores,
     tiempo_ms: Date.now() - start,
