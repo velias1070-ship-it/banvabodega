@@ -4,6 +4,38 @@ import { syncStockFull } from "@/lib/ml";
 export const maxDuration = 300;
 
 /**
+ * GET /api/ml/sync-stock-full
+ * Vercel cron handler — sincroniza stock Full y dispara recálculo.
+ */
+export async function GET() {
+  try {
+    console.log("[sync-stock-full] Cron: Iniciando sincronización...");
+    const result = await syncStockFull();
+
+    if (result.stock_actualizado > 0) {
+      try {
+        const baseUrl = process.env.VERCEL_URL
+          ? `https://${process.env.VERCEL_URL}`
+          : "http://localhost:3000";
+        await fetch(`${baseUrl}/api/intelligence/recalcular`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ full: true }),
+        });
+        console.log("[sync-stock-full] Cron: Recálculo de inteligencia disparado");
+      } catch (err) {
+        console.error("[sync-stock-full] Cron: Error disparando recálculo:", err);
+      }
+    }
+
+    return NextResponse.json(result);
+  } catch (err) {
+    console.error("[sync-stock-full] Cron error:", err);
+    return NextResponse.json({ ok: false, error: String(err) }, { status: 500 });
+  }
+}
+
+/**
  * POST /api/ml/sync-stock-full
  * Sincroniza stock Full desde ML API → stock_full_cache.
  * Opcionalmente dispara recálculo de inteligencia.
