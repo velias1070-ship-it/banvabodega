@@ -1567,10 +1567,18 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                               onChange={async(e)=>{
                                 const val = e.target.value;
                                 const info = ventas.find(v => v.skuVenta === val);
-                                await actualizarLineaRecepcion(l.id!, {
+                                const prodVenta = val ? getStore().products[val] : null;
+                                const updates: Partial<DBRecepcionLinea> = {
                                   sku_venta: val || undefined,
                                   requiere_etiqueta: !!val,
-                                } as Partial<DBRecepcionLinea>);
+                                };
+                                if (info) {
+                                  updates.codigo_ml = info.codigoMl || l.codigo_ml;
+                                }
+                                if (prodVenta) {
+                                  updates.nombre = prodVenta.name;
+                                }
+                                await actualizarLineaRecepcion(l.id!, updates);
                                 setLineas(await getRecepcionLineas(selRec!.id!));
                               }}
                               style={{fontSize:10,padding:"2px 6px",borderRadius:4,border:"1px solid var(--bg4)",background:"var(--bg)",color:"var(--txt1)",fontWeight:600,maxWidth:160}}>
