@@ -185,6 +185,7 @@ export async function GET(req: NextRequest) {
   const from = searchParams.get("from");
   const to = searchParams.get("to");
   const debug = searchParams.get("debug") === "true";
+  const tarifaFlex = parseInt(searchParams.get("tarifa_flex") || "3320") || 3320;
 
   if (!from || !to) {
     return NextResponse.json({ error: "Parámetros 'from' y 'to' son requeridos (YYYY-MM-DD)" }, { status: 400 });
@@ -271,12 +272,28 @@ export async function GET(req: NextRequest) {
       // Count total items in pack for equal split (like ProfitGuard)
       const packItemCount = packOrders.reduce((s, o) => s + o.order_items.length, 0);
 
+      // Resolve logistic_type for the shipment group
+      const groupLogisticType = (() => {
+        for (const o of packOrders) {
+          const lt = o.shipping?.logistic_type || shipmentLogisticMap.get(o.shipping?.id);
+          if (lt) return lt;
+        }
+        // Fallback: check billing marketplace
+        for (const o of packOrders) {
+          const billing = billingMap.get(o.id);
+          if (billing?.details?.[0]?.marketplace_info?.marketplace === "SHIPPING") return "self_service";
+        }
+        return "";
+      })();
+
+      // Flex fallback: if billing has no shipping charge but it's a Flex order, apply fixed rate
+      const isFlex = groupLogisticType === "self_service" || (groupLogisticType === "" && packCostoEnvio === 0);
+      if (packCostoEnvio === 0 && isFlex && groupLogisticType === "self_service") {
+        packCostoEnvio = tarifaFlex;
+      }
+
       for (const order of packOrders) {
-        const billing = billingMap.get(order.id);
-        const logisticType = order.shipping?.logistic_type
-          || shipmentLogisticMap.get(order.shipping?.id)
-          || (billing?.details?.[0]?.marketplace_info?.marketplace === "SHIPPING" ? "self_service" : "")
-          || "";
+        const logisticType = groupLogisticType;
 
         if (debug) {
           debugData.push({ order_id: order.id, billing, order });
@@ -331,6 +348,7 @@ export async function GET(req: NextRequest) {
       total: ordenes.length,
       total_raw: orders.length,
       billing_coverage: `${billingMap.size}/${orders.length}`,
+      tarifa_flex: tarifaFlex,
     };
 
     if (debug && debugData.length > 0) {

@@ -34,6 +34,7 @@ export default function AdminVentasML() {
   const today = new Date().toISOString().slice(0, 10);
   const [from, setFrom] = useState(today);
   const [to, setTo] = useState(today);
+  const [tarifaFlex, setTarifaFlex] = useState(3320);
   const [loading, setLoading] = useState<string | null>(null);
   const [pgOrders, setPgOrders] = useState<OrderRow[]>([]);
   const [mlOrders, setMlOrders] = useState<OrderRow[]>([]);
@@ -45,7 +46,7 @@ export default function AdminVentasML() {
     setError(null);
     try {
       setLoading("Cargando ML Directo...");
-      const mlRes = await fetch(`/api/ml/orders-history?from=${from}&to=${to}`);
+      const mlRes = await fetch(`/api/ml/orders-history?from=${from}&to=${to}&tarifa_flex=${tarifaFlex}`);
       const mlData = await mlRes.json();
       if (mlData.error) throw new Error("ML: " + mlData.error);
       setMlOrders(mlData.ordenes || []);
@@ -70,7 +71,7 @@ export default function AdminVentasML() {
     setLoading("Cargando ML Directo...");
     setError(null);
     try {
-      const res = await fetch(`/api/ml/orders-history?from=${from}&to=${to}`);
+      const res = await fetch(`/api/ml/orders-history?from=${from}&to=${to}&tarifa_flex=${tarifaFlex}`);
       const data = await res.json();
       if (data.error) throw new Error(data.error);
       setMlOrders(data.ordenes || []);
@@ -132,6 +133,11 @@ export default function AdminVentasML() {
             <span style={{ color: "var(--txt3)", fontSize: 12 }}>→</span>
             <input type="date" value={to} onChange={e => setTo(e.target.value)}
               style={{ padding: "6px 10px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 12 }} />
+            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <label style={{ fontSize: 10, color: "var(--txt3)" }}>Tarifa Flex:</label>
+              <input type="number" value={tarifaFlex} onChange={e => setTarifaFlex(parseInt(e.target.value) || 0)}
+                style={{ width: 70, padding: "6px 8px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 12, textAlign: "right" }} />
+            </div>
             <button onClick={fetchMLOnly} disabled={!!loading}
               style={{ padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: "var(--bg3)", color: "var(--cyan)", border: "1px solid var(--cyanBd)", cursor: loading ? "wait" : "pointer" }}>
               Solo ML
