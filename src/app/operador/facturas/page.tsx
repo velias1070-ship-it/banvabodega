@@ -273,16 +273,8 @@ export default function FacturasOperador() {
                     <span style={{fontSize:12,color:"var(--txt3)",transition:"transform 0.2s",transform:isCollapsed?"rotate(-90deg)":"rotate(0)"}}>&#9660;</span>
                   </div>
                   {isCollapsed && (
-                    <div style={{fontSize:10,color:"var(--txt3)",marginTop:4,lineHeight:1.6}}>
-                      {items.map((s, i) => (
-                        <div key={s.sku} style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:4}}>
-                          <span style={{color:"var(--txt2)",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.nombre}</span>
-                          <span className="mono" style={{fontWeight:700,color:"var(--cyan)",whiteSpace:"nowrap"}}>{s.totalFactura}</span>
-                          <span style={{color:"var(--txt3)",whiteSpace:"nowrap",fontSize:9}}>
-                            {s.facturas.map(f => f.folio).join(", ")}
-                          </span>
-                        </div>
-                      ))}
+                    <div style={{fontSize:10,color:"var(--txt3)",marginTop:2}}>
+                      {catTotal} uds en {items.length} producto{items.length > 1 ? "s" : ""}
                     </div>
                   )}
                 </div>
@@ -414,8 +406,8 @@ function SkuCard({ s, editingSku, editQty, onTodoOk, onStartEdit, onCancelEdit, 
       border:`1px solid ${enMultiples?"var(--amberBd)":"var(--bg4)"}`}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <div style={{flex:1,minWidth:0}}>
-          <span className="mono" style={{fontWeight:700,fontSize:12}}>{s.sku}</span>
-          <div style={{fontSize:11,color:"var(--txt3)",marginTop:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.nombre}</div>
+          <div style={{fontSize:13,fontWeight:700,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.nombre}</div>
+          <span className="mono" style={{fontSize:11,color:"var(--txt3)"}}>{s.sku}</span>
         </div>
         <div className="mono" style={{fontSize:20,fontWeight:800,color:enMultiples?"var(--amber)":"var(--txt)",marginLeft:8}}>{s.totalFactura}</div>
       </div>
