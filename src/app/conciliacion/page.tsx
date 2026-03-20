@@ -109,11 +109,16 @@ function currentPeriodo(): string {
   return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
-// Generar lista de periodos (últimos 12 meses como fallback)
+// Generar lista de periodos (años + últimos 18 meses)
 function periodOptions(): { value: string; label: string }[] {
-  const opts = [];
+  const opts: { value: string; label: string }[] = [];
   const now = new Date();
-  for (let i = 0; i < 12; i++) {
+  // Años completos (actual y anterior)
+  for (let y = now.getFullYear(); y >= now.getFullYear() - 2; y--) {
+    opts.push({ value: String(y), label: `Año ${y}` });
+  }
+  // Meses (últimos 18)
+  for (let i = 0; i < 18; i++) {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
     const val = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}`;
     const label = d.toLocaleDateString("es-CL", { month: "long", year: "numeric" });
@@ -122,8 +127,9 @@ function periodOptions(): { value: string; label: string }[] {
   return opts;
 }
 
-// Formatear periodo YYYYMM a "Enero 2026"
+// Formatear periodo YYYYMM o YYYY a texto legible
 function formatPeriodo(p: string): string {
+  if (p.length === 4) return `Año ${p}`;
   const y = parseInt(p.slice(0, 4));
   const m = parseInt(p.slice(4, 6));
   const d = new Date(y, m - 1, 1);
@@ -797,11 +803,25 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
-  const load = useCallback(() => {
+  const isAnual = periodo.length === 4;
+
+  const load = useCallback(async () => {
     if (!empresa.id) return;
     setLoading(true);
-    fetchRcvCompras(empresa.id, periodo).then(d => { setData(d); setLoading(false); });
-  }, [empresa.id, periodo]);
+    if (isAnual) {
+      // Cargar todos los meses del año
+      const promises = [];
+      for (let m = 1; m <= 12; m++) {
+        promises.push(fetchRcvCompras(empresa.id!, `${periodo}${String(m).padStart(2, "0")}`));
+      }
+      const results = await Promise.all(promises);
+      setData(results.flat());
+    } else {
+      const d = await fetchRcvCompras(empresa.id, periodo);
+      setData(d);
+    }
+    setLoading(false);
+  }, [empresa.id, periodo, isAnual]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -809,19 +829,39 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
     setSyncing(true);
     setSyncMsg(null);
     try {
-      const res = await fetch("/api/sii/sync", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ periodo, tipo: "compras" }),
-      });
-      const data = await res.json();
-      if (data.status === "ok") {
-        const logInfo = data.log ? `\n${data.log.join("\n")}` : "";
-        setSyncMsg(`${data.compras} compras importadas del SII${data.compras === 0 ? logInfo : ""}`);
-        if (data.compras > 0) load();
+      if (isAnual) {
+        // Sync mes a mes
+        let totalC = 0, errores = 0;
+        for (let mes = 1; mes <= 12; mes++) {
+          const per = `${periodo}${String(mes).padStart(2, "0")}`;
+          setSyncMsg(`Importando compras ${periodo} — mes ${mes}/12...`);
+          try {
+            const res = await fetch("/api/sii/sync", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ periodo: per, tipo: "compras", solo_registro: true }),
+            });
+            const data = await res.json();
+            if (!data.error) totalC += data.compras || 0;
+            else errores++;
+          } catch { errores++; }
+        }
+        setSyncMsg(`${totalC} compras importadas del ${periodo} (${12 - errores} meses OK${errores > 0 ? `, ${errores} con error` : ""})`);
+        load();
       } else {
-        const logInfo = data.log ? `\n${data.log.join("\n")}` : "";
-        setSyncMsg(`Error: ${data.error || "Error desconocido"}${logInfo}`);
+        const res = await fetch("/api/sii/sync", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ periodo, tipo: "compras" }),
+        });
+        const data = await res.json();
+        if (!data.error) {
+          setSyncMsg(`${data.compras || 0} compras importadas del SII`);
+          if (data.compras > 0) load();
+        } else {
+          const logInfo = data.log ? `\n${data.log.join("\n")}` : "";
+          setSyncMsg(`Error: ${data.error}${logInfo}`);
+        }
       }
     } catch (e) {
       setSyncMsg(`Error de conexión: ${e instanceof Error ? e.message : "sin detalles"}`);
@@ -863,6 +903,12 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
             className="scan-btn" style={{ padding: "6px 14px", fontSize: 11, fontWeight: 600, background: "linear-gradient(135deg, #2563eb, #3b82f6)", opacity: syncing ? 0.6 : 1 }}>
             {syncing ? "Importando..." : "Importar SII"}
           </button>
+          {empresa.id && (
+            <button onClick={() => window.open(`/api/sii/export?empresa_id=${empresa.id}&anio=${isAnual ? periodo : periodo.slice(0, 4)}&tipo=compras`, "_blank")}
+              style={{ padding: "6px 14px", fontSize: 11, fontWeight: 600, borderRadius: 8, background: "var(--greenBg)", color: "var(--green)", border: "1px solid var(--greenBd)", cursor: "pointer" }}>
+              CSV
+            </button>
+          )}
         </div>
       </div>
       {syncMsg && (
