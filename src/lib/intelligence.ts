@@ -739,9 +739,17 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     }
     // Stock Full: sumar de todos los SKU Venta asociados (convertir a físico)
     let stFull = 0;
+    const stockFullDebugEntries: Record<string, number> = {};
     for (const va of ventasAsoc) {
       const sfVenta = stockFullN.get(va.skuVenta) || 0;
+      stockFullDebugEntries[va.skuVenta] = sfVenta;
       stFull += sfVenta * va.unidades;
+    }
+    if (debugSkuUp && skuOrigen.toUpperCase() === debugSkuUp && debugLog) {
+      (debugLog as Record<string, unknown>).stockFullN_size = stockFullN.size;
+      (debugLog as Record<string, unknown>).stockFullN_entries = stockFullDebugEntries;
+      (debugLog as Record<string, unknown>).stFull = stFull;
+      (debugLog as Record<string, unknown>).stBodega = stBodega;
     }
     const stTotal = stFull + stBodega;
     const stEnTransito = stockEnTransitoN.get(skuOrigen) || 0;
