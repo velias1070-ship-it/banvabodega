@@ -229,9 +229,10 @@ export async function GET(req: NextRequest) {
         const batch = missingShipIds.slice(i, i + 10);
         await Promise.all(batch.map(async (sid) => {
           try {
-            const ship = await mlGet<{ id: number; logistic_type?: string }>(`/shipments/${sid}`, { "x-format-new": "true" });
-            if (ship?.logistic_type) {
-              shipmentLogisticMap.set(sid, ship.logistic_type);
+            const ship = await mlGet<{ id: number; logistic_type?: string; logistic?: { type?: string } }>(`/shipments/${sid}`, { "x-format-new": "true" });
+            const lt = ship?.logistic?.type || ship?.logistic_type;
+            if (lt) {
+              shipmentLogisticMap.set(sid, lt);
             }
           } catch { /* ignore */ }
         }));
