@@ -40,8 +40,10 @@ export async function GET(req: NextRequest) {
       const { data, error } = await sb.from("rcv_compras")
         .select("*")
         .eq("empresa_id", empresaId)
-        .in("periodo", periodos)
-        .order("fecha_docto", { ascending: true });
+        .gte("periodo", `${anio}01`)
+        .lte("periodo", `${anio}12`)
+        .order("fecha_docto", { ascending: true })
+        .limit(10000);
 
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
@@ -86,8 +88,10 @@ export async function GET(req: NextRequest) {
     const { data, error } = await sb.from("rcv_ventas")
       .select("*")
       .eq("empresa_id", empresaId)
-      .in("periodo", periodos)
-      .order("fecha_docto", { ascending: true });
+      .gte("periodo", `${anio}01`)
+      .lte("periodo", `${anio}12`)
+      .order("fecha_docto", { ascending: true })
+      .limit(10000);
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
