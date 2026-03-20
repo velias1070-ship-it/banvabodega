@@ -7,24 +7,26 @@ export const maxDuration = 300;
 const MP_BASE_URL = "https://api.mercadopago.com";
 const MP_ACCESS_TOKEN = process.env.MP_ACCESS_TOKEN || "";
 const PAGE_SIZE = 50;
-const MAX_PAGES = 60; // 3000 pagos max
+const MAX_PAGES = 60;
 
 interface MPPago {
   id: number;
   date_created: string;
   date_approved: string | null;
   transaction_amount: number;
-  net_received_amount: number;
+  net_received_amount: number | null;
+  coupon_amount: number;
   status: string;
-  description: string;
+  description: string | null;
   payment_type_id: string;
   payment_method_id: string;
   installments: number;
   fee_details: { amount: number }[];
+  collector_id: number | null;
   order?: { id: number };
-  external_reference?: string;
-  payer?: { email?: string };
+  payer?: { id?: string; email?: string };
   operation_type?: string;
+  transaction_details?: { total_paid_amount?: number };
   point_of_interaction?: { type?: string };
 }
 
@@ -39,21 +41,30 @@ async function mpGet(path: string, params: Record<string, string> = {}): Promise
   return res.json();
 }
 
-function safeDate(dt: string | null): string | null {
-  if (!dt) return null;
-  try {
-    return new Date(dt).toISOString().slice(0, 10);
-  } catch { return dt.slice(0, 10); }
+async function mpGetText(path: string): Promise<string> {
+  const url = `${MP_BASE_URL}${path}`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+    signal: AbortSignal.timeout(60000),
+  });
+  if (!res.ok) throw new Error(`MP API ${res.status}`);
+  return res.text();
 }
 
-function refHash(id: string): string {
-  return crypto.createHash("sha256").update(`mp_${id}`).digest("hex").slice(0, 32);
+function safeDate(dt: string | null): string | null {
+  if (!dt) return null;
+  try { return new Date(dt).toISOString().slice(0, 10); }
+  catch { return dt.slice(0, 10); }
+}
+
+function refHash(prefix: string, id: string): string {
+  return crypto.createHash("sha256").update(`${prefix}_${id}`).digest("hex").slice(0, 32);
 }
 
 /**
  * POST /api/mp/sync
  * Body: { periodo: "YYYYMM" }
- * Sincroniza pagos aprobados de MercadoPago del periodo a movimientos_banco.
+ * Sincroniza compras propias + retiros de MercadoPago del periodo.
  */
 export async function POST(req: NextRequest) {
   if (!MP_ACCESS_TOKEN) {
@@ -87,12 +98,14 @@ export async function POST(req: NextRequest) {
       .select("id").eq("empresa_id", empresaId).eq("banco", "MercadoPago").limit(1);
     const cuentaBancariaId = cuentas?.[0]?.id || null;
 
-    // Paginar pagos aprobados
-    const pagos: MPPago[] = [];
+    // ══════════════════════════════════════
+    // 1. COMPRAS PROPIAS (collector_id = null)
+    // ══════════════════════════════════════
+    const allPagos: MPPago[] = [];
     for (let page = 0; page < MAX_PAGES; page++) {
       const data = await mpGet("/v1/payments/search", {
         sort: "date_created",
-        criteria: "desc",
+        criteria: "asc",
         begin_date: fechaDesde,
         end_date: fechaHasta,
         status: "approved",
@@ -101,28 +114,21 @@ export async function POST(req: NextRequest) {
       }) as { results: MPPago[]; paging: { total: number } };
 
       if (!data.results || data.results.length === 0) break;
-      pagos.push(...data.results);
-
-      if (pagos.length >= data.paging.total) break;
+      allPagos.push(...data.results);
+      if (allPagos.length >= data.paging.total) break;
       await new Promise(r => setTimeout(r, 300));
     }
 
-    if (pagos.length === 0) {
-      return NextResponse.json({ periodo, movimientos: 0, mensaje: "Sin pagos en el periodo" });
-    }
+    // Filtrar compras propias: collector_id es null
+    const compras = allPagos.filter(p => p.collector_id === null || p.collector_id === undefined);
 
-    // Convertir a movimientos_banco
-    const rows = pagos.map(p => {
-      const fees = p.fee_details || [];
-      const comision = fees.reduce((s, f) => s + (f.amount || 0), 0);
-      const neto = p.net_received_amount || (p.transaction_amount - comision);
+    const compraRows = compras.map(p => {
+      const td = p.transaction_details || {};
+      const totalPagado = td.total_paid_amount || p.transaction_amount;
+      const cupon = p.coupon_amount || 0;
       const fecha = safeDate(p.date_approved || p.date_created);
-      const descParts: string[] = [];
-      const opType = p.operation_type || "";
-      const poiType = p.point_of_interaction?.type || "";
-      if (opType === "regular_payment") descParts.push("VENTA ML");
-      else if (opType === "money_transfer") descParts.push("BONIFICACION FLEX");
-      else descParts.push(opType.toUpperCase());
+
+      const descParts: string[] = ["COMPRA ML"];
       if (p.description) descParts.push(p.description.slice(0, 80));
 
       return {
@@ -131,49 +137,111 @@ export async function POST(req: NextRequest) {
         cuenta: null,
         fecha,
         descripcion: descParts.join(" | "),
-        monto: neto,
+        monto: -totalPagado, // negativo = egreso/gasto
         saldo: null,
-        referencia: `MP-${p.id}`,
+        referencia: `MP-COMPRA-${p.id}`,
         origen: "api" as const,
         cuenta_bancaria_id: cuentaBancariaId,
-        referencia_unica: refHash(String(p.id)),
+        referencia_unica: refHash("mp_compra", String(p.id)),
         metadata: JSON.stringify({
+          tipo: "compra_propia",
           mp_id: String(p.id),
-          source: "payments_search",
-          status: p.status,
-          operation_type: opType,
-          payment_type: p.payment_type_id,
-          comision,
-          monto_bruto: p.transaction_amount,
-          orden_ml_id: p.order?.id ? String(p.order.id) : null,
-          poi_type: poiType,
+          monto_producto: p.transaction_amount,
+          cupon_descuento: cupon,
+          total_pagado: totalPagado,
+          medio_pago: p.payment_method_id,
+          tipo_pago: p.payment_type_id,
+          cuotas: p.installments,
+          cuota_monto: p.installments > 1 ? Math.round(totalPagado / p.installments) : null,
+          orden_ml: p.order?.id ? String(p.order.id) : null,
         }),
       };
     });
 
-    // Dedup: buscar existentes por referencia_unica
+    // ══════════════════════════════════════
+    // 2. RETIROS (PAYOUTS del settlement report)
+    // ══════════════════════════════════════
+    let retiroRows: typeof compraRows = [];
+    try {
+      // Listar settlement reports del periodo
+      const reports = await mpGet("/v1/account/settlement_report/list", {
+        begin_date: fechaDesde,
+        end_date: fechaHasta,
+      }) as Array<{ file_name: string; status: string }>;
+
+      // Descargar el primer reporte procesado
+      const processed = (reports || []).filter(r => r.status === "processed");
+      if (processed.length > 0) {
+        const csv = await mpGetText(`/v1/account/settlement_report/${processed[0].file_name}`);
+        const lines = csv.split("\n");
+
+        for (const line of lines.slice(1)) {
+          const cols = line.split(";");
+          if (cols.length < 8) continue;
+          if (cols[2] !== "PAYOUTS") continue;
+
+          const sourceId = cols[0];
+          const monto = Math.abs(parseFloat(cols[3]) || 0);
+          const fecha = safeDate(cols[4]);
+          if (!monto || !fecha) continue;
+
+          retiroRows.push({
+            empresa_id: empresaId,
+            banco: "MercadoPago",
+            cuenta: null,
+            fecha,
+            descripcion: `RETIRO MP → Banco | $${monto.toLocaleString("es-CL")}`,
+            monto: -monto, // negativo = sale de MP
+            saldo: null,
+            referencia: `MP-RETIRO-${sourceId}`,
+            origen: "api" as const,
+            cuenta_bancaria_id: cuentaBancariaId,
+            referencia_unica: refHash("mp_retiro", sourceId),
+            metadata: JSON.stringify({
+              tipo: "retiro",
+              source_id: sourceId,
+              monto_retirado: monto,
+            }),
+          });
+        }
+      }
+    } catch (err) {
+      console.error("[MP Sync] Error obteniendo retiros:", err);
+    }
+
+    // ══════════════════════════════════════
+    // 3. DEDUP E INSERT
+    // ══════════════════════════════════════
+    const allRows = [...compraRows, ...retiroRows];
+
+    if (allRows.length === 0) {
+      return NextResponse.json({ periodo, compras: 0, retiros: 0, mensaje: "Sin compras ni retiros en el periodo" });
+    }
+
+    // Dedup
     const existingRefs = new Set<string>();
-    const allRefs = rows.map(r => r.referencia_unica);
+    const allRefs = allRows.map(r => r.referencia_unica);
     for (let i = 0; i < allRefs.length; i += 100) {
       const batch = allRefs.slice(i, i + 100);
       const { data: existing } = await sb.from("movimientos_banco")
         .select("referencia_unica")
         .eq("empresa_id", empresaId)
-        .eq("banco", "MercadoPago")
         .in("referencia_unica", batch);
       for (const r of (existing || [])) existingRefs.add(r.referencia_unica);
     }
 
-    const newRows = rows.filter(r => !existingRefs.has(r.referencia_unica));
+    const newRows = allRows.filter(r => !existingRefs.has(r.referencia_unica));
 
-    // Insert nuevos
     let inserted = 0;
     for (let i = 0; i < newRows.length; i += 500) {
       const batch = newRows.slice(i, i + 500);
       const { error } = await sb.from("movimientos_banco").insert(batch);
-      if (error) console.error(`[MP Sync] Insert error batch ${i}:`, error.message);
+      if (error) console.error(`[MP Sync] Insert error:`, error.message);
       else inserted += batch.length;
     }
+
+    const newCompras = newRows.filter(r => JSON.parse(r.metadata).tipo === "compra_propia").length;
+    const newRetiros = newRows.filter(r => JSON.parse(r.metadata).tipo === "retiro").length;
 
     // Sync log
     await sb.from("sync_log").insert({
@@ -183,17 +251,26 @@ export async function POST(req: NextRequest) {
       registros: inserted,
     });
 
-    const bruto = pagos.reduce((s, p) => s + p.transaction_amount, 0);
-    const comisionTotal = pagos.reduce((s, p) => s + (p.fee_details || []).reduce((s2, f) => s2 + (f.amount || 0), 0), 0);
-
     return NextResponse.json({
       periodo,
-      pagos_total: pagos.length,
+      compras_encontradas: compras.length,
+      retiros_encontrados: retiroRows.length,
       ya_existentes: existingRefs.size,
-      movimientos_nuevos: inserted,
-      monto_bruto: bruto,
-      comision_total: comisionTotal,
-      monto_neto: bruto - comisionTotal,
+      compras_nuevas: newCompras,
+      retiros_nuevos: newRetiros,
+      total_insertado: inserted,
+      detalle_compras: compras.map(p => {
+        const td = p.transaction_details || {};
+        return {
+          fecha: safeDate(p.date_approved || p.date_created),
+          monto_producto: p.transaction_amount,
+          cupon: p.coupon_amount || 0,
+          total_pagado: td.total_paid_amount || p.transaction_amount,
+          medio: p.payment_method_id,
+          cuotas: p.installments,
+          orden_ml: p.order?.id || null,
+        };
+      }),
     });
   } catch (err) {
     console.error("[MP Sync] Error:", err);
