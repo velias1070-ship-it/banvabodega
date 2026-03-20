@@ -408,6 +408,11 @@ export default function AdminInteligencia() {
   const [mlSinVincular, setMlSinVincular] = useState<{ item_id: string; title: string; available_quantity: number }[]>([]);
   const [mlSinVincularOpen, setMlSinVincularOpen] = useState(false);
 
+  // Pendientes de atención
+  const [pendientes, setPendientes] = useState<{ sku: string; titulo: string; tipo: string; stock_full: number; stock_bodega: number }[]>([]);
+  const [pendientesResumen, setPendientesResumen] = useState<{ sin_producto_wms: number; sin_costo_con_full: number; sin_costo: number; total: number } | null>(null);
+  const [pendientesOpen, setPendientesOpen] = useState(false);
+
   // Modal masivo
   const [modalMasivo, setModalMasivo] = useState(false);
   // Modal notas operativas
@@ -472,11 +477,22 @@ export default function AdminInteligencia() {
     setMlSinVincular(sinVincular);
   }, []);
 
+  const cargarPendientes = useCallback(async () => {
+    try {
+      const res = await fetch("/api/intelligence/pendientes");
+      if (res.ok) {
+        const data = await res.json();
+        setPendientes(data.pendientes || []);
+        setPendientesResumen(data.resumen || null);
+      }
+    } catch { /* ignore */ }
+  }, []);
+
   const cargar = useCallback(async () => {
     setLoading(true);
-    await Promise.all([cargarOrigen(), cargarVenta(), cargarMlMap()]);
+    await Promise.all([cargarOrigen(), cargarVenta(), cargarMlMap(), cargarPendientes()]);
     setLoading(false);
-  }, [cargarOrigen, cargarVenta, cargarMlMap]);
+  }, [cargarOrigen, cargarVenta, cargarMlMap, cargarPendientes]);
 
   useEffect(() => { cargar(); }, [cargar]);
 
@@ -1208,6 +1224,51 @@ export default function AdminInteligencia() {
       {eventoActivo && (
         <div style={{ padding: "6px 12px", borderRadius: 6, background: "var(--amberBg)", color: "var(--amber)", fontSize: 11, marginBottom: 8, border: "1px solid var(--amberBd)", fontWeight: 600 }}>
           Preparacion {eventoActivo.evento_activo} (x{eventoActivo.multiplicador_evento}) — Targets ajustados
+        </div>
+      )}
+
+      {/* ═══ 2b. PENDIENTES DE ATENCION ═══ */}
+      {pendientesResumen && pendientesResumen.total > 0 && (
+        <div style={{ marginBottom: 8, borderRadius: 8, border: "1px solid var(--amberBd)", background: "var(--amberBg)", overflow: "hidden" }}>
+          <button onClick={() => setPendientesOpen(!pendientesOpen)} style={{ width: "100%", padding: "8px 12px", background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ display: "flex", gap: 12, alignItems: "center", fontSize: 11, fontWeight: 600, color: "var(--amber)" }}>
+              <span>Pendientes de atencion ({pendientesResumen.total})</span>
+              {pendientesResumen.sin_producto_wms > 0 && <span style={{ padding: "2px 6px", borderRadius: 4, background: "var(--redBg)", color: "var(--red)", fontSize: 10 }}>Sin producto WMS: {pendientesResumen.sin_producto_wms}</span>}
+              {pendientesResumen.sin_costo_con_full > 0 && <span style={{ padding: "2px 6px", borderRadius: 4, background: "var(--amberBg)", color: "var(--amber)", fontSize: 10, border: "1px solid var(--amberBd)" }}>Sin costo c/Full: {pendientesResumen.sin_costo_con_full}</span>}
+              {pendientesResumen.sin_costo > 0 && <span style={{ padding: "2px 6px", borderRadius: 4, background: "var(--bg3)", color: "var(--txt2)", fontSize: 10 }}>Sin costo: {pendientesResumen.sin_costo}</span>}
+            </div>
+            <span style={{ color: "var(--txt3)", fontSize: 10 }}>{pendientesOpen ? "▲" : "▼"}</span>
+          </button>
+          {pendientesOpen && (
+            <div style={{ padding: "0 12px 10px", maxHeight: 300, overflowY: "auto" }}>
+              <table className="tbl" style={{ width: "100%", fontSize: 10 }}>
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: "left" }}>SKU</th>
+                    <th style={{ textAlign: "left" }}>Nombre</th>
+                    <th style={{ textAlign: "left" }}>Problema</th>
+                    <th style={{ textAlign: "right" }}>St. Full</th>
+                    <th style={{ textAlign: "right" }}>St. Bodega</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pendientes.map((p, i) => (
+                    <tr key={i}>
+                      <td className="mono">{p.sku}</td>
+                      <td style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.titulo}</td>
+                      <td>
+                        {p.tipo === "sin_producto_wms" && <span style={{ color: "var(--red)", fontWeight: 600 }}>Sin producto en WMS</span>}
+                        {p.tipo === "sin_costo_con_full" && <span style={{ color: "var(--amber)", fontWeight: 600 }}>Sin costo (con stock Full)</span>}
+                        {p.tipo === "sin_costo" && <span style={{ color: "var(--txt2)" }}>Sin costo (con stock bodega)</span>}
+                      </td>
+                      <td className="mono" style={{ textAlign: "right", color: p.stock_full > 0 ? "var(--cyan)" : "var(--txt3)" }}>{p.stock_full}</td>
+                      <td className="mono" style={{ textAlign: "right" }}>{p.stock_bodega}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 
