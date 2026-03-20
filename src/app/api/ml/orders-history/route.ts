@@ -271,13 +271,8 @@ export async function GET(req: NextRequest) {
           const comisionUnitaria = Math.round(item.sale_fee || 0);
           const comisionTotal = comisionUnitaria * item.quantity;
 
-          // Shipping split equally across all items in the pack (like ProfitGuard)
-          // Fallback: Flex orders always have a fixed $3,320 CLP shipping cost
-          let shipCostoEnvio = packCostoEnvio;
-          if (shipCostoEnvio === 0 && logisticType !== "fulfillment" && logisticType !== "xd_drop_off") {
-            shipCostoEnvio = 3320 * packItemCount; // Will be divided by packItemCount below
-          }
-          const costoEnvio = Math.round(shipCostoEnvio / packItemCount);
+          // Shipping split equally across all items in the shipment group (like ProfitGuard)
+          const costoEnvio = Math.round(packCostoEnvio / packItemCount);
           const ingresoEnvio = Math.round(packIngresoEnvio / packItemCount);
           const ingresoTC = Math.round(packIngresoTC / packItemCount);
 
