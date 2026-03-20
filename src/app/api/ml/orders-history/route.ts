@@ -319,9 +319,15 @@ export async function GET(req: NextRequest) {
           const comisionTotal = comisionUnitaria * item.quantity;
 
           // Shipping split equally across all items in the shipment group (like ProfitGuard)
-          const costoEnvio = Math.round(packCostoEnvio / packItemCount);
-          const ingresoEnvio = Math.round(packIngresoEnvio / packItemCount);
+          let costoEnvio = Math.round(packCostoEnvio / packItemCount);
+          let ingresoEnvio = Math.round(packIngresoEnvio / packItemCount);
           const ingresoTC = Math.round(packIngresoTC / packItemCount);
+
+          // If buyer paid the full shipping (costo === ingreso), net is 0 for the seller
+          if (costoEnvio > 0 && costoEnvio === ingresoEnvio) {
+            costoEnvio = 0;
+            ingresoEnvio = 0;
+          }
 
           const precioUnit = Math.round(item.unit_price);
           const subtotal = Math.round(itemSubtotal);
