@@ -401,8 +401,8 @@ function Dashboard({ empresa, periodo, onChangePeriodo }: { empresa: DBEmpresa; 
         body: JSON.stringify({ periodo, tipo: "ambos" }),
       });
       const data = await res.json();
-      if (data.status === "ok") {
-        setSyncMsg(`${data.compras} compras + ${data.ventas} ventas importadas`);
+      if (data.compras !== undefined || data.ventas !== undefined) {
+        setSyncMsg(`${data.compras || 0} compras + ${data.ventas || 0} ventas importadas`);
         reload();
       } else {
         const logInfo = data.log ? `\n${data.log.join("\n")}` : "";
@@ -413,6 +413,41 @@ function Dashboard({ empresa, periodo, onChangePeriodo }: { empresa: DBEmpresa; 
     } finally {
       setSyncing(false);
     }
+  };
+
+  // Sincronizar año completo
+  const [syncAnualLoading, setSyncAnualLoading] = useState(false);
+  const [syncAnualMsg, setSyncAnualMsg] = useState<string | null>(null);
+  const handleSyncAnual = async (anio: number, tipo: string) => {
+    if (!window.confirm(`Sincronizar ${tipo} de todo ${anio} desde el SII?\nEsto puede tardar varios minutos.`)) return;
+    setSyncAnualLoading(true);
+    setSyncAnualMsg(`Sincronizando ${tipo} ${anio}...`);
+    try {
+      const res = await fetch("/api/sii/sync-anual", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ anio, tipo }),
+      });
+      const data = await res.json();
+      if (data.meses) {
+        const ok = data.meses.filter((m: { error?: string }) => !m.error).length;
+        const fail = data.meses.filter((m: { error?: string }) => m.error).length;
+        setSyncAnualMsg(`${anio}: ${data.total_compras || 0} compras + ${data.total_ventas || 0} ventas (${ok} meses OK${fail > 0 ? `, ${fail} con error` : ""})`);
+        reload();
+      } else {
+        setSyncAnualMsg(`Error: ${data.error || "Error desconocido"}`);
+      }
+    } catch (e) {
+      setSyncAnualMsg(`Error: ${e instanceof Error ? e.message : "sin detalles"}`);
+    } finally {
+      setSyncAnualLoading(false);
+    }
+  };
+
+  // Exportar CSV
+  const handleExportCSV = (anio: number, tipo: string) => {
+    if (!empresa.id) return;
+    window.open(`/api/sii/export?empresa_id=${empresa.id}&anio=${anio}&tipo=${tipo}`, "_blank");
   };
 
   if (loading) return <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>Cargando...</div>;
@@ -504,6 +539,36 @@ function Dashboard({ empresa, periodo, onChangePeriodo }: { empresa: DBEmpresa; 
           color: syncMsg.startsWith("Error") ? "var(--red)" : "var(--green)",
           border: `1px solid ${syncMsg.startsWith("Error") ? "var(--redBd)" : "var(--greenBd)"}` }}>
           {syncMsg}
+        </div>
+      )}
+
+      {/* Sync anual + Export */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
+        <span style={{ fontSize: 10, fontWeight: 600, color: "var(--txt3)" }}>Anual:</span>
+        <button onClick={() => handleSyncAnual(2025, "compras")} disabled={syncAnualLoading}
+          style={{ padding: "4px 10px", borderRadius: 6, fontSize: 10, fontWeight: 600, background: "var(--blueBg)", color: "var(--blue)", border: "1px solid var(--blueBd)", cursor: "pointer" }}>
+          {syncAnualLoading ? "..." : "Sync Compras 2025"}
+        </button>
+        <button onClick={() => handleSyncAnual(2025, "ventas")} disabled={syncAnualLoading}
+          style={{ padding: "4px 10px", borderRadius: 6, fontSize: 10, fontWeight: 600, background: "var(--blueBg)", color: "var(--blue)", border: "1px solid var(--blueBd)", cursor: "pointer" }}>
+          {syncAnualLoading ? "..." : "Sync Ventas 2025"}
+        </button>
+        <span style={{ color: "var(--bg4)" }}>|</span>
+        <button onClick={() => handleExportCSV(2025, "compras")}
+          style={{ padding: "4px 10px", borderRadius: 6, fontSize: 10, fontWeight: 600, background: "var(--greenBg)", color: "var(--green)", border: "1px solid var(--greenBd)", cursor: "pointer" }}>
+          CSV Compras 2025
+        </button>
+        <button onClick={() => handleExportCSV(2025, "ventas")}
+          style={{ padding: "4px 10px", borderRadius: 6, fontSize: 10, fontWeight: 600, background: "var(--greenBg)", color: "var(--green)", border: "1px solid var(--greenBd)", cursor: "pointer" }}>
+          CSV Ventas 2025
+        </button>
+      </div>
+      {syncAnualMsg && (
+        <div style={{ padding: "6px 10px", borderRadius: 6, marginBottom: 8, fontSize: 11, fontWeight: 600,
+          background: syncAnualMsg.startsWith("Error") ? "var(--redBg)" : "var(--blueBg)",
+          color: syncAnualMsg.startsWith("Error") ? "var(--red)" : "var(--blue)",
+          border: `1px solid ${syncAnualMsg.startsWith("Error") ? "var(--redBd)" : "var(--blueBd)"}` }}>
+          {syncAnualMsg}
         </div>
       )}
 
