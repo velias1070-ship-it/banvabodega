@@ -9,9 +9,28 @@
 
 import { NextRequest, NextResponse } from "next/server";
 
+export const maxDuration = 300; // 5 minutos (Vercel Pro)
+
 // URL del servidor RCV SII (Railway)
 const SII_SERVER_URL = process.env.SII_SERVER_URL || "http://localhost:8080";
 const SII_API_KEY = process.env.SII_API_KEY || "banva-rcv-2026";
+
+async function syncTipo(periodo: string, tipo: string): Promise<{ compras: number; ventas: number; log?: string[] }> {
+  const siiUrl = `${SII_SERVER_URL}/sync-supabase?periodo=${periodo}&tipo=${tipo}&key=${SII_API_KEY}`;
+  console.log(`[SII Sync] Llamando a Railway: periodo=${periodo} tipo=${tipo}`);
+
+  const siiRes = await fetch(siiUrl, { signal: AbortSignal.timeout(240000) }); // 4 min timeout
+  if (!siiRes.ok) {
+    const errText = await siiRes.text();
+    throw new Error(`Error del servidor SII: ${siiRes.status} ${errText.slice(0, 300)}`);
+  }
+
+  const result = await siiRes.json();
+  if (result.status === "error") {
+    throw new Error(`SII error: ${result.error}`);
+  }
+  return result;
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -25,28 +44,21 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Tipo debe ser: compras, ventas, ambos" }, { status: 400 });
     }
 
-    // Llamar a Railway — hace todo: SII auth → descarga → parseo → Supabase upsert
-    const siiUrl = `${SII_SERVER_URL}/sync-supabase?periodo=${periodo}&tipo=${tipo}&key=${SII_API_KEY}`;
-    console.log(`[SII Sync] Llamando a ${SII_SERVER_URL}/sync-supabase periodo=${periodo} tipo=${tipo}`);
-
-    const siiRes = await fetch(siiUrl, { signal: AbortSignal.timeout(180000) }); // 3 min timeout
-    if (!siiRes.ok) {
-      const errText = await siiRes.text();
-      return NextResponse.json(
-        { error: `Error del servidor SII: ${siiRes.status} ${errText.slice(0, 300)}` },
-        { status: 502 }
-      );
+    if (tipo === "ambos") {
+      // Hacer compras y ventas en secuencia para evitar sobrecargar Railway
+      const resCompras = await syncTipo(periodo, "compras");
+      const resVentas = await syncTipo(periodo, "ventas");
+      const result = {
+        compras: resCompras.compras || 0,
+        ventas: resVentas.ventas || 0,
+        log: [...(resCompras.log || []), ...(resVentas.log || [])],
+      };
+      console.log(`[SII Sync] OK — compras: ${result.compras}, ventas: ${result.ventas}`);
+      return NextResponse.json(result);
     }
 
-    const result = await siiRes.json();
-    if (result.status === "error") {
-      return NextResponse.json(
-        { error: `SII error: ${result.error}`, log: result.log || [] },
-        { status: 502 }
-      );
-    }
-
-    console.log(`[SII Sync] OK — compras: ${result.compras}, ventas: ${result.ventas}`);
+    const result = await syncTipo(periodo, tipo);
+    console.log(`[SII Sync] OK — compras: ${result.compras || 0}, ventas: ${result.ventas || 0}`);
     return NextResponse.json(result);
 
   } catch (err) {
@@ -54,7 +66,7 @@ export async function POST(req: NextRequest) {
     console.error("[SII Sync] Error:", msg);
     if (msg.includes("timeout") || msg.includes("abort")) {
       return NextResponse.json(
-        { error: "Timeout: el servidor SII tardó más de 3 minutos. Intenta de nuevo." },
+        { error: "Timeout: el servidor SII tardó más de 4 minutos. Intenta sincronizar compras y ventas por separado." },
         { status: 504 }
       );
     }
