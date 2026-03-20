@@ -71,6 +71,16 @@ interface MappedOrder {
   fuente: string;
 }
 
+/** Convert any date string to Chile timezone (America/Santiago) */
+function toChileISO(dateStr: string): string {
+  try {
+    const d = new Date(dateStr);
+    return d.toLocaleString("sv-SE", { timeZone: "America/Santiago" }).replace(" ", "T");
+  } catch {
+    return dateStr;
+  }
+}
+
 function mapCanal(logisticType: string | undefined): string {
   if (!logisticType) return "Flex";
   if (logisticType === "fulfillment" || logisticType === "xd_drop_off") return "Full";
@@ -87,8 +97,10 @@ function mapEstado(status: string): string {
 
 /** Fetch all paid orders in date range with pagination */
 async function fetchOrdersInRange(sellerId: string, from: string, to: string): Promise<MLOrderFull[]> {
-  const fromISO = new Date(from + "T00:00:00-04:00").toISOString(); // Chile timezone approx
-  const toISO = new Date(to + "T23:59:59-04:00").toISOString();
+  // Chile uses -03:00 in summer (CLST) and -04:00 in winter (CLT)
+  // Use -03:00 as safe default — may include a few extra hours but won't miss orders
+  const fromISO = new Date(from + "T00:00:00-03:00").toISOString();
+  const toISO = new Date(to + "T23:59:59-03:00").toISOString();
 
   const allOrders: MLOrderFull[] = [];
   let offset = 0;
@@ -319,7 +331,7 @@ export async function GET(req: NextRequest) {
           ordenes.push({
             order_id: String(order.id),
             order_number: String(order.pack_id || order.id),
-            fecha: order.date_created,
+            fecha: toChileISO(order.date_created),
             sku_venta: skuVenta,
             nombre_producto: item.item.title,
             cantidad: item.quantity,
