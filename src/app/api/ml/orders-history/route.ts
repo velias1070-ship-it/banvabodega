@@ -206,19 +206,36 @@ export async function GET(req: NextRequest) {
     const billingMap = await fetchBillingForOrders(orderIds);
     console.log(`[ML Orders History] Got billing for ${billingMap.size} orders`);
 
-    // 3. Resolve logistic_type from ml_shipments (order search doesn't include it)
+    // 3. Resolve logistic_type from ml_shipments + ML API for missing ones
     const shipmentLogisticMap = new Map<number, string>(); // shipping_id → logistic_type
+    const allShippingIds = Array.from(new Set(orders.map(o => o.shipping?.id).filter(Boolean))) as number[];
     const sb = getServerSupabase();
     if (sb) {
-      const shippingIds = Array.from(new Set(orders.map(o => o.shipping?.id).filter(Boolean)));
-      for (let i = 0; i < shippingIds.length; i += 500) {
-        const chunk = shippingIds.slice(i, i + 500);
+      for (let i = 0; i < allShippingIds.length; i += 500) {
+        const chunk = allShippingIds.slice(i, i + 500);
         const { data } = await sb.from("ml_shipments").select("shipment_id, logistic_type").in("shipment_id", chunk);
         if (data) {
           for (const row of data as { shipment_id: number; logistic_type: string }[]) {
             shipmentLogisticMap.set(row.shipment_id, row.logistic_type);
           }
         }
+      }
+    }
+    // Fetch logistic_type from ML API for shipments not in DB
+    const missingShipIds = allShippingIds.filter(id => !shipmentLogisticMap.has(id));
+    if (missingShipIds.length > 0) {
+      console.log(`[ML Orders History] Fetching logistic_type for ${missingShipIds.length} shipments from API`);
+      for (let i = 0; i < missingShipIds.length; i += 10) {
+        const batch = missingShipIds.slice(i, i + 10);
+        await Promise.all(batch.map(async (sid) => {
+          try {
+            const ship = await mlGet<{ id: number; logistic_type?: string }>(`/shipments/${sid}`, { "x-format-new": "true" });
+            if (ship?.logistic_type) {
+              shipmentLogisticMap.set(sid, ship.logistic_type);
+            }
+          } catch { /* ignore */ }
+        }));
+        if (i + 10 < missingShipIds.length) await new Promise(r => setTimeout(r, 200));
       }
     }
 
