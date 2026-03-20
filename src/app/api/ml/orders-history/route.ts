@@ -157,9 +157,10 @@ async function fetchBillingForOrders(orderIds: number[]): Promise<Map<number, Bi
 /** Extract financial data from billing detail (matches ProfitGuard structure) */
 function extractBillingData(billing: BillingOrderDetail | undefined) {
   const data = {
-    costo_envio: 0,           // Net shipping cost (after bonificación, like PG shippingCost)
-    ingreso_envio: 0,         // What buyer paid for shipping (like PG shippingRevenue)
+    costo_envio: 0,           // Net shipping cost (detail_amount, post-bonificación)
+    ingreso_envio: 0,         // Bonificación de envío (discount_amount del CFF)
     ingreso_adicional_tc: 0,
+    has_shipping_detail: false, // Whether billing had a CFF/CXD detail
   };
 
   if (!billing) return data;
@@ -169,14 +170,14 @@ function extractBillingData(billing: BillingOrderDetail | undefined) {
       const subType = detail.charge_info?.detail_sub_type || "";
       const marketplace = detail.marketplace_info?.marketplace || "";
 
-      // CFF / CXD = Cargo por envíos — use detail_amount (net, post-bonificación)
-      // Also catch any SHIPPING marketplace charge not caught by sub_type
+      // CFF / CXD = Cargo por envíos
       if (subType === "CFF" || subType === "CXD" || (marketplace === "SHIPPING" && detail.charge_info?.detail_type === "CHARGE")) {
+        data.has_shipping_detail = true;
         data.costo_envio += Math.abs(detail.charge_info?.detail_amount || 0);
 
-        // Shipping revenue: only from SHIPPING details (not CORE)
-        if (detail.shipping_info?.receiver_shipping_cost) {
-          data.ingreso_envio += Math.abs(detail.shipping_info.receiver_shipping_cost);
+        // Bonificación = discount_amount (lo que ML descuenta del cargo de envío)
+        if (detail.discount_info?.discount_amount) {
+          data.ingreso_envio += Math.abs(detail.discount_info.discount_amount);
         }
       }
     }
@@ -273,12 +274,14 @@ export async function GET(req: NextRequest) {
       let packCostoEnvio = 0;
       let packIngresoEnvio = 0;
       let packIngresoTC = 0;
+      let hasShippingDetail = false;
       for (const order of packOrders) {
         const billing = billingMap.get(order.id);
         const billingData = extractBillingData(billing);
         packCostoEnvio += billingData.costo_envio;
         packIngresoEnvio += billingData.ingreso_envio;
         packIngresoTC += billingData.ingreso_adicional_tc;
+        if (billingData.has_shipping_detail) hasShippingDetail = true;
       }
 
       // Count total items in pack for equal split (like ProfitGuard)
@@ -298,10 +301,10 @@ export async function GET(req: NextRequest) {
         return "";
       })();
 
-      // Flex fallback: if billing has no shipping charge but it's a Flex order, apply fixed rate
-      const isFlex = groupLogisticType === "self_service" || (groupLogisticType === "" && packCostoEnvio === 0);
-      if (packCostoEnvio === 0 && isFlex && groupLogisticType === "self_service") {
+      // Flex fallback: if billing has no shipping detail but it's a confirmed Flex order, apply fixed rate
+      if (!hasShippingDetail && groupLogisticType === "self_service") {
         packCostoEnvio = tarifaFlex;
+        // No bonificación data available without billing — leave ingreso_envio as 0
       }
 
       for (const order of packOrders) {
@@ -323,11 +326,6 @@ export async function GET(req: NextRequest) {
           let ingresoEnvio = Math.round(packIngresoEnvio / packItemCount);
           const ingresoTC = Math.round(packIngresoTC / packItemCount);
 
-          // If buyer paid the full shipping (costo === ingreso), net is 0 for the seller
-          if (costoEnvio > 0 && costoEnvio === ingresoEnvio) {
-            costoEnvio = 0;
-            ingresoEnvio = 0;
-          }
 
           const precioUnit = Math.round(item.unit_price);
           const subtotal = Math.round(itemSubtotal);
