@@ -1994,6 +1994,35 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     }
   }
 
+  // 8. Limpiar entradas stale: SKUs en stock_full_cache que no fueron tocados en este sync
+  //    tienen datos viejos (ej: de ProfitGuard). Poner cantidad=0 para los no actualizados.
+  const skusActualizados = new Set<string>();
+  allSkus.forEach(s => skusActualizados.add(s.toUpperCase()));
+  if (allMappings) {
+    for (const m of allMappings as { sku: string }[]) {
+      skusActualizados.add(m.sku.toUpperCase());
+    }
+  }
+
+  const { data: allCacheRows } = await sb.from("stock_full_cache")
+    .select("sku_venta")
+    .gt("cantidad", 0);
+
+  if (allCacheRows && allCacheRows.length > 0) {
+    const staleSkus = (allCacheRows as { sku_venta: string }[])
+      .filter(r => !skusActualizados.has(r.sku_venta.toUpperCase()));
+
+    if (staleSkus.length > 0) {
+      console.log(`[syncStockFull] Limpiando ${staleSkus.length} entradas stale en stock_full_cache`);
+      for (let i = 0; i < staleSkus.length; i += 500) {
+        const batch = staleSkus.slice(i, i + 500).map(r => r.sku_venta);
+        await sb.from("stock_full_cache")
+          .update({ cantidad: 0, fuente: "ml_stale_cleanup", updated_at: new Date().toISOString() })
+          .in("sku_venta", batch);
+      }
+    }
+  }
+
   const result: SyncStockFullResult = {
     ok: errores.length === 0,
     items_sincronizados: itemsMapRows.length,
