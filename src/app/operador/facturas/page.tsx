@@ -273,12 +273,15 @@ export default function FacturasOperador() {
                     <span style={{fontSize:12,color:"var(--txt3)",transition:"transform 0.2s",transform:isCollapsed?"rotate(-90deg)":"rotate(0)"}}>&#9660;</span>
                   </div>
                   {isCollapsed && (
-                    <div style={{fontSize:10,color:"var(--txt3)",marginTop:4,lineHeight:1.5}}>
+                    <div style={{fontSize:10,color:"var(--txt3)",marginTop:4,lineHeight:1.6}}>
                       {items.map((s, i) => (
-                        <span key={s.sku}>
-                          {i > 0 && <span style={{margin:"0 3px"}}>·</span>}
-                          <span style={{color:"var(--txt2)"}}>{s.nombre}</span> <span className="mono" style={{fontWeight:700,color:"var(--cyan)"}}>{s.totalFactura}</span>
-                        </span>
+                        <div key={s.sku} style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:4}}>
+                          <span style={{color:"var(--txt2)",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.nombre}</span>
+                          <span className="mono" style={{fontWeight:700,color:"var(--cyan)",whiteSpace:"nowrap"}}>{s.totalFactura}</span>
+                          <span style={{color:"var(--txt3)",whiteSpace:"nowrap",fontSize:9}}>
+                            {s.facturas.map(f => f.folio).join(", ")}
+                          </span>
+                        </div>
                       ))}
                     </div>
                   )}
@@ -348,6 +351,44 @@ export default function FacturasOperador() {
                     style={{padding:"5px 10px",borderRadius:6,background:"var(--bg3)",color:"var(--txt3)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)",marginLeft:8}}>
                     Deshacer
                   </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {/* Checklist por factura */}
+        {recs.length > 0 && (
+          <div style={{marginTop:20}}>
+            <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>Checklist por factura</div>
+            {recs.map(rec => {
+              const recLineas = lineas.filter(l => l.recepcion_id === rec.id);
+              const recSkus = recLineas.map(l => l.sku);
+              const todosChecked = recSkus.length > 0 && recSkus.every(sku => checks[sku]);
+              const checkCount = recSkus.filter(sku => checks[sku]).length;
+              const conDiff = recSkus.filter(sku => checks[sku] && !checks[sku].ok).length;
+
+              return (
+                <div key={rec.id} style={{padding:"10px 12px",marginBottom:6,borderRadius:8,
+                  background:todosChecked?(conDiff>0?"var(--amberBg)":"var(--greenBg)"):"var(--bg2)",
+                  border:`1px solid ${todosChecked?(conDiff>0?"var(--amberBd)":"var(--greenBd)"):"var(--bg3)"}`}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <div>
+                      <div style={{display:"flex",alignItems:"center",gap:6}}>
+                        <span style={{fontSize:14}}>{todosChecked ? (conDiff > 0 ? "\u26A0\uFE0F" : "\u2705") : "\u2B1C"}</span>
+                        <span style={{fontSize:13,fontWeight:700}}>Folio {rec.folio}</span>
+                      </div>
+                      <div style={{fontSize:11,color:"var(--txt3)",marginTop:2}}>{rec.proveedor} · {recLineas.length} SKUs</div>
+                    </div>
+                    <div style={{textAlign:"right"}}>
+                      <div style={{fontSize:12,fontWeight:700,color:todosChecked?"var(--green)":"var(--txt3)"}}>{checkCount}/{recSkus.length}</div>
+                      {conDiff > 0 && <div style={{fontSize:10,color:"var(--amber)",fontWeight:600}}>{conDiff} con dif.</div>}
+                    </div>
+                  </div>
+                  {/* Mini progress */}
+                  <div style={{background:"var(--bg3)",borderRadius:4,height:4,overflow:"hidden",marginTop:6}}>
+                    <div style={{width:`${recSkus.length>0?Math.round((checkCount/recSkus.length)*100):0}%`,height:"100%",
+                      background:todosChecked?(conDiff>0?"var(--amber)":"var(--green)"):"var(--cyan)",borderRadius:4}}/>
+                  </div>
                 </div>
               );
             })}
