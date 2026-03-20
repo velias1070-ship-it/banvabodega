@@ -415,33 +415,31 @@ function Dashboard({ empresa, periodo, onChangePeriodo }: { empresa: DBEmpresa; 
     }
   };
 
-  // Sincronizar año completo
+  // Sincronizar año completo — mes a mes desde el cliente
   const [syncAnualLoading, setSyncAnualLoading] = useState(false);
   const [syncAnualMsg, setSyncAnualMsg] = useState<string | null>(null);
   const handleSyncAnual = async (anio: number, tipo: string) => {
-    if (!window.confirm(`Sincronizar ${tipo} de todo ${anio} desde el SII?\nEsto puede tardar varios minutos.`)) return;
+    if (!window.confirm(`Sincronizar ${tipo} de todo ${anio} desde el SII?\nSe procesara mes a mes (~1 min por mes).`)) return;
     setSyncAnualLoading(true);
-    setSyncAnualMsg(`Sincronizando ${tipo} ${anio}...`);
-    try {
-      const res = await fetch("/api/sii/sync-anual", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ anio, tipo }),
-      });
-      const data = await res.json();
-      if (data.meses) {
-        const ok = data.meses.filter((m: { error?: string }) => !m.error).length;
-        const fail = data.meses.filter((m: { error?: string }) => m.error).length;
-        setSyncAnualMsg(`${anio}: ${data.total_compras || 0} compras + ${data.total_ventas || 0} ventas (${ok} meses OK${fail > 0 ? `, ${fail} con error` : ""})`);
-        reload();
-      } else {
-        setSyncAnualMsg(`Error: ${data.error || "Error desconocido"}`);
-      }
-    } catch (e) {
-      setSyncAnualMsg(`Error: ${e instanceof Error ? e.message : "sin detalles"}`);
-    } finally {
-      setSyncAnualLoading(false);
+    let totalC = 0, totalV = 0, errores = 0;
+    for (let mes = 1; mes <= 12; mes++) {
+      const per = `${anio}${String(mes).padStart(2, "0")}`;
+      setSyncAnualMsg(`Sincronizando ${tipo} ${anio} — mes ${mes}/12 (${per})...`);
+      try {
+        const res = await fetch("/api/sii/sync", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ periodo: per, tipo }),
+        });
+        const data = await res.json();
+        if (data.error) { errores++; continue; }
+        totalC += data.compras || 0;
+        totalV += data.ventas || 0;
+      } catch { errores++; }
     }
+    setSyncAnualMsg(`${anio}: ${totalC} compras + ${totalV} ventas importadas (${12 - errores} meses OK${errores > 0 ? `, ${errores} con error` : ""})`);
+    setSyncAnualLoading(false);
+    reload();
   };
 
   // Exportar CSV
