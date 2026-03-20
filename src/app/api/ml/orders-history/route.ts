@@ -161,11 +161,11 @@ function extractBillingData(billing: BillingOrderDetail | undefined) {
       // Also catch any SHIPPING marketplace charge not caught by sub_type
       if (subType === "CFF" || subType === "CXD" || (marketplace === "SHIPPING" && detail.charge_info?.detail_type === "CHARGE")) {
         data.costo_envio += Math.abs(detail.charge_info?.detail_amount || 0);
-      }
 
-      // Shipping revenue: what the buyer paid for shipping
-      if (detail.shipping_info?.receiver_shipping_cost) {
-        data.ingreso_envio += Math.abs(detail.shipping_info.receiver_shipping_cost);
+        // Shipping revenue: only from SHIPPING details (not CORE)
+        if (detail.shipping_info?.receiver_shipping_cost) {
+          data.ingreso_envio += Math.abs(detail.shipping_info.receiver_shipping_cost);
+        }
       }
     }
   }
