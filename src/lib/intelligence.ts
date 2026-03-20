@@ -416,6 +416,9 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     return out;
   };
   const stockBodegaN = normMap(stockBodega);
+  const stockFullN = normMap(stockFull);
+  const stockFullDetailN = new Map<string, StockFullDetailRow>();
+  stockFullDetail.forEach((v, k) => stockFullDetailN.set(k.toUpperCase(), v));
   const stockEnTransitoN = normMap(stockEnTransito);
   const ocPendientesPorSkuN = normMap(ocPendientesPorSku);
 
@@ -737,7 +740,7 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     // Stock Full: sumar de todos los SKU Venta asociados (convertir a físico)
     let stFull = 0;
     for (const va of ventasAsoc) {
-      const sfVenta = stockFull.get(va.skuVenta) || 0;
+      const sfVenta = stockFullN.get(va.skuVenta) || 0;
       stFull += sfVenta * va.unidades;
     }
     const stTotal = stFull + stBodega;
@@ -1185,7 +1188,7 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       let totalDanado = 0;
       let totalPerdido = 0;
       for (const sv of r.skus_venta) {
-        const detail = stockFullDetail.get(sv);
+        const detail = stockFullDetailN.get(sv);
         if (detail) {
           totalDanado += detail.stock_danado;
           totalPerdido += detail.stock_perdido;
