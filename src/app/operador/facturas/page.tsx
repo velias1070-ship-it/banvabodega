@@ -28,11 +28,10 @@ function normalizarCategoria(cat: string): string {
   return CATEGORIA_NORM[key] || cat.trim();
 }
 
-function parseCategoria(nombre: string, cat: string): string {
-  const n = nombre.toLowerCase();
-  // Usar categoria del diccionario si existe y no es genérica, normalizada
-  if (cat && cat !== "Otros" && cat !== "") return normalizarCategoria(cat);
-  // Fallback: parsear del nombre
+// Categorias genéricas que deben ceder ante lo que diga el nombre del producto
+const CATEGORIAS_GENERICAS = new Set(["otros", "textil", "textiles", "hogar", "home", "general", "sin categoria", ""]);
+
+function catDesdeNombre(n: string): string | null {
   if (n.includes("quilt")) return "Quilts";
   if (n.includes("limpiapie") || n.includes("limpia pie")) return "Limpiapies";
   if (n.includes("jgo sabana") || n.includes("jgo. sabana") || n.includes("juego sabana") || n.includes("sabana")) return "Jgo Sabanas";
@@ -45,6 +44,18 @@ function parseCategoria(nombre: string, cat: string): string {
   if (n.includes("bajada") || n.includes("pie de cama")) return "Bajadas de Cama";
   if (n.includes("cortina")) return "Cortinas";
   if (n.includes("cojin") || n.includes("cojín")) return "Cojines";
+  return null;
+}
+
+function parseCategoria(nombre: string, cat: string): string {
+  const n = nombre.toLowerCase();
+  const catNorm = normalizarCategoria(cat);
+  const esGenerica = CATEGORIAS_GENERICAS.has(cat.trim().toLowerCase());
+  // Si el nombre indica una categoria específica, siempre usarla
+  const catNombre = catDesdeNombre(n);
+  if (catNombre) return catNombre;
+  // Si la categoria del diccionario es específica, usarla
+  if (cat && !esGenerica) return catNorm;
   return "Otros";
 }
 
