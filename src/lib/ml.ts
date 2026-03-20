@@ -1881,6 +1881,39 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     if (error) errores.push(`Upsert stock_full_cache error: ${error.message}`);
   }
 
+  // 7. Corregir cantidades con la API distribuida (fuente de verdad)
+  // La API de fulfillment inventory puede contar doble; la distribuida es precisa.
+  console.log("[syncStockFull] Corrigiendo cantidades con API distribuida...");
+  let correciones = 0;
+  try {
+    const distributedStock = await getFullStockForAllSkus();
+    const corrections: { sku_venta: string; cantidad: number }[] = [];
+    for (const [sku, qty] of Object.entries(distributedStock)) {
+      const cached = stockBySku.get(sku);
+      if (cached && cached.cantidad !== qty) {
+        corrections.push({ sku_venta: sku, cantidad: qty });
+      } else if (!cached && qty > 0) {
+        corrections.push({ sku_venta: sku, cantidad: qty });
+      }
+    }
+    if (corrections.length > 0) {
+      for (let i = 0; i < corrections.length; i += 500) {
+        const batch = corrections.slice(i, i + 500).map(c => ({
+          sku_venta: c.sku_venta,
+          cantidad: c.cantidad,
+          fuente: "ml_distributed",
+          updated_at: new Date().toISOString(),
+        }));
+        await sb.from("stock_full_cache").upsert(batch, { onConflict: "sku_venta" });
+      }
+      correciones = corrections.length;
+      console.log(`[syncStockFull] ${correciones} SKUs corregidos con API distribuida`);
+    }
+  } catch (err) {
+    console.error("[syncStockFull] Error en corrección distribuida:", err);
+    errores.push(`Corrección distribuida: ${err}`);
+  }
+
   const result: SyncStockFullResult = {
     ok: errores.length === 0,
     items_sincronizados: itemsMapRows.length,
