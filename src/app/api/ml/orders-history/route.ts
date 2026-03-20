@@ -308,7 +308,7 @@ export async function GET(req: NextRequest) {
         const logisticType = groupLogisticType;
 
         if (debug) {
-          debugData.push({ order_id: order.id, billing, order });
+          debugData.push({ order_id: order.id, billing: billingMap.get(order.id), order });
         }
 
         for (const item of order.order_items) {
