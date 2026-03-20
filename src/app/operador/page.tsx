@@ -51,6 +51,9 @@ export default function OperadorPage() {
           <Link href="/operador/picking">
             <button style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"#f59e0b",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>🏷️ Picking</button>
           </Link>
+          <Link href="/operador/facturas">
+            <button style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"#06b6d4",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>📄 Facturas</button>
+          </Link>
           <Link href="/operador/recepciones">
             <button style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"var(--green)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>📦 Recepción</button>
           </Link>
