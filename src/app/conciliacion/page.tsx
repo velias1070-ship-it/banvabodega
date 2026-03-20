@@ -1207,10 +1207,16 @@ function TabBanco({ empresa, periodo }: { empresa: DBEmpresa; periodo: string })
   const [showUpload, setShowUpload] = useState<false | "csv" | "liquidacion">(false);
   const [filter, setFilter] = useState("");
   const [bancoFilter, setBancoFilter] = useState("todos");
+  const [tipoFilter, setTipoFilter] = useState<"todos" | "ingresos" | "egresos">("todos");
   const [page, setPage] = useState(0);
+  const [syncingMP, setSyncingMP] = useState(false);
+  const [syncMPMsg, setSyncMPMsg] = useState<string | null>(null);
 
   // Convertir periodo YYYYMM → rango de fechas para filtrar
   const periodoToRange = useCallback((p: string) => {
+    if (p.length === 4) {
+      return { desde: `${p}-01-01`, hasta: `${p}-12-31` };
+    }
     const y = parseInt(p.slice(0, 4));
     const m = parseInt(p.slice(4, 6));
     const desde = `${y}-${String(m).padStart(2, "0")}-01`;
@@ -1228,6 +1234,37 @@ function TabBanco({ empresa, periodo }: { empresa: DBEmpresa; periodo: string })
     setLoading(false);
     setPage(0);
   }, [empresa.id, periodo, periodoToRange]);
+
+  const handleSyncMP = useCallback(async () => {
+    setSyncingMP(true);
+    setSyncMPMsg(null);
+    try {
+      if (periodo.length === 4) {
+        // Año completo: mes a mes
+        let totalC = 0, totalR = 0;
+        for (let mes = 1; mes <= 12; mes++) {
+          const per = `${periodo}${String(mes).padStart(2, "0")}`;
+          setSyncMPMsg(`Sync MP ${periodo} — mes ${mes}/12...`);
+          try {
+            const res = await fetch("/api/mp/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ periodo: per }) });
+            const d = await res.json();
+            if (!d.error) { totalC += d.compras_nuevas || 0; totalR += d.retiros_nuevos || 0; }
+          } catch { /* skip */ }
+        }
+        setSyncMPMsg(`${totalC} compras + ${totalR} retiros importados de MP ${periodo}`);
+      } else {
+        const res = await fetch("/api/mp/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ periodo }) });
+        const d = await res.json();
+        if (d.error) setSyncMPMsg(`Error: ${d.error}`);
+        else setSyncMPMsg(`${d.compras_nuevas || 0} compras + ${d.retiros_nuevos || 0} retiros importados de MP`);
+      }
+      load();
+    } catch (e) {
+      setSyncMPMsg(`Error: ${e instanceof Error ? e.message : "sin detalles"}`);
+    } finally {
+      setSyncingMP(false);
+    }
+  }, [periodo, load]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -1259,9 +1296,11 @@ function TabBanco({ empresa, periodo }: { empresa: DBEmpresa; periodo: string })
   // Bancos únicos para el filtro
   const bancosUnicos = Array.from(new Set(data.map(m => m.banco))).sort();
 
-  // Filtrado: por banco + por texto
+  // Filtrado: por banco + tipo + texto
   const filtered = data.filter(m => {
     if (bancoFilter !== "todos" && m.banco !== bancoFilter) return false;
+    if (tipoFilter === "ingresos" && m.monto < 0) return false;
+    if (tipoFilter === "egresos" && m.monto >= 0) return false;
     if (filter) {
       const q = filter.toLowerCase();
       const matchDesc = (m.descripcion || "").toLowerCase().includes(q);
@@ -1306,6 +1345,10 @@ function TabBanco({ empresa, periodo }: { empresa: DBEmpresa; periodo: string })
               </button>
               <button onClick={() => setShowUpload("liquidacion")} className="scan-btn" style={{ padding: "6px 16px", fontSize: 12, background: "linear-gradient(135deg, #009ee3, #00b1ea)" }}>
                 Liquidación MP
+              </button>
+              <button onClick={handleSyncMP} disabled={syncingMP}
+                style={{ padding: "6px 16px", fontSize: 12, fontWeight: 600, borderRadius: 8, background: "var(--blueBg)", color: "var(--blue)", border: "1px solid var(--blueBd)", cursor: "pointer", opacity: syncingMP ? 0.6 : 1 }}>
+                {syncingMP ? "Sync MP..." : "Sync MP (Compras+Retiros)"}
               </button>
             </>
           )}
@@ -1362,8 +1405,28 @@ function TabBanco({ empresa, periodo }: { empresa: DBEmpresa; periodo: string })
             </div>
           </div>
 
-          {/* Filtros: banco + texto */}
+          {syncMPMsg && (
+            <div style={{ padding: "6px 10px", borderRadius: 6, marginBottom: 8, fontSize: 11, fontWeight: 600,
+              background: syncMPMsg.startsWith("Error") ? "var(--redBg)" : "var(--blueBg)",
+              color: syncMPMsg.startsWith("Error") ? "var(--red)" : "var(--blue)",
+              border: `1px solid ${syncMPMsg.startsWith("Error") ? "var(--redBd)" : "var(--blueBd)"}` }}>
+              {syncMPMsg}
+            </div>
+          )}
+
+          {/* Filtros: tipo + banco + texto */}
           <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
+            <div style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--bg4)" }}>
+              {(["todos", "ingresos", "egresos"] as const).map(t => (
+                <button key={t} onClick={() => setTipoFilter(t)} style={{
+                  padding: "5px 10px", fontSize: 10, fontWeight: 600, border: "none", cursor: "pointer",
+                  background: tipoFilter === t ? (t === "ingresos" ? "var(--green)" : t === "egresos" ? "var(--red)" : "var(--cyan)") : "var(--bg3)",
+                  color: tipoFilter === t ? "#000" : "var(--txt3)",
+                }}>
+                  {t === "todos" ? "Todos" : t === "ingresos" ? "Ingresos" : "Egresos"}
+                </button>
+              ))}
+            </div>
             {bancosUnicos.length > 1 && (
               <select value={bancoFilter} onChange={e => setBancoFilter(e.target.value)} className="form-input" style={{ fontSize: 12, width: "auto", minWidth: 140 }}>
                 <option value="todos">Todos los bancos</option>
