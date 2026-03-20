@@ -96,6 +96,10 @@ export default function FacturasOperador() {
   const [lineas, setLineas] = useState<DBRecepcionLinea[]>([]);
   const [busqueda, setBusqueda] = useState("");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  // Checklist: sku -> { ok: true } (todo bien) or { ok: false, qty: number } (con diferencia)
+  const [checks, setChecks] = useState<Record<string, { ok: boolean; qty?: number }>>({});
+  const [editingSku, setEditingSku] = useState<string | null>(null);
+  const [editQty, setEditQty] = useState(0);
 
   useEffect(() => {
     initStore().then(() => { setMounted(true); setLoading(false); });
@@ -169,6 +173,9 @@ export default function FacturasOperador() {
   });
 
   const totalUnidades = skuList.reduce((s, x) => s + x.totalFactura, 0);
+  const totalSkus = Object.keys(allSkus).length;
+  const checkedCount = Object.keys(checks).length;
+  const conDiferencia = Object.values(checks).filter(c => !c.ok).length;
 
   return (
     <div className="app">
@@ -183,20 +190,32 @@ export default function FacturasOperador() {
 
       <div style={{padding:12}}>
         {/* Summary */}
-        <div style={{padding:"12px 14px",borderRadius:10,background:"var(--bg2)",border:"1px solid var(--bg3)",marginBottom:12,
-          display:"flex",justifyContent:"space-around",textAlign:"center"}}>
-          <div>
-            <div style={{fontSize:20,fontWeight:800,color:"var(--cyan)"}}>{recs.length}</div>
-            <div style={{fontSize:10,color:"var(--txt3)"}}>Facturas</div>
+        <div style={{padding:"12px 14px",borderRadius:10,background:"var(--bg2)",border:"1px solid var(--bg3)",marginBottom:12}}>
+          <div style={{display:"flex",justifyContent:"space-around",textAlign:"center",marginBottom:checkedCount>0?10:0}}>
+            <div>
+              <div style={{fontSize:20,fontWeight:800,color:"var(--cyan)"}}>{recs.length}</div>
+              <div style={{fontSize:10,color:"var(--txt3)"}}>Facturas</div>
+            </div>
+            <div>
+              <div style={{fontSize:20,fontWeight:800,color:"var(--txt)"}}>{totalSkus}</div>
+              <div style={{fontSize:10,color:"var(--txt3)"}}>SKUs</div>
+            </div>
+            <div>
+              <div style={{fontSize:20,fontWeight:800,color:"var(--amber)"}}>{totalUnidades.toLocaleString()}</div>
+              <div style={{fontSize:10,color:"var(--txt3)"}}>Unidades</div>
+            </div>
           </div>
-          <div>
-            <div style={{fontSize:20,fontWeight:800,color:"var(--txt)"}}>{Object.keys(allSkus).length}</div>
-            <div style={{fontSize:10,color:"var(--txt3)"}}>SKUs</div>
-          </div>
-          <div>
-            <div style={{fontSize:20,fontWeight:800,color:"var(--amber)"}}>{totalUnidades.toLocaleString()}</div>
-            <div style={{fontSize:10,color:"var(--txt3)"}}>Unidades</div>
-          </div>
+          {checkedCount > 0 && (<>
+            <div style={{background:"var(--bg3)",borderRadius:6,height:8,overflow:"hidden",marginBottom:6}}>
+              <div style={{width:`${Math.round((checkedCount/totalSkus)*100)}%`,height:"100%",
+                background:checkedCount===totalSkus?"var(--green)":"var(--cyan)",borderRadius:6,transition:"width 0.3s"}}/>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:11}}>
+              <span style={{color:"var(--txt3)"}}>{checkedCount}/{totalSkus} verificados</span>
+              {conDiferencia > 0 && <span style={{color:"var(--amber)",fontWeight:700}}>{conDiferencia} con diferencia</span>}
+              {checkedCount === totalSkus && conDiferencia === 0 && <span style={{color:"var(--green)",fontWeight:700}}>Todo OK</span>}
+            </div>
+          </>)}
         </div>
 
         {/* Search */}
@@ -219,9 +238,10 @@ export default function FacturasOperador() {
           </div>
         )}
 
-        {/* Per-category sections */}
+        {/* Per-category sections — unchecked items */}
         {categorias.map(cat => {
-          const items = porCategoria[cat];
+          const items = porCategoria[cat].filter(s => !checks[s.sku]);
+          if (items.length === 0) return null;
           const catTotal = items.reduce((s, x) => s + x.totalFactura, 0);
           const isCollapsed = collapsed[cat] === true;
 
@@ -260,7 +280,6 @@ export default function FacturasOperador() {
                 <div style={{background:"var(--bg2)",border:"1px solid var(--bg3)",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"6px 10px"}}>
                   {subgrupos.map((sg, gi) => (
                     <div key={gi}>
-                      {/* Sub-group label (tamano/hilos) */}
                       {sg.label && (
                         <div style={{fontSize:10,fontWeight:700,color:"var(--txt3)",padding:"6px 4px 2px",
                           borderTop:gi>0?"1px solid var(--bg3)":"none",marginTop:gi>0?4:0,
@@ -268,32 +287,13 @@ export default function FacturasOperador() {
                           {sg.label}
                         </div>
                       )}
-                      {sg.items.map(s => {
-                        const enMultiples = s.facturas.length > 1;
-                        return (
-                          <div key={s.sku} style={{padding:"8px 10px",marginBottom:4,borderRadius:8,
-                            background:enMultiples?"var(--amberBg)":"var(--bg3)",
-                            border:`1px solid ${enMultiples?"var(--amberBd)":"var(--bg4)"}`}}>
-                            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                              <div style={{flex:1,minWidth:0}}>
-                                <span className="mono" style={{fontWeight:700,fontSize:12}}>{s.sku}</span>
-                                <div style={{fontSize:11,color:"var(--txt3)",marginTop:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.nombre}</div>
-                              </div>
-                              <div className="mono" style={{fontSize:20,fontWeight:800,color:enMultiples?"var(--amber)":"var(--txt)",marginLeft:8}}>{s.totalFactura}</div>
-                            </div>
-                            {enMultiples && (
-                              <div style={{marginTop:4,fontSize:10,color:"var(--txt3)"}}>
-                                {s.facturas.map((f, i) => (
-                                  <span key={i}>
-                                    {i > 0 && " + "}
-                                    <span style={{color:"var(--cyan)",fontWeight:600}}>{f.folio}</span>: {f.qty}
-                                  </span>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
+                      {sg.items.map(s => <SkuCard key={s.sku} s={s} editingSku={editingSku} editQty={editQty}
+                        onTodoOk={() => { setChecks(c => ({...c, [s.sku]: { ok: true }})); setEditingSku(null); }}
+                        onStartEdit={() => { setEditingSku(s.sku); setEditQty(s.totalFactura); }}
+                        onCancelEdit={() => setEditingSku(null)}
+                        onConfirmQty={(qty) => { setChecks(c => ({...c, [s.sku]: { ok: qty === s.totalFactura, qty }})); setEditingSku(null); }}
+                        setEditQty={setEditQty}
+                      />)}
                     </div>
                   ))}
                 </div>
@@ -301,7 +301,128 @@ export default function FacturasOperador() {
             </div>
           );
         })}
+
+        {/* Checked items section */}
+        {checkedCount > 0 && (
+          <div style={{marginTop:16}}>
+            <div style={{fontSize:12,fontWeight:700,color:"var(--green)",marginBottom:8,display:"flex",alignItems:"center",gap:6}}>
+              <span>Verificados ({checkedCount})</span>
+              {checkedCount > 0 && (
+                <button onClick={() => setChecks({})}
+                  style={{padding:"2px 8px",borderRadius:4,background:"var(--bg3)",color:"var(--txt3)",fontSize:10,fontWeight:600,border:"1px solid var(--bg4)",marginLeft:"auto"}}>
+                  Limpiar todo
+                </button>
+              )}
+            </div>
+            {Object.entries(checks).map(([sku, check]) => {
+              const s = allSkus[sku];
+              if (!s) return null;
+              return (
+                <div key={sku} style={{padding:"8px 10px",marginBottom:4,borderRadius:8,
+                  background:check.ok?"var(--greenBg)":"var(--amberBg)",
+                  border:`1px solid ${check.ok?"var(--greenBd)":"var(--amberBd)"}`,
+                  display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{display:"flex",alignItems:"center",gap:6}}>
+                      <span style={{fontSize:14}}>{check.ok ? "\u2705" : "\u26A0\uFE0F"}</span>
+                      <span className="mono" style={{fontWeight:700,fontSize:12}}>{sku}</span>
+                    </div>
+                    <div style={{fontSize:11,color:"var(--txt3)",marginTop:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.nombre}</div>
+                    {!check.ok && check.qty !== undefined && (
+                      <div style={{fontSize:11,color:"var(--amber)",fontWeight:700,marginTop:2}}>
+                        Recibido: {check.qty} / Factura: {s.totalFactura} (faltan {s.totalFactura - check.qty})
+                      </div>
+                    )}
+                  </div>
+                  <button onClick={() => setChecks(c => { const next = {...c}; delete next[sku]; return next; })}
+                    style={{padding:"5px 10px",borderRadius:6,background:"var(--bg3)",color:"var(--txt3)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)",marginLeft:8}}>
+                    Deshacer
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
+    </div>
+  );
+}
+
+// ==================== SKU CARD ====================
+function SkuCard({ s, editingSku, editQty, onTodoOk, onStartEdit, onCancelEdit, onConfirmQty, setEditQty }: {
+  s: SkuConsolidado; editingSku: string | null; editQty: number;
+  onTodoOk: () => void; onStartEdit: () => void; onCancelEdit: () => void;
+  onConfirmQty: (qty: number) => void; setEditQty: (fn: number | ((q: number) => number)) => void;
+}) {
+  const enMultiples = s.facturas.length > 1;
+  const isEditing = editingSku === s.sku;
+
+  return (
+    <div style={{padding:"8px 10px",marginBottom:4,borderRadius:8,
+      background:enMultiples?"var(--amberBg)":"var(--bg3)",
+      border:`1px solid ${enMultiples?"var(--amberBd)":"var(--bg4)"}`}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div style={{flex:1,minWidth:0}}>
+          <span className="mono" style={{fontWeight:700,fontSize:12}}>{s.sku}</span>
+          <div style={{fontSize:11,color:"var(--txt3)",marginTop:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.nombre}</div>
+        </div>
+        <div className="mono" style={{fontSize:20,fontWeight:800,color:enMultiples?"var(--amber)":"var(--txt)",marginLeft:8}}>{s.totalFactura}</div>
+      </div>
+      {enMultiples && (
+        <div style={{marginTop:4,fontSize:10,color:"var(--txt3)"}}>
+          {s.facturas.map((f, i) => (
+            <span key={i}>
+              {i > 0 && " + "}
+              <span style={{color:"var(--cyan)",fontWeight:600}}>{f.folio}</span>: {f.qty}
+            </span>
+          ))}
+        </div>
+      )}
+      {/* Action buttons */}
+      {!isEditing && (
+        <div style={{display:"flex",gap:6,marginTop:8}}>
+          <button onClick={onTodoOk}
+            style={{flex:1,padding:"8px 0",borderRadius:6,background:"var(--green)",color:"#fff",fontSize:12,fontWeight:700,border:"none"}}>
+            Todo OK
+          </button>
+          <button onClick={onStartEdit}
+            style={{flex:1,padding:"8px 0",borderRadius:6,background:"var(--bg2)",color:"var(--amber)",fontSize:12,fontWeight:700,border:"1px solid var(--amberBd)"}}>
+            Ingreso parcial
+          </button>
+        </div>
+      )}
+      {/* Qty edit mode */}
+      {isEditing && (
+        <div style={{marginTop:8,padding:"8px 10px",borderRadius:8,background:"var(--bg2)",border:"1px solid var(--amberBd)"}}>
+          <div style={{fontSize:11,color:"var(--txt3)",marginBottom:6}}>Unidades recibidas realmente:</div>
+          <div style={{display:"flex",alignItems:"center",gap:8,justifyContent:"center"}}>
+            <button onClick={() => setEditQty((q: number) => Math.max(0, q - 1))}
+              style={{width:36,height:36,borderRadius:8,background:"var(--bg3)",fontSize:18,fontWeight:700,border:"1px solid var(--bg4)",color:"var(--txt)"}}>-</button>
+            <input type="number" value={editQty} onFocus={e=>e.target.select()}
+              onChange={e => setEditQty(Math.max(0, parseInt(e.target.value) || 0))}
+              style={{width:70,textAlign:"center",fontSize:22,fontWeight:800,padding:6,borderRadius:8,background:"var(--bg)",
+                border:"2px solid var(--amber)",color:"var(--txt)",fontFamily:"var(--font-mono)"}} />
+            <button onClick={() => setEditQty((q: number) => q + 1)}
+              style={{width:36,height:36,borderRadius:8,background:"var(--bg3)",fontSize:18,fontWeight:700,border:"1px solid var(--bg4)",color:"var(--txt)"}}>+</button>
+          </div>
+          {editQty !== s.totalFactura && (
+            <div style={{textAlign:"center",marginTop:6,fontSize:12,fontWeight:700,
+              color:editQty < s.totalFactura ? "var(--amber)" : "var(--red)"}}>
+              {editQty < s.totalFactura ? `Faltan ${s.totalFactura - editQty}` : `Sobran ${editQty - s.totalFactura}`}
+            </div>
+          )}
+          <div style={{display:"flex",gap:6,marginTop:8}}>
+            <button onClick={onCancelEdit}
+              style={{flex:1,padding:"8px 0",borderRadius:6,background:"var(--bg3)",color:"var(--txt3)",fontSize:12,fontWeight:600,border:"1px solid var(--bg4)"}}>
+              Cancelar
+            </button>
+            <button onClick={() => onConfirmQty(editQty)}
+              style={{flex:1,padding:"8px 0",borderRadius:6,background:"var(--amber)",color:"#000",fontSize:12,fontWeight:700,border:"none"}}>
+              Confirmar
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
