@@ -6,10 +6,32 @@ import Link from "next/link";
 
 // ==================== PARSING INTELIGENTE ====================
 
+// Normaliza variantes de categoría a un nombre canónico
+const CATEGORIA_NORM: Record<string, string> = {
+  "quilt": "Quilts", "quilts": "Quilts",
+  "limpiapie": "Limpiapies", "limpiapies": "Limpiapies", "limpia pie": "Limpiapies",
+  "sabana": "Jgo Sabanas", "sabanas": "Jgo Sabanas", "sábana": "Jgo Sabanas", "sábanas": "Jgo Sabanas",
+  "jgo sabanas": "Jgo Sabanas", "jgo sabana": "Jgo Sabanas", "juego sabanas": "Jgo Sabanas",
+  "toalla": "Toallas", "toallas": "Toallas",
+  "almohada": "Almohadas", "almohadas": "Almohadas",
+  "funda": "Fundas", "fundas": "Fundas",
+  "plumon": "Plumones", "plumón": "Plumones", "plumones": "Plumones", "duvet": "Plumones",
+  "cubrecama": "Cubrecamas", "cubrecamas": "Cubrecamas", "cubre cama": "Cubrecamas",
+  "protector": "Protectores", "protectores": "Protectores",
+  "bajada de cama": "Bajadas de Cama", "bajadas de cama": "Bajadas de Cama", "pie de cama": "Bajadas de Cama",
+  "cortina": "Cortinas", "cortinas": "Cortinas",
+  "cojin": "Cojines", "cojín": "Cojines", "cojines": "Cojines",
+};
+
+function normalizarCategoria(cat: string): string {
+  const key = cat.trim().toLowerCase();
+  return CATEGORIA_NORM[key] || cat.trim();
+}
+
 function parseCategoria(nombre: string, cat: string): string {
   const n = nombre.toLowerCase();
-  // Usar categoria del diccionario si existe y no es genérica
-  if (cat && cat !== "Otros" && cat !== "") return cat;
+  // Usar categoria del diccionario si existe y no es genérica, normalizada
+  if (cat && cat !== "Otros" && cat !== "") return normalizarCategoria(cat);
   // Fallback: parsear del nombre
   if (n.includes("quilt")) return "Quilts";
   if (n.includes("limpiapie") || n.includes("limpia pie")) return "Limpiapies";
