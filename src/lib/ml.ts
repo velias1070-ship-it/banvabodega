@@ -641,7 +641,7 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
   try {
     const sla = await mlGet<{ expected_date?: string; status?: string }>(`/shipments/${shipmentId}/sla`);
     if (sla?.expected_date) {
-      slaDate = sla.expected_date.slice(0, 10);
+      slaDate = sla.expected_date;
       slaStatus = sla.status || null;
     }
   } catch {
