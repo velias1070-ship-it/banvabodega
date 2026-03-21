@@ -6746,6 +6746,7 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
   const [storeOptions, setStoreOptions] = useState<{ store_id: number; count: number }[]>([]);
 
   // Flex config
+  const [flexView, setFlexView] = useState<"pedidos"|"config">("pedidos");
   const [showFlexConfig, setShowFlexConfig] = useState(false);
   const [flexSubs, setFlexSubs] = useState<{service_id:number;origin:{address_line:string;city?:{name?:string}};status:string}[]>([]);
   const [flexConfigs, setFlexConfigs] = useState<Record<number, {delivery_window:string;delivery_ranges:{week?:{capacity:number;from:number;to:number;cutoff:number}[];saturday?:{capacity:number;from:number;to:number;cutoff:number}[];sunday?:{capacity:number;from:number;to:number;cutoff:number}[]}}>>({});
@@ -7020,9 +7021,18 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
           <div className="card-title">🛒 Pedidos MercadoLibre Flex</div>
           <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-            <button onClick={() => doDownloadLabels()} style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"#a855f7",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
-              📄 Etiquetas HOY
-            </button>
+            {flexView === "config" ? (
+              <button onClick={() => setFlexView("pedidos")} style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"var(--cyan)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
+                ← Volver a pedidos
+              </button>
+            ) : (<>
+              <button onClick={() => { setFlexView("config"); loadFlexConfig(); }} style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"var(--txt2)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
+                ⚙️ Configuracion
+              </button>
+              <button onClick={() => doDownloadLabels()} style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"#a855f7",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
+                📄 Etiquetas HOY
+              </button>
+            </>)}
           </div>
         </div>
 
@@ -7063,6 +7073,7 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
         </div>
       </div>
 
+      {flexView === "pedidos" && (<>
       {/* Summary KPIs: dispatch categories */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8,marginBottom:0}}>
         <div className="card" style={{textAlign:"center",padding:12,border: shipCounts.atrasado > 0 ? "2px solid #ef4444" : undefined}}>
@@ -7291,17 +7302,10 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
         </div>
       )}
 
-      {/* ==================== FLEX CONFIG ==================== */}
-      <div className="card" style={{marginTop:12}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <div className="card-title" style={{margin:0}}>Configuracion Flex</div>
-          <button onClick={() => { if (!showFlexConfig) loadFlexConfig(); setShowFlexConfig(!showFlexConfig); }}
-            style={{padding:"6px 14px",borderRadius:6,background:showFlexConfig?"var(--cyan)":"var(--bg3)",color:showFlexConfig?"#000":"var(--cyan)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
-            {showFlexConfig ? "Ocultar" : "Ver configuracion"}
-          </button>
-        </div>
+      </>)}
 
-        {showFlexConfig && (
+      {/* ==================== FLEX CONFIG VIEW ==================== */}
+      {flexView === "config" && (
           <div style={{marginTop:12}}>
             {flexLoading && <div style={{textAlign:"center",padding:20,color:"var(--txt3)"}}>Cargando configuracion desde MercadoLibre...</div>}
 
@@ -7471,8 +7475,7 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
               </button>
             )}
           </div>
-        )}
-      </div>
+      )}
     </div>
   );
 }
