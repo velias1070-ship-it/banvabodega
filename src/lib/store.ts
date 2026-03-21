@@ -340,11 +340,29 @@ export function activePositions(): Position[] {
 export function findProduct(query: string): Product[] {
   const raw = query.trim();
   if (!raw) return [];
-  
+
   // Normalize: strip accents, lowercase
   const normalize = (s: string) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
   const words = normalize(raw).split(/\s+/).filter(w => w.length > 0);
   if (words.length === 0) return [];
+
+  // Quick check: if query is an exact SKU venta in composicion_venta, return its SKU origen directly
+  if (words.length === 1) {
+    const qUpper = raw.toUpperCase();
+    const comps = _cache.composicion.filter(c => c.skuVenta.toUpperCase() === qUpper);
+    if (comps.length > 0) {
+      const seen = new Set<string>();
+      const results: Product[] = [];
+      for (const c of comps) {
+        const p = _cache.products[c.skuOrigen];
+        if (p && !seen.has(p.sku)) {
+          seen.add(p.sku);
+          results.push(p);
+        }
+      }
+      if (results.length > 0) return results;
+    }
+  }
   
   const scored: { p: Product; score: number }[] = [];
   
