@@ -1721,6 +1721,83 @@ export async function crearPickingSession(fecha: string, lineas: db.PickingLinea
   return db.createPickingSession({ fecha, estado: "ABIERTA", lineas, tipo: tipo || "flex", titulo });
 }
 
+/**
+ * Sync Flex picking session for today.
+ * Auto-creates or updates a picking session from today's shipments (DESPACHAR_HOY + ATRASADO).
+ * Called after each ML sync to keep the picking list up to date.
+ */
+export async function syncFlexPickingSession(): Promise<{ created: boolean; updated: boolean; total: number }> {
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Santiago" }); // YYYY-MM-DD Chile
+
+  // 1. Get active shipments
+  const shipments = await db.fetchActiveFlexShipments();
+
+  // 2. Filter to today + overdue (same logic as admin classifyShipment)
+  const todayShipments = shipments.filter(s => {
+    if (s.status === "pending" && s.substatus === "buffered") return false;
+    if (s.substatus !== "ready_to_print" && s.substatus !== "printed") return false;
+    if (!s.handling_limit) return true; // no date = assume today
+    const limitDay = new Date(s.handling_limit).toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
+    return limitDay <= today; // today + overdue
+  });
+
+  if (todayShipments.length === 0) return { created: false, updated: false, total: 0 };
+
+  // 3. Build picking lines from shipment items
+  const orders: { skuVenta: string; qty: number; shipmentId: number }[] = [];
+  for (const s of todayShipments) {
+    for (const item of s.items) {
+      // seller_sku is the SKU venta from the ML item
+      const sku = item.seller_sku || item.item_id;
+      orders.push({ skuVenta: sku, qty: item.quantity, shipmentId: s.shipment_id });
+    }
+  }
+
+  const { lineas } = buildPickingLineas(orders.map(o => ({ skuVenta: o.skuVenta, qty: o.qty })));
+  if (lineas.length === 0) return { created: false, updated: false, total: 0 };
+
+  // 4. Check if there's already a flex picking session for today
+  const todaySessions = await db.getPickingSessionsByDate(today);
+  const existingSession = todaySessions.find(s => s.tipo === "flex" && s.estado !== "COMPLETADA");
+
+  if (!existingSession) {
+    // Create new session
+    await db.createPickingSession({
+      fecha: today, estado: "ABIERTA", lineas,
+      tipo: "flex", titulo: `Flex ${today}`,
+    });
+    return { created: true, updated: false, total: lineas.length };
+  }
+
+  // 5. Update existing session — add new SKUs, don't touch already-picked ones
+  const existingSkus = new Set(existingSession.lineas.map(l => l.skuVenta));
+  const newLineas = lineas.filter(l => !existingSkus.has(l.skuVenta));
+
+  if (newLineas.length > 0) {
+    const merged = [...existingSession.lineas, ...newLineas];
+    await db.updatePickingSession(existingSession.id!, { lineas: merged });
+    return { created: false, updated: true, total: merged.length };
+  }
+
+  // Check if any existing lines need qty update (same SKU, more quantity)
+  let needsUpdate = false;
+  const updatedLineas = existingSession.lineas.map(existingLine => {
+    const matchingNew = lineas.find(l => l.skuVenta === existingLine.skuVenta);
+    if (matchingNew && matchingNew.qtyPedida > existingLine.qtyPedida && existingLine.estado !== "PICKEADO") {
+      needsUpdate = true;
+      return { ...existingLine, qtyPedida: matchingNew.qtyPedida, componentes: matchingNew.componentes };
+    }
+    return existingLine;
+  });
+
+  if (needsUpdate) {
+    await db.updatePickingSession(existingSession.id!, { lineas: updatedLineas });
+    return { created: false, updated: true, total: updatedLineas.length };
+  }
+
+  return { created: false, updated: false, total: existingSession.lineas.length };
+}
+
 // Update picking session
 export async function actualizarPicking(id: string, updates: Partial<db.DBPickingSession>): Promise<boolean> {
   return db.updatePickingSession(id, updates);
