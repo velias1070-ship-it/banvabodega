@@ -186,7 +186,7 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
   // Persist armados to localStorage
   useEffect(() => {
     if (typeof window !== "undefined") {
-      localStorage.setItem(`flex_armados_${session.id}`, JSON.stringify([...armados]));
+      localStorage.setItem(`flex_armados_${session.id}`, JSON.stringify(Array.from(armados)));
     }
   }, [armados, session.id]);
 
