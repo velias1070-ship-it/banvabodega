@@ -635,7 +635,20 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
     return { items: 0, shipInfo };
   }
 
-  // 2. Check fraud risk on orders
+  // 2. Fetch SLA (expected dispatch date — more reliable than lead_time for Flex)
+  let slaDate: string | null = shipInfo.handling_limit_date;
+  let slaStatus: string | null = null;
+  try {
+    const sla = await mlGet<{ expected_date?: string; status?: string }>(`/shipments/${shipmentId}/sla`);
+    if (sla?.expected_date) {
+      slaDate = sla.expected_date.slice(0, 10);
+      slaStatus = sla.status || null;
+    }
+  } catch {
+    // SLA endpoint may not be available for all shipment types — fallback to shipInfo
+  }
+
+  // 3. Check fraud risk on orders
   let isFraudRisk = false;
   for (const orderId of orderIds) {
     const order = await mlGet<MLOrder>(`/orders/${orderId}`);
@@ -646,7 +659,7 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
     }
   }
 
-  // 3. Upsert ml_shipments
+  // 4. Upsert ml_shipments
   const shipmentRow = {
     shipment_id: shipmentId,
     order_ids: orderIds,
@@ -654,7 +667,7 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
     substatus: shipInfo.raw?.substatus || null,
     logistic_type: shipInfo.logistic_type,
     is_flex: shipInfo.is_flex,
-    handling_limit: shipInfo.handling_limit_date || null,
+    handling_limit: slaDate || shipInfo.handling_limit_date || null,
     buffering_date: shipInfo.raw?.lead_time?.buffering?.date || null,
     delivery_date: shipInfo.delivery_date || null,
     origin_type: shipInfo.origin_type,
@@ -705,7 +718,7 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
     : shipInfo.logistic_type === "cross_docking" ? "Colecta"
     : shipInfo.logistic_type === "xd_drop_off" ? "Drop-off"
     : shipInfo.logistic_type;
-  console.log(`[ML] Shipment ${shipmentId}: ${ltLabel}, ${totalItems} items, handling_limit=${shipInfo.handling_limit_date}`);
+  console.log(`[ML] Shipment ${shipmentId}: ${ltLabel}, ${totalItems} items, sla=${slaDate} (${slaStatus}), handling_limit=${shipInfo.handling_limit_date}`);
 
   return { items: totalItems, shipInfo };
 }
