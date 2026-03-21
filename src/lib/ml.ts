@@ -1333,9 +1333,9 @@ export async function getFlexConfig(serviceId: string): Promise<unknown> {
  * PUT /shipping/flex/sites/MLC/users/$USER_ID/services/$SERVICE_ID/configuration/delivery/custom/v3
  */
 export async function updateFlexConfig(serviceId: string, configData: unknown): Promise<unknown> {
-  // DESACTIVADO: No enviar config a MercadoLibre
-  console.warn(`[ML Flex] DESACTIVADO — updateFlexConfig(${serviceId}) bloqueado`);
-  return null;
+  const config = await getMLConfig();
+  if (!config?.seller_id) return null;
+  return mlPut(`/flex/sites/${SITE_ID}/users/${config.seller_id}/services/${serviceId}/configurations/delivery-ranges/v1`, configData);
 }
 
 /**
@@ -1353,9 +1353,9 @@ export async function getFlexHolidays(serviceId: string): Promise<unknown> {
  * PUT /flex/sites/MLC/users/$USER_ID/services/$SERVICE_ID/configurations/holidays/v1
  */
 export async function updateFlexHolidays(serviceId: string, holidays: unknown): Promise<unknown> {
-  // DESACTIVADO: No enviar holidays a MercadoLibre
-  console.warn(`[ML Flex] DESACTIVADO — updateFlexHolidays(${serviceId}) bloqueado`);
-  return null;
+  const config = await getMLConfig();
+  if (!config?.seller_id) return null;
+  return mlPut(`/flex/sites/${SITE_ID}/users/${config.seller_id}/services/${serviceId}/configurations/holidays/v1`, holidays);
 }
 
 /**
