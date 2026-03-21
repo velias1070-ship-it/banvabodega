@@ -332,7 +332,13 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
               <div>
                 <span style={{fontSize:10,color:"#94a3b8",fontWeight:600}}>PEDIDO {linea.id}{orderId ? ` · Venta ${orderId}` : ""}</span>
                 <div className="mono" style={{fontSize:14,fontWeight:700}}>{linea.skuVenta}</div>
-                <div style={{fontSize:11,color:"#94a3b8"}}>x{linea.qtyPedida}</div>
+                {linea.qtyPedida > 1 ? (
+                  <div style={{fontSize:11,fontWeight:700,color:"var(--amber)",background:"var(--amberBg)",padding:"2px 8px",borderRadius:4,marginTop:2,display:"inline-block",border:"1px solid var(--amberBd)"}}>
+                    BULTO: {linea.qtyPedida} unidades — 1 etiqueta
+                  </div>
+                ) : (
+                  <div style={{fontSize:11,color:"#94a3b8"}}>x{linea.qtyPedida}</div>
+                )}
               </div>
               <div style={{display:"flex",alignItems:"center",gap:6}}>
                 {allDone?<span style={{fontSize:20}}>✅</span>:
