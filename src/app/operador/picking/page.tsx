@@ -177,9 +177,8 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
     fetchActiveFlexShipments().then(setShipments).catch(() => {});
   }, []);
 
-  const todayChile = new Date().toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
-  const todayShipmentIds = shipments
-    .filter(s => s.substatus === "ready_to_print" && (!s.handling_limit || new Date(s.handling_limit).toLocaleDateString("en-CA", { timeZone: "America/Santiago" }) <= todayChile))
+  const printableShipmentIds = shipments
+    .filter(s => s.substatus === "ready_to_print" || s.substatus === "printed")
     .map(s => s.shipment_id);
 
   const doDownloadLabels = async (ids: number[]) => {
@@ -194,7 +193,7 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a"); a.href = url;
-      a.download = `etiquetas-${todayChile}.pdf`; a.click();
+      a.download = `etiquetas-${session.fecha}.pdf`; a.click();
       URL.revokeObjectURL(url);
     } catch (e) { alert("Error: " + String(e)); }
     setDownloading(false);
@@ -263,10 +262,10 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
 
       <div style={{display:"flex",gap:6,marginBottom:12}}>
         <button onClick={onRefresh} style={{flex:1,padding:8,borderRadius:6,background:"var(--bg3)",color:"#06b6d4",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>Refrescar</button>
-        {todayShipmentIds.length > 0 && (
-          <button onClick={() => doDownloadLabels(todayShipmentIds)} disabled={downloading}
+        {printableShipmentIds.length > 0 && (
+          <button onClick={() => doDownloadLabels(printableShipmentIds)} disabled={downloading}
             style={{flex:1,padding:8,borderRadius:6,background:"var(--bg3)",color:"#a855f7",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
-            {downloading ? "Descargando..." : `Etiquetas (${todayShipmentIds.length})`}
+            {downloading ? "Descargando..." : `Etiquetas (${printableShipmentIds.length})`}
           </button>
         )}
       </div>
