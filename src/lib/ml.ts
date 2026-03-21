@@ -149,6 +149,12 @@ interface MLShipmentDetail {
       date?: string; // when label becomes available for printing
     };
   };
+  shipping_option?: {
+    estimated_handling_limit?: { date?: string | null };
+    estimated_delivery_time?: { date?: string | null; handling?: number };
+    estimated_delivery_final?: { date?: string | null };
+    estimated_schedule_limit?: { date?: string | null };
+  };
 }
 
 // ==================== TOKEN MANAGEMENT ====================
@@ -531,14 +537,24 @@ export async function getShipmentFlexInfo(shippingId: number): Promise<ShipmentF
   const storeId = originAddr?.id || null;
 
   // Extract handling limit date (YYYY-MM-DD)
+  // Priority: lead_time > shipping_option.estimated_handling_limit > shipping_option.estimated_delivery_time
   let handlingLimitDate: string | null = null;
   if (shipment.lead_time?.estimated_handling_limit?.date) {
     handlingLimitDate = shipment.lead_time.estimated_handling_limit.date.slice(0, 10);
+  } else if (shipment.shipping_option?.estimated_handling_limit?.date) {
+    handlingLimitDate = shipment.shipping_option.estimated_handling_limit.date.slice(0, 10);
+  } else if (shipment.shipping_option?.estimated_delivery_time?.date) {
+    // Use delivery date as proxy — the shipment must be dispatched before delivery
+    handlingLimitDate = shipment.shipping_option.estimated_delivery_time.date.slice(0, 10);
   }
 
   let deliveryDate: string | null = null;
   if (shipment.lead_time?.estimated_delivery_time?.date) {
     deliveryDate = shipment.lead_time.estimated_delivery_time.date.slice(0, 10);
+  } else if (shipment.shipping_option?.estimated_delivery_final?.date) {
+    deliveryDate = shipment.shipping_option.estimated_delivery_final.date.slice(0, 10);
+  } else if (shipment.shipping_option?.estimated_delivery_time?.date) {
+    deliveryDate = shipment.shipping_option.estimated_delivery_time.date.slice(0, 10);
   }
 
   return {
@@ -638,9 +654,9 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
     substatus: shipInfo.raw?.substatus || null,
     logistic_type: shipInfo.logistic_type,
     is_flex: shipInfo.is_flex,
-    handling_limit: shipInfo.raw?.lead_time?.estimated_handling_limit?.date || null,
+    handling_limit: shipInfo.handling_limit_date || null,
     buffering_date: shipInfo.raw?.lead_time?.buffering?.date || null,
-    delivery_date: shipInfo.raw?.lead_time?.estimated_delivery_time?.date || null,
+    delivery_date: shipInfo.delivery_date || null,
     origin_type: shipInfo.origin_type,
     store_id: shipInfo.store_id,
     receiver_name: shipInfo.raw?.destination?.receiver_name || null,
