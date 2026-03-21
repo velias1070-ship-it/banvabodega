@@ -1,8 +1,8 @@
 "use client";
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { initStore, refreshStore, isSupabaseConfigured, getActivePickings, pickearComponente, pickearLineaFull, marcarArmadoFull, verificarScanPicking, activePositions, posContents, getMapConfig, calcularRutaPicking, agruparPorPosicion, getNotasOperativas, despickearComponente, guardarBultosLinea } from "@/lib/store";
-import { fetchBultosSession, crearBulto, agregarLineaBulto, eliminarLineasBulto, fetchActiveFlexShipments } from "@/lib/db";
-import type { DBPickingBulto, DBPickingBultoLinea, ShipmentWithItems } from "@/lib/db";
+import { fetchBultosSession, crearBulto, agregarLineaBulto, eliminarLineasBulto, fetchActiveFlexShipments, fetchMLConfig } from "@/lib/db";
+import type { DBPickingBulto, DBPickingBultoLinea, ShipmentWithItems, DBMLConfig } from "@/lib/db";
 import type { DBPickingSession, PickingLinea, PickingComponente } from "@/lib/store";
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -171,10 +171,12 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
   const [resetting,setResetting]=useState(false);
   const [downloading,setDownloading]=useState(false);
   const [shipments,setShipments]=useState<ShipmentWithItems[]>([]);
+  const [mlCfg,setMlCfg]=useState<DBMLConfig|null>(null);
 
-  // Load shipments for label printing
+  // Load shipments + ML config
   useEffect(() => {
     fetchActiveFlexShipments().then(setShipments).catch(() => {});
+    fetchMLConfig().then(setMlCfg).catch(() => {});
   }, []);
 
   const todayChile = new Date().toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
@@ -244,14 +246,16 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
   const pedidosArmados = session.lineas.filter(l => l.componentes.every(c => c.estado === "PICKEADO")).length;
   const pedidosPendientes = totalPedidos - pedidosArmados;
 
-  // Cutoff por dia
+  // Cutoff dinamico desde ml_config
   const now = new Date();
   const chileHour = parseInt(now.toLocaleString("en-US", { timeZone: "America/Santiago", hour: "numeric", hour12: false }));
   const chileDay = now.toLocaleDateString("en-US", { timeZone: "America/Santiago", weekday: "short" });
   const isSat = chileDay === "Sat";
   const isSun = chileDay === "Sun";
-  const cutoffHora = isSun ? null : isSat ? 13 : 14;
-  const cutoffLabel = isSun ? "Domingo — sin despacho" : isSat ? "Sabado — hasta las 13:00" : "Lunes a Viernes — hasta las 14:00";
+  const cutoffLV = mlCfg?.hora_corte_lv || 14;
+  const cutoffSab = mlCfg?.hora_corte_sab || 13;
+  const cutoffHora = isSun ? null : isSat ? cutoffSab : cutoffLV;
+  const cutoffLabel = isSun ? "Domingo — sin despacho" : isSat ? `Sabado — hasta las ${cutoffSab}:00` : `Lunes a Viernes — hasta las ${cutoffLV}:00`;
   const pastCutoff = cutoffHora !== null && chileHour >= cutoffHora;
 
   return(
