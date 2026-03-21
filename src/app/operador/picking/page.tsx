@@ -183,9 +183,9 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
   const allShipmentIds = shipments
     .filter(s => {
       if (s.substatus !== "ready_to_print" && s.substatus !== "printed") return false;
-      if (!s.handling_limit) return true;
+      if (!s.handling_limit) return true; // sin fecha = asumir hoy
       const limitDay = new Date(s.handling_limit).toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
-      return limitDay === todayChile;
+      return limitDay <= todayChile; // hoy + atrasados
     })
     .map(s => s.shipment_id);
 
