@@ -320,31 +320,30 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
         return aDone - bDone;
       }).map(linea=>{
         const allDone=linea.componentes.every(c=>c.estado==="PICKEADO");
+        const skuUp = linea.skuVenta.toUpperCase();
+        const shipMatch = shipments.find(s => s.items.some(it =>
+          it.seller_sku?.toUpperCase() === skuUp || it.item_id?.toUpperCase() === skuUp
+        ));
+        const orderId = shipMatch?.order_ids?.[0] || null;
         return(
           <div key={linea.id} style={{padding:14,marginBottom:8,borderRadius:10,
             background:allDone?"#10b98110":"var(--bg2)",border:`1px solid ${allDone?"#10b98133":"var(--bg3)"}`,opacity:allDone?0.7:1}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
               <div>
-                <span style={{fontSize:10,color:"#94a3b8",fontWeight:600}}>PEDIDO {linea.id}</span>
+                <span style={{fontSize:10,color:"#94a3b8",fontWeight:600}}>PEDIDO {linea.id}{orderId ? ` · Venta ${orderId}` : ""}</span>
                 <div className="mono" style={{fontSize:14,fontWeight:700}}>{linea.skuVenta}</div>
-                <div style={{fontSize:11,color:"#94a3b8"}}>×{linea.qtyPedida}</div>
+                <div style={{fontSize:11,color:"#94a3b8"}}>x{linea.qtyPedida}</div>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:6}}>
                 {allDone?<span style={{fontSize:20}}>✅</span>:
                   <span style={{fontSize:11,fontWeight:700,color:"#f59e0b"}}>{linea.componentes.filter(c=>c.estado==="PICKEADO").length}/{linea.componentes.length}</span>
                 }
-                {(() => {
-                  const skuUp = linea.skuVenta.toUpperCase();
-                  const shipMatch = shipments.find(s => s.items.some(it =>
-                    it.seller_sku?.toUpperCase() === skuUp || it.item_id?.toUpperCase() === skuUp
-                  ));
-                  return shipMatch && (shipMatch.substatus === "ready_to_print" || shipMatch.substatus === "printed") ? (
-                    <button onClick={(e) => { e.stopPropagation(); doDownloadLabels([shipMatch.shipment_id]); }}
-                      style={{padding:"4px 8px",borderRadius:4,background:"#a855f722",color:"#a855f7",fontSize:10,fontWeight:700,border:"1px solid #a855f744"}}>
-                      Etiqueta
-                    </button>
-                  ) : null;
-                })()}
+                {shipMatch && (shipMatch.substatus === "ready_to_print" || shipMatch.substatus === "printed") && (
+                  <button onClick={(e) => { e.stopPropagation(); doDownloadLabels([shipMatch.shipment_id]); }}
+                    style={{padding:"4px 8px",borderRadius:4,background:"#a855f722",color:"#a855f7",fontSize:10,fontWeight:700,border:"1px solid #a855f744"}}>
+                    Etiqueta
+                  </button>
+                )}
               </div>
             </div>
             {linea.componentes.map((comp,idx)=>(
