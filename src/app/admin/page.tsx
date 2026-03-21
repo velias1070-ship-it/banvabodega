@@ -6864,15 +6864,17 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
   const classifyShipment = (s: ShipmentWithItems): FlexDispatchCategory => {
     // Buffered — ML hasn't released the label yet
     if (s.status === "pending" && s.substatus === "buffered") return "BUFFERED";
-    // Already printed
-    if (s.substatus === "printed") return "YA_IMPRESO";
-    // Ready to print — classify HOY vs MAÑANA using handling_limit in Chile timezone
-    if (s.substatus === "ready_to_print") {
-      if (!s.handling_limit) return "DESPACHAR_HOY"; // no date = assume urgent
+    // Classify by date first, then by print status
+    if (s.substatus === "ready_to_print" || s.substatus === "printed") {
+      if (!s.handling_limit) {
+        // No date = assume today
+        return s.substatus === "printed" ? "YA_IMPRESO" : "DESPACHAR_HOY";
+      }
       const limitDay = toChileDateStr(new Date(s.handling_limit));
+      if (limitDay > todayChile) return "DESPACHAR_MANANA";
       if (limitDay < todayChile) return "ATRASADO";
-      if (limitDay === todayChile) return "DESPACHAR_HOY";
-      return "DESPACHAR_MANANA";
+      // Es de hoy
+      return s.substatus === "printed" ? "YA_IMPRESO" : "DESPACHAR_HOY";
     }
     // Pending with ready_to_print (before ready_to_ship)
     if (s.status === "pending" && s.substatus === "ready_to_print") {
