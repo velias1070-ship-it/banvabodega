@@ -6780,6 +6780,19 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
       }
       setFlexConfigs(configs);
       setFlexHolidays(holidays);
+      // Sync cutoffs from ML to ml_config
+      const activeServiceIds = subs.filter((s: {status:string}) => s.status === "in").map((s: {service_id:number}) => s.service_id);
+      const firstConfig = activeServiceIds.length > 0 ? configs[activeServiceIds[0]] : null;
+      if (firstConfig?.delivery_ranges) {
+        const weekCutoff = firstConfig.delivery_ranges.week?.[0]?.cutoff;
+        const satCutoff = firstConfig.delivery_ranges.saturday?.[0]?.cutoff;
+        const updates: Record<string, number> = {};
+        if (weekCutoff !== undefined) updates.hora_corte_lv = weekCutoff;
+        if (satCutoff !== undefined) updates.hora_corte_sab = satCutoff;
+        if (Object.keys(updates).length > 0) {
+          await upsertMLConfig(updates as Partial<DBMLConfig>);
+        }
+      }
     } catch { /* ignore */ }
     setFlexLoading(false);
   };
@@ -6803,7 +6816,7 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
     setMlConfig(cfg);
   }, []);
 
-  useEffect(() => { loadPedidos(); loadConfig(); }, [loadPedidos, loadConfig]);
+  useEffect(() => { loadPedidos(); loadConfig(); loadFlexConfig(); }, [loadPedidos, loadConfig]);
 
   // Auto-refresh UI cada 30 segundos
   useEffect(() => {
