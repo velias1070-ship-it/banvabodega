@@ -296,11 +296,14 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
                   <span style={{fontSize:11,fontWeight:700,color:"#f59e0b"}}>{linea.componentes.filter(c=>c.estado==="PICKEADO").length}/{linea.componentes.length}</span>
                 }
                 {(() => {
-                  const shipMatch = shipments.find(s => s.items.some(it => it.seller_sku === linea.skuVenta));
-                  return shipMatch && shipMatch.substatus === "ready_to_print" ? (
+                  const skuUp = linea.skuVenta.toUpperCase();
+                  const shipMatch = shipments.find(s => s.items.some(it =>
+                    it.seller_sku?.toUpperCase() === skuUp || it.item_id?.toUpperCase() === skuUp
+                  ));
+                  return shipMatch && (shipMatch.substatus === "ready_to_print" || shipMatch.substatus === "printed") ? (
                     <button onClick={(e) => { e.stopPropagation(); doDownloadLabels([shipMatch.shipment_id]); }}
-                      style={{padding:"3px 6px",borderRadius:4,background:"#a855f722",color:"#a855f7",fontSize:9,fontWeight:700,border:"1px solid #a855f744"}}>
-                      Etiq.
+                      style={{padding:"4px 8px",borderRadius:4,background:"#a855f722",color:"#a855f7",fontSize:10,fontWeight:700,border:"1px solid #a855f744"}}>
+                      Etiqueta
                     </button>
                   ) : null;
                 })()}
