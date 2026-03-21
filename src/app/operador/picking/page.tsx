@@ -179,8 +179,14 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
     fetchMLConfig().then(setMlCfg).catch(() => {});
   }, []);
 
+  const todayChile = new Date().toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
   const allShipmentIds = shipments
-    .filter(s => s.substatus === "ready_to_print" || s.substatus === "printed")
+    .filter(s => {
+      if (s.substatus !== "ready_to_print" && s.substatus !== "printed") return false;
+      if (!s.handling_limit) return true;
+      const limitDay = new Date(s.handling_limit).toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
+      return limitDay === todayChile;
+    })
     .map(s => s.shipment_id);
 
   const doDownloadLabels = async (ids: number[]) => {
