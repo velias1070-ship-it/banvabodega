@@ -240,12 +240,46 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
     return null;
   }, [session, rutaOrdenada]);
 
+  const totalPedidos = session.lineas.length;
+  const pedidosArmados = session.lineas.filter(l => l.componentes.every(c => c.estado === "PICKEADO")).length;
+  const pedidosPendientes = totalPedidos - pedidosArmados;
+
+  // Cutoff por dia
+  const now = new Date();
+  const chileHour = parseInt(now.toLocaleString("en-US", { timeZone: "America/Santiago", hour: "numeric", hour12: false }));
+  const chileDay = now.toLocaleDateString("en-US", { timeZone: "America/Santiago", weekday: "short" });
+  const isSat = chileDay === "Sat";
+  const isSun = chileDay === "Sun";
+  const cutoffHora = isSun ? null : isSat ? 13 : 14;
+  const cutoffLabel = isSun ? "Domingo — sin despacho" : isSat ? "Sabado — hasta las 13:00" : "Lunes a Viernes — hasta las 14:00";
+  const pastCutoff = cutoffHora !== null && chileHour >= cutoffHora;
+
   return(
     <div>
+      {/* Resumen de la sesion */}
       <div style={{padding:16,background:"var(--bg2)",borderRadius:12,border:"1px solid var(--bg3)",marginBottom:12}}>
-        <div style={{fontSize:16,fontWeight:700,marginBottom:4}}>🏷️ Picking Flex {session.fecha}</div>
-        <div style={{fontSize:12,color:"#94a3b8"}}>{dc}/{tc} productos</div>
-        <div style={{background:"var(--bg3)",borderRadius:6,height:10,overflow:"hidden",marginTop:8}}>
+        <div style={{fontSize:16,fontWeight:700,marginBottom:4}}>Picking Flex {session.fecha}</div>
+        <div style={{fontSize:12,color:"var(--amber)",marginBottom:10}}>
+          Pueden llegar pedidos {cutoffLabel}
+          {pastCutoff && <span style={{color:"var(--red)",fontWeight:700}}> (cutoff pasado)</span>}
+        </div>
+
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:10}}>
+          <div style={{textAlign:"center",padding:"8px 0",borderRadius:8,background:"var(--bg3)"}}>
+            <div style={{fontSize:22,fontWeight:800,color:"var(--cyan)"}}>{totalPedidos}</div>
+            <div style={{fontSize:10,color:"var(--txt3)"}}>Total</div>
+          </div>
+          <div style={{textAlign:"center",padding:"8px 0",borderRadius:8,background:"var(--bg3)"}}>
+            <div style={{fontSize:22,fontWeight:800,color:"var(--amber)"}}>{pedidosPendientes}</div>
+            <div style={{fontSize:10,color:"var(--txt3)"}}>Pendientes</div>
+          </div>
+          <div style={{textAlign:"center",padding:"8px 0",borderRadius:8,background:"var(--bg3)"}}>
+            <div style={{fontSize:22,fontWeight:800,color:"var(--green)"}}>{pedidosArmados}</div>
+            <div style={{fontSize:10,color:"var(--txt3)"}}>Armados</div>
+          </div>
+        </div>
+
+        <div style={{background:"var(--bg3)",borderRadius:6,height:10,overflow:"hidden"}}>
           <div style={{width:`${pct}%`,height:"100%",background:pct===100?"#10b981":"#3b82f6",borderRadius:6,transition:"width .3s"}}/>
         </div>
         <div style={{textAlign:"center",marginTop:6,fontSize:20,fontWeight:800,color:pct===100?"#10b981":"#3b82f6"}}>{pct}%</div>
@@ -255,14 +289,14 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
         <button onClick={()=>onPickComp(next.linea,next.idx)}
           style={{width:"100%",padding:18,marginBottom:12,borderRadius:14,fontWeight:700,fontSize:16,color:"#fff",
             background:"linear-gradient(135deg,#059669,#10b981)",cursor:"pointer",border:"none",boxShadow:"0 4px 20px #10b98133"}}>
-          ▶ SIGUIENTE PRODUCTO
+          SIGUIENTE PRODUCTO
         </button>
       )}
 
       {pct===100&&(
         <div style={{textAlign:"center",padding:20,marginBottom:12}}>
           <div style={{fontSize:48}}>✅</div>
-          <div style={{fontSize:18,fontWeight:700,color:"#10b981",marginTop:8}}>¡Picking completo!</div>
+          <div style={{fontSize:18,fontWeight:700,color:"#10b981",marginTop:8}}>Picking completo!</div>
         </div>
       )}
 
