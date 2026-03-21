@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import Link from "next/link";
 import {
   fetchEmpresaDefault,
@@ -1208,6 +1208,9 @@ function TabBanco({ empresa, periodo }: { empresa: DBEmpresa; periodo: string })
   const [filter, setFilter] = useState("");
   const [bancoFilter, setBancoFilter] = useState("todos");
   const [tipoFilter, setTipoFilter] = useState<"todos" | "ingresos" | "egresos">("todos");
+  const [descFilter, setDescFilter] = useState("todos");
+  const [fechaDesde, setFechaDesde] = useState("");
+  const [fechaHasta, setFechaHasta] = useState("");
   const [page, setPage] = useState(0);
   const [syncingMP, setSyncingMP] = useState(false);
   const [syncMPMsg, setSyncMPMsg] = useState<string | null>(null);
@@ -1296,11 +1299,35 @@ function TabBanco({ empresa, periodo }: { empresa: DBEmpresa; periodo: string })
   // Bancos únicos para el filtro
   const bancosUnicos = Array.from(new Set(data.map(m => m.banco))).sort();
 
-  // Filtrado: por banco + tipo + texto
+  // Categorías de descripción para filtro rápido
+  const descCategorias = useMemo(() => {
+    const cats = new Set<string>();
+    for (const m of data) {
+      const d = (m.descripcion || "").toUpperCase();
+      if (d.startsWith("COMPRA ML")) cats.add("COMPRA ML");
+      else if (d.startsWith("RETIRO MP")) cats.add("RETIRO");
+      else if (d.startsWith("DEVOLUCION")) cats.add("DEVOLUCION");
+      else if (d.startsWith("BONIFICACION")) cats.add("BONIFICACION");
+      else if (d.startsWith("VENTA ML")) cats.add("VENTA ML");
+      else if (d.startsWith("COMPRA MP")) cats.add("COMPRA MP");
+      else cats.add("OTRO");
+    }
+    return Array.from(cats).sort();
+  }, [data]);
+
+  // Filtrado: por banco + tipo + descripcion + fecha + texto
   const filtered = data.filter(m => {
     if (bancoFilter !== "todos" && m.banco !== bancoFilter) return false;
     if (tipoFilter === "ingresos" && m.monto < 0) return false;
     if (tipoFilter === "egresos" && m.monto >= 0) return false;
+    if (descFilter !== "todos") {
+      const d = (m.descripcion || "").toUpperCase();
+      if (descFilter === "OTRO") {
+        if (["COMPRA ML", "RETIRO MP", "DEVOLUCION", "BONIFICACION", "VENTA ML", "COMPRA MP"].some(c => d.startsWith(c))) return false;
+      } else if (!d.startsWith(descFilter)) return false;
+    }
+    if (fechaDesde && m.fecha < fechaDesde) return false;
+    if (fechaHasta && m.fecha > fechaHasta) return false;
     if (filter) {
       const q = filter.toLowerCase();
       const matchDesc = (m.descripcion || "").toLowerCase().includes(q);
@@ -1414,8 +1441,8 @@ function TabBanco({ empresa, periodo }: { empresa: DBEmpresa; periodo: string })
             </div>
           )}
 
-          {/* Filtros: tipo + banco + texto */}
-          <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
+          {/* Filtros fila 1: tipo + categoria + banco */}
+          <div style={{ display: "flex", gap: 8, marginBottom: 6, alignItems: "center", flexWrap: "wrap" }}>
             <div style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--bg4)" }}>
               {(["todos", "ingresos", "egresos"] as const).map(t => (
                 <button key={t} onClick={() => setTipoFilter(t)} style={{
@@ -1427,19 +1454,37 @@ function TabBanco({ empresa, periodo }: { empresa: DBEmpresa; periodo: string })
                 </button>
               ))}
             </div>
+            <select value={descFilter} onChange={e => setDescFilter(e.target.value)} className="form-input" style={{ fontSize: 11, width: "auto", minWidth: 130, padding: "4px 6px" }}>
+              <option value="todos">Tipo: Todos</option>
+              {descCategorias.map(c => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
             {bancosUnicos.length > 1 && (
-              <select value={bancoFilter} onChange={e => setBancoFilter(e.target.value)} className="form-input" style={{ fontSize: 12, width: "auto", minWidth: 140 }}>
-                <option value="todos">Todos los bancos</option>
+              <select value={bancoFilter} onChange={e => setBancoFilter(e.target.value)} className="form-input" style={{ fontSize: 11, width: "auto", minWidth: 130, padding: "4px 6px" }}>
+                <option value="todos">Banco: Todos</option>
                 {bancosUnicos.map(b => (
-                  <option key={b} value={b}>{b.toUpperCase()}</option>
+                  <option key={b} value={b}>{b}</option>
                 ))}
               </select>
             )}
-            <input className="form-input" placeholder="Buscar descripción o referencia..." value={filter} onChange={e => setFilter(e.target.value)}
-              style={{ fontSize: 12, flex: 1 }} />
             <div style={{ fontSize: 11, color: "var(--txt3)", whiteSpace: "nowrap" }}>
               {filtered.length.toLocaleString()} de {data.length.toLocaleString()}
             </div>
+          </div>
+          {/* Filtros fila 2: fechas + texto */}
+          <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
+            <input type="date" className="form-input mono" value={fechaDesde} onChange={e => setFechaDesde(e.target.value)}
+              style={{ fontSize: 10, padding: "4px 6px", width: 120 }} placeholder="Desde" />
+            <input type="date" className="form-input mono" value={fechaHasta} onChange={e => setFechaHasta(e.target.value)}
+              style={{ fontSize: 10, padding: "4px 6px", width: 120 }} placeholder="Hasta" />
+            {(fechaDesde || fechaHasta) && (
+              <button onClick={() => { setFechaDesde(""); setFechaHasta(""); }} style={{ padding: "3px 8px", borderRadius: 4, fontSize: 10, background: "var(--bg3)", color: "var(--txt3)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
+                Limpiar
+              </button>
+            )}
+            <input className="form-input" placeholder="Buscar descripcion o referencia..." value={filter} onChange={e => setFilter(e.target.value)}
+              style={{ fontSize: 11, flex: 1, padding: "4px 8px" }} />
           </div>
 
           {/* Tabla paginada */}
