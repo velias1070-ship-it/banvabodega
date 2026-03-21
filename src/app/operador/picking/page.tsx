@@ -179,14 +179,8 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
     fetchMLConfig().then(setMlCfg).catch(() => {});
   }, []);
 
-  const todayChile = new Date().toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
-  const printableShipmentIds = shipments
-    .filter(s => {
-      if (s.substatus !== "ready_to_print" && s.substatus !== "printed") return false;
-      if (!s.handling_limit) return true; // sin fecha = asumir hoy
-      const limitDay = new Date(s.handling_limit).toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
-      return limitDay <= todayChile; // hoy + atrasados
-    })
+  const allShipmentIds = shipments
+    .filter(s => s.substatus === "ready_to_print" || s.substatus === "printed")
     .map(s => s.shipment_id);
 
   const doDownloadLabels = async (ids: number[]) => {
@@ -306,10 +300,10 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
 
       <div style={{display:"flex",gap:6,marginBottom:12}}>
         <button onClick={onRefresh} style={{flex:1,padding:8,borderRadius:6,background:"var(--bg3)",color:"#06b6d4",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>Refrescar</button>
-        {printableShipmentIds.length > 0 && (
-          <button onClick={() => doDownloadLabels(printableShipmentIds)} disabled={downloading}
+        {allShipmentIds.length > 0 && (
+          <button onClick={() => doDownloadLabels(allShipmentIds)} disabled={downloading}
             style={{flex:1,padding:8,borderRadius:6,background:"var(--bg3)",color:"#a855f7",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
-            {downloading ? "Descargando..." : `Etiquetas (${printableShipmentIds.length})`}
+            {downloading ? "Descargando..." : `Etiquetas (${allShipmentIds.length})`}
           </button>
         )}
       </div>
