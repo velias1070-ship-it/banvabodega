@@ -6745,6 +6745,44 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
   const [storeFilter, setStoreFilter] = useState<number | null>(null); // store_id filter
   const [storeOptions, setStoreOptions] = useState<{ store_id: number; count: number }[]>([]);
 
+  // Flex config
+  const [showFlexConfig, setShowFlexConfig] = useState(false);
+  const [flexSubs, setFlexSubs] = useState<{service_id:number;origin:{address_line:string;city?:{name?:string}};status:string}[]>([]);
+  const [flexConfigs, setFlexConfigs] = useState<Record<number, {delivery_window:string;delivery_ranges:{week?:{capacity:number;from:number;to:number;cutoff:number}[];saturday?:{capacity:number;from:number;to:number;cutoff:number}[];sunday?:{capacity:number;from:number;to:number;cutoff:number}[]}}>>({});
+  const [flexHolidays, setFlexHolidays] = useState<Record<number, {date:string;description:string;selected:boolean}[]>>({});
+  const [flexLoading, setFlexLoading] = useState(false);
+  const [flexSaving, setFlexSaving] = useState(false);
+  const [flexEditService, setFlexEditService] = useState<number|null>(null);
+  const [flexEditConfig, setFlexEditConfig] = useState<{delivery_window:string;delivery_ranges:{week?:{capacity:number;from:number;to:number;cutoff:number}[];saturday?:{capacity:number;from:number;to:number;cutoff:number}[];sunday?:{capacity:number;from:number;to:number;cutoff:number}[]}}|null>(null);
+
+  const loadFlexConfig = async () => {
+    setFlexLoading(true);
+    try {
+      const resp = await fetch("/api/ml/flex", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({action:"subscription"}) });
+      const data = await resp.json();
+      const subs = data.data || [];
+      setFlexSubs(subs);
+      const configs: typeof flexConfigs = {};
+      const holidays: typeof flexHolidays = {};
+      for (const sub of subs) {
+        if (sub.status !== "in") continue;
+        try {
+          const cResp = await fetch("/api/ml/flex", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({action:"config", service_id: String(sub.service_id)}) });
+          const cData = await cResp.json();
+          if (cData.data) configs[sub.service_id] = cData.data;
+        } catch {}
+        try {
+          const hResp = await fetch("/api/ml/flex", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({action:"holidays", service_id: String(sub.service_id)}) });
+          const hData = await hResp.json();
+          if (hData.data?.holidays) holidays[sub.service_id] = hData.data.holidays;
+        } catch {}
+      }
+      setFlexConfigs(configs);
+      setFlexHolidays(holidays);
+    } catch { /* ignore */ }
+    setFlexLoading(false);
+  };
+
   const loadPedidos = useCallback(async () => {
     setLoading(true);
     // Load ALL active shipments (ready_to_ship + pending/buffered) for Flex dispatch view
@@ -7252,6 +7290,189 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
           )}
         </div>
       )}
+
+      {/* ==================== FLEX CONFIG ==================== */}
+      <div className="card" style={{marginTop:12}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div className="card-title" style={{margin:0}}>Configuracion Flex</div>
+          <button onClick={() => { if (!showFlexConfig) loadFlexConfig(); setShowFlexConfig(!showFlexConfig); }}
+            style={{padding:"6px 14px",borderRadius:6,background:showFlexConfig?"var(--cyan)":"var(--bg3)",color:showFlexConfig?"#000":"var(--cyan)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
+            {showFlexConfig ? "Ocultar" : "Ver configuracion"}
+          </button>
+        </div>
+
+        {showFlexConfig && (
+          <div style={{marginTop:12}}>
+            {flexLoading && <div style={{textAlign:"center",padding:20,color:"var(--txt3)"}}>Cargando configuracion desde MercadoLibre...</div>}
+
+            {!flexLoading && flexSubs.length === 0 && (
+              <div style={{textAlign:"center",padding:20,color:"var(--txt3)",fontSize:12}}>No se encontraron suscripciones Flex.</div>
+            )}
+
+            {!flexLoading && flexSubs.map(sub => {
+              const cfg = flexConfigs[sub.service_id];
+              const hols = flexHolidays[sub.service_id] || [];
+              const isActive = sub.status === "in";
+              const isEditing = flexEditService === sub.service_id;
+              const DAY_LABELS: Record<string, string> = { week: "Lunes a Viernes", saturday: "Sabado", sunday: "Domingo" };
+
+              return (
+                <div key={sub.service_id} style={{padding:"12px 14px",borderRadius:8,background:"var(--bg3)",border:`1px solid ${isActive?"var(--greenBd)":"var(--bg4)"}`,marginBottom:10}}>
+                  {/* Service header */}
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                    <div>
+                      <div style={{fontSize:13,fontWeight:700}}>{sub.origin?.address_line || "Bodega"}</div>
+                      <div style={{fontSize:11,color:"var(--txt3)"}}>{sub.origin?.city?.name || ""} · Service ID: {sub.service_id}</div>
+                    </div>
+                    <span style={{padding:"3px 10px",borderRadius:4,fontSize:10,fontWeight:700,
+                      background:isActive?"var(--greenBg)":"var(--redBg)",color:isActive?"var(--green)":"var(--red)"}}>
+                      {isActive ? "Activo" : "Inactivo"}
+                    </span>
+                  </div>
+
+                  {!isActive && <div style={{fontSize:11,color:"var(--txt3)"}}>Este servicio esta inactivo en MercadoLibre.</div>}
+
+                  {isActive && cfg && !isEditing && (
+                    <div>
+                      {/* Delivery window */}
+                      <div style={{fontSize:11,color:"var(--txt3)",marginBottom:8}}>
+                        Modo: <strong style={{color:"var(--cyan)"}}>{cfg.delivery_window === "same_day" ? "Entrega mismo dia" : "Entrega dia siguiente"}</strong>
+                      </div>
+
+                      {/* Delivery ranges table */}
+                      <table className="tbl" style={{fontSize:11,marginBottom:10}}>
+                        <thead><tr><th>Dia</th><th style={{textAlign:"center"}}>Cutoff</th><th style={{textAlign:"center"}}>Entrega</th><th style={{textAlign:"center"}}>Capacidad</th></tr></thead>
+                        <tbody>
+                          {(["week","saturday","sunday"] as const).map(day => {
+                            const ranges = cfg.delivery_ranges[day];
+                            if (!ranges || ranges.length === 0) return (
+                              <tr key={day}><td>{DAY_LABELS[day]}</td><td colSpan={3} style={{textAlign:"center",color:"var(--txt3)"}}>No configurado</td></tr>
+                            );
+                            return ranges.map((r, i) => (
+                              <tr key={`${day}-${i}`}>
+                                <td>{DAY_LABELS[day]}</td>
+                                <td style={{textAlign:"center"}}><strong style={{color:"var(--amber)"}}>{r.cutoff}:00</strong></td>
+                                <td style={{textAlign:"center"}}>{r.from}:00 — {r.to}:00</td>
+                                <td style={{textAlign:"center"}}><strong>{r.capacity}</strong> envios</td>
+                              </tr>
+                            ));
+                          })}
+                        </tbody>
+                      </table>
+
+                      {/* Holidays */}
+                      {hols.length > 0 && (
+                        <div style={{marginBottom:8}}>
+                          <div style={{fontSize:11,fontWeight:700,color:"var(--txt2)",marginBottom:4}}>Feriados</div>
+                          <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+                            {hols.map(h => (
+                              <span key={h.date} style={{padding:"3px 8px",borderRadius:4,fontSize:10,
+                                background:h.selected?"var(--redBg)":"var(--bg2)",
+                                color:h.selected?"var(--red)":"var(--txt3)",
+                                border:`1px solid ${h.selected?"var(--redBd)":"var(--bg4)"}`}}>
+                                {h.selected ? "Pausado" : "Activo"} {h.date} — {h.description}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      <button onClick={() => { setFlexEditService(sub.service_id); setFlexEditConfig(JSON.parse(JSON.stringify(cfg))); }}
+                        style={{padding:"6px 14px",borderRadius:6,background:"var(--bg2)",color:"var(--cyan)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
+                        Editar configuracion
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Edit mode */}
+                  {isActive && isEditing && flexEditConfig && (
+                    <div>
+                      <div style={{fontSize:12,fontWeight:700,color:"var(--cyan)",marginBottom:8}}>Editando configuracion</div>
+                      {(["week","saturday","sunday"] as const).map(day => {
+                        const ranges = flexEditConfig.delivery_ranges[day];
+                        if (!ranges || ranges.length === 0) return (
+                          <div key={day} style={{marginBottom:8}}>
+                            <div style={{fontSize:11,fontWeight:700,marginBottom:4}}>{DAY_LABELS[day]}: <span style={{color:"var(--txt3)",fontWeight:400}}>No configurado</span></div>
+                            <button onClick={() => {
+                              const updated = {...flexEditConfig, delivery_ranges: {...flexEditConfig.delivery_ranges, [day]: [{capacity:30,from:12,to:21,cutoff:14}]}};
+                              setFlexEditConfig(updated);
+                            }} style={{padding:"4px 10px",borderRadius:4,background:"var(--bg2)",color:"var(--cyan)",fontSize:10,fontWeight:600,border:"1px solid var(--bg4)"}}>+ Agregar rango</button>
+                          </div>
+                        );
+                        return (
+                          <div key={day} style={{marginBottom:10}}>
+                            <div style={{fontSize:11,fontWeight:700,marginBottom:6}}>{DAY_LABELS[day]}</div>
+                            {ranges.map((r, i) => (
+                              <div key={i} style={{display:"flex",gap:8,alignItems:"center",marginBottom:4,flexWrap:"wrap"}}>
+                                <label style={{fontSize:10,color:"var(--txt3)"}}>Cutoff:
+                                  <select value={r.cutoff} onChange={e => { const v=[...ranges]; v[i]={...v[i],cutoff:Number(e.target.value)}; setFlexEditConfig({...flexEditConfig, delivery_ranges:{...flexEditConfig.delivery_ranges,[day]:v}}); }}
+                                    style={{marginLeft:4,padding:"3px 6px",borderRadius:4,background:"var(--bg2)",color:"var(--txt)",border:"1px solid var(--bg4)",fontSize:11}}>
+                                    {Array.from({length:7},(_,j)=>j+12).map(h => <option key={h} value={h}>{h}:00</option>)}
+                                  </select>
+                                </label>
+                                <label style={{fontSize:10,color:"var(--txt3)"}}>Desde:
+                                  <select value={r.from} onChange={e => { const v=[...ranges]; v[i]={...v[i],from:Number(e.target.value)}; setFlexEditConfig({...flexEditConfig, delivery_ranges:{...flexEditConfig.delivery_ranges,[day]:v}}); }}
+                                    style={{marginLeft:4,padding:"3px 6px",borderRadius:4,background:"var(--bg2)",color:"var(--txt)",border:"1px solid var(--bg4)",fontSize:11}}>
+                                    {Array.from({length:13},(_,j)=>j+8).map(h => <option key={h} value={h}>{h}:00</option>)}
+                                  </select>
+                                </label>
+                                <label style={{fontSize:10,color:"var(--txt3)"}}>Hasta:
+                                  <select value={r.to} onChange={e => { const v=[...ranges]; v[i]={...v[i],to:Number(e.target.value)}; setFlexEditConfig({...flexEditConfig, delivery_ranges:{...flexEditConfig.delivery_ranges,[day]:v}}); }}
+                                    style={{marginLeft:4,padding:"3px 6px",borderRadius:4,background:"var(--bg2)",color:"var(--txt)",border:"1px solid var(--bg4)",fontSize:11}}>
+                                    {Array.from({length:13},(_,j)=>j+8).map(h => <option key={h} value={h}>{h}:00</option>)}
+                                  </select>
+                                </label>
+                                <label style={{fontSize:10,color:"var(--txt3)"}}>Capacidad:
+                                  <input type="number" value={r.capacity} onChange={e => { const v=[...ranges]; v[i]={...v[i],capacity:Math.max(1,Number(e.target.value)||0)}; setFlexEditConfig({...flexEditConfig, delivery_ranges:{...flexEditConfig.delivery_ranges,[day]:v}}); }}
+                                    style={{marginLeft:4,width:60,padding:"3px 6px",borderRadius:4,background:"var(--bg2)",color:"var(--txt)",border:"1px solid var(--bg4)",fontSize:11,textAlign:"center"}} />
+                                </label>
+                                <button onClick={() => { const v = ranges.filter((_,j)=>j!==i); setFlexEditConfig({...flexEditConfig, delivery_ranges:{...flexEditConfig.delivery_ranges, [day]: v.length>0?v:undefined}}); }}
+                                  style={{padding:"3px 6px",borderRadius:4,background:"var(--redBg)",color:"var(--red)",fontSize:10,fontWeight:700,border:"1px solid var(--redBd)"}}>X</button>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })}
+                      <div style={{display:"flex",gap:8,marginTop:8}}>
+                        <button onClick={() => { setFlexEditService(null); setFlexEditConfig(null); }}
+                          style={{padding:"8px 16px",borderRadius:6,background:"var(--bg2)",color:"var(--txt3)",fontSize:12,fontWeight:600,border:"1px solid var(--bg4)"}}>
+                          Cancelar
+                        </button>
+                        <button disabled={flexSaving} onClick={async () => {
+                          if (!window.confirm("Esto actualizara la configuracion de Flex en MercadoLibre. Continuar?")) return;
+                          setFlexSaving(true);
+                          try {
+                            const resp = await fetch("/api/ml/flex", { method:"POST", headers:{"Content-Type":"application/json"},
+                              body: JSON.stringify({ action:"update_config", service_id: String(sub.service_id), config: flexEditConfig }) });
+                            const data = await resp.json();
+                            if (data.status === "ok") {
+                              alert("Configuracion actualizada exitosamente.");
+                              setFlexEditService(null); setFlexEditConfig(null);
+                              await loadFlexConfig();
+                            } else {
+                              alert("Error al actualizar: " + (data.error || JSON.stringify(data)));
+                            }
+                          } catch (e) { alert("Error: " + String(e)); }
+                          setFlexSaving(false);
+                        }}
+                          style={{padding:"8px 16px",borderRadius:6,background:flexSaving?"var(--bg3)":"var(--cyan)",color:flexSaving?"var(--txt3)":"#000",fontSize:12,fontWeight:700,border:"none"}}>
+                          {flexSaving ? "Guardando..." : "Guardar en MercadoLibre"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {!flexLoading && (
+              <button onClick={loadFlexConfig} style={{padding:"6px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--cyan)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)",marginTop:4}}>
+                Recargar desde ML
+              </button>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

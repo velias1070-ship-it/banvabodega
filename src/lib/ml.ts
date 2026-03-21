@@ -1316,7 +1316,7 @@ export async function getFullStockForAllSkus(): Promise<Record<string, number>> 
 export async function getFlexSubscription(): Promise<unknown> {
   const config = await getMLConfig();
   if (!config?.seller_id) return null;
-  return mlGet(`/shipping/flex/sites/${SITE_ID}/users/${config.seller_id}/subscriptions/v1`);
+  return mlGet(`/flex/sites/${SITE_ID}/users/${config.seller_id}/subscriptions/v1`);
 }
 
 /**
@@ -1325,7 +1325,7 @@ export async function getFlexSubscription(): Promise<unknown> {
 export async function getFlexConfig(serviceId: string): Promise<unknown> {
   const config = await getMLConfig();
   if (!config?.seller_id) return null;
-  return mlGet(`/shipping/flex/sites/${SITE_ID}/users/${config.seller_id}/services/${serviceId}/configuration/delivery/custom/v3`);
+  return mlGet(`/flex/sites/${SITE_ID}/users/${config.seller_id}/services/${serviceId}/configurations/delivery-ranges/v1`);
 }
 
 /**
