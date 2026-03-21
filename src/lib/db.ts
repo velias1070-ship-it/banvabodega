@@ -1865,7 +1865,7 @@ export async function fetchMovimientosBanco(empresaId: string, opts?: { banco?: 
   if (opts?.banco) q = q.eq("banco", opts.banco);
   if (opts?.desde) q = q.gte("fecha", opts.desde);
   if (opts?.hasta) q = q.lte("fecha", opts.hasta);
-  const { data } = await q.order("fecha", { ascending: false });
+  const { data } = await q.order("fecha", { ascending: false }).limit(10000);
   return (data || []) as DBMovimientoBanco[];
 }
 
