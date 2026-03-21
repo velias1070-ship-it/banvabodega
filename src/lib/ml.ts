@@ -449,7 +449,9 @@ export async function mlPut<T = unknown>(path: string, body: unknown, extraHeade
     throw new Error(`ML_PUT_ERROR ${resp.status}: ${errText.slice(0, 300)}`);
   }
 
-  return resp.json() as Promise<T>;
+  const text = await resp.text();
+  if (!text) return null;
+  try { return JSON.parse(text) as T; } catch { return null; }
 }
 
 /**
