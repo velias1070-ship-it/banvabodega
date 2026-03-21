@@ -163,15 +163,37 @@ function SessionList({sessions,onSelect,onRefresh}:{sessions:DBPickingSession[];
   );
 }
 
-// ==================== SESSION DETAIL (Flex — con agrupación por posición) ====================
+// ==================== SESSION DETAIL (Flex — 2 fases: Recolección + Armado) ====================
 function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickingSession;operario:string;onPickComp:(l:PickingLinea,i:number)=>void;onRefresh:()=>void}) {
   const tc=session.lineas.reduce((s,l)=>s+l.componentes.length,0);
   const dc=session.lineas.reduce((s,l)=>s+l.componentes.filter(c=>c.estado==="PICKEADO").length,0);
-  const pct=tc>0?Math.round((dc/tc)*100):0;
+  const pctRecoleccion=tc>0?Math.round((dc/tc)*100):0;
+  const allRecolectado = pctRecoleccion === 100;
+
+  const [fase, setFase] = useState<"recoleccion"|"armado">(allRecolectado ? "armado" : "recoleccion");
   const [resetting,setResetting]=useState(false);
   const [downloading,setDownloading]=useState(false);
   const [shipments,setShipments]=useState<ShipmentWithItems[]>([]);
   const [mlCfg,setMlCfg]=useState<DBMLConfig|null>(null);
+  const [armados, setArmados] = useState<Set<number>>(() => {
+    if (typeof window === "undefined") return new Set();
+    try {
+      const saved = localStorage.getItem(`flex_armados_${session.id}`);
+      return saved ? new Set(JSON.parse(saved)) : new Set();
+    } catch { return new Set(); }
+  });
+
+  // Persist armados to localStorage
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem(`flex_armados_${session.id}`, JSON.stringify([...armados]));
+    }
+  }, [armados, session.id]);
+
+  // Auto-switch to armado when recoleccion completes
+  useEffect(() => {
+    if (allRecolectado && fase === "recoleccion") setFase("armado");
+  }, [allRecolectado]);
 
   // Load shipments + ML config
   useEffect(() => {
@@ -180,14 +202,13 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
   }, []);
 
   const todayChile = new Date().toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
-  const allShipmentIds = shipments
-    .filter(s => {
-      if (s.substatus !== "ready_to_print" && s.substatus !== "printed") return false;
-      if (!s.handling_limit) return true; // sin fecha = asumir hoy
-      const limitDay = new Date(s.handling_limit).toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
-      return limitDay <= todayChile; // hoy + atrasados
-    })
-    .map(s => s.shipment_id);
+  const todayShipments = shipments.filter(s => {
+    if (s.substatus !== "ready_to_print" && s.substatus !== "printed") return false;
+    if (!s.handling_limit) return true;
+    const limitDay = new Date(s.handling_limit).toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
+    return limitDay <= todayChile;
+  });
+  const allShipmentIds = todayShipments.map(s => s.shipment_id);
 
   const doDownloadLabels = async (ids: number[]) => {
     if (ids.length === 0) { alert("Sin etiquetas para descargar"); return; }
@@ -208,59 +229,59 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
   };
 
   const handleDespick = async (linea: PickingLinea, idx: number) => {
-    if (!confirm(`¿Reiniciar pick de ${linea.componentes[idx].nombre}?\n\nSe devolverá el stock a la posición ${linea.componentes[idx].posicion}.`)) return;
+    if (!confirm(`Reiniciar pick de ${linea.componentes[idx].nombre}?\n\nSe devolvera el stock a la posicion ${linea.componentes[idx].posicion}.`)) return;
     setResetting(true);
     await despickearComponente(session.id!, linea.id, idx, operario, session);
     await onRefresh();
     setResetting(false);
   };
 
-  // Aplicar ruta inteligente y agrupación por posición para Flex también
+  const marcarArmado = (shipmentId: number) => {
+    setArmados(prev => { const next = new Set(prev); next.add(shipmentId); return next; });
+  };
+  const desmarcarArmado = (shipmentId: number) => {
+    setArmados(prev => { const next = new Set(prev); next.delete(shipmentId); return next; });
+  };
+
+  // Ruta inteligente
   const posicionesNecesarias = useMemo(() => {
     const posSet = new Set<string>();
     for (const l of session.lineas) for (const c of l.componentes) if (c.estado === "PENDIENTE") posSet.add(c.posicion);
     return Array.from(posSet);
   }, [session]);
-
   const rutaOrdenada = useMemo(() => calcularRutaPicking(posicionesNecesarias), [posicionesNecesarias]);
-
-  // Find next pending (by route order)
   const next = useMemo(() => {
-    // Build ordered list of pending components by route
     for (const posId of rutaOrdenada) {
       for (const l of session.lineas) {
         for (let i = 0; i < l.componentes.length; i++) {
-          if (l.componentes[i].estado === "PENDIENTE" && l.componentes[i].posicion === posId) {
-            return { linea: l, idx: i };
-          }
+          if (l.componentes[i].estado === "PENDIENTE" && l.componentes[i].posicion === posId) return { linea: l, idx: i };
         }
       }
     }
-    // Fallback: any pending
     for (const l of session.lineas) for (let i = 0; i < l.componentes.length; i++)
       if (l.componentes[i].estado === "PENDIENTE") return { linea: l, idx: i };
     return null;
   }, [session, rutaOrdenada]);
 
-  const totalPedidos = session.lineas.length;
-  const pedidosArmados = session.lineas.filter(l => l.componentes.every(c => c.estado === "PICKEADO")).length;
-  const pedidosPendientes = totalPedidos - pedidosArmados;
+  // Counts
+  const totalPedidos = todayShipments.length || session.lineas.length;
+  const totalArmados = armados.size;
+  const pedidosPendientesArmar = totalPedidos - totalArmados;
+  const hayNuevosPorRecolectar = !allRecolectado && fase === "armado";
 
-  // Cutoff dinamico desde ml_config
+  // Cutoff
   const now = new Date();
   const chileHour = parseInt(now.toLocaleString("en-US", { timeZone: "America/Santiago", hour: "numeric", hour12: false }));
   const chileDay = now.toLocaleDateString("en-US", { timeZone: "America/Santiago", weekday: "short" });
-  const isSat = chileDay === "Sat";
-  const isSun = chileDay === "Sun";
   const cutoffLV = mlCfg?.hora_corte_lv || 14;
   const cutoffSab = mlCfg?.hora_corte_sab || 13;
-  const cutoffHora = isSun ? null : isSat ? cutoffSab : cutoffLV;
-  const cutoffLabel = isSun ? "Domingo — sin despacho" : isSat ? `Sabado — hasta las ${cutoffSab}:00` : `Lunes a Viernes — hasta las ${cutoffLV}:00`;
+  const cutoffHora = chileDay === "Sun" ? null : chileDay === "Sat" ? cutoffSab : cutoffLV;
+  const cutoffLabel = chileDay === "Sun" ? "Domingo — sin despacho" : chileDay === "Sat" ? `Sabado — hasta las ${cutoffSab}:00` : `Lunes a Viernes — hasta las ${cutoffLV}:00`;
   const pastCutoff = cutoffHora !== null && chileHour >= cutoffHora;
 
   return(
     <div>
-      {/* Resumen de la sesion */}
+      {/* Header */}
       <div style={{padding:16,background:"var(--bg2)",borderRadius:12,border:"1px solid var(--bg3)",marginBottom:12}}>
         <div style={{fontSize:16,fontWeight:700,marginBottom:4}}>Picking Flex {session.fecha}</div>
         <div style={{fontSize:12,color:"var(--amber)",marginBottom:10}}>
@@ -271,116 +292,199 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:10}}>
           <div style={{textAlign:"center",padding:"8px 0",borderRadius:8,background:"var(--bg3)"}}>
             <div style={{fontSize:22,fontWeight:800,color:"var(--cyan)"}}>{totalPedidos}</div>
-            <div style={{fontSize:10,color:"var(--txt3)"}}>Total</div>
+            <div style={{fontSize:10,color:"var(--txt3)"}}>Pedidos</div>
           </div>
           <div style={{textAlign:"center",padding:"8px 0",borderRadius:8,background:"var(--bg3)"}}>
-            <div style={{fontSize:22,fontWeight:800,color:"var(--amber)"}}>{pedidosPendientes}</div>
-            <div style={{fontSize:10,color:"var(--txt3)"}}>Pendientes</div>
+            <div style={{fontSize:22,fontWeight:800,color:fase==="recoleccion"?"var(--blue)":"var(--amber)"}}>{fase==="recoleccion"?`${pctRecoleccion}%`:pedidosPendientesArmar}</div>
+            <div style={{fontSize:10,color:"var(--txt3)"}}>{fase==="recoleccion"?"Recolectado":"Por armar"}</div>
           </div>
           <div style={{textAlign:"center",padding:"8px 0",borderRadius:8,background:"var(--bg3)"}}>
-            <div style={{fontSize:22,fontWeight:800,color:"var(--green)"}}>{pedidosArmados}</div>
+            <div style={{fontSize:22,fontWeight:800,color:"var(--green)"}}>{totalArmados}</div>
             <div style={{fontSize:10,color:"var(--txt3)"}}>Armados</div>
           </div>
         </div>
 
-        <div style={{background:"var(--bg3)",borderRadius:6,height:10,overflow:"hidden"}}>
-          <div style={{width:`${pct}%`,height:"100%",background:pct===100?"#10b981":"#3b82f6",borderRadius:6,transition:"width .3s"}}/>
+        {/* Phase toggle */}
+        <div style={{display:"flex",gap:0,marginBottom:0}}>
+          <button onClick={()=>setFase("recoleccion")}
+            style={{flex:1,padding:"8px 0",borderRadius:"6px 0 0 6px",fontSize:12,fontWeight:700,
+              background:fase==="recoleccion"?"var(--blue)":"var(--bg3)",color:fase==="recoleccion"?"#fff":"var(--txt3)",
+              border:`1px solid ${fase==="recoleccion"?"var(--blue)":"var(--bg4)"}`}}>
+            1. Recoleccion {pctRecoleccion === 100 ? "✅" : `${pctRecoleccion}%`}
+          </button>
+          <button onClick={()=>setFase("armado")}
+            style={{flex:1,padding:"8px 0",borderRadius:"0 6px 6px 0",fontSize:12,fontWeight:700,
+              background:fase==="armado"?"var(--amber)":"var(--bg3)",color:fase==="armado"?"#000":"var(--txt3)",
+              border:`1px solid ${fase==="armado"?"var(--amber)":"var(--bg4)"}`,borderLeft:"none"}}>
+            2. Armado {totalArmados > 0 ? `${totalArmados}/${totalPedidos}` : ""}
+          </button>
         </div>
-        <div style={{textAlign:"center",marginTop:6,fontSize:20,fontWeight:800,color:pct===100?"#10b981":"#3b82f6"}}>{pct}%</div>
       </div>
 
-      {next&&(
-        <button onClick={()=>onPickComp(next.linea,next.idx)}
-          style={{width:"100%",padding:18,marginBottom:12,borderRadius:14,fontWeight:700,fontSize:16,color:"#fff",
-            background:"linear-gradient(135deg,#059669,#10b981)",cursor:"pointer",border:"none",boxShadow:"0 4px 20px #10b98133"}}>
-          SIGUIENTE PRODUCTO
-        </button>
-      )}
+      {/* ==================== FASE 1: RECOLECCION ==================== */}
+      {fase === "recoleccion" && (<>
+        {hayNuevosPorRecolectar && (
+          <div style={{padding:10,borderRadius:8,background:"var(--amberBg)",border:"1px solid var(--amberBd)",marginBottom:12,textAlign:"center",fontSize:12,fontWeight:700,color:"var(--amber)"}}>
+            Hay productos nuevos por recolectar
+          </div>
+        )}
 
-      {pct===100&&(
-        <div style={{textAlign:"center",padding:20,marginBottom:12}}>
-          <div style={{fontSize:48}}>✅</div>
-          <div style={{fontSize:18,fontWeight:700,color:"#10b981",marginTop:8}}>Picking completo!</div>
-        </div>
-      )}
-
-      <div style={{display:"flex",gap:6,marginBottom:12}}>
-        <button onClick={onRefresh} style={{flex:1,padding:8,borderRadius:6,background:"var(--bg3)",color:"#06b6d4",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>Refrescar</button>
-        {allShipmentIds.length > 0 && (
-          <button onClick={() => doDownloadLabels(allShipmentIds)} disabled={downloading}
-            style={{flex:1,padding:8,borderRadius:6,background:"var(--bg3)",color:"#a855f7",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
-            {downloading ? "Descargando..." : `Etiquetas (${allShipmentIds.length})`}
+        {next&&(
+          <button onClick={()=>onPickComp(next.linea,next.idx)}
+            style={{width:"100%",padding:18,marginBottom:12,borderRadius:14,fontWeight:700,fontSize:16,color:"#fff",
+              background:"linear-gradient(135deg,#059669,#10b981)",cursor:"pointer",border:"none",boxShadow:"0 4px 20px #10b98133"}}>
+            SIGUIENTE PRODUCTO
           </button>
         )}
-      </div>
 
-      {[...session.lineas].sort((a,b) => {
-        const aDone = a.componentes.every(c=>c.estado==="PICKEADO") ? 1 : 0;
-        const bDone = b.componentes.every(c=>c.estado==="PICKEADO") ? 1 : 0;
-        return aDone - bDone;
-      }).map(linea=>{
-        const allDone=linea.componentes.every(c=>c.estado==="PICKEADO");
-        const skuUp = linea.skuVenta.toUpperCase();
-        const shipMatch = shipments.find(s => s.items.some(it =>
-          it.seller_sku?.toUpperCase() === skuUp || it.item_id?.toUpperCase() === skuUp
-        ));
-        const orderId = shipMatch?.order_ids?.[0] || null;
-        return(
-          <div key={linea.id} style={{padding:14,marginBottom:8,borderRadius:10,
-            background:allDone?"#10b98110":"var(--bg2)",border:`1px solid ${allDone?"#10b98133":"var(--bg3)"}`,opacity:allDone?0.7:1}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-              <div>
-                <span style={{fontSize:10,color:"#94a3b8",fontWeight:600}}>PEDIDO {linea.id}{orderId ? ` · Venta ${orderId}` : ""}</span>
-                <div className="mono" style={{fontSize:14,fontWeight:700}}>{linea.skuVenta}</div>
-                {linea.qtyPedida > 1 ? (
-                  <div style={{fontSize:11,fontWeight:700,color:"var(--amber)",background:"var(--amberBg)",padding:"2px 8px",borderRadius:4,marginTop:2,display:"inline-block",border:"1px solid var(--amberBd)"}}>
-                    BULTO: {linea.qtyPedida} unidades — 1 etiqueta
-                  </div>
-                ) : (
+        {allRecolectado&&(
+          <div style={{textAlign:"center",padding:16,marginBottom:12}}>
+            <div style={{fontSize:36}}>✅</div>
+            <div style={{fontSize:16,fontWeight:700,color:"#10b981",marginTop:4}}>Recoleccion completa</div>
+            <button onClick={()=>setFase("armado")}
+              style={{marginTop:12,padding:"12px 24px",borderRadius:10,background:"var(--amber)",color:"#000",fontSize:14,fontWeight:700,border:"none"}}>
+              Ir a Armado
+            </button>
+          </div>
+        )}
+
+        <button onClick={onRefresh} style={{width:"100%",padding:8,marginBottom:12,borderRadius:6,background:"var(--bg3)",color:"#06b6d4",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>Refrescar</button>
+
+        {/* Consolidated picking lines */}
+        {session.lineas.map(linea=>{
+          const allDone=linea.componentes.every(c=>c.estado==="PICKEADO");
+          return(
+            <div key={linea.id} style={{padding:14,marginBottom:6,borderRadius:10,
+              background:allDone?"#10b98110":"var(--bg2)",border:`1px solid ${allDone?"#10b98133":"var(--bg3)"}`,opacity:allDone?0.6:1}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                <div>
+                  <div className="mono" style={{fontSize:13,fontWeight:700}}>{linea.skuVenta}</div>
                   <div style={{fontSize:11,color:"#94a3b8"}}>x{linea.qtyPedida}</div>
-                )}
-              </div>
-              <div style={{display:"flex",alignItems:"center",gap:6}}>
-                {allDone?<span style={{fontSize:20}}>✅</span>:
+                </div>
+                {allDone?<span style={{fontSize:16}}>✅</span>:
                   <span style={{fontSize:11,fontWeight:700,color:"#f59e0b"}}>{linea.componentes.filter(c=>c.estado==="PICKEADO").length}/{linea.componentes.length}</span>
                 }
-                {shipMatch && (shipMatch.substatus === "ready_to_print" || shipMatch.substatus === "printed") && (
-                  <button onClick={(e) => { e.stopPropagation(); doDownloadLabels([shipMatch.shipment_id]); }}
+              </div>
+              {linea.componentes.map((comp,idx)=>(
+                <div key={idx} onClick={()=>{if(comp.estado!=="PICKEADO")onPickComp(linea,idx);}}
+                  style={{display:"flex",alignItems:"center",gap:10,padding:"8px 10px",marginTop:3,borderRadius:8,
+                    background:comp.estado==="PICKEADO"?"#10b98118":"var(--bg3)",
+                    border:`1px solid ${comp.estado==="PICKEADO"?"#10b98133":"var(--bg4)"}`,
+                    cursor:comp.estado==="PICKEADO"?"default":"pointer",opacity:comp.estado==="PICKEADO"?0.7:1}}>
+                  <div style={{width:32,height:32,borderRadius:6,background:comp.estado==="PICKEADO"?"#10b98122":"#3b82f622",
+                    display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                    {comp.estado==="PICKEADO"?<span style={{fontSize:16}}>✅</span>:
+                      <span className="mono" style={{fontSize:13,fontWeight:800,color:"#3b82f6"}}>{comp.unidades}</span>}
+                  </div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:12,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{comp.nombre}</div>
+                    <div style={{fontSize:10,color:"#94a3b8"}}>
+                      <span className="mono">{comp.skuOrigen}</span> · Pos <strong style={{color:"#10b981"}}>{comp.posicion}</strong>
+                    </div>
+                  </div>
+                  {comp.estado!=="PICKEADO"&&<span style={{fontSize:16,color:"#3b82f6"}}>→</span>}
+                  {comp.estado==="PICKEADO"&&(
+                    <button onClick={(e)=>{e.stopPropagation();handleDespick(linea,idx);}} disabled={resetting}
+                      style={{padding:"4px 10px",borderRadius:6,background:"var(--amberBg)",color:"var(--amber)",fontSize:10,fontWeight:700,border:"1px solid var(--amberBd)",cursor:"pointer",flexShrink:0}}>
+                      {resetting?"...":"Reiniciar"}
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          );
+        })}
+      </>)}
+
+      {/* ==================== FASE 2: ARMADO (por pedido/shipment) ==================== */}
+      {fase === "armado" && (<>
+        {hayNuevosPorRecolectar && (
+          <div onClick={()=>setFase("recoleccion")}
+            style={{padding:12,borderRadius:8,background:"var(--amberBg)",border:"1px solid var(--amberBd)",marginBottom:12,textAlign:"center",fontSize:12,fontWeight:700,color:"var(--amber)",cursor:"pointer"}}>
+            Hay productos nuevos por recolectar — toca para ir a Recoleccion
+          </div>
+        )}
+
+        <div style={{display:"flex",gap:6,marginBottom:12}}>
+          <button onClick={onRefresh} style={{flex:1,padding:8,borderRadius:6,background:"var(--bg3)",color:"#06b6d4",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>Refrescar</button>
+          {allShipmentIds.length > 0 && (
+            <button onClick={() => doDownloadLabels(allShipmentIds)} disabled={downloading}
+              style={{flex:1,padding:8,borderRadius:6,background:"var(--bg3)",color:"#a855f7",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
+              {downloading ? "Descargando..." : `Etiquetas (${allShipmentIds.length})`}
+            </button>
+          )}
+        </div>
+
+        {totalArmados === totalPedidos && totalPedidos > 0 && (
+          <div style={{textAlign:"center",padding:20,marginBottom:12}}>
+            <div style={{fontSize:48}}>🎉</div>
+            <div style={{fontSize:18,fontWeight:700,color:"var(--green)",marginTop:8}}>Todos los pedidos armados!</div>
+            <div style={{fontSize:12,color:"var(--txt3)",marginTop:4}}>{totalArmados} pedidos listos para despacho</div>
+          </div>
+        )}
+
+        {/* Pending orders first, then armados */}
+        {[...todayShipments].sort((a,b) => {
+          const aArm = armados.has(a.shipment_id) ? 1 : 0;
+          const bArm = armados.has(b.shipment_id) ? 1 : 0;
+          return aArm - bArm;
+        }).map(ship => {
+          const isArmado = armados.has(ship.shipment_id);
+          const orderId = ship.order_ids?.[0];
+          return (
+            <div key={ship.shipment_id} style={{padding:14,marginBottom:8,borderRadius:10,
+              background:isArmado?"#10b98110":"var(--bg2)",
+              border:`1px solid ${isArmado?"#10b98133":"var(--bg3)"}`,
+              opacity:isArmado?0.6:1}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
+                <div>
+                  <span style={{fontSize:10,color:"#94a3b8",fontWeight:600}}>Venta {orderId || ship.shipment_id}</span>
+                  {ship.receiver_name && <div style={{fontSize:12,fontWeight:600,marginTop:2}}>{ship.receiver_name}</div>}
+                  {ship.destination_city && <div style={{fontSize:10,color:"var(--txt3)"}}>{ship.destination_city}</div>}
+                </div>
+                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                  {isArmado && <span style={{fontSize:18}}>✅</span>}
+                  <button onClick={(e) => { e.stopPropagation(); doDownloadLabels([ship.shipment_id]); }}
                     style={{padding:"4px 8px",borderRadius:4,background:"#a855f722",color:"#a855f7",fontSize:10,fontWeight:700,border:"1px solid #a855f744"}}>
                     Etiqueta
                   </button>
-                )}
-              </div>
-            </div>
-            {linea.componentes.map((comp,idx)=>(
-              <div key={idx} onClick={()=>{if(comp.estado!=="PICKEADO")onPickComp(linea,idx);}}
-                style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",marginTop:4,borderRadius:8,
-                  background:comp.estado==="PICKEADO"?"#10b98118":"var(--bg3)",
-                  border:`1px solid ${comp.estado==="PICKEADO"?"#10b98133":"var(--bg4)"}`,
-                  cursor:comp.estado==="PICKEADO"?"default":"pointer",opacity:comp.estado==="PICKEADO"?0.7:1}}>
-                <div style={{width:36,height:36,borderRadius:8,background:comp.estado==="PICKEADO"?"#10b98122":"#3b82f622",
-                  display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
-                  {comp.estado==="PICKEADO"?<span style={{fontSize:18}}>✅</span>:
-                    <span className="mono" style={{fontSize:14,fontWeight:800,color:"#3b82f6"}}>{comp.unidades}</span>}
                 </div>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{comp.nombre}</div>
-                  <div style={{fontSize:11,color:"#94a3b8"}}>
-                    <span className="mono">{comp.skuOrigen}</span> · Pos <strong style={{color:"#10b981"}}>{comp.posicion}</strong>
+              </div>
+
+              {/* Items in this shipment */}
+              {ship.items.map((item, i) => (
+                <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 10px",marginBottom:3,borderRadius:6,background:"var(--bg3)",border:"1px solid var(--bg4)"}}>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:12,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{item.title}</div>
+                    <span className="mono" style={{fontSize:10,color:"var(--txt3)"}}>{item.seller_sku}</span>
                   </div>
+                  <span className="mono" style={{fontSize:14,fontWeight:800,color:"var(--cyan)",marginLeft:8}}>x{item.quantity}</span>
                 </div>
-                {comp.estado!=="PICKEADO"&&<span style={{fontSize:18,color:"#3b82f6"}}>→</span>}
-                {comp.estado==="PICKEADO"&&(
-                  <button onClick={(e)=>{e.stopPropagation();handleDespick(linea,idx);}} disabled={resetting}
-                    style={{padding:"6px 12px",borderRadius:6,background:"var(--amberBg)",color:"var(--amber)",fontSize:10,fontWeight:700,border:"1px solid var(--amberBd)",cursor:"pointer",flexShrink:0}}>
-                    {resetting?"...":"↩ Reiniciar"}
-                  </button>
-                )}
-              </div>
-            ))}
+              ))}
+
+              {ship.items.reduce((s, it) => s + it.quantity, 0) > 1 && (
+                <div style={{fontSize:11,fontWeight:700,color:"var(--amber)",background:"var(--amberBg)",padding:"3px 8px",borderRadius:4,marginTop:6,textAlign:"center",border:"1px solid var(--amberBd)"}}>
+                  BULTO: {ship.items.reduce((s, it) => s + it.quantity, 0)} unidades — 1 etiqueta
+                </div>
+              )}
+
+              {/* Armar / Desarmar button */}
+              <button onClick={() => isArmado ? desmarcarArmado(ship.shipment_id) : marcarArmado(ship.shipment_id)}
+                style={{width:"100%",marginTop:8,padding:12,borderRadius:8,fontWeight:700,fontSize:13,border:"none",
+                  background:isArmado?"var(--bg3)":"linear-gradient(135deg,#059669,#10b981)",
+                  color:isArmado?"var(--txt3)":"#fff"}}>
+                {isArmado ? "Desarmar" : "Marcar como armado"}
+              </button>
+            </div>
+          );
+        })}
+
+        {todayShipments.length === 0 && (
+          <div style={{textAlign:"center",padding:20,color:"var(--txt3)",fontSize:12}}>
+            Sin shipments cargados. Refresca o espera la sincronizacion.
           </div>
-        );
-      })}
+        )}
+      </>)}
     </div>
   );
 }
