@@ -1861,12 +1861,21 @@ export async function upsertRcvVentas(items: DBRcvVenta[]): Promise<void> {
 
 export async function fetchMovimientosBanco(empresaId: string, opts?: { banco?: string; desde?: string; hasta?: string }): Promise<DBMovimientoBanco[]> {
   const sb = getSupabase(); if (!sb) return [];
-  let q = sb.from("movimientos_banco").select("*").eq("empresa_id", empresaId);
-  if (opts?.banco) q = q.eq("banco", opts.banco);
-  if (opts?.desde) q = q.gte("fecha", opts.desde);
-  if (opts?.hasta) q = q.lte("fecha", opts.hasta);
-  const { data } = await q.order("fecha", { ascending: false }).limit(10000);
-  return (data || []) as DBMovimientoBanco[];
+  const all: DBMovimientoBanco[] = [];
+  const PAGE = 1000;
+  let from = 0;
+  while (true) {
+    let q = sb.from("movimientos_banco").select("*").eq("empresa_id", empresaId);
+    if (opts?.banco) q = q.eq("banco", opts.banco);
+    if (opts?.desde) q = q.gte("fecha", opts.desde);
+    if (opts?.hasta) q = q.lte("fecha", opts.hasta);
+    const { data } = await q.order("fecha", { ascending: false }).range(from, from + PAGE - 1);
+    if (!data || data.length === 0) break;
+    all.push(...(data as DBMovimientoBanco[]));
+    if (data.length < PAGE) break;
+    from += PAGE;
+  }
+  return all;
 }
 
 export async function insertMovimientosBanco(items: DBMovimientoBanco[]): Promise<void> {
