@@ -1,8 +1,8 @@
 "use client";
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { initStore, refreshStore, isSupabaseConfigured, getActivePickings, pickearComponente, pickearLineaFull, marcarArmadoFull, verificarScanPicking, activePositions, posContents, getMapConfig, calcularRutaPicking, agruparPorPosicion, getNotasOperativas, despickearComponente, guardarBultosLinea } from "@/lib/store";
-import { fetchBultosSession, crearBulto, agregarLineaBulto, eliminarLineasBulto } from "@/lib/db";
-import type { DBPickingBulto, DBPickingBultoLinea } from "@/lib/db";
+import { fetchBultosSession, crearBulto, agregarLineaBulto, eliminarLineasBulto, fetchActiveFlexShipments } from "@/lib/db";
+import type { DBPickingBulto, DBPickingBultoLinea, ShipmentWithItems } from "@/lib/db";
 import type { DBPickingSession, PickingLinea, PickingComponente } from "@/lib/store";
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -169,6 +169,36 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
   const dc=session.lineas.reduce((s,l)=>s+l.componentes.filter(c=>c.estado==="PICKEADO").length,0);
   const pct=tc>0?Math.round((dc/tc)*100):0;
   const [resetting,setResetting]=useState(false);
+  const [downloading,setDownloading]=useState(false);
+  const [shipments,setShipments]=useState<ShipmentWithItems[]>([]);
+
+  // Load shipments for label printing
+  useEffect(() => {
+    fetchActiveFlexShipments().then(setShipments).catch(() => {});
+  }, []);
+
+  const todayChile = new Date().toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
+  const todayShipmentIds = shipments
+    .filter(s => s.substatus === "ready_to_print" && (!s.handling_limit || new Date(s.handling_limit).toLocaleDateString("en-CA", { timeZone: "America/Santiago" }) <= todayChile))
+    .map(s => s.shipment_id);
+
+  const doDownloadLabels = async (ids: number[]) => {
+    if (ids.length === 0) { alert("Sin etiquetas para descargar"); return; }
+    setDownloading(true);
+    try {
+      const resp = await fetch("/api/ml/labels", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shipping_ids: ids.slice(0, 50), skip_validation: true }),
+      });
+      if (!resp.ok) { alert("Error descargando etiquetas"); return; }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url;
+      a.download = `etiquetas-${todayChile}.pdf`; a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) { alert("Error: " + String(e)); }
+    setDownloading(false);
+  };
 
   const handleDespick = async (linea: PickingLinea, idx: number) => {
     if (!confirm(`¿Reiniciar pick de ${linea.componentes[idx].nombre}?\n\nSe devolverá el stock a la posición ${linea.componentes[idx].posicion}.`)) return;
@@ -231,9 +261,21 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
         </div>
       )}
 
-      <button onClick={onRefresh} style={{width:"100%",padding:8,marginBottom:12,borderRadius:6,background:"var(--bg3)",color:"#06b6d4",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>🔄 Refrescar</button>
+      <div style={{display:"flex",gap:6,marginBottom:12}}>
+        <button onClick={onRefresh} style={{flex:1,padding:8,borderRadius:6,background:"var(--bg3)",color:"#06b6d4",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>Refrescar</button>
+        {todayShipmentIds.length > 0 && (
+          <button onClick={() => doDownloadLabels(todayShipmentIds)} disabled={downloading}
+            style={{flex:1,padding:8,borderRadius:6,background:"var(--bg3)",color:"#a855f7",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
+            {downloading ? "Descargando..." : `Etiquetas (${todayShipmentIds.length})`}
+          </button>
+        )}
+      </div>
 
-      {session.lineas.map(linea=>{
+      {[...session.lineas].sort((a,b) => {
+        const aDone = a.componentes.every(c=>c.estado==="PICKEADO") ? 1 : 0;
+        const bDone = b.componentes.every(c=>c.estado==="PICKEADO") ? 1 : 0;
+        return aDone - bDone;
+      }).map(linea=>{
         const allDone=linea.componentes.every(c=>c.estado==="PICKEADO");
         return(
           <div key={linea.id} style={{padding:14,marginBottom:8,borderRadius:10,
@@ -244,9 +286,20 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
                 <div className="mono" style={{fontSize:14,fontWeight:700}}>{linea.skuVenta}</div>
                 <div style={{fontSize:11,color:"#94a3b8"}}>×{linea.qtyPedida}</div>
               </div>
-              {allDone?<span style={{fontSize:20}}>✅</span>:
-                <span style={{fontSize:11,fontWeight:700,color:"#f59e0b"}}>{linea.componentes.filter(c=>c.estado==="PICKEADO").length}/{linea.componentes.length}</span>
-              }
+              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                {allDone?<span style={{fontSize:20}}>✅</span>:
+                  <span style={{fontSize:11,fontWeight:700,color:"#f59e0b"}}>{linea.componentes.filter(c=>c.estado==="PICKEADO").length}/{linea.componentes.length}</span>
+                }
+                {(() => {
+                  const shipMatch = shipments.find(s => s.items.some(it => it.seller_sku === linea.skuVenta));
+                  return shipMatch && shipMatch.substatus === "ready_to_print" ? (
+                    <button onClick={(e) => { e.stopPropagation(); doDownloadLabels([shipMatch.shipment_id]); }}
+                      style={{padding:"3px 6px",borderRadius:4,background:"#a855f722",color:"#a855f7",fontSize:9,fontWeight:700,border:"1px solid #a855f744"}}>
+                      Etiq.
+                    </button>
+                  ) : null;
+                })()}
+              </div>
             </div>
             {linea.componentes.map((comp,idx)=>(
               <div key={idx} onClick={()=>{if(comp.estado!=="PICKEADO")onPickComp(linea,idx);}}
