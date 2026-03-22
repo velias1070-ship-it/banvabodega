@@ -918,7 +918,7 @@ function PickFlow({session,linea,compIdx,operario,onDone}:{
 
   const confirmingRef=useRef(false);
   const doConfirm=useCallback(async()=>{
-    if(confirmingRef.current)return; // prevent double execution
+    if(confirmingRef.current)return;
     confirmingRef.current=true;
     setSaving(true);
     await pickearComponente(session.id!,linea.id,compIdx,operario,session);
@@ -928,11 +928,23 @@ function PickFlow({session,linea,compIdx,operario,onDone}:{
   },[session,linea,compIdx,operario,onDone]);
 
   const handleScan=useCallback((code:string)=>{
-    if(confirmingRef.current)return; // ignore scans while confirming
+    if(confirmingRef.current)return;
     setScanCode(code);
-    if(verificarScanPicking(code,comp,linea.skuVenta)){setScanResult("ok");doConfirm();}
-    else{setScanResult("error");if(navigator.vibrate)navigator.vibrate([200,100,200]);}
-  },[comp,doConfirm,linea.skuVenta]);
+    if(verificarScanPicking(code,comp,linea.skuVenta)){
+      setScanResult("ok");
+      // Don't call doConfirm here — let the useEffect below handle it
+    } else {
+      setScanResult("error");
+      if(navigator.vibrate)navigator.vibrate([200,100,200]);
+    }
+  },[comp,linea.skuVenta]);
+
+  // Auto-confirm when scan is successful (runs after render, not during scanner overlay)
+  useEffect(()=>{
+    if(scanResult==="ok"&&!confirmingRef.current){
+      doConfirm();
+    }
+  },[scanResult]);
 
   if(phase==="done")return(
     <div style={{textAlign:"center",padding:40}}>
