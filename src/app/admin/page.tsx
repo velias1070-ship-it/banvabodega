@@ -65,7 +65,7 @@ function LoginGate({ onLogin }: { onLogin: (pin: string) => boolean }) {
 export default function AdminPage() {
   const [tab, setTab] = useState<"dash"|"rec"|"picking"|"pedidos"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"intel"|"compras"|"eventos"|"ventasml"|"agentes"|"stockml"|"config">("dash");
   const SIDEBAR_GROUPS = [
-    {section:"OPERACIONES",icon:"⚡",items:[["rec","Recepciones","📦"],["picking","Picking Flex","🏷️"],["pedidos","Pedidos ML","🛒"],["ops","Operaciones","⚡"],["reposicion","Reposición","🔄"]] as const},
+    {section:"OPERACIONES",icon:"⚡",items:[["rec","Recepciones","📦"],["flex","Ultima Milla","🚚"],["ops","Operaciones","⚡"],["reposicion","Reposición","🔄"]] as const},
     {section:"INVENTARIO",icon:"📦",items:[["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["stockml","Stock ML","📡"]] as const},
     {section:"INTELIGENCIA",icon:"🧠",items:[["intel","Inteligencia","🧠"],["compras","Compras","🛒"],["eventos","Eventos","📅"],["ventasml","Ventas ML","💰"]] as const},
     {section:"SISTEMA",icon:"⚙️",items:[["agentes","Agentes IA","🤖"],["config","Configuración","⚙️"]] as const},
@@ -173,8 +173,7 @@ export default function AdminPage() {
           <div className="admin-content">
             {tab==="dash"&&<Dashboard/>}
             {tab==="rec"&&<AdminRecepciones refresh={r}/>}
-            {tab==="picking"&&<AdminPicking refresh={r}/>}
-            {tab==="pedidos"&&<AdminPedidosFlex refresh={r}/>}
+            {tab==="flex"&&<AdminUltimaMilla refresh={r}/>}
             {tab==="ops"&&<Operaciones refresh={r}/>}
             {tab==="inv"&&<Inventario/>}
             {tab==="mov"&&<Movimientos/>}
@@ -2139,6 +2138,30 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
 }
 
 // ==================== OPERACIONES RÁPIDAS ====================
+// ==================== ULTIMA MILLA (Pedidos + Picking + Config) ====================
+function AdminUltimaMilla({ refresh }: { refresh: () => void }) {
+  const [subTab, setSubTab] = useState<"pedidos"|"picking"|"config">("pedidos");
+  return (
+    <div>
+      <div style={{display:"flex",gap:0,marginBottom:16}}>
+        {([["pedidos","Pedidos","🛒"],["picking","Picking","🏷️"],["config","Configuracion","⚙️"]] as const).map(([key,label,icon],i,arr) => (
+          <button key={key} onClick={()=>setSubTab(key)}
+            style={{flex:1,padding:"10px 0",fontSize:12,fontWeight:700,cursor:"pointer",
+              borderRadius:i===0?"8px 0 0 8px":i===arr.length-1?"0 8px 8px 0":"0",
+              background:subTab===key?"var(--cyan)":"var(--bg3)",color:subTab===key?"#000":"var(--txt2)",
+              border:`1px solid ${subTab===key?"var(--cyan)":"var(--bg4)"}`,
+              borderLeft:i>0?"none":undefined}}>
+            {icon} {label}
+          </button>
+        ))}
+      </div>
+      {subTab==="pedidos"&&<AdminPedidosFlex refresh={refresh} initialView="pedidos"/>}
+      {subTab==="picking"&&<AdminPicking refresh={refresh}/>}
+      {subTab==="config"&&<AdminPedidosFlex refresh={refresh} initialView="config"/>}
+    </div>
+  );
+}
+
 // ==================== ADMIN PICKING FLEX ====================
 function AdminPicking({ refresh }: { refresh: () => void }) {
   const [sessions, setSessions] = useState<DBPickingSession[]>([]);
@@ -6732,7 +6755,7 @@ function parseCSVLine(line: string): string[] {
 }
 
 // ==================== PEDIDOS ML (Shipment-centric) ====================
-function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
+function AdminPedidosFlex({ refresh, initialView = "pedidos" }: { refresh: () => void; initialView?: "pedidos" | "config" }) {
   const today = new Date().toISOString().slice(0, 10);
   const [fecha, setFecha] = useState(today);
   const [shipments, setShipments] = useState<ShipmentWithItems[]>([]);
@@ -6746,7 +6769,7 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
   const [storeOptions, setStoreOptions] = useState<{ store_id: number; count: number }[]>([]);
 
   // Flex config
-  const [flexView, setFlexView] = useState<"pedidos"|"config">("pedidos");
+  const [flexView, setFlexView] = useState<"pedidos"|"config">(initialView);
   const [showFlexConfig, setShowFlexConfig] = useState(false);
   const [flexSubs, setFlexSubs] = useState<{service_id:number;origin:{address_line:string;city?:{name?:string}};status:string}[]>([]);
   const [flexConfigs, setFlexConfigs] = useState<Record<number, {delivery_window:string;delivery_ranges:{week?:{capacity:number;from:number;to:number;cutoff:number}[];saturday?:{capacity:number;from:number;to:number;cutoff:number}[];sunday?:{capacity:number;from:number;to:number;cutoff:number}[]}}>>({});
@@ -7040,18 +7063,11 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
           <div className="card-title">🛒 Pedidos MercadoLibre Flex</div>
           <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-            {flexView === "config" ? (
-              <button onClick={() => setFlexView("pedidos")} style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"var(--cyan)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
-                ← Volver a pedidos
-              </button>
-            ) : (<>
-              <button onClick={() => { setFlexView("config"); loadFlexConfig(); }} style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"var(--txt2)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
-                ⚙️ Configuracion
-              </button>
+            {flexView !== "config" && (
               <button onClick={() => doDownloadLabels()} style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"#a855f7",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
                 📄 Etiquetas HOY
               </button>
-            </>)}
+            )}
           </div>
         </div>
 
