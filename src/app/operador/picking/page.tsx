@@ -1,6 +1,6 @@
 "use client";
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
-import { initStore, refreshStore, isSupabaseConfigured, getActivePickings, pickearComponente, pickearLineaFull, marcarArmadoFull, verificarScanPicking, activePositions, posContents, getMapConfig, calcularRutaPicking, agruparPorPosicion, getNotasOperativas, despickearComponente, guardarBultosLinea, syncFlexPickingSession } from "@/lib/store";
+import { initStore, refreshStore, isSupabaseConfigured, getActivePickings, pickearComponente, pickearLineaFull, marcarArmadoFull, verificarScanPicking, activePositions, posContents, getMapConfig, calcularRutaPicking, agruparPorPosicion, getNotasOperativas, despickearComponente, guardarBultosLinea, syncFlexPickingSession, getPickingsByDate } from "@/lib/store";
 import { fetchBultosSession, crearBulto, agregarLineaBulto, eliminarLineasBulto, fetchActiveFlexShipments, fetchMLConfig } from "@/lib/db";
 import type { DBPickingBulto, DBPickingBultoLinea, ShipmentWithItems, DBMLConfig } from "@/lib/db";
 import type { DBPickingSession, PickingLinea, PickingComponente } from "@/lib/store";
@@ -27,9 +27,13 @@ export default function PickingPage() {
   }, []);
 
   const loadSessions = useCallback(async () => {
-    const data = await getActivePickings();
-    setSessions(data);
-    return data;
+    const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
+    const [active, todaySessions] = await Promise.all([getActivePickings(), getPickingsByDate(today)]);
+    const map = new Map<string, DBPickingSession>();
+    [...active, ...todaySessions].forEach(s => { if (s.id) map.set(s.id, s); });
+    const merged = Array.from(map.values());
+    setSessions(merged);
+    return merged;
   }, []);
 
   // Auto-create/update flex session and load it
@@ -37,7 +41,8 @@ export default function PickingPage() {
     await syncFlexPickingSession().catch(() => {});
     const all = await loadSessions();
     const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
-    const flex = all.find(s => s.tipo === "flex" && s.fecha === today && s.estado !== "COMPLETADA");
+    const flex = all.find(s => s.tipo === "flex" && s.fecha === today && s.estado !== "COMPLETADA")
+      || all.find(s => s.tipo === "flex" && s.fecha === today && s.estado === "COMPLETADA");
     setFlexSession(flex || null);
   }, [loadSessions]);
 
@@ -108,7 +113,8 @@ export default function PickingPage() {
     await syncFlexPickingSession().catch(() => {});
     const all = await loadSessions();
     const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
-    const flex = all.find(s => s.tipo === "flex" && s.fecha === today && s.estado !== "COMPLETADA");
+    const flex = all.find(s => s.tipo === "flex" && s.fecha === today && s.estado !== "COMPLETADA")
+      || all.find(s => s.tipo === "flex" && s.fecha === today && s.estado === "COMPLETADA");
     setFlexSession(flex || null);
   };
 
