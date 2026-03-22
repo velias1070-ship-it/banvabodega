@@ -918,27 +918,19 @@ function PickFlow({session,linea,compIdx,operario,onDone}:{
 
   const confirmingRef=useRef(false);
   const doConfirm=useCallback(async()=>{
-    if(confirmingRef.current){console.log("[PICK] doConfirm blocked — already confirming");return;}
+    if(confirmingRef.current)return;
     confirmingRef.current=true;
-    console.log("[PICK] doConfirm START",{sessionId:session.id,lineaId:linea.id,compIdx,sku:comp.skuOrigen,skuVenta:linea.skuVenta});
     setSaving(true);
-    try{
-      const result=await pickearComponente(session.id!,linea.id,compIdx,operario,session,linea.skuVenta);
-      console.log("[PICK] pickearComponente result:",result);
-    }catch(e){console.error("[PICK] pickearComponente ERROR:",e);}
+    await pickearComponente(session.id!,linea.id,compIdx,operario,session,linea.skuVenta);
     setSaving(false);setPhase("done");
     if(navigator.vibrate)navigator.vibrate([100,50,100]);
-    console.log("[PICK] doConfirm DONE — calling onDone in 1.2s");
     setTimeout(onDone,1200);
   },[session,linea,compIdx,operario,onDone]);
 
   const handleScan=useCallback((code:string)=>{
-    console.log("[PICK] handleScan called",{code,confirming:confirmingRef.current});
     if(confirmingRef.current)return;
     setScanCode(code);
-    const valid=verificarScanPicking(code,comp,linea.skuVenta);
-    console.log("[PICK] scan valid:",valid);
-    if(valid){
+    if(verificarScanPicking(code,comp,linea.skuVenta)){
       setScanResult("ok");
     } else {
       setScanResult("error");
@@ -946,13 +938,8 @@ function PickFlow({session,linea,compIdx,operario,onDone}:{
     }
   },[comp,linea.skuVenta]);
 
-  // Auto-confirm when scan is successful
   useEffect(()=>{
-    console.log("[PICK] useEffect scanResult:",scanResult,"confirming:",confirmingRef.current);
-    if(scanResult==="ok"&&!confirmingRef.current){
-      console.log("[PICK] useEffect triggering doConfirm");
-      doConfirm();
-    }
+    if(scanResult==="ok"&&!confirmingRef.current) doConfirm();
   },[scanResult]);
 
   if(phase==="done")return(
