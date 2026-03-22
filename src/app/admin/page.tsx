@@ -2165,54 +2165,125 @@ function AdminUltimaMilla({ refresh }: { refresh: () => void }) {
 // ==================== ADMIN PICKING FLEX ====================
 function AdminPicking({ refresh }: { refresh: () => void }) {
   const [sessions, setSessions] = useState<DBPickingSession[]>([]);
+  const [shipments, setShipments] = useState<ShipmentWithItems[]>([]);
   const [loading, setLoading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [selSession, setSelSession] = useState<DBPickingSession | null>(null);
 
-  const loadSessions = async () => {
+  const loadAll = async () => {
     setLoading(true);
     const today = new Date().toISOString().slice(0, 10);
-    const active = await getActivePickings();
-    const todaySessions = await getPickingsByDate(today);
-    // Merge unique
+    const [active, todaySessions, ships] = await Promise.all([
+      getActivePickings(),
+      getPickingsByDate(today),
+      fetchActiveFlexShipments(),
+    ]);
     const map = new Map<string, DBPickingSession>();
     [...active, ...todaySessions].forEach(s => { if (s.id) map.set(s.id, s); });
     setSessions(Array.from(map.values()).sort((a, b) => (b.created_at || "").localeCompare(a.created_at || "")));
+    setShipments(ships);
     setLoading(false);
   };
 
-  useEffect(() => { loadSessions(); }, []);
+  useEffect(() => { loadAll(); }, []);
 
   if (selSession) {
-    return <PickingSessionDetail session={selSession} onBack={() => { setSelSession(null); loadSessions(); }}/>;
+    return <PickingSessionDetail session={selSession} onBack={() => { setSelSession(null); loadAll(); }}/>;
   }
 
   if (showCreate) {
-    return <CreatePickingSession onCreated={() => { setShowCreate(false); loadSessions(); }} onCancel={() => setShowCreate(false)}/>;
+    return <CreatePickingSession onCreated={() => { setShowCreate(false); loadAll(); }} onCancel={() => setShowCreate(false)}/>;
   }
+
+  // Shipment stats
+  const todayChile = new Date().toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
+  const todayShips = shipments.filter(s => {
+    if (!s.handling_limit) return true;
+    const d = new Date(s.handling_limit).toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
+    return d <= todayChile;
+  });
+  const shipsReadyToPrint = todayShips.filter(s => s.substatus === "ready_to_print").length;
+  const shipsPrinted = todayShips.filter(s => s.substatus === "printed").length;
+  const shipsTotal = todayShips.length;
 
   return (
     <div>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
         <div>
-          <h2 style={{fontSize:18,fontWeight:700,margin:0}}>Picking Flex</h2>
-          <p style={{fontSize:12,color:"var(--txt3)",margin:0}}>Sesiones de picking diario para envíos Flex</p>
+          <h2 style={{fontSize:18,fontWeight:700,margin:0}}>Picking y Despacho</h2>
+          <p style={{fontSize:12,color:"var(--txt3)",margin:0}}>Estado de recoleccion, armado y etiquetas</p>
         </div>
         <div style={{display:"flex",gap:8}}>
-          <button onClick={loadSessions} disabled={loading} style={{padding:"8px 14px",borderRadius:8,background:"var(--bg3)",color:"var(--cyan)",fontSize:12,fontWeight:600,border:"1px solid var(--bg4)"}}>
-            {loading ? "..." : "🔄"}
+          <button onClick={loadAll} disabled={loading} style={{padding:"8px 14px",borderRadius:8,background:"var(--bg3)",color:"var(--cyan)",fontSize:12,fontWeight:600,border:"1px solid var(--bg4)"}}>
+            {loading ? "..." : "Actualizar"}
           </button>
           <button onClick={() => setShowCreate(true)} style={{padding:"8px 18px",borderRadius:8,background:"var(--green)",color:"#fff",fontSize:12,fontWeight:700,border:"none"}}>
-            + Nueva sesión
+            + Nueva sesion
           </button>
         </div>
       </div>
 
-      {sessions.length === 0 && !loading && (
+      {/* Shipment overview */}
+      {shipsTotal > 0 && (
+        <div className="card" style={{marginBottom:12}}>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>Estado de envios del dia ({shipsTotal})</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+            <div style={{padding:"10px 12px",borderRadius:8,background:"var(--amberBg)",border:"1px solid var(--amberBd)",textAlign:"center"}}>
+              <div style={{fontSize:22,fontWeight:800,color:"var(--amber)"}}>{shipsReadyToPrint}</div>
+              <div style={{fontSize:10,color:"var(--txt3)"}}>Sin imprimir etiqueta</div>
+            </div>
+            <div style={{padding:"10px 12px",borderRadius:8,background:"var(--greenBg)",border:"1px solid var(--greenBd)",textAlign:"center"}}>
+              <div style={{fontSize:22,fontWeight:800,color:"var(--green)"}}>{shipsPrinted}</div>
+              <div style={{fontSize:10,color:"var(--txt3)"}}>Etiqueta impresa</div>
+            </div>
+          </div>
+          {/* Per-shipment detail table */}
+          <div style={{overflowX:"auto"}}>
+            <table className="tbl" style={{fontSize:11}}>
+              <thead><tr>
+                <th>Venta</th><th>Producto</th><th>Qty</th><th>Etiqueta</th><th>Recolectado</th><th>Destino</th>
+              </tr></thead>
+              <tbody>
+                {todayShips.map(s => {
+                  const orderId = s.order_ids?.[0];
+                  // Match picking status from sessions
+                  const flexSession = sessions.find(ss => ss.tipo === "flex");
+                  const isRecolectado = flexSession ? s.items.every(item => {
+                    const sku = (item.seller_sku || item.item_id || "").toUpperCase();
+                    return flexSession.lineas.some(l => l.skuVenta.toUpperCase() === sku && l.componentes.every(c => c.estado === "PICKEADO"));
+                  }) : false;
+                  const etiquetaStatus = s.substatus === "printed" ? "Impresa" : "Pendiente";
+                  return (
+                    <tr key={s.shipment_id} style={{background:isRecolectado?"var(--greenBg)":"transparent"}}>
+                      <td className="mono" style={{fontWeight:600}}>{orderId || s.shipment_id}</td>
+                      <td>{s.items.map(it => it.title).join(", ").slice(0, 50)}{s.items.map(it => it.title).join(", ").length > 50 ? "..." : ""}</td>
+                      <td style={{textAlign:"center"}}>{s.items.reduce((sum, it) => sum + it.quantity, 0)}</td>
+                      <td><span style={{padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:700,
+                        background:s.substatus==="printed"?"var(--greenBg)":"var(--amberBg)",
+                        color:s.substatus==="printed"?"var(--green)":"var(--amber)"}}>
+                        {etiquetaStatus}
+                      </span></td>
+                      <td><span style={{padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:700,
+                        background:isRecolectado?"var(--greenBg)":"var(--redBg)",
+                        color:isRecolectado?"var(--green)":"var(--red)"}}>
+                        {isRecolectado ? "Si" : "No"}
+                      </span></td>
+                      <td style={{fontSize:10,color:"var(--txt3)"}}>{s.receiver_name ? `${s.receiver_name}` : ""}{s.destination_city ? ` · ${s.destination_city}` : ""}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Sessions list */}
+      {sessions.length === 0 && shipsTotal === 0 && !loading && (
         <div style={{textAlign:"center",padding:40,color:"var(--txt3)"}}>
           <div style={{fontSize:40,marginBottom:8}}>🏷️</div>
-          <div style={{fontSize:14,fontWeight:600}}>No hay sesiones de picking</div>
-          <div style={{fontSize:12,marginTop:4}}>Crea una nueva para el picking del día</div>
+          <div style={{fontSize:14,fontWeight:600}}>Sin picking activo</div>
+          <div style={{fontSize:12,marginTop:4}}>Los pedidos se cargan automaticamente desde MercadoLibre</div>
         </div>
       )}
 
@@ -2227,13 +2298,13 @@ function AdminPicking({ refresh }: { refresh: () => void }) {
             style={{padding:16,marginBottom:8,borderRadius:10,background:"var(--bg2)",border:"1px solid var(--bg3)",cursor:"pointer"}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
               <div>
-                <div style={{fontSize:14,fontWeight:700}}>Picking {sess.fecha}</div>
-                <div style={{fontSize:12,color:"var(--txt3)"}}>{sess.lineas.length} pedidos · {totalUnits} unidades · {doneComps}/{totalComps} items</div>
+                <div style={{fontSize:14,fontWeight:700}}>{sess.titulo || `Picking ${sess.fecha}`}</div>
+                <div style={{fontSize:12,color:"var(--txt3)"}}>{sess.lineas.length} SKUs · {totalUnits} unidades · {doneComps}/{totalComps} items</div>
               </div>
               <div style={{padding:"4px 10px",borderRadius:6,fontSize:10,fontWeight:700,
                 background: pct === 100 ? "var(--greenBg)" : pct > 0 ? "var(--amberBg)" : "var(--redBg)",
                 color: pct === 100 ? "var(--green)" : pct > 0 ? "var(--amber)" : "var(--red)"}}>
-                {sess.estado === "COMPLETADA" ? "✅ COMPLETADA" : pct > 0 ? `${pct}%` : "PENDIENTE"}
+                {sess.estado === "COMPLETADA" ? "COMPLETADA" : pct > 0 ? `${pct}%` : "PENDIENTE"}
               </div>
             </div>
             <div style={{marginTop:8,background:"var(--bg3)",borderRadius:4,height:4,overflow:"hidden"}}>
