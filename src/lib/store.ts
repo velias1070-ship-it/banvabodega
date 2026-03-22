@@ -1774,6 +1774,16 @@ export async function syncFlexPickingSession(): Promise<{ created: boolean; upda
   const newLineas = lineas.filter(l => !existingSkus.has(l.skuVenta));
 
   if (newLineas.length > 0) {
+    // Re-number new lineas to avoid ID collisions with existing ones
+    const existingIds = new Set(existingSession.lineas.map(l => l.id));
+    let nextNum = existingSession.lineas.length + 1;
+    for (const nl of newLineas) {
+      let newId = `P${String(nextNum).padStart(3, "0")}`;
+      while (existingIds.has(newId)) { nextNum++; newId = `P${String(nextNum).padStart(3, "0")}`; }
+      nl.id = newId;
+      existingIds.add(newId);
+      nextNum++;
+    }
     const merged = [...existingSession.lineas, ...newLineas];
     await db.updatePickingSession(existingSession.id!, { lineas: merged });
     return { created: false, updated: true, total: merged.length };
@@ -2080,15 +2090,13 @@ export async function pickearComponente(
 
   console.log(`[Picking] Fresh session lineas:`, freshSession.lineas.map(l => `${l.id}:${l.skuVenta}:${l.estado}`));
 
-  // Find linea by ID first, then fallback to skuVenta match
-  let linea = freshSession.lineas.find(l => l.id === lineaId);
-  if (!linea) {
-    const passedLinea = _session.lineas.find(l => l.id === lineaId);
-    if (passedLinea) {
-      linea = freshSession.lineas.find(l => l.skuVenta === passedLinea.skuVenta);
-      console.log(`[Picking] lineaId ${lineaId} not found, matched by skuVenta ${passedLinea.skuVenta}: ${!!linea}`);
-    }
-  }
+  // Find linea: match by ID + skuVenta to handle duplicate IDs
+  const passedLinea = _session.lineas.find(l => l.id === lineaId);
+  const targetSku = passedLinea?.skuVenta;
+  let linea = freshSession.lineas.find(l => l.id === lineaId && l.skuVenta === targetSku)
+    || freshSession.lineas.find(l => l.skuVenta === targetSku && l.estado !== "PICKEADO")
+    || freshSession.lineas.find(l => l.id === lineaId);
+  console.log(`[Picking] Linea lookup: targetSku=${targetSku}, found=${!!linea}, foundSku=${linea?.skuVenta}, foundEstado=${linea?.estado}`);
   if (!linea) {
     console.error(`[Picking] Could not find linea ${lineaId} — using FALLBACK`);
     return pickearComponenteFallback(sessionId, lineaId, compIdx, operario, _session);
