@@ -50,12 +50,18 @@ export default function PickingPage() {
     return () => clearInterval(iv);
   }, [loading]);
 
-  // Polling: refresh flex session every 30s
+  // Polling: reload flex session every 30s (without re-syncing from shipments)
   useEffect(() => {
     if (!mounted || loading || screen !== "flex") return;
-    const iv = setInterval(loadFlexSession, 30_000);
+    const iv = setInterval(async () => {
+      const all = await loadSessions();
+      const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
+      const flex = all.find(s => s.tipo === "flex" && s.fecha === today && s.estado !== "COMPLETADA")
+        || all.find(s => s.tipo === "flex" && s.estado !== "COMPLETADA");
+      setFlexSession(flex || null);
+    }, 30_000);
     return () => clearInterval(iv);
-  }, [mounted, loading, screen, loadFlexSession]);
+  }, [mounted, loading, screen, loadSessions]);
 
   const saveOperario = (name: string) => {
     setOperario(name);
