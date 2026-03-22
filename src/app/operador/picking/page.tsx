@@ -37,8 +37,7 @@ export default function PickingPage() {
     await syncFlexPickingSession().catch(() => {});
     const all = await loadSessions();
     const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
-    const flex = all.find(s => s.tipo === "flex" && s.fecha === today && s.estado !== "COMPLETADA")
-      || all.find(s => s.tipo === "flex" && s.estado !== "COMPLETADA");
+    const flex = all.find(s => s.tipo === "flex" && s.fecha === today && s.estado !== "COMPLETADA");
     setFlexSession(flex || null);
   }, [loadSessions]);
 
@@ -109,8 +108,7 @@ export default function PickingPage() {
     await syncFlexPickingSession().catch(() => {});
     const all = await loadSessions();
     const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
-    const flex = all.find(s => s.tipo === "flex" && s.fecha === today && s.estado !== "COMPLETADA")
-      || all.find(s => s.tipo === "flex" && s.estado !== "COMPLETADA");
+    const flex = all.find(s => s.tipo === "flex" && s.fecha === today && s.estado !== "COMPLETADA");
     setFlexSession(flex || null);
   };
 
