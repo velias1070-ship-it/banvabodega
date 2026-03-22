@@ -1761,7 +1761,22 @@ export async function syncFlexPickingSession(): Promise<{ created: boolean; upda
   const existingSession = todaySessions.find(s => s.tipo === "flex" && s.estado !== "COMPLETADA");
 
   if (!existingSession) {
-    // Create new session
+    // Check if there's a completed session — only create new if there are truly new SKUs
+    const completedSession = todaySessions.find(s => s.tipo === "flex" && s.estado === "COMPLETADA");
+    if (completedSession) {
+      const completedSkus = new Set(completedSession.lineas.map(l => l.skuVenta));
+      const trulyNewLineas = lineas.filter(l => !completedSkus.has(l.skuVenta));
+      if (trulyNewLineas.length === 0) {
+        return { created: false, updated: false, total: 0 };
+      }
+      // Only create with truly new items
+      await db.createPickingSession({
+        fecha: today, estado: "ABIERTA", lineas: trulyNewLineas,
+        tipo: "flex", titulo: `Flex ${today}`,
+      });
+      return { created: true, updated: false, total: trulyNewLineas.length };
+    }
+    // No session at all — create fresh
     await db.createPickingSession({
       fecha: today, estado: "ABIERTA", lineas,
       tipo: "flex", titulo: `Flex ${today}`,
