@@ -2072,15 +2072,17 @@ export async function pickearComponente(
   // Read fresh session from DB to avoid stale state overwrites
   const sessions = await db.getActivePickingSessions();
   const freshSession = sessions.find(s => s.id === sessionId);
+  console.log(`[Picking] Fresh session found: ${!!freshSession}, sessions count: ${sessions.length}, looking for: ${sessionId}`);
   if (!freshSession) {
-    console.warn("[Picking] Could not read fresh session, using passed reference");
+    console.warn("[Picking] Could not read fresh session, using FALLBACK");
     return pickearComponenteFallback(sessionId, lineaId, compIdx, operario, _session);
   }
+
+  console.log(`[Picking] Fresh session lineas:`, freshSession.lineas.map(l => `${l.id}:${l.skuVenta}:${l.estado}`));
 
   // Find linea by ID first, then fallback to skuVenta match
   let linea = freshSession.lineas.find(l => l.id === lineaId);
   if (!linea) {
-    // IDs may have changed after sync — find by skuVenta from the passed session
     const passedLinea = _session.lineas.find(l => l.id === lineaId);
     if (passedLinea) {
       linea = freshSession.lineas.find(l => l.skuVenta === passedLinea.skuVenta);
@@ -2088,11 +2090,15 @@ export async function pickearComponente(
     }
   }
   if (!linea) {
-    console.error(`[Picking] Could not find linea ${lineaId} in fresh session`);
+    console.error(`[Picking] Could not find linea ${lineaId} — using FALLBACK`);
     return pickearComponenteFallback(sessionId, lineaId, compIdx, operario, _session);
   }
   const comp = linea.componentes[compIdx];
-  if (!comp || comp.estado === "PICKEADO") return false;
+  console.log(`[Picking] Found comp:`, { compExists: !!comp, estado: comp?.estado, compIdx });
+  if (!comp || comp.estado === "PICKEADO") {
+    console.log(`[Picking] Comp skip — ${!comp ? 'not found' : 'already PICKEADO'}`);
+    return false;
+  }
 
   // Decrement stock from the suggested position
   const pos = comp.posicion;
