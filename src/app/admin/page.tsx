@@ -63,7 +63,7 @@ function LoginGate({ onLogin }: { onLogin: (pin: string) => boolean }) {
 }
 
 export default function AdminPage() {
-  const [tab, setTab] = useState<"dash"|"rec"|"picking"|"pedidos"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"intel"|"compras"|"eventos"|"ventasml"|"agentes"|"stockml"|"config">("dash");
+  const [tab, setTab] = useState<"dash"|"rec"|"flex"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"intel"|"compras"|"eventos"|"ventasml"|"agentes"|"stockml"|"config">("dash");
   const SIDEBAR_GROUPS = [
     {section:"OPERACIONES",icon:"⚡",items:[["rec","Recepciones","📦"],["flex","Ultima Milla","🚚"],["ops","Operaciones","⚡"],["reposicion","Reposición","🔄"]] as const},
     {section:"INVENTARIO",icon:"📦",items:[["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["stockml","Stock ML","📡"]] as const},
@@ -166,7 +166,7 @@ export default function AdminPage() {
         <main className="admin-main">
           {/* Mobile tabs fallback */}
           <div className="admin-mobile-tabs">
-            {([["dash","Dashboard"],["rec","Recepción"],["picking","Picking"],["pedidos","Pedidos ML"],["ops","Ops"],["inv","Inventario"],["mov","Movim."],["prod","Productos"],["reposicion","Reposición"],["intel","Inteligencia"],["compras","Compras"],["eventos","Eventos"],["ventasml","Ventas ML"],["agentes","Agentes IA"],["stockml","Stock ML"],["config","Config"]] as const).map(([key,label])=>(
+            {([["dash","Dashboard"],["rec","Recepción"],["flex","Ultima Milla"],["ops","Ops"],["inv","Inventario"],["mov","Movim."],["prod","Productos"],["reposicion","Reposición"],["intel","Inteligencia"],["compras","Compras"],["eventos","Eventos"],["ventasml","Ventas ML"],["agentes","Agentes IA"],["stockml","Stock ML"],["config","Config"]] as const).map(([key,label])=>(
               <button key={key} className={`tab ${tab===key?"active-cyan":""}`} onClick={()=>setTab(key as any)}>{label}</button>
             ))}
           </div>
