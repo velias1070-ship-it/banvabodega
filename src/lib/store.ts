@@ -2067,9 +2067,18 @@ export function buildPickingLineasFull(
 // Mark component as picked + decrement stock
 export async function pickearComponente(
   sessionId: string, lineaId: string, compIdx: number, operario: string,
-  session: db.DBPickingSession
+  _session: db.DBPickingSession
 ): Promise<boolean> {
-  const linea = session.lineas.find(l => l.id === lineaId);
+  // Read fresh session from DB to avoid stale state overwrites
+  const sessions = await db.getActivePickingSessions();
+  const freshSession = sessions.find(s => s.id === sessionId);
+  if (!freshSession) {
+    // Fallback to passed session if DB read fails
+    console.warn("[Picking] Could not read fresh session, using passed reference");
+    return pickearComponenteFallback(sessionId, lineaId, compIdx, operario, _session);
+  }
+
+  const linea = freshSession.lineas.find(l => l.id === lineaId);
   if (!linea) return false;
   const comp = linea.componentes[compIdx];
   if (!comp || comp.estado === "PICKEADO") return false;
@@ -2095,10 +2104,10 @@ export async function pickearComponente(
   }
 
   // Check if all lines are picked
-  const allDone = session.lineas.every(l => l.estado === "PICKEADO");
+  const allDone = freshSession.lineas.every(l => l.estado === "PICKEADO");
 
   await db.updatePickingSession(sessionId, {
-    lineas: session.lineas,
+    lineas: freshSession.lineas,
     estado: allDone ? "COMPLETADA" : "EN_PROCESO",
     ...(allDone ? { completed_at: new Date().toISOString() } : {}),
   });
@@ -2108,6 +2117,36 @@ export async function pickearComponente(
     import("./agents-triggers").then(m => m.dispararTrigger("picking_completado", { session_id: sessionId, tipo: "flex" })).catch(() => {});
   }
 
+  return true;
+}
+
+// Fallback for when DB read fails
+async function pickearComponenteFallback(
+  sessionId: string, lineaId: string, compIdx: number, operario: string,
+  session: db.DBPickingSession
+): Promise<boolean> {
+  const linea = session.lineas.find(l => l.id === lineaId);
+  if (!linea) return false;
+  const comp = linea.componentes[compIdx];
+  if (!comp || comp.estado === "PICKEADO") return false;
+  const pos = comp.posicion;
+  if (pos && pos !== "?") {
+    recordMovement({
+      ts: new Date().toISOString(), type: "out", reason: "venta_flex" as OutReason,
+      sku: comp.skuOrigen, pos, qty: comp.unidades,
+      who: operario, note: `Picking Flex: ${linea.skuVenta} ×${linea.qtyPedida}`,
+    });
+  }
+  comp.estado = "PICKEADO";
+  comp.pickedAt = new Date().toISOString();
+  comp.operario = operario;
+  if (linea.componentes.every(c => c.estado === "PICKEADO")) linea.estado = "PICKEADO";
+  const allDone = session.lineas.every(l => l.estado === "PICKEADO");
+  await db.updatePickingSession(sessionId, {
+    lineas: session.lineas,
+    estado: allDone ? "COMPLETADA" : "EN_PROCESO",
+    ...(allDone ? { completed_at: new Date().toISOString() } : {}),
+  });
   return true;
 }
 

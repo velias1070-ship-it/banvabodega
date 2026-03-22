@@ -916,7 +916,10 @@ function PickFlow({session,linea,compIdx,operario,onDone}:{
   const targetPos=comp.posicion;
   const posItems=targetPos?posContents(targetPos):[];
 
+  const confirmingRef=useRef(false);
   const doConfirm=useCallback(async()=>{
+    if(confirmingRef.current)return; // prevent double execution
+    confirmingRef.current=true;
     setSaving(true);
     await pickearComponente(session.id!,linea.id,compIdx,operario,session);
     setSaving(false);setPhase("done");
@@ -925,6 +928,7 @@ function PickFlow({session,linea,compIdx,operario,onDone}:{
   },[session,linea,compIdx,operario,onDone]);
 
   const handleScan=useCallback((code:string)=>{
+    if(confirmingRef.current)return; // ignore scans while confirming
     setScanCode(code);
     if(verificarScanPicking(code,comp,linea.skuVenta)){setScanResult("ok");doConfirm();}
     else{setScanResult("error");if(navigator.vibrate)navigator.vibrate([200,100,200]);}
