@@ -2077,7 +2077,7 @@ export function buildPickingLineasFull(
 // Mark component as picked + decrement stock
 export async function pickearComponente(
   sessionId: string, lineaId: string, compIdx: number, operario: string,
-  _session: db.DBPickingSession
+  _session: db.DBPickingSession, skuVenta?: string
 ): Promise<boolean> {
   // Read fresh session from DB to avoid stale state overwrites
   const sessions = await db.getActivePickingSessions();
@@ -2090,11 +2090,10 @@ export async function pickearComponente(
 
   console.log(`[Picking] Fresh session lineas:`, freshSession.lineas.map(l => `${l.id}:${l.skuVenta}:${l.estado}`));
 
-  // Find linea: match by ID + skuVenta to handle duplicate IDs
-  const passedLinea = _session.lineas.find(l => l.id === lineaId);
-  const targetSku = passedLinea?.skuVenta;
-  let linea = freshSession.lineas.find(l => l.id === lineaId && l.skuVenta === targetSku)
-    || freshSession.lineas.find(l => l.skuVenta === targetSku && l.estado !== "PICKEADO")
+  // Find linea: use explicit skuVenta if provided (handles duplicate IDs)
+  const targetSku = skuVenta || _session.lineas.find(l => l.id === lineaId)?.skuVenta;
+  let linea = freshSession.lineas.find(l => l.skuVenta === targetSku && l.estado !== "PICKEADO")
+    || freshSession.lineas.find(l => l.id === lineaId && l.skuVenta === targetSku)
     || freshSession.lineas.find(l => l.id === lineaId);
   console.log(`[Picking] Linea lookup: targetSku=${targetSku}, found=${!!linea}, foundSku=${linea?.skuVenta}, foundEstado=${linea?.estado}`);
   if (!linea) {

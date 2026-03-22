@@ -920,10 +920,10 @@ function PickFlow({session,linea,compIdx,operario,onDone}:{
   const doConfirm=useCallback(async()=>{
     if(confirmingRef.current){console.log("[PICK] doConfirm blocked — already confirming");return;}
     confirmingRef.current=true;
-    console.log("[PICK] doConfirm START",{sessionId:session.id,lineaId:linea.id,compIdx,sku:comp.skuOrigen});
+    console.log("[PICK] doConfirm START",{sessionId:session.id,lineaId:linea.id,compIdx,sku:comp.skuOrigen,skuVenta:linea.skuVenta});
     setSaving(true);
     try{
-      const result=await pickearComponente(session.id!,linea.id,compIdx,operario,session);
+      const result=await pickearComponente(session.id!,linea.id,compIdx,operario,session,linea.skuVenta);
       console.log("[PICK] pickearComponente result:",result);
     }catch(e){console.error("[PICK] pickearComponente ERROR:",e);}
     setSaving(false);setPhase("done");
@@ -1091,7 +1091,7 @@ function PickFlow({session,linea,compIdx,operario,onDone}:{
           </div>
         )}
 
-        <button onClick={async()=>{setSaving(true);await pickearComponente(session.id!,linea.id,compIdx,operario,session);setSaving(false);setPhase("done");setTimeout(onDone,800);}} disabled={saving}
+        <button onClick={async()=>{setSaving(true);await pickearComponente(session.id!,linea.id,compIdx,operario,session,linea.skuVenta);setSaving(false);setPhase("done");setTimeout(onDone,800);}} disabled={saving}
           style={{width:"100%",marginTop:16,padding:10,borderRadius:8,background:"transparent",color:"#64748b",fontSize:11,border:"1px dashed #64748b44"}}>
           Confirmar sin escanear (solo si no hay etiqueta)
         </button>
