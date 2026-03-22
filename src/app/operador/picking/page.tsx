@@ -100,7 +100,11 @@ export default function PickingPage() {
   };
 
   const refreshActiveFlex = async () => {
-    await loadFlexSession();
+    const all = await loadSessions();
+    const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
+    const flex = all.find(s => s.tipo === "flex" && s.fecha === today && s.estado !== "COMPLETADA")
+      || all.find(s => s.tipo === "flex" && s.estado !== "COMPLETADA");
+    setFlexSession(flex || null);
   };
 
   const fullSessions = sessions.filter(s => s.tipo === "envio_full" && s.estado !== "COMPLETADA");
@@ -144,7 +148,10 @@ export default function PickingPage() {
         }}/>}
         {screen==="pick"&&activeSes&&activeLinea&&activeCompIdx>=0&&<PickFlow session={activeSes} linea={activeLinea} compIdx={activeCompIdx} operario={operario} onDone={async()=>{
           if (activeSes.tipo === "flex") {
-            await loadFlexSession();
+            // Reload session without re-syncing (to preserve just-picked state)
+            const all = await loadSessions();
+            const flex = all.find(s => s.id === activeSes.id) || all.find(s => s.tipo === "flex" && s.estado !== "COMPLETADA");
+            setFlexSession(flex || null);
             setScreen("flex");
           } else {
             const fresh=await getActivePickings();const u=fresh.find(s=>s.id===activeSes.id);
