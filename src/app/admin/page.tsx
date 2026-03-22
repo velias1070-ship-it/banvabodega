@@ -6786,9 +6786,11 @@ function AdminPedidosFlex({ refresh }: { refresh: () => void }) {
       if (firstConfig?.delivery_ranges) {
         const weekCutoff = firstConfig.delivery_ranges.week?.[0]?.cutoff;
         const satCutoff = firstConfig.delivery_ranges.saturday?.[0]?.cutoff;
-        const updates: Record<string, number> = {};
+        const sunCutoff = firstConfig.delivery_ranges.sunday?.[0]?.cutoff;
+        const updates: Record<string, number | null> = {};
         if (weekCutoff !== undefined) updates.hora_corte_lv = weekCutoff;
         if (satCutoff !== undefined) updates.hora_corte_sab = satCutoff;
+        updates.hora_corte_dom = sunCutoff ?? null;
         if (Object.keys(updates).length > 0) {
           await upsertMLConfig(updates as Partial<DBMLConfig>);
         }

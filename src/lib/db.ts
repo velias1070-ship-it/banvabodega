@@ -1470,6 +1470,7 @@ export interface DBMLConfig {
   webhook_secret: string | null;
   hora_corte_lv: number;
   hora_corte_sab: number;
+  hora_corte_dom: number | null;
   updated_at: string;
 }
 

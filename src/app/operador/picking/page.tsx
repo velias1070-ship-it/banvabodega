@@ -1,6 +1,6 @@
 "use client";
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
-import { initStore, refreshStore, isSupabaseConfigured, getActivePickings, pickearComponente, pickearLineaFull, marcarArmadoFull, verificarScanPicking, activePositions, posContents, getMapConfig, calcularRutaPicking, agruparPorPosicion, getNotasOperativas, despickearComponente, guardarBultosLinea } from "@/lib/store";
+import { initStore, refreshStore, isSupabaseConfigured, getActivePickings, pickearComponente, pickearLineaFull, marcarArmadoFull, verificarScanPicking, activePositions, posContents, getMapConfig, calcularRutaPicking, agruparPorPosicion, getNotasOperativas, despickearComponente, guardarBultosLinea, syncFlexPickingSession } from "@/lib/store";
 import { fetchBultosSession, crearBulto, agregarLineaBulto, eliminarLineasBulto, fetchActiveFlexShipments, fetchMLConfig } from "@/lib/db";
 import type { DBPickingBulto, DBPickingBultoLinea, ShipmentWithItems, DBMLConfig } from "@/lib/db";
 import type { DBPickingSession, PickingLinea, PickingComponente } from "@/lib/store";
@@ -15,9 +15,10 @@ export default function PickingPage() {
   const [activeSes, setActiveSes] = useState<DBPickingSession | null>(null);
   const [activeLinea, setActiveLinea] = useState<PickingLinea | null>(null);
   const [activeCompIdx, setActiveCompIdx] = useState(-1);
-  const [screen, setScreen] = useState<"list" | "session" | "pick" | "pickFull">("list");
+  const [screen, setScreen] = useState<"flex" | "list" | "session" | "pick" | "pickFull">("flex");
   const [editBultosMode, setEditBultosMode] = useState(false);
   const [operario, setOperario] = useState("");
+  const [flexSession, setFlexSession] = useState<DBPickingSession | null>(null);
 
   useEffect(() => {
     setMounted(true);
@@ -28,15 +29,33 @@ export default function PickingPage() {
   const loadSessions = useCallback(async () => {
     const data = await getActivePickings();
     setSessions(data);
+    return data;
   }, []);
 
-  useEffect(() => { if (!loading) loadSessions(); }, [loading, loadSessions]);
+  // Auto-create/update flex session and load it
+  const loadFlexSession = useCallback(async () => {
+    await syncFlexPickingSession().catch(() => {});
+    const all = await loadSessions();
+    const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
+    const flex = all.find(s => s.tipo === "flex" && s.fecha === today && s.estado !== "COMPLETADA")
+      || all.find(s => s.tipo === "flex" && s.estado !== "COMPLETADA");
+    setFlexSession(flex || null);
+  }, [loadSessions]);
+
+  useEffect(() => { if (!loading) loadFlexSession(); }, [loading, loadFlexSession]);
 
   useEffect(() => {
     if (!isSupabaseConfigured() || loading) return;
     const iv = setInterval(() => refreshStore(), 15_000);
     return () => clearInterval(iv);
   }, [loading]);
+
+  // Polling: refresh flex session every 30s
+  useEffect(() => {
+    if (!mounted || loading || screen !== "flex") return;
+    const iv = setInterval(loadFlexSession, 30_000);
+    return () => clearInterval(iv);
+  }, [mounted, loading, screen, loadFlexSession]);
 
   const saveOperario = (name: string) => {
     setOperario(name);
@@ -60,7 +79,7 @@ export default function PickingPage() {
       </div>
       <div style={{textAlign:"center",padding:40}}>
         <div style={{fontSize:32,marginBottom:12}}>👷</div>
-        <div style={{fontSize:18,fontWeight:700,marginBottom:16}}>¿Quién eres?</div>
+        <div style={{fontSize:18,fontWeight:700,marginBottom:16}}>Quien eres?</div>
         <input className="form-input" placeholder="Tu nombre" autoFocus
           onKeyDown={e=>{if(e.key==="Enter"&&(e.target as HTMLInputElement).value.trim())saveOperario((e.target as HTMLInputElement).value.trim());}}
           style={{fontSize:18,textAlign:"center",padding:14,width:"100%",maxWidth:300,margin:"0 auto"}}/>
@@ -70,36 +89,69 @@ export default function PickingPage() {
   );
 
   const goBack = () => {
-    if (screen==="pick" || screen==="pickFull"){setScreen("session");setActiveLinea(null);setActiveCompIdx(-1);setEditBultosMode(false);}
+    if (screen==="pick" || screen==="pickFull"){
+      setScreen(activeSes?.tipo === "envio_full" ? "session" : "flex");
+      setActiveLinea(null);setActiveCompIdx(-1);setEditBultosMode(false);
+      if (activeSes?.tipo !== "envio_full") loadFlexSession();
+    }
     else if(screen==="session"){setScreen("list");setActiveSes(null);loadSessions();}
+    else if(screen==="flex"){/* stay */}
+    else if(screen==="list"){setScreen("flex");}
   };
 
-  const isEnvioFull = activeSes?.tipo === "envio_full";
-  const titulo = isEnvioFull ? (activeSes?.titulo || "Envío a Full") : "Picking Flex";
+  const refreshActiveFlex = async () => {
+    await loadFlexSession();
+  };
+
+  const fullSessions = sessions.filter(s => s.tipo === "envio_full" && s.estado !== "COMPLETADA");
 
   return (
     <div className="app">
       <div className="topbar">
-        {screen==="list"?(<Link href="/operador"><button className="back-btn">&#8592;</button></Link>):(
+        {screen==="flex"?(<Link href="/operador"><button className="back-btn">&#8592;</button></Link>):(
           <button className="back-btn" onClick={goBack}>&#8592;</button>
         )}
-        <h1>{screen==="list" ? "Picking" : titulo}</h1>
+        <h1>{screen==="flex"?"Picking Flex":screen==="list"?"Otros pickings":activeSes?.titulo||"Picking"}</h1>
         <div style={{fontSize:10,color:"#06b6d4",fontWeight:600}}>{operario}</div>
       </div>
       <div style={{padding:12}}>
-        {screen==="list"&&<SessionList sessions={sessions} onSelect={s=>{setActiveSes(s);setScreen("session");}} onRefresh={loadSessions}/>}
-        {screen==="session"&&activeSes&&!isEnvioFull&&<SessionDetail session={activeSes} operario={operario} onPickComp={(l,i)=>{setActiveLinea(l);setActiveCompIdx(i);setScreen("pick");}} onRefresh={async()=>{
-          const fresh=await getActivePickings();const u=fresh.find(s=>s.id===activeSes.id);
-          if(u)setActiveSes(u);setSessions(fresh);
-        }}/>}
-        {screen==="session"&&activeSes&&isEnvioFull&&<SessionDetailFull session={activeSes} onPickLine={(linea)=>{setEditBultosMode(false);setActiveLinea(linea);setScreen("pickFull");}} onEditBultos={(linea)=>{setEditBultosMode(true);setActiveLinea(linea);setScreen("pickFull");}} operario={operario} onRefresh={async()=>{
+        {/* FLEX: direct view, no session selection */}
+        {screen==="flex"&&(
+          <>
+            {flexSession ? (
+              <SessionDetail session={flexSession} operario={operario} onPickComp={(l,i)=>{setActiveSes(flexSession);setActiveLinea(l);setActiveCompIdx(i);setScreen("pick");}} onRefresh={refreshActiveFlex}/>
+            ) : (
+              <div style={{textAlign:"center",padding:40,color:"#94a3b8"}}>
+                <div style={{fontSize:40,marginBottom:12}}>📋</div>
+                <div style={{fontSize:16,fontWeight:700}}>Sin pedidos Flex por ahora</div>
+                <div style={{fontSize:12,marginTop:4}}>Los pedidos se cargan automaticamente desde MercadoLibre</div>
+                <button onClick={loadFlexSession} style={{marginTop:16,padding:"8px 16px",borderRadius:8,background:"var(--bg3)",color:"#06b6d4",fontSize:12,fontWeight:600,border:"1px solid var(--bg4)"}}>Refrescar</button>
+              </div>
+            )}
+            {fullSessions.length > 0 && (
+              <button onClick={()=>setScreen("list")}
+                style={{width:"100%",marginTop:12,padding:12,borderRadius:8,background:"var(--bg2)",color:"var(--txt2)",fontSize:12,fontWeight:600,border:"1px solid var(--bg3)"}}>
+                Ver otros pickings ({fullSessions.length})
+              </button>
+            )}
+          </>
+        )}
+        {/* LIST: only for envio_full sessions */}
+        {screen==="list"&&<SessionList sessions={fullSessions} onSelect={s=>{setActiveSes(s);setScreen("session");}} onRefresh={loadSessions}/>}
+        {screen==="session"&&activeSes&&activeSes.tipo==="envio_full"&&<SessionDetailFull session={activeSes} onPickLine={(linea)=>{setEditBultosMode(false);setActiveLinea(linea);setScreen("pickFull");}} onEditBultos={(linea)=>{setEditBultosMode(true);setActiveLinea(linea);setScreen("pickFull");}} operario={operario} onRefresh={async()=>{
           const fresh=await getActivePickings();const u=fresh.find(s=>s.id===activeSes.id);
           if(u)setActiveSes(u);setSessions(fresh);
         }}/>}
         {screen==="pick"&&activeSes&&activeLinea&&activeCompIdx>=0&&<PickFlow session={activeSes} linea={activeLinea} compIdx={activeCompIdx} operario={operario} onDone={async()=>{
-          const fresh=await getActivePickings();const u=fresh.find(s=>s.id===activeSes.id);
-          if(u){setActiveSes(u);setSessions(fresh);}
-          setScreen("session");setActiveLinea(null);setActiveCompIdx(-1);
+          if (activeSes.tipo === "flex") {
+            await loadFlexSession();
+            setScreen("flex");
+          } else {
+            const fresh=await getActivePickings();const u=fresh.find(s=>s.id===activeSes.id);
+            if(u){setActiveSes(u);setSessions(fresh);}
+            setScreen("session");
+          }
+          setActiveLinea(null);setActiveCompIdx(-1);
         }}/>}
         {screen==="pickFull"&&activeSes&&activeLinea&&<PickFlowFull session={activeSes} linea={activeLinea} operario={operario} editBultos={editBultosMode} onDone={async()=>{
           const fresh=await getActivePickings();const u=fresh.find(s=>s.id===activeSes.id);
@@ -275,8 +327,12 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
   const chileDay = now.toLocaleDateString("en-US", { timeZone: "America/Santiago", weekday: "short" });
   const cutoffLV = mlCfg?.hora_corte_lv || 14;
   const cutoffSab = mlCfg?.hora_corte_sab || 13;
-  const cutoffHora = chileDay === "Sun" ? null : chileDay === "Sat" ? cutoffSab : cutoffLV;
-  const cutoffLabel = chileDay === "Sun" ? "Domingo — sin despacho" : chileDay === "Sat" ? `Sabado — hasta las ${cutoffSab}:00` : `Lunes a Viernes — hasta las ${cutoffLV}:00`;
+  const cutoffDom = mlCfg?.hora_corte_dom ?? null;
+  const cutoffHora = chileDay === "Sun" ? cutoffDom : chileDay === "Sat" ? cutoffSab : cutoffLV;
+  const cutoffLabel = chileDay === "Sun"
+    ? (cutoffDom ? `Domingo — hasta las ${cutoffDom}:00` : "Domingo — sin despacho")
+    : chileDay === "Sat" ? `Sabado — hasta las ${cutoffSab}:00`
+    : `Lunes a Viernes — hasta las ${cutoffLV}:00`;
   const pastCutoff = cutoffHora !== null && chileHour >= cutoffHora;
 
   return(
