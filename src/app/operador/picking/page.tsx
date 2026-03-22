@@ -918,30 +918,39 @@ function PickFlow({session,linea,compIdx,operario,onDone}:{
 
   const confirmingRef=useRef(false);
   const doConfirm=useCallback(async()=>{
-    if(confirmingRef.current)return;
+    if(confirmingRef.current){console.log("[PICK] doConfirm blocked — already confirming");return;}
     confirmingRef.current=true;
+    console.log("[PICK] doConfirm START",{sessionId:session.id,lineaId:linea.id,compIdx,sku:comp.skuOrigen});
     setSaving(true);
-    await pickearComponente(session.id!,linea.id,compIdx,operario,session);
+    try{
+      const result=await pickearComponente(session.id!,linea.id,compIdx,operario,session);
+      console.log("[PICK] pickearComponente result:",result);
+    }catch(e){console.error("[PICK] pickearComponente ERROR:",e);}
     setSaving(false);setPhase("done");
     if(navigator.vibrate)navigator.vibrate([100,50,100]);
+    console.log("[PICK] doConfirm DONE — calling onDone in 1.2s");
     setTimeout(onDone,1200);
   },[session,linea,compIdx,operario,onDone]);
 
   const handleScan=useCallback((code:string)=>{
+    console.log("[PICK] handleScan called",{code,confirming:confirmingRef.current});
     if(confirmingRef.current)return;
     setScanCode(code);
-    if(verificarScanPicking(code,comp,linea.skuVenta)){
+    const valid=verificarScanPicking(code,comp,linea.skuVenta);
+    console.log("[PICK] scan valid:",valid);
+    if(valid){
       setScanResult("ok");
-      // Don't call doConfirm here — let the useEffect below handle it
     } else {
       setScanResult("error");
       if(navigator.vibrate)navigator.vibrate([200,100,200]);
     }
   },[comp,linea.skuVenta]);
 
-  // Auto-confirm when scan is successful (runs after render, not during scanner overlay)
+  // Auto-confirm when scan is successful
   useEffect(()=>{
+    console.log("[PICK] useEffect scanResult:",scanResult,"confirming:",confirmingRef.current);
     if(scanResult==="ok"&&!confirmingRef.current){
+      console.log("[PICK] useEffect triggering doConfirm");
       doConfirm();
     }
   },[scanResult]);
