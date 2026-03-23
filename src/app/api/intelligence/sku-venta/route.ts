@@ -184,6 +184,26 @@ export async function GET(request: Request) {
       });
     }
 
+    // ── Auto-detect alternativas (same logic as intelligence.ts) ──
+    const compsPorSV = new Map<string, { soUp: string; unidades: number }[]>();
+    for (const c of composicion) {
+      if (c.tipo_relacion === "alternativo") continue;
+      const svUp = c.sku_venta.toUpperCase();
+      if (!compsPorSV.has(svUp)) compsPorSV.set(svUp, []);
+      compsPorSV.get(svUp)!.push({ soUp: c.sku_origen.toUpperCase(), unidades: c.unidades });
+    }
+    // Build set of alternative sku_origen that should be skipped (not the principal)
+    const alternativoSkipSet = new Set<string>();
+    for (const [, comps] of Array.from(compsPorSV.entries())) {
+      if (comps.length < 2) continue;
+      const principal = comps[0]; // first one is principal
+      for (const c of comps.slice(1)) {
+        if (c.unidades === principal.unidades) {
+          alternativoSkipSet.add(c.soUp);
+        }
+      }
+    }
+
     // ── Contar formatos por origen (para flag compartido) ──
     const ventasCountPorOrigen = new Map<string, number>();
     ventasPorOrigen.forEach((ventas, soUp) => {
@@ -208,6 +228,9 @@ export async function GET(request: Request) {
     const result: Record<string, unknown>[] = [];
 
     ventasPorOrigen.forEach((ventas, skuOrigen) => {
+      // Skip alternative sku_origen — already covered by the principal
+      if (alternativoSkipSet.has(skuOrigen)) return;
+
       const intel = intelMap.get(skuOrigen);
 
       if (debugSku && isDebug(skuOrigen)) {
