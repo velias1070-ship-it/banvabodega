@@ -8686,6 +8686,7 @@ interface StockCompareRow {
   stock_full_ml: number;
   ultimo_sync: string | null;
   cache_updated_at: string | null;
+  status_ml: string | null;
 }
 
 function AdminStockML() {
@@ -8709,6 +8710,8 @@ function AdminStockML() {
   const [syncResult, setSyncResult] = useState<Record<string, string>>({});
   const [syncAllLoading, setSyncAllLoading] = useState(false);
   const [diagnostics, setDiagnostics] = useState<string[]>([]);
+  const [statusFilter, setStatusFilter] = useState<"todos"|"active"|"paused"|"closed"|"sin_status">("todos");
+  const [syncingStatus, setSyncingStatus] = useState(false);
   const s = getStore();
 
   // Carga rápida: WMS + cache ML desde DB (instantáneo, sin llamar a ML API)
@@ -8811,7 +8814,26 @@ function AdminStockML() {
     return () => clearInterval(iv);
   }, [loadWms]);
 
+  const syncStatus = async () => {
+    setSyncingStatus(true);
+    try {
+      const resp = await fetch("/api/ml/stock-compare?phase=sync-status");
+      const data = await resp.json();
+      if (data.ok) {
+        alert(`Status sincronizado: ${JSON.stringify(data.statusCounts)}`);
+        loadWms();
+      } else {
+        alert("Error: " + (data.error || "desconocido"));
+      }
+    } catch (e) { alert("Error: " + String(e)); }
+    setSyncingStatus(false);
+  };
+
   const filtered = rows.filter(r => {
+    if (statusFilter === "active" && r.status_ml !== "active") return false;
+    if (statusFilter === "paused" && r.status_ml !== "paused") return false;
+    if (statusFilter === "closed" && r.status_ml !== "closed") return false;
+    if (statusFilter === "sin_status" && r.status_ml) return false;
     if (!q) return true;
     const ql = q.toLowerCase();
     const prod = s.products[r.sku];
@@ -8979,8 +9001,29 @@ function AdminStockML() {
         }
         return null;
       })()}
-      <input className="form-input" placeholder="Buscar SKU, item ID, nombre..." value={q} onChange={e=>setQ(e.target.value)}
-        style={{maxWidth:400}} />
+      <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:8}}>
+        <input className="form-input" placeholder="Buscar SKU, item ID, nombre..." value={q} onChange={e=>setQ(e.target.value)}
+          style={{maxWidth:400}} />
+        <button onClick={syncStatus} disabled={syncingStatus}
+          style={{padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"var(--cyan)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>
+          {syncingStatus ? "Sincronizando..." : "Sync Status ML"}
+        </button>
+      </div>
+      <div style={{display:"flex",gap:4,marginBottom:8,flexWrap:"wrap"}}>
+        {([["todos","Todos"],["active","Activas"],["paused","Pausadas"],["closed","Cerradas"],["sin_status","Sin status"]] as const).map(([key,label]) => {
+          const count = key === "todos" ? rows.length
+            : key === "sin_status" ? rows.filter(r => !r.status_ml).length
+            : rows.filter(r => r.status_ml === key).length;
+          return (
+            <button key={key} onClick={() => setStatusFilter(key)}
+              style={{padding:"4px 10px",borderRadius:4,fontSize:10,fontWeight:600,
+                background:statusFilter===key?"var(--cyan)":"var(--bg3)",color:statusFilter===key?"#000":"var(--txt3)",
+                border:`1px solid ${statusFilter===key?"var(--cyan)":"var(--bg4)"}`,cursor:"pointer"}}>
+              {label} ({count})
+            </button>
+          );
+        })}
+      </div>
 
       {mlLoading && rows.length > 0 && (
         <div style={{padding:"8px 16px",textAlign:"center",fontSize:12}}>

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
-import { diagnoseToken, getDistributedStock, getDistributedStockDiagnostic, getItemUserProductId, getSellerStockType, updateFlexStock } from "@/lib/ml";
+import { diagnoseToken, getDistributedStock, getDistributedStockDiagnostic, getItemUserProductId, getSellerStockType, updateFlexStock, mlGet, getMLConfig } from "@/lib/ml";
 
 interface CompareRow {
   sku: string;
@@ -11,6 +11,7 @@ interface CompareRow {
   stock_full_ml: number;
   ultimo_sync: string | null;
   cache_updated_at: string | null;
+  status_ml: string | null;
 }
 
 /**
@@ -28,6 +29,42 @@ export async function GET(req: NextRequest) {
   const skusParam = req.nextUrl.searchParams.get("skus");
 
   try {
+    // ── Phase sync-status: fetch item status from ML and update ml_items_map ──
+    if (phase === "sync-status") {
+      const config = await getMLConfig();
+      if (!config?.seller_id) return NextResponse.json({ error: "no_seller_id" }, { status: 500 });
+
+      const statusCounts: Record<string, number> = {};
+      let updated = 0;
+
+      for (const status of ["active", "paused", "closed"] as const) {
+        let offset = 0;
+        while (true) {
+          const result = await mlGet<{ results: string[]; paging: { total: number; limit: number } }>(
+            `/users/${config.seller_id}/items/search?status=${status}&limit=100&offset=${offset}`
+          );
+          if (!result?.results || result.results.length === 0) break;
+
+          const itemIds = result.results;
+          statusCounts[status] = (statusCounts[status] || 0) + itemIds.length;
+
+          // Update ml_items_map in batches
+          for (let i = 0; i < itemIds.length; i += 50) {
+            const batch = itemIds.slice(i, i + 50);
+            await sb.from("ml_items_map")
+              .update({ status_ml: status, activo: status === "active" })
+              .in("item_id", batch);
+            updated += batch.length;
+          }
+
+          if (result.results.length < 100) break;
+          offset += 100;
+        }
+      }
+
+      return NextResponse.json({ ok: true, statusCounts, updated });
+    }
+
     // ── Phase ML batch: fetch live ML stock for specific SKUs + save to cache ──
     if (phase === "ml" && skusParam) {
       const targetSkus = skusParam.split(",").filter(Boolean);
@@ -122,6 +159,7 @@ export async function GET(req: NextRequest) {
         stock_full_ml: map.stock_full_cache ?? 0,
         ultimo_sync: map.ultimo_sync || null,
         cache_updated_at: map.cache_updated_at || null,
+        status_ml: map.status_ml || null,
       }));
       return NextResponse.json({ rows, phase: "wms" });
     }
@@ -208,6 +246,7 @@ export async function GET(req: NextRequest) {
         stock_full_ml: ml?.fullQty || 0,
         ultimo_sync: map.ultimo_sync || null,
         cache_updated_at: map.cache_updated_at || null,
+        status_ml: map.status_ml || null,
       };
     });
 
