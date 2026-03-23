@@ -610,9 +610,40 @@ export default function AdminInteligencia() {
 
       // Tipo y componentes
       const compsAll = getComponentesPorSkuVenta(r.sku_venta);
-      // Solo componentes principales (no alternativos) para determinar tipo
-      const comps = compsAll.filter(c => c.tipoRelacion !== "alternativo");
-      const alternativos = compsAll.filter(c => c.tipoRelacion === "alternativo");
+      const compsExpl = compsAll.filter(c => c.tipoRelacion !== "alternativo");
+      const altExpl = compsAll.filter(c => c.tipoRelacion === "alternativo");
+
+      // Auto-detect alternativas: si hay 2+ componentes con mismas unidades,
+      // elegir el que tiene stock en bodega
+      let comps = compsExpl;
+      let alternativos = altExpl;
+      if (comps.length > 1) {
+        const byUnidades = new Map<number, typeof comps>();
+        for (const c of comps) {
+          if (!byUnidades.has(c.unidades)) byUnidades.set(c.unidades, []);
+          byUnidades.get(c.unidades)!.push(c);
+        }
+        const deduped: typeof comps = [];
+        for (const [, group] of Array.from(byUnidades.entries())) {
+          if (group.length > 1) {
+            // Multiple SKU origen with same unidades = alternativas
+            // Pick the one with most bodega stock
+            const sorted = [...group].sort((a, b) => {
+              const sa = skuPositions(a.skuOrigen).reduce((s, p) => s + p.qty, 0);
+              const sb = skuPositions(b.skuOrigen).reduce((s, p) => s + p.qty, 0);
+              return sb - sa;
+            });
+            deduped.push(sorted[0]); // best stock
+            for (const alt of sorted.slice(1)) {
+              alternativos = [...alternativos, alt];
+            }
+          } else {
+            deduped.push(group[0]);
+          }
+        }
+        comps = deduped;
+      }
+
       let tipo: "simple" | "pack" | "combo";
       if (comps.length === 0 || (comps.length === 1 && comps[0].unidades === 1)) tipo = "simple";
       else if (comps.length === 1 && comps[0].unidades > 1) tipo = "pack";
