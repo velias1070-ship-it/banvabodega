@@ -302,19 +302,25 @@ export async function GET(request: Request) {
         const vel30d = fisicas30 / 4.3;
         const vel60d = fisicas60 / 8.6;
 
-        // Split por canal
-        const totalCanal30 = fullFisicas30 + flexFisicas30;
-        const pctFull = totalCanal30 > 0 ? fullFisicas30 / totalCanal30 : 0.5;
-        const pctFlex = 1 - pctFull;
+        // Margen por unidad con costo producto (calcularMargen de reposicion.ts)
+        const margenFull30d = calcularMargen(faFull, "full", costoBruto) ?? 0;
+        const margenFlex30d = calcularMargen(faFlex, "flex", costoBruto) ?? 0;
+
+        // Split por canal: ratio de rentabilidad (misma regla que intelligence.ts)
+        let pctFull: number;
+        let pctFlex: number;
+        if (margenFull30d > 0 && margenFlex30d > 0 && margenFlex30d / margenFull30d > 1.1) {
+          pctFull = 0.70;
+          pctFlex = 0.30;
+        } else {
+          pctFull = 0.80;
+          pctFlex = 0.20;
+        }
         const velFull = velPonderada * pctFull;
         const velFlex = velPonderada * pctFlex;
 
         // Cobertura: stock_full / vel_full × 7
         const cobFull = velFull > 0 ? (stFull / velFull) * 7 : 999;
-
-        // Margen por unidad con costo producto (calcularMargen de reposicion.ts)
-        const margenFull30d = calcularMargen(faFull, "full", costoBruto) ?? 0;
-        const margenFlex30d = calcularMargen(faFlex, "flex", costoBruto) ?? 0;
         const canalMasRentable = margenFull30d >= margenFlex30d ? "Full" : "Flex";
         const precioPromedio = precioCount > 0 ? precioSum / precioCount : 0;
 
