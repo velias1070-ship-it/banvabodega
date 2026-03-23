@@ -684,6 +684,7 @@ export default function AdminInteligencia() {
       // Apply any admin edit
       const editedQty = envioEdits.get(r.sku_venta);
       const mandarFinal = editedQty !== undefined ? editedQty : mandarRedondeado;
+      if (mandarFinal <= 0 && editedQty === undefined) continue; // skip if rounded to 0
 
       // Componentes finales
       const componentesFinal = efectivos.map(c => ({
