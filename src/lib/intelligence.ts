@@ -704,10 +704,10 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       };
     }
 
-    // Distribución por canal
+    // Distribución por canal (inicial por volumen, se ajusta por margen en paso 7b)
     const totalCanal30d = fullQty30d + flexQty30d;
-    const pctFull = totalCanal30d > 0 ? fullQty30d / totalCanal30d : 1.0;
-    const pctFlex = 1 - pctFull;
+    let pctFull = totalCanal30d > 0 ? fullQty30d / totalCanal30d : 1.0;
+    let pctFlex = 1 - pctFull;
 
     const velFull = velPonderada * pctFull;
     const velFlex = velPonderada * pctFlex;
@@ -769,6 +769,29 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     const tendMargenFlex = calcTendencia(margenFlex7d, margenFlex30d);
     const canalMasRentable: "full" | "flex" = margenFlex30d > margenFull30d ? "flex" : "full";
     const precioPromedio = precioCnt > 0 ? Math.round(precioTotal / precioCnt) : 0;
+
+    // ── PASO 7b: Ratio de reposición por margen ──
+    // Si margen_flex / margen_full > 1.1 → 70/30 (más Flex porque es más rentable)
+    // De lo contrario → 80/20 (priorizar Full como canal principal)
+    if (margenFull30d > 0 && margenFlex30d > 0) {
+      const ratioRentabilidad = margenFlex30d / margenFull30d;
+      if (ratioRentabilidad > 1.1) {
+        pctFull = 0.70;
+        pctFlex = 0.30;
+      } else {
+        pctFull = 0.80;
+        pctFlex = 0.20;
+      }
+    } else if (margenFull30d > 0 && margenFlex30d <= 0) {
+      // Flex no es rentable — priorizar Full
+      pctFull = 0.90;
+      pctFlex = 0.10;
+    } else if (margenFlex30d > 0 && margenFull30d <= 0) {
+      // Full no es rentable — priorizar Flex
+      pctFull = 0.30;
+      pctFlex = 0.70;
+    }
+    // Si ambos <= 0 o sin datos, mantener pctFull/pctFlex del volumen de ventas
 
     // ── PASO 8: Target dinámico (preliminar — se ajusta por ABC después del paso 9) ──
     // Si Flex > Full, usar regla de margen; sino placeholder que se reemplaza por ABC
