@@ -1914,6 +1914,9 @@ export default function AdminInteligencia() {
       {/* ═══ PEDIDO A PROVEEDOR ═══ */}
       {vistaPedido && (
         <div>
+          {/* Upload OC desde CSV */}
+          <OCFromCSV rows={rows} onCreated={(msg) => { setOcCreada(msg); }} />
+
           {/* KPIs pedido */}
           <div style={{ display: "flex", gap: 4, marginBottom: 8, flexWrap: "wrap", fontSize: 11 }}>
             <KpiBadge label="SKUs a pedir" value={String(pedidoKpis.skus)} color="var(--amber)" />
@@ -2511,4 +2514,168 @@ function descargarCSV(csvRows: string[], prefix: string) {
   a.download = `${prefix}_${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+// ==================== OC FROM CSV ====================
+function OCFromCSV({ rows, onCreated }: { rows: IntelRow[]; onCreated: (msg: string) => void }) {
+  const [show, setShow] = useState(false);
+  const [proveedor, setProveedor] = useState("");
+  const [csvText, setCsvText] = useState("");
+  const [parsed, setParsed] = useState<{ sku: string; nombre: string; cantidad: number; costoUnit: number; innerPack: number; bultos: number; found: boolean }[]>([]);
+  const [creating, setCreating] = useState(false);
+
+  const proveedores = Array.from(new Set(rows.map(r => r.proveedor).filter(Boolean))).sort() as string[];
+
+  const parseCsv = (text: string) => {
+    const lines = text.trim().split("\n").filter(l => l.trim());
+    const items: typeof parsed = [];
+    for (let i = 0; i < lines.length; i++) {
+      const cols = lines[i].split(/[;\t,]/).map(c => c.trim());
+      // Skip header
+      if (i === 0 && (cols[0]?.toLowerCase().includes("sku") || cols[0]?.toLowerCase().includes("codigo"))) continue;
+      const sku = (cols[0] || "").toUpperCase();
+      if (!sku) continue;
+      const nombre = cols[1] || "";
+      const cantidad = parseInt(cols[2] || "0") || 0;
+      if (cantidad <= 0) continue;
+      // Lookup from intelligence
+      const row = rows.find(r => r.sku_origen === sku);
+      const costoUnit = row ? (row.costo_bruto > 0 ? Math.round(row.costo_bruto / 1.19) : 0) : 0;
+      const ip = row?.inner_pack || 1;
+      items.push({
+        sku, nombre: nombre || row?.nombre || sku,
+        cantidad, costoUnit, innerPack: ip,
+        bultos: ip > 1 ? Math.ceil(cantidad / ip) : cantidad,
+        found: !!row,
+      });
+    }
+    setParsed(items);
+  };
+
+  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target?.result as string;
+      setCsvText(text);
+      parseCsv(text);
+    };
+    reader.readAsText(file);
+  };
+
+  const doCreate = async (estado: "BORRADOR" | "PENDIENTE") => {
+    if (!proveedor || parsed.length === 0 || creating) return;
+    setCreating(true);
+    try {
+      const totalNeto = parsed.reduce((s, l) => s + l.cantidad * l.costoUnit, 0);
+      const totalBruto = Math.round(totalNeto * 1.19);
+      const numero = await nextOCNumero();
+      const ocId = await insertOrdenCompra({ numero, proveedor, estado, total_neto: totalNeto, total_bruto: totalBruto, notas: `Creada desde CSV — ${parsed.length} SKUs` });
+      if (!ocId) { alert("Error al crear OC"); setCreating(false); return; }
+      const ocLineas: Omit<DBOrdenCompraLinea, "id" | "created_at">[] = parsed.map(l => {
+        const row = rows.find(r => r.sku_origen === l.sku);
+        return {
+          orden_id: ocId, sku_origen: l.sku, nombre: l.nombre,
+          cantidad_pedida: l.cantidad, costo_unitario: l.costoUnit,
+          inner_pack: l.innerPack, bultos: l.bultos,
+          abc: row?.abc || null, vel_ponderada: row?.vel_ponderada ?? null,
+          cob_total_al_pedir: row?.cob_total ?? null,
+          stock_full_al_pedir: row?.stock_full ?? null,
+          stock_bodega_al_pedir: row?.stock_bodega ?? null,
+          accion_al_pedir: row?.accion ?? null,
+        };
+      });
+      await insertOrdenCompraLineas(ocLineas);
+      await insertAdminActionLog("crear_oc", "ordenes_compra", ocId, { oc_id: ocId, numero, proveedor, lineas: parsed.length, total_neto: totalNeto, fuente: "csv_upload" });
+      onCreated(`${numero} — ${proveedor} (${estado}, desde CSV)`);
+      setShow(false); setCsvText(""); setParsed([]);
+      try { await fetch("/api/intelligence/recalcular", { method: "POST" }); } catch {}
+    } catch (err) {
+      alert("Error: " + String(err));
+    } finally { setCreating(false); }
+  };
+
+  if (!show) return (
+    <button onClick={() => setShow(true)}
+      style={{ marginBottom: 12, padding: "8px 16px", borderRadius: 8, background: "var(--bg3)", color: "var(--cyan)", fontSize: 12, fontWeight: 600, border: "1px solid var(--bg4)" }}>
+      Crear OC desde CSV/Excel
+    </button>
+  );
+
+  return (
+    <div style={{ marginBottom: 16, padding: 16, borderRadius: 10, background: "var(--bg2)", border: "1px solid var(--bg4)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ fontSize: 14, fontWeight: 700 }}>Crear OC desde CSV</div>
+        <button onClick={() => { setShow(false); setParsed([]); setCsvText(""); }}
+          style={{ padding: "4px 10px", borderRadius: 4, background: "var(--bg3)", color: "var(--txt3)", fontSize: 11, border: "1px solid var(--bg4)" }}>Cerrar</button>
+      </div>
+
+      <div style={{ display: "flex", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
+        <div>
+          <label style={{ fontSize: 11, color: "var(--txt3)", display: "block", marginBottom: 4 }}>Proveedor</label>
+          <select value={proveedor} onChange={e => setProveedor(e.target.value)}
+            style={{ padding: "6px 10px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 12 }}>
+            <option value="">Seleccionar...</option>
+            {proveedores.map(p => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={{ fontSize: 11, color: "var(--txt3)", display: "block", marginBottom: 4 }}>Archivo CSV (SKU; Nombre; Cantidad)</label>
+          <input type="file" accept=".csv,.txt,.xlsx" onChange={handleFile}
+            style={{ fontSize: 11, color: "var(--txt3)" }} />
+        </div>
+      </div>
+
+      <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 8 }}>
+        Formato: SKU;Nombre;Cantidad (separado por ; o tab o coma). La primera fila se ignora si es encabezado.
+      </div>
+
+      {!csvText && (
+        <div>
+          <label style={{ fontSize: 11, color: "var(--txt3)", display: "block", marginBottom: 4 }}>O pegar texto directamente:</label>
+          <textarea value={csvText} onChange={e => { setCsvText(e.target.value); parseCsv(e.target.value); }}
+            placeholder={"SKU;Nombre;Cantidad\nLITAF400G4PGR;Set 4 Toallas Gris;72\nTXPMMF15PBOYG;Plumon Boy;24"}
+            style={{ width: "100%", minHeight: 80, padding: 8, borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 11, fontFamily: "var(--font-mono)", resize: "vertical" }} />
+        </div>
+      )}
+
+      {parsed.length > 0 && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Vista previa ({parsed.length} items, {parsed.reduce((s, l) => s + l.cantidad, 0)} uds)</div>
+          <div style={{ overflowX: "auto", maxHeight: 300 }}>
+            <table className="tbl" style={{ fontSize: 11 }}>
+              <thead><tr><th>SKU</th><th>Nombre</th><th style={{ textAlign: "right" }}>Cantidad</th><th style={{ textAlign: "right" }}>IP</th><th style={{ textAlign: "right" }}>Bultos</th><th>Estado</th></tr></thead>
+              <tbody>
+                {parsed.map((l, i) => (
+                  <tr key={i} style={{ background: l.found ? "transparent" : "var(--amberBg)" }}>
+                    <td className="mono">{l.sku}</td>
+                    <td>{l.nombre}</td>
+                    <td className="mono" style={{ textAlign: "right" }}>{l.cantidad}</td>
+                    <td className="mono" style={{ textAlign: "right", color: "var(--txt3)" }}>{l.innerPack > 1 ? l.innerPack : "—"}</td>
+                    <td className="mono" style={{ textAlign: "right" }}>{l.bultos}</td>
+                    <td><span style={{ fontSize: 9, padding: "2px 6px", borderRadius: 4, background: l.found ? "var(--greenBg)" : "var(--amberBg)", color: l.found ? "var(--green)" : "var(--amber)", fontWeight: 600 }}>
+                      {l.found ? "OK" : "No en intel"}
+                    </span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+            <button onClick={() => doCreate("BORRADOR")} disabled={creating || !proveedor}
+              style={{ padding: "10px 20px", borderRadius: 8, background: "var(--bg3)", color: proveedor ? "var(--txt)" : "var(--txt3)", fontWeight: 700, fontSize: 12, border: "1px solid var(--bg4)", cursor: proveedor ? "pointer" : "default" }}>
+              {creating ? "Creando..." : "Guardar como Borrador"}
+            </button>
+            <button onClick={() => doCreate("PENDIENTE")} disabled={creating || !proveedor}
+              style={{ padding: "10px 20px", borderRadius: 8, background: proveedor ? "var(--amber)" : "var(--bg3)", color: proveedor ? "#000" : "var(--txt3)", fontWeight: 700, fontSize: 12, border: "none", cursor: proveedor ? "pointer" : "default" }}>
+              {creating ? "Creando..." : "Confirmar OC"}
+            </button>
+          </div>
+          {!proveedor && <div style={{ fontSize: 11, color: "var(--amber)", marginTop: 4 }}>Selecciona un proveedor</div>}
+        </div>
+      )}
+    </div>
+  );
 }
