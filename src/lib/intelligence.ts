@@ -783,15 +783,8 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       pctFlex = 0.20;
     }
 
-    // ── PASO 8: Target dinámico (preliminar — se ajusta por ABC después del paso 9) ──
-    // Si Flex > Full, usar regla de margen; sino placeholder que se reemplaza por ABC
-    const targetDiasFull = calcularTargetDias(
-      margenFlex30d || null,
-      margenFull30d || null,
-      config.cobObjetivo,  // placeholder, se sobreescribe con ABC después
-    );
-    // Guardar si el target fue por margen Flex (no se sobreescribe con ABC)
-    const targetPorMargenFlex = (margenFlex30d || 0) > (margenFull30d || 0) && margenFlex30d !== null;
+    // ── PASO 8: Target de cobertura (placeholder — se asigna por ABC en paso 8b) ──
+    const targetDiasFull = config.cobObjetivo;
 
     // ── PASO 10 (parcial): XYZ — CV con datos semanales ──
     // Usar solo semanas sin quiebre
@@ -1087,16 +1080,8 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     }
   }
 
-  // ── PASO 8b: Ajustar target de cobertura por ABC ──
-  // Sobreescribe el placeholder SOLO si el target no fue asignado por regla margen Flex>Full
+  // ── PASO 8b: Asignar target de cobertura por ABC ──
   for (const r of rows) {
-    // Reconstruir si fue target por margen Flex
-    const mf30 = r.margen_flex_30d || 0;
-    const mfull30 = r.margen_full_30d || 0;
-    const esPorMargenFlex = mf30 > mfull30;
-    if (esPorMargenFlex) continue; // mantener 15d o 25d por regla Flex
-
-    // Asignar target según ABC
     if (r.abc === "A") r.target_dias_full = config.targetDiasA;
     else if (r.abc === "B") r.target_dias_full = config.targetDiasB;
     else r.target_dias_full = config.targetDiasC;
