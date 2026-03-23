@@ -1772,6 +1772,17 @@ export default function AdminInteligencia() {
                           <td style={{ textAlign: "right" }}>
                             <input type="number" value={envioIpEdits.get(item.skuVenta) ?? (item.innerPack > 1 ? item.innerPack : "")}
                               onChange={e => setEnvioIpEdits(prev => new Map(prev).set(item.skuVenta, parseInt(e.target.value) || 0))}
+                              onBlur={async () => {
+                                const v = envioIpEdits.get(item.skuVenta);
+                                const skuOrig = item.skuOrigen || item.skuVenta;
+                                if (v !== undefined && v > 0) {
+                                  const sb = getSupabase();
+                                  if (sb) {
+                                    await sb.from("proveedor_catalogo").update({ inner_pack: v, updated_at: new Date().toISOString() }).eq("sku_origen", skuOrig);
+                                    await sb.from("productos").update({ inner_pack: v }).eq("sku", skuOrig);
+                                  }
+                                }
+                              }}
                               placeholder="—"
                               style={{ width: 40, textAlign: "center", fontSize: 10, padding: "2px 4px", borderRadius: 4, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontFamily: "var(--font-mono)" }} />
                           </td>
@@ -2061,6 +2072,16 @@ export default function AdminInteligencia() {
                                   <td style={{ textAlign: "right" }}>
                                     <input type="number" value={pedidoIpEdits.get(item.skuOrigen) ?? (item.innerPack > 1 ? item.innerPack : "")}
                                       onChange={e => setPedidoIpEdits(prev => new Map(prev).set(item.skuOrigen, parseInt(e.target.value) || 0))}
+                                      onBlur={async () => {
+                                        const v = pedidoIpEdits.get(item.skuOrigen);
+                                        if (v !== undefined && v > 0) {
+                                          const sb = getSupabase();
+                                          if (sb) {
+                                            await sb.from("proveedor_catalogo").update({ inner_pack: v, updated_at: new Date().toISOString() }).eq("sku_origen", item.skuOrigen);
+                                            await sb.from("productos").update({ inner_pack: v }).eq("sku", item.skuOrigen);
+                                          }
+                                        }
+                                      }}
                                       placeholder="—"
                                       style={{ width: 40, textAlign: "center", fontSize: 10, padding: "2px 4px", borderRadius: 4, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontFamily: "var(--font-mono)" }} />
                                   </td>
