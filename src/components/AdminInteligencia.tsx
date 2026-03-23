@@ -377,6 +377,9 @@ export default function AdminInteligencia() {
   const [syncMLResult, setSyncMLResult] = useState<string | null>(null);
   const [vistaOrigen, setVistaOrigen] = useState(false);
   const [vistaEnvio, setVistaEnvio] = useState(false);
+  const [envioSort, setEnvioSort] = useState<{ col: string; asc: boolean }>({ col: "accion", asc: true });
+  const [envioFilter, setEnvioFilter] = useState<"todos"|"sin_ip"|"abc_a"|"abc_b"|"abc_c"|"urgente"|"stock_insuf">("todos");
+  const [envioIpEdits, setEnvioIpEdits] = useState<Map<string, number>>(new Map());
   const [vistaPedido, setVistaPedido] = useState(false);
 
   // Pedido a Proveedor
@@ -1576,10 +1579,64 @@ export default function AdminInteligencia() {
 
           {envioItems.length === 0 ? (
             <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>No hay SKUs con mandar_full &gt; 0. Ejecuta &quot;Recalcular&quot;.</div>
-          ) : (
-            <>
+          ) : (() => {
+            // Filter
+            const filteredEnvio = envioItems.filter(item => {
+              if (envioFilter === "sin_ip") return !item.innerPack || item.innerPack <= 1;
+              if (envioFilter === "abc_a") return item.abc === "A";
+              if (envioFilter === "abc_b") return item.abc === "B";
+              if (envioFilter === "abc_c") return item.abc === "C";
+              if (envioFilter === "urgente") return item.accion === "URGENTE" || item.accion === "AGOTADO_PEDIR";
+              if (envioFilter === "stock_insuf") return item.stockBodega < item.mandarEditado;
+              return true;
+            });
+            // Sort
+            const sortedEnvio = [...filteredEnvio].sort((a, b) => {
+              const { col, asc } = envioSort;
+              let va: number | string = 0, vb: number | string = 0;
+              if (col === "sku") { va = a.skuVenta; vb = b.skuVenta; }
+              else if (col === "nombre") { va = a.nombre; vb = b.nombre; }
+              else if (col === "abc") { va = a.abc; vb = b.abc; }
+              else if (col === "vel") { va = a.velPonderada; vb = b.velPonderada; }
+              else if (col === "stFull") { va = a.stockFull; vb = b.stockFull; }
+              else if (col === "stBod") { va = a.stockBodega; vb = b.stockBodega; }
+              else if (col === "cob") { va = a.cobFull; vb = b.cobFull; }
+              else if (col === "target") { va = a.targetDias; vb = b.targetDias; }
+              else if (col === "mandar") { va = a.mandarEditado; vb = b.mandarEditado; }
+              else if (col === "ip") { va = a.innerPack; vb = b.innerPack; }
+              else if (col === "bultos") { va = a.bultos; vb = b.bultos; }
+              else if (col === "accion") { va = a.accion; vb = b.accion; }
+              const cmp = typeof va === "string" ? va.localeCompare(vb as string) : (va as number) - (vb as number);
+              return asc ? cmp : -cmp;
+            });
+            const toggleSort = (col: string) => setEnvioSort(prev => ({ col, asc: prev.col === col ? !prev.asc : true }));
+            const SH = ({ col, label, right }: { col: string; label: string; right?: boolean }) => (
+              <th onClick={() => toggleSort(col)} style={{ cursor: "pointer", textAlign: right ? "right" : "left", userSelect: "none" }}>
+                {label} {envioSort.col === col ? (envioSort.asc ? "▲" : "▼") : ""}
+              </th>
+            );
+            return <>
+              {/* Filters */}
+              <div style={{ display: "flex", gap: 4, marginBottom: 8, flexWrap: "wrap" }}>
+                {([["todos","Todos"],["sin_ip","Sin IP"],["abc_a","ABC A"],["abc_b","ABC B"],["abc_c","ABC C"],["urgente","Urgentes"],["stock_insuf","Stock insuf."]] as const).map(([key, label]) => (
+                  <button key={key} onClick={() => setEnvioFilter(key)}
+                    style={{ padding: "4px 10px", borderRadius: 4, fontSize: 10, fontWeight: 600, border: `1px solid ${envioFilter === key ? "var(--cyan)" : "var(--bg4)"}`,
+                      background: envioFilter === key ? "var(--cyan)" : "var(--bg3)", color: envioFilter === key ? "#000" : "var(--txt3)", cursor: "pointer" }}>
+                    {label} ({envioItems.filter(i => {
+                      if (key === "sin_ip") return !i.innerPack || i.innerPack <= 1;
+                      if (key === "abc_a") return i.abc === "A";
+                      if (key === "abc_b") return i.abc === "B";
+                      if (key === "abc_c") return i.abc === "C";
+                      if (key === "urgente") return i.accion === "URGENTE" || i.accion === "AGOTADO_PEDIR";
+                      if (key === "stock_insuf") return i.stockBodega < i.mandarEditado;
+                      return true;
+                    }).length})
+                  </button>
+                ))}
+              </div>
+
               <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 6 }}>
-                {envioSelected.length} de {envioItems.length} SKUs seleccionados
+                {envioSelected.length} de {envioItems.length} seleccionados · Mostrando {sortedEnvio.length}
               </div>
 
               <div style={{ overflowX: "auto" }}>
@@ -1596,24 +1653,24 @@ export default function AdminInteligencia() {
                           }}
                         />
                       </th>
-                      <th>SKU Venta</th>
-                      <th>Nombre</th>
-                      <th>ABC</th>
-                      <th style={{ textAlign: "right" }}>Vel/sem</th>
-                      <th style={{ textAlign: "right" }}>St.Full</th>
-                      <th style={{ textAlign: "right" }}>St.Bod</th>
-                      <th style={{ textAlign: "right" }}>Cob Full</th>
-                      <th style={{ textAlign: "right" }}>Target</th>
-                      <th style={{ textAlign: "right" }}>Mandar</th>
-                      <th style={{ textAlign: "right" }}>IP</th>
-                      <th style={{ textAlign: "right" }}>Bultos</th>
+                      <SH col="sku" label="SKU Venta" />
+                      <SH col="nombre" label="Nombre" />
+                      <SH col="abc" label="ABC" />
+                      <SH col="vel" label="Vel/sem" right />
+                      <SH col="stFull" label="St.Full" right />
+                      <SH col="stBod" label="St.Bod" right />
+                      <SH col="cob" label="Cob Full" right />
+                      <SH col="target" label="Target" right />
+                      <SH col="mandar" label="Mandar" right />
+                      <SH col="ip" label="IP" right />
+                      <SH col="bultos" label="Bultos" right />
                       <th>Pos.</th>
-                      <th>Estado</th>
+                      <SH col="accion" label="Estado" />
                       <th>Notas</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {envioItems.map(item => {
+                    {sortedEnvio.map(item => {
                       const sel = envioSelection.has(item.skuVenta);
                       return (
                         <tr key={item.skuVenta} style={{ opacity: sel ? 1 : 0.4 }}>
@@ -1658,7 +1715,12 @@ export default function AdminInteligencia() {
                               }}
                             />
                           </td>
-                          <td className="mono" style={{ textAlign: "right", fontSize: 10, color: "var(--txt3)" }}>{item.innerPack > 1 ? item.innerPack : "—"}</td>
+                          <td style={{ textAlign: "right" }}>
+                            <input type="number" value={envioIpEdits.get(item.skuVenta) ?? (item.innerPack > 1 ? item.innerPack : "")}
+                              onChange={e => setEnvioIpEdits(prev => new Map(prev).set(item.skuVenta, parseInt(e.target.value) || 0))}
+                              placeholder="—"
+                              style={{ width: 40, textAlign: "center", fontSize: 10, padding: "2px 4px", borderRadius: 4, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontFamily: "var(--font-mono)" }} />
+                          </td>
                           <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>
                             {item.bultos}
                             {item.redondeo && item.redondeo !== "sin_cambio" && (
@@ -1723,7 +1785,7 @@ export default function AdminInteligencia() {
                 </button>
               </div>
             </>
-          )}
+          })()}
         </div>
       )}
 
