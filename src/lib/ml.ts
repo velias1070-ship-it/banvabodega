@@ -1092,11 +1092,11 @@ export async function getDistributedStockDiagnostic(userProductId: string): Prom
 
 /**
  * Determine which stock location type the seller controls.
- * Priority: selling_address (Flex) > seller_warehouse (multi-origin) > null (Full-only)
+ * Priority: seller_warehouse (multi-origin) > selling_address (Flex single) > null (Full-only)
  */
 export function getSellerStockType(locations: StockLocation[]): "selling_address" | "seller_warehouse" | null {
-  if (locations.some(l => l.type === "selling_address")) return "selling_address";
   if (locations.some(l => l.type === "seller_warehouse")) return "seller_warehouse";
+  if (locations.some(l => l.type === "selling_address")) return "selling_address";
   return null;
 }
 
@@ -1112,7 +1112,7 @@ export async function updateFlexStock(
   userProductId: string,
   quantity: number,
   version: number,
-  stockType: "selling_address" | "seller_warehouse" = "selling_address",
+  stockType: "selling_address" | "seller_warehouse" = "seller_warehouse",
   warehouseLocations: StockLocation[] = []
 ): Promise<{ ok: boolean; error?: string }> {
   // DESACTIVADO: No enviar stock a MercadoLibre
