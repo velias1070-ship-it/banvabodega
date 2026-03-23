@@ -2164,7 +2164,73 @@ function AdminUltimaMilla({ refresh }: { refresh: () => void }) {
 
 // ==================== ADMIN PICKING FLEX ====================
 function AdminEnviosFull({ refresh }: { refresh: () => void }) {
-  return <AdminPicking refresh={refresh} />;
+  const [sessions, setSessions] = useState<DBPickingSession[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [selSession, setSelSession] = useState<DBPickingSession | null>(null);
+
+  const loadSessions = async () => {
+    setLoading(true);
+    const today = new Date().toISOString().slice(0, 10);
+    const [active, todaySessions] = await Promise.all([getActivePickings(), getPickingsByDate(today)]);
+    const map = new Map<string, DBPickingSession>();
+    [...active, ...todaySessions].forEach(s => { if (s.id && s.tipo === "envio_full") map.set(s.id, s); });
+    setSessions(Array.from(map.values()).sort((a, b) => (b.created_at || "").localeCompare(a.created_at || "")));
+    setLoading(false);
+  };
+
+  useEffect(() => { loadSessions(); }, []);
+
+  if (selSession) {
+    return <PickingSessionDetail session={selSession} onBack={() => { setSelSession(null); loadSessions(); }}/>;
+  }
+
+  return (
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+        <div>
+          <h2 style={{fontSize:18,fontWeight:700,margin:0}}>Envios a Full</h2>
+          <p style={{fontSize:12,color:"var(--txt3)",margin:0}}>Sesiones de picking para reposicion Full</p>
+        </div>
+        <button onClick={loadSessions} disabled={loading} style={{padding:"8px 14px",borderRadius:8,background:"var(--bg3)",color:"var(--cyan)",fontSize:12,fontWeight:600,border:"1px solid var(--bg4)"}}>
+          {loading ? "..." : "Actualizar"}
+        </button>
+      </div>
+
+      {sessions.length === 0 && !loading && (
+        <div style={{textAlign:"center",padding:40,color:"var(--txt3)"}}>
+          <div style={{fontSize:40,marginBottom:8}}>📦</div>
+          <div style={{fontSize:14,fontWeight:600}}>Sin envios Full activos</div>
+          <div style={{fontSize:12,marginTop:4}}>Crea un envio desde Inteligencia &gt; Envio a Full</div>
+        </div>
+      )}
+
+      {sessions.map(sess => {
+        const totalComps = sess.lineas.reduce((s, l) => s + l.componentes.length, 0);
+        const doneComps = sess.lineas.reduce((s, l) => s + l.componentes.filter(c => c.estado === "PICKEADO").length, 0);
+        const pct = totalComps > 0 ? Math.round((doneComps / totalComps) * 100) : 0;
+        const totalUnits = sess.lineas.reduce((s, l) => s + l.componentes.reduce((s2, c) => s2 + c.unidades, 0), 0);
+        return (
+          <div key={sess.id} onClick={() => setSelSession(sess)}
+            style={{padding:16,marginBottom:8,borderRadius:10,background:"var(--bg2)",border:"1px solid var(--bg3)",cursor:"pointer"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div>
+                <div style={{fontSize:14,fontWeight:700}}>{sess.titulo || `Envio Full ${sess.fecha}`}</div>
+                <div style={{fontSize:12,color:"var(--txt3)"}}>{sess.lineas.length} SKUs · {totalUnits} unidades · {doneComps}/{totalComps} items</div>
+              </div>
+              <div style={{padding:"4px 10px",borderRadius:6,fontSize:10,fontWeight:700,
+                background: pct === 100 ? "var(--greenBg)" : pct > 0 ? "var(--amberBg)" : "var(--redBg)",
+                color: pct === 100 ? "var(--green)" : pct > 0 ? "var(--amber)" : "var(--red)"}}>
+                {sess.estado === "COMPLETADA" ? "COMPLETADA" : pct > 0 ? `${pct}%` : "PENDIENTE"}
+              </div>
+            </div>
+            <div style={{marginTop:8,background:"var(--bg3)",borderRadius:4,height:4,overflow:"hidden"}}>
+              <div style={{width:`${pct}%`,height:"100%",background:pct===100?"var(--green)":"var(--amber)",borderRadius:4}}/>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 function AdminPicking({ refresh }: { refresh: () => void }) {
