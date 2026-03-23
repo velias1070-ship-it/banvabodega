@@ -404,6 +404,32 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     }
   }
 
+  // Auto-detect alternativas: si un SKU venta tiene 2+ SKU origen "componente"
+  // con las mismas unidades, los secundarios son alternativos del principal
+  const compsPorSkuVenta = new Map<string, { soUp: string; unidades: number }[]>();
+  for (const c of composicion) {
+    if (c.tipo_relacion === "alternativo") continue;
+    const svUp = c.sku_venta.toUpperCase();
+    if (!compsPorSkuVenta.has(svUp)) compsPorSkuVenta.set(svUp, []);
+    compsPorSkuVenta.get(svUp)!.push({ soUp: c.sku_origen.toUpperCase(), unidades: c.unidades });
+  }
+  for (const [, comps] of Array.from(compsPorSkuVenta.entries())) {
+    if (comps.length < 2) continue;
+    // El principal es el que tiene sku_origen === sku_venta, o el primero
+    const principal = comps.find(c => compsPorSkuVenta.has(c.soUp)) || comps[0];
+    for (const c of comps) {
+      if (c.soUp === principal.soUp) continue;
+      if (c.unidades !== principal.unidades) continue; // diferente unidades = combo real, no alternativo
+      if (!alternativosPorOrigen.has(principal.soUp)) alternativosPorOrigen.set(principal.soUp, []);
+      const alts = alternativosPorOrigen.get(principal.soUp)!;
+      if (!alts.includes(c.soUp)) alts.push(c.soUp);
+      // Bidireccional: el alternativo también conoce al principal
+      if (!alternativosPorOrigen.has(c.soUp)) alternativosPorOrigen.set(c.soUp, []);
+      const alts2 = alternativosPorOrigen.get(c.soUp)!;
+      if (!alts2.includes(principal.soUp)) alts2.push(principal.soUp);
+    }
+  }
+
   // ── Normalizar Maps de entrada a UPPERCASE ──
   const normMap = <V>(m: Map<string, V>): Map<string, V> => {
     const out = new Map<string, V>();
