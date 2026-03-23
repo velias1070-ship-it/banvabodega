@@ -386,6 +386,9 @@ export default function AdminInteligencia() {
 
   // Pedido a Proveedor
   const [pedidoEdits, setPedidoEdits] = useState<Map<string, number>>(new Map());
+  const [pedidoSort, setPedidoSort] = useState<{ col: string; asc: boolean }>({ col: "accion", asc: true });
+  const [pedidoFilter, setPedidoFilter] = useState<"todos"|"sin_ip"|"abc_a"|"abc_b"|"abc_c"|"urgente"|"sin_stock_prov">("todos");
+  const [pedidoIpEdits, setPedidoIpEdits] = useState<Map<string, number>>(new Map());
   const [pedidoSelection, setPedidoSelection] = useState<Set<string>>(new Set());
   const [pedidoCollapsed, setPedidoCollapsed] = useState<Set<string>>(new Set());
   const [modalOC, setModalOC] = useState<{ proveedor: string; lineas: PedidoProveedorItem[] } | null>(null);
@@ -834,9 +837,12 @@ export default function AdminInteligencia() {
     return rows
       .filter(r => r.pedir_proveedor > 0)
       .map(r => {
+        const ip = pedidoIpEdits.get(r.sku_origen) || r.inner_pack || 1;
+        // Redondear al IP (misma lógica que envío a full)
+        const pedirBase = r.pedir_proveedor;
+        const pedirRedondeado = ip > 1 ? Math.ceil(pedirBase / ip) * ip : pedirBase;
         const edited = pedidoEdits.get(r.sku_origen);
-        const pedir = edited !== undefined ? edited : r.pedir_proveedor;
-        const ip = r.inner_pack || 1;
+        const pedir = edited !== undefined ? edited : pedirRedondeado;
         const costo = r.costo_bruto > 0 ? Math.round(r.costo_bruto / 1.19) : 0;
         return {
           skuOrigen: r.sku_origen,
@@ -847,7 +853,7 @@ export default function AdminInteligencia() {
           stockBodega: r.stock_bodega,
           stockEnTransito: r.stock_en_transito,
           cobTotal: r.cob_total,
-          pedirSugerido: r.pedir_proveedor,
+          pedirSugerido: pedirRedondeado,
           pedirEditado: pedir,
           innerPack: ip,
           bultos: ip > 1 ? Math.ceil(pedir / ip) : pedir,
@@ -1913,8 +1919,74 @@ export default function AdminInteligencia() {
 
           {pedidoItems.length === 0 ? (
             <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>No hay SKUs con pedir_proveedor &gt; 0. Ejecuta &quot;Recalcular&quot;.</div>
-          ) : (
-            Array.from(pedidoPorProveedor.entries()).map(([prov, items]) => {
+          ) : (() => {
+            // Filter
+            const filteredPedido = pedidoItems.filter(item => {
+              if (pedidoFilter === "sin_ip") return !item.innerPack || item.innerPack <= 1;
+              if (pedidoFilter === "abc_a") return item.abc === "A";
+              if (pedidoFilter === "abc_b") return item.abc === "B";
+              if (pedidoFilter === "abc_c") return item.abc === "C";
+              if (pedidoFilter === "urgente") return item.accion === "URGENTE" || item.accion === "AGOTADO_PEDIR";
+              if (pedidoFilter === "sin_stock_prov") return item.stockProveedor === 0;
+              return true;
+            });
+            // Re-group filtered by proveedor
+            const filteredPorProv = new Map<string, PedidoProveedorItem[]>();
+            for (const item of filteredPedido) {
+              const arr = filteredPorProv.get(item.proveedor) || [];
+              arr.push(item);
+              filteredPorProv.set(item.proveedor, arr);
+            }
+            // Sort within each group
+            const sortItems = (items: PedidoProveedorItem[]) => [...items].sort((a, b) => {
+              const { col, asc } = pedidoSort;
+              let va: number | string = 0, vb: number | string = 0;
+              if (col === "sku") { va = a.skuOrigen; vb = b.skuOrigen; }
+              else if (col === "nombre") { va = a.nombre; vb = b.nombre; }
+              else if (col === "abc") { va = a.abc; vb = b.abc; }
+              else if (col === "vel") { va = a.velPonderada; vb = b.velPonderada; }
+              else if (col === "stFull") { va = a.stockFull; vb = b.stockFull; }
+              else if (col === "stBod") { va = a.stockBodega; vb = b.stockBodega; }
+              else if (col === "transito") { va = a.stockEnTransito; vb = b.stockEnTransito; }
+              else if (col === "cob") { va = a.cobTotal; vb = b.cobTotal; }
+              else if (col === "pedir") { va = a.pedirEditado; vb = b.pedirEditado; }
+              else if (col === "ip") { va = a.innerPack; vb = b.innerPack; }
+              else if (col === "bultos") { va = a.bultos; vb = b.bultos; }
+              else if (col === "subtotal") { va = a.subtotal; vb = b.subtotal; }
+              else if (col === "accion") { va = a.accion; vb = b.accion; }
+              const cmp = typeof va === "string" ? va.localeCompare(vb as string) : (va as number) - (vb as number);
+              return asc ? cmp : -cmp;
+            });
+            const togglePedidoSort = (col: string) => setPedidoSort(prev => ({ col, asc: prev.col === col ? !prev.asc : true }));
+            const PSH = ({ col, label, right }: { col: string; label: string; right?: boolean }) => (
+              <th onClick={() => togglePedidoSort(col)} style={{ cursor: "pointer", textAlign: right ? "right" : "left", userSelect: "none" }}>
+                {label} {pedidoSort.col === col ? (pedidoSort.asc ? "▲" : "▼") : ""}
+              </th>
+            );
+            return <>
+            {/* Filters */}
+            <div style={{ display: "flex", gap: 4, marginBottom: 8, flexWrap: "wrap" }}>
+              {([["todos","Todos"],["sin_ip","Sin IP"],["abc_a","ABC A"],["abc_b","ABC B"],["abc_c","ABC C"],["urgente","Urgentes"],["sin_stock_prov","Sin stock prov."]] as const).map(([key, label]) => (
+                <button key={key} onClick={() => setPedidoFilter(key)}
+                  style={{ padding: "4px 10px", borderRadius: 4, fontSize: 10, fontWeight: 600, border: `1px solid ${pedidoFilter === key ? "var(--cyan)" : "var(--bg4)"}`,
+                    background: pedidoFilter === key ? "var(--cyan)" : "var(--bg3)", color: pedidoFilter === key ? "#000" : "var(--txt3)", cursor: "pointer" }}>
+                  {label} ({pedidoItems.filter(i => {
+                    if (key === "sin_ip") return !i.innerPack || i.innerPack <= 1;
+                    if (key === "abc_a") return i.abc === "A";
+                    if (key === "abc_b") return i.abc === "B";
+                    if (key === "abc_c") return i.abc === "C";
+                    if (key === "urgente") return i.accion === "URGENTE" || i.accion === "AGOTADO_PEDIR";
+                    if (key === "sin_stock_prov") return i.stockProveedor === 0;
+                    return true;
+                  }).length})
+                </button>
+              ))}
+            </div>
+            <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 6 }}>
+              Mostrando {filteredPedido.length} de {pedidoItems.length} SKUs
+            </div>
+            {Array.from(filteredPorProv.entries()).map(([prov, rawItems]) => {
+              const items = sortItems(rawItems);
               const collapsed = pedidoCollapsed.has(prov);
               const selectedItems = items.filter(i => pedidoSelection.has(i.skuOrigen));
               const montoGrupo = selectedItems.reduce((s, i) => s + i.subtotal, 0);
@@ -1947,19 +2019,19 @@ export default function AdminInteligencia() {
                                   }}
                                 />
                               </th>
-                              <th>SKU Origen</th>
-                              <th>Nombre</th>
-                              <th>ABC</th>
-                              <th style={{ textAlign: "right" }}>Vel/sem</th>
-                              <th style={{ textAlign: "right" }}>St.Full</th>
-                              <th style={{ textAlign: "right" }}>St.Bod</th>
-                              <th style={{ textAlign: "right" }}>En Tránsito</th>
-                              <th style={{ textAlign: "right" }}>Cob Total</th>
-                              <th style={{ textAlign: "right" }}>Pedir</th>
-                              <th style={{ textAlign: "right" }}>IP</th>
-                              <th style={{ textAlign: "right" }}>Bultos</th>
+                              <PSH col="sku" label="SKU Origen" />
+                              <PSH col="nombre" label="Nombre" />
+                              <PSH col="abc" label="ABC" />
+                              <PSH col="vel" label="Vel/sem" right />
+                              <PSH col="stFull" label="St.Full" right />
+                              <PSH col="stBod" label="St.Bod" right />
+                              <PSH col="transito" label="En Transito" right />
+                              <PSH col="cob" label="Cob Total" right />
+                              <PSH col="pedir" label="Pedir" right />
+                              <PSH col="ip" label="IP" right />
+                              <PSH col="bultos" label="Bultos" right />
                               <th style={{ textAlign: "right" }}>Costo Unit</th>
-                              <th style={{ textAlign: "right" }}>Subtotal</th>
+                              <PSH col="subtotal" label="Subtotal" right />
                               <th style={{ textAlign: "right" }}>Stock Prov</th>
                               <th>Notas</th>
                             </tr>
@@ -1982,17 +2054,16 @@ export default function AdminInteligencia() {
                                     {item.cobTotal >= 999 ? "—" : fmtN(item.cobTotal, 0) + "d"}
                                   </td>
                                   <td style={{ textAlign: "right" }}>
-                                    <input
-                                      type="number"
-                                      value={item.pedirEditado}
-                                      onChange={e => {
-                                        const v = Math.max(0, parseInt(e.target.value) || 0);
-                                        setPedidoEdits(prev => new Map(prev).set(item.skuOrigen, v));
-                                      }}
-                                      style={{ width: 60, textAlign: "right", padding: "2px 4px", fontSize: 11, background: "var(--bg3)", border: "1px solid var(--bg4)", borderRadius: 4, color: "var(--txt)" }}
-                                    />
+                                    <input type="number" value={item.pedirEditado}
+                                      onChange={e => setPedidoEdits(prev => new Map(prev).set(item.skuOrigen, Math.max(0, parseInt(e.target.value) || 0)))}
+                                      style={{ width: 60, textAlign: "right", padding: "2px 4px", fontSize: 11, background: "var(--bg3)", border: "1px solid var(--bg4)", borderRadius: 4, color: "var(--txt)", fontFamily: "var(--font-mono)" }} />
                                   </td>
-                                  <td className="mono" style={{ textAlign: "right", fontSize: 10, color: "var(--txt3)" }}>{item.innerPack > 1 ? item.innerPack : "—"}</td>
+                                  <td style={{ textAlign: "right" }}>
+                                    <input type="number" value={pedidoIpEdits.get(item.skuOrigen) ?? (item.innerPack > 1 ? item.innerPack : "")}
+                                      onChange={e => setPedidoIpEdits(prev => new Map(prev).set(item.skuOrigen, parseInt(e.target.value) || 0))}
+                                      placeholder="—"
+                                      style={{ width: 40, textAlign: "center", fontSize: 10, padding: "2px 4px", borderRadius: 4, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontFamily: "var(--font-mono)" }} />
+                                  </td>
                                   <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{item.bultos}</td>
                                   <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtMoney(item.costoUnit)}</td>
                                   <td className="mono" style={{ textAlign: "right", fontSize: 11, fontWeight: 600 }}>{fmtMoney(item.subtotal)}</td>
@@ -2032,7 +2103,8 @@ export default function AdminInteligencia() {
                 </div>
               );
             })
-          )}
+          }
+          </>})()}
         </div>
       )}
 
