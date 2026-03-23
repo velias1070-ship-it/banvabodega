@@ -15,7 +15,7 @@ export default function PickingPage() {
   const [activeSes, setActiveSes] = useState<DBPickingSession | null>(null);
   const [activeLinea, setActiveLinea] = useState<PickingLinea | null>(null);
   const [activeCompIdx, setActiveCompIdx] = useState(-1);
-  const [screen, setScreen] = useState<"flex" | "list" | "session" | "pick" | "pickFull">("flex");
+  const [screen, setScreen] = useState<"home" | "flex" | "list" | "session" | "pick" | "pickFull">("home");
   const [editBultosMode, setEditBultosMode] = useState(false);
   const [operario, setOperario] = useState("");
   const [flexSession, setFlexSession] = useState<DBPickingSession | null>(null);
@@ -105,8 +105,7 @@ export default function PickingPage() {
       if (activeSes?.tipo !== "envio_full") loadFlexSession();
     }
     else if(screen==="session"){setScreen("list");setActiveSes(null);loadSessions();}
-    else if(screen==="flex"){/* stay */}
-    else if(screen==="list"){setScreen("flex");}
+    else if(screen==="flex"||screen==="list"){setScreen("home");}
   };
 
   const refreshActiveFlex = async () => {
@@ -123,35 +122,65 @@ export default function PickingPage() {
   return (
     <div className="app">
       <div className="topbar">
-        {screen==="flex"?(<Link href="/operador"><button className="back-btn">&#8592;</button></Link>):(
+        {screen==="home"?(<Link href="/operador"><button className="back-btn">&#8592;</button></Link>):(
           <button className="back-btn" onClick={goBack}>&#8592;</button>
         )}
-        <h1>{screen==="flex"?"Picking Flex":screen==="list"?"Otros pickings":activeSes?.titulo||"Picking"}</h1>
+        <h1>{screen==="home"?"Picking":screen==="flex"?"Picking Flex":screen==="list"?"Envio a Full":activeSes?.titulo||"Picking"}</h1>
         <div style={{fontSize:10,color:"#06b6d4",fontWeight:600}}>{operario}</div>
       </div>
       <div style={{padding:12}}>
-        {/* FLEX: direct view, no session selection */}
-        {screen==="flex"&&(
-          <>
-            {flexSession ? (
-              <SessionDetail session={flexSession} operario={operario} onPickComp={(l,i)=>{setActiveSes(flexSession);setActiveLinea(l);setActiveCompIdx(i);setScreen("pick");}} onRefresh={refreshActiveFlex}/>
-            ) : (
-              <div style={{textAlign:"center",padding:40,color:"#94a3b8"}}>
-                <div style={{fontSize:40,marginBottom:12}}>📋</div>
-                <div style={{fontSize:16,fontWeight:700}}>Sin pedidos Flex por ahora</div>
-                <div style={{fontSize:12,marginTop:4}}>Los pedidos se cargan automaticamente desde MercadoLibre</div>
-                <button onClick={loadFlexSession} style={{marginTop:16,padding:"8px 16px",borderRadius:8,background:"var(--bg3)",color:"#06b6d4",fontSize:12,fontWeight:600,border:"1px solid var(--bg4)"}}>Refrescar</button>
+        {/* HOME: two sections */}
+        {screen==="home"&&(
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            <button onClick={()=>{setScreen("flex");loadFlexSession();}}
+              style={{padding:20,borderRadius:14,background:"linear-gradient(135deg,#064e3b,#065f46)",border:"2px solid #10b98144",cursor:"pointer",textAlign:"left"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div>
+                  <div style={{fontSize:16,fontWeight:800,color:"#10b981"}}>Flex</div>
+                  <div style={{fontSize:12,color:"#94a3b8",marginTop:4}}>Pedidos del dia para despacho Flex</div>
+                </div>
+                {flexSession && (
+                  <div style={{textAlign:"right"}}>
+                    <div style={{fontSize:20,fontWeight:800,color:"#10b981"}}>{flexSession.lineas.length}</div>
+                    <div style={{fontSize:10,color:"#94a3b8"}}>pedidos</div>
+                  </div>
+                )}
+                {!flexSession && <span style={{fontSize:24,color:"#10b981"}}>&#8594;</span>}
               </div>
-            )}
-            {fullSessions.length > 0 && (
-              <button onClick={()=>setScreen("list")}
-                style={{width:"100%",marginTop:12,padding:12,borderRadius:8,background:"var(--bg2)",color:"var(--txt2)",fontSize:12,fontWeight:600,border:"1px solid var(--bg3)"}}>
-                Ver otros pickings ({fullSessions.length})
-              </button>
-            )}
-          </>
+            </button>
+            <button onClick={()=>setScreen("list")}
+              style={{padding:20,borderRadius:14,background:"linear-gradient(135deg,#1e1b4b,#312e81)",border:"2px solid #3b82f644",cursor:"pointer",textAlign:"left"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div>
+                  <div style={{fontSize:16,fontWeight:800,color:"#3b82f6"}}>Envio a Full</div>
+                  <div style={{fontSize:12,color:"#94a3b8",marginTop:4}}>Reposicion de stock a MercadoLibre Full</div>
+                </div>
+                {fullSessions.length > 0 ? (
+                  <div style={{textAlign:"right"}}>
+                    <div style={{fontSize:20,fontWeight:800,color:"#3b82f6"}}>{fullSessions.length}</div>
+                    <div style={{fontSize:10,color:"#94a3b8"}}>sesion{fullSessions.length>1?"es":""}</div>
+                  </div>
+                ) : (
+                  <span style={{fontSize:24,color:"#3b82f6"}}>&#8594;</span>
+                )}
+              </div>
+            </button>
+          </div>
         )}
-        {/* LIST: only for envio_full sessions */}
+        {/* FLEX: direct view */}
+        {screen==="flex"&&(
+          flexSession ? (
+            <SessionDetail session={flexSession} operario={operario} onPickComp={(l,i)=>{setActiveSes(flexSession);setActiveLinea(l);setActiveCompIdx(i);setScreen("pick");}} onRefresh={refreshActiveFlex}/>
+          ) : (
+            <div style={{textAlign:"center",padding:40,color:"#94a3b8"}}>
+              <div style={{fontSize:40,marginBottom:12}}>📋</div>
+              <div style={{fontSize:16,fontWeight:700}}>Sin pedidos Flex por ahora</div>
+              <div style={{fontSize:12,marginTop:4}}>Los pedidos se cargan automaticamente desde MercadoLibre</div>
+              <button onClick={loadFlexSession} style={{marginTop:16,padding:"8px 16px",borderRadius:8,background:"var(--bg3)",color:"#06b6d4",fontSize:12,fontWeight:600,border:"1px solid var(--bg4)"}}>Refrescar</button>
+            </div>
+          )
+        )}
+        {/* LIST: envio_full sessions */}
         {screen==="list"&&<SessionList sessions={fullSessions} onSelect={s=>{setActiveSes(s);setScreen("session");}} onRefresh={loadSessions}/>}
         {screen==="session"&&activeSes&&activeSes.tipo==="envio_full"&&<SessionDetailFull session={activeSes} onPickLine={(linea)=>{setEditBultosMode(false);setActiveLinea(linea);setScreen("pickFull");}} onEditBultos={(linea)=>{setEditBultosMode(true);setActiveLinea(linea);setScreen("pickFull");}} operario={operario} onRefresh={async()=>{
           const fresh=await getActivePickings();const u=fresh.find(s=>s.id===activeSes.id);
