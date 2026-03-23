@@ -883,7 +883,9 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     const targetFullUds = velParaPedir * pctFull * targetDiasFull / 7;
     const targetFlexUds = velParaPedir * pctFlex * 30 / 7;
     const mandarFull = Math.max(0, Math.min(Math.ceil(targetFullUds - stFull), stBodega));
-    const pedirTotal = Math.max(0, Math.ceil((targetFullUds + targetFlexUds) - stProyectado));
+    const pedirFull = Math.max(0, Math.ceil(targetFullUds - stFull - stEnTransito));
+    const pedirFlex = Math.max(0, Math.ceil(targetFlexUds - stBodega));
+    const pedirTotal = pedirFull + pedirFlex;
     const pedirProvBultos = innerPack > 1 && pedirTotal > 0 ? Math.ceil(pedirTotal / innerPack) : pedirTotal;
 
     let accion: AccionIntel;
@@ -1098,8 +1100,9 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     const targetFullUds = velParaPedir * r.pct_full * r.target_dias_full / 7;
     const targetFlexUds = velParaPedir * r.pct_flex * 30 / 7;
     r.mandar_full = Math.max(0, Math.min(Math.ceil(targetFullUds - r.stock_full), r.stock_bodega));
-    const stProyectado = r.stock_full + r.stock_bodega + r.stock_en_transito;
-    r.pedir_proveedor = Math.max(0, Math.ceil((targetFullUds + targetFlexUds) - stProyectado));
+    const pedirFullR = Math.max(0, Math.ceil(targetFullUds - r.stock_full - r.stock_en_transito));
+    const pedirFlexR = Math.max(0, Math.ceil(targetFlexUds - r.stock_bodega));
+    r.pedir_proveedor = pedirFullR + pedirFlexR;
     r.pedir_proveedor_bultos = innerPack > 1 && r.pedir_proveedor > 0 ? Math.ceil(r.pedir_proveedor / innerPack) : r.pedir_proveedor;
 
     // Recalcular cobertura
