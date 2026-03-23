@@ -773,25 +773,15 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     // ── PASO 7b: Ratio de reposición por margen ──
     // Si margen_flex / margen_full > 1.1 → 70/30 (más Flex porque es más rentable)
     // De lo contrario → 80/20 (priorizar Full como canal principal)
-    if (margenFull30d > 0 && margenFlex30d > 0) {
-      const ratioRentabilidad = margenFlex30d / margenFull30d;
-      if (ratioRentabilidad > 1.1) {
-        pctFull = 0.70;
-        pctFlex = 0.30;
-      } else {
-        pctFull = 0.80;
-        pctFlex = 0.20;
-      }
-    } else if (margenFull30d > 0 && margenFlex30d <= 0) {
-      // Flex no es rentable — priorizar Full
-      pctFull = 0.90;
-      pctFlex = 0.10;
-    } else if (margenFlex30d > 0 && margenFull30d <= 0) {
-      // Full no es rentable — priorizar Flex
-      pctFull = 0.30;
-      pctFlex = 0.70;
+    if (margenFull30d > 0 && margenFlex30d > 0 && margenFlex30d / margenFull30d > 1.1) {
+      // Flex significativamente más rentable
+      pctFull = 0.70;
+      pctFlex = 0.30;
+    } else {
+      // Default: Full como canal principal
+      pctFull = 0.80;
+      pctFlex = 0.20;
     }
-    // Si ambos <= 0 o sin datos, mantener pctFull/pctFlex del volumen de ventas
 
     // ── PASO 8: Target dinámico (preliminar — se ajusta por ABC después del paso 9) ──
     // Si Flex > Full, usar regla de margen; sino placeholder que se reemplaza por ABC
