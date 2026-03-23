@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { getSupabase } from "@/lib/supabase";
-import { buildPickingLineasFull, crearPickingSession, skuPositions, getComponentesPorSkuVenta, getSkusVenta, getNotasOperativas, getSkuFisicoPorSkuVenta } from "@/lib/store";
+import { buildPickingLineasFull, crearPickingSession, skuPositions, getComponentesPorSkuVenta, getSkusVenta, getNotasOperativas, getSkuFisicoPorSkuVenta, findProduct, skuTotal } from "@/lib/store";
 import { upsertNotasOperativas, insertOrdenCompra, insertOrdenCompraLineas, nextOCNumero, insertAdminActionLog } from "@/lib/db";
 import type { DBOrdenCompraLinea } from "@/lib/db";
 import AdminMLSinVincular from "./AdminMLSinVincular";
@@ -380,6 +380,8 @@ export default function AdminInteligencia() {
   const [envioSort, setEnvioSort] = useState<{ col: string; asc: boolean }>({ col: "accion", asc: true });
   const [envioFilter, setEnvioFilter] = useState<"todos"|"sin_ip"|"abc_a"|"abc_b"|"abc_c"|"urgente"|"stock_insuf">("todos");
   const [envioIpEdits, setEnvioIpEdits] = useState<Map<string, number>>(new Map());
+  const [envioManualSearch, setEnvioManualSearch] = useState("");
+  const [envioManualItems, setEnvioManualItems] = useState<{skuVenta:string;nombre:string;qty:number}[]>([]);
   const [vistaPedido, setVistaPedido] = useState(false);
 
   // Pedido a Proveedor
@@ -910,7 +912,8 @@ export default function AdminInteligencia() {
 
   // Crear picking from envío
   const crearPickingEnvioFull = useCallback(async () => {
-    if (envioSelected.length === 0 || creandoPicking) return;
+    if (envioSelected.length === 0 && envioManualItems.length === 0) return;
+    if (creandoPicking) return;
     setCreandoPicking(true);
     setPickingCreado(null);
 
@@ -922,6 +925,20 @@ export default function AdminInteligencia() {
         tipo: i.tipo,
         componentes: i.componentes,
       }));
+
+      // Add manual items
+      for (const manual of envioManualItems) {
+        const comps = getComponentesPorSkuVenta(manual.skuVenta).filter(c => c.tipoRelacion !== "alternativo");
+        source.push({
+          skuVenta: manual.skuVenta,
+          nombre: manual.nombre,
+          mandarFull: manual.qty,
+          tipo: comps.length === 1 && comps[0].unidades === 1 ? "simple" : comps.length === 1 && comps[0].unidades > 1 ? "pack" : "simple",
+          componentes: comps.length > 0
+            ? comps.map(c => ({ skuOrigen: c.skuOrigen, nombreOrigen: c.skuOrigen, unidadesPorPack: c.unidades, unidadesFisicas: manual.qty * c.unidades, alternativos: [] }))
+            : [{ skuOrigen: manual.skuVenta, nombreOrigen: manual.nombre, unidadesPorPack: 1, unidadesFisicas: manual.qty, alternativos: [] }],
+        });
+      }
 
       const { lineas, errors } = buildPickingLineasFull(source);
 
@@ -1798,11 +1815,68 @@ export default function AdminInteligencia() {
                 </div>
               </div>
 
+              {/* Agregar productos manualmente */}
+              <div style={{ marginTop: 12, padding: "12px 14px", borderRadius: 8, background: "var(--bg2)", border: "1px solid var(--bg4)" }}>
+                <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Agregar productos manualmente</div>
+                <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 8 }}>
+                  <input className="form-input" placeholder="Buscar SKU o nombre..." value={envioManualSearch}
+                    onChange={e => setEnvioManualSearch(e.target.value)}
+                    style={{ flex: 1, fontSize: 12, padding: "6px 10px" }} />
+                </div>
+                {envioManualSearch.length >= 2 && (() => {
+                  const results = findProduct(envioManualSearch).slice(0, 8);
+                  const yaEnLista = new Set([...envioItems.map(i => i.skuVenta), ...envioManualItems.map(i => i.skuVenta)]);
+                  return results.length > 0 ? (
+                    <div style={{ marginBottom: 8, maxHeight: 200, overflow: "auto" }}>
+                      {results.map(p => (
+                        <div key={p.sku} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 8px", marginBottom: 3, borderRadius: 6, background: "var(--bg3)", border: "1px solid var(--bg4)", fontSize: 11 }}>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
+                            <span className="mono" style={{ color: "var(--txt3)", fontSize: 10 }}>{p.sku} · Bodega: {skuTotal(p.sku)}</span>
+                          </div>
+                          {yaEnLista.has(p.sku) ? (
+                            <span style={{ fontSize: 10, color: "var(--txt3)", padding: "2px 8px" }}>Ya incluido</span>
+                          ) : (
+                            <button onClick={() => { setEnvioManualItems(prev => [...prev, { skuVenta: p.sku, nombre: p.name, qty: 1 }]); setEnvioManualSearch(""); }}
+                              style={{ padding: "4px 10px", borderRadius: 4, background: "var(--blue)", color: "#fff", fontSize: 10, fontWeight: 700, border: "none", cursor: "pointer" }}>
+                              + Agregar
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : <div style={{ fontSize: 11, color: "var(--txt3)", marginBottom: 8 }}>Sin resultados</div>;
+                })()}
+                {envioManualItems.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: "var(--txt2)", marginBottom: 4 }}>Productos agregados ({envioManualItems.length}):</div>
+                    {envioManualItems.map((item, i) => (
+                      <div key={item.skuVenta} style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", marginBottom: 3, borderRadius: 6, background: "var(--bg3)", border: "1px solid var(--blueBd,var(--bg4))" }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 11, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.nombre}</div>
+                          <span className="mono" style={{ fontSize: 10, color: "var(--txt3)" }}>{item.skuVenta}</span>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          <button onClick={() => setEnvioManualItems(prev => prev.map((it, j) => j === i ? { ...it, qty: Math.max(1, it.qty - 1) } : it))}
+                            style={{ width: 22, height: 22, borderRadius: 4, background: "var(--bg2)", color: "var(--txt2)", fontSize: 12, fontWeight: 700, border: "1px solid var(--bg4)", cursor: "pointer" }}>-</button>
+                          <input type="number" value={item.qty} onChange={e => setEnvioManualItems(prev => prev.map((it, j) => j === i ? { ...it, qty: Math.max(1, parseInt(e.target.value) || 1) } : it))}
+                            style={{ width: 40, textAlign: "center", fontSize: 11, padding: "2px", borderRadius: 4, background: "var(--bg2)", color: "var(--txt)", border: "1px solid var(--bg4)", fontFamily: "var(--font-mono)" }} />
+                          <button onClick={() => setEnvioManualItems(prev => prev.map((it, j) => j === i ? { ...it, qty: it.qty + 1 } : it))}
+                            style={{ width: 22, height: 22, borderRadius: 4, background: "var(--bg2)", color: "var(--txt2)", fontSize: 12, fontWeight: 700, border: "1px solid var(--bg4)", cursor: "pointer" }}>+</button>
+                        </div>
+                        <button onClick={() => setEnvioManualItems(prev => prev.filter((_, j) => j !== i))}
+                          style={{ width: 22, height: 22, borderRadius: 4, background: "var(--redBg)", color: "var(--red)", fontSize: 12, fontWeight: 700, border: "none", cursor: "pointer" }}>x</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               {/* Botón Crear Picking */}
               <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
                 <button
                   onClick={crearPickingEnvioFull}
-                  disabled={creandoPicking || envioSelected.length === 0 || !!pickingCreado}
+                  disabled={creandoPicking || (envioSelected.length === 0 && envioManualItems.length === 0) || !!pickingCreado}
                   style={{
                     padding: "12px 24px", borderRadius: 8, fontWeight: 700, fontSize: 14,
                     background: pickingCreado ? "var(--greenBg)" : "var(--blue)",
