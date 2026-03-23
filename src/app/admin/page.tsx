@@ -63,9 +63,9 @@ function LoginGate({ onLogin }: { onLogin: (pin: string) => boolean }) {
 }
 
 export default function AdminPage() {
-  const [tab, setTab] = useState<"dash"|"rec"|"flex"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"intel"|"compras"|"eventos"|"ventasml"|"agentes"|"stockml"|"config">("dash");
+  const [tab, setTab] = useState<"dash"|"rec"|"flex"|"enviosfull"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"intel"|"compras"|"eventos"|"ventasml"|"agentes"|"stockml"|"config">("dash");
   const SIDEBAR_GROUPS = [
-    {section:"OPERACIONES",icon:"⚡",items:[["rec","Recepciones","📦"],["flex","Ultima Milla","🚚"],["ops","Operaciones","⚡"],["reposicion","Reposición","🔄"]] as const},
+    {section:"OPERACIONES",icon:"⚡",items:[["rec","Recepciones","📦"],["flex","Ultima Milla","🚚"],["enviosfull","Envios Full","📦"],["ops","Operaciones","⚡"],["reposicion","Reposición","🔄"]] as const},
     {section:"INVENTARIO",icon:"📦",items:[["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["stockml","Stock ML","📡"]] as const},
     {section:"INTELIGENCIA",icon:"🧠",items:[["intel","Inteligencia","🧠"],["compras","Compras","🛒"],["eventos","Eventos","📅"],["ventasml","Ventas ML","💰"]] as const},
     {section:"SISTEMA",icon:"⚙️",items:[["agentes","Agentes IA","🤖"],["config","Configuración","⚙️"]] as const},
@@ -166,7 +166,7 @@ export default function AdminPage() {
         <main className="admin-main">
           {/* Mobile tabs fallback */}
           <div className="admin-mobile-tabs">
-            {([["dash","Dashboard"],["rec","Recepción"],["flex","Ultima Milla"],["ops","Ops"],["inv","Inventario"],["mov","Movim."],["prod","Productos"],["reposicion","Reposición"],["intel","Inteligencia"],["compras","Compras"],["eventos","Eventos"],["ventasml","Ventas ML"],["agentes","Agentes IA"],["stockml","Stock ML"],["config","Config"]] as const).map(([key,label])=>(
+            {([["dash","Dashboard"],["rec","Recepción"],["flex","Ultima Milla"],["enviosfull","Envios Full"],["ops","Ops"],["inv","Inventario"],["mov","Movim."],["prod","Productos"],["reposicion","Reposición"],["intel","Inteligencia"],["compras","Compras"],["eventos","Eventos"],["ventasml","Ventas ML"],["agentes","Agentes IA"],["stockml","Stock ML"],["config","Config"]] as const).map(([key,label])=>(
               <button key={key} className={`tab ${tab===key?"active-cyan":""}`} onClick={()=>setTab(key as any)}>{label}</button>
             ))}
           </div>
@@ -174,6 +174,7 @@ export default function AdminPage() {
             {tab==="dash"&&<Dashboard/>}
             {tab==="rec"&&<AdminRecepciones refresh={r}/>}
             {tab==="flex"&&<AdminUltimaMilla refresh={r}/>}
+            {tab==="enviosfull"&&<AdminEnviosFull refresh={r}/>}
             {tab==="ops"&&<Operaciones refresh={r}/>}
             {tab==="inv"&&<Inventario/>}
             {tab==="mov"&&<Movimientos/>}
@@ -2140,11 +2141,11 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
 // ==================== OPERACIONES RÁPIDAS ====================
 // ==================== ULTIMA MILLA (Pedidos + Picking + Config) ====================
 function AdminUltimaMilla({ refresh }: { refresh: () => void }) {
-  const [subTab, setSubTab] = useState<"pedidos"|"picking"|"config">("pedidos");
+  const [subTab, setSubTab] = useState<"pedidos"|"config">("pedidos");
   return (
     <div>
       <div style={{display:"flex",gap:0,marginBottom:16}}>
-        {([["pedidos","Pedidos","🛒"],["picking","Picking","🏷️"],["config","Configuracion","⚙️"]] as const).map(([key,label,icon],i,arr) => (
+        {([["pedidos","Pedidos","🛒"],["config","Configuracion","⚙️"]] as const).map(([key,label,icon],i,arr) => (
           <button key={key} onClick={()=>setSubTab(key)}
             style={{flex:1,padding:"10px 0",fontSize:12,fontWeight:700,cursor:"pointer",
               borderRadius:i===0?"8px 0 0 8px":i===arr.length-1?"0 8px 8px 0":"0",
@@ -2156,13 +2157,16 @@ function AdminUltimaMilla({ refresh }: { refresh: () => void }) {
         ))}
       </div>
       {subTab==="pedidos"&&<AdminPedidosFlex refresh={refresh} initialView="pedidos"/>}
-      {subTab==="picking"&&<AdminPicking refresh={refresh}/>}
       {subTab==="config"&&<AdminPedidosFlex refresh={refresh} initialView="config"/>}
     </div>
   );
 }
 
 // ==================== ADMIN PICKING FLEX ====================
+function AdminEnviosFull({ refresh }: { refresh: () => void }) {
+  return <AdminPicking refresh={refresh} />;
+}
+
 function AdminPicking({ refresh }: { refresh: () => void }) {
   const [sessions, setSessions] = useState<DBPickingSession[]>([]);
   const [shipments, setShipments] = useState<ShipmentWithItems[]>([]);
