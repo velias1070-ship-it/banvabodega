@@ -2696,11 +2696,11 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
 
   // Exportar CSV para envio_full
   const exportCSV = () => {
-    // Agrupar por SKU Venta con unidades de venta
+    // Agrupar por SKU Venta — usar qtyPedida (cantidad real por línea)
+    // qtyVenta es el total del formato y se repite en líneas split por posición
     const skuMap = new Map<string, number>();
     for (const l of session.lineas) {
-      const qty = l.qtyVenta || l.qtyPedida;
-      skuMap.set(l.skuVenta, (skuMap.get(l.skuVenta) || 0) + qty);
+      skuMap.set(l.skuVenta, (skuMap.get(l.skuVenta) || 0) + l.qtyPedida);
     }
 
     let csv = "SKU Venta;Unidades\n";
