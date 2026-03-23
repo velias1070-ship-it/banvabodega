@@ -882,7 +882,8 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     const velTarget = multiplicadorEvento > 1 ? velAjustadaEvento : velPonderada;
     const targetFullUds = velParaPedir * pctFull * targetDiasFull / 7;
     const targetFlexUds = velParaPedir * pctFlex * 30 / 7;
-    const mandarFull = Math.max(0, Math.min(Math.ceil(targetFullUds - stFull), stBodega));
+    const disponibleParaFull = Math.max(0, stBodega - Math.ceil(targetFlexUds));
+    const mandarFull = Math.max(0, Math.min(Math.ceil(targetFullUds - stFull), disponibleParaFull));
     const pedirFull = Math.max(0, Math.ceil(targetFullUds - stFull - stEnTransito));
     const pedirFlex = Math.max(0, Math.ceil(targetFlexUds - stBodega));
     const pedirTotal = pedirFull + pedirFlex;
@@ -1099,7 +1100,8 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     const velParaPedir = enQP ? r.vel_pre_quiebre : velCalcR;
     const targetFullUds = velParaPedir * r.pct_full * r.target_dias_full / 7;
     const targetFlexUds = velParaPedir * r.pct_flex * 30 / 7;
-    r.mandar_full = Math.max(0, Math.min(Math.ceil(targetFullUds - r.stock_full), r.stock_bodega));
+    const disponibleParaFullR = Math.max(0, r.stock_bodega - Math.ceil(targetFlexUds));
+    r.mandar_full = Math.max(0, Math.min(Math.ceil(targetFullUds - r.stock_full), disponibleParaFullR));
     const pedirFullR = Math.max(0, Math.ceil(targetFullUds - r.stock_full - r.stock_en_transito));
     const pedirFlexR = Math.max(0, Math.ceil(targetFlexUds - r.stock_bodega));
     r.pedir_proveedor = pedirFullR + pedirFlexR;
