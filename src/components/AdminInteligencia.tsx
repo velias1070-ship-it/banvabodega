@@ -2105,8 +2105,8 @@ export default function AdminInteligencia() {
                         </table>
                       </div>
 
-                      {/* Botón crear OC por proveedor */}
-                      <div style={{ padding: "10px 12px", background: "var(--bg2)", borderRadius: "0 0 8px 8px", border: "1px solid var(--bg4)", borderTop: "none" }}>
+                      {/* Botones crear OC + exportar CSV */}
+                      <div style={{ padding: "10px 12px", background: "var(--bg2)", borderRadius: "0 0 8px 8px", border: "1px solid var(--bg4)", borderTop: "none", display: "flex", gap: 8, flexWrap: "wrap" }}>
                         <button
                           onClick={() => {
                             const lineasSel = items.filter(i => pedidoSelection.has(i.skuOrigen));
@@ -2117,6 +2117,25 @@ export default function AdminInteligencia() {
                           style={{ padding: "10px 20px", borderRadius: 8, fontWeight: 700, fontSize: 12, background: selectedItems.length > 0 ? "var(--amber)" : "var(--bg3)", color: selectedItems.length > 0 ? "#000" : "var(--txt3)", border: "none", cursor: selectedItems.length > 0 ? "pointer" : "default" }}
                         >
                           Crear OC para {prov} ({selectedItems.length} SKUs, {fmtInt(udsGrupo)} uds, {fmtK(montoGrupo)} neto)
+                        </button>
+                        <button
+                          onClick={() => {
+                            let csv = "SKU;Nombre;Cantidad;Inner Pack;Bultos\n";
+                            for (const i of selectedItems) {
+                              csv += `${i.skuOrigen};${(i.nombre || "").replace(/;/g, ",")};${i.pedirEditado};${i.innerPack > 1 ? i.innerPack : ""};${i.bultos}\n`;
+                            }
+                            const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement("a");
+                            a.href = url;
+                            a.download = `pedido_${prov.replace(/\s+/g, "_")}_${new Date().toISOString().slice(0, 10)}.csv`;
+                            a.click();
+                            URL.revokeObjectURL(url);
+                          }}
+                          disabled={selectedItems.length === 0}
+                          style={{ padding: "10px 16px", borderRadius: 8, fontWeight: 600, fontSize: 12, background: "var(--bg3)", color: selectedItems.length > 0 ? "var(--cyan)" : "var(--txt3)", border: "1px solid var(--bg4)", cursor: selectedItems.length > 0 ? "pointer" : "default" }}
+                        >
+                          Exportar CSV ({selectedItems.length})
                         </button>
                       </div>
                     </>
