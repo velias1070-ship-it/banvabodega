@@ -744,7 +744,12 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       stFull += sfVenta * va.unidades;
     }
     const stTotal = stFull + stBodega;
-    const stEnTransito = stockEnTransitoN.get(skuOrigen) || 0;
+    let stEnTransito = stockEnTransitoN.get(skuOrigen) || 0;
+    if (alts) {
+      for (const altSku of alts) {
+        stEnTransito += stockEnTransitoN.get(altSku) || 0;
+      }
+    }
     const stProyectado = stTotal + stEnTransito;
     const ocPend = ocPendientesPorSkuN.get(skuOrigen) || 0;
 
@@ -1110,6 +1115,44 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     // Recalcular cobertura
     const velFullCalcR = velCalcR * r.pct_full;
     r.cob_full = round2(calcularCobertura(r.stock_full, velFullCalcR));
+  }
+
+  // ── PASO 10b: Deduplicar pedido entre alternativas ──
+  // Si un SKU tiene alternativas con stock suficiente, no pedir para este SKU
+  const rowMap = new Map<string, SkuIntelRow>();
+  for (const r of rows) rowMap.set(r.sku_origen, r);
+  for (const r of rows) {
+    if (r.pedir_proveedor <= 0) continue;
+    const altsR = alternativosPorOrigen.get(r.sku_origen);
+    if (!altsR || altsR.length === 0) continue;
+    // Check if any alternative has enough bodega stock to cover this SKU's flex needs
+    // AND the group's total stock covers the combined demand
+    let stockBodegaGrupo = r.stock_bodega; // already includes alts from step 5
+    let stockFullGrupo = r.stock_full;
+    let stockTransitoGrupo = r.stock_en_transito; // already includes alts
+    // The demand is shared — it's the same publication/listing
+    // So we only need to cover it once, not per SKU origen
+    const velCalcR = r.multiplicador_evento > 1 ? r.vel_ajustada_evento : r.vel_ponderada;
+    const enQP = r.stock_full === 0 && r.vel_ponderada > 0 && r.dias_en_quiebre >= 14 && r.vel_pre_quiebre > 2;
+    const velR = enQP ? r.vel_pre_quiebre : velCalcR;
+    const tFull = velR * r.pct_full * r.target_dias_full / 7;
+    const tFlex = velR * r.pct_flex * 30 / 7;
+    const totalNecesario = tFull + tFlex;
+    const totalDisponible = stockFullGrupo + stockBodegaGrupo + stockTransitoGrupo;
+    if (totalDisponible >= totalNecesario) {
+      // Group has enough — don't need to order
+      r.pedir_proveedor = 0;
+      r.pedir_proveedor_bultos = 0;
+    } else {
+      // Recalculate with group stock
+      const pedirFullR = Math.max(0, Math.ceil(tFull - stockFullGrupo - stockTransitoGrupo));
+      const pedirFlexR = Math.max(0, Math.ceil(tFlex - stockBodegaGrupo));
+      r.pedir_proveedor = pedirFullR + pedirFlexR;
+      const prod2 = prodMap.get(r.sku_origen);
+      const provCat2 = proveedorCatalogo?.get(r.sku_origen);
+      const ip2 = provCat2?.inner_pack || prod2?.inner_pack || 1;
+      r.pedir_proveedor_bultos = ip2 > 1 && r.pedir_proveedor > 0 ? Math.ceil(r.pedir_proveedor / ip2) : r.pedir_proveedor;
+    }
   }
 
   // ── PASO 11: Cuadrante (mediana vel × margen) ──
