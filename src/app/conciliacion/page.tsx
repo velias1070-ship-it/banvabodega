@@ -355,12 +355,12 @@ function Dashboard({ empresa, periodo, onChangePeriodo }: { empresa: DBEmpresa; 
   useEffect(() => {
     if (!empresa.id) return;
     setLoading(true);
-    // Convertir periodo YYYYMM → rango de fechas para movimientos banco
+    // Convertir periodo YYYYMM o YYYY → rango de fechas para movimientos banco
+    const isAnual = periodo.length === 4;
     const y = parseInt(periodo.slice(0, 4));
-    const m2 = parseInt(periodo.slice(4, 6));
-    const desde = `${y}-${String(m2).padStart(2, "0")}-01`;
-    const lastDay = new Date(y, m2, 0).getDate();
-    const hasta = `${y}-${String(m2).padStart(2, "0")}-${lastDay}`;
+    const m2 = isAnual ? 1 : parseInt(periodo.slice(4, 6));
+    const desde = isAnual ? `${y}-01-01` : `${y}-${String(m2).padStart(2, "0")}-01`;
+    const hasta = isAnual ? `${y}-12-31` : `${y}-${String(m2).padStart(2, "0")}-${new Date(y, m2, 0).getDate()}`;
     Promise.all([
       fetchRcvCompras(empresa.id, periodo),
       fetchRcvVentas(empresa.id, periodo),
@@ -378,11 +378,11 @@ function Dashboard({ empresa, periodo, onChangePeriodo }: { empresa: DBEmpresa; 
   const reload = () => {
     if (!empresa.id) return;
     setLoading(true);
+    const isAnual2 = periodo.length === 4;
     const y2 = parseInt(periodo.slice(0, 4));
-    const m3 = parseInt(periodo.slice(4, 6));
-    const d1 = `${y2}-${String(m3).padStart(2, "0")}-01`;
-    const ld2 = new Date(y2, m3, 0).getDate();
-    const d2 = `${y2}-${String(m3).padStart(2, "0")}-${ld2}`;
+    const m3 = isAnual2 ? 1 : parseInt(periodo.slice(4, 6));
+    const d1 = isAnual2 ? `${y2}-01-01` : `${y2}-${String(m3).padStart(2, "0")}-01`;
+    const d2 = isAnual2 ? `${y2}-12-31` : `${y2}-${String(m3).padStart(2, "0")}-${new Date(y2, m3, 0).getDate()}`;
     Promise.all([
       fetchRcvCompras(empresa.id!, periodo),
       fetchRcvVentas(empresa.id!, periodo),
