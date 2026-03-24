@@ -489,10 +489,18 @@ function Dashboard({ empresa, periodo, onChangePeriodo }: { empresa: DBEmpresa; 
   const ingresos = movBanco.filter(m => m.monto > 0).reduce((s, m) => s + m.monto, 0);
   const egresos = movBanco.filter(m => m.monto < 0).reduce((s, m) => s + m.monto, 0);
 
-  // === Conciliación ===
-  const concPendientes = conciliaciones.filter(c => c.estado === "pendiente").length;
-  const concConfirmadas = conciliaciones.filter(c => c.estado === "confirmado").length;
+  // === Conciliación (filtrada por movimientos del período) ===
+  const movBancoIds = new Set(movBanco.map(m => m.id).filter(Boolean));
+  const concDelPeriodo = conciliaciones.filter(c => c.movimiento_banco_id && movBancoIds.has(c.movimiento_banco_id));
+  const concPendientes = concDelPeriodo.filter(c => c.estado === "pendiente").length;
+  const concConfirmadas = concDelPeriodo.filter(c => c.estado === "confirmado").length;
+  const movConciliadosSet = new Set(concDelPeriodo.filter(c => c.estado !== "rechazado").map(c => c.movimiento_banco_id));
   const movSinConciliar = movBanco.filter(m => !m.estado_conciliacion || m.estado_conciliacion === "pendiente").length;
+  const movConciliados = movBanco.filter(m => m.estado_conciliacion === "conciliado" || movConciliadosSet.has(m.id!)).length;
+  const movIgnorados = movBanco.filter(m => m.estado_conciliacion === "ignorado").length;
+  const totalMov = movBanco.length;
+  const pctConciliado = totalMov > 0 ? Math.round(((movConciliados + movIgnorados) / totalMov) * 100) : 0;
+  const montoSinConciliar = movBanco.filter(m => !m.estado_conciliacion || m.estado_conciliacion === "pendiente").reduce((s, m) => s + Math.abs(m.monto), 0);
 
   // === Reembolsos pendientes a Vicente ===
   const totalReembolsoPend = reembolsosPend.reduce((s, m) => s + Math.abs(m.monto), 0);
@@ -594,6 +602,56 @@ function Dashboard({ empresa, periodo, onChangePeriodo }: { empresa: DBEmpresa; 
         </div>
       )}
 
+      {/* ══════ ESTADO DE CONCILIACIÓN ══════ */}
+      {totalMov > 0 && (
+        <div className="card" style={{ padding: 20, marginBottom: 16, borderLeft: `4px solid ${pctConciliado === 100 ? "var(--green)" : pctConciliado >= 50 ? "var(--cyan)" : "var(--amber)"}` }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.1em", color: "var(--txt3)", textTransform: "uppercase" }}>Conciliación del período</div>
+              <div style={{ fontSize: 14, fontWeight: 600, marginTop: 2 }}>{formatPeriodo(periodo)}</div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div className="mono" style={{ fontSize: 32, fontWeight: 800, color: pctConciliado === 100 ? "var(--green)" : pctConciliado >= 50 ? "var(--cyan)" : "var(--amber)" }}>
+                {pctConciliado}%
+              </div>
+            </div>
+          </div>
+
+          {/* Barra de progreso */}
+          <div style={{ height: 10, borderRadius: 5, background: "var(--bg4)", overflow: "hidden", marginBottom: 14 }}>
+            <div style={{
+              height: "100%", borderRadius: 5, transition: "width 0.5s ease",
+              width: `${pctConciliado}%`,
+              background: pctConciliado === 100 ? "var(--green)" : pctConciliado >= 50 ? "var(--cyan)" : "var(--amber)",
+            }} />
+          </div>
+
+          {/* Métricas en fila */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+            <div>
+              <div style={{ fontSize: 10, color: "var(--txt3)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Sin conciliar</div>
+              <div className="mono" style={{ fontSize: 20, fontWeight: 700, color: movSinConciliar > 0 ? "var(--amber)" : "var(--green)" }}>{movSinConciliar}</div>
+              <div style={{ fontSize: 10, color: "var(--txt3)" }}>de {totalMov} movimientos</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: "var(--txt3)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Monto pendiente</div>
+              <div className="mono" style={{ fontSize: 20, fontWeight: 700, color: montoSinConciliar > 0 ? "var(--amber)" : "var(--green)" }}>{fmtMoney(montoSinConciliar)}</div>
+              <div style={{ fontSize: 10, color: "var(--txt3)" }}>en valor absoluto</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: "var(--txt3)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Conciliados</div>
+              <div className="mono" style={{ fontSize: 20, fontWeight: 700, color: "var(--green)" }}>{movConciliados}</div>
+              <div style={{ fontSize: 10, color: "var(--txt3)" }}>{concPendientes > 0 ? `+ ${concPendientes} por confirmar` : "confirmados"}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: "var(--txt3)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Ignorados</div>
+              <div className="mono" style={{ fontSize: 20, fontWeight: 700, color: "var(--txt3)" }}>{movIgnorados}</div>
+              <div style={{ fontSize: 10, color: "var(--txt3)" }}>sin documento</div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* KPIs fila 1: Compras vs Ventas */}
       <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(3, 1fr)", marginBottom: 12 }}>
         <div className="kpi">
@@ -668,8 +726,8 @@ function Dashboard({ empresa, periodo, onChangePeriodo }: { empresa: DBEmpresa; 
         </div>
       </div>
 
-      {/* KPIs fila 3: Banco + Conciliación */}
-      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(4, 1fr)", marginBottom: 12 }}>
+      {/* KPIs fila 3: Banco */}
+      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(2, 1fr)", marginBottom: 12 }}>
         <div className="kpi">
           <div style={{ fontSize: 11, color: "var(--txt3)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Ingresos Banco</div>
           <div className="mono" style={{ fontSize: 18, fontWeight: 700, color: "var(--green)" }}>{fmtMoney(ingresos)}</div>
@@ -679,16 +737,6 @@ function Dashboard({ empresa, periodo, onChangePeriodo }: { empresa: DBEmpresa; 
           <div style={{ fontSize: 11, color: "var(--txt3)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Egresos Banco</div>
           <div className="mono" style={{ fontSize: 18, fontWeight: 700, color: "var(--red)" }}>{fmtMoney(egresos)}</div>
           <div style={{ fontSize: 11, color: "var(--txt3)" }}>{movBanco.filter(m => m.monto < 0).length} movimientos</div>
-        </div>
-        <div className="kpi">
-          <div style={{ fontSize: 11, color: "var(--txt3)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Conciliadas</div>
-          <div className="mono" style={{ fontSize: 18, fontWeight: 700, color: "var(--cyan)" }}>{concConfirmadas}</div>
-          <div style={{ fontSize: 11, color: "var(--txt3)" }}>{concPendientes} pendientes</div>
-        </div>
-        <div className="kpi">
-          <div style={{ fontSize: 11, color: "var(--txt3)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Mov. sin conciliar</div>
-          <div className="mono" style={{ fontSize: 18, fontWeight: 700, color: movSinConciliar > 0 ? "var(--amber)" : "var(--green)" }}>{movSinConciliar}</div>
-          <div style={{ fontSize: 11, color: "var(--txt3)" }}>de {movBanco.length} total</div>
         </div>
       </div>
 
