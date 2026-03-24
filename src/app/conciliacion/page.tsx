@@ -230,7 +230,7 @@ function SiiImportModal({ tipo, empresa, periodoActual, onClose, onImported }: S
         await insertSyncLog({
           empresa_id: empresa.id,
           periodo,
-          tipo: tipo === "COMPRA" ? "compras" : tipo === "BHE" ? "honorarios" : "ventas",
+          tipo: tipo === "COMPRA" || tipo === "BHE" ? "compras" : "ventas",
           registros: json.data.length,
         });
       }
