@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSupabase } from "@/lib/supabase-server";
 
 /**
  * POST /api/sii/bhe
@@ -151,9 +150,6 @@ function splitRut(rutCompleto: string): { rut: string; dv: string } {
 }
 
 export async function POST(req: NextRequest) {
-  const sb = getServerSupabase();
-  if (!sb) return NextResponse.json({ error: "no_db" }, { status: 500 });
-
   try {
     const body = await req.json();
     const { rut: rutCompleto, clave, periodo } = body as { rut: string; clave: string; periodo: string };
