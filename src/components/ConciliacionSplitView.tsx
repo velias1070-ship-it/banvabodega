@@ -200,6 +200,24 @@ export default function ConciliacionSplitView({
     [conciliaciones]
   );
 
+  // Mapa: movimiento_banco_id → conciliación + documento vinculado
+  const concDetailByMov = useMemo(() => {
+    const map = new Map<string, { conc: DBConciliacion; doc: { tipo: string; nro: string; rut: string; razon_social: string; monto: number; fecha: string } | null }>();
+    for (const c of conciliaciones) {
+      if (c.estado === "rechazado" || !c.movimiento_banco_id) continue;
+      let doc: { tipo: string; nro: string; rut: string; razon_social: string; monto: number; fecha: string } | null = null;
+      if (c.rcv_compra_id) {
+        const comp = compras.find(x => x.id === c.rcv_compra_id);
+        if (comp) doc = { tipo: "Compra", nro: comp.nro_doc || "", rut: comp.rut_proveedor || "", razon_social: comp.razon_social || "", monto: comp.monto_total || 0, fecha: comp.fecha_docto || "" };
+      } else if (c.rcv_venta_id) {
+        const ven = ventas.find(x => x.id === c.rcv_venta_id);
+        if (ven) doc = { tipo: "Venta", nro: ven.folio || ven.nro || "", rut: ven.rut_emisor || "", razon_social: "", monto: ven.monto_total || 0, fecha: ven.fecha_docto || "" };
+      }
+      map.set(c.movimiento_banco_id, { conc: c, doc });
+    }
+    return map;
+  }, [conciliaciones, compras, ventas]);
+
   // Movimientos filtrados
   const movFiltrados = useMemo(() => {
     let filtered = movBanco;
@@ -599,11 +617,12 @@ export default function ConciliacionSplitView({
             ) : movFiltrados.map(m => {
               const isSelected = selectedMov?.id === m.id;
               const isConciliado = concMovIds.has(m.id!);
+              const detail = isConciliado ? concDetailByMov.get(m.id!) : null;
               return (
                 <div key={m.id}
-                  onClick={() => { if (!isConciliado) { setSelectedMov(m); setSelectedDoc(null); }}}
+                  onClick={() => { setSelectedMov(isSelected ? null : m); setSelectedDoc(null); }}
                   style={{
-                    padding: 10, marginBottom: 4, borderRadius: 8, cursor: isConciliado ? "default" : "pointer",
+                    padding: 10, marginBottom: 4, borderRadius: 8, cursor: "pointer",
                     border: isSelected ? "2px solid var(--cyan)" : "1px solid var(--bg4)",
                     background: isSelected ? "var(--cyanBg)" : isConciliado ? "var(--bg)" : "var(--bg2)",
                   }}>
@@ -624,6 +643,31 @@ export default function ConciliacionSplitView({
                       </span>
                     )}
                   </div>
+                  {/* Detalle del documento vinculado (expandible al click) */}
+                  {isSelected && isConciliado && detail && (
+                    <div style={{ marginTop: 8, padding: 8, borderRadius: 6, background: "var(--bg3)", borderLeft: "3px solid var(--green)" }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: "var(--green)", marginBottom: 4, textTransform: "uppercase" }}>Conciliado con:</div>
+                      {detail.doc ? (
+                        <>
+                          <div style={{ fontSize: 12, fontWeight: 600 }}>
+                            {detail.doc.tipo} #{detail.doc.nro}
+                            {detail.doc.razon_social ? ` — ${detail.doc.razon_social}` : ""}
+                          </div>
+                          <div style={{ fontSize: 11, color: "var(--txt2)", marginTop: 2 }}>
+                            {detail.doc.rut && <span>RUT: {detail.doc.rut} · </span>}
+                            {fmtDate(detail.doc.fecha)} · {fmtMoney(detail.doc.monto)}
+                          </div>
+                        </>
+                      ) : (
+                        <div style={{ fontSize: 11, color: "var(--txt3)" }}>
+                          {detail.conc.tipo_partida === "clasificacion_directa" ? "Clasificación directa (sin documento)" : "Documento no encontrado"}
+                        </div>
+                      )}
+                      <div style={{ fontSize: 9, color: "var(--txt3)", marginTop: 4 }}>
+                        Método: {detail.conc.metodo} · Confianza: {Math.round((detail.conc.confianza || 0) * 100)}%
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
