@@ -2552,16 +2552,28 @@ function OCFromCSV({ rows, onCreated }: { rows: IntelRow[]; onCreated: (msg: str
     setParsed(items);
   };
 
-  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const text = ev.target?.result as string;
+    const isExcel = file.name.endsWith(".xlsx") || file.name.endsWith(".xls");
+    if (isExcel) {
+      const XLSX = await import("xlsx");
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows: string[][] = XLSX.utils.sheet_to_json(ws, { header: 1 });
+      const text = rows.map(r => r.join(";")).join("\n");
       setCsvText(text);
       parseCsv(text);
-    };
-    reader.readAsText(file);
+    } else {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const text = ev.target?.result as string;
+        setCsvText(text);
+        parseCsv(text);
+      };
+      reader.readAsText(file);
+    }
   };
 
   const doCreate = async (estado: "BORRADOR" | "PENDIENTE") => {
