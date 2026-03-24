@@ -92,14 +92,14 @@ function TreeNodeItem({
   };
 
   // Cuentas válidas para mover (excluir sí misma y sus descendientes)
-  const getDescendantIds = (n: TreeNode): Set<string> => {
-    const ids = new Set<string>([n.id!]);
+  const getDescendantIds = (n: TreeNode): string[] => {
+    const ids = [n.id!];
     for (const c of n.children) {
-      for (const id of getDescendantIds(c)) ids.add(id);
+      ids.push(...getDescendantIds(c));
     }
     return ids;
   };
-  const excludeIds = getDescendantIds(node);
+  const excludeIds = new Set(getDescendantIds(node));
 
   return (
     <div>
