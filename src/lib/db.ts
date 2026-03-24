@@ -1654,6 +1654,7 @@ export interface DBMovimientoBanco {
   estado_conciliacion?: string;
   categoria_cuenta_id?: string | null;
   referencia_unica?: string | null;
+  metadata?: unknown;
   created_at?: string;
 }
 
