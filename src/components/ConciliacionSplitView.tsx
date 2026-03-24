@@ -151,8 +151,9 @@ export default function ConciliacionSplitView({
   // Documento seleccionado para confirmar
   const [selectedDoc, setSelectedDoc] = useState<DocUnificado | null>(null);
 
-  // Filtro para movimientos
+  // Filtros para movimientos
   const [movFilter, setMovFilter] = useState<"todos" | "pendiente" | "conciliado">("pendiente");
+  const [tipoFilter, setTipoFilter] = useState<"todos" | "egresos" | "ingresos">("egresos");
 
   // Modal de crear regla
   const [showRuleModal, setShowRuleModal] = useState(false);
@@ -201,10 +202,15 @@ export default function ConciliacionSplitView({
 
   // Movimientos filtrados
   const movFiltrados = useMemo(() => {
-    if (movFilter === "pendiente") return movBanco.filter(m => !concMovIds.has(m.id!));
-    if (movFilter === "conciliado") return movBanco.filter(m => concMovIds.has(m.id!));
-    return movBanco;
-  }, [movBanco, concMovIds, movFilter]);
+    let filtered = movBanco;
+    // Filtro estado
+    if (movFilter === "pendiente") filtered = filtered.filter(m => !concMovIds.has(m.id!));
+    else if (movFilter === "conciliado") filtered = filtered.filter(m => concMovIds.has(m.id!));
+    // Filtro tipo
+    if (tipoFilter === "egresos") filtered = filtered.filter(m => m.monto < 0);
+    else if (tipoFilter === "ingresos") filtered = filtered.filter(m => m.monto > 0);
+    return filtered;
+  }, [movBanco, concMovIds, movFilter, tipoFilter]);
 
   // Documentos sin conciliar (unificados compras + ventas)
   const docsSinConciliar = useMemo((): DocUnificado[] => {
@@ -553,18 +559,35 @@ export default function ConciliacionSplitView({
             <h3 style={{ fontSize: 14, fontWeight: 700, color: "var(--cyan)", margin: 0 }}>
               Banco ({movFiltrados.length})
             </h3>
-            <div style={{ display: "flex", gap: 4 }}>
-              {(["pendiente", "conciliado", "todos"] as const).map(f => (
-                <button key={f} onClick={() => setMovFilter(f)}
-                  style={{
-                    padding: "3px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600, cursor: "pointer",
-                    background: movFilter === f ? "var(--cyanBg)" : "var(--bg3)",
-                    color: movFilter === f ? "var(--cyan)" : "var(--txt3)",
-                    border: movFilter === f ? "1px solid var(--cyanBd)" : "1px solid var(--bg4)",
-                  }}>
-                  {f === "pendiente" ? "Pendientes" : f === "conciliado" ? "Conciliados" : "Todos"}
-                </button>
-              ))}
+            <div style={{ display: "flex", gap: 8 }}>
+              {/* Filtro egresos/ingresos */}
+              <div style={{ display: "flex", gap: 2, background: "var(--bg3)", borderRadius: 6, padding: 2 }}>
+                {(["egresos", "ingresos", "todos"] as const).map(f => (
+                  <button key={f} onClick={() => setTipoFilter(f)}
+                    style={{
+                      padding: "3px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600, cursor: "pointer",
+                      background: tipoFilter === f ? (f === "egresos" ? "var(--redBg)" : f === "ingresos" ? "var(--greenBg)" : "var(--cyanBg)") : "transparent",
+                      color: tipoFilter === f ? (f === "egresos" ? "var(--red)" : f === "ingresos" ? "var(--green)" : "var(--cyan)") : "var(--txt3)",
+                      border: "none",
+                    }}>
+                    {f === "egresos" ? "Egresos" : f === "ingresos" ? "Ingresos" : "Todos"}
+                  </button>
+                ))}
+              </div>
+              {/* Filtro estado */}
+              <div style={{ display: "flex", gap: 2, background: "var(--bg3)", borderRadius: 6, padding: 2 }}>
+                {(["pendiente", "conciliado", "todos"] as const).map(f => (
+                  <button key={f} onClick={() => setMovFilter(f)}
+                    style={{
+                      padding: "3px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600, cursor: "pointer",
+                      background: movFilter === f ? "var(--cyanBg)" : "transparent",
+                      color: movFilter === f ? "var(--cyan)" : "var(--txt3)",
+                      border: "none",
+                    }}>
+                    {f === "pendiente" ? "Pendientes" : f === "conciliado" ? "Conciliados" : "Todos"}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
