@@ -57,21 +57,29 @@ const TIPO_COLORS: Record<string, { bg: string; color: string; label: string }> 
 function TreeNodeItem({
   node,
   depth,
+  allCuentas,
   onToggleActive,
   onEditName,
   onAddChild,
+  onMove,
+  onDelete,
   onSelect,
 }: {
   node: TreeNode;
   depth: number;
+  allCuentas: DBPlanCuentas[];
   onToggleActive: (id: string, activa: boolean) => void;
   onEditName: (id: string, nombre: string) => void;
   onAddChild: (parent: TreeNode) => void;
+  onMove: (id: string, newParentId: string | null) => void;
+  onDelete: (id: string, nombre: string) => void;
   onSelect?: (cuenta: DBPlanCuentas) => void;
 }) {
   const [expanded, setExpanded] = useState(depth < 2);
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(node.nombre);
+  const [showActions, setShowActions] = useState(false);
+  const [showMoveSelect, setShowMoveSelect] = useState(false);
 
   const hasChildren = node.children.length > 0;
   const tipoStyle = TIPO_COLORS[node.tipo] || TIPO_COLORS.ingreso;
@@ -82,6 +90,16 @@ function TreeNodeItem({
     }
     setEditing(false);
   };
+
+  // Cuentas válidas para mover (excluir sí misma y sus descendientes)
+  const getDescendantIds = (n: TreeNode): Set<string> => {
+    const ids = new Set<string>([n.id!]);
+    for (const c of n.children) {
+      for (const id of getDescendantIds(c)) ids.add(id);
+    }
+    return ids;
+  };
+  const excludeIds = getDescendantIds(node);
 
   return (
     <div>
@@ -94,7 +112,7 @@ function TreeNodeItem({
           padding: "6px 8px",
           paddingLeft: depth * 24 + 8,
           borderBottom: "1px solid var(--bg4)",
-          background: !node.activa ? "var(--bg)" : depth === 0 ? "var(--bg3)" : "transparent",
+          background: !node.activa ? "var(--bg)" : showActions ? "var(--bg3)" : depth === 0 ? "var(--bg3)" : "transparent",
           opacity: node.activa ? 1 : 0.5,
           cursor: onSelect && node.es_hoja ? "pointer" : "default",
         }}
@@ -128,7 +146,7 @@ function TreeNodeItem({
             value={editName}
             onChange={(e) => setEditName(e.target.value)}
             onBlur={handleSaveName}
-            onKeyDown={(e) => e.key === "Enter" && handleSaveName()}
+            onKeyDown={(e) => { if (e.key === "Enter") handleSaveName(); if (e.key === "Escape") setEditing(false); }}
             autoFocus
             style={{ fontSize: 12, padding: "2px 6px", flex: 1 }}
             onClick={(e) => e.stopPropagation()}
@@ -161,35 +179,51 @@ function TreeNodeItem({
           <span style={{ fontSize: 9, color: "var(--txt3)", fontWeight: 600 }}>HOJA</span>
         )}
 
-        {/* Agregar sub-cuenta */}
-        <button
-          onClick={(e) => { e.stopPropagation(); onAddChild(node); }}
-          title="Agregar sub-cuenta"
-          style={{
-            width: 20, height: 20, borderRadius: 4, border: "1px solid var(--bg4)",
-            background: "var(--bg3)", color: "var(--cyan)", fontSize: 12, fontWeight: 700,
-            cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-          }}
-        >
-          +
-        </button>
-
-        {/* Toggle activa */}
-        <button
-          onClick={(e) => { e.stopPropagation(); onToggleActive(node.id!, !node.activa); }}
-          style={{
-            width: 32, height: 18, borderRadius: 9, border: "none", cursor: "pointer",
-            background: node.activa ? "var(--green)" : "var(--bg4)",
-            position: "relative", transition: "background 0.2s",
-          }}
-        >
-          <div style={{
-            width: 14, height: 14, borderRadius: 7, background: "#fff",
-            position: "absolute", top: 2,
-            left: node.activa ? 16 : 2, transition: "left 0.2s",
-          }} />
-        </button>
+        {/* Botones de acción */}
+        <div style={{ display: "flex", gap: 3, alignItems: "center" }}>
+          <button onClick={(e) => { e.stopPropagation(); onAddChild(node); }} title="Agregar sub-cuenta"
+            style={{ width: 22, height: 22, borderRadius: 4, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--cyan)", fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            +
+          </button>
+          <button onClick={(e) => { e.stopPropagation(); setShowActions(!showActions); setShowMoveSelect(false); }} title="Más acciones"
+            style={{ width: 22, height: 22, borderRadius: 4, border: "1px solid var(--bg4)", background: showActions ? "var(--cyanBg)" : "var(--bg3)", color: "var(--txt3)", fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            ...
+          </button>
+          <button onClick={(e) => { e.stopPropagation(); onToggleActive(node.id!, !node.activa); }}
+            style={{ width: 32, height: 18, borderRadius: 9, border: "none", cursor: "pointer", background: node.activa ? "var(--green)" : "var(--bg4)", position: "relative", transition: "background 0.2s" }}>
+            <div style={{ width: 14, height: 14, borderRadius: 7, background: "#fff", position: "absolute", top: 2, left: node.activa ? 16 : 2, transition: "left 0.2s" }} />
+          </button>
+        </div>
       </div>
+
+      {/* Panel de acciones expandible */}
+      {showActions && (
+        <div style={{ padding: "6px 8px", paddingLeft: depth * 24 + 48, background: "var(--bg3)", borderBottom: "1px solid var(--bg4)", display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+          <button onClick={() => setEditing(true)} style={{ padding: "3px 10px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: "var(--bg2)", color: "var(--txt2)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
+            Renombrar
+          </button>
+          <button onClick={() => setShowMoveSelect(!showMoveSelect)} style={{ padding: "3px 10px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)", cursor: "pointer" }}>
+            Mover a...
+          </button>
+          {node.es_hoja && !hasChildren && (
+            <button onClick={() => onDelete(node.id!, node.nombre)} style={{ padding: "3px 10px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: "var(--redBg)", color: "var(--red)", border: "1px solid var(--redBd)", cursor: "pointer" }}>
+              Eliminar
+            </button>
+          )}
+          {showMoveSelect && (
+            <select
+              onChange={(e) => { onMove(node.id!, e.target.value || null); setShowActions(false); setShowMoveSelect(false); }}
+              defaultValue=""
+              style={{ padding: "3px 6px", fontSize: 10, background: "var(--bg2)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 4, maxWidth: 250 }}
+            >
+              <option value="">— Raíz (sin padre) —</option>
+              {allCuentas.filter(c => c.activa && !excludeIds.has(c.id!)).map(c => (
+                <option key={c.id} value={c.id}>{c.codigo} — {c.nombre}</option>
+              ))}
+            </select>
+          )}
+        </div>
+      )}
 
       {/* Hijos (si expandido) */}
       {expanded && hasChildren && node.children.map((child) => (
@@ -197,9 +231,12 @@ function TreeNodeItem({
           key={child.id}
           node={child}
           depth={depth + 1}
+          allCuentas={allCuentas}
           onToggleActive={onToggleActive}
           onEditName={onEditName}
           onAddChild={onAddChild}
+          onMove={onMove}
+          onDelete={onDelete}
           onSelect={onSelect}
         />
       ))}
@@ -353,6 +390,47 @@ export default function PlanCuentasTree({ onSelect }: PlanCuentasTreeProps) {
     setShowForm(true);
   };
 
+  // Mover cuenta a otro padre
+  const handleMove = async (id: string, newParentId: string | null) => {
+    // Si el nuevo padre era hoja, convertirlo
+    if (newParentId) {
+      const newParent = cuentas.find(x => x.id === newParentId);
+      if (newParent?.es_hoja) {
+        await updatePlanCuenta(newParentId, { es_hoja: false });
+      }
+    }
+    // Si el padre anterior se queda sin hijos, convertirlo a hoja
+    const cuenta = cuentas.find(x => x.id === id);
+    if (cuenta?.parent_id) {
+      const siblings = cuentas.filter(x => x.parent_id === cuenta.parent_id && x.id !== id);
+      if (siblings.length === 0) {
+        await updatePlanCuenta(cuenta.parent_id, { es_hoja: true });
+      }
+    }
+    const nivel = newParentId
+      ? (cuentas.find(x => x.id === newParentId)?.nivel ?? 0) + 1
+      : 0;
+    await updatePlanCuenta(id, { parent_id: newParentId, nivel });
+    load();
+  };
+
+  // Eliminar cuenta (solo hojas sin hijos)
+  const handleDelete = async (id: string, nombre: string) => {
+    if (!confirm(`¿Eliminar la cuenta "${nombre}"?`)) return;
+    const sb = (await import("@/lib/supabase")).getSupabase();
+    if (!sb) return;
+    await sb.from("plan_cuentas").delete().eq("id", id);
+    // Si el padre se queda sin hijos, convertirlo a hoja
+    const cuenta = cuentas.find(x => x.id === id);
+    if (cuenta?.parent_id) {
+      const siblings = cuentas.filter(x => x.parent_id === cuenta.parent_id && x.id !== id);
+      if (siblings.length === 0) {
+        await updatePlanCuenta(cuenta.parent_id, { es_hoja: true });
+      }
+    }
+    load();
+  };
+
   if (loading) return <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>Cargando plan de cuentas...</div>;
 
   // Resumen por tipo
@@ -403,9 +481,12 @@ export default function PlanCuentasTree({ onSelect }: PlanCuentasTreeProps) {
             key={node.id}
             node={node}
             depth={0}
+            allCuentas={cuentas}
             onToggleActive={handleToggleActive}
             onEditName={handleEditName}
             onAddChild={handleAddChild}
+            onMove={handleMove}
+            onDelete={handleDelete}
             onSelect={onSelect}
           />
         ))}
