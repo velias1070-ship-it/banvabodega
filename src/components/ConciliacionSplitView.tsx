@@ -9,10 +9,11 @@ import {
   updateMovimientoBanco,
   insertFeedback,
   upsertRegla,
+  fetchPlanCuentasHojas,
 } from "@/lib/db";
 import type {
   DBEmpresa, DBMovimientoBanco, DBRcvCompra, DBRcvVenta, DBConciliacion,
-  DBReglaConciliacion, CondicionRegla,
+  DBReglaConciliacion, CondicionRegla, DBPlanCuentas,
 } from "@/lib/db";
 
 // ==================== HELPERS ====================
@@ -161,6 +162,12 @@ export default function ConciliacionSplitView({
   const [ruleName, setRuleName] = useState("");
   const [ruleCondiciones, setRuleCondiciones] = useState<CondicionRegla[]>([]);
 
+  // Clasificación sin documento
+  const [cuentasHoja, setCuentasHoja] = useState<DBPlanCuentas[]>([]);
+  const [showClasificar, setShowClasificar] = useState(false);
+  const [clasificarCuenta, setClasificarCuenta] = useState("");
+  const [clasificarNota, setClasificarNota] = useState("");
+
   // Estado de feedback guardado
   const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null);
 
@@ -174,13 +181,14 @@ export default function ConciliacionSplitView({
     const m2 = isAnual ? 1 : parseInt(periodo.slice(4, 6));
     const desde = isAnual ? `${y}-01-01` : `${y}-${String(m2).padStart(2, "0")}-01`;
     const hasta = isAnual ? `${y}-12-31` : `${y}-${String(m2).padStart(2, "0")}-${new Date(y, m2, 0).getDate()}`;
-    const [m, c, v, conc] = await Promise.all([
+    const [m, c, v, conc, ctas] = await Promise.all([
       fetchMovimientosBanco(empresa.id, { desde, hasta }),
       fetchRcvCompras(empresa.id),
       fetchRcvVentas(empresa.id, periodo),
       fetchConciliaciones(empresa.id),
+      fetchPlanCuentasHojas(),
     ]);
-    setMovBanco(m); setCompras(c); setVentas(v); setConciliaciones(conc);
+    setMovBanco(m); setCompras(c); setVentas(v); setConciliaciones(conc); setCuentasHoja(ctas);
     setLoading(false);
   }, [empresa.id, periodo]);
 
@@ -405,6 +413,39 @@ export default function ConciliacionSplitView({
     setMovBanco(prev => prev.map(m => m.id === movId ? { ...m, estado_conciliacion: "ignorado" } : m));
     setSelectedMov(null);
     showFeedback("Movimiento ignorado");
+  };
+
+  // Clasificar sin documento (asignar cuenta contable directamente)
+  const handleClasificar = async () => {
+    if (!selectedMov || !empresa.id || !clasificarCuenta) return;
+
+    const c: DBConciliacion = {
+      empresa_id: empresa.id,
+      movimiento_banco_id: selectedMov.id!,
+      rcv_compra_id: null,
+      rcv_venta_id: null,
+      confianza: 1,
+      estado: "confirmado",
+      tipo_partida: "clasificacion_directa",
+      metodo: "manual",
+      notas: clasificarNota || null,
+      created_by: "admin",
+    };
+    await upsertConciliacion(c);
+    await updateMovimientoBanco(selectedMov.id!, {
+      estado_conciliacion: "conciliado",
+      categoria_cuenta_id: clasificarCuenta,
+    } as Partial<DBMovimientoBanco>);
+
+    // Actualizar estado local
+    const movId = selectedMov.id;
+    setMovBanco(prev => prev.map(m => m.id === movId ? { ...m, estado_conciliacion: "conciliado", categoria_cuenta_id: clasificarCuenta } : m));
+    setConciliaciones(prev => [...prev, c]);
+    setSelectedMov(null);
+    setShowClasificar(false);
+    setClasificarCuenta("");
+    setClasificarNota("");
+    showFeedback("Movimiento clasificado");
   };
 
   // Guardar regla sugerida
@@ -673,12 +714,46 @@ export default function ConciliacionSplitView({
             })}
           </div>
 
-          {/* Botón ignorar movimiento */}
-          {selectedMov && !selectedDoc && (
-            <button onClick={handleIgnorar}
-              style={{ marginTop: 8, width: "100%", padding: "8px 0", borderRadius: 8, background: "var(--bg3)", color: "var(--txt3)", fontSize: 11, fontWeight: 600, border: "1px solid var(--bg4)", cursor: "pointer" }}>
-              Ignorar este movimiento
-            </button>
+          {/* Acciones para movimiento seleccionado (no conciliado) */}
+          {selectedMov && !selectedDoc && !concMovIds.has(selectedMov.id!) && (
+            <div style={{ marginTop: 8 }}>
+              {!showClasificar ? (
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button onClick={() => setShowClasificar(true)}
+                    style={{ flex: 1, padding: "8px 0", borderRadius: 8, background: "var(--amberBg)", color: "var(--amber)", fontSize: 11, fontWeight: 600, border: "1px solid var(--amberBd)", cursor: "pointer" }}>
+                    Clasificar sin documento
+                  </button>
+                  <button onClick={handleIgnorar}
+                    style={{ flex: 1, padding: "8px 0", borderRadius: 8, background: "var(--bg3)", color: "var(--txt3)", fontSize: 11, fontWeight: 600, border: "1px solid var(--bg4)", cursor: "pointer" }}>
+                    Ignorar
+                  </button>
+                </div>
+              ) : (
+                <div className="card" style={{ padding: 12 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "var(--amber)", marginBottom: 8, textTransform: "uppercase" }}>Clasificar sin documento</div>
+                  <select value={clasificarCuenta} onChange={e => setClasificarCuenta(e.target.value)}
+                    style={{ width: "100%", marginBottom: 6, padding: "6px 8px", fontSize: 11, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 6 }}>
+                    <option value="">— Seleccionar cuenta —</option>
+                    {cuentasHoja.map(c => (
+                      <option key={c.id} value={c.id}>{c.codigo} — {c.nombre}</option>
+                    ))}
+                  </select>
+                  <input value={clasificarNota} onChange={e => setClasificarNota(e.target.value)}
+                    placeholder="Nota (opcional)"
+                    style={{ width: "100%", marginBottom: 8, padding: "6px 8px", fontSize: 11, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 6 }} />
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button onClick={() => { setShowClasificar(false); setClasificarCuenta(""); setClasificarNota(""); }}
+                      style={{ flex: 1, padding: "6px 0", borderRadius: 6, background: "var(--bg3)", color: "var(--txt3)", fontSize: 11, border: "1px solid var(--bg4)", cursor: "pointer" }}>
+                      Cancelar
+                    </button>
+                    <button onClick={handleClasificar} disabled={!clasificarCuenta}
+                      style={{ flex: 1, padding: "6px 0", borderRadius: 6, background: clasificarCuenta ? "var(--amberBg)" : "var(--bg3)", color: clasificarCuenta ? "var(--amber)" : "var(--txt3)", fontSize: 11, fontWeight: 600, border: `1px solid ${clasificarCuenta ? "var(--amberBd)" : "var(--bg4)"}`, cursor: clasificarCuenta ? "pointer" : "not-allowed" }}>
+                      Clasificar
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           )}
         </div>
 
