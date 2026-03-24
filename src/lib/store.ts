@@ -2225,9 +2225,32 @@ export async function despickearComponente(
 // Uses same structure as Flex: each line has componentes[0]
 export async function pickearLineaFull(
   sessionId: string, lineaId: string, operario: string,
-  session: db.DBPickingSession
+  _session: db.DBPickingSession, skuVenta?: string
 ): Promise<boolean> {
-  const linea = session.lineas.find(l => l.id === lineaId);
+  // Read fresh session from DB to avoid stale state overwrites
+  const sessions = await db.getActivePickingSessions();
+  const freshSession = sessions.find(s => s.id === sessionId);
+  if (!freshSession) {
+    console.warn("[Picking Full] Could not read fresh session, using passed reference");
+    // Fallback to passed session
+    const linea = _session.lineas.find(l => l.id === lineaId);
+    if (!linea) return false;
+    const comp = linea.componentes[0];
+    if (!comp || comp.estado === "PICKEADO") return false;
+    const pos = comp.posicion;
+    if (pos && pos !== "?") {
+      recordMovement({ ts: new Date().toISOString(), type: "out", reason: "envio_full" as OutReason, sku: comp.skuOrigen, pos, qty: comp.unidades, who: operario, note: `Envío Full: ${linea.skuVenta} (${comp.unidades} uds ${comp.skuOrigen})` });
+    }
+    comp.estado = "PICKEADO"; comp.pickedAt = new Date().toISOString(); comp.operario = operario; linea.estado = "PICKEADO";
+    await db.updatePickingSession(sessionId, { lineas: _session.lineas, estado: _session.lineas.every(l => l.estado === "PICKEADO") ? "COMPLETADA" : "EN_PROCESO" });
+    return true;
+  }
+
+  // Find linea by ID + skuVenta (handles duplicate IDs)
+  const targetSku = skuVenta || _session.lineas.find(l => l.id === lineaId)?.skuVenta;
+  let linea = freshSession.lineas.find(l => l.skuVenta === targetSku && l.estado !== "PICKEADO")
+    || freshSession.lineas.find(l => l.id === lineaId && l.skuVenta === targetSku)
+    || freshSession.lineas.find(l => l.id === lineaId);
   if (!linea) return false;
   const comp = linea.componentes[0];
   if (!comp || comp.estado === "PICKEADO") return false;
@@ -2248,12 +2271,12 @@ export async function pickearLineaFull(
   linea.estado = "PICKEADO";
 
   // Check if all lines are picked and armado done
-  const allPicked = session.lineas.every(l => l.estado === "PICKEADO");
-  const allArmado = session.lineas.every(l => !l.estadoArmado || l.estadoArmado === "COMPLETADO");
+  const allPicked = freshSession.lineas.every(l => l.estado === "PICKEADO");
+  const allArmado = freshSession.lineas.every(l => !l.estadoArmado || l.estadoArmado === "COMPLETADO");
   const sessionDone = allPicked && allArmado;
 
   await db.updatePickingSession(sessionId, {
-    lineas: session.lineas,
+    lineas: freshSession.lineas,
     estado: sessionDone ? "COMPLETADA" : "EN_PROCESO",
     ...(sessionDone ? { completed_at: new Date().toISOString() } : {}),
   });

@@ -1167,7 +1167,7 @@ function PickFlowFull({session,linea,operario,onDone,editBultos}:{
 
   const goToBultoPhase = useCallback(async () => {
     setSaving(true);
-    await pickearLineaFull(session.id!,linea.id,operario,session);
+    await pickearLineaFull(session.id!,linea.id,operario,session,linea.skuVenta);
     setSaving(false);
     if(navigator.vibrate)navigator.vibrate([100,50,100]);
     setPhase("bulto");
