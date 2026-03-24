@@ -59,15 +59,17 @@ function TreeNodeItem({
   depth,
   onToggleActive,
   onEditName,
+  onAddChild,
   onSelect,
 }: {
   node: TreeNode;
   depth: number;
   onToggleActive: (id: string, activa: boolean) => void;
   onEditName: (id: string, nombre: string) => void;
+  onAddChild: (parent: TreeNode) => void;
   onSelect?: (cuenta: DBPlanCuentas) => void;
 }) {
-  const [expanded, setExpanded] = useState(depth < 2); // Expandir 2 niveles por defecto
+  const [expanded, setExpanded] = useState(depth < 2);
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(node.nombre);
 
@@ -159,6 +161,19 @@ function TreeNodeItem({
           <span style={{ fontSize: 9, color: "var(--txt3)", fontWeight: 600 }}>HOJA</span>
         )}
 
+        {/* Agregar sub-cuenta */}
+        <button
+          onClick={(e) => { e.stopPropagation(); onAddChild(node); }}
+          title="Agregar sub-cuenta"
+          style={{
+            width: 20, height: 20, borderRadius: 4, border: "1px solid var(--bg4)",
+            background: "var(--bg3)", color: "var(--cyan)", fontSize: 12, fontWeight: 700,
+            cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+          }}
+        >
+          +
+        </button>
+
         {/* Toggle activa */}
         <button
           onClick={(e) => { e.stopPropagation(); onToggleActive(node.id!, !node.activa); }}
@@ -184,6 +199,7 @@ function TreeNodeItem({
           depth={depth + 1}
           onToggleActive={onToggleActive}
           onEditName={onEditName}
+          onAddChild={onAddChild}
           onSelect={onSelect}
         />
       ))}
@@ -197,19 +213,23 @@ function NuevaCuentaForm({
   cuentas,
   onSave,
   onCancel,
+  defaultParent,
 }: {
   cuentas: DBPlanCuentas[];
   onSave: (c: DBPlanCuentas) => void;
   onCancel: () => void;
+  defaultParent?: DBPlanCuentas | null;
 }) {
-  const [codigo, setCodigo] = useState("");
+  const parent = defaultParent || null;
+  const suggestedCode = parent ? `${parent.codigo}.` : "";
+  const [codigo, setCodigo] = useState(suggestedCode);
   const [nombre, setNombre] = useState("");
-  const [tipo, setTipo] = useState<DBPlanCuentas["tipo"]>("gasto_operacional");
-  const [parentId, setParentId] = useState<string>("");
+  const [tipo, setTipo] = useState<DBPlanCuentas["tipo"]>(parent?.tipo || "gasto_operacional");
+  const [parentId, setParentId] = useState<string>(parent?.id || "");
   const [esHoja, setEsHoja] = useState(true);
 
-  // Padres posibles: solo cuentas que no son hoja
-  const padres = cuentas.filter((c) => !c.es_hoja);
+  // Cualquier cuenta puede ser padre
+  const padres = cuentas.filter((c) => c.activa);
 
   const handleSubmit = () => {
     if (!codigo.trim() || !nombre.trim()) return;
@@ -287,6 +307,7 @@ export default function PlanCuentasTree({ onSelect }: PlanCuentasTreeProps) {
   const [cuentas, setCuentas] = useState<DBPlanCuentas[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  const [formParent, setFormParent] = useState<DBPlanCuentas | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -313,9 +334,23 @@ export default function PlanCuentasTree({ onSelect }: PlanCuentasTreeProps) {
 
   // Crear nueva cuenta
   const handleCreate = async (c: DBPlanCuentas) => {
+    // Si el padre era hoja, convertirlo a no-hoja
+    if (c.parent_id) {
+      const parent = cuentas.find(x => x.id === c.parent_id);
+      if (parent?.es_hoja) {
+        await updatePlanCuenta(parent.id!, { es_hoja: false });
+      }
+    }
     await upsertPlanCuenta(c);
     setShowForm(false);
+    setFormParent(null);
     load();
+  };
+
+  // Agregar sub-cuenta desde el árbol
+  const handleAddChild = (parent: TreeNode) => {
+    setFormParent(parent);
+    setShowForm(true);
   };
 
   if (loading) return <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>Cargando plan de cuentas...</div>;
@@ -337,7 +372,7 @@ export default function PlanCuentasTree({ onSelect }: PlanCuentasTreeProps) {
             {cuentas.length} cuentas · {hojas.length} hojas activas
           </div>
         </div>
-        <button onClick={() => setShowForm(!showForm)}
+        <button onClick={() => { setFormParent(null); setShowForm(!showForm); }}
           className="scan-btn blue" style={{ padding: "6px 16px", fontSize: 12 }}>
           {showForm ? "Cancelar" : "+ Nueva cuenta"}
         </button>
@@ -355,7 +390,7 @@ export default function PlanCuentasTree({ onSelect }: PlanCuentasTreeProps) {
 
       {/* Formulario nueva cuenta */}
       {showForm && (
-        <NuevaCuentaForm cuentas={cuentas} onSave={handleCreate} onCancel={() => setShowForm(false)} />
+        <NuevaCuentaForm cuentas={cuentas} onSave={handleCreate} onCancel={() => { setShowForm(false); setFormParent(null); }} defaultParent={formParent} />
       )}
 
       {/* Árbol */}
@@ -370,6 +405,7 @@ export default function PlanCuentasTree({ onSelect }: PlanCuentasTreeProps) {
             depth={0}
             onToggleActive={handleToggleActive}
             onEditName={handleEditName}
+            onAddChild={handleAddChild}
             onSelect={onSelect}
           />
         ))}
