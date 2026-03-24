@@ -6,29 +6,8 @@ export const maxDuration = 300;
 
 const MP_BASE_URL = "https://api.mercadopago.com";
 const MP_ACCESS_TOKEN = process.env.MP_ACCESS_TOKEN || "";
-const PAGE_SIZE = 50;
-const MAX_PAGES = 60;
 
-interface MPPago {
-  id: number;
-  date_created: string;
-  date_approved: string | null;
-  transaction_amount: number;
-  net_received_amount: number | null;
-  coupon_amount: number;
-  status: string;
-  description: string | null;
-  payment_type_id: string;
-  payment_method_id: string;
-  installments: number;
-  fee_details: { amount: number }[];
-  collector_id: number | null;
-  order?: { id: number };
-  payer?: { id?: string; email?: string };
-  operation_type?: string;
-  transaction_details?: { total_paid_amount?: number };
-  point_of_interaction?: { type?: string };
-}
+// ==================== HELPERS ====================
 
 async function mpGet(path: string, params: Record<string, string> = {}): Promise<unknown> {
   const qs = new URLSearchParams(params).toString();
@@ -38,6 +17,21 @@ async function mpGet(path: string, params: Record<string, string> = {}): Promise
     signal: AbortSignal.timeout(30000),
   });
   if (!res.ok) throw new Error(`MP API ${res.status}: ${await res.text().catch(() => "")}`);
+  return res.json();
+}
+
+async function mpPost(path: string, body: unknown): Promise<unknown> {
+  const url = `${MP_BASE_URL}${path}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${MP_ACCESS_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30000),
+  });
+  if (!res.ok) throw new Error(`MP API POST ${res.status}: ${await res.text().catch(() => "")}`);
   return res.json();
 }
 
@@ -61,10 +55,149 @@ function refHash(prefix: string, id: string): string {
   return crypto.createHash("sha256").update(`${prefix}_${id}`).digest("hex").slice(0, 32);
 }
 
+function sleep(ms: number) {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+// ==================== SETTLEMENT REPORT ====================
+
+interface MPReport {
+  id: number;
+  file_name: string;
+  status: string;
+  begin_date: string;
+  end_date: string;
+}
+
+/**
+ * Obtiene un settlement report procesado para el periodo.
+ * Si no existe uno que cubra el periodo completo, genera uno nuevo y espera.
+ */
+async function getSettlementReport(fechaDesde: string, fechaHasta: string): Promise<string | null> {
+  // 1. Buscar reportes existentes
+  const reports = await mpGet("/v1/account/settlement_report/list", {
+    begin_date: fechaDesde,
+    end_date: fechaHasta,
+  }) as MPReport[];
+
+  // Buscar uno procesado que cubra hasta cerca del fin del periodo
+  const hastaDate = new Date(fechaHasta).getTime();
+  const processed = (reports || [])
+    .filter(r => r.status === "processed" && r.file_name)
+    .sort((a, b) => new Date(b.end_date).getTime() - new Date(a.end_date).getTime());
+
+  // Si el reporte más reciente cubre al menos hasta ayer, usarlo
+  const oneDayMs = 24 * 60 * 60 * 1000;
+  if (processed.length > 0) {
+    const bestEnd = new Date(processed[0].end_date).getTime();
+    const now = Date.now();
+    // Usar si cubre hasta ayer o si el periodo ya terminó
+    if (bestEnd >= hastaDate - oneDayMs || hastaDate < now - oneDayMs) {
+      return processed[0].file_name;
+    }
+  }
+
+  // 2. Generar reporte nuevo
+  console.log("[MP Sync] No hay reporte actualizado, generando uno nuevo...");
+  const generated = await mpPost("/v1/account/settlement_report", {
+    begin_date: fechaDesde,
+    end_date: fechaHasta,
+  }) as MPReport;
+
+  if (!generated?.id) {
+    console.error("[MP Sync] No se pudo generar el reporte");
+    // Fallback: usar el mejor reporte existente si hay alguno
+    return processed.length > 0 ? processed[0].file_name : null;
+  }
+
+  // 3. Polling hasta que esté procesado (max 4 minutos)
+  const maxWait = 240_000;
+  const pollInterval = 15_000;
+  const start = Date.now();
+
+  while (Date.now() - start < maxWait) {
+    await sleep(pollInterval);
+
+    const updated = await mpGet("/v1/account/settlement_report/list", {
+      begin_date: fechaDesde,
+      end_date: fechaHasta,
+    }) as MPReport[];
+
+    const ready = (updated || []).find(r => r.id === generated.id && r.status === "processed");
+    if (ready?.file_name) {
+      console.log(`[MP Sync] Reporte listo: ${ready.file_name}`);
+      return ready.file_name;
+    }
+
+    const pending = (updated || []).find(r => r.id === generated.id);
+    console.log(`[MP Sync] Reporte ${generated.id} status: ${pending?.status || "?"} (${Math.round((Date.now() - start) / 1000)}s)`);
+  }
+
+  // Timeout: usar el mejor reporte existente como fallback
+  console.warn("[MP Sync] Timeout esperando reporte nuevo, usando el mejor disponible");
+  return processed.length > 0 ? processed[0].file_name : null;
+}
+
+/**
+ * Parsea el CSV del settlement report y extrae retiros (PAYOUTS).
+ */
+function parseRetiros(csv: string, empresaId: string, cuentaBancariaId: string | null) {
+  const lines = csv.split("\n");
+  const rows: {
+    empresa_id: string;
+    banco: string;
+    cuenta: null;
+    fecha: string | null;
+    descripcion: string;
+    monto: number;
+    saldo: null;
+    referencia: string;
+    origen: "api";
+    cuenta_bancaria_id: string | null;
+    referencia_unica: string;
+    metadata: string;
+  }[] = [];
+
+  for (const line of lines.slice(1)) {
+    const cols = line.split(";");
+    if (cols.length < 8) continue;
+    if (cols[2] !== "PAYOUTS") continue;
+
+    const sourceId = cols[0];
+    const monto = Math.abs(parseFloat(cols[3]) || 0);
+    const fecha = safeDate(cols[4]);
+    if (!monto || !fecha) continue;
+
+    rows.push({
+      empresa_id: empresaId,
+      banco: "MercadoPago",
+      cuenta: null,
+      fecha,
+      descripcion: `RETIRO MP → Banco | $${monto.toLocaleString("es-CL")}`,
+      monto: -monto,
+      saldo: null,
+      referencia: `MP-RETIRO-${sourceId}`,
+      origen: "api" as const,
+      cuenta_bancaria_id: cuentaBancariaId,
+      referencia_unica: refHash("mp_retiro", sourceId),
+      metadata: JSON.stringify({
+        tipo: "retiro",
+        source_id: sourceId,
+        monto_retirado: monto,
+      }),
+    });
+  }
+
+  return rows;
+}
+
+// ==================== MAIN ====================
+
 /**
  * POST /api/mp/sync
  * Body: { periodo: "YYYYMM" }
- * Sincroniza compras propias + retiros de MercadoPago del periodo.
+ * Sincroniza retiros/transferencias de MercadoPago del periodo.
+ * Genera automáticamente un settlement report si no existe uno actualizado.
  */
 export async function POST(req: NextRequest) {
   if (!MP_ACCESS_TOKEN) {
@@ -99,128 +232,40 @@ export async function POST(req: NextRequest) {
     const cuentaBancariaId = cuentas?.[0]?.id || null;
 
     // ══════════════════════════════════════
-    // 1. COMPRAS PROPIAS (collector_id = null)
+    // RETIROS (PAYOUTS del settlement report)
     // ══════════════════════════════════════
-    const allPagos: MPPago[] = [];
-    for (let page = 0; page < MAX_PAGES; page++) {
-      const data = await mpGet("/v1/payments/search", {
-        sort: "date_created",
-        criteria: "asc",
-        begin_date: fechaDesde,
-        end_date: fechaHasta,
-        status: "approved",
-        limit: String(PAGE_SIZE),
-        offset: String(page * PAGE_SIZE),
-      }) as { results: MPPago[]; paging: { total: number } };
+    let retiroRows: ReturnType<typeof parseRetiros> = [];
+    let reportUsado: string | null = null;
 
-      if (!data.results || data.results.length === 0) break;
-      allPagos.push(...data.results);
-      if (allPagos.length >= data.paging.total) break;
-      await new Promise(r => setTimeout(r, 300));
-    }
-
-    // Filtrar compras propias: collector_id es null
-    const compras = allPagos.filter(p => p.collector_id === null || p.collector_id === undefined);
-
-    const compraRows = compras.map(p => {
-      const td = p.transaction_details || {};
-      const totalPagado = td.total_paid_amount || p.transaction_amount;
-      const cupon = p.coupon_amount || 0;
-      const fecha = safeDate(p.date_approved || p.date_created);
-
-      const descParts: string[] = ["COMPRA ML"];
-      if (p.description) descParts.push(p.description.slice(0, 80));
-
-      return {
-        empresa_id: empresaId,
-        banco: "MercadoPago",
-        cuenta: null,
-        fecha,
-        descripcion: descParts.join(" | "),
-        monto: -totalPagado, // negativo = egreso/gasto
-        saldo: null,
-        referencia: `MP-COMPRA-${p.id}`,
-        origen: "api" as const,
-        cuenta_bancaria_id: cuentaBancariaId,
-        referencia_unica: refHash("mp_compra", String(p.id)),
-        metadata: JSON.stringify({
-          tipo: "compra_propia",
-          mp_id: String(p.id),
-          monto_producto: p.transaction_amount,
-          cupon_descuento: cupon,
-          total_pagado: totalPagado,
-          medio_pago: p.payment_method_id,
-          tipo_pago: p.payment_type_id,
-          cuotas: p.installments,
-          cuota_monto: p.installments > 1 ? Math.round(totalPagado / p.installments) : null,
-          orden_ml: p.order?.id ? String(p.order.id) : null,
-        }),
-      };
-    });
-
-    // ══════════════════════════════════════
-    // 2. RETIROS (PAYOUTS del settlement report)
-    // ══════════════════════════════════════
-    let retiroRows: typeof compraRows = [];
     try {
-      // Listar settlement reports del periodo
-      const reports = await mpGet("/v1/account/settlement_report/list", {
-        begin_date: fechaDesde,
-        end_date: fechaHasta,
-      }) as Array<{ file_name: string; status: string }>;
+      const fileName = await getSettlementReport(fechaDesde, fechaHasta);
 
-      // Descargar el primer reporte procesado
-      const processed = (reports || []).filter(r => r.status === "processed");
-      if (processed.length > 0) {
-        const csv = await mpGetText(`/v1/account/settlement_report/${processed[0].file_name}`);
-        const lines = csv.split("\n");
-
-        for (const line of lines.slice(1)) {
-          const cols = line.split(";");
-          if (cols.length < 8) continue;
-          if (cols[2] !== "PAYOUTS") continue;
-
-          const sourceId = cols[0];
-          const monto = Math.abs(parseFloat(cols[3]) || 0);
-          const fecha = safeDate(cols[4]);
-          if (!monto || !fecha) continue;
-
-          retiroRows.push({
-            empresa_id: empresaId,
-            banco: "MercadoPago",
-            cuenta: null,
-            fecha,
-            descripcion: `RETIRO MP → Banco | $${monto.toLocaleString("es-CL")}`,
-            monto: -monto, // negativo = sale de MP
-            saldo: null,
-            referencia: `MP-RETIRO-${sourceId}`,
-            origen: "api" as const,
-            cuenta_bancaria_id: cuentaBancariaId,
-            referencia_unica: refHash("mp_retiro", sourceId),
-            metadata: JSON.stringify({
-              tipo: "retiro",
-              source_id: sourceId,
-              monto_retirado: monto,
-            }),
-          });
-        }
+      if (fileName) {
+        reportUsado = fileName;
+        const csv = await mpGetText(`/v1/account/settlement_report/${fileName}`);
+        retiroRows = parseRetiros(csv, empresaId, cuentaBancariaId);
       }
     } catch (err) {
       console.error("[MP Sync] Error obteniendo retiros:", err);
     }
 
     // ══════════════════════════════════════
-    // 3. DEDUP E INSERT
+    // DEDUP E INSERT
     // ══════════════════════════════════════
-    const allRows = [...compraRows, ...retiroRows];
-
-    if (allRows.length === 0) {
-      return NextResponse.json({ periodo, compras: 0, retiros: 0, mensaje: "Sin compras ni retiros en el periodo" });
+    if (retiroRows.length === 0) {
+      return NextResponse.json({
+        periodo,
+        retiros_nuevos: 0,
+        reporte: reportUsado,
+        mensaje: reportUsado
+          ? "Sin retiros nuevos en el periodo"
+          : "No se pudo obtener el settlement report. Intenta de nuevo en unos minutos.",
+      });
     }
 
     // Dedup
     const existingRefs = new Set<string>();
-    const allRefs = allRows.map(r => r.referencia_unica);
+    const allRefs = retiroRows.map(r => r.referencia_unica);
     for (let i = 0; i < allRefs.length; i += 100) {
       const batch = allRefs.slice(i, i + 100);
       const { data: existing } = await sb.from("movimientos_banco")
@@ -230,7 +275,7 @@ export async function POST(req: NextRequest) {
       for (const r of (existing || [])) existingRefs.add(r.referencia_unica);
     }
 
-    const newRows = allRows.filter(r => !existingRefs.has(r.referencia_unica));
+    const newRows = retiroRows.filter(r => !existingRefs.has(r.referencia_unica));
 
     let inserted = 0;
     for (let i = 0; i < newRows.length; i += 500) {
@@ -239,9 +284,6 @@ export async function POST(req: NextRequest) {
       if (error) console.error(`[MP Sync] Insert error:`, error.message);
       else inserted += batch.length;
     }
-
-    const newCompras = newRows.filter(r => JSON.parse(r.metadata).tipo === "compra_propia").length;
-    const newRetiros = newRows.filter(r => JSON.parse(r.metadata).tipo === "retiro").length;
 
     // Sync log
     await sb.from("sync_log").insert({
@@ -253,24 +295,10 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       periodo,
-      compras_encontradas: compras.length,
+      reporte: reportUsado,
       retiros_encontrados: retiroRows.length,
       ya_existentes: existingRefs.size,
-      compras_nuevas: newCompras,
-      retiros_nuevos: newRetiros,
-      total_insertado: inserted,
-      detalle_compras: compras.map(p => {
-        const td = p.transaction_details || {};
-        return {
-          fecha: safeDate(p.date_approved || p.date_created),
-          monto_producto: p.transaction_amount,
-          cupon: p.coupon_amount || 0,
-          total_pagado: td.total_paid_amount || p.transaction_amount,
-          medio: p.payment_method_id,
-          cuotas: p.installments,
-          orden_ml: p.order?.id || null,
-        };
-      }),
+      retiros_nuevos: inserted,
     });
   } catch (err) {
     console.error("[MP Sync] Error:", err);

@@ -1251,15 +1251,16 @@ function TabBanco({ empresa, periodo }: { empresa: DBEmpresa; periodo: string })
           try {
             const res = await fetch("/api/mp/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ periodo: per }) });
             const d = await res.json();
-            if (!d.error) { totalC += d.compras_nuevas || 0; totalR += d.retiros_nuevos || 0; }
+            if (!d.error) { totalR += d.retiros_nuevos || 0; }
           } catch { /* skip */ }
         }
-        setSyncMPMsg(`${totalC} compras + ${totalR} retiros importados de MP ${periodo}`);
+        setSyncMPMsg(`${totalR} retiros importados de MP ${periodo}`);
       } else {
         const res = await fetch("/api/mp/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ periodo }) });
         const d = await res.json();
         if (d.error) setSyncMPMsg(`Error: ${d.error}`);
-        else setSyncMPMsg(`${d.compras_nuevas || 0} compras + ${d.retiros_nuevos || 0} retiros importados de MP`);
+        else if (d.mensaje && d.retiros_nuevos === 0) setSyncMPMsg(d.mensaje);
+        else setSyncMPMsg(`${d.retiros_nuevos || 0} retiros importados de MP`);
       }
       load();
     } catch (e) {
@@ -1375,7 +1376,7 @@ function TabBanco({ empresa, periodo }: { empresa: DBEmpresa; periodo: string })
               </button>
               <button onClick={handleSyncMP} disabled={syncingMP}
                 style={{ padding: "6px 16px", fontSize: 12, fontWeight: 600, borderRadius: 8, background: "var(--blueBg)", color: "var(--blue)", border: "1px solid var(--blueBd)", cursor: "pointer", opacity: syncingMP ? 0.6 : 1 }}>
-                {syncingMP ? "Sync MP..." : "Sync MP (Compras+Retiros)"}
+                {syncingMP ? "Sync MP..." : "Sync MP (Retiros)"}
               </button>
             </>
           )}
