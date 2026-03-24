@@ -9,7 +9,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 60;
 
-const SII_AUTH_URL = "https://herculesr.sii.cl/cgi_AUT2000/CAutInWor498.cgi";
+const SII_AUTH_URL = "https://zeusr.sii.cl/cgi_AUT2000/CAutInWor498.cgi";
 const BHE_CGI_URL = "https://palena.sii.cl/cgi_IMT/TMBCOC_InformeMensualBheRec.cgi";
 
 // ==================== AUTH ====================
@@ -27,17 +27,35 @@ async function autenticarSII(rut: string, dv: string, clave: string): Promise<st
       redirect: "manual",
     });
 
-    const cookies = resp.headers.getSetCookie?.() || [];
+    // Buscar TOKEN en set-cookie (puede venir como redirect 302 o response 200)
     let token = "";
+
+    // Método 1: getSetCookie
+    const cookies = resp.headers.getSetCookie?.() || [];
     for (const c of cookies) {
       const match = c.match(/TOKEN=([^;]+)/);
       if (match) { token = match[1]; break; }
     }
+
+    // Método 2: header raw
     if (!token) {
       const raw = resp.headers.get("set-cookie") || "";
       const match = raw.match(/TOKEN=([^;]+)/);
       if (match) token = match[1];
     }
+
+    // Método 3: buscar en el body HTML (zeusr puede devolver token en un script)
+    if (!token) {
+      const html = await resp.text();
+      // Verificar si la respuesta indica error
+      if (html.includes("Transaccion Rechazada")) {
+        console.error(`[BHE Auth] Transaccion Rechazada. Status: ${resp.status}`);
+        return null;
+      }
+      const bodyMatch = html.match(/TOKEN[=:][\s'"]*([A-Za-z0-9]+)/);
+      if (bodyMatch) token = bodyMatch[1];
+    }
+
     if (!token) {
       console.error(`[BHE Auth] No TOKEN. Status: ${resp.status}, headers: ${JSON.stringify(Object.fromEntries(resp.headers.entries()))}`);
     }
