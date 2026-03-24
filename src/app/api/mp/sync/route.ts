@@ -51,23 +51,77 @@ interface MPReport {
   format?: string;
 }
 
+async function mpPost(path: string, body: unknown): Promise<unknown> {
+  const url = `${MP_BASE_URL}${path}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30000),
+  });
+  if (!res.ok) throw new Error(`MP API POST ${res.status}`);
+  return res.json();
+}
+
+function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
+
 /**
- * Busca el release report más reciente que cubra el periodo.
- * Intenta release_report primero, fallback a settlement_report.
+ * Busca el release report más reciente. Si no hay uno fresco (< 1 hora),
+ * genera uno nuevo y espera hasta 2 minutos a que esté listo.
+ * Fallback a settlement_report si no hay release reports.
  */
 async function findReport(fechaDesde: string, fechaHasta: string): Promise<{ fileName: string; type: "release" | "settlement" } | null> {
-  // 1. Buscar release reports (reporte de liberaciones)
+  // 1. Buscar release reports existentes
   try {
     const releases = await mpGet("/v1/account/release_report/list") as MPReport[];
     const ready = (releases || [])
       .filter(r => (r.status === "enabled" || r.status === "processed") && r.file_name && r.file_name.endsWith(".csv"))
       .sort((a, b) => new Date(b.end_date).getTime() - new Date(a.end_date).getTime());
 
+    const desdeDate = new Date(fechaDesde).getTime();
+
     if (ready.length > 0) {
-      // Usar el más reciente que cubra al menos parte del periodo
-      const desdeDate = new Date(fechaDesde).getTime();
-      const match = ready.find(r => new Date(r.end_date).getTime() >= desdeDate);
-      if (match) return { fileName: match.file_name, type: "release" };
+      const best = ready.find(r => new Date(r.end_date).getTime() >= desdeDate);
+      if (best) {
+        // Verificar si el reporte es reciente (generado hace < 1 hora)
+        // El filename tiene formato: reserve-release-...-YYYY-MM-DD-HHMMSS.csv
+        const nameMatch = best.file_name.match(/(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})(\d{2})\.csv$/);
+        if (nameMatch) {
+          const reportDate = new Date(`${nameMatch[1]}-${nameMatch[2]}-${nameMatch[3]}T${nameMatch[4]}:${nameMatch[5]}:${nameMatch[6]}Z`);
+          const ageMs = Date.now() - reportDate.getTime();
+          if (ageMs < 3600_000) {
+            // Reporte fresco (< 1 hora) — usarlo directamente
+            return { fileName: best.file_name, type: "release" };
+          }
+        }
+
+        // Reporte viejo — generar uno nuevo
+        console.log("[MP Sync] Reporte existente pero viejo, generando uno fresco...");
+        try {
+          await mpPost("/v1/account/release_report", {
+            begin_date: fechaDesde,
+            end_date: fechaHasta,
+          });
+
+          // Polling: esperar hasta 2 min
+          for (let i = 0; i < 12; i++) {
+            await sleep(10_000);
+            const updated = await mpGet("/v1/account/release_report/list") as MPReport[];
+            const fresh = (updated || [])
+              .filter(r => (r.status === "enabled" || r.status === "processed") && r.file_name && r.file_name.endsWith(".csv"))
+              .sort((a, b) => new Date(b.end_date).getTime() - new Date(a.end_date).getTime());
+            if (fresh.length > 0 && fresh[0].file_name !== best.file_name) {
+              console.log(`[MP Sync] Reporte fresco listo: ${fresh[0].file_name}`);
+              return { fileName: fresh[0].file_name, type: "release" };
+            }
+          }
+        } catch (err) {
+          console.log("[MP Sync] No se pudo generar reporte nuevo:", err);
+        }
+
+        // Fallback: usar el reporte viejo
+        return { fileName: best.file_name, type: "release" };
+      }
     }
   } catch (err) {
     console.log("[MP Sync] No se pudo consultar release_report:", err);
