@@ -169,7 +169,7 @@ export default function ConciliacionSplitView({
     setLoading(true);
     const [m, c, v, conc] = await Promise.all([
       fetchMovimientosBanco(empresa.id),
-      fetchRcvCompras(empresa.id, periodo),
+      fetchRcvCompras(empresa.id),
       fetchRcvVentas(empresa.id, periodo),
       fetchConciliaciones(empresa.id),
     ]);
