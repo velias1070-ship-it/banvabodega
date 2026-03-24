@@ -1241,7 +1241,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                               if (nota === null) return;
                               setLoading(true);
                               try {
-                                await resolverDiscrepanciaQty(d.id!, r.valor, nota);
+                                await resolverDiscrepanciaQty(d.id!, r.valor, nota, { linea_id: d.linea_id, recepcion_id: d.recepcion_id, qty_recibida: d.qty_recibida, tipo: d.tipo });
                                 await refreshDetail();
                               } catch (e: unknown) {
                                 console.error("Error resolviendo discrepancia qty:", e);

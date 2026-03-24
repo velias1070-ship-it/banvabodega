@@ -2609,13 +2609,27 @@ export async function recalcularDiscrepanciasQty(recepcionId: string, lineas: db
   return detectarDiscrepanciasQty(recepcionId, lineas);
 }
 
-export async function resolverDiscrepanciaQty(discId: string, estado: db.DiscrepanciaQtyEstado, notas?: string) {
+export async function resolverDiscrepanciaQty(
+  discId: string, estado: db.DiscrepanciaQtyEstado, notas?: string,
+  discInfo?: { linea_id: string; recepcion_id: string; qty_recibida: number; tipo: string }
+) {
   await db.updateDiscrepanciaQty(discId, {
     estado,
     resuelto_por: "admin",
     resuelto_at: new Date().toISOString(),
     notas: notas || "",
   });
+
+  // For NOTA_CREDITO on FALTANTE: adjust qty_factura to qty_recibida so the line can close
+  if (estado === "NOTA_CREDITO" && discInfo && discInfo.tipo === "FALTANTE" && discInfo.linea_id) {
+    await db.updateRecepcionLinea(discInfo.linea_id, { qty_factura: discInfo.qty_recibida });
+    // Check if all lines are now complete → close recepcion
+    const lineas = await db.fetchRecepcionLineas(discInfo.recepcion_id);
+    const allUbicadas = lineas.every(l => l.estado === "UBICADA" || (l.qty_ubicada || 0) >= l.qty_factura);
+    if (allUbicadas) {
+      await db.updateRecepcion(discInfo.recepcion_id, { estado: "COMPLETADA", completed_at: new Date().toISOString() });
+    }
+  }
 }
 
 export async function crearDiscrepanciaQtyManual(
