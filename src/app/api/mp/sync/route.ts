@@ -20,21 +20,6 @@ async function mpGet(path: string, params: Record<string, string> = {}): Promise
   return res.json();
 }
 
-async function mpPost(path: string, body: unknown): Promise<unknown> {
-  const url = `${MP_BASE_URL}${path}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${MP_ACCESS_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(30000),
-  });
-  if (!res.ok) throw new Error(`MP API POST ${res.status}: ${await res.text().catch(() => "")}`);
-  return res.json();
-}
-
 async function mpGetText(path: string): Promise<string> {
   const url = `${MP_BASE_URL}${path}`;
   const res = await fetch(url, {
@@ -55,11 +40,7 @@ function refHash(prefix: string, id: string): string {
   return crypto.createHash("sha256").update(`${prefix}_${id}`).digest("hex").slice(0, 32);
 }
 
-function sleep(ms: number) {
-  return new Promise(r => setTimeout(r, ms));
-}
-
-// ==================== SETTLEMENT REPORT ====================
+// ==================== RELEASE REPORT ====================
 
 interface MPReport {
   id: number;
@@ -67,81 +48,57 @@ interface MPReport {
   status: string;
   begin_date: string;
   end_date: string;
+  format?: string;
 }
 
 /**
- * Obtiene un settlement report procesado para el periodo.
- * Si no existe uno que cubra el periodo completo, genera uno nuevo y espera.
+ * Busca el release report más reciente que cubra el periodo.
+ * Intenta release_report primero, fallback a settlement_report.
  */
-async function getSettlementReport(fechaDesde: string, fechaHasta: string): Promise<string | null> {
-  // 1. Buscar reportes existentes
-  const reports = await mpGet("/v1/account/settlement_report/list", {
-    begin_date: fechaDesde,
-    end_date: fechaHasta,
-  }) as MPReport[];
+async function findReport(fechaDesde: string, fechaHasta: string): Promise<{ fileName: string; type: "release" | "settlement" } | null> {
+  // 1. Buscar release reports (reporte de liberaciones)
+  try {
+    const releases = await mpGet("/v1/account/release_report/list") as MPReport[];
+    const ready = (releases || [])
+      .filter(r => (r.status === "enabled" || r.status === "processed") && r.file_name && r.file_name.endsWith(".csv"))
+      .sort((a, b) => new Date(b.end_date).getTime() - new Date(a.end_date).getTime());
 
-  // Buscar uno procesado que cubra hasta cerca del fin del periodo
-  const hastaDate = new Date(fechaHasta).getTime();
-  const processed = (reports || [])
-    .filter(r => r.status === "processed" && r.file_name)
-    .sort((a, b) => new Date(b.end_date).getTime() - new Date(a.end_date).getTime());
-
-  // Si el reporte más reciente cubre al menos hasta ayer, usarlo
-  const oneDayMs = 24 * 60 * 60 * 1000;
-  if (processed.length > 0) {
-    const bestEnd = new Date(processed[0].end_date).getTime();
-    const now = Date.now();
-    // Usar si cubre hasta ayer o si el periodo ya terminó
-    if (bestEnd >= hastaDate - oneDayMs || hastaDate < now - oneDayMs) {
-      return processed[0].file_name;
+    if (ready.length > 0) {
+      // Usar el más reciente que cubra al menos parte del periodo
+      const desdeDate = new Date(fechaDesde).getTime();
+      const match = ready.find(r => new Date(r.end_date).getTime() >= desdeDate);
+      if (match) return { fileName: match.file_name, type: "release" };
     }
+  } catch (err) {
+    console.log("[MP Sync] No se pudo consultar release_report:", err);
   }
 
-  // 2. Generar reporte nuevo
-  console.log("[MP Sync] No hay reporte actualizado, generando uno nuevo...");
-  const generated = await mpPost("/v1/account/settlement_report", {
-    begin_date: fechaDesde,
-    end_date: fechaHasta,
-  }) as MPReport;
-
-  if (!generated?.id) {
-    console.error("[MP Sync] No se pudo generar el reporte");
-    // Fallback: usar el mejor reporte existente si hay alguno
-    return processed.length > 0 ? processed[0].file_name : null;
-  }
-
-  // 3. Polling hasta que esté procesado (max 4 minutos)
-  const maxWait = 240_000;
-  const pollInterval = 15_000;
-  const start = Date.now();
-
-  while (Date.now() - start < maxWait) {
-    await sleep(pollInterval);
-
-    const updated = await mpGet("/v1/account/settlement_report/list", {
+  // 2. Fallback: settlement reports
+  try {
+    const settlements = await mpGet("/v1/account/settlement_report/list", {
       begin_date: fechaDesde,
       end_date: fechaHasta,
     }) as MPReport[];
 
-    const ready = (updated || []).find(r => r.id === generated.id && r.status === "processed");
-    if (ready?.file_name) {
-      console.log(`[MP Sync] Reporte listo: ${ready.file_name}`);
-      return ready.file_name;
-    }
+    const ready = (settlements || [])
+      .filter(r => r.status === "processed" && r.file_name)
+      .sort((a, b) => new Date(b.end_date).getTime() - new Date(a.end_date).getTime());
 
-    const pending = (updated || []).find(r => r.id === generated.id);
-    console.log(`[MP Sync] Reporte ${generated.id} status: ${pending?.status || "?"} (${Math.round((Date.now() - start) / 1000)}s)`);
+    if (ready.length > 0) {
+      return { fileName: ready[0].file_name, type: "settlement" };
+    }
+  } catch (err) {
+    console.log("[MP Sync] No se pudo consultar settlement_report:", err);
   }
 
-  // Timeout: usar el mejor reporte existente como fallback
-  console.warn("[MP Sync] Timeout esperando reporte nuevo, usando el mejor disponible");
-  return processed.length > 0 ? processed[0].file_name : null;
+  return null;
 }
 
 /**
- * Parsea el CSV del settlement report y extrae retiros (PAYOUTS).
+ * Parsea retiros del release report (columnas: DATE;SOURCE_ID;DESCRIPTION;NET_CREDIT;NET_DEBIT;...)
+ * Los payouts tienen DESCRIPTION = "payout"
  */
-function parseRetiros(csv: string, empresaId: string, cuentaBancariaId: string | null) {
+function parseRetirosRelease(csv: string, empresaId: string, cuentaBancariaId: string | null) {
   const lines = csv.split("\n");
   const rows: {
     empresa_id: string;
@@ -157,6 +114,49 @@ function parseRetiros(csv: string, empresaId: string, cuentaBancariaId: string |
     referencia_unica: string;
     metadata: string;
   }[] = [];
+
+  for (const line of lines.slice(1)) {
+    const cols = line.split(";");
+    if (cols.length < 6) continue;
+
+    const desc = (cols[2] || "").trim();
+    if (desc !== "payout") continue;
+
+    const sourceId = cols[1];
+    const debit = Math.abs(parseFloat(cols[4]) || 0);
+    const fecha = safeDate(cols[0]);
+    if (!debit || !fecha) continue;
+
+    rows.push({
+      empresa_id: empresaId,
+      banco: "MercadoPago",
+      cuenta: null,
+      fecha,
+      descripcion: `RETIRO MP → Banco | $${debit.toLocaleString("es-CL")}`,
+      monto: -debit,
+      saldo: null,
+      referencia: `MP-RETIRO-${sourceId}`,
+      origen: "api" as const,
+      cuenta_bancaria_id: cuentaBancariaId,
+      referencia_unica: refHash("mp_retiro", sourceId),
+      metadata: JSON.stringify({
+        tipo: "retiro",
+        source_id: sourceId,
+        monto_retirado: debit,
+      }),
+    });
+  }
+
+  return rows;
+}
+
+/**
+ * Parsea retiros del settlement report (columnas: SOURCE_ID;PAYMENT_METHOD_TYPE;TRANSACTION_TYPE;TRANSACTION_AMOUNT;...)
+ * Los payouts tienen TRANSACTION_TYPE = "PAYOUTS"
+ */
+function parseRetirosSettlement(csv: string, empresaId: string, cuentaBancariaId: string | null) {
+  const lines = csv.split("\n");
+  const rows: ReturnType<typeof parseRetirosRelease> = [];
 
   for (const line of lines.slice(1)) {
     const cols = line.split(";");
@@ -197,7 +197,7 @@ function parseRetiros(csv: string, empresaId: string, cuentaBancariaId: string |
  * POST /api/mp/sync
  * Body: { periodo: "YYYYMM" }
  * Sincroniza retiros/transferencias de MercadoPago del periodo.
- * Genera automáticamente un settlement report si no existe uno actualizado.
+ * Usa release report (preferido) o settlement report como fallback.
  */
 export async function POST(req: NextRequest) {
   if (!MP_ACCESS_TOKEN) {
@@ -232,18 +232,26 @@ export async function POST(req: NextRequest) {
     const cuentaBancariaId = cuentas?.[0]?.id || null;
 
     // ══════════════════════════════════════
-    // RETIROS (PAYOUTS del settlement report)
+    // RETIROS (PAYOUTS) desde release o settlement report
     // ══════════════════════════════════════
-    let retiroRows: ReturnType<typeof parseRetiros> = [];
+    let retiroRows: ReturnType<typeof parseRetirosRelease> = [];
     let reportUsado: string | null = null;
+    let reportType: string | null = null;
 
     try {
-      const fileName = await getSettlementReport(fechaDesde, fechaHasta);
+      const report = await findReport(fechaDesde, fechaHasta);
 
-      if (fileName) {
-        reportUsado = fileName;
-        const csv = await mpGetText(`/v1/account/settlement_report/${fileName}`);
-        retiroRows = parseRetiros(csv, empresaId, cuentaBancariaId);
+      if (report) {
+        reportUsado = report.fileName;
+        reportType = report.type;
+        const downloadPath = report.type === "release"
+          ? `/v1/account/release_report/${report.fileName}`
+          : `/v1/account/settlement_report/${report.fileName}`;
+        const csv = await mpGetText(downloadPath);
+
+        retiroRows = report.type === "release"
+          ? parseRetirosRelease(csv, empresaId, cuentaBancariaId)
+          : parseRetirosSettlement(csv, empresaId, cuentaBancariaId);
       }
     } catch (err) {
       console.error("[MP Sync] Error obteniendo retiros:", err);
@@ -257,9 +265,10 @@ export async function POST(req: NextRequest) {
         periodo,
         retiros_nuevos: 0,
         reporte: reportUsado,
+        reporte_tipo: reportType,
         mensaje: reportUsado
           ? "Sin retiros nuevos en el periodo"
-          : "No se pudo obtener el settlement report. Intenta de nuevo en unos minutos.",
+          : "No hay reporte disponible. Genera uno desde el panel de MercadoPago en Informes → Liberaciones.",
       });
     }
 
@@ -296,6 +305,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       periodo,
       reporte: reportUsado,
+      reporte_tipo: reportType,
       retiros_encontrados: retiroRows.length,
       ya_existentes: existingRefs.size,
       retiros_nuevos: inserted,
