@@ -229,8 +229,28 @@ export default function ConciliacionSplitView({
   // Movimientos filtrados
   const movFiltrados = useMemo(() => {
     let filtered = movBanco;
+    // Excluir movimientos internos de MP que no son bancarios reales
+    filtered = filtered.filter(m => {
+      if (m.estado_conciliacion === "ignorado") return movFilter === "todos"; // solo mostrar ignorados en "todos"
+      const desc = (m.descripcion || "").toUpperCase();
+      // Excluir ventas, bonificaciones, devoluciones (son internos de MP)
+      if (desc.startsWith("VENTA ML")) return false;
+      if (desc.startsWith("BONIFICACION")) return false;
+      if (desc.startsWith("DEVOLUCION")) return false;
+      // Excluir compras ML pagadas con tarjeta (no son egresos de MP)
+      if (desc.startsWith("COMPRA ML") || desc.startsWith("COMPRA MP")) {
+        try {
+          const meta = typeof m.metadata === "string" ? JSON.parse(m.metadata) : m.metadata;
+          const parsed = typeof meta === "string" ? JSON.parse(meta) : meta;
+          if (parsed?.medio_pago && parsed.medio_pago !== "account_money") return false;
+        } catch { /* mantener si no se puede parsear */ }
+      }
+      // Excluir "Pago MP #" (son ventas individuales del sync viejo)
+      if (desc.startsWith("PAGO MP #")) return false;
+      return true;
+    });
     // Filtro estado
-    if (movFilter === "pendiente") filtered = filtered.filter(m => !concMovIds.has(m.id!));
+    if (movFilter === "pendiente") filtered = filtered.filter(m => !concMovIds.has(m.id!) && m.estado_conciliacion !== "ignorado");
     else if (movFilter === "conciliado") filtered = filtered.filter(m => concMovIds.has(m.id!));
     // Filtro tipo
     if (tipoFilter === "egresos") filtered = filtered.filter(m => m.monto < 0);

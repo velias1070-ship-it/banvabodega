@@ -489,18 +489,32 @@ function Dashboard({ empresa, periodo, onChangePeriodo }: { empresa: DBEmpresa; 
   const ingresos = movBanco.filter(m => m.monto > 0).reduce((s, m) => s + m.monto, 0);
   const egresos = movBanco.filter(m => m.monto < 0).reduce((s, m) => s + m.monto, 0);
 
-  // === Conciliación (filtrada por movimientos del período) ===
-  const movBancoIds = new Set(movBanco.map(m => m.id).filter(Boolean));
+  // === Filtrar movimientos reales (excluir internos de MP) ===
+  const movReales = movBanco.filter(m => {
+    const desc = (m.descripcion || "").toUpperCase();
+    if (desc.startsWith("VENTA ML") || desc.startsWith("BONIFICACION") || desc.startsWith("DEVOLUCION") || desc.startsWith("PAGO MP #")) return false;
+    if ((desc.startsWith("COMPRA ML") || desc.startsWith("COMPRA MP"))) {
+      try {
+        const meta = typeof m.metadata === "string" ? JSON.parse(m.metadata) : m.metadata;
+        const parsed = typeof meta === "string" ? JSON.parse(meta) : meta;
+        if (parsed?.medio_pago && parsed.medio_pago !== "account_money") return false;
+      } catch { /* mantener */ }
+    }
+    return true;
+  });
+
+  // === Conciliación (filtrada por movimientos reales del período) ===
+  const movBancoIds = new Set(movReales.map(m => m.id).filter(Boolean));
   const concDelPeriodo = conciliaciones.filter(c => c.movimiento_banco_id && movBancoIds.has(c.movimiento_banco_id));
   const concPendientes = concDelPeriodo.filter(c => c.estado === "pendiente").length;
   const concConfirmadas = concDelPeriodo.filter(c => c.estado === "confirmado").length;
   const movConciliadosSet = new Set(concDelPeriodo.filter(c => c.estado !== "rechazado").map(c => c.movimiento_banco_id));
-  const movSinConciliar = movBanco.filter(m => !m.estado_conciliacion || m.estado_conciliacion === "pendiente").length;
-  const movConciliados = movBanco.filter(m => m.estado_conciliacion === "conciliado" || movConciliadosSet.has(m.id!)).length;
-  const movIgnorados = movBanco.filter(m => m.estado_conciliacion === "ignorado").length;
-  const totalMov = movBanco.length;
+  const movSinConciliar = movReales.filter(m => !m.estado_conciliacion || m.estado_conciliacion === "pendiente").length;
+  const movConciliados = movReales.filter(m => m.estado_conciliacion === "conciliado" || movConciliadosSet.has(m.id!)).length;
+  const movIgnorados = movReales.filter(m => m.estado_conciliacion === "ignorado").length;
+  const totalMov = movReales.length;
   const pctConciliado = totalMov > 0 ? Math.round(((movConciliados + movIgnorados) / totalMov) * 100) : 0;
-  const montoSinConciliar = movBanco.filter(m => !m.estado_conciliacion || m.estado_conciliacion === "pendiente").reduce((s, m) => s + Math.abs(m.monto), 0);
+  const montoSinConciliar = movReales.filter(m => !m.estado_conciliacion || m.estado_conciliacion === "pendiente").reduce((s, m) => s + Math.abs(m.monto), 0);
 
   // === Reembolsos pendientes a Vicente ===
   const totalReembolsoPend = reembolsosPend.reduce((s, m) => s + Math.abs(m.monto), 0);
