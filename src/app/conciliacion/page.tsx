@@ -160,7 +160,7 @@ function useSiiCreds() {
 }
 
 interface SiiImportModalProps {
-  tipo: "COMPRA" | "VENTA";
+  tipo: "COMPRA" | "VENTA" | "BHE";
   empresa: DBEmpresa;
   periodoActual: string;
   onClose: () => void;
@@ -177,7 +177,7 @@ function SiiImportModal({ tipo, empresa, periodoActual, onClose, onImported }: S
   const [error, setError] = useState("");
   const [resultado, setResultado] = useState<{ registros: number } | null>(null);
 
-  const label = tipo === "COMPRA" ? "Compras" : "Ventas";
+  const label = tipo === "COMPRA" ? "Compras" : tipo === "BHE" ? "Boletas de Honorarios" : "Ventas";
 
   const handleImport = async () => {
     if (!rut || !clave || !periodo) {
@@ -189,10 +189,11 @@ function SiiImportModal({ tipo, empresa, periodoActual, onClose, onImported }: S
     setResultado(null);
 
     try {
-      const resp = await fetch("/api/sii/rcv", {
+      const endpoint = tipo === "BHE" ? "/api/sii/bhe" : "/api/sii/rcv";
+      const resp = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rut, clave, periodo, tipo }),
+        body: JSON.stringify(tipo === "BHE" ? { rut, clave, periodo } : { rut, clave, periodo, tipo }),
       });
 
       const json = await resp.json();
@@ -210,7 +211,7 @@ function SiiImportModal({ tipo, empresa, periodoActual, onClose, onImported }: S
       }
 
       // Guardar en Supabase
-      if (tipo === "COMPRA") {
+      if (tipo === "COMPRA" || tipo === "BHE") {
         const items = json.data.map((d: Record<string, unknown>) => ({
           ...d,
           empresa_id: empresa.id,
@@ -229,7 +230,7 @@ function SiiImportModal({ tipo, empresa, periodoActual, onClose, onImported }: S
         await insertSyncLog({
           empresa_id: empresa.id,
           periodo,
-          tipo: tipo === "COMPRA" ? "compras" : "ventas",
+          tipo: tipo === "COMPRA" ? "compras" : tipo === "BHE" ? "honorarios" : "ventas",
           registros: json.data.length,
         });
       }
@@ -864,6 +865,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const [tipoFilter, setTipoFilter] = useState<string>("todos");
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
+  const [showBheModal, setShowBheModal] = useState(false);
 
   const isAnual = periodo.length === 4;
 
@@ -965,6 +967,10 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
             className="scan-btn" style={{ padding: "6px 14px", fontSize: 11, fontWeight: 600, background: "linear-gradient(135deg, #2563eb, #3b82f6)", opacity: syncing ? 0.6 : 1 }}>
             {syncing ? "Importando..." : "Importar SII"}
           </button>
+          <button onClick={() => setShowBheModal(true)}
+            style={{ padding: "6px 14px", fontSize: 11, fontWeight: 600, borderRadius: 8, background: "var(--amberBg)", color: "var(--amber)", border: "1px solid var(--amberBd)", cursor: "pointer" }}>
+            Importar BHE
+          </button>
           {empresa.id && (
             <button onClick={() => window.open(`/api/sii/export?empresa_id=${empresa.id}&anio=${isAnual ? periodo : periodo.slice(0, 4)}&tipo=compras`, "_blank")}
               style={{ padding: "6px 14px", fontSize: 11, fontWeight: 600, borderRadius: 8, background: "var(--greenBg)", color: "var(--green)", border: "1px solid var(--greenBd)", cursor: "pointer" }}>
@@ -973,6 +979,10 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
           )}
         </div>
       </div>
+
+      {/* Modal Importar BHE */}
+      {showBheModal && <SiiImportModal tipo="BHE" empresa={empresa} periodoActual={periodo} onClose={() => setShowBheModal(false)} onImported={() => { setShowBheModal(false); load(); }} />}
+
       {syncMsg && (
         <div style={{ padding: "8px 12px", borderRadius: 8, marginBottom: 12, fontSize: 12, fontWeight: 600,
           whiteSpace: "pre-wrap", maxHeight: 300, overflow: "auto",
