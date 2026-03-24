@@ -2171,9 +2171,10 @@ function AdminEnviosFull({ refresh }: { refresh: () => void }) {
   const loadSessions = async () => {
     setLoading(true);
     const today = new Date().toISOString().slice(0, 10);
-    const [active, todaySessions] = await Promise.all([getActivePickings(), getPickingsByDate(today)]);
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    const [active, todaySessions, yesterdaySessions] = await Promise.all([getActivePickings(), getPickingsByDate(today), getPickingsByDate(yesterday)]);
     const map = new Map<string, DBPickingSession>();
-    [...active, ...todaySessions].forEach(s => { if (s.id && s.tipo === "envio_full") map.set(s.id, s); });
+    [...active, ...todaySessions, ...yesterdaySessions].forEach(s => { if (s.id && s.tipo === "envio_full") map.set(s.id, s); });
     setSessions(Array.from(map.values()).sort((a, b) => (b.created_at || "").localeCompare(a.created_at || "")));
     setLoading(false);
   };
