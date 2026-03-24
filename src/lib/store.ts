@@ -2115,7 +2115,24 @@ export async function pickearComponente(
   const comp = linea.componentes[compIdx];
   if (!comp || comp.estado === "PICKEADO") return false;
 
-  // Decrement stock from the suggested position
+  // Mark as picked FIRST, save session, THEN move stock
+  comp.estado = "PICKEADO";
+  comp.pickedAt = new Date().toISOString();
+  comp.operario = operario;
+
+  if (linea.componentes.every(c => c.estado === "PICKEADO")) {
+    linea.estado = "PICKEADO";
+  }
+
+  const allDone = freshSession.lineas.every(l => l.estado === "PICKEADO");
+
+  await db.updatePickingSession(sessionId, {
+    lineas: freshSession.lineas,
+    estado: allDone ? "COMPLETADA" : "EN_PROCESO",
+    ...(allDone ? { completed_at: new Date().toISOString() } : {}),
+  });
+
+  // Decrement stock AFTER session is saved
   const pos = comp.posicion;
   if (pos && pos !== "?") {
     recordMovement({
@@ -2125,26 +2142,6 @@ export async function pickearComponente(
     });
   }
 
-  // Update session data
-  comp.estado = "PICKEADO";
-  comp.pickedAt = new Date().toISOString();
-  comp.operario = operario;
-
-  // Check if all components of this line are picked
-  if (linea.componentes.every(c => c.estado === "PICKEADO")) {
-    linea.estado = "PICKEADO";
-  }
-
-  // Check if all lines are picked
-  const allDone = freshSession.lineas.every(l => l.estado === "PICKEADO");
-
-  await db.updatePickingSession(sessionId, {
-    lineas: freshSession.lineas,
-    estado: allDone ? "COMPLETADA" : "EN_PROCESO",
-    ...(allDone ? { completed_at: new Date().toISOString() } : {}),
-  });
-
-  // Trigger: picking completado
   if (allDone && sessionId) {
     import("./agents-triggers").then(m => m.dispararTrigger("picking_completado", { session_id: sessionId, tipo: "flex" })).catch(() => {});
   }
@@ -2255,16 +2252,8 @@ export async function pickearLineaFull(
   const comp = linea.componentes[0];
   if (!comp || comp.estado === "PICKEADO") return false;
 
-  // Decrement stock
-  const pos = comp.posicion;
-  if (pos && pos !== "?") {
-    recordMovement({
-      ts: new Date().toISOString(), type: "out", reason: "envio_full" as OutReason,
-      sku: comp.skuOrigen, pos, qty: comp.unidades,
-      who: operario, note: `Envío Full: ${linea.skuVenta} (${comp.unidades} uds ${comp.skuOrigen})`,
-    });
-  }
-
+  // Mark as picked FIRST, then save to DB, then decrement stock
+  // This ensures the session update happens before stock movement
   comp.estado = "PICKEADO";
   comp.pickedAt = new Date().toISOString();
   comp.operario = operario;
@@ -2280,6 +2269,16 @@ export async function pickearLineaFull(
     estado: sessionDone ? "COMPLETADA" : "EN_PROCESO",
     ...(sessionDone ? { completed_at: new Date().toISOString() } : {}),
   });
+
+  // Decrement stock AFTER session is saved — prevents stock moving without session update
+  const pos = comp.posicion;
+  if (pos && pos !== "?") {
+    recordMovement({
+      ts: new Date().toISOString(), type: "out", reason: "envio_full" as OutReason,
+      sku: comp.skuOrigen, pos, qty: comp.unidades,
+      who: operario, note: `Envío Full: ${linea.skuVenta} (${comp.unidades} uds ${comp.skuOrigen})`,
+    });
+  }
 
   if (sessionDone) {
     import("./agents-triggers").then(m => m.dispararTrigger("picking_completado", { session_id: sessionId, tipo: "envio_full" })).catch(() => {});
