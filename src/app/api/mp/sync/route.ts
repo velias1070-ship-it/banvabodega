@@ -95,11 +95,23 @@ async function findReport(fechaDesde: string, fechaHasta: string): Promise<{ fil
 }
 
 /**
- * Parsea retiros del release report (columnas: DATE;SOURCE_ID;DESCRIPTION;NET_CREDIT;NET_DEBIT;...)
+ * Parsea retiros del release report. Usa nombres de columna del header (no posición fija).
  * Los payouts tienen DESCRIPTION = "payout"
  */
 function parseRetirosRelease(csv: string, empresaId: string, cuentaBancariaId: string | null) {
   const lines = csv.split("\n");
+  if (lines.length < 2) return [];
+
+  // Mapear columnas por nombre
+  const header = lines[0].split(";");
+  const idx: Record<string, number> = {};
+  header.forEach((h, i) => { idx[h.trim()] = i; });
+
+  const col = (row: string[], name: string) => {
+    const i = idx[name];
+    return i !== undefined && i < row.length ? row[i].trim() : "";
+  };
+
   const rows: {
     empresa_id: string;
     banco: string;
@@ -119,20 +131,25 @@ function parseRetirosRelease(csv: string, empresaId: string, cuentaBancariaId: s
     const cols = line.split(";");
     if (cols.length < 6) continue;
 
-    const desc = (cols[2] || "").trim();
+    const desc = col(cols, "DESCRIPTION");
     if (desc !== "payout") continue;
 
-    const sourceId = cols[1];
-    const debit = Math.abs(parseFloat(cols[4]) || 0);
-    const fecha = safeDate(cols[0]);
+    const sourceId = col(cols, "SOURCE_ID");
+    const debit = Math.abs(parseFloat(col(cols, "NET_DEBIT_AMOUNT")) || 0);
+    const fecha = safeDate(col(cols, "DATE"));
+    const payerName = col(cols, "PAYER_NAME");
     if (!debit || !fecha) continue;
+
+    const descParts = ["RETIRO MP"];
+    if (payerName) descParts.push(payerName);
+    descParts.push(`$${debit.toLocaleString("es-CL")}`);
 
     rows.push({
       empresa_id: empresaId,
       banco: "MercadoPago",
       cuenta: null,
       fecha,
-      descripcion: `RETIRO MP → Banco | $${debit.toLocaleString("es-CL")}`,
+      descripcion: descParts.join(" | "),
       monto: -debit,
       saldo: null,
       referencia: `MP-RETIRO-${sourceId}`,
@@ -143,6 +160,7 @@ function parseRetirosRelease(csv: string, empresaId: string, cuentaBancariaId: s
         tipo: "retiro",
         source_id: sourceId,
         monto_retirado: debit,
+        payer_name: payerName || null,
       }),
     });
   }
