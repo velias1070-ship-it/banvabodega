@@ -167,8 +167,14 @@ export default function ConciliacionSplitView({
   const load = useCallback(async () => {
     if (!empresa.id) return;
     setLoading(true);
+    // Filtrar movimientos banco por período
+    const isAnual = periodo.length === 4;
+    const y = parseInt(periodo.slice(0, 4));
+    const m2 = isAnual ? 1 : parseInt(periodo.slice(4, 6));
+    const desde = isAnual ? `${y}-01-01` : `${y}-${String(m2).padStart(2, "0")}-01`;
+    const hasta = isAnual ? `${y}-12-31` : `${y}-${String(m2).padStart(2, "0")}-${new Date(y, m2, 0).getDate()}`;
     const [m, c, v, conc] = await Promise.all([
-      fetchMovimientosBanco(empresa.id),
+      fetchMovimientosBanco(empresa.id, { desde, hasta }),
       fetchRcvCompras(empresa.id),
       fetchRcvVentas(empresa.id, periodo),
       fetchConciliaciones(empresa.id),
@@ -291,16 +297,20 @@ export default function ConciliacionSplitView({
 
     showFeedback("Match confirmado y feedback guardado");
 
-    // 4. Ofrecer crear regla automática
+    // 4. Actualizar estado local (sin recargar todo desde DB)
     const movRef = selectedMov;
     const docRef = selectedDoc;
-    const condiciones = extraerCondicionesRegla(movRef, docRef);
+
+    // Marcar movimiento como conciliado en el estado local
+    setMovBanco(prev => prev.map(m => m.id === movRef.id ? { ...m, estado_conciliacion: "conciliado" } : m));
+    // Agregar conciliación al estado local
+    setConciliaciones(prev => [...prev, c]);
 
     setSelectedMov(null);
     setSelectedDoc(null);
-    await load();
 
-    // Solo sugerir si hay condiciones útiles (al menos una de descripción)
+    // 5. Ofrecer crear regla automática
+    const condiciones = extraerCondicionesRegla(movRef, docRef);
     if (condiciones.some(c => c.campo === "descripcion")) {
       setRuleFromMatch({ mov: movRef, doc: docRef });
       setRuleCondiciones(condiciones);
@@ -366,9 +376,11 @@ export default function ConciliacionSplitView({
       },
     });
 
+    // Actualizar estado local
+    const movId = selectedMov.id;
+    setMovBanco(prev => prev.map(m => m.id === movId ? { ...m, estado_conciliacion: "ignorado" } : m));
     setSelectedMov(null);
     showFeedback("Movimiento ignorado");
-    load();
   };
 
   // Guardar regla sugerida
