@@ -38,6 +38,9 @@ async function autenticarSII(rut: string, dv: string, clave: string): Promise<st
       const match = raw.match(/TOKEN=([^;]+)/);
       if (match) token = match[1];
     }
+    if (!token) {
+      console.error(`[BHE Auth] No TOKEN. Status: ${resp.status}, headers: ${JSON.stringify(Object.fromEntries(resp.headers.entries()))}`);
+    }
     return token || null;
   } catch (err) {
     console.error("[BHE Auth] Error:", err);
@@ -169,8 +172,9 @@ export async function POST(req: NextRequest) {
     console.log(`[BHE] Autenticando RUT ${rut}-${dv}...`);
     const token = await autenticarSII(rut, dv, clave);
     if (!token) {
-      return NextResponse.json({ error: "No se pudo autenticar con el SII." }, { status: 401 });
+      return NextResponse.json({ error: "No se pudo autenticar con el SII. Verifica RUT y clave tributaria de la empresa." }, { status: 401 });
     }
+    console.log(`[BHE] Token obtenido: ${token.slice(0, 8)}...`);
 
     // 2. Descargar BHE
     console.log(`[BHE] Descargando BHE ${anio}-${mes}...`);
