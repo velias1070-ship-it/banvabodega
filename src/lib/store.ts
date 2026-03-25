@@ -1752,11 +1752,14 @@ export async function syncFlexPickingSession(): Promise<{ created: boolean; upda
   const existingSession = todaySessions.find(s => s.tipo === "flex" && s.estado !== "COMPLETADA");
 
   if (!existingSession) {
-    // Check if there's a completed session — only create new if there are truly new SKUs
-    const completedSession = todaySessions.find(s => s.tipo === "flex" && s.estado === "COMPLETADA");
-    if (completedSession) {
-      const completedSkus = new Set(completedSession.lineas.map(l => l.skuVenta));
-      const trulyNewLineas = lineas.filter(l => !completedSkus.has(l.skuVenta));
+    // Check ALL completed/in-process sessions — only create if there are truly new SKUs
+    const allFlexToday = todaySessions.filter(s => s.tipo === "flex");
+    if (allFlexToday.length > 0) {
+      const allDoneSkus = new Set<string>();
+      for (const sess of allFlexToday) {
+        for (const l of sess.lineas) allDoneSkus.add(l.skuVenta.toUpperCase());
+      }
+      const trulyNewLineas = lineas.filter(l => !allDoneSkus.has(l.skuVenta.toUpperCase()));
       if (trulyNewLineas.length === 0) {
         return { created: false, updated: false, total: 0 };
       }
