@@ -42,26 +42,12 @@ export async function POST(req: NextRequest) {
       // Throttle: wait 1s between SKUs to avoid ML rate limits
       if (idx > 0) await new Promise(r => setTimeout(r, 1000));
       try {
-        // 2. Calculate total stock in WMS
-        const { data: stockRows } = await sb.from("stock").select("cantidad").eq("sku", sku);
-        const totalStock = (stockRows || []).reduce((s: number, r: { cantidad: number }) => s + r.cantidad, 0);
+        // 2. Get available stock from v_stock_disponible (on_hand - reserved)
+        const { data: stockRow } = await sb.from("v_stock_disponible")
+          .select("disponible").eq("sku", sku).maybeSingle();
+        const available = Math.max(0, (stockRow as { disponible: number } | null)?.disponible ?? 0);
 
-        // 3. Calculate committed stock from active shipments (ml_shipments + ml_shipment_items)
-        const { data: activeShipments } = await sb.from("ml_shipments").select("shipment_id")
-          .neq("logistic_type", "fulfillment")
-          .in("status", ["ready_to_ship", "pending"]);
-        let committed = 0;
-        if (activeShipments && activeShipments.length > 0) {
-          const sids = (activeShipments as { shipment_id: number }[]).map(s => s.shipment_id);
-          const { data: commitItems } = await sb.from("ml_shipment_items").select("quantity")
-            .in("shipment_id", sids).eq("seller_sku", sku);
-          committed = (commitItems || []).reduce((s: number, i: { quantity: number }) => s + i.quantity, 0);
-        }
-
-        // 4. Available = total - committed (Flex stock at selling_address)
-        const available = Math.max(0, totalStock - committed);
-
-        // 5. Send to ML via distributed stock API
+        // 3. Send to ML via distributed stock API
         const count = await syncStockToML(sku, available);
         if (count > 0) synced++;
       } catch (err) {
@@ -69,7 +55,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 6. Clear processed items from queue
+    // 4. Clear processed items from queue
     await sb.from("stock_sync_queue").delete().in("sku", uniqueSkus);
 
     console.log(`[ML Stock Sync] Done: ${synced}/${uniqueSkus.length} synced`);

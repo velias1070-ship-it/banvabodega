@@ -661,7 +661,13 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
     }
   }
 
-  // 4. Upsert ml_shipments
+  // 4. Read previous status (for reservation logic)
+  const { data: prevShipment } = await sb.from("ml_shipments")
+    .select("status").eq("shipment_id", shipmentId).maybeSingle();
+  const prevStatus = (prevShipment as { status: string } | null)?.status || null;
+  const newStatus = shipInfo.raw?.status || "unknown";
+
+  // 5. Upsert ml_shipments
   const shipmentRow = {
     shipment_id: shipmentId,
     order_ids: orderIds,
@@ -716,11 +722,68 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
     }
   }
 
+  // 7. Stock reservation logic based on status transitions
+  const RESERVE_STATUSES = ["ready_to_ship", "shipped"];
+  const RELEASE_DESPACHO_STATUSES = ["delivered"];
+  const RELEASE_CANCEL_STATUSES = ["cancelled", "not_delivered"];
+
+  // Collect SKU quantities from this shipment's items
+  const skuQtys = new Map<string, number>();
+  {
+    const { data: currentItems } = await sb.from("ml_shipment_items")
+      .select("seller_sku, quantity").eq("shipment_id", shipmentId);
+    for (const item of (currentItems || []) as { seller_sku: string; quantity: number }[]) {
+      skuQtys.set(item.seller_sku, (skuQtys.get(item.seller_sku) || 0) + item.quantity);
+    }
+  }
+
+  const wasReserved = prevStatus && RESERVE_STATUSES.includes(prevStatus);
+  const shouldReserve = RESERVE_STATUSES.includes(newStatus);
+  const shouldReleaseDespacho = RELEASE_DESPACHO_STATUSES.includes(newStatus);
+  const shouldReleaseCancel = RELEASE_CANCEL_STATUSES.includes(newStatus);
+
+  if (!wasReserved && shouldReserve) {
+    // New shipment or transition to ready_to_ship — reserve stock
+    for (const [sku, qty] of skuQtys) {
+      try {
+        const ok = await sb.rpc("reservar_stock", { p_sku: sku, p_cantidad: qty });
+        if (ok.data === false) {
+          console.warn(`[ML] reservar_stock: insufficient stock for ${sku} (need ${qty})`);
+        }
+      } catch (e) {
+        console.error(`[ML] reservar_stock error for ${sku}:`, e);
+      }
+    }
+  } else if (wasReserved && shouldReleaseDespacho) {
+    // Delivered — release reservation AND deduct stock
+    for (const [sku, qty] of skuQtys) {
+      try {
+        await sb.rpc("liberar_reserva", {
+          p_sku: sku, p_cantidad: qty, p_descontar: true,
+          p_motivo: "despacho_ml", p_operario: "webhook",
+        });
+      } catch (e) {
+        console.error(`[ML] liberar_reserva (despacho) error for ${sku}:`, e);
+      }
+    }
+  } else if (wasReserved && shouldReleaseCancel) {
+    // Cancelled — release reservation only
+    for (const [sku, qty] of skuQtys) {
+      try {
+        await sb.rpc("liberar_reserva", {
+          p_sku: sku, p_cantidad: qty, p_descontar: false,
+        });
+      } catch (e) {
+        console.error(`[ML] liberar_reserva (cancel) error for ${sku}:`, e);
+      }
+    }
+  }
+
   const ltLabel = shipInfo.logistic_type === "self_service" ? "Flex"
     : shipInfo.logistic_type === "cross_docking" ? "Colecta"
     : shipInfo.logistic_type === "xd_drop_off" ? "Drop-off"
     : shipInfo.logistic_type;
-  console.log(`[ML] Shipment ${shipmentId}: ${ltLabel}, ${totalItems} items, sla=${slaDate} (${slaStatus}), handling_limit=${shipInfo.handling_limit_date}`);
+  console.log(`[ML] Shipment ${shipmentId}: ${ltLabel}, ${totalItems} items, status=${prevStatus}→${newStatus}, sla=${slaDate} (${slaStatus})`);
 
   return { items: totalItems, shipInfo };
 }

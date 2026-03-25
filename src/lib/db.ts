@@ -64,6 +64,7 @@ export interface DBStock {
   sku_venta: string | null;
   posicion_id: string;
   cantidad: number;
+  qty_reserved: number;
 }
 
 export interface DBMovimiento {
@@ -289,6 +290,51 @@ export async function setStock(sku: string, posicion_id: string, cantidad: numbe
 export async function deleteStockBySku(sku: string) {
   const sb = getSupabase(); if (!sb) return;
   await sb.from("stock").delete().eq("sku", sku.toUpperCase().trim());
+}
+
+// ==================== RESERVAS ====================
+export async function reservarStock(sku: string, cantidad: number): Promise<boolean> {
+  const sb = getSupabase(); if (!sb) return false;
+  const { data, error } = await sb.rpc("reservar_stock", {
+    p_sku: sku.toUpperCase().trim(),
+    p_cantidad: cantidad,
+  });
+  if (error) throw new Error(`reservarStock failed for ${sku}: ${error.message}`);
+  return data as boolean;
+}
+
+export async function liberarReserva(params: {
+  sku: string;
+  cantidad: number;
+  descontar?: boolean;
+  motivo?: string;
+  operario?: string;
+}): Promise<boolean> {
+  const sb = getSupabase(); if (!sb) return false;
+  const { data, error } = await sb.rpc("liberar_reserva", {
+    p_sku: params.sku.toUpperCase().trim(),
+    p_cantidad: params.cantidad,
+    p_descontar: params.descontar ?? false,
+    p_motivo: params.motivo ?? null,
+    p_operario: params.operario ?? "",
+  });
+  if (error) throw new Error(`liberarReserva failed for ${params.sku}: ${error.message}`);
+  return data as boolean;
+}
+
+export interface DBStockDisponible {
+  sku: string;
+  on_hand: number;
+  reserved: number;
+  disponible: number;
+}
+
+export async function fetchStockDisponible(sku?: string): Promise<DBStockDisponible[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  let q = sb.from("v_stock_disponible").select("*");
+  if (sku) q = q.eq("sku", sku.toUpperCase().trim());
+  const { data } = await q;
+  return (data || []) as DBStockDisponible[];
 }
 
 // ==================== MOVIMIENTOS ====================

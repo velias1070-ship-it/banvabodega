@@ -76,16 +76,10 @@ export async function GET(req: NextRequest) {
         .eq("sku", skuBuscar);
       stockWMS = stockRows || [];
 
-      // Calculate committed from active shipments
-      const { data: activeShip } = await sb.from("ml_shipments").select("shipment_id")
-        .neq("logistic_type", "fulfillment")
-        .in("status", ["ready_to_ship", "pending"]);
-      if (activeShip && activeShip.length > 0) {
-        const sids = (activeShip as { shipment_id: number }[]).map(s => s.shipment_id);
-        const { data: commitItems } = await sb.from("ml_shipment_items").select("quantity")
-          .in("shipment_id", sids).eq("seller_sku", skuBuscar);
-        stockComprometido = (commitItems || []).reduce((s: number, i: { quantity: number }) => s + i.quantity, 0);
-      }
+      // Get committed from v_stock_disponible
+      const { data: dispRow } = await sb.from("v_stock_disponible")
+        .select("reserved").eq("sku", skuBuscar).maybeSingle();
+      stockComprometido = (dispRow as { reserved: number } | null)?.reserved ?? 0;
     }
 
     const totalWMS = stockWMS.reduce((s, r) => s + r.cantidad, 0);
