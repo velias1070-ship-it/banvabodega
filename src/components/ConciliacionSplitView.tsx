@@ -1,5 +1,7 @@
 "use client";
 import { useState, useEffect, useCallback, useMemo } from "react";
+import dynamic from "next/dynamic";
+const ConciliarModal = dynamic(() => import("@/components/ConciliarModal"), { ssr: false });
 import {
   fetchMovimientosBanco,
   fetchRcvCompras,
@@ -191,6 +193,9 @@ export default function ConciliacionSplitView({
   const [showClasificar, setShowClasificar] = useState(false);
   const [clasificarCuenta, setClasificarCuenta] = useState("");
   const [clasificarNota, setClasificarNota] = useState("");
+
+  // Modal de conciliación multi-documento
+  const [conciliarMov, setConciliarMov] = useState<DBMovimientoBanco | null>(null);
 
   // Nota al confirmar match
   const [matchNota, setMatchNota] = useState("");
@@ -846,7 +851,14 @@ export default function ConciliacionSplitView({
               const detail = isConciliado ? concDetailByMov.get(m.id!) : null;
               return (
                 <div key={m.id}
-                  onClick={() => { setSelectedMov(isSelected ? null : m); setSelectedDoc(null); }}
+                  onClick={() => {
+                    if (!isConciliado) {
+                      setConciliarMov(m);
+                    } else {
+                      setSelectedMov(isSelected ? null : m);
+                      setSelectedDoc(null);
+                    }
+                  }}
                   style={{
                     padding: 10, marginBottom: 4, borderRadius: 8, cursor: "pointer",
                     border: isSelected ? "2px solid var(--cyan)" : "1px solid var(--bg4)",
@@ -1069,6 +1081,27 @@ export default function ConciliacionSplitView({
           })()}
         </div>
       </div>
+
+      {/* Modal conciliar multi-documento */}
+      {conciliarMov && (
+        <ConciliarModal
+          mov={conciliarMov}
+          compras={compras}
+          ventas={ventas}
+          conciliaciones={conciliaciones}
+          cuentasHoja={cuentasHoja}
+          provCuentas={provCuentas}
+          empresaId={empresa.id!}
+          onClose={() => setConciliarMov(null)}
+          onSaved={() => {
+            setConciliarMov(null);
+            // Optimistic: marcar como conciliado localmente
+            setMovBanco(prev => prev.map(m => m.id === conciliarMov.id ? { ...m, estado_conciliacion: "conciliado" } : m));
+            // Recargar conciliaciones
+            load();
+          }}
+        />
+      )}
 
       {/* Conciliaciones confirmadas */}
       {conciliaciones.filter(c => c.estado === "confirmado").length > 0 && (
