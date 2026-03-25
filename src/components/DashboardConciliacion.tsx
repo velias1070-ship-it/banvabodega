@@ -180,14 +180,14 @@ export default function DashboardConciliacion({ empresa, periodo, onChangePeriod
         {abonosPend.length > 0 && (
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid var(--bg4)" }}>
             <span style={{ fontSize: 13 }}><strong>{abonosPend.length}</strong> abonos por conciliar, que suman <strong className="mono">{fmtMoney(abonosPend.reduce((s, m) => s + m.monto, 0))}</strong></span>
-            <button onClick={() => onNavigate?.("banco")} style={{ fontSize: 12, color: "var(--cyan)", background: "none", border: "none", cursor: "pointer", fontWeight: 600 }}>Revisar</button>
+            <button onClick={() => onNavigate?.("banco:abonos")} style={{ fontSize: 12, color: "var(--cyan)", background: "none", border: "none", cursor: "pointer", fontWeight: 600 }}>Revisar</button>
           </div>
         )}
 
         {cargosPend.length > 0 && (
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid var(--bg4)" }}>
             <span style={{ fontSize: 13 }}><strong>{cargosPend.length}</strong> cargos por conciliar, que suman <strong className="mono">{fmtMoney(Math.abs(cargosPend.reduce((s, m) => s + m.monto, 0)))}</strong></span>
-            <button onClick={() => onNavigate?.("banco")} style={{ fontSize: 12, color: "var(--cyan)", background: "none", border: "none", cursor: "pointer", fontWeight: 600 }}>Revisar</button>
+            <button onClick={() => onNavigate?.("banco:cargos")} style={{ fontSize: 12, color: "var(--cyan)", background: "none", border: "none", cursor: "pointer", fontWeight: 600 }}>Revisar</button>
           </div>
         )}
 

@@ -964,11 +964,10 @@ export async function importStockFromSheet(): Promise<{ imported: number; totalU
         });
       }
 
-      await setStock(sku, "SIN_ASIGNAR", qty);
-      await insertMovimiento({
-        tipo: "entrada", motivo: "carga_inicial", sku,
-        posicion_id: "SIN_ASIGNAR", cantidad: qty,
-        operario: "Sistema", nota: "Importación desde Google Sheet",
+      await registrarMovimientoStock({
+        sku, posicion: "SIN_ASIGNAR", delta: qty, tipo: "entrada",
+        motivo: "carga_inicial", operario: "Sistema",
+        nota: "Importación desde Google Sheet",
       });
 
       result.imported++;

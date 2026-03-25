@@ -659,24 +659,26 @@ export async function recordMovementAsync(m: Omit<Movement, "id">): Promise<Move
   mov.qty = actualQty;
   _cache.movements.unshift(mov);
 
-  // Write to Supabase
+  // Write to Supabase — atómico (stock + movimiento en una transacción)
   if (isConfigured()) {
     if (m.type === "in") {
-      await db.updateStock(m.sku, m.pos, actualQty, resolvedSkuVenta);
+      await db.registrarMovimientoStock({
+        sku: m.sku, posicion: m.pos, delta: actualQty, tipo: "entrada",
+        sku_venta: resolvedSkuVenta, motivo: motivoToDB(m.reason, m.type),
+        operario: m.who, nota: m.note,
+      });
     } else {
-      // Resolve which sku_venta variants to decrement
+      // Resolve which sku_venta variants to decrement — each gets its own movement
       const chunks = resolveSkuVentaForOut(m.sku, m.pos, actualQty);
       for (const chunk of chunks) {
-        await db.updateStock(m.sku, m.pos, -chunk.qty, chunk.skuVenta);
+        await db.registrarMovimientoStock({
+          sku: m.sku, posicion: m.pos, delta: -chunk.qty, tipo: "salida",
+          sku_venta: chunk.skuVenta, motivo: motivoToDB(m.reason, m.type),
+          operario: m.who, nota: m.note,
+        });
         updateStockDetalleCache(m.sku, m.pos, chunk.skuVenta, -chunk.qty);
       }
     }
-    await db.insertMovimiento({
-      tipo: m.type === "in" ? "entrada" : "salida",
-      motivo: motivoToDB(m.reason, m.type),
-      sku: m.sku, posicion_id: m.pos, cantidad: actualQty,
-      operario: m.who, nota: m.note,
-    });
     // Queue SKU for ML stock sync (fire & forget)
     db.addToStockSyncQueue([m.sku]).catch(() => {});
   }
@@ -719,33 +721,35 @@ export function recordMovement(m: Omit<Movement, "id">): Movement {
   mov.qty = actualQty;
   _cache.movements.unshift(mov);
 
-  // Fire to Supabase with cache rollback on failure
+  // Fire to Supabase — atómico con cache rollback on failure
   if (isConfigured()) {
     if (m.type === "in") {
-      db.updateStock(m.sku, m.pos, actualQty, resolvedSkuVenta).catch((err) => {
-        console.error("Stock update failed, reverting cache:", err);
+      db.registrarMovimientoStock({
+        sku: m.sku, posicion: m.pos, delta: actualQty, tipo: "entrada",
+        sku_venta: resolvedSkuVenta, motivo: motivoToDB(m.reason, m.type),
+        operario: m.who, nota: m.note,
+      }).catch((err) => {
+        console.error("registrarMovimientoStock failed, reverting cache:", err);
         if (!_cache.stock[m.sku]) _cache.stock[m.sku] = {};
         _cache.stock[m.sku][m.pos] = Math.max(0, (_cache.stock[m.sku][m.pos] || 0) - actualQty);
         if (_cache.stock[m.sku][m.pos] === 0) delete _cache.stock[m.sku][m.pos];
         updateStockDetalleCache(m.sku, m.pos, resolvedSkuVenta, -actualQty);
       });
     } else {
-      // Fire each variant update to Supabase
+      // Fire each variant as its own atomic movement
       for (const chunk of outChunks) {
-        db.updateStock(m.sku, m.pos, -chunk.qty, chunk.skuVenta).catch((err) => {
-          console.error("Stock update failed, reverting cache:", err);
+        db.registrarMovimientoStock({
+          sku: m.sku, posicion: m.pos, delta: -chunk.qty, tipo: "salida",
+          sku_venta: chunk.skuVenta, motivo: motivoToDB(m.reason, m.type),
+          operario: m.who, nota: m.note,
+        }).catch((err) => {
+          console.error("registrarMovimientoStock failed, reverting cache:", err);
           if (!_cache.stock[m.sku]) _cache.stock[m.sku] = {};
           _cache.stock[m.sku][m.pos] = (_cache.stock[m.sku][m.pos] || 0) + chunk.qty;
           updateStockDetalleCache(m.sku, m.pos, chunk.skuVenta, chunk.qty);
         });
       }
     }
-    db.insertMovimiento({
-      tipo: m.type === "in" ? "entrada" : "salida",
-      motivo: motivoToDB(m.reason, m.type),
-      sku: m.sku, posicion_id: m.pos, cantidad: actualQty,
-      operario: m.who, nota: m.note,
-    }).catch(console.error);
     // Queue SKU for ML stock sync
     db.addToStockSyncQueue([m.sku]).catch(() => {});
   }
@@ -939,20 +943,18 @@ export function assignPosition(sku: string, targetPos: string, qty: number): boo
   updateStockDetalleCache(sku, "SIN_ASIGNAR", null, -qty);
   updateStockDetalleCache(sku, targetPos, autoSv, qty);
 
-  // Fire & forget to Supabase
+  // Fire & forget to Supabase — 2 movimientos atómicos (salida + entrada)
   if (isConfigured()) {
     (async () => {
-      await db.updateStock(sku, "SIN_ASIGNAR", -qty);
-      await db.updateStock(sku, targetPos, qty, autoSv);
-      await db.insertMovimiento({
-        tipo: "salida", motivo: "transferencia_out", sku,
-        posicion_id: "SIN_ASIGNAR", cantidad: qty,
-        operario: "Admin", nota: "Asignación → " + targetPos,
+      await db.registrarMovimientoStock({
+        sku, posicion: "SIN_ASIGNAR", delta: -qty, tipo: "transferencia",
+        motivo: "transferencia_out", operario: "Admin",
+        nota: "Asignación → " + targetPos,
       });
-      await db.insertMovimiento({
-        tipo: "entrada", motivo: "transferencia_in", sku,
-        posicion_id: targetPos, cantidad: qty,
-        operario: "Admin", nota: "Asignación ← SIN_ASIGNAR" + (autoSv ? ` [${autoSv}]` : ""),
+      await db.registrarMovimientoStock({
+        sku, posicion: targetPos, delta: qty, tipo: "transferencia",
+        sku_venta: autoSv, motivo: "transferencia_in", operario: "Admin",
+        nota: "Asignación ← SIN_ASIGNAR" + (autoSv ? ` [${autoSv}]` : ""),
       });
     })().catch(console.error);
   }
@@ -1118,17 +1120,16 @@ export async function reasignarFormato(
   if (qty <= 0) return;
   if (!isConfigured()) throw new Error("Supabase no configurado");
 
-  // Decrementar stock sin etiquetar
-  await db.updateStock(sku, posicionId, -qty, null);
-  // Incrementar stock con nuevo sku_venta
-  await db.updateStock(sku, posicionId, qty, nuevoSkuVenta);
-
-  // Registrar movimiento de reasignación
-  await db.insertMovimiento({
-    tipo: "entrada", motivo: "ajuste_entrada", sku,
-    posicion_id: posicionId, cantidad: 0,
-    operario: "admin",
-    nota: `Reasignación formato: Sin etiquetar → ${nuevoSkuVenta} (${qty} uds)`,
+  // 2 movimientos atómicos: salida sin etiquetar + entrada con nuevo formato
+  await db.registrarMovimientoStock({
+    sku, posicion: posicionId, delta: -qty, tipo: "ajuste",
+    sku_venta: null, motivo: "reasignacion_formato", operario: "admin",
+    nota: `Reasignación formato: Sin etiquetar → ${nuevoSkuVenta} (${qty} uds) [salida]`,
+  });
+  await db.registrarMovimientoStock({
+    sku, posicion: posicionId, delta: qty, tipo: "ajuste",
+    sku_venta: nuevoSkuVenta, motivo: "reasignacion_formato", operario: "admin",
+    nota: `Reasignación formato: Sin etiquetar → ${nuevoSkuVenta} (${qty} uds) [entrada]`,
   });
 
   // Actualizar cache
@@ -1159,16 +1160,11 @@ export async function editarStockVariante(
   const delta = nuevaCantidad - actual;
   if (delta === 0) return;
 
-  // Actualizar en DB
-  await db.setStock(sku, posicionId, nuevaCantidad, skuVenta);
-
-  // Registrar movimiento de ajuste
-  const tipo = delta > 0 ? "entrada" : "salida";
-  const motivo = delta > 0 ? "ajuste_entrada" : "ajuste_salida";
+  // Actualizar stock + registrar movimiento atómicamente
   const etiqueta = skuVenta || "Sin etiquetar";
-  await db.insertMovimiento({
-    tipo, motivo, sku,
-    posicion_id: posicionId, cantidad: Math.abs(delta),
+  await db.registrarMovimientoStock({
+    sku, posicion: posicionId, delta, tipo: "ajuste",
+    sku_venta: skuVenta, motivo: delta > 0 ? "ajuste_entrada" : "ajuste_salida",
     operario: "admin",
     nota: `Ajuste manual variante [${etiqueta}]: ${actual} → ${nuevaCantidad}`,
   });
@@ -1351,9 +1347,14 @@ export async function repararRecepcion(recepcionId: string, posicionDestino: str
         continue;
       }
     } else if (stockLinea === 0 && totalMovido > 0) {
-      // Movements exist but stock is 0 — re-register stock
+      // Movements exist but stock is 0 — re-register stock with adjustment movement
       try {
-        await db.updateStock(l.sku, posicionDestino, l.qty_ubicada || 0);
+        await db.registrarMovimientoStock({
+          sku: l.sku, posicion: posicionDestino, delta: l.qty_ubicada || 0, tipo: "ajuste",
+          motivo: "reparacion_stock", recepcion_id: recepcionId,
+          operario: l.operario_ubicacion || "admin-reparacion",
+          nota: `Reparación: stock era 0 pero movimientos OK — re-registrado ${l.qty_ubicada} uds`,
+        });
         result.detalle += `Stock re-registrado +${l.qty_ubicada} en ${posicionDestino}. `;
       } catch (e: unknown) {
         result.problema = `Error re-stock: ${e instanceof Error ? e.message : e}`;
@@ -1483,13 +1484,23 @@ export async function aplicarReconciliacion(discrepancias: StockDiscrepancia[]):
         for (const row of rows) {
           if (remaining <= 0) break;
           const reduce = Math.min(remaining, row.cantidad);
-          await db.updateStock(d.sku, d.posicion, -reduce, row.sku_venta ?? null);
+          await db.registrarMovimientoStock({
+            sku: d.sku, posicion: d.posicion, delta: -reduce, tipo: "ajuste",
+            sku_venta: row.sku_venta ?? null, motivo: "reconciliacion",
+            operario: "admin",
+            nota: `Reconciliación: stock sobra ${Math.abs(d.diferencia)} uds (variante ${row.sku_venta || "sin etiquetar"}: -${reduce})`,
+          });
           remaining -= reduce;
         }
       } else {
         // Stock falta → agregar con auto-etiquetado si tiene 1 solo sku_venta
         const autoSv = resolveAutoSkuVenta(d.sku);
-        await db.updateStock(d.sku, d.posicion, d.diferencia, autoSv);
+        await db.registrarMovimientoStock({
+          sku: d.sku, posicion: d.posicion, delta: d.diferencia, tipo: "ajuste",
+          sku_venta: autoSv, motivo: "reconciliacion",
+          operario: "admin",
+          nota: `Reconciliación: stock falta ${d.diferencia} uds`,
+        });
       }
 
       // Update cache

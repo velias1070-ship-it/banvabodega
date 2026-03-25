@@ -85,34 +85,22 @@ export async function POST() {
           const qtyAsignar = Math.min(qtyMov, qtyRestante);
           if (qtyAsignar <= 0) continue;
 
-          // Crear/incrementar stock con sku_venta
-          const { error } = await sb.rpc("update_stock", {
-            p_sku: row.sku,
-            p_posicion: row.posicion_id,
-            p_delta: qtyAsignar,
-            p_sku_venta: skuVenta,
-          });
-          if (error) {
-            console.error(`Error reclasificando ${row.sku} → ${skuVenta}:`, error);
-            continue;
-          }
-
-          // Decrementar stock sin etiquetar
-          const { error: errDec } = await sb.rpc("update_stock", {
-            p_sku: row.sku,
-            p_posicion: row.posicion_id,
-            p_delta: -qtyAsignar,
-            p_sku_venta: null,
-          });
-          if (errDec) {
-            console.error(`Error decrementando stock NULL ${row.sku}:`, errDec);
-            // Revertir el incremento
-            await sb.rpc("update_stock", {
-              p_sku: row.sku,
-              p_posicion: row.posicion_id,
-              p_delta: -qtyAsignar,
-              p_sku_venta: skuVenta,
+          try {
+            // Salida sin etiquetar + entrada con formato — 2 movimientos atómicos
+            await sb.rpc("registrar_movimiento_stock", {
+              p_sku: row.sku, p_posicion: row.posicion_id, p_delta: -qtyAsignar,
+              p_tipo: "ajuste", p_sku_venta: null, p_motivo: "reclasificacion",
+              p_operario: "sistema",
+              p_nota: `Reclasificación: Sin etiquetar → ${skuVenta} (${qtyAsignar} uds) [salida]`,
             });
+            await sb.rpc("registrar_movimiento_stock", {
+              p_sku: row.sku, p_posicion: row.posicion_id, p_delta: qtyAsignar,
+              p_tipo: "ajuste", p_sku_venta: skuVenta, p_motivo: "reclasificacion",
+              p_operario: "sistema",
+              p_nota: `Reclasificación: Sin etiquetar → ${skuVenta} (${qtyAsignar} uds) [entrada]`,
+            });
+          } catch (err) {
+            console.error(`Error reclasificando ${row.sku} → ${skuVenta}:`, err);
             continue;
           }
 
@@ -127,23 +115,23 @@ export async function POST() {
         const comps = compPorSkuOrigen[row.sku];
         if (comps && comps.length === 1 && comps[0].unidades === 1) {
           const skuVenta = comps[0].sku_venta;
-          const { error } = await sb.rpc("update_stock", {
-            p_sku: row.sku,
-            p_posicion: row.posicion_id,
-            p_delta: qtyRestante,
-            p_sku_venta: skuVenta,
-          });
-          if (!error) {
-            const { error: errDec } = await sb.rpc("update_stock", {
-              p_sku: row.sku,
-              p_posicion: row.posicion_id,
-              p_delta: -qtyRestante,
-              p_sku_venta: null,
+          try {
+            await sb.rpc("registrar_movimiento_stock", {
+              p_sku: row.sku, p_posicion: row.posicion_id, p_delta: -qtyRestante,
+              p_tipo: "ajuste", p_sku_venta: null, p_motivo: "reclasificacion",
+              p_operario: "sistema",
+              p_nota: `Reclasificación auto: Sin etiquetar → ${skuVenta} (${qtyRestante} uds) [salida]`,
             });
-            if (!errDec) {
-              reclasificados++;
-              detalles.push({ sku: row.sku, posicion: row.posicion_id, skuVenta, qty: qtyRestante, metodo: "composicion_unica" });
-            }
+            await sb.rpc("registrar_movimiento_stock", {
+              p_sku: row.sku, p_posicion: row.posicion_id, p_delta: qtyRestante,
+              p_tipo: "ajuste", p_sku_venta: skuVenta, p_motivo: "reclasificacion",
+              p_operario: "sistema",
+              p_nota: `Reclasificación auto: Sin etiquetar → ${skuVenta} (${qtyRestante} uds) [entrada]`,
+            });
+            reclasificados++;
+            detalles.push({ sku: row.sku, posicion: row.posicion_id, skuVenta, qty: qtyRestante, metodo: "composicion_unica" });
+          } catch (err) {
+            console.error(`Error reclasificando auto ${row.sku} → ${skuVenta}:`, err);
           }
         }
       }
