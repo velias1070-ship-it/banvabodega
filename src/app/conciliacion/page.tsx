@@ -872,7 +872,8 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
   const [showBheModal, setShowBheModal] = useState(false);
-  const [provFilter, setProvFilter] = useState<string>("todos");
+  const [provFilterSet, setProvFilterSet] = useState<Set<string> | null>(null); // null = todos
+  const [showProvFilter, setShowProvFilter] = useState(false);
   const [showProveedores, setShowProveedores] = useState(false);
   const [editingProv, setEditingProv] = useState<string | null>(null);
   const [editPlazo, setEditPlazo] = useState("");
@@ -991,7 +992,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   // Filtrar por texto, tipo, proveedor y estado conciliación
   let filtered = data;
   if (tipoFilter !== "todos") filtered = filtered.filter(c => String(c.tipo_doc) === tipoFilter);
-  if (provFilter !== "todos") filtered = filtered.filter(c => (c.rut_proveedor || "") === provFilter);
+  if (provFilterSet) filtered = filtered.filter(c => provFilterSet.has(c.rut_proveedor || ""));
   if (concFilter === "conciliada") filtered = filtered.filter(c => concCompraIds.has(c.id!));
   else if (concFilter === "sin_pago") filtered = filtered.filter(c => !concCompraIds.has(c.id!));
   if (filter) filtered = filtered.filter(c =>
@@ -1160,13 +1161,78 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
       <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
         <input className="form-input" placeholder="Buscar..." value={filter} onChange={e => setFilter(e.target.value)}
           style={{ fontSize: 12, flex: 1, minWidth: 120 }} />
-        <select value={provFilter} onChange={e => setProvFilter(e.target.value)}
-          style={{ background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 8, padding: "6px 10px", fontSize: 11, maxWidth: 220 }}>
-          <option value="todos">Todos los proveedores</option>
-          {proveedoresUnicos.map(p => (
-            <option key={p.rut} value={p.rut}>{p.razon_social} ({p.facturas})</option>
-          ))}
-        </select>
+        <div style={{ position: "relative" }}>
+          <button onClick={() => setShowProvFilter(!showProvFilter)}
+            style={{
+              padding: "6px 10px", borderRadius: 8, fontSize: 11, cursor: "pointer",
+              background: provFilterSet ? "var(--cyanBg)" : "var(--bg3)",
+              color: provFilterSet ? "var(--cyan)" : "var(--txt)",
+              border: `1px solid ${provFilterSet ? "var(--cyanBd)" : "var(--bg4)"}`,
+              whiteSpace: "nowrap",
+            }}>
+            {provFilterSet ? `${provFilterSet.size} proveedor${provFilterSet.size !== 1 ? "es" : ""}` : "Proveedores"} ▾
+          </button>
+          {showProvFilter && (
+            <div style={{
+              position: "absolute", top: "100%", left: 0, zIndex: 100, marginTop: 4,
+              background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 8,
+              boxShadow: "0 8px 24px rgba(0,0,0,0.4)", width: 280, maxHeight: 350, overflow: "hidden",
+              display: "flex", flexDirection: "column",
+            }}>
+              {/* Botones Todos / Ninguno */}
+              <div style={{ display: "flex", gap: 4, padding: "8px 8px 4px", borderBottom: "1px solid var(--bg4)" }}>
+                <button onClick={() => setProvFilterSet(null)}
+                  style={{ flex: 1, padding: "4px 0", borderRadius: 4, fontSize: 10, fontWeight: 600, cursor: "pointer", background: !provFilterSet ? "var(--cyanBg)" : "var(--bg3)", color: !provFilterSet ? "var(--cyan)" : "var(--txt3)", border: "none" }}>
+                  Todos
+                </button>
+                <button onClick={() => setProvFilterSet(new Set())}
+                  style={{ flex: 1, padding: "4px 0", borderRadius: 4, fontSize: 10, fontWeight: 600, cursor: "pointer", background: "var(--bg3)", color: "var(--txt3)", border: "none" }}>
+                  Ninguno
+                </button>
+                <button onClick={() => setShowProvFilter(false)}
+                  style={{ padding: "4px 8px", borderRadius: 4, fontSize: 10, cursor: "pointer", background: "var(--bg3)", color: "var(--txt3)", border: "none" }}>
+                  ✕
+                </button>
+              </div>
+              {/* Lista de proveedores */}
+              <div style={{ overflowY: "auto", maxHeight: 290, padding: "4px 0" }}>
+                {proveedoresUnicos.map(p => {
+                  const checked = !provFilterSet || provFilterSet.has(p.rut);
+                  return (
+                    <label key={p.rut} style={{
+                      display: "flex", alignItems: "center", gap: 8, padding: "4px 10px", cursor: "pointer",
+                      fontSize: 11, background: checked ? "transparent" : "var(--bg)",
+                      opacity: checked ? 1 : 0.5,
+                    }}>
+                      <input type="checkbox" checked={checked}
+                        onChange={() => {
+                          if (!provFilterSet) {
+                            // Estaba en "todos" → crear set sin este
+                            const allRuts = new Set(proveedoresUnicos.map(x => x.rut));
+                            allRuts.delete(p.rut);
+                            setProvFilterSet(allRuts);
+                          } else if (provFilterSet.has(p.rut)) {
+                            const next = new Set(provFilterSet);
+                            next.delete(p.rut);
+                            setProvFilterSet(next.size === 0 ? new Set() : next);
+                          } else {
+                            const next = new Set(provFilterSet);
+                            next.add(p.rut);
+                            // Si seleccionamos todos, volver a null
+                            if (next.size === proveedoresUnicos.length) setProvFilterSet(null);
+                            else setProvFilterSet(next);
+                          }
+                        }}
+                        style={{ accentColor: "var(--cyan)" }} />
+                      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.razon_social}</span>
+                      <span className="mono" style={{ fontSize: 10, color: "var(--txt3)" }}>{p.facturas}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
         <select value={tipoFilter} onChange={e => setTipoFilter(e.target.value)}
           style={{ background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 8, padding: "6px 10px", fontSize: 11 }}>
           <option value="todos">Todos los tipos</option>
