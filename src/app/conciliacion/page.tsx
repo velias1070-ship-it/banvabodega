@@ -1394,7 +1394,7 @@ export default function ConciliacionPage() {
   const SIDEBAR_GROUPS = useMemo(() => [
     { section: "INGRESOS", icon: "🏷️", items: [["ventas", "RCV Ventas", "📄"]] as [TabKey, string, string][] },
     { section: "EGRESOS", icon: "💳", items: [["compras", "RCV Compras", "📄"]] as [TabKey, string, string][] },
-    { section: "BANCO", icon: "🏦", items: [["banco", "Banco", "🏦"], ["conciliacion", "Conciliación", "🔗"]] as [TabKey, string, string][] },
+    { section: "BANCO", icon: "🏦", items: [["banco", "Banco y Conciliación", "🏦"]] as [TabKey, string, string][] },
     { section: "REPORTES", icon: "📈", items: [["resultados", "Estado Resultados", "📈"], ["flujo", "Flujo Caja", "💰"], ["proyectado", "Flujo Proyectado", "🔮"], ["presupuesto", "Presupuesto", "📊"]] as [TabKey, string, string][] },
     { section: "AJUSTES", icon: "⚙️", items: [["cuentas", "Plan Cuentas", "📋"], ["reglas", "Reglas", "⚙️"]] as [TabKey, string, string][] },
   ], []);
@@ -1497,8 +1497,7 @@ export default function ConciliacionPage() {
             {empresa && tab === "dash" && <DashboardConciliacion empresa={empresa} periodo={periodo} onChangePeriodo={setPeriodo} />}
             {empresa && tab === "compras" && <TabRcvCompras empresa={empresa} periodo={periodo} />}
             {empresa && tab === "ventas" && <TabRcvVentas empresa={empresa} periodo={periodo} />}
-            {empresa && tab === "banco" && <TabBanco empresa={empresa} periodo={periodo} />}
-            {empresa && tab === "conciliacion" && <ConciliacionTabla empresa={empresa} periodo={periodo} />}
+            {empresa && tab === "banco" && <ConciliacionTabla empresa={empresa} periodo={periodo} />}
             {tab === "cuentas" && <PlanCuentasTree />}
             {tab === "reglas" && <RuleBuilder />}
             {empresa && tab === "resultados" && <EstadoResultados empresa={empresa} periodo={periodo} />}

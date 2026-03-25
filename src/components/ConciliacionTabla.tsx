@@ -133,6 +133,14 @@ export default function ConciliacionTabla({ empresa, periodo }: { empresa: DBEmp
   const abonosPend = pendientes.filter(m => m.monto > 0);
   const cargosPend = pendientes.filter(m => m.monto < 0);
 
+  // KPIs
+  const concCompraIds = new Set(conciliaciones.filter(c => c.estado === "confirmado" && c.rcv_compra_id).map(c => c.rcv_compra_id));
+  const concVentaIds = new Set(conciliaciones.filter(c => c.estado === "confirmado" && c.rcv_venta_id).map(c => c.rcv_venta_id));
+  const porCobrar = ventas.filter(v => !concVentaIds.has(v.id!)).reduce((s, v) => s + (v.monto_total || 0), 0);
+  const porPagar = compras.filter(c => !concCompraIds.has(c.id!)).reduce((s, c) => s + (c.monto_total || 0), 0);
+  const totalCargos = filtered.filter(m => m.monto < 0).reduce((s, m) => s + m.monto, 0);
+  const totalAbonos = filtered.filter(m => m.monto > 0).reduce((s, m) => s + m.monto, 0);
+
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) setSortDir(d => d === "asc" ? "desc" : "asc");
     else { setSortKey(key); setSortDir("desc"); }
@@ -176,6 +184,22 @@ export default function ConciliacionTabla({ empresa, periodo }: { empresa: DBEmp
 
   return (
     <div>
+      {/* KPIs */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 16 }}>
+        <div className="card" style={{ padding: 16 }}>
+          <div className="mono" style={{ fontSize: 24, fontWeight: 800, color: "var(--green)" }}>{fmtMoney(porCobrar)}</div>
+          <div style={{ fontSize: 12, color: "var(--txt3)", marginTop: 2 }}>Por Cobrar <span style={{ fontSize: 10 }}>(incluye IVA)</span></div>
+        </div>
+        <div className="card" style={{ padding: 16 }}>
+          <div className="mono" style={{ fontSize: 24, fontWeight: 800, color: "var(--red)" }}>{fmtMoney(porPagar)}</div>
+          <div style={{ fontSize: 12, color: "var(--txt3)", marginTop: 2 }}>Por Pagar <span style={{ fontSize: 10 }}>(incluye IVA)</span></div>
+        </div>
+        <div className="card" style={{ padding: 16 }}>
+          <div className="mono" style={{ fontSize: 24, fontWeight: 800 }}>{fmtMoney(porCobrar - porPagar)}</div>
+          <div style={{ fontSize: 12, color: "var(--txt3)", marginTop: 2 }}>Saldo Neto</div>
+        </div>
+      </div>
+
       {/* Períodos */}
       <div style={{ display: "flex", gap: 4, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
         <span style={{ fontSize: 10, fontWeight: 600, color: "var(--txt3)", marginRight: 4 }}>Períodos:</span>
@@ -311,6 +335,22 @@ export default function ConciliacionTabla({ empresa, periodo }: { empresa: DBEmp
                 );
               })}
             </tbody>
+            {filtered.length > 0 && (
+              <tfoot>
+                <tr style={{ borderTop: "2px solid var(--bg4)", fontWeight: 700 }}>
+                  <td colSpan={3} style={{ padding: "10px 12px" }}>Total CLP</td>
+                  <td className="mono" style={{ padding: "10px 12px", textAlign: "right", color: "var(--red)" }}>
+                    {totalCargos !== 0 ? fmtMoney(Math.abs(totalCargos)) : "$0"}
+                    <div style={{ fontSize: 9, fontWeight: 400, color: "var(--txt3)" }}>Total cargos</div>
+                  </td>
+                  <td className="mono" style={{ padding: "10px 12px", textAlign: "right", color: "var(--green)" }}>
+                    {totalAbonos !== 0 ? fmtMoney(totalAbonos) : "$0"}
+                    <div style={{ fontSize: 9, fontWeight: 400, color: "var(--txt3)" }}>Total abonos</div>
+                  </td>
+                  <td></td>
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
       </div>
