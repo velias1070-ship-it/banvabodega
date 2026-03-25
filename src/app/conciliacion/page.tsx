@@ -948,15 +948,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
     }
   };
 
-  if (loading) return <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>Cargando...</div>;
-
-  // Tipos disponibles para el filtro
-  const tiposDisponibles = Array.from(new Set(data.map(c => String(c.tipo_doc))));
-
-  // IDs de compras conciliadas
-  const concCompraIds = new Set(conciliaciones.filter(c => c.estado === "confirmado" && c.rcv_compra_id).map(c => c.rcv_compra_id));
-
-  // Proveedores únicos con totales
+  // Proveedores únicos con totales (debe estar antes del early return)
   const proveedoresUnicos = useMemo(() => {
     const map = new Map<string, { rut: string; razon_social: string; facturas: number; total: number }>();
     for (const c of data) {
@@ -972,6 +964,14 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
     }
     return Array.from(map.values()).sort((a, b) => b.total - a.total);
   }, [data]);
+
+  if (loading) return <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>Cargando...</div>;
+
+  // Tipos disponibles para el filtro
+  const tiposDisponibles = Array.from(new Set(data.map(c => String(c.tipo_doc))));
+
+  // IDs de compras conciliadas
+  const concCompraIds = new Set(conciliaciones.filter(c => c.estado === "confirmado" && c.rcv_compra_id).map(c => c.rcv_compra_id));
 
   // Handler para guardar proveedor
   const handleSaveProv = async (rut: string) => {
