@@ -949,17 +949,28 @@ export default function ConciliacionSplitView({
 
         {/* DERECHA: Documentos sugeridos o facturas sin pago */}
         <div>
+          {(() => {
+            // Filtrar facturas sin pago por períodos seleccionados
+            const periodosSet = new Set(periodos);
+            const facturasSinPago = docsSinConciliar.filter(d => {
+              if (d.tipo !== "compra") return false;
+              if (!d.fecha) return true; // mostrar si no tiene fecha
+              const docPeriodo = d.fecha.slice(0, 4) + d.fecha.slice(5, 7); // YYYY-MM-DD → YYYYMM
+              return periodosSet.has(docPeriodo);
+            });
+            return (
+              <>
           <h3 style={{ fontSize: 14, fontWeight: 700, color: "var(--cyan)", marginBottom: 8 }}>
-            {selectedMov ? `Sugerencias (${sugerencias.length})` : `Facturas sin pago (${docsSinConciliar.filter(d => d.tipo === "compra").length})`}
+            {selectedMov ? `Sugerencias (${sugerencias.length})` : `Facturas sin pago (${facturasSinPago.length})`}
           </h3>
 
           {!selectedMov ? (
             <div style={{ maxHeight: 600, overflowY: "auto" }}>
-              {docsSinConciliar.filter(d => d.tipo === "compra").length === 0 ? (
+              {facturasSinPago.length === 0 ? (
                 <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>
-                  <div style={{ fontSize: 13 }}>Todas las facturas de compra están conciliadas</div>
+                  <div style={{ fontSize: 13 }}>Todas las facturas del período están conciliadas</div>
                 </div>
-              ) : docsSinConciliar.filter(d => d.tipo === "compra").map(doc => (
+              ) : facturasSinPago.map(doc => (
                 <div key={doc.id} style={{
                   padding: 10, marginBottom: 4, borderRadius: 8,
                   border: "1px solid var(--bg4)", background: "var(--bg2)",
@@ -1053,6 +1064,9 @@ export default function ConciliacionSplitView({
               })}
             </div>
           )}
+              </>
+            );
+          })()}
         </div>
       </div>
 
