@@ -511,29 +511,42 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const totalIva = filtered.reduce((s, c) => s + (c.monto_iva || 0), 0);
   const total = filtered.reduce((s, c) => s + (c.monto_total || 0), 0);
 
+  // Clasificacion por proveedor (cuenta asignada o "Sin clasificar")
+  const getClasificacion = (c: DBRcvCompra) => {
+    const pc = provCuentas.find(x => x.rut_proveedor === (c.rut_proveedor || ""));
+    if (!pc?.categoria_cuenta_id) return null;
+    const cuenta = cuentasHoja.find(x => x.id === pc.categoria_cuenta_id);
+    return cuenta ? `${empresa.razon_social || "Empresa"} / ${cuenta.nombre}` : null;
+  };
+
+  const sinClasificar = data.filter(c => !getClasificacion(c));
+  const porPagarList = data.filter(c => !concCompraIds.has(c.id!));
+  const porRevisarList = data.filter(c => {
+    const venc = getVencimiento(c);
+    return venc && venc.diasRestantes < 0 && !concCompraIds.has(c.id!);
+  });
+  const pctConciliado = data.length > 0 ? Math.round((totalConciliadas / data.length) * 100) : 0;
+
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-        <div>
-          <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>RCV Compras</h2>
-          <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 2 }}>{formatPeriodo(periodo)}</div>
-        </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <span style={{ fontSize: 12, color: "var(--txt3)" }}>{filtered.length} de {data.length} docs</span>
-          <span className="mono" style={{ fontSize: 14, fontWeight: 700, color: "var(--red)" }}>{fmtMoney(total)}</span>
+      {/* Header — Chipax style */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+        <h2 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>Registro de Compras</h2>
+        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+          <div style={{ fontSize: 12, color: "var(--txt3)", padding: "6px 16px", border: "1px solid var(--bg4)", borderRadius: 20 }}>
+            {pctConciliado}% conciliado este mes
+          </div>
+          <span style={{ fontSize: 14, fontWeight: 700 }}>{empresa.razon_social}</span>
           <button onClick={handleSyncSii} disabled={syncing}
-            className="scan-btn" style={{ padding: "6px 14px", fontSize: 11, fontWeight: 600, background: "linear-gradient(135deg, #2563eb, #3b82f6)", opacity: syncing ? 0.6 : 1 }}>
-            {syncing ? "Importando..." : "Importar SII"}
-          </button>
+            style={{ width: 36, height: 36, borderRadius: "50%", background: "var(--cyan)", color: "#fff", border: "none", cursor: syncing ? "not-allowed" : "pointer", fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center", opacity: syncing ? 0.6 : 1 }}
+            title="Importar desde SII">{syncing ? "..." : "\u21BB"}</button>
           <button onClick={() => setShowBheModal(true)}
-            style={{ padding: "6px 14px", fontSize: 11, fontWeight: 600, borderRadius: 8, background: "var(--amberBg)", color: "var(--amber)", border: "1px solid var(--amberBd)", cursor: "pointer" }}>
-            Importar BHE
-          </button>
+            style={{ width: 36, height: 36, borderRadius: "50%", background: "var(--bg3)", border: "1px solid var(--bg4)", cursor: "pointer", fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center" }}
+            title="Importar BHE">+</button>
           {empresa.id && (
             <button onClick={() => window.open(`/api/sii/export?empresa_id=${empresa.id}&anio=${isAnual ? periodo : periodo.slice(0, 4)}&tipo=compras`, "_blank")}
-              style={{ padding: "6px 14px", fontSize: 11, fontWeight: 600, borderRadius: 8, background: "var(--greenBg)", color: "var(--green)", border: "1px solid var(--greenBd)", cursor: "pointer" }}>
-              CSV
-            </button>
+              style={{ width: 36, height: 36, borderRadius: "50%", background: "var(--bg3)", border: "1px solid var(--bg4)", cursor: "pointer", fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center" }}
+              title="Exportar CSV">{"\u2193"}</button>
           )}
         </div>
       </div>
@@ -542,7 +555,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
       {showBheModal && <SiiImportModal tipo="BHE" empresa={empresa} periodoActual={periodo} onClose={() => setShowBheModal(false)} onImported={() => { setShowBheModal(false); load(); }} />}
 
       {syncMsg && (
-        <div style={{ padding: "8px 12px", borderRadius: 8, marginBottom: 12, fontSize: 12, fontWeight: 600,
+        <div style={{ padding: "8px 14px", borderRadius: 8, marginBottom: 14, fontSize: 12, fontWeight: 600,
           whiteSpace: "pre-wrap", maxHeight: 300, overflow: "auto",
           background: syncMsg.startsWith("Error") ? "var(--redBg)" : "var(--greenBg)",
           color: syncMsg.startsWith("Error") ? "var(--red)" : "var(--green)",
@@ -551,301 +564,178 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
         </div>
       )}
 
-      {/* Resumen rápido */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 12 }}>
-        <div style={{ padding: 8, background: "var(--bg3)", borderRadius: 8, textAlign: "center" }}>
-          <div style={{ fontSize: 10, color: "var(--txt3)" }}>Neto</div>
-          <div className="mono" style={{ fontSize: 13, fontWeight: 700 }}>{fmtMoney(totalNeto)}</div>
+      {/* Chipax-style filter tabs */}
+      <div style={{ display: "flex", gap: 0, borderBottom: "2px solid var(--bg4)", marginBottom: 16, alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", gap: 0 }}>
+          {([
+            { key: "todos" as typeof concFilter, label: "Registro", count: data.length, showBadge: false },
+            { key: "sin_pago" as typeof concFilter, label: "Pendientes", count: totalSinPago, showBadge: true },
+            { key: "conciliada" as typeof concFilter, label: "Por pagar", count: porPagarList.length, showBadge: true },
+          ]).map(t => (
+            <button key={t.key} onClick={() => setConcFilter(t.key)}
+              style={{
+                padding: "10px 16px", fontSize: 13, fontWeight: concFilter === t.key ? 600 : 400, cursor: "pointer", background: "none", border: "none",
+                borderBottom: concFilter === t.key ? "2px solid var(--cyan)" : "2px solid transparent",
+                color: concFilter === t.key ? "var(--txt)" : "var(--txt3)", marginBottom: -2, whiteSpace: "nowrap",
+              }}>
+              {t.label}
+              {t.showBadge && t.count > 0 && (
+                <span style={{
+                  marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10,
+                  background: concFilter === t.key ? "var(--red)" : "var(--redBg)",
+                  color: concFilter === t.key ? "#fff" : "var(--red)",
+                }}>{t.count}</span>
+              )}
+            </button>
+          ))}
+          {porRevisarList.length > 0 && (
+            <button onClick={() => setConcFilter("sin_pago")}
+              style={{ padding: "10px 16px", fontSize: 13, fontWeight: 400, cursor: "pointer", background: "none", border: "none", borderBottom: "2px solid transparent", color: "var(--txt3)", marginBottom: -2, whiteSpace: "nowrap" }}>
+              Por revisar
+              <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10, background: "var(--redBg)", color: "var(--red)" }}>{porRevisarList.length}</span>
+            </button>
+          )}
+          {sinClasificar.length > 0 && (
+            <button onClick={() => setConcFilter("todos")}
+              style={{ padding: "10px 16px", fontSize: 13, fontWeight: 400, cursor: "pointer", background: "none", border: "none", borderBottom: "2px solid transparent", color: "var(--txt3)", marginBottom: -2, whiteSpace: "nowrap" }}>
+              Por clasificar
+              <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10, background: "var(--redBg)", color: "var(--red)" }}>{sinClasificar.length}</span>
+            </button>
+          )}
         </div>
-        <div style={{ padding: 8, background: "var(--bg3)", borderRadius: 8, textAlign: "center" }}>
-          <div style={{ fontSize: 10, color: "var(--txt3)" }}>Exento</div>
-          <div className="mono" style={{ fontSize: 13, fontWeight: 700 }}>{fmtMoney(totalExento)}</div>
-        </div>
-        <div style={{ padding: 8, background: "var(--amberBg)", borderRadius: 8, textAlign: "center" }}>
-          <div style={{ fontSize: 10, color: "var(--amber)" }}>IVA</div>
-          <div className="mono" style={{ fontSize: 13, fontWeight: 700, color: "var(--amber)" }}>{fmtMoney(totalIva)}</div>
-        </div>
-        <div style={{ padding: 8, background: "var(--redBg)", borderRadius: 8, textAlign: "center" }}>
-          <div style={{ fontSize: 10, color: "var(--red)" }}>Total</div>
-          <div className="mono" style={{ fontSize: 13, fontWeight: 700, color: "var(--red)" }}>{fmtMoney(total)}</div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", paddingBottom: 6 }}>
+          <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, cursor: "pointer", color: "var(--txt3)" }}>
+            <input type="checkbox" checked={concFilter === "sin_pago"} onChange={e => setConcFilter(e.target.checked ? "sin_pago" : "todos")} style={{ accentColor: "var(--cyan)" }} />
+            Por conciliar
+          </label>
+          <input className="form-input" placeholder="Buscar..." value={filter} onChange={e => setFilter(e.target.value)}
+            style={{ fontSize: 12, width: 160, padding: "6px 12px" }} />
         </div>
       </div>
 
-      {/* Panel Proveedores */}
-      <div style={{ marginBottom: 12 }}>
-        <button onClick={() => setShowProveedores(!showProveedores)}
-          style={{ padding: "6px 14px", borderRadius: 8, fontSize: 11, fontWeight: 600, cursor: "pointer", background: "var(--bg3)", color: "var(--txt2)", border: "1px solid var(--bg4)", width: "100%", textAlign: "left", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span>Proveedores — Plazos y Cuentas ({proveedoresUnicos.length})</span>
-          <span style={{ fontSize: 10, color: "var(--txt3)" }}>{showProveedores ? "▲ cerrar" : "▼ abrir"}</span>
-        </button>
-        {showProveedores && (
-          <div className="card" style={{ marginTop: 4, overflow: "hidden" }}>
-            <table className="tbl" style={{ fontSize: 11 }}>
+      {data.length === 0 ? (
+        <div className="card" style={{ padding: 40, textAlign: "center" }}>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>📄</div>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Sin compras para este periodo</div>
+          <div style={{ fontSize: 12, color: "var(--txt3)", marginBottom: 16 }}>Importa los datos directamente desde el SII</div>
+          <button onClick={handleSyncSii} disabled={syncing}
+            style={{ padding: "10px 24px", borderRadius: 10, background: "var(--cyan)", color: "#fff", fontWeight: 700, fontSize: 13, border: "none", cursor: syncing ? "not-allowed" : "pointer", opacity: syncing ? 0.6 : 1 }}>
+            {syncing ? "Importando..." : "Importar desde SII"}
+          </button>
+        </div>
+      ) : (
+        <div className="card" style={{ overflow: "hidden", padding: 0 }}>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
               <thead>
-                <tr><th>Proveedor</th><th>RUT</th><th style={{ textAlign: "right" }}>Facturas</th><th style={{ textAlign: "right" }}>Total</th><th>Plazo</th><th>Cuenta</th><th>Var.</th><th></th></tr>
+                <tr style={{ borderBottom: "2px solid var(--bg4)" }}>
+                  <th style={{ padding: "12px 14px", textAlign: "left", fontWeight: 600, fontSize: 12, color: "var(--cyan)" }}>Folio</th>
+                  <th style={{ padding: "12px 14px", textAlign: "left", fontWeight: 600, fontSize: 12, color: "var(--txt3)" }}>Clasificaci&oacute;n</th>
+                  <th style={{ padding: "12px 14px", textAlign: "left", fontWeight: 600, fontSize: 12, color: "var(--cyan)" }}>Raz&oacute;n Social</th>
+                  <th style={{ padding: "12px 14px", textAlign: "left", fontWeight: 600, fontSize: 12, color: "var(--txt3)" }}>Fecha Emisi&oacute;n</th>
+                  <th style={{ padding: "12px 14px", textAlign: "left", fontWeight: 600, fontSize: 12, color: "var(--cyan)" }}>Pago Est.</th>
+                  <th style={{ padding: "12px 14px", textAlign: "left", fontWeight: 600, fontSize: 12, color: "var(--txt3)" }}>Per&iacute;odo SII</th>
+                  <th style={{ padding: "12px 14px", textAlign: "right", fontWeight: 600, fontSize: 12, color: "var(--cyan)" }}>Monto Total</th>
+                  <th style={{ padding: "12px 14px", textAlign: "right", fontWeight: 600, fontSize: 12, color: "var(--txt3)" }}></th>
+                </tr>
               </thead>
               <tbody>
-                {proveedoresUnicos.map(p => {
-                  const pc = provCuentas.find(x => x.rut_proveedor === p.rut);
-                  const isEditing = editingProv === p.rut;
-                  const cuenta = pc?.categoria_cuenta_id ? cuentasHoja.find(c => c.id === pc.categoria_cuenta_id) : null;
+                {filtered.length === 0 ? (
+                  <tr><td colSpan={8} style={{ textAlign: "center", padding: 32, color: "var(--txt3)" }}>Sin resultados</td></tr>
+                ) : filtered.map((c, i) => {
+                  const venc = getVencimiento(c);
+                  const isConciliada = concCompraIds.has(c.id!);
+                  const clasificacion = getClasificacion(c);
+                  const tipoAbrev = TIPO_DOC_NAMES[c.tipo_doc]?.slice(0, 3).toUpperCase() || "DOC";
+                  const periodoDoc = c.fecha_docto ? c.fecha_docto.slice(0, 7) : "";
+
                   return (
-                    <tr key={p.rut}>
-                      <td style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.razon_social}</td>
-                      <td className="mono" style={{ fontSize: 10 }}>{p.rut}</td>
-                      <td className="mono" style={{ textAlign: "right" }}>{p.facturas}</td>
-                      <td className="mono" style={{ textAlign: "right", fontWeight: 600 }}>{fmtMoney(p.total)}</td>
-                      <td>
-                        {isEditing ? (
-                          <input type="number" value={editPlazo} onChange={e => setEditPlazo(e.target.value)} placeholder="días"
-                            style={{ width: 60, padding: "2px 4px", fontSize: 11, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 4 }} />
+                    <tr key={c.id || i} style={{ borderBottom: "1px solid var(--bg4)" }}>
+                      {/* Folio badge */}
+                      <td style={{ padding: "14px 14px", whiteSpace: "nowrap" }}>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                          <span className="mono" style={{ fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 6, background: "var(--cyan)", color: "#fff" }}>
+                            {tipoAbrev}-EL
+                          </span>
+                          <span className="mono" style={{ fontWeight: 700, fontSize: 13 }}>{c.nro_doc || "\u2014"}</span>
+                        </span>
+                      </td>
+                      {/* Clasificacion */}
+                      <td style={{ padding: "14px 14px" }}>
+                        {clasificacion ? (
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                            <span style={{ fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 6, background: "var(--cyanBg)", color: "var(--cyan)" }}>{periodoDoc}</span>
+                            <span style={{ fontSize: 10, color: "var(--txt2)" }}>{clasificacion}</span>
+                          </span>
                         ) : (
-                          <span className="mono" style={{ fontSize: 11, color: pc?.plazo_dias ? "var(--txt)" : "var(--txt3)" }}>
-                            {pc?.plazo_dias ? `${pc.plazo_dias}d` : "—"}
+                          <span style={{ fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 6, background: "var(--redBg)", color: "var(--red)" }}>
+                            Sin clasificar
                           </span>
                         )}
                       </td>
-                      <td>
-                        {isEditing ? (
-                          <select value={editCuenta} onChange={e => setEditCuenta(e.target.value)}
-                            style={{ padding: "2px 4px", fontSize: 10, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 4, maxWidth: 150 }}>
-                            <option value="">—</option>
-                            {cuentasHoja.map(c => <option key={c.id} value={c.id}>{c.codigo} — {c.nombre}</option>)}
-                          </select>
-                        ) : (
-                          <span style={{ fontSize: 10, color: cuenta ? "var(--cyan)" : "var(--txt3)" }}>
-                            {cuenta ? `${cuenta.codigo}` : "—"}
-                          </span>
-                        )}
+                      {/* Razon Social + RUT */}
+                      <td style={{ padding: "14px 14px", maxWidth: 200 }}>
+                        <div style={{ fontWeight: 500, color: "var(--cyan)", fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.razon_social || "\u2014"}</div>
+                        <div className="mono" style={{ fontSize: 10, color: "var(--txt3)", marginTop: 2 }}>{fmtRut(c.rut_proveedor)}</div>
                       </td>
-                      <td style={{ textAlign: "center" }}>
-                        {isEditing ? (
-                          <input type="checkbox" checked={editVariable} onChange={e => setEditVariable(e.target.checked)}
-                            title="Cuenta variable (preguntar cada vez)" style={{ accentColor: "var(--amber)" }} />
-                        ) : (
-                          pc?.cuenta_variable ? <span style={{ fontSize: 10, color: "var(--amber)", fontWeight: 600 }}>Si</span> : <span style={{ fontSize: 10, color: "var(--txt3)" }}>—</span>
-                        )}
-                      </td>
-                      <td>
-                        {isEditing ? (
-                          <div style={{ display: "flex", gap: 4 }}>
-                            <button onClick={() => handleSaveProv(p.rut)}
-                              style={{ padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: "var(--greenBg)", color: "var(--green)", border: "none", cursor: "pointer" }}>
-                              OK
-                            </button>
-                            <button onClick={() => setEditingProv(null)}
-                              style={{ padding: "2px 8px", borderRadius: 4, fontSize: 10, background: "var(--bg3)", color: "var(--txt3)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
-                              X
-                            </button>
+                      {/* Fecha Emision */}
+                      <td className="mono" style={{ padding: "14px 14px", fontSize: 12 }}>{fmtDate(c.fecha_docto)}</td>
+                      {/* Pago Estimado */}
+                      <td style={{ padding: "14px 14px" }}>
+                        {venc ? (
+                          <div>
+                            <div className="mono" style={{ fontSize: 12 }}>{fmtDate(venc.fecha)}</div>
+                            {!isConciliada && (
+                              <div style={{ fontSize: 10, marginTop: 2, color: venc.diasRestantes < 0 ? "var(--red)" : "var(--green)", fontWeight: 600 }}>
+                                {venc.diasRestantes < 0 ? `Vencida ${Math.abs(venc.diasRestantes)}d` : venc.diasRestantes === 0 ? "Hoy" : `En ${venc.diasRestantes} d\u00edas`}
+                              </div>
+                            )}
                           </div>
                         ) : (
-                          <button onClick={() => { setEditingProv(p.rut); setEditPlazo(pc?.plazo_dias?.toString() || ""); setEditCuenta(pc?.categoria_cuenta_id || ""); setEditVariable(pc?.cuenta_variable || false); }}
-                            style={{ padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: "var(--bg3)", color: "var(--cyan)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
-                            Editar
-                          </button>
+                          <span style={{ fontSize: 11, color: "var(--txt3)" }}>\u2014</span>
                         )}
+                      </td>
+                      {/* Periodo SII */}
+                      <td className="mono" style={{ padding: "14px 14px", fontSize: 12 }}>{periodoDoc}</td>
+                      {/* Monto Total */}
+                      <td style={{ padding: "14px 14px", textAlign: "right" }}>
+                        <div className="mono" style={{ fontSize: 14, fontWeight: 700 }}>{fmtMoney(c.monto_total || 0)}</div>
+                        <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 1 }}>Incluye IVA</div>
+                      </td>
+                      {/* Estado / Accion */}
+                      <td style={{ padding: "14px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+                          <span style={{ fontSize: 10, color: "var(--txt3)" }}>
+                            {fmtMoney(c.monto_total || 0)} {isConciliada ? "" : "por pagar"}
+                          </span>
+                          {isConciliada ? (
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, padding: "4px 12px", borderRadius: 6, background: "var(--greenBg)", color: "var(--green)" }}>
+                              Pagado
+                            </span>
+                          ) : (
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, padding: "4px 12px", borderRadius: 6, background: "var(--cyan)", color: "#fff", cursor: "pointer" }}>
+                              Asignar Pago
+                            </span>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
                 })}
               </tbody>
+              {filtered.length > 0 && (
+                <tfoot>
+                  <tr style={{ borderTop: "2px solid var(--bg4)", fontWeight: 700 }}>
+                    <td colSpan={6} style={{ padding: "12px 14px", fontSize: 13 }}>Total CLP</td>
+                    <td className="mono" style={{ padding: "12px 14px", textAlign: "right", fontSize: 14 }}>
+                      {fmtMoney(total)}
+                    </td>
+                    <td></td>
+                  </tr>
+                </tfoot>
+              )}
             </table>
           </div>
-        )}
-      </div>
-
-      {/* Filtros */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
-        <input className="form-input" placeholder="Buscar..." value={filter} onChange={e => setFilter(e.target.value)}
-          style={{ fontSize: 12, flex: 1, minWidth: 120 }} />
-        <div style={{ position: "relative" }}>
-          <button onClick={() => setShowProvFilter(!showProvFilter)}
-            style={{
-              padding: "6px 10px", borderRadius: 8, fontSize: 11, cursor: "pointer",
-              background: provFilterSet ? "var(--cyanBg)" : "var(--bg3)",
-              color: provFilterSet ? "var(--cyan)" : "var(--txt)",
-              border: `1px solid ${provFilterSet ? "var(--cyanBd)" : "var(--bg4)"}`,
-              whiteSpace: "nowrap",
-            }}>
-            {provFilterSet ? `${provFilterSet.size} proveedor${provFilterSet.size !== 1 ? "es" : ""}` : "Proveedores"} ▾
-          </button>
-          {showProvFilter && (
-            <div style={{
-              position: "absolute", top: "100%", left: 0, zIndex: 100, marginTop: 4,
-              background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 8,
-              boxShadow: "0 8px 24px rgba(0,0,0,0.4)", width: 280, maxHeight: 350, overflow: "hidden",
-              display: "flex", flexDirection: "column",
-            }}>
-              {/* Botones Todos / Ninguno */}
-              <div style={{ display: "flex", gap: 4, padding: "8px 8px 4px", borderBottom: "1px solid var(--bg4)" }}>
-                <button onClick={() => setProvFilterSet(null)}
-                  style={{ flex: 1, padding: "4px 0", borderRadius: 4, fontSize: 10, fontWeight: 600, cursor: "pointer", background: !provFilterSet ? "var(--cyanBg)" : "var(--bg3)", color: !provFilterSet ? "var(--cyan)" : "var(--txt3)", border: "none" }}>
-                  Todos
-                </button>
-                <button onClick={() => setProvFilterSet(new Set())}
-                  style={{ flex: 1, padding: "4px 0", borderRadius: 4, fontSize: 10, fontWeight: 600, cursor: "pointer", background: "var(--bg3)", color: "var(--txt3)", border: "none" }}>
-                  Ninguno
-                </button>
-                <button onClick={() => setShowProvFilter(false)}
-                  style={{ padding: "4px 8px", borderRadius: 4, fontSize: 10, cursor: "pointer", background: "var(--bg3)", color: "var(--txt3)", border: "none" }}>
-                  ✕
-                </button>
-              </div>
-              {/* Lista de proveedores */}
-              <div style={{ overflowY: "auto", maxHeight: 290, padding: "4px 0" }}>
-                {proveedoresUnicos.map(p => {
-                  const checked = !provFilterSet || provFilterSet.has(p.rut);
-                  return (
-                    <label key={p.rut} style={{
-                      display: "flex", alignItems: "center", gap: 8, padding: "4px 10px", cursor: "pointer",
-                      fontSize: 11, background: checked ? "transparent" : "var(--bg)",
-                      opacity: checked ? 1 : 0.5,
-                    }}>
-                      <input type="checkbox" checked={checked}
-                        onChange={() => {
-                          if (!provFilterSet) {
-                            // Estaba en "todos" → crear set sin este
-                            const allRuts = new Set(proveedoresUnicos.map(x => x.rut));
-                            allRuts.delete(p.rut);
-                            setProvFilterSet(allRuts);
-                          } else if (provFilterSet.has(p.rut)) {
-                            const next = new Set(provFilterSet);
-                            next.delete(p.rut);
-                            setProvFilterSet(next.size === 0 ? new Set() : next);
-                          } else {
-                            const next = new Set(provFilterSet);
-                            next.add(p.rut);
-                            // Si seleccionamos todos, volver a null
-                            if (next.size === proveedoresUnicos.length) setProvFilterSet(null);
-                            else setProvFilterSet(next);
-                          }
-                        }}
-                        style={{ accentColor: "var(--cyan)" }} />
-                      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.razon_social}</span>
-                      <span className="mono" style={{ fontSize: 10, color: "var(--txt3)" }}>{p.facturas}</span>
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        </div>
-        <select value={tipoFilter} onChange={e => setTipoFilter(e.target.value)}
-          style={{ background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 8, padding: "6px 10px", fontSize: 11 }}>
-          <option value="todos">Todos los tipos</option>
-          {tiposDisponibles.map(t => (
-            <option key={t} value={t}>{TIPO_DOC_NAMES[t] || `Tipo ${t}`}</option>
-          ))}
-        </select>
-        <div style={{ display: "flex", gap: 2, background: "var(--bg3)", borderRadius: 6, padding: 2 }}>
-          {(["todos", "sin_pago", "conciliada"] as const).map(f => (
-            <button key={f} onClick={() => setConcFilter(f)}
-              style={{
-                padding: "4px 10px", borderRadius: 4, fontSize: 10, fontWeight: 600, cursor: "pointer", border: "none",
-                background: concFilter === f ? (f === "sin_pago" ? "var(--amberBg)" : f === "conciliada" ? "var(--greenBg)" : "var(--cyanBg)") : "transparent",
-                color: concFilter === f ? (f === "sin_pago" ? "var(--amber)" : f === "conciliada" ? "var(--green)" : "var(--cyan)") : "var(--txt3)",
-              }}>
-              {f === "todos" ? `Todas (${data.length})` : f === "sin_pago" ? `Sin pago (${totalSinPago})` : `Conciliadas (${totalConciliadas})`}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {data.length === 0 ? (
-        <div className="card" style={{ padding: 32, textAlign: "center" }}>
-          <div style={{ fontSize: 32, marginBottom: 8 }}>📄</div>
-          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Sin compras para este período</div>
-          <div style={{ fontSize: 12, color: "var(--txt3)", marginBottom: 12 }}>Importa los datos directamente desde el SII</div>
-          <button onClick={handleSyncSii} disabled={syncing}
-            style={{ padding: "10px 20px", borderRadius: 10, background: "var(--cyan)", color: "#000", fontWeight: 700, fontSize: 13, border: "none", cursor: syncing ? "not-allowed" : "pointer", opacity: syncing ? 0.6 : 1 }}>
-            {syncing ? "Importando..." : "Importar desde SII"}
-          </button>
-        </div>
-      ) : (
-        <div style={{ overflowX: "auto" }}>
-          <table className="tbl" style={{ fontSize: 11 }}>
-            <thead>
-              <tr>
-                <th>Tipo</th><th>N° Doc</th><th>RUT Proveedor</th><th>Razón Social</th><th>Fecha</th>
-                <th style={{ textAlign: "right" }}>Total</th><th>Vencimiento</th><th>Pago</th><th>Nota</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((c, i) => {
-                const venc = getVencimiento(c);
-                const isConciliada = concCompraIds.has(c.id!);
-                return (
-                <tr key={c.id || i}>
-                  <td>
-                    <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 4, background: "var(--bg3)", color: "var(--txt2)", whiteSpace: "nowrap" }}>
-                      {TIPO_DOC_NAMES[c.tipo_doc] || c.tipo_doc}
-                    </span>
-                  </td>
-                  <td className="mono" style={{ fontWeight: 600 }}>{c.nro_doc || "—"}</td>
-                  <td className="mono" style={{ fontSize: 10 }}>{fmtRut(c.rut_proveedor)}</td>
-                  <td style={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.razon_social || "—"}</td>
-                  <td className="mono">{fmtDate(c.fecha_docto)}</td>
-                  <td className="mono" style={{ textAlign: "right", fontWeight: 700 }}>{fmtMoney(c.monto_total || 0)}</td>
-                  <td>
-                    {venc ? (
-                      <span className="mono" style={{
-                        fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 4,
-                        background: isConciliada ? "var(--bg3)" : venc.diasRestantes < 0 ? "var(--redBg)" : venc.diasRestantes <= 7 ? "var(--amberBg)" : "var(--bg3)",
-                        color: isConciliada ? "var(--txt3)" : venc.diasRestantes < 0 ? "var(--red)" : venc.diasRestantes <= 7 ? "var(--amber)" : "var(--txt2)",
-                      }}>
-                        {fmtDate(venc.fecha)}
-                        {!isConciliada && (
-                          <span style={{ marginLeft: 4 }}>
-                            {venc.diasRestantes < 0 ? `(${Math.abs(venc.diasRestantes)}d vencida)` : venc.diasRestantes === 0 ? "(hoy)" : `(${venc.diasRestantes}d)`}
-                          </span>
-                        )}
-                      </span>
-                    ) : (
-                      <span style={{ fontSize: 10, color: "var(--txt3)" }}>—</span>
-                    )}
-                  </td>
-                  <td>
-                    {isConciliada ? (
-                      <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 4, background: "var(--greenBg)", color: "var(--green)" }}>
-                        PAGADA
-                      </span>
-                    ) : (
-                      <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 4, background: "var(--amberBg)", color: "var(--amber)" }}>
-                        PENDIENTE
-                      </span>
-                    )}
-                  </td>
-                  <td>
-                    {editingNota === c.id ? (
-                      <div style={{ display: "flex", gap: 3 }}>
-                        <input value={notaText} onChange={e => setNotaText(e.target.value)}
-                          onKeyDown={e => { if (e.key === "Enter") { updateRcvCompra(c.id!, { notas: notaText.trim() || null }); setData(prev => prev.map(x => x.id === c.id ? { ...x, notas: notaText.trim() || null } : x)); setEditingNota(null); } if (e.key === "Escape") setEditingNota(null); }}
-                          autoFocus placeholder="Nota..."
-                          style={{ width: 120, padding: "2px 4px", fontSize: 10, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 3 }} />
-                        <button onClick={() => { updateRcvCompra(c.id!, { notas: notaText.trim() || null }); setData(prev => prev.map(x => x.id === c.id ? { ...x, notas: notaText.trim() || null } : x)); setEditingNota(null); }}
-                          style={{ padding: "2px 6px", borderRadius: 3, fontSize: 9, background: "var(--greenBg)", color: "var(--green)", border: "none", cursor: "pointer" }}>OK</button>
-                      </div>
-                    ) : (
-                      <span onClick={() => { setEditingNota(c.id!); setNotaText(c.notas || ""); }}
-                        style={{ fontSize: 10, color: c.notas ? "var(--txt2)" : "var(--txt3)", cursor: "pointer", fontStyle: c.notas ? "normal" : "italic" }}>
-                        {c.notas || "agregar..."}
-                      </span>
-                    )}
-                  </td>
-                </tr>
-                );
-              })}
-            </tbody>
-            <tfoot>
-              <tr style={{ fontWeight: 700, background: "var(--bg3)" }}>
-                <td colSpan={5} style={{ fontSize: 12 }}>TOTAL ({filtered.length} docs)</td>
-                <td className="mono" style={{ textAlign: "right" }}>{fmtMoney(totalNeto)}</td>
-                <td className="mono" style={{ textAlign: "right", color: "var(--amber)" }}>{fmtMoney(totalIva)}</td>
-                <td className="mono" style={{ textAlign: "right", color: "var(--red)" }}>{fmtMoney(total)}</td>
-                <td></td>
-              </tr>
-            </tfoot>
-          </table>
         </div>
       )}
     </div>
