@@ -262,6 +262,7 @@ export async function fetchStock(): Promise<DBStock[]> {
   return data || [];
 }
 
+/** @deprecated Usar registrarMovimientoStock(). Solo se mantiene para uso interno de la función SQL. */
 export async function updateStock(sku: string, posicion_id: string, delta: number, sku_venta?: string | null) {
   sku = sku.toUpperCase().trim();
   if (sku_venta) sku_venta = sku_venta.toUpperCase().trim();
@@ -371,6 +372,7 @@ export async function fetchMovimientosByRecepcion(recepcionId: string): Promise<
   return data || [];
 }
 
+/** @deprecated Usar registrarMovimientoStock(). Solo se mantiene por compatibilidad. */
 export async function insertMovimiento(m: Omit<DBMovimiento, "id" | "created_at">) {
   const sb = getSupabase(); if (!sb) return;
   const { error } = await sb.from("movimientos").insert({ ...m, sku: (m.sku || "").toUpperCase().trim() });
