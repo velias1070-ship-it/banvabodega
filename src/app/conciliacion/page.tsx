@@ -872,6 +872,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
   const [showBheModal, setShowBheModal] = useState(false);
+  const [provFilter, setProvFilter] = useState<string>("todos");
   const [showProveedores, setShowProveedores] = useState(false);
   const [editingProv, setEditingProv] = useState<string | null>(null);
   const [editPlazo, setEditPlazo] = useState("");
@@ -987,9 +988,10 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
     setEditingProv(null);
   };
 
-  // Filtrar por texto, tipo y estado conciliación
+  // Filtrar por texto, tipo, proveedor y estado conciliación
   let filtered = data;
   if (tipoFilter !== "todos") filtered = filtered.filter(c => String(c.tipo_doc) === tipoFilter);
+  if (provFilter !== "todos") filtered = filtered.filter(c => (c.rut_proveedor || "") === provFilter);
   if (concFilter === "conciliada") filtered = filtered.filter(c => concCompraIds.has(c.id!));
   else if (concFilter === "sin_pago") filtered = filtered.filter(c => !concCompraIds.has(c.id!));
   if (filter) filtered = filtered.filter(c =>
@@ -1155,11 +1157,18 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
       </div>
 
       {/* Filtros */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
-        <input className="form-input" placeholder="Buscar por proveedor, RUT o N° doc..." value={filter} onChange={e => setFilter(e.target.value)}
-          style={{ fontSize: 13, flex: 1 }} />
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <input className="form-input" placeholder="Buscar..." value={filter} onChange={e => setFilter(e.target.value)}
+          style={{ fontSize: 12, flex: 1, minWidth: 120 }} />
+        <select value={provFilter} onChange={e => setProvFilter(e.target.value)}
+          style={{ background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 8, padding: "6px 10px", fontSize: 11, maxWidth: 220 }}>
+          <option value="todos">Todos los proveedores</option>
+          {proveedoresUnicos.map(p => (
+            <option key={p.rut} value={p.rut}>{p.razon_social} ({p.facturas})</option>
+          ))}
+        </select>
         <select value={tipoFilter} onChange={e => setTipoFilter(e.target.value)}
-          style={{ background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 8, padding: "6px 10px", fontSize: 12 }}>
+          style={{ background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 8, padding: "6px 10px", fontSize: 11 }}>
           <option value="todos">Todos los tipos</option>
           {tiposDisponibles.map(t => (
             <option key={t} value={t}>{TIPO_DOC_NAMES[t] || `Tipo ${t}`}</option>
