@@ -367,7 +367,9 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
   const totalArmados = armados.size;
   const pedidosPendientesArmar = totalPedidos - totalArmados;
   const hayNuevosPorRecolectar = !allRecolectado && fase === "armado";
-  const todoCompleto = allRecolectado && totalArmados >= totalPedidos;
+  // Session COMPLETADA + all picked + cutoff passed = everything is done
+  const todoCompleto = (allRecolectado && totalArmados >= totalPedidos)
+    || (session.estado === "COMPLETADA" && allRecolectado && pastCutoff);
 
   // Cutoff
   const now = new Date();
