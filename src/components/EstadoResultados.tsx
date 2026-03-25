@@ -289,6 +289,20 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
           : comprasAct;
         return filteredCompras.map(mapCompra);
       }
+      // Gastos operacionales sin categorizar
+      if (expandedRow === "sin_cat") {
+        const movsSinCat = movBanco.filter(m => m.monto < 0 && !m.categoria_cuenta_id);
+        return movsSinCat.map(m => {
+          const conc = conciliaciones.find(c => c.movimiento_banco_id === m.id && c.estado === "confirmado");
+          if (conc?.rcv_compra_id) {
+            const compra = comprasAct.find(c => c.id === conc.rcv_compra_id) || comprasAnt.find(c => c.id === conc.rcv_compra_id);
+            if (compra) {
+              return { tipo: "Compra", doc: TIPO_DOC[compra.tipo_doc] || String(compra.tipo_doc), nro: compra.nro_doc || "—", rut: compra.rut_proveedor || "", razon: compra.razon_social || "", fecha: compra.fecha_docto || "—", monto: Math.abs(m.monto), nota: conc.notas || compra.notas || "", conciliada: true };
+            }
+          }
+          return { tipo: "Banco", doc: m.banco, nro: m.referencia || "—", rut: "", razon: m.descripcion || "", fecha: m.fecha, monto: Math.abs(m.monto), nota: conc?.notas || "", conciliada: !!conc };
+        });
+      }
       return [];
     }
 
