@@ -497,11 +497,11 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
                     // Recargar
                     setLoading(true);
                     const [va, ca, vant, cant, pc2, mb, mbAnt, prc, concs, cH] = await Promise.all([
-                      fetchRcvVentas(empresa.id, periodo), fetchRcvCompras(empresa.id, periodo),
-                      fetchRcvVentas(empresa.id, pAnt), fetchRcvCompras(empresa.id, pAnt),
-                      fetchPlanCuentas(), fetchMovimientosBanco(empresa.id, { desde: rangoAct.desde, hasta: rangoAct.hasta }),
-                      fetchMovimientosBanco(empresa.id, { desde: rangoAnt.desde, hasta: rangoAnt.hasta }),
-                      fetchProveedorCuentas(), fetchConciliaciones(empresa.id), fetchPlanCuentasHojas(),
+                      fetchRcvVentas(empresa.id!, periodo), fetchRcvCompras(empresa.id!, periodo),
+                      fetchRcvVentas(empresa.id!, pAnt), fetchRcvCompras(empresa.id!, pAnt),
+                      fetchPlanCuentas(), fetchMovimientosBanco(empresa.id!, { desde: rangoAct.desde, hasta: rangoAct.hasta }),
+                      fetchMovimientosBanco(empresa.id!, { desde: rangoAnt.desde, hasta: rangoAnt.hasta }),
+                      fetchProveedorCuentas(), fetchConciliaciones(empresa.id!), fetchPlanCuentasHojas(),
                     ]);
                     setVentasAct(va); setComprasAct(ca); setVentasAnt(vant); setComprasAnt(cant);
                     setPlanCuentas(pc2); setMovBanco(mb); setMovBancoAnt(mbAnt);
