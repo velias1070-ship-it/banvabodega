@@ -22,6 +22,7 @@ import type { CsvRow } from "@/components/CsvUploader";
 import dynamic from "next/dynamic";
 
 // Componentes pesados: carga dinámica para no inflar el bundle inicial
+const DashboardConciliacion = dynamic(() => import("@/components/DashboardConciliacion"), { ssr: false });
 const PlanCuentasTree = dynamic(() => import("@/components/PlanCuentasTree"), { ssr: false });
 const RuleBuilder = dynamic(() => import("@/components/RuleBuilder"), { ssr: false });
 const ConciliacionSplitView = dynamic(() => import("@/components/ConciliacionSplitView"), { ssr: false });
@@ -344,8 +345,9 @@ function SiiImportModal({ tipo, empresa, periodoActual, onClose, onImported }: S
   );
 }
 
-// ==================== DASHBOARD ====================
-function Dashboard({ empresa, periodo, onChangePeriodo }: { empresa: DBEmpresa; periodo: string; onChangePeriodo: (p: string) => void }) {
+// Dashboard movido a src/components/DashboardConciliacion.tsx
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function _DashboardOld({ empresa, periodo, onChangePeriodo }: { empresa: DBEmpresa; periodo: string; onChangePeriodo: (p: string) => void }) {
   const [compras, setCompras] = useState<DBRcvCompra[]>([]);
   const [ventas, setVentas] = useState<DBRcvVenta[]>([]);
   const [movBanco, setMovBanco] = useState<DBMovimientoBanco[]>([]);
@@ -1982,7 +1984,7 @@ export default function ConciliacionPage() {
             ))}
           </div>
           <div className="admin-content">
-            {empresa && tab === "dash" && <Dashboard empresa={empresa} periodo={periodo} onChangePeriodo={setPeriodo} />}
+            {empresa && tab === "dash" && <DashboardConciliacion empresa={empresa} periodo={periodo} onChangePeriodo={setPeriodo} />}
             {empresa && tab === "compras" && <TabRcvCompras empresa={empresa} periodo={periodo} />}
             {empresa && tab === "ventas" && <TabRcvVentas empresa={empresa} periodo={periodo} />}
             {empresa && tab === "banco" && <TabBanco empresa={empresa} periodo={periodo} />}
