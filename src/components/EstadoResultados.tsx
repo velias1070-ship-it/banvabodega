@@ -3,9 +3,9 @@ import { useState, useEffect, useMemo } from "react";
 import {
   fetchRcvVentas, fetchRcvCompras,
   fetchPlanCuentas, fetchMovimientosBanco,
-  fetchProveedorCuentas,
+  fetchProveedorCuentas, fetchConciliaciones,
 } from "@/lib/db";
-import type { DBEmpresa, DBRcvCompra, DBRcvVenta, DBPlanCuentas, DBMovimientoBanco, DBProveedorCuenta } from "@/lib/db";
+import type { DBEmpresa, DBRcvCompra, DBRcvVenta, DBPlanCuentas, DBMovimientoBanco, DBProveedorCuenta, DBConciliacion } from "@/lib/db";
 import { exportToExcel, fmtMoneyExcel } from "@/lib/exportExcel";
 
 // ==================== HELPERS ====================
@@ -78,6 +78,7 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
   const [movBanco, setMovBanco] = useState<DBMovimientoBanco[]>([]);
   const [movBancoAnt, setMovBancoAnt] = useState<DBMovimientoBanco[]>([]);
   const [provCuentas, setProvCuentas] = useState<DBProveedorCuenta[]>([]);
+  const [conciliaciones, setConciliaciones] = useState<DBConciliacion[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
 
@@ -98,11 +99,12 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
       fetchMovimientosBanco(empresa.id, { desde: rangoAct.desde, hasta: rangoAct.hasta }),
       fetchMovimientosBanco(empresa.id, { desde: rangoAnt.desde, hasta: rangoAnt.hasta }),
       fetchProveedorCuentas(),
-    ]).then(([va, ca, vant, cant, pc, mb, mbAnt, prc]) => {
+      fetchConciliaciones(empresa.id),
+    ]).then(([va, ca, vant, cant, pc, mb, mbAnt, prc, conc]) => {
       setVentasAct(va); setComprasAct(ca);
       setVentasAnt(vant); setComprasAnt(cant);
       setPlanCuentas(pc); setMovBanco(mb); setMovBancoAnt(mbAnt);
-      setProvCuentas(prc);
+      setProvCuentas(prc); setConciliaciones(conc);
       setLoading(false);
     });
   }, [empresa.id, periodo]);
@@ -247,33 +249,59 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
     return result;
   }, [ventasAct, comprasAct, ventasAnt, comprasAnt, planCuentas, movBanco, movBancoAnt]);
 
+  // Mapa de conciliaciones: compra_id → conciliación
+  const concByCompraId = useMemo(() => {
+    const map = new Map<string, DBConciliacion>();
+    for (const c of conciliaciones) {
+      if (c.rcv_compra_id && c.estado === "confirmado") map.set(c.rcv_compra_id, c);
+    }
+    return map;
+  }, [conciliaciones]);
+
   // Documentos para drill-down
   const drillDocs = useMemo(() => {
     if (!expandedRow) return [];
     const cuenta = planCuentas.find(c => c.id === expandedRow);
+
+    const mapCompra = (c: DBRcvCompra) => {
+      const conc = concByCompraId.get(c.id!);
+      return {
+        tipo: "Compra", doc: TIPO_DOC[c.tipo_doc] || String(c.tipo_doc),
+        nro: c.nro_doc || "—", rut: c.rut_proveedor || "—",
+        razon: c.razon_social || "", fecha: c.fecha_docto || "—",
+        monto: c.monto_total || 0, nota: c.notas || conc?.notas || "",
+        conciliada: !!conc,
+      };
+    };
+
     if (!cuenta) {
-      // Drill-down genérico: si es ing_total, mostrar ventas; si es cos_total, mostrar compras
-      if (expandedRow === "ing_total") return ventasAct.map(v => ({ tipo: "Venta", doc: TIPO_DOC[v.tipo_doc] || String(v.tipo_doc), nro: v.folio || v.nro || "—", rut: v.rut_emisor || "—", fecha: v.fecha_docto || "—", monto: v.monto_total || 0 }));
-      if (expandedRow === "cos_total") return comprasAct.map(c => ({ tipo: "Compra", doc: TIPO_DOC[c.tipo_doc] || String(c.tipo_doc), nro: c.nro_doc || "—", rut: c.rut_proveedor || "—", fecha: c.fecha_docto || "—", monto: c.monto_total || 0 }));
+      if (expandedRow === "ing_total") return ventasAct.map(v => ({ tipo: "Venta", doc: TIPO_DOC[v.tipo_doc] || String(v.tipo_doc), nro: v.folio || v.nro || "—", rut: v.rut_emisor || "—", razon: "", fecha: v.fecha_docto || "—", monto: v.monto_total || 0, nota: "", conciliada: false }));
+      if (expandedRow === "cos_total" || expandedRow === "cos_sin_cat") {
+        const sinCuentaRuts = new Set(provCuentas.filter(p => p.categoria_cuenta_id).map(p => p.rut_proveedor));
+        const filteredCompras = expandedRow === "cos_sin_cat"
+          ? comprasAct.filter(c => !sinCuentaRuts.has(c.rut_proveedor || ""))
+          : comprasAct;
+        return filteredCompras.map(mapCompra);
+      }
       return [];
     }
 
     if (cuenta.tipo === "ingreso") {
-      return ventasAct.map(v => ({ tipo: "Venta", doc: TIPO_DOC[v.tipo_doc] || String(v.tipo_doc), nro: v.folio || v.nro || "—", rut: v.rut_emisor || "—", fecha: v.fecha_docto || "—", monto: v.monto_total || 0 }));
+      return ventasAct.map(v => ({ tipo: "Venta", doc: TIPO_DOC[v.tipo_doc] || String(v.tipo_doc), nro: v.folio || v.nro || "—", rut: v.rut_emisor || "—", razon: "", fecha: v.fecha_docto || "—", monto: v.monto_total || 0, nota: "", conciliada: false }));
     }
     if (cuenta.tipo === "costo") {
-      // Filtrar compras cuyos proveedores tienen esta cuenta asignada
       const provRuts = provCuentas.filter(p => p.categoria_cuenta_id === cuenta.id).map(p => p.rut_proveedor);
       const rutsSet = new Set(provRuts);
-      const filteredCompras = rutsSet.size > 0
-        ? comprasAct.filter(c => rutsSet.has(c.rut_proveedor || ""))
-        : comprasAct;
-      return filteredCompras.map(c => ({ tipo: "Compra", doc: TIPO_DOC[c.tipo_doc] || String(c.tipo_doc), nro: c.nro_doc || "—", rut: c.rut_proveedor || "—", razon: c.razon_social || "", fecha: c.fecha_docto || "—", monto: c.monto_total || 0 }));
+      const filteredCompras = rutsSet.size > 0 ? comprasAct.filter(c => rutsSet.has(c.rut_proveedor || "")) : comprasAct;
+      return filteredCompras.map(mapCompra);
     }
-    // Gastos: movimientos banco de esa categoría
+    // Gastos: movimientos banco
     const movs = movBanco.filter(m => m.monto < 0 && m.categoria_cuenta_id === cuenta.id);
-    return movs.map(m => ({ tipo: "Banco", doc: m.banco, nro: m.referencia || "—", rut: "", fecha: m.fecha, monto: Math.abs(m.monto) }));
-  }, [expandedRow, ventasAct, comprasAct, movBanco, planCuentas]);
+    return movs.map(m => {
+      const conc = conciliaciones.find(c => c.movimiento_banco_id === m.id && c.estado === "confirmado");
+      return { tipo: "Banco", doc: m.banco, nro: m.referencia || "—", rut: "", razon: m.descripcion || "", fecha: m.fecha, monto: Math.abs(m.monto), nota: conc?.notas || "", conciliada: !!conc };
+    });
+  }, [expandedRow, ventasAct, comprasAct, movBanco, planCuentas, concByCompraId, provCuentas, conciliaciones]);
 
   // Exportar Excel
   const handleExport = () => {
@@ -423,17 +451,24 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
           <div style={{ maxHeight: 300, overflowY: "auto" }}>
             <table className="tbl" style={{ fontSize: 11 }}>
               <thead>
-                <tr><th>Tipo</th><th>Doc</th><th>N°</th><th>RUT</th><th>Fecha</th><th style={{ textAlign: "right" }}>Monto</th></tr>
+                <tr><th>Doc</th><th>N°</th><th>Proveedor</th><th>Fecha</th><th style={{ textAlign: "right" }}>Monto</th><th>Nota</th><th>Pago</th></tr>
               </thead>
               <tbody>
                 {drillDocs.map((d, i) => (
                   <tr key={i}>
-                    <td><span style={{ fontSize: 9, fontWeight: 600, padding: "2px 6px", borderRadius: 4, background: d.tipo === "Venta" ? "var(--greenBg)" : d.tipo === "Compra" ? "var(--redBg)" : "var(--blueBg)", color: d.tipo === "Venta" ? "var(--green)" : d.tipo === "Compra" ? "var(--red)" : "var(--blue)" }}>{d.tipo}</span></td>
                     <td style={{ fontSize: 10, color: "var(--txt3)" }}>{d.doc}</td>
                     <td className="mono" style={{ fontWeight: 600 }}>{d.nro}</td>
-                    <td className="mono" style={{ fontSize: 10 }}>{d.rut}</td>
+                    <td style={{ maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.razon || d.rut || "—"}</td>
                     <td className="mono">{d.fecha}</td>
                     <td className="mono" style={{ textAlign: "right", fontWeight: 600 }}>{fmtMoney(d.monto)}</td>
+                    <td style={{ fontSize: 10, color: "var(--txt2)", fontStyle: d.nota ? "italic" : "normal", maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.nota || "—"}</td>
+                    <td>
+                      {d.conciliada ? (
+                        <span style={{ fontSize: 9, fontWeight: 600, padding: "1px 5px", borderRadius: 3, background: "var(--greenBg)", color: "var(--green)" }}>PAGADA</span>
+                      ) : (
+                        <span style={{ fontSize: 9, fontWeight: 600, padding: "1px 5px", borderRadius: 3, background: "var(--amberBg)", color: "var(--amber)" }}>PEND.</span>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
