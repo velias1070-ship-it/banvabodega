@@ -1615,6 +1615,10 @@ export interface DBRcvCompra {
   monto_total: number;
   fecha_recepcion: string | null;
   evento_receptor: string | null;
+  estado_pago?: string | null;
+  fecha_vencimiento?: string | null;
+  categoria_cuenta_id?: string | null;
+  notas?: string | null;
   created_at?: string;
 }
 
@@ -2102,6 +2106,11 @@ export async function categorizarMovimiento(id: string, categoriaId: string): Pr
 }
 
 // Actualizar estado_pago de compra o venta
+export async function updateRcvCompra(id: string, fields: Partial<DBRcvCompra>): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("rcv_compras").update(fields).eq("id", id);
+}
+
 export async function updateEstadoPagoCompra(id: string, estado: string): Promise<void> {
   const sb = getSupabase(); if (!sb) return;
   await sb.from("rcv_compras").update({ estado_pago: estado }).eq("id", id);

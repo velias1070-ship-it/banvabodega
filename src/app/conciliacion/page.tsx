@@ -11,6 +11,7 @@ import {
   fetchProveedorCuentas,
   upsertProveedorCuenta,
   fetchPlanCuentasHojas,
+  updateRcvCompra,
 } from "@/lib/db";
 import type {
   DBEmpresa, DBRcvCompra, DBRcvVenta, DBMovimientoBanco,
@@ -875,6 +876,8 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const [provFilterSet, setProvFilterSet] = useState<Set<string> | null>(null); // null = todos
   const [showProvFilter, setShowProvFilter] = useState(false);
   const [showProveedores, setShowProveedores] = useState(false);
+  const [editingNota, setEditingNota] = useState<string | null>(null);
+  const [notaText, setNotaText] = useState("");
   const [editingProv, setEditingProv] = useState<string | null>(null);
   const [editPlazo, setEditPlazo] = useState("");
   const [editCuenta, setEditCuenta] = useState("");
@@ -1270,7 +1273,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
             <thead>
               <tr>
                 <th>Tipo</th><th>N° Doc</th><th>RUT Proveedor</th><th>Razón Social</th><th>Fecha</th>
-                <th style={{ textAlign: "right" }}>Total</th><th>Vencimiento</th><th>Pago</th>
+                <th style={{ textAlign: "right" }}>Total</th><th>Vencimiento</th><th>Pago</th><th>Nota</th>
               </tr>
             </thead>
             <tbody>
@@ -1315,6 +1318,23 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                     ) : (
                       <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 4, background: "var(--amberBg)", color: "var(--amber)" }}>
                         PENDIENTE
+                      </span>
+                    )}
+                  </td>
+                  <td>
+                    {editingNota === c.id ? (
+                      <div style={{ display: "flex", gap: 3 }}>
+                        <input value={notaText} onChange={e => setNotaText(e.target.value)}
+                          onKeyDown={e => { if (e.key === "Enter") { updateRcvCompra(c.id!, { notas: notaText.trim() || null }); setData(prev => prev.map(x => x.id === c.id ? { ...x, notas: notaText.trim() || null } : x)); setEditingNota(null); } if (e.key === "Escape") setEditingNota(null); }}
+                          autoFocus placeholder="Nota..."
+                          style={{ width: 120, padding: "2px 4px", fontSize: 10, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 3 }} />
+                        <button onClick={() => { updateRcvCompra(c.id!, { notas: notaText.trim() || null }); setData(prev => prev.map(x => x.id === c.id ? { ...x, notas: notaText.trim() || null } : x)); setEditingNota(null); }}
+                          style={{ padding: "2px 6px", borderRadius: 3, fontSize: 9, background: "var(--greenBg)", color: "var(--green)", border: "none", cursor: "pointer" }}>OK</button>
+                      </div>
+                    ) : (
+                      <span onClick={() => { setEditingNota(c.id!); setNotaText(c.notas || ""); }}
+                        style={{ fontSize: 10, color: c.notas ? "var(--txt2)" : "var(--txt3)", cursor: "pointer", fontStyle: c.notas ? "normal" : "italic" }}>
+                        {c.notas || "agregar..."}
                       </span>
                     )}
                   </td>

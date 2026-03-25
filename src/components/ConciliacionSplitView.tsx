@@ -192,6 +192,9 @@ export default function ConciliacionSplitView({
   const [clasificarCuenta, setClasificarCuenta] = useState("");
   const [clasificarNota, setClasificarNota] = useState("");
 
+  // Nota al confirmar match
+  const [matchNota, setMatchNota] = useState("");
+
   // Estado de feedback guardado
   const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null);
 
@@ -355,7 +358,7 @@ export default function ConciliacionSplitView({
       estado: "confirmado",
       tipo_partida: "match",
       metodo: "manual",
-      notas: null,
+      notas: matchNota.trim() || null,
       created_by: "admin",
     };
 
@@ -400,6 +403,7 @@ export default function ConciliacionSplitView({
     setConciliaciones(prev => [...prev, c]);
     setSelectedMov(null);
     setSelectedDoc(null);
+    setMatchNota("");
 
     const condiciones = extraerCondicionesRegla(mov, doc);
     if (condiciones.some(cond => cond.campo === "descripcion")) {
@@ -756,22 +760,26 @@ export default function ConciliacionSplitView({
         <div style={{
           padding: 12, background: "var(--cyanBg)", borderRadius: 10,
           border: "1px solid var(--cyanBd)", marginBottom: 12,
-          display: "flex", justifyContent: "space-between", alignItems: "center",
         }}>
-          <div style={{ fontSize: 12 }}>
-            <span style={{ fontWeight: 600 }}>Match:</span>{" "}
-            <span className="mono">{fmtMoney(selectedMov.monto)}</span> ↔{" "}
-            {selectedDoc.tipo === "compra" ? "Compra" : "Venta"} #{selectedDoc.nro}{" "}
-            <span className="mono">{fmtMoney(selectedDoc.monto_total)}</span>{" "}
-            <span style={{ color: "var(--cyan)", fontWeight: 600 }}>(Score: {selectedDoc.score}%)</span>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <div style={{ fontSize: 12 }}>
+              <span style={{ fontWeight: 600 }}>Match:</span>{" "}
+              <span className="mono">{fmtMoney(selectedMov.monto)}</span> ↔{" "}
+              {selectedDoc.tipo === "compra" ? "Compra" : "Venta"} #{selectedDoc.nro}{" "}
+              <span className="mono">{fmtMoney(selectedDoc.monto_total)}</span>{" "}
+              <span style={{ color: "var(--cyan)", fontWeight: 600 }}>(Score: {selectedDoc.score}%)</span>
+            </div>
           </div>
-          <div style={{ display: "flex", gap: 6 }}>
-            <button onClick={() => { setSelectedMov(null); setSelectedDoc(null); }}
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input value={matchNota} onChange={e => setMatchNota(e.target.value)}
+              placeholder="Nota opcional (ej: Cámara de seguridad bodega)"
+              style={{ flex: 1, padding: "6px 8px", fontSize: 11, background: "var(--bg2)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 6 }} />
+            <button onClick={() => { setSelectedMov(null); setSelectedDoc(null); setMatchNota(""); }}
               style={{ padding: "6px 12px", borderRadius: 8, background: "var(--bg3)", color: "var(--txt)", fontSize: 11, border: "1px solid var(--bg4)", cursor: "pointer" }}>
               Cancelar
             </button>
             <button onClick={handleConfirmar} className="scan-btn green" style={{ padding: "6px 14px", fontSize: 11 }}>
-              Confirmar match
+              Confirmar
             </button>
           </div>
         </div>
@@ -869,6 +877,11 @@ export default function ConciliacionSplitView({
                       ) : (
                         <div style={{ fontSize: 11, color: "var(--txt3)" }}>
                           {detail.conc.tipo_partida === "clasificacion_directa" ? "Clasificación directa (sin documento)" : "Documento no encontrado"}
+                        </div>
+                      )}
+                      {detail.conc.notas && (
+                        <div style={{ fontSize: 11, color: "var(--txt)", marginTop: 4, fontStyle: "italic" }}>
+                          {detail.conc.notas}
                         </div>
                       )}
                       <div style={{ fontSize: 9, color: "var(--txt3)", marginTop: 4 }}>
