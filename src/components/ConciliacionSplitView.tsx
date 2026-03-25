@@ -48,7 +48,7 @@ interface DocUnificado {
 // ==================== LÓGICA DE MATCHING ====================
 
 // Calcular score de match entre un movimiento banco y un documento RCV
-function calcularScore(mov: DBMovimientoBanco, doc: DocUnificado): number {
+function calcularScore(mov: DBMovimientoBanco, doc: DocUnificado, plazoDias?: number | null): number {
   let score = 0;
   const movAbs = Math.abs(mov.monto);
   const docAbs = Math.abs(doc.monto_total);
@@ -71,11 +71,21 @@ function calcularScore(mov: DBMovimientoBanco, doc: DocUnificado): number {
     score += 10;
   }
 
-  // Fecha cercana: ±5 días (+25 puntos), ±15 días (+15), ±30 días (+5)
-  if (mov.fecha && doc.fecha) {
+  // Fecha de vencimiento vs fecha de pago (+30 puntos si calza)
+  if (plazoDias && mov.fecha && doc.fecha) {
+    const docDate = new Date(doc.fecha + "T12:00:00").getTime();
+    const vencDate = docDate + plazoDias * 86400000;
+    const movDate = new Date(mov.fecha + "T12:00:00").getTime();
+    const diffVenc = Math.abs(movDate - vencDate) / 86400000;
+    if (diffVenc <= 3) score += 30;       // Pago en fecha de vencimiento (±3 días)
+    else if (diffVenc <= 7) score += 20;  // Pago cercano al vencimiento
+    else if (diffVenc <= 15) score += 10; // Pago dentro de 2 semanas del vencimiento
+  }
+  // Fallback: fecha cercana entre emisión y pago (sin plazo)
+  else if (mov.fecha && doc.fecha) {
     const movDate = new Date(mov.fecha + "T12:00:00").getTime();
     const docDate = new Date(doc.fecha + "T12:00:00").getTime();
-    const diffDias = Math.abs(movDate - docDate) / (1000 * 60 * 60 * 24);
+    const diffDias = Math.abs(movDate - docDate) / 86400000;
     if (diffDias <= 5) score += 25;
     else if (diffDias <= 15) score += 15;
     else if (diffDias <= 30) score += 5;
@@ -307,15 +317,24 @@ export default function ConciliacionSplitView({
     return docs;
   }, [compras, ventas, concCompraIds, concVentaIds]);
 
+  // Mapa RUT → plazo_dias para scoring
+  const plazoByRut = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const pc of provCuentas) {
+      if (pc.plazo_dias && pc.rut_proveedor) map.set(pc.rut_proveedor, pc.plazo_dias);
+    }
+    return map;
+  }, [provCuentas]);
+
   // Sugerencias para el movimiento seleccionado (ordenadas por score)
   const sugerencias = useMemo((): DocUnificado[] => {
     if (!selectedMov) return [];
     return docsSinConciliar
-      .map(doc => ({ ...doc, score: calcularScore(selectedMov, doc) }))
+      .map(doc => ({ ...doc, score: calcularScore(selectedMov, doc, plazoByRut.get(doc.rut) || null) }))
       .filter(doc => doc.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, 20);
-  }, [selectedMov, docsSinConciliar]);
+  }, [selectedMov, docsSinConciliar, plazoByRut]);
 
   // Mostrar mensaje temporal de feedback
   const showFeedback = (msg: string) => {
