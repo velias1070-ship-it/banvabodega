@@ -1927,19 +1927,27 @@ export default function ConciliacionPage() {
     </div>
   );
 
-  const tabs: [TabKey, string, string][] = [
-    ["dash", "Dashboard", "📊"],
-    ["compras", "RCV Compras", "📄"],
-    ["ventas", "RCV Ventas", "📄"],
-    ["banco", "Banco", "🏦"],
-    ["conciliacion", "Conciliación", "🔗"],
-    ["cuentas", "Plan Cuentas", "📋"],
-    ["reglas", "Reglas", "⚙️"],
-    ["resultados", "Estado Resultados", "📈"],
-    ["flujo", "Flujo Caja", "💰"],
-    ["proyectado", "Flujo Proyectado", "🔮"],
-    ["presupuesto", "Presupuesto", "📊"],
+  const SIDEBAR_GROUPS = [
+    { section: "INGRESOS", icon: "🏷️", items: [["ventas", "RCV Ventas", "📄"]] as [TabKey, string, string][] },
+    { section: "EGRESOS", icon: "💳", items: [["compras", "RCV Compras", "📄"]] as [TabKey, string, string][] },
+    { section: "BANCO", icon: "🏦", items: [["banco", "Banco", "🏦"], ["conciliacion", "Conciliación", "🔗"]] as [TabKey, string, string][] },
+    { section: "REPORTES", icon: "📈", items: [["resultados", "Estado Resultados", "📈"], ["flujo", "Flujo Caja", "💰"], ["proyectado", "Flujo Proyectado", "🔮"], ["presupuesto", "Presupuesto", "📊"]] as [TabKey, string, string][] },
+    { section: "AJUSTES", icon: "⚙️", items: [["cuentas", "Plan Cuentas", "📋"], ["reglas", "Reglas", "⚙️"]] as [TabKey, string, string][] },
   ];
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>(() => {
+    const init: Record<string, boolean> = {};
+    for (const g of SIDEBAR_GROUPS) init[g.section] = false;
+    return init;
+  });
+  const toggleSection = (section: string) => setOpenSections(prev => ({ ...prev, [section]: !prev[section] }));
+  useEffect(() => {
+    for (const g of SIDEBAR_GROUPS) {
+      if (g.items.some(([k]) => k === tab)) {
+        setOpenSections(prev => prev[g.section] ? prev : { ...prev, [g.section]: true });
+        break;
+      }
+    }
+  }, [tab]);
 
   return (
     <div className="app-admin">
@@ -1966,20 +1974,42 @@ export default function ConciliacionPage() {
       {/* Layout sidebar + main */}
       <div className="admin-layout">
         <nav className="admin-sidebar">
-          {tabs.map(([key, label, icon]) => (
-            <button key={key} className={`sidebar-btn ${tab === key ? "active" : ""}`} onClick={() => setTab(key)}>
-              <span className="sidebar-icon">{icon}</span>
-              <span className="sidebar-label">{label}</span>
-            </button>
-          ))}
+          {/* Home */}
+          <Link href="/admin"><button className="sidebar-btn"><span className="sidebar-icon">🏠</span><span className="sidebar-label">Home</span></button></Link>
+          {/* Dashboard */}
+          <button className={`sidebar-btn ${tab === "dash" ? "active" : ""}`} onClick={() => setTab("dash")}>
+            <span className="sidebar-icon">📊</span>
+            <span className="sidebar-label">Dashboard</span>
+          </button>
+          {/* Collapsible groups */}
+          {SIDEBAR_GROUPS.map((group) => {
+            const isOpen = openSections[group.section];
+            const hasActive = group.items.some(([k]) => k === tab);
+            return (
+              <div key={group.section} className="sidebar-group">
+                <button className={`sidebar-section-btn${hasActive ? " has-active" : ""}`} onClick={() => toggleSection(group.section)}>
+                  <span className="sidebar-section-icon">{group.icon}</span>
+                  <span className="sidebar-section-label">{group.section}</span>
+                  <span className={`sidebar-chevron${isOpen ? " open" : ""}`}>&#9206;</span>
+                </button>
+                {isOpen && group.items.map(([key, label, icon]) => (
+                  <button key={key} className={`sidebar-btn sidebar-child ${tab === key ? "active" : ""}`} onClick={() => setTab(key)}>
+                    <span className="sidebar-icon">{icon}</span>
+                    <span className="sidebar-label">{label}</span>
+                  </button>
+                ))}
+              </div>
+            );
+          })}
           <div style={{ flex: 1 }} />
-          <Link href="/admin"><button className="sidebar-btn"><span className="sidebar-icon">📦</span><span className="sidebar-label">WMS Bodega</span></button></Link>
+          {/* Cuenta (bottom) */}
+          <Link href="/admin"><button className="sidebar-btn"><span className="sidebar-icon">👤</span><span className="sidebar-label">Cuenta</span></button></Link>
         </nav>
 
         <main className="admin-main">
           {/* Mobile tabs */}
           <div className="admin-mobile-tabs">
-            {tabs.map(([key, label]) => (
+            {([["dash","Dashboard"],["ventas","RCV Ventas"],["compras","RCV Compras"],["banco","Banco"],["conciliacion","Conciliación"],["resultados","Estado Resultados"],["flujo","Flujo Caja"],["proyectado","Flujo Proyectado"],["presupuesto","Presupuesto"],["cuentas","Plan Cuentas"],["reglas","Reglas"]] as [TabKey,string][]).map(([key, label]) => (
               <button key={key} className={`tab ${tab === key ? "active-cyan" : ""}`} onClick={() => setTab(key)}>{label}</button>
             ))}
           </div>
