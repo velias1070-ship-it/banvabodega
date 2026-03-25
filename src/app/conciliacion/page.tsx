@@ -881,6 +881,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const [editingProv, setEditingProv] = useState<string | null>(null);
   const [editPlazo, setEditPlazo] = useState("");
   const [editCuenta, setEditCuenta] = useState("");
+  const [editVariable, setEditVariable] = useState(false);
   const [cuentasHoja, setCuentasHoja] = useState<{ id: string; codigo: string; nombre: string }[]>([]);
 
   const isAnual = periodo.length === 4;
@@ -982,10 +983,10 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const handleSaveProv = async (rut: string) => {
     const plazo = editPlazo ? parseInt(editPlazo) : null;
     const prov = proveedoresUnicos.find(p => p.rut === rut);
-    await upsertProveedorCuenta(rut, editCuenta || "", prov?.razon_social, plazo);
+    await upsertProveedorCuenta(rut, editCuenta || "", prov?.razon_social, plazo, editVariable);
     setProvCuentas(prev => {
       const idx = prev.findIndex(p => p.rut_proveedor === rut);
-      const updated: DBProveedorCuenta = { rut_proveedor: rut, razon_social: prov?.razon_social || null, categoria_cuenta_id: editCuenta || null, plazo_dias: plazo };
+      const updated: DBProveedorCuenta = { rut_proveedor: rut, razon_social: prov?.razon_social || null, categoria_cuenta_id: editCuenta || null, plazo_dias: plazo, cuenta_variable: editVariable };
       if (idx >= 0) { const next = [...prev]; next[idx] = updated; return next; }
       return [...prev, updated];
     });
@@ -1096,7 +1097,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
           <div className="card" style={{ marginTop: 4, overflow: "hidden" }}>
             <table className="tbl" style={{ fontSize: 11 }}>
               <thead>
-                <tr><th>Proveedor</th><th>RUT</th><th style={{ textAlign: "right" }}>Facturas</th><th style={{ textAlign: "right" }}>Total</th><th>Plazo</th><th>Cuenta</th><th></th></tr>
+                <tr><th>Proveedor</th><th>RUT</th><th style={{ textAlign: "right" }}>Facturas</th><th style={{ textAlign: "right" }}>Total</th><th>Plazo</th><th>Cuenta</th><th>Var.</th><th></th></tr>
               </thead>
               <tbody>
                 {proveedoresUnicos.map(p => {
@@ -1132,6 +1133,14 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                           </span>
                         )}
                       </td>
+                      <td style={{ textAlign: "center" }}>
+                        {isEditing ? (
+                          <input type="checkbox" checked={editVariable} onChange={e => setEditVariable(e.target.checked)}
+                            title="Cuenta variable (preguntar cada vez)" style={{ accentColor: "var(--amber)" }} />
+                        ) : (
+                          pc?.cuenta_variable ? <span style={{ fontSize: 10, color: "var(--amber)", fontWeight: 600 }}>Si</span> : <span style={{ fontSize: 10, color: "var(--txt3)" }}>—</span>
+                        )}
+                      </td>
                       <td>
                         {isEditing ? (
                           <div style={{ display: "flex", gap: 4 }}>
@@ -1145,7 +1154,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                             </button>
                           </div>
                         ) : (
-                          <button onClick={() => { setEditingProv(p.rut); setEditPlazo(pc?.plazo_dias?.toString() || ""); setEditCuenta(pc?.categoria_cuenta_id || ""); }}
+                          <button onClick={() => { setEditingProv(p.rut); setEditPlazo(pc?.plazo_dias?.toString() || ""); setEditCuenta(pc?.categoria_cuenta_id || ""); setEditVariable(pc?.cuenta_variable || false); }}
                             style={{ padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: "var(--bg3)", color: "var(--cyan)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
                             Editar
                           </button>

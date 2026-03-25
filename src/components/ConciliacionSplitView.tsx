@@ -366,13 +366,13 @@ export default function ConciliacionSplitView({
     const rutProv = selectedDoc.rut;
     const existente = provCuentas.find(p => p.rut_proveedor === rutProv);
 
-    if (existente?.categoria_cuenta_id) {
-      // Proveedor ya tiene cuenta → conciliar directo con cuenta automática
+    if (existente?.categoria_cuenta_id && !existente.cuenta_variable) {
+      // Proveedor con cuenta fija → conciliar directo
       await finalizarConfirmacion(c, selectedMov, selectedDoc, existente.categoria_cuenta_id);
     } else if (rutProv && selectedDoc.tipo === "compra") {
-      // Proveedor sin cuenta → pedir selección (solo la primera vez)
+      // Proveedor variable o sin cuenta → siempre preguntar
       setPendingConfirm({ mov: selectedMov, doc: selectedDoc, conc: c });
-      setPromptCuenta("");
+      setPromptCuenta(existente?.categoria_cuenta_id || "");
       setShowCuentaPrompt(true);
     } else {
       // Venta u otro → conciliar sin cuenta
@@ -419,9 +419,19 @@ export default function ConciliacionSplitView({
     if (!pendingConfirm || !promptCuenta) return;
     const { mov, doc, conc } = pendingConfirm;
 
-    const plazo = promptPlazo ? parseInt(promptPlazo) : null;
-    await upsertProveedorCuenta(doc.rut, promptCuenta, doc.razon_social, plazo);
-    setProvCuentas(prev => [...prev, { rut_proveedor: doc.rut, razon_social: doc.razon_social, categoria_cuenta_id: promptCuenta, plazo_dias: plazo }]);
+    const existente = provCuentas.find(p => p.rut_proveedor === doc.rut);
+    if (!existente?.cuenta_variable) {
+      // Proveedor nuevo o fijo → guardar cuenta + plazo para futuro
+      const plazo = promptPlazo ? parseInt(promptPlazo) : existente?.plazo_dias ?? null;
+      await upsertProveedorCuenta(doc.rut, promptCuenta, doc.razon_social, plazo);
+      setProvCuentas(prev => {
+        const idx = prev.findIndex(p => p.rut_proveedor === doc.rut);
+        const updated: DBProveedorCuenta = { rut_proveedor: doc.rut, razon_social: doc.razon_social, categoria_cuenta_id: promptCuenta, plazo_dias: plazo };
+        if (idx >= 0) { const next = [...prev]; next[idx] = updated; return next; }
+        return [...prev, updated];
+      });
+    }
+    // Para proveedor variable: la cuenta se asigna solo al movimiento/factura, no al proveedor
 
     setShowCuentaPrompt(false);
     setPendingConfirm(null);
