@@ -241,6 +241,14 @@ a { color: inherit; text-decoration: none; }
 
 /* ==================== Chipax Light Theme ==================== */
 .chipax-theme {
+  /* Override global dark vars to light */
+  --bg: #f5f7fa; --bg2: #ffffff; --bg3: #edf2f7; --bg4: #e2e8f0;
+  --txt: #2d3748; --txt2: #4a5568; --txt3: #718096;
+  --cyan: #4db6ac; --cyanBg: rgba(77,182,172,0.1); --cyanBd: rgba(77,182,172,0.3);
+  --green: #38b2ac; --greenBg: rgba(56,178,172,0.1); --greenBd: rgba(56,178,172,0.25);
+  --red: #e53e3e; --redBg: rgba(229,62,62,0.08); --redBd: rgba(229,62,62,0.2);
+  --amber: #dd6b20; --amberBg: rgba(221,107,32,0.08); --amberBd: rgba(221,107,32,0.2);
+  /* Chipax-specific */
   --cpx-teal: #4db6ac;
   --cpx-teal-dark: #3a9e93;
   --cpx-bg: #f5f7fa;
