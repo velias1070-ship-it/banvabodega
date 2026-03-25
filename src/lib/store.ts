@@ -1747,45 +1747,11 @@ export async function syncFlexPickingSession(): Promise<{ created: boolean; upda
   const { lineas } = buildPickingLineas(orders.map(o => ({ skuVenta: o.skuVenta, qty: o.qty })));
   if (lineas.length === 0) return { created: false, updated: false, total: 0 };
 
-  // 4. Check if there's already a flex picking session for today
+  // 4. Single session per day — find or create, reopen if needed
   const todaySessions = await db.getPickingSessionsByDate(today);
-  const existingSession = todaySessions.find(s => s.tipo === "flex" && s.estado !== "COMPLETADA");
+  const flexSession = todaySessions.find(s => s.tipo === "flex");
 
-  if (!existingSession) {
-    // Check ALL completed/in-process sessions — subtract already-picked quantities
-    const allFlexToday = todaySessions.filter(s => s.tipo === "flex");
-    if (allFlexToday.length > 0) {
-      // Count total qty already picked/assigned per SKU across all sessions
-      const doneQtyBySku = new Map<string, number>();
-      for (const sess of allFlexToday) {
-        for (const l of sess.lineas) {
-          const key = l.skuVenta.toUpperCase();
-          doneQtyBySku.set(key, (doneQtyBySku.get(key) || 0) + l.qtyPedida);
-        }
-      }
-      // Subtract already-done qty from new lines
-      const trulyNewLineas: typeof lineas = [];
-      for (const l of lineas) {
-        const key = l.skuVenta.toUpperCase();
-        const alreadyDone = doneQtyBySku.get(key) || 0;
-        if (l.qtyPedida > alreadyDone) {
-          // Partial: only the extra quantity
-          trulyNewLineas.push({ ...l, qtyPedida: l.qtyPedida - alreadyDone, componentes: l.componentes.map(c => ({ ...c, unidades: l.qtyPedida - alreadyDone })) });
-          doneQtyBySku.set(key, l.qtyPedida); // mark as accounted
-        } else {
-          // Fully covered by previous sessions
-          doneQtyBySku.set(key, alreadyDone - l.qtyPedida);
-        }
-      }
-      if (trulyNewLineas.length === 0) {
-        return { created: false, updated: false, total: 0 };
-      }
-      await db.createPickingSession({
-        fecha: today, estado: "ABIERTA", lineas: trulyNewLineas,
-        tipo: "flex", titulo: `Flex ${today}`,
-      });
-      return { created: true, updated: false, total: trulyNewLineas.length };
-    }
+  if (!flexSession) {
     // No session at all — create fresh
     await db.createPickingSession({
       fecha: today, estado: "ABIERTA", lineas,
@@ -1794,43 +1760,45 @@ export async function syncFlexPickingSession(): Promise<{ created: boolean; upda
     return { created: true, updated: false, total: lineas.length };
   }
 
-  // 5. Update existing session — add new SKUs, don't touch already-picked ones
-  const existingSkus = new Set(existingSession.lineas.map(l => l.skuVenta));
-  const newLineas = lineas.filter(l => !existingSkus.has(l.skuVenta));
-
-  if (newLineas.length > 0) {
-    // Re-number new lineas to avoid ID collisions with existing ones
-    const existingIds = new Set(existingSession.lineas.map(l => l.id));
-    let nextNum = existingSession.lineas.length + 1;
-    for (const nl of newLineas) {
-      let newId = `P${String(nextNum).padStart(3, "0")}`;
-      while (existingIds.has(newId)) { nextNum++; newId = `P${String(nextNum).padStart(3, "0")}`; }
-      nl.id = newId;
-      existingIds.add(newId);
-      nextNum++;
-    }
-    const merged = [...existingSession.lineas, ...newLineas];
-    await db.updatePickingSession(existingSession.id!, { lineas: merged });
-    return { created: false, updated: true, total: merged.length };
+  // Session exists — check if there are new SKUs/quantities to add
+  const doneQtyBySku = new Map<string, number>();
+  for (const l of flexSession.lineas) {
+    const key = l.skuVenta.toUpperCase();
+    doneQtyBySku.set(key, (doneQtyBySku.get(key) || 0) + l.qtyPedida);
   }
 
-  // Check if any existing lines need qty update (same SKU, more quantity)
-  let needsUpdate = false;
-  const updatedLineas = existingSession.lineas.map(existingLine => {
-    const matchingNew = lineas.find(l => l.skuVenta === existingLine.skuVenta);
-    if (matchingNew && matchingNew.qtyPedida > existingLine.qtyPedida && existingLine.estado !== "PICKEADO") {
-      needsUpdate = true;
-      return { ...existingLine, qtyPedida: matchingNew.qtyPedida, componentes: matchingNew.componentes };
+  const newLineas: typeof lineas = [];
+  for (const l of lineas) {
+    const key = l.skuVenta.toUpperCase();
+    const alreadyDone = doneQtyBySku.get(key) || 0;
+    if (l.qtyPedida > alreadyDone) {
+      const extra = l.qtyPedida - alreadyDone;
+      newLineas.push({ ...l, qtyPedida: extra, componentes: l.componentes.map(c => ({ ...c, unidades: extra })) });
+      doneQtyBySku.set(key, l.qtyPedida);
     }
-    return existingLine;
-  });
-
-  if (needsUpdate) {
-    await db.updatePickingSession(existingSession.id!, { lineas: updatedLineas });
-    return { created: false, updated: true, total: updatedLineas.length };
   }
 
-  return { created: false, updated: false, total: existingSession.lineas.length };
+  if (newLineas.length === 0) {
+    return { created: false, updated: false, total: flexSession.lineas.length };
+  }
+
+  // Re-number new lines to avoid ID collisions
+  const existingIds = new Set(flexSession.lineas.map(l => l.id));
+  let nextNum = flexSession.lineas.length + 1;
+  for (const nl of newLineas) {
+    let newId = `P${String(nextNum).padStart(3, "0")}`;
+    while (existingIds.has(newId)) { nextNum++; newId = `P${String(nextNum).padStart(3, "0")}`; }
+    nl.id = newId;
+    existingIds.add(newId);
+    nextNum++;
+  }
+
+  // Merge and reopen if completed
+  const merged = [...flexSession.lineas, ...newLineas];
+  const newEstado = flexSession.estado === "COMPLETADA" ? "EN_PROCESO" : flexSession.estado;
+  await db.updatePickingSession(flexSession.id!, { lineas: merged, estado: newEstado });
+  return { created: false, updated: true, total: merged.length };
+
 }
 
 // Update picking session
