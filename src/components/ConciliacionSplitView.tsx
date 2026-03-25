@@ -10,10 +10,13 @@ import {
   insertFeedback,
   upsertRegla,
   fetchPlanCuentasHojas,
+  fetchProveedorCuentas,
+  upsertProveedorCuenta,
+  categorizarMovimiento,
 } from "@/lib/db";
 import type {
   DBEmpresa, DBMovimientoBanco, DBRcvCompra, DBRcvVenta, DBConciliacion,
-  DBReglaConciliacion, CondicionRegla, DBPlanCuentas,
+  DBReglaConciliacion, CondicionRegla, DBPlanCuentas, DBProveedorCuenta,
 } from "@/lib/db";
 
 // ==================== HELPERS ====================
@@ -162,8 +165,14 @@ export default function ConciliacionSplitView({
   const [ruleName, setRuleName] = useState("");
   const [ruleCondiciones, setRuleCondiciones] = useState<CondicionRegla[]>([]);
 
-  // Clasificación sin documento
+  // Cuentas y mapeo proveedor→cuenta
   const [cuentasHoja, setCuentasHoja] = useState<DBPlanCuentas[]>([]);
+  const [provCuentas, setProvCuentas] = useState<DBProveedorCuenta[]>([]);
+  const [showCuentaPrompt, setShowCuentaPrompt] = useState(false);
+  const [pendingConfirm, setPendingConfirm] = useState<{ mov: DBMovimientoBanco; doc: DocUnificado; conc: DBConciliacion } | null>(null);
+  const [promptCuenta, setPromptCuenta] = useState("");
+
+  // Clasificación sin documento
   const [showClasificar, setShowClasificar] = useState(false);
   const [clasificarCuenta, setClasificarCuenta] = useState("");
   const [clasificarNota, setClasificarNota] = useState("");
@@ -181,14 +190,15 @@ export default function ConciliacionSplitView({
     const m2 = isAnual ? 1 : parseInt(periodo.slice(4, 6));
     const desde = isAnual ? `${y}-01-01` : `${y}-${String(m2).padStart(2, "0")}-01`;
     const hasta = isAnual ? `${y}-12-31` : `${y}-${String(m2).padStart(2, "0")}-${new Date(y, m2, 0).getDate()}`;
-    const [m, c, v, conc, ctas] = await Promise.all([
+    const [m, c, v, conc, ctas, pc] = await Promise.all([
       fetchMovimientosBanco(empresa.id, { desde, hasta }),
       fetchRcvCompras(empresa.id),
       fetchRcvVentas(empresa.id, periodo),
       fetchConciliaciones(empresa.id),
       fetchPlanCuentasHojas(),
+      fetchProveedorCuentas(),
     ]);
-    setMovBanco(m); setCompras(c); setVentas(v); setConciliaciones(conc); setCuentasHoja(ctas);
+    setMovBanco(m); setCompras(c); setVentas(v); setConciliaciones(conc); setCuentasHoja(ctas); setProvCuentas(pc);
     setLoading(false);
   }, [empresa.id, periodo]);
 
@@ -298,11 +308,10 @@ export default function ConciliacionSplitView({
     setTimeout(() => setFeedbackMsg(null), 3000);
   };
 
-  // Confirmar match manual — con feedback loop
+  // Confirmar match — busca cuenta del proveedor o pide seleccionar
   const handleConfirmar = async () => {
     if (!selectedMov || !selectedDoc || !empresa.id) return;
 
-    // 1. Guardar la conciliación
     const c: DBConciliacion = {
       empresa_id: empresa.id,
       movimiento_banco_id: selectedMov.id!,
@@ -315,60 +324,79 @@ export default function ConciliacionSplitView({
       notas: null,
       created_by: "admin",
     };
+
+    // Buscar si el proveedor ya tiene cuenta asignada
+    const rutProv = selectedDoc.rut;
+    const existente = provCuentas.find(p => p.rut_proveedor === rutProv);
+
+    if (existente?.categoria_cuenta_id) {
+      // Proveedor ya tiene cuenta → conciliar directo con cuenta automática
+      await finalizarConfirmacion(c, selectedMov, selectedDoc, existente.categoria_cuenta_id);
+    } else if (rutProv && selectedDoc.tipo === "compra") {
+      // Proveedor sin cuenta → pedir selección (solo la primera vez)
+      setPendingConfirm({ mov: selectedMov, doc: selectedDoc, conc: c });
+      setPromptCuenta("");
+      setShowCuentaPrompt(true);
+    } else {
+      // Venta u otro → conciliar sin cuenta
+      await finalizarConfirmacion(c, selectedMov, selectedDoc, null);
+    }
+  };
+
+  // Finalizar confirmación con cuenta opcional
+  const finalizarConfirmacion = async (c: DBConciliacion, mov: DBMovimientoBanco, doc: DocUnificado, cuentaId: string | null) => {
     await upsertConciliacion(c);
+    await updateMovimientoBanco(mov.id!, { estado_conciliacion: "conciliado" } as Partial<DBMovimientoBanco>);
+    if (cuentaId) {
+      await categorizarMovimiento(mov.id!, cuentaId);
+    }
 
-    // 2. Actualizar estado del movimiento banco
-    await updateMovimientoBanco(selectedMov.id!, { estado_conciliacion: "conciliado" } as Partial<DBMovimientoBanco>);
-
-    // 3. Guardar feedback para aprendizaje del agente conciliador
     await insertFeedback({
-      empresa_id: empresa.id,
+      empresa_id: c.empresa_id,
       agente: "conciliador",
-      accion_sugerida: {
-        tipo: "match_confirmado",
-        movimiento_id: selectedMov.id,
-        documento_id: selectedDoc.id,
-        documento_tipo: selectedDoc.tipo,
-        score: selectedDoc.score,
-      },
-      accion_correcta: {
-        tipo: "match_confirmado",
-        movimiento_id: selectedMov.id,
-        documento_id: selectedDoc.id,
-        documento_tipo: selectedDoc.tipo,
-      },
-      contexto: {
-        monto_mov: selectedMov.monto,
-        descripcion_mov: selectedMov.descripcion,
-        monto_doc: selectedDoc.monto_total,
-        rut_doc: selectedDoc.rut,
-        razon_social_doc: selectedDoc.razon_social,
-        banco: selectedMov.banco,
-      },
+      accion_sugerida: { tipo: "match_confirmado", movimiento_id: mov.id, documento_id: doc.id, documento_tipo: doc.tipo, score: doc.score },
+      accion_correcta: { tipo: "match_confirmado", movimiento_id: mov.id, documento_id: doc.id, documento_tipo: doc.tipo },
+      contexto: { monto_mov: mov.monto, descripcion_mov: mov.descripcion, monto_doc: doc.monto_total, rut_doc: doc.rut, razon_social_doc: doc.razon_social, banco: mov.banco },
     });
 
-    showFeedback("Match confirmado y feedback guardado");
+    const cuentaNombre = cuentaId ? cuentasHoja.find(x => x.id === cuentaId)?.nombre : null;
+    showFeedback(cuentaNombre ? `Match confirmado → ${cuentaNombre}` : "Match confirmado");
 
-    // 4. Actualizar estado local (sin recargar todo desde DB)
-    const movRef = selectedMov;
-    const docRef = selectedDoc;
-
-    // Marcar movimiento como conciliado en el estado local
-    setMovBanco(prev => prev.map(m => m.id === movRef.id ? { ...m, estado_conciliacion: "conciliado" } : m));
-    // Agregar conciliación al estado local
+    setMovBanco(prev => prev.map(m => m.id === mov.id ? { ...m, estado_conciliacion: "conciliado", categoria_cuenta_id: cuentaId || undefined } : m));
     setConciliaciones(prev => [...prev, c]);
-
     setSelectedMov(null);
     setSelectedDoc(null);
 
-    // 5. Ofrecer crear regla automática
-    const condiciones = extraerCondicionesRegla(movRef, docRef);
-    if (condiciones.some(c => c.campo === "descripcion")) {
-      setRuleFromMatch({ mov: movRef, doc: docRef });
+    const condiciones = extraerCondicionesRegla(mov, doc);
+    if (condiciones.some(cond => cond.campo === "descripcion")) {
+      setRuleFromMatch({ mov, doc });
       setRuleCondiciones(condiciones);
-      setRuleName(`Auto: ${docRef.razon_social || docRef.rut || "Match"}`);
+      setRuleName(`Auto: ${doc.razon_social || doc.rut || "Match"}`);
       setShowRuleModal(true);
     }
+  };
+
+  // Confirmar con cuenta seleccionada (primera vez para este proveedor)
+  const handleConfirmarConCuenta = async () => {
+    if (!pendingConfirm || !promptCuenta) return;
+    const { mov, doc, conc } = pendingConfirm;
+
+    // Guardar mapeo proveedor→cuenta para futuro
+    await upsertProveedorCuenta(doc.rut, promptCuenta, doc.razon_social);
+    setProvCuentas(prev => [...prev, { rut_proveedor: doc.rut, razon_social: doc.razon_social, categoria_cuenta_id: promptCuenta }]);
+
+    setShowCuentaPrompt(false);
+    setPendingConfirm(null);
+    await finalizarConfirmacion(conc, mov, doc, promptCuenta);
+  };
+
+  // Confirmar sin asignar cuenta (skip)
+  const handleConfirmarSinCuenta = async () => {
+    if (!pendingConfirm) return;
+    const { mov, doc, conc } = pendingConfirm;
+    setShowCuentaPrompt(false);
+    setPendingConfirm(null);
+    await finalizarConfirmacion(conc, mov, doc, null);
   };
 
   // Rechazar sugerencia y elegir otro doc — guardar feedback de corrección
@@ -530,6 +558,41 @@ export default function ConciliacionSplitView({
           animation: "fadeIn 0.3s",
         }}>
           {feedbackMsg}
+        </div>
+      )}
+
+      {/* Modal asignar cuenta a proveedor (primera vez) */}
+      {showCuentaPrompt && pendingConfirm && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 9998, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={() => { setShowCuentaPrompt(false); setPendingConfirm(null); }}>
+          <div className="card" style={{ padding: 24, maxWidth: 420, width: "90%" }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Asignar cuenta contable</h3>
+            <p style={{ fontSize: 12, color: "var(--txt3)", marginBottom: 12 }}>
+              Primera vez conciliando con <strong>{pendingConfirm.doc.razon_social || pendingConfirm.doc.rut}</strong>.
+              Selecciona la cuenta contable — se recordará para futuras conciliaciones con este proveedor.
+            </p>
+            <div style={{ padding: 10, borderRadius: 8, background: "var(--bg)", marginBottom: 12, fontSize: 11, color: "var(--txt3)" }}>
+              <div>Factura #{pendingConfirm.doc.nro} · {fmtMoney(pendingConfirm.doc.monto_total)}</div>
+              <div>RUT: {pendingConfirm.doc.rut}</div>
+            </div>
+            <select value={promptCuenta} onChange={e => setPromptCuenta(e.target.value)}
+              style={{ width: "100%", marginBottom: 12, padding: "8px 10px", fontSize: 12, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 6 }}>
+              <option value="">— Seleccionar cuenta —</option>
+              {cuentasHoja.map(c => (
+                <option key={c.id} value={c.id}>{c.codigo} — {c.nombre}</option>
+              ))}
+            </select>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={handleConfirmarSinCuenta}
+                style={{ padding: "8px 16px", borderRadius: 8, background: "var(--bg3)", color: "var(--txt3)", fontSize: 12, border: "1px solid var(--bg4)", cursor: "pointer" }}>
+                Omitir
+              </button>
+              <button onClick={handleConfirmarConCuenta} disabled={!promptCuenta}
+                className="scan-btn green" style={{ padding: "8px 20px", fontSize: 12 }}>
+                Confirmar
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

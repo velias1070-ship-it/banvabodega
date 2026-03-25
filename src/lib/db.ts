@@ -2112,6 +2112,38 @@ export async function updateEstadoPagoVenta(id: string, estado: string): Promise
   await sb.from("rcv_ventas").update({ estado_pago: estado }).eq("id", id);
 }
 
+// ==================== PROVEEDOR → CUENTA CONTABLE ====================
+
+export interface DBProveedorCuenta {
+  id?: string;
+  rut_proveedor: string;
+  razon_social?: string | null;
+  categoria_cuenta_id: string | null;
+  updated_at?: string;
+}
+
+export async function fetchProveedorCuentas(): Promise<DBProveedorCuenta[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("proveedor_cuenta").select("*");
+  return (data || []) as DBProveedorCuenta[];
+}
+
+export async function getProveedorCuenta(rutProveedor: string): Promise<string | null> {
+  const sb = getSupabase(); if (!sb) return null;
+  const { data } = await sb.from("proveedor_cuenta").select("categoria_cuenta_id").eq("rut_proveedor", rutProveedor).limit(1);
+  return data?.[0]?.categoria_cuenta_id || null;
+}
+
+export async function upsertProveedorCuenta(rutProveedor: string, categoriaId: string, razonSocial?: string): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("proveedor_cuenta").upsert({
+    rut_proveedor: rutProveedor,
+    categoria_cuenta_id: categoriaId,
+    razon_social: razonSocial || null,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: "rut_proveedor" });
+}
+
 // ==================== MP LIQUIDACIÓN DETALLE ====================
 
 export interface DBMpLiquidacionDetalle {
