@@ -4,6 +4,8 @@ import {
   fetchRcvVentas, fetchRcvCompras,
   fetchPlanCuentas, fetchMovimientosBanco,
   fetchProveedorCuentas, fetchConciliaciones,
+  upsertProveedorCuenta, categorizarMovimiento,
+  fetchPlanCuentasHojas,
 } from "@/lib/db";
 import type { DBEmpresa, DBRcvCompra, DBRcvVenta, DBPlanCuentas, DBMovimientoBanco, DBProveedorCuenta, DBConciliacion } from "@/lib/db";
 import { exportToExcel, fmtMoneyExcel } from "@/lib/exportExcel";
@@ -79,8 +81,11 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
   const [movBancoAnt, setMovBancoAnt] = useState<DBMovimientoBanco[]>([]);
   const [provCuentas, setProvCuentas] = useState<DBProveedorCuenta[]>([]);
   const [conciliaciones, setConciliaciones] = useState<DBConciliacion[]>([]);
+  const [cuentasHoja, setCuentasHoja] = useState<DBPlanCuentas[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
+  const [assigningId, setAssigningId] = useState<string | null>(null);
+  const [assignCuenta, setAssignCuenta] = useState("");
 
   const pAnt = periodoAnterior(periodo);
   const rangoAct = periodoRange(periodo);
@@ -100,11 +105,12 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
       fetchMovimientosBanco(empresa.id, { desde: rangoAnt.desde, hasta: rangoAnt.hasta }),
       fetchProveedorCuentas(),
       fetchConciliaciones(empresa.id),
-    ]).then(([va, ca, vant, cant, pc, mb, mbAnt, prc, conc]) => {
+      fetchPlanCuentasHojas(),
+    ]).then(([va, ca, vant, cant, pc, mb, mbAnt, prc, conc, cHojas]) => {
       setVentasAct(va); setComprasAct(ca);
       setVentasAnt(vant); setComprasAnt(cant);
       setPlanCuentas(pc); setMovBanco(mb); setMovBancoAnt(mbAnt);
-      setProvCuentas(prc); setConciliaciones(conc);
+      setProvCuentas(prc); setConciliaciones(conc); setCuentasHoja(cHojas);
       setLoading(false);
     });
   }, [empresa.id, periodo]);
@@ -457,16 +463,69 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
       {expandedRow && drillDocs.length > 0 && (
         <div className="card" style={{ marginTop: 8, padding: 12 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <h4 style={{ fontSize: 13, fontWeight: 600, margin: 0 }}>Detalle: {planCuentas.find(c => c.id === expandedRow)?.nombre || "Documentos"}</h4>
-            <span style={{ fontSize: 11, color: "var(--txt3)" }}>{drillDocs.length} documentos</span>
+            <h4 style={{ fontSize: 13, fontWeight: 600, margin: 0 }}>Detalle: {planCuentas.find(c => c.id === expandedRow)?.nombre || (expandedRow === "cos_sin_cat" || expandedRow === "sin_cat" ? "Sin categorizar" : "Documentos")}</h4>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <span style={{ fontSize: 11, color: "var(--txt3)" }}>{drillDocs.length} documentos</span>
+              {(expandedRow === "cos_sin_cat" || expandedRow === "sin_cat") && (
+                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                  <select value={assignCuenta} onChange={e => setAssignCuenta(e.target.value)}
+                    style={{ padding: "3px 6px", fontSize: 10, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 4 }}>
+                    <option value="">— Cuenta —</option>
+                    {cuentasHoja.map(c => <option key={c.id} value={c.id!}>{c.codigo} — {c.nombre}</option>)}
+                  </select>
+                  <button disabled={!assignCuenta} onClick={async () => {
+                    if (!assignCuenta) return;
+                    // Asignar cuenta a todos los proveedores sin cuenta que aparecen aquí
+                    const rutsVistos = new Set<string>();
+                    for (const d of drillDocs) {
+                      if (!d.rut || rutsVistos.has(d.rut)) continue;
+                      rutsVistos.add(d.rut);
+                      const pc = provCuentas.find(p => p.rut_proveedor === d.rut);
+                      if (!pc?.categoria_cuenta_id) {
+                        await upsertProveedorCuenta(d.rut, assignCuenta, d.razon);
+                      }
+                    }
+                    // Asignar cuenta a movimientos conciliados sin cuenta
+                    for (const d of drillDocs) {
+                      if (!d.conciliada) continue;
+                      const conc = conciliaciones.find(c => c.rcv_compra_id && c.estado === "confirmado" &&
+                        comprasAct.find(comp => comp.id === c.rcv_compra_id && comp.nro_doc === d.nro));
+                      if (conc?.movimiento_banco_id) {
+                        await categorizarMovimiento(conc.movimiento_banco_id, assignCuenta);
+                      }
+                    }
+                    // Recargar
+                    setLoading(true);
+                    const [va, ca, vant, cant, pc2, mb, mbAnt, prc, concs, cH] = await Promise.all([
+                      fetchRcvVentas(empresa.id, periodo), fetchRcvCompras(empresa.id, periodo),
+                      fetchRcvVentas(empresa.id, pAnt), fetchRcvCompras(empresa.id, pAnt),
+                      fetchPlanCuentas(), fetchMovimientosBanco(empresa.id, { desde: rangoAct.desde, hasta: rangoAct.hasta }),
+                      fetchMovimientosBanco(empresa.id, { desde: rangoAnt.desde, hasta: rangoAnt.hasta }),
+                      fetchProveedorCuentas(), fetchConciliaciones(empresa.id), fetchPlanCuentasHojas(),
+                    ]);
+                    setVentasAct(va); setComprasAct(ca); setVentasAnt(vant); setComprasAnt(cant);
+                    setPlanCuentas(pc2); setMovBanco(mb); setMovBancoAnt(mbAnt);
+                    setProvCuentas(prc); setConciliaciones(concs); setCuentasHoja(cH);
+                    setLoading(false); setAssignCuenta("");
+                  }}
+                    style={{ padding: "3px 10px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: assignCuenta ? "var(--greenBg)" : "var(--bg3)", color: assignCuenta ? "var(--green)" : "var(--txt3)", border: `1px solid ${assignCuenta ? "var(--greenBd)" : "var(--bg4)"}`, cursor: assignCuenta ? "pointer" : "not-allowed" }}>
+                    Asignar todo
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
-          <div style={{ maxHeight: 300, overflowY: "auto" }}>
+          <div style={{ maxHeight: 400, overflowY: "auto" }}>
             <table className="tbl" style={{ fontSize: 11 }}>
               <thead>
-                <tr><th>Doc</th><th>N°</th><th>Proveedor</th><th>Fecha</th><th style={{ textAlign: "right" }}>Monto</th><th>Nota</th><th>Pago</th></tr>
+                <tr><th>Doc</th><th>N°</th><th>Proveedor</th><th>Fecha</th><th style={{ textAlign: "right" }}>Monto</th><th>Nota</th><th>Pago</th>
+                  {(expandedRow === "cos_sin_cat" || expandedRow === "sin_cat") && <th>Cuenta</th>}
+                </tr>
               </thead>
               <tbody>
-                {drillDocs.map((d, i) => (
+                {drillDocs.map((d, i) => {
+                  const isAssigning = assigningId === `${d.nro}_${i}`;
+                  return (
                   <tr key={i}>
                     <td style={{ fontSize: 10, color: "var(--txt3)" }}>{d.doc}</td>
                     <td className="mono" style={{ fontWeight: 600 }}>{d.nro}</td>
@@ -481,8 +540,42 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
                         <span style={{ fontSize: 9, fontWeight: 600, padding: "1px 5px", borderRadius: 3, background: "var(--amberBg)", color: "var(--amber)" }}>PEND.</span>
                       )}
                     </td>
+                    {(expandedRow === "cos_sin_cat" || expandedRow === "sin_cat") && (
+                      <td>
+                        {isAssigning ? (
+                          <select autoFocus value="" onChange={async (e) => {
+                            if (!e.target.value || !d.rut) return;
+                            await upsertProveedorCuenta(d.rut, e.target.value, d.razon);
+                            // Actualizar movimiento si conciliado
+                            if (d.conciliada) {
+                              const conc = conciliaciones.find(c => c.rcv_compra_id && c.estado === "confirmado" &&
+                                comprasAct.find(comp => comp.id === c.rcv_compra_id && comp.nro_doc === d.nro));
+                              if (conc?.movimiento_banco_id) await categorizarMovimiento(conc.movimiento_banco_id, e.target.value);
+                            }
+                            setProvCuentas(prev => {
+                              const idx = prev.findIndex(p => p.rut_proveedor === d.rut);
+                              const u = { rut_proveedor: d.rut, razon_social: d.razon, categoria_cuenta_id: e.target.value, plazo_dias: null };
+                              if (idx >= 0) { const n = [...prev]; n[idx] = u; return n; }
+                              return [...prev, u];
+                            });
+                            setAssigningId(null);
+                          }}
+                            onBlur={() => setAssigningId(null)}
+                            style={{ padding: "2px 4px", fontSize: 9, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 3, maxWidth: 130 }}>
+                            <option value="">Seleccionar...</option>
+                            {cuentasHoja.map(c => <option key={c.id} value={c.id!}>{c.codigo} — {c.nombre}</option>)}
+                          </select>
+                        ) : (
+                          <button onClick={() => setAssigningId(`${d.nro}_${i}`)}
+                            style={{ padding: "1px 6px", borderRadius: 3, fontSize: 9, fontWeight: 600, background: "var(--cyanBg)", color: "var(--cyan)", border: "none", cursor: "pointer" }}>
+                            Asignar
+                          </button>
+                        )}
+                      </td>
+                    )}
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
               <tfoot>
                 <tr style={{ fontWeight: 700, background: "var(--bg3)" }}>
