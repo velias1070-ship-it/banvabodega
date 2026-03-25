@@ -1381,7 +1381,7 @@ function TabBanco({ empresa, periodo }: { empresa: DBEmpresa; periodo: string })
 }
 
 // ==================== PÁGINA PRINCIPAL ====================
-type TabKey = "dash" | "compras" | "ventas" | "banco" | "conciliacion" | "cuentas" | "reglas" | "resultados" | "flujo" | "proyectado" | "presupuesto";
+type TabKey = "dash" | "compras" | "ventas" | "banco" | "conciliacion" | "cuentas" | "reglas" | "resultados" | "flujo" | "proyectado" | "presupuesto" | "gastos" | "honorarios" | "remuneraciones" | "impuestos" | "proveedores";
 
 export default function ConciliacionPage() {
   const [tab, setTab] = useState<TabKey>("dash");
@@ -1393,7 +1393,7 @@ export default function ConciliacionPage() {
 
   const SIDEBAR_GROUPS = useMemo(() => [
     { section: "INGRESOS", icon: "🏷️", items: [["ventas", "RCV Ventas", "📄"]] as [TabKey, string, string][] },
-    { section: "EGRESOS", icon: "💳", items: [["compras", "RCV Compras", "📄"]] as [TabKey, string, string][] },
+    { section: "EGRESOS", icon: "💳", items: [["compras", "Registro de compras", "📄"], ["gastos", "Gastos", "🧾"], ["honorarios", "Boletas de honorarios", "📋"], ["remuneraciones", "Remuneraciones", "👥"], ["impuestos", "Impuestos", "🏛️"], ["proveedores", "Proveedores", "🤝"]] as [TabKey, string, string][] },
     { section: "BANCO", icon: "🏦", items: [["banco", "Banco y Conciliación", "🏦"]] as [TabKey, string, string][] },
     { section: "REPORTES", icon: "📈", items: [["resultados", "Estado Resultados", "📈"], ["flujo", "Flujo Caja", "💰"], ["proyectado", "Flujo Proyectado", "🔮"], ["presupuesto", "Presupuesto", "📊"]] as [TabKey, string, string][] },
     { section: "AJUSTES", icon: "⚙️", items: [["cuentas", "Plan Cuentas", "📋"], ["reglas", "Reglas", "⚙️"]] as [TabKey, string, string][] },
@@ -1489,7 +1489,7 @@ export default function ConciliacionPage() {
         <main className="admin-main">
           {/* Mobile tabs */}
           <div className="admin-mobile-tabs">
-            {([["dash","Dashboard"],["ventas","RCV Ventas"],["compras","RCV Compras"],["banco","Banco"],["conciliacion","Conciliación"],["resultados","Estado Resultados"],["flujo","Flujo Caja"],["proyectado","Flujo Proyectado"],["presupuesto","Presupuesto"],["cuentas","Plan Cuentas"],["reglas","Reglas"]] as [TabKey,string][]).map(([key, label]) => (
+            {([["dash","Dashboard"],["ventas","RCV Ventas"],["compras","Reg. Compras"],["gastos","Gastos"],["honorarios","Honorarios"],["remuneraciones","Remunerac."],["impuestos","Impuestos"],["proveedores","Proveedores"],["banco","Banco"],["conciliacion","Conciliación"],["resultados","Estado Res."],["flujo","Flujo Caja"],["proyectado","Flujo Proy."],["presupuesto","Presupuesto"],["cuentas","Plan Cuentas"],["reglas","Reglas"]] as [TabKey,string][]).map(([key, label]) => (
               <button key={key} className={`tab ${tab === key ? "active-cyan" : ""}`} onClick={() => setTab(key)}>{label}</button>
             ))}
           </div>
@@ -1504,6 +1504,19 @@ export default function ConciliacionPage() {
             {empresa && tab === "flujo" && <FlujoCaja empresa={empresa} periodo={periodo} />}
             {empresa && tab === "proyectado" && <FlujoProyectado empresa={empresa} periodo={periodo} />}
             {empresa && tab === "presupuesto" && <TabPresupuesto empresa={empresa} periodo={periodo} />}
+            {["gastos","honorarios","remuneraciones","impuestos","proveedores"].includes(tab) && (
+              <div className="card" style={{ padding: 32, textAlign: "center" }}>
+                <div style={{ fontSize: 32, marginBottom: 8 }}>🚧</div>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
+                  {tab === "gastos" && "Gastos — Boletas, invoice y más"}
+                  {tab === "honorarios" && "Boletas de honorarios — BHEs y BTEs"}
+                  {tab === "remuneraciones" && "Remuneraciones — Sueldos y Previred"}
+                  {tab === "impuestos" && "Impuestos — F29, F22 y más"}
+                  {tab === "proveedores" && "Proveedores — Plazo de pago y contactos"}
+                </div>
+                <div style={{ fontSize: 12, color: "var(--txt3)" }}>Próximamente</div>
+              </div>
+            )}
             {!empresa && tab !== "cuentas" && tab !== "reglas" && (
               <div className="card" style={{ padding: 32, textAlign: "center" }}>
                 <div style={{ fontSize: 32, marginBottom: 8 }}>⚠️</div>
