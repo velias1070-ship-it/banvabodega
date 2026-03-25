@@ -26,6 +26,7 @@ const DashboardConciliacion = dynamic(() => import("@/components/DashboardConcil
 const PlanCuentasTree = dynamic(() => import("@/components/PlanCuentasTree"), { ssr: false });
 const RuleBuilder = dynamic(() => import("@/components/RuleBuilder"), { ssr: false });
 const ConciliacionSplitView = dynamic(() => import("@/components/ConciliacionSplitView"), { ssr: false });
+const ConciliacionTabla = dynamic(() => import("@/components/ConciliacionTabla"), { ssr: false });
 const EstadoResultados = dynamic(() => import("@/components/EstadoResultados"), { ssr: false });
 const FlujoCaja = dynamic(() => import("@/components/FlujoCaja"), { ssr: false });
 const FlujoProyectado = dynamic(() => import("@/components/FlujoProyectado"), { ssr: false });
@@ -2018,7 +2019,7 @@ export default function ConciliacionPage() {
             {empresa && tab === "compras" && <TabRcvCompras empresa={empresa} periodo={periodo} />}
             {empresa && tab === "ventas" && <TabRcvVentas empresa={empresa} periodo={periodo} />}
             {empresa && tab === "banco" && <TabBanco empresa={empresa} periodo={periodo} />}
-            {empresa && tab === "conciliacion" && <ConciliacionSplitView empresa={empresa} periodo={periodo} />}
+            {empresa && tab === "conciliacion" && <ConciliacionTabla empresa={empresa} periodo={periodo} />}
             {tab === "cuentas" && <PlanCuentasTree />}
             {tab === "reglas" && <RuleBuilder />}
             {empresa && tab === "resultados" && <EstadoResultados empresa={empresa} periodo={periodo} />}
