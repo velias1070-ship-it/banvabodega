@@ -1752,18 +1752,34 @@ export async function syncFlexPickingSession(): Promise<{ created: boolean; upda
   const existingSession = todaySessions.find(s => s.tipo === "flex" && s.estado !== "COMPLETADA");
 
   if (!existingSession) {
-    // Check ALL completed/in-process sessions — only create if there are truly new SKUs
+    // Check ALL completed/in-process sessions — subtract already-picked quantities
     const allFlexToday = todaySessions.filter(s => s.tipo === "flex");
     if (allFlexToday.length > 0) {
-      const allDoneSkus = new Set<string>();
+      // Count total qty already picked/assigned per SKU across all sessions
+      const doneQtyBySku = new Map<string, number>();
       for (const sess of allFlexToday) {
-        for (const l of sess.lineas) allDoneSkus.add(l.skuVenta.toUpperCase());
+        for (const l of sess.lineas) {
+          const key = l.skuVenta.toUpperCase();
+          doneQtyBySku.set(key, (doneQtyBySku.get(key) || 0) + l.qtyPedida);
+        }
       }
-      const trulyNewLineas = lineas.filter(l => !allDoneSkus.has(l.skuVenta.toUpperCase()));
+      // Subtract already-done qty from new lines
+      const trulyNewLineas: typeof lineas = [];
+      for (const l of lineas) {
+        const key = l.skuVenta.toUpperCase();
+        const alreadyDone = doneQtyBySku.get(key) || 0;
+        if (l.qtyPedida > alreadyDone) {
+          // Partial: only the extra quantity
+          trulyNewLineas.push({ ...l, qtyPedida: l.qtyPedida - alreadyDone, componentes: l.componentes.map(c => ({ ...c, unidades: l.qtyPedida - alreadyDone })) });
+          doneQtyBySku.set(key, l.qtyPedida); // mark as accounted
+        } else {
+          // Fully covered by previous sessions
+          doneQtyBySku.set(key, alreadyDone - l.qtyPedida);
+        }
+      }
       if (trulyNewLineas.length === 0) {
         return { created: false, updated: false, total: 0 };
       }
-      // Only create with truly new items
       await db.createPickingSession({
         fecha: today, estado: "ABIERTA", lineas: trulyNewLineas,
         tipo: "flex", titulo: `Flex ${today}`,
