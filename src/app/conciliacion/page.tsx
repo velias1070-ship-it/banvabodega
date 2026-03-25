@@ -8,10 +8,11 @@ import {
   fetchMovimientosBanco, insertMovimientosBanco, deleteMovimientosBancoByIds,
   fetchConciliaciones,
   fetchAlertas, fetchSyncLog, insertSyncLog,
+  fetchProveedorCuentas,
 } from "@/lib/db";
 import type {
   DBEmpresa, DBRcvCompra, DBRcvVenta, DBMovimientoBanco,
-  DBConciliacion, DBAlerta, DBSyncLog,
+  DBConciliacion, DBAlerta, DBSyncLog, DBProveedorCuenta,
 } from "@/lib/db";
 import CsvUploader from "@/components/CsvUploader";
 import type { CsvRow } from "@/components/CsvUploader";
@@ -861,6 +862,7 @@ function Dashboard({ empresa, periodo, onChangePeriodo }: { empresa: DBEmpresa; 
 function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: string }) {
   const [data, setData] = useState<DBRcvCompra[]>([]);
   const [conciliaciones, setConciliaciones] = useState<DBConciliacion[]>([]);
+  const [provCuentas, setProvCuentas] = useState<DBProveedorCuenta[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("");
   const [tipoFilter, setTipoFilter] = useState<string>("todos");
@@ -874,8 +876,9 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const load = useCallback(async () => {
     if (!empresa.id) return;
     setLoading(true);
-    const [conc] = await Promise.all([fetchConciliaciones(empresa.id)]);
+    const [conc, pc] = await Promise.all([fetchConciliaciones(empresa.id), fetchProveedorCuentas()]);
     setConciliaciones(conc);
+    setProvCuentas(pc);
     if (isAnual) {
       const promises = [];
       for (let m = 1; m <= 12; m++) {
@@ -958,6 +961,19 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
 
   const totalSinPago = data.filter(c => !concCompraIds.has(c.id!)).length;
   const totalConciliadas = data.filter(c => concCompraIds.has(c.id!)).length;
+
+  // Mapa RUT → plazo_dias
+  const plazoByRut = new Map(provCuentas.filter(p => p.plazo_dias).map(p => [p.rut_proveedor, p.plazo_dias!]));
+
+  // Calcular vencimiento
+  const getVencimiento = (c: DBRcvCompra): { fecha: string; diasRestantes: number } | null => {
+    const plazo = plazoByRut.get(c.rut_proveedor || "");
+    if (!plazo || !c.fecha_docto) return null;
+    const fechaDoc = new Date(c.fecha_docto + "T12:00:00");
+    const venc = new Date(fechaDoc.getTime() + plazo * 86400000);
+    const dias = Math.ceil((venc.getTime() - Date.now()) / 86400000);
+    return { fecha: venc.toISOString().slice(0, 10), diasRestantes: dias };
+  };
 
   const totalNeto = filtered.reduce((s, c) => s + (c.monto_neto || 0), 0);
   const totalExento = filtered.reduce((s, c) => s + (c.monto_exento || 0), 0);
@@ -1065,11 +1081,14 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
             <thead>
               <tr>
                 <th>Tipo</th><th>N° Doc</th><th>RUT Proveedor</th><th>Razón Social</th><th>Fecha</th>
-                <th style={{ textAlign: "right" }}>Neto</th><th style={{ textAlign: "right" }}>IVA</th><th style={{ textAlign: "right" }}>Total</th><th>Pago</th>
+                <th style={{ textAlign: "right" }}>Total</th><th>Vencimiento</th><th>Pago</th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((c, i) => (
+              {filtered.map((c, i) => {
+                const venc = getVencimiento(c);
+                const isConciliada = concCompraIds.has(c.id!);
+                return (
                 <tr key={c.id || i}>
                   <td>
                     <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 4, background: "var(--bg3)", color: "var(--txt2)", whiteSpace: "nowrap" }}>
@@ -1080,22 +1099,39 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                   <td className="mono" style={{ fontSize: 10 }}>{fmtRut(c.rut_proveedor)}</td>
                   <td style={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.razon_social || "—"}</td>
                   <td className="mono">{fmtDate(c.fecha_docto)}</td>
-                  <td className="mono" style={{ textAlign: "right" }}>{fmtMoney(c.monto_neto || 0)}</td>
-                  <td className="mono" style={{ textAlign: "right", color: "var(--amber)" }}>{fmtMoney(c.monto_iva || 0)}</td>
                   <td className="mono" style={{ textAlign: "right", fontWeight: 700 }}>{fmtMoney(c.monto_total || 0)}</td>
                   <td>
-                    {concCompraIds.has(c.id!) ? (
+                    {venc ? (
+                      <span className="mono" style={{
+                        fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 4,
+                        background: isConciliada ? "var(--bg3)" : venc.diasRestantes < 0 ? "var(--redBg)" : venc.diasRestantes <= 7 ? "var(--amberBg)" : "var(--bg3)",
+                        color: isConciliada ? "var(--txt3)" : venc.diasRestantes < 0 ? "var(--red)" : venc.diasRestantes <= 7 ? "var(--amber)" : "var(--txt2)",
+                      }}>
+                        {fmtDate(venc.fecha)}
+                        {!isConciliada && (
+                          <span style={{ marginLeft: 4 }}>
+                            {venc.diasRestantes < 0 ? `(${Math.abs(venc.diasRestantes)}d vencida)` : venc.diasRestantes === 0 ? "(hoy)" : `(${venc.diasRestantes}d)`}
+                          </span>
+                        )}
+                      </span>
+                    ) : (
+                      <span style={{ fontSize: 10, color: "var(--txt3)" }}>—</span>
+                    )}
+                  </td>
+                  <td>
+                    {isConciliada ? (
                       <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 4, background: "var(--greenBg)", color: "var(--green)" }}>
-                        CONCILIADA
+                        PAGADA
                       </span>
                     ) : (
                       <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 4, background: "var(--amberBg)", color: "var(--amber)" }}>
-                        SIN PAGO
+                        PENDIENTE
                       </span>
                     )}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
             <tfoot>
               <tr style={{ fontWeight: 700, background: "var(--bg3)" }}>

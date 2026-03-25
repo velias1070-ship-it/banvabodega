@@ -171,6 +171,7 @@ export default function ConciliacionSplitView({
   const [showCuentaPrompt, setShowCuentaPrompt] = useState(false);
   const [pendingConfirm, setPendingConfirm] = useState<{ mov: DBMovimientoBanco; doc: DocUnificado; conc: DBConciliacion } | null>(null);
   const [promptCuenta, setPromptCuenta] = useState("");
+  const [promptPlazo, setPromptPlazo] = useState("");
 
   // Clasificación sin documento
   const [showClasificar, setShowClasificar] = useState(false);
@@ -381,12 +382,13 @@ export default function ConciliacionSplitView({
     if (!pendingConfirm || !promptCuenta) return;
     const { mov, doc, conc } = pendingConfirm;
 
-    // Guardar mapeo proveedor→cuenta para futuro
-    await upsertProveedorCuenta(doc.rut, promptCuenta, doc.razon_social);
-    setProvCuentas(prev => [...prev, { rut_proveedor: doc.rut, razon_social: doc.razon_social, categoria_cuenta_id: promptCuenta }]);
+    const plazo = promptPlazo ? parseInt(promptPlazo) : null;
+    await upsertProveedorCuenta(doc.rut, promptCuenta, doc.razon_social, plazo);
+    setProvCuentas(prev => [...prev, { rut_proveedor: doc.rut, razon_social: doc.razon_social, categoria_cuenta_id: promptCuenta, plazo_dias: plazo }]);
 
     setShowCuentaPrompt(false);
     setPendingConfirm(null);
+    setPromptPlazo("");
     await finalizarConfirmacion(conc, mov, doc, promptCuenta);
   };
 
@@ -582,6 +584,13 @@ export default function ConciliacionSplitView({
                 <option key={c.id} value={c.id}>{c.codigo} — {c.nombre}</option>
               ))}
             </select>
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ fontSize: 11, color: "var(--txt3)", display: "block", marginBottom: 4 }}>Plazo de pago (días)</label>
+              <input type="number" value={promptPlazo} onChange={e => setPromptPlazo(e.target.value)}
+                placeholder="ej: 60" min={0}
+                style={{ width: 120, padding: "6px 10px", fontSize: 12, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 6 }} />
+              <span style={{ fontSize: 10, color: "var(--txt3)", marginLeft: 8 }}>Se recordará para este proveedor</span>
+            </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <button onClick={handleConfirmarSinCuenta}
                 style={{ padding: "8px 16px", borderRadius: 8, background: "var(--bg3)", color: "var(--txt3)", fontSize: 12, border: "1px solid var(--bg4)", cursor: "pointer" }}>
