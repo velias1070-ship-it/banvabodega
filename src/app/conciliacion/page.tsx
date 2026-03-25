@@ -9,6 +9,8 @@ import {
   fetchConciliaciones,
   fetchAlertas, fetchSyncLog, insertSyncLog,
   fetchProveedorCuentas,
+  upsertProveedorCuenta,
+  fetchPlanCuentasHojas,
 } from "@/lib/db";
 import type {
   DBEmpresa, DBRcvCompra, DBRcvVenta, DBMovimientoBanco,
@@ -870,15 +872,21 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
   const [showBheModal, setShowBheModal] = useState(false);
+  const [showProveedores, setShowProveedores] = useState(false);
+  const [editingProv, setEditingProv] = useState<string | null>(null);
+  const [editPlazo, setEditPlazo] = useState("");
+  const [editCuenta, setEditCuenta] = useState("");
+  const [cuentasHoja, setCuentasHoja] = useState<{ id: string; codigo: string; nombre: string }[]>([]);
 
   const isAnual = periodo.length === 4;
 
   const load = useCallback(async () => {
     if (!empresa.id) return;
     setLoading(true);
-    const [conc, pc] = await Promise.all([fetchConciliaciones(empresa.id), fetchProveedorCuentas()]);
+    const [conc, pc, ctas] = await Promise.all([fetchConciliaciones(empresa.id), fetchProveedorCuentas(), fetchPlanCuentasHojas()]);
     setConciliaciones(conc);
     setProvCuentas(pc);
+    setCuentasHoja(ctas.map(c => ({ id: c.id!, codigo: c.codigo, nombre: c.nombre })));
     if (isAnual) {
       const promises = [];
       for (let m = 1; m <= 12; m++) {
@@ -947,6 +955,37 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
 
   // IDs de compras conciliadas
   const concCompraIds = new Set(conciliaciones.filter(c => c.estado === "confirmado" && c.rcv_compra_id).map(c => c.rcv_compra_id));
+
+  // Proveedores únicos con totales
+  const proveedoresUnicos = useMemo(() => {
+    const map = new Map<string, { rut: string; razon_social: string; facturas: number; total: number }>();
+    for (const c of data) {
+      const rut = c.rut_proveedor || "";
+      if (!rut) continue;
+      const existing = map.get(rut);
+      if (existing) {
+        existing.facturas++;
+        existing.total += c.monto_total || 0;
+      } else {
+        map.set(rut, { rut, razon_social: c.razon_social || "", facturas: 1, total: c.monto_total || 0 });
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => b.total - a.total);
+  }, [data]);
+
+  // Handler para guardar proveedor
+  const handleSaveProv = async (rut: string) => {
+    const plazo = editPlazo ? parseInt(editPlazo) : null;
+    const prov = proveedoresUnicos.find(p => p.rut === rut);
+    await upsertProveedorCuenta(rut, editCuenta || "", prov?.razon_social, plazo);
+    setProvCuentas(prev => {
+      const idx = prev.findIndex(p => p.rut_proveedor === rut);
+      const updated: DBProveedorCuenta = { rut_proveedor: rut, razon_social: prov?.razon_social || null, categoria_cuenta_id: editCuenta || null, plazo_dias: plazo };
+      if (idx >= 0) { const next = [...prev]; next[idx] = updated; return next; }
+      return [...prev, updated];
+    });
+    setEditingProv(null);
+  };
 
   // Filtrar por texto, tipo y estado conciliación
   let filtered = data;
@@ -1038,6 +1077,81 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
           <div style={{ fontSize: 10, color: "var(--red)" }}>Total</div>
           <div className="mono" style={{ fontSize: 13, fontWeight: 700, color: "var(--red)" }}>{fmtMoney(total)}</div>
         </div>
+      </div>
+
+      {/* Panel Proveedores */}
+      <div style={{ marginBottom: 12 }}>
+        <button onClick={() => setShowProveedores(!showProveedores)}
+          style={{ padding: "6px 14px", borderRadius: 8, fontSize: 11, fontWeight: 600, cursor: "pointer", background: "var(--bg3)", color: "var(--txt2)", border: "1px solid var(--bg4)", width: "100%", textAlign: "left", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span>Proveedores — Plazos y Cuentas ({proveedoresUnicos.length})</span>
+          <span style={{ fontSize: 10, color: "var(--txt3)" }}>{showProveedores ? "▲ cerrar" : "▼ abrir"}</span>
+        </button>
+        {showProveedores && (
+          <div className="card" style={{ marginTop: 4, overflow: "hidden" }}>
+            <table className="tbl" style={{ fontSize: 11 }}>
+              <thead>
+                <tr><th>Proveedor</th><th>RUT</th><th style={{ textAlign: "right" }}>Facturas</th><th style={{ textAlign: "right" }}>Total</th><th>Plazo</th><th>Cuenta</th><th></th></tr>
+              </thead>
+              <tbody>
+                {proveedoresUnicos.map(p => {
+                  const pc = provCuentas.find(x => x.rut_proveedor === p.rut);
+                  const isEditing = editingProv === p.rut;
+                  const cuenta = pc?.categoria_cuenta_id ? cuentasHoja.find(c => c.id === pc.categoria_cuenta_id) : null;
+                  return (
+                    <tr key={p.rut}>
+                      <td style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.razon_social}</td>
+                      <td className="mono" style={{ fontSize: 10 }}>{p.rut}</td>
+                      <td className="mono" style={{ textAlign: "right" }}>{p.facturas}</td>
+                      <td className="mono" style={{ textAlign: "right", fontWeight: 600 }}>{fmtMoney(p.total)}</td>
+                      <td>
+                        {isEditing ? (
+                          <input type="number" value={editPlazo} onChange={e => setEditPlazo(e.target.value)} placeholder="días"
+                            style={{ width: 60, padding: "2px 4px", fontSize: 11, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 4 }} />
+                        ) : (
+                          <span className="mono" style={{ fontSize: 11, color: pc?.plazo_dias ? "var(--txt)" : "var(--txt3)" }}>
+                            {pc?.plazo_dias ? `${pc.plazo_dias}d` : "—"}
+                          </span>
+                        )}
+                      </td>
+                      <td>
+                        {isEditing ? (
+                          <select value={editCuenta} onChange={e => setEditCuenta(e.target.value)}
+                            style={{ padding: "2px 4px", fontSize: 10, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 4, maxWidth: 150 }}>
+                            <option value="">—</option>
+                            {cuentasHoja.map(c => <option key={c.id} value={c.id}>{c.codigo} — {c.nombre}</option>)}
+                          </select>
+                        ) : (
+                          <span style={{ fontSize: 10, color: cuenta ? "var(--cyan)" : "var(--txt3)" }}>
+                            {cuenta ? `${cuenta.codigo}` : "—"}
+                          </span>
+                        )}
+                      </td>
+                      <td>
+                        {isEditing ? (
+                          <div style={{ display: "flex", gap: 4 }}>
+                            <button onClick={() => handleSaveProv(p.rut)}
+                              style={{ padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: "var(--greenBg)", color: "var(--green)", border: "none", cursor: "pointer" }}>
+                              OK
+                            </button>
+                            <button onClick={() => setEditingProv(null)}
+                              style={{ padding: "2px 8px", borderRadius: 4, fontSize: 10, background: "var(--bg3)", color: "var(--txt3)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
+                              X
+                            </button>
+                          </div>
+                        ) : (
+                          <button onClick={() => { setEditingProv(p.rut); setEditPlazo(pc?.plazo_dias?.toString() || ""); setEditCuenta(pc?.categoria_cuenta_id || ""); }}
+                            style={{ padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: "var(--bg3)", color: "var(--cyan)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
+                            Editar
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {/* Filtros */}
