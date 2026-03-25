@@ -86,6 +86,8 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
   const [assigningId, setAssigningId] = useState<string | null>(null);
   const [assignCuenta, setAssignCuenta] = useState("");
+  const [dragItem, setDragItem] = useState<{ rut: string; razon: string; nro: string; conciliada: boolean } | null>(null);
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
 
   const pAnt = periodoAnterior(periodo);
   const rangoAct = periodoRange(periodo);
@@ -435,12 +437,50 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
               const isExpanded = expandedRow === l.id;
               const canExpand = l.esHoja && (l.montoActual !== 0 || l.montoAnterior !== 0);
 
+              const isDropTarget = dropTarget === l.id && dragItem;
               return (
-                <tr key={l.id} onClick={() => canExpand && setExpandedRow(isExpanded ? null : l.id)}
+                <tr key={l.id}
+                  onClick={() => canExpand && setExpandedRow(isExpanded ? null : l.id)}
+                  onDragOver={l.esHoja && !l.esSubtotal ? (e) => { e.preventDefault(); setDropTarget(l.id); } : undefined}
+                  onDragLeave={l.esHoja ? () => setDropTarget(null) : undefined}
+                  onDrop={l.esHoja && !l.esSubtotal ? async (e) => {
+                    e.preventDefault();
+                    setDropTarget(null);
+                    if (!dragItem || !l.id) return;
+                    // Reasignar proveedor a esta cuenta
+                    if (dragItem.rut) {
+                      const pc = provCuentas.find(p => p.rut_proveedor === dragItem.rut);
+                      if (!pc?.cuenta_variable) {
+                        await upsertProveedorCuenta(dragItem.rut, l.id, dragItem.razon);
+                      }
+                    }
+                    // Actualizar movimiento si conciliado
+                    if (dragItem.conciliada && dragItem.nro) {
+                      const conc = conciliaciones.find(c => c.estado === "confirmado" && c.rcv_compra_id &&
+                        comprasAct.find(comp => comp.id === c.rcv_compra_id && comp.nro_doc === dragItem.nro));
+                      if (conc?.movimiento_banco_id) await categorizarMovimiento(conc.movimiento_banco_id, l.id);
+                    }
+                    setDragItem(null);
+                    // Recargar
+                    setLoading(true);
+                    const [va2, ca2, vant2, cant2, pc2, mb2, mbAnt2, prc2, conc2, cH2] = await Promise.all([
+                      fetchRcvVentas(empresa.id!, periodo), fetchRcvCompras(empresa.id!, periodo),
+                      fetchRcvVentas(empresa.id!, pAnt), fetchRcvCompras(empresa.id!, pAnt),
+                      fetchPlanCuentas(), fetchMovimientosBanco(empresa.id!, { desde: rangoAct.desde, hasta: rangoAct.hasta }),
+                      fetchMovimientosBanco(empresa.id!, { desde: rangoAnt.desde, hasta: rangoAnt.hasta }),
+                      fetchProveedorCuentas(), fetchConciliaciones(empresa.id!), fetchPlanCuentasHojas(),
+                    ]);
+                    setVentasAct(va2); setComprasAct(ca2); setVentasAnt(vant2); setComprasAnt(cant2);
+                    setPlanCuentas(pc2); setMovBanco(mb2); setMovBancoAnt(mbAnt2);
+                    setProvCuentas(prc2); setConciliaciones(conc2); setCuentasHoja(cH2);
+                    setLoading(false);
+                  } : undefined}
                   style={{
                     cursor: canExpand ? "pointer" : "default",
-                    background: l.esSubtotal ? "var(--bg3)" : l.esSeparador ? tipoStyle.bg : isExpanded ? "var(--cyanBg)" : "transparent",
+                    background: isDropTarget ? "var(--cyanBg)" : l.esSubtotal ? "var(--bg3)" : l.esSeparador ? tipoStyle.bg : isExpanded ? "var(--cyanBg)" : "transparent",
                     fontWeight: l.esSubtotal || l.esSeparador ? 700 : 400,
+                    outline: isDropTarget ? "2px dashed var(--cyan)" : "none",
+                    transition: "background 0.15s, outline 0.15s",
                   }}>
                   <td style={{
                     paddingLeft: l.esSeparador || l.esSubtotal ? 12 : 32,
@@ -538,7 +578,10 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
                 {drillDocs.map((d, i) => {
                   const isAssigning = assigningId === `${d.nro}_${i}`;
                   return (
-                  <tr key={i}>
+                  <tr key={i} draggable
+                    onDragStart={() => setDragItem({ rut: d.rut, razon: d.razon, nro: d.nro, conciliada: d.conciliada })}
+                    onDragEnd={() => { setDragItem(null); setDropTarget(null); }}
+                    style={{ cursor: "grab" }}>
                     <td style={{ fontSize: 10, color: "var(--txt3)" }}>{d.doc}</td>
                     <td className="mono" style={{ fontWeight: 600 }}>{d.nro}</td>
                     <td style={{ maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.razon || d.rut || "—"}</td>
