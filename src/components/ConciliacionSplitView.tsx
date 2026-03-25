@@ -144,6 +144,10 @@ export default function ConciliacionSplitView({
   empresa: DBEmpresa;
   periodo: string;
 }) {
+  // Períodos seleccionados para movimientos banco
+  const [periodos, setPeriodos] = useState<string[]>([periodo]);
+  const [showPeriodoSelect, setShowPeriodoSelect] = useState(false);
+
   const [movBanco, setMovBanco] = useState<DBMovimientoBanco[]>([]);
   const [compras, setCompras] = useState<DBRcvCompra[]>([]);
   const [ventas, setVentas] = useState<DBRcvVenta[]>([]);
@@ -185,14 +189,24 @@ export default function ConciliacionSplitView({
   const load = useCallback(async () => {
     if (!empresa.id) return;
     setLoading(true);
-    // Filtrar movimientos banco por período
-    const isAnual = periodo.length === 4;
-    const y = parseInt(periodo.slice(0, 4));
-    const m2 = isAnual ? 1 : parseInt(periodo.slice(4, 6));
-    const desde = isAnual ? `${y}-01-01` : `${y}-${String(m2).padStart(2, "0")}-01`;
-    const hasta = isAnual ? `${y}-12-31` : `${y}-${String(m2).padStart(2, "0")}-${new Date(y, m2, 0).getDate()}`;
+
+    // Calcular rango de fechas desde los períodos seleccionados
+    const allPeriods = periodos.length > 0 ? periodos : [periodo];
+    let minDesde = "9999-12-31";
+    let maxHasta = "0000-01-01";
+    for (const p of allPeriods) {
+      const isAnual = p.length === 4;
+      const y = parseInt(p.slice(0, 4));
+      const m2 = isAnual ? 1 : parseInt(p.slice(4, 6));
+      const desde = isAnual ? `${y}-01-01` : `${y}-${String(m2).padStart(2, "0")}-01`;
+      const hastaM = isAnual ? 12 : m2;
+      const hasta = isAnual ? `${y}-12-31` : `${y}-${String(hastaM).padStart(2, "0")}-${new Date(y, hastaM, 0).getDate()}`;
+      if (desde < minDesde) minDesde = desde;
+      if (hasta > maxHasta) maxHasta = hasta;
+    }
+
     const [m, c, v, conc, ctas, pc] = await Promise.all([
-      fetchMovimientosBanco(empresa.id, { desde, hasta }),
+      fetchMovimientosBanco(empresa.id, { desde: minDesde, hasta: maxHasta }),
       fetchRcvCompras(empresa.id),
       fetchRcvVentas(empresa.id, periodo),
       fetchConciliaciones(empresa.id),
@@ -201,7 +215,7 @@ export default function ConciliacionSplitView({
     ]);
     setMovBanco(m); setCompras(c); setVentas(v); setConciliaciones(conc); setCuentasHoja(ctas); setProvCuentas(pc);
     setLoading(false);
-  }, [empresa.id, periodo]);
+  }, [empresa.id, periodo, periodos]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -541,6 +555,29 @@ export default function ConciliacionSplitView({
     showFeedback("Regla creada exitosamente");
   };
 
+  // Opciones de períodos (últimos 6 meses)
+  const periodoOpts = useMemo(() => {
+    const opts: { value: string; label: string }[] = [];
+    const now = new Date();
+    for (let i = 0; i < 6; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const val = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}`;
+      const label = d.toLocaleDateString("es-CL", { month: "short", year: "numeric" });
+      opts.push({ value: val, label: label.charAt(0).toUpperCase() + label.slice(1) });
+    }
+    return opts;
+  }, []);
+
+  const togglePeriodo = (p: string) => {
+    setPeriodos(prev => {
+      if (prev.includes(p)) {
+        const next = prev.filter(x => x !== p);
+        return next.length === 0 ? [periodo] : next;
+      }
+      return [...prev, p];
+    });
+  };
+
   if (loading) return <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>Cargando datos de conciliación...</div>;
 
   // Estadísticas
@@ -550,6 +587,25 @@ export default function ConciliacionSplitView({
 
   return (
     <div>
+      {/* Selector de períodos */}
+      <div style={{ display: "flex", gap: 4, marginBottom: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <span style={{ fontSize: 10, fontWeight: 600, color: "var(--txt3)", marginRight: 4 }}>Períodos:</span>
+        {periodoOpts.map(o => {
+          const selected = periodos.includes(o.value);
+          return (
+            <button key={o.value} onClick={() => togglePeriodo(o.value)}
+              style={{
+                padding: "3px 10px", borderRadius: 4, fontSize: 10, fontWeight: 600, cursor: "pointer",
+                background: selected ? "var(--cyanBg)" : "var(--bg3)",
+                color: selected ? "var(--cyan)" : "var(--txt3)",
+                border: selected ? "1px solid var(--cyanBd)" : "1px solid var(--bg4)",
+              }}>
+              {o.label}
+            </button>
+          );
+        })}
+      </div>
+
       {/* Mensaje de feedback temporal */}
       {feedbackMsg && (
         <div style={{
