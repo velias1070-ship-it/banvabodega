@@ -532,9 +532,7 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
           <div style={{ maxHeight: 400, overflowY: "auto" }}>
             <table className="tbl" style={{ fontSize: 11 }}>
               <thead>
-                <tr><th>Doc</th><th>N°</th><th>Proveedor</th><th>Fecha</th><th style={{ textAlign: "right" }}>Monto</th><th>Nota</th><th>Pago</th>
-                  {(expandedRow === "cos_sin_cat" || expandedRow === "sin_cat") && <th>Cuenta</th>}
-                </tr>
+                <tr><th>Doc</th><th>N°</th><th>Proveedor</th><th>Fecha</th><th style={{ textAlign: "right" }}>Monto</th><th>Nota</th><th>Pago</th><th>Cuenta</th></tr>
               </thead>
               <tbody>
                 {drillDocs.map((d, i) => {
@@ -554,39 +552,46 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
                         <span style={{ fontSize: 9, fontWeight: 600, padding: "1px 5px", borderRadius: 3, background: "var(--amberBg)", color: "var(--amber)" }}>PEND.</span>
                       )}
                     </td>
-                    {(expandedRow === "cos_sin_cat" || expandedRow === "sin_cat") && (
-                      <td>
-                        {isAssigning ? (
-                          <select autoFocus value="" onChange={async (e) => {
-                            if (!e.target.value || !d.rut) return;
-                            await upsertProveedorCuenta(d.rut, e.target.value, d.razon);
-                            // Actualizar movimiento si conciliado
-                            if (d.conciliada) {
-                              const conc = conciliaciones.find(c => c.rcv_compra_id && c.estado === "confirmado" &&
-                                comprasAct.find(comp => comp.id === c.rcv_compra_id && comp.nro_doc === d.nro));
-                              if (conc?.movimiento_banco_id) await categorizarMovimiento(conc.movimiento_banco_id, e.target.value);
+                    <td>
+                      {isAssigning ? (
+                        <select autoFocus value="" onChange={async (e) => {
+                          if (!e.target.value) return;
+                          const newCuentaId = e.target.value;
+                          // Actualizar proveedor si tiene RUT y no es variable
+                          if (d.rut) {
+                            const pc = provCuentas.find(p => p.rut_proveedor === d.rut);
+                            if (!pc?.cuenta_variable) {
+                              await upsertProveedorCuenta(d.rut, newCuentaId, d.razon);
+                              setProvCuentas(prev => {
+                                const idx = prev.findIndex(p => p.rut_proveedor === d.rut);
+                                const u = { rut_proveedor: d.rut, razon_social: d.razon, categoria_cuenta_id: newCuentaId, plazo_dias: pc?.plazo_dias ?? null };
+                                if (idx >= 0) { const n = [...prev]; n[idx] = u; return n; }
+                                return [...prev, u];
+                              });
                             }
-                            setProvCuentas(prev => {
-                              const idx = prev.findIndex(p => p.rut_proveedor === d.rut);
-                              const u = { rut_proveedor: d.rut, razon_social: d.razon, categoria_cuenta_id: e.target.value, plazo_dias: null };
-                              if (idx >= 0) { const n = [...prev]; n[idx] = u; return n; }
-                              return [...prev, u];
-                            });
-                            setAssigningId(null);
-                          }}
-                            onBlur={() => setAssigningId(null)}
-                            style={{ padding: "2px 4px", fontSize: 9, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 3, maxWidth: 130 }}>
-                            <option value="">Seleccionar...</option>
-                            {cuentasHoja.map(c => <option key={c.id} value={c.id!}>{c.codigo} — {c.nombre}</option>)}
-                          </select>
-                        ) : (
-                          <button onClick={() => setAssigningId(`${d.nro}_${i}`)}
-                            style={{ padding: "1px 6px", borderRadius: 3, fontSize: 9, fontWeight: 600, background: "var(--cyanBg)", color: "var(--cyan)", border: "none", cursor: "pointer" }}>
-                            Asignar
-                          </button>
-                        )}
-                      </td>
-                    )}
+                          }
+                          // Actualizar movimiento banco si conciliado
+                          if (d.conciliada) {
+                            const conc = conciliaciones.find(c => c.estado === "confirmado" && (
+                              (c.rcv_compra_id && comprasAct.find(comp => comp.id === c.rcv_compra_id && comp.nro_doc === d.nro)) ||
+                              (c.movimiento_banco_id && movBanco.find(m => m.id === c.movimiento_banco_id && m.referencia === d.nro))
+                            ));
+                            if (conc?.movimiento_banco_id) await categorizarMovimiento(conc.movimiento_banco_id, newCuentaId);
+                          }
+                          setAssigningId(null);
+                        }}
+                          onBlur={() => setTimeout(() => setAssigningId(null), 200)}
+                          style={{ padding: "2px 4px", fontSize: 9, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 3, maxWidth: 140 }}>
+                          <option value="">Mover a...</option>
+                          {cuentasHoja.map(c => <option key={c.id} value={c.id!}>{c.codigo} — {c.nombre}</option>)}
+                        </select>
+                      ) : (
+                        <button onClick={() => setAssigningId(`${d.nro}_${i}`)}
+                          style={{ padding: "1px 6px", borderRadius: 3, fontSize: 9, fontWeight: 600, background: "var(--bg3)", color: "var(--cyan)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
+                          Mover
+                        </button>
+                      )}
+                    </td>
                   </tr>
                   );
                 })}
