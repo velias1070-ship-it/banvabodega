@@ -1723,13 +1723,13 @@ export async function syncFlexPickingSession(): Promise<{ created: boolean; upda
   // 1. Get active shipments
   const shipments = await db.fetchActiveFlexShipments();
 
-  // 2. Filter to today + overdue (same logic as admin classifyShipment)
+  // 2. Filter to today only (not overdue — those belong to previous sessions)
   const todayShipments = shipments.filter(s => {
     if (s.status === "pending" && s.substatus === "buffered") return false;
     if (s.substatus !== "ready_to_print" && s.substatus !== "printed") return false;
     if (!s.handling_limit) return true; // no date = assume today
     const limitDay = new Date(s.handling_limit).toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
-    return limitDay <= today; // today + overdue
+    return limitDay === today; // only today, not overdue
   });
 
   if (todayShipments.length === 0) return { created: false, updated: false, total: 0 };
