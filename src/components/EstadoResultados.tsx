@@ -295,10 +295,22 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
       const filteredCompras = rutsSet.size > 0 ? comprasAct.filter(c => rutsSet.has(c.rut_proveedor || "")) : comprasAct;
       return filteredCompras.map(mapCompra);
     }
-    // Gastos: movimientos banco
+    // Gastos: movimientos banco — mostrar factura vinculada si existe
     const movs = movBanco.filter(m => m.monto < 0 && m.categoria_cuenta_id === cuenta.id);
     return movs.map(m => {
       const conc = conciliaciones.find(c => c.movimiento_banco_id === m.id && c.estado === "confirmado");
+      // Si está conciliado con una factura de compra, mostrar datos de la factura
+      if (conc?.rcv_compra_id) {
+        const compra = comprasAct.find(c => c.id === conc.rcv_compra_id) || comprasAnt.find(c => c.id === conc.rcv_compra_id);
+        if (compra) {
+          return {
+            tipo: "Compra", doc: TIPO_DOC[compra.tipo_doc] || String(compra.tipo_doc),
+            nro: compra.nro_doc || "—", rut: compra.rut_proveedor || "",
+            razon: compra.razon_social || "", fecha: compra.fecha_docto || "—",
+            monto: Math.abs(m.monto), nota: conc.notas || compra.notas || "", conciliada: true,
+          };
+        }
+      }
       return { tipo: "Banco", doc: m.banco, nro: m.referencia || "—", rut: "", razon: m.descripcion || "", fecha: m.fecha, monto: Math.abs(m.monto), nota: conc?.notas || "", conciliada: !!conc };
     });
   }, [expandedRow, ventasAct, comprasAct, movBanco, planCuentas, concByCompraId, provCuentas, conciliaciones]);
