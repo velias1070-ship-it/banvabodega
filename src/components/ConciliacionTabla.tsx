@@ -39,7 +39,7 @@ type SortKey = "fecha" | "descripcion" | "monto";
 type SortDir = "asc" | "desc";
 type TabFilter = "todos" | "abonos" | "cargos";
 
-export default function ConciliacionTabla({ empresa, periodo }: { empresa: DBEmpresa; periodo: string }) {
+export default function ConciliacionTabla({ empresa, periodo, initialFilter }: { empresa: DBEmpresa; periodo: string; initialFilter?: string }) {
   const [movBanco, setMovBanco] = useState<DBMovimientoBanco[]>([]);
   const [compras, setCompras] = useState<DBRcvCompra[]>([]);
   const [ventas, setVentas] = useState<DBRcvVenta[]>([]);
@@ -49,7 +49,7 @@ export default function ConciliacionTabla({ empresa, periodo }: { empresa: DBEmp
   const [loading, setLoading] = useState(true);
 
   // Filtros
-  const [tab, setTab] = useState<TabFilter>("todos");
+  const [tab, setTab] = useState<TabFilter>((initialFilter === "abonos" || initialFilter === "cargos") ? initialFilter : "todos");
   const [soloPendientes, setSoloPendientes] = useState(true);
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("fecha");

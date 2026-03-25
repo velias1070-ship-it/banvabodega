@@ -1385,6 +1385,7 @@ type TabKey = "dash" | "compras" | "ventas" | "banco" | "conciliacion" | "cuenta
 
 export default function ConciliacionPage() {
   const [tab, setTab] = useState<TabKey>("dash");
+  const [bancoFilter, setBancoFilter] = useState<string | undefined>(undefined);
   const [empresa, setEmpresa] = useState<DBEmpresa | null>(null);
   const [periodo, setPeriodo] = useState(currentPeriodo());
   const [loading, setLoading] = useState(true);
@@ -1494,10 +1495,18 @@ export default function ConciliacionPage() {
             ))}
           </div>
           <div className="admin-content">
-            {empresa && tab === "dash" && <DashboardConciliacion empresa={empresa} periodo={periodo} onChangePeriodo={setPeriodo} onNavigate={(t: string) => setTab(t as TabKey)} />}
+            {empresa && tab === "dash" && <DashboardConciliacion empresa={empresa} periodo={periodo} onChangePeriodo={setPeriodo} onNavigate={(t: string) => {
+              if (t.includes(":")) {
+                const [tabName, filter] = t.split(":");
+                setTab(tabName as TabKey);
+                setBancoFilter(filter);
+              } else {
+                setTab(t as TabKey);
+              }
+            }} />}
             {empresa && tab === "compras" && <TabRcvCompras empresa={empresa} periodo={periodo} />}
             {empresa && tab === "ventas" && <TabRcvVentas empresa={empresa} periodo={periodo} />}
-            {empresa && tab === "banco" && <ConciliacionTabla empresa={empresa} periodo={periodo} />}
+            {empresa && tab === "banco" && <ConciliacionTabla empresa={empresa} periodo={periodo} initialFilter={bancoFilter} />}
             {tab === "cuentas" && <PlanCuentasTree />}
             {tab === "reglas" && <RuleBuilder />}
             {empresa && tab === "resultados" && <EstadoResultados empresa={empresa} periodo={periodo} />}
