@@ -849,16 +849,40 @@ export default function ConciliacionSplitView({
           )}
         </div>
 
-        {/* DERECHA: Documentos sugeridos */}
+        {/* DERECHA: Documentos sugeridos o facturas sin pago */}
         <div>
           <h3 style={{ fontSize: 14, fontWeight: 700, color: "var(--cyan)", marginBottom: 8 }}>
-            {selectedMov ? `Sugerencias (${sugerencias.length})` : "Selecciona un movimiento"}
+            {selectedMov ? `Sugerencias (${sugerencias.length})` : `Facturas sin pago (${docsSinConciliar.filter(d => d.tipo === "compra").length})`}
           </h3>
 
           {!selectedMov ? (
-            <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>
-              <div style={{ fontSize: 32, marginBottom: 8 }}>👈</div>
-              <div style={{ fontSize: 13 }}>Selecciona un movimiento del banco para ver documentos sugeridos</div>
+            <div style={{ maxHeight: 600, overflowY: "auto" }}>
+              {docsSinConciliar.filter(d => d.tipo === "compra").length === 0 ? (
+                <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>
+                  <div style={{ fontSize: 13 }}>Todas las facturas de compra están conciliadas</div>
+                </div>
+              ) : docsSinConciliar.filter(d => d.tipo === "compra").map(doc => (
+                <div key={doc.id} style={{
+                  padding: 10, marginBottom: 4, borderRadius: 8,
+                  border: "1px solid var(--bg4)", background: "var(--bg2)",
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }}>
+                    <span style={{ fontSize: 10, fontWeight: 600, padding: "1px 6px", borderRadius: 3, background: "var(--amberBg)", color: "var(--amber)" }}>
+                      {doc.tipo_doc} #{doc.nro}
+                    </span>
+                    <span className="mono" style={{ fontSize: 13, fontWeight: 700, color: "var(--red)" }}>
+                      {fmtMoney(doc.monto_total)}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 11, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {doc.razon_social || doc.rut || "—"}
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginTop: 2, fontSize: 10, color: "var(--txt3)" }}>
+                    <span>{fmtDate(doc.fecha)}</span>
+                    <span>{doc.rut}</span>
+                  </div>
+                </div>
+              ))}
             </div>
           ) : sugerencias.length === 0 ? (
             <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>
