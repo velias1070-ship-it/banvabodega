@@ -3,8 +3,9 @@ import { useState, useEffect, useMemo } from "react";
 import {
   fetchRcvVentas, fetchRcvCompras,
   fetchPlanCuentas, fetchMovimientosBanco,
+  fetchProveedorCuentas,
 } from "@/lib/db";
-import type { DBEmpresa, DBRcvCompra, DBRcvVenta, DBPlanCuentas, DBMovimientoBanco } from "@/lib/db";
+import type { DBEmpresa, DBRcvCompra, DBRcvVenta, DBPlanCuentas, DBMovimientoBanco, DBProveedorCuenta } from "@/lib/db";
 import { exportToExcel, fmtMoneyExcel } from "@/lib/exportExcel";
 
 // ==================== HELPERS ====================
@@ -76,6 +77,7 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
   const [planCuentas, setPlanCuentas] = useState<DBPlanCuentas[]>([]);
   const [movBanco, setMovBanco] = useState<DBMovimientoBanco[]>([]);
   const [movBancoAnt, setMovBancoAnt] = useState<DBMovimientoBanco[]>([]);
+  const [provCuentas, setProvCuentas] = useState<DBProveedorCuenta[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
 
@@ -95,10 +97,12 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
       fetchPlanCuentas(),
       fetchMovimientosBanco(empresa.id, { desde: rangoAct.desde, hasta: rangoAct.hasta }),
       fetchMovimientosBanco(empresa.id, { desde: rangoAnt.desde, hasta: rangoAnt.hasta }),
-    ]).then(([va, ca, vant, cant, pc, mb, mbAnt]) => {
+      fetchProveedorCuentas(),
+    ]).then(([va, ca, vant, cant, pc, mb, mbAnt, prc]) => {
       setVentasAct(va); setComprasAct(ca);
       setVentasAnt(vant); setComprasAnt(cant);
       setPlanCuentas(pc); setMovBanco(mb); setMovBancoAnt(mbAnt);
+      setProvCuentas(prc);
       setLoading(false);
     });
   }, [empresa.id, periodo]);
@@ -145,19 +149,51 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
       result.push({ id: "ing_total", codigo: "", nombre: "Ventas totales", tipo: "ingreso", esHoja: true, nivel: 1, montoActual: totalIngresosAct, montoAnterior: totalIngresosAnt });
     }
 
-    // === COSTOS ===
+    // === COSTOS (agrupados por cuenta del proveedor) ===
     result.push({ id: "sec_cos", codigo: "(-)", nombre: "COSTOS", tipo: "costo", esHoja: false, nivel: 0, montoActual: totalCostosAct, montoAnterior: totalCostosAnt, esSeparador: true });
 
+    // Mapa RUT proveedor → cuenta contable
+    const provCuentaMap = new Map(provCuentas.filter(p => p.categoria_cuenta_id).map(p => [p.rut_proveedor, p.categoria_cuenta_id!]));
+
+    // Agrupar compras por cuenta contable
+    const costosPorCuenta = new Map<string, { act: number; ant: number }>();
+    let sinCuentaCostosAct = 0, sinCuentaCostosAnt = 0;
+
+    for (const c of comprasAct) {
+      const cuentaId = provCuentaMap.get(c.rut_proveedor || "");
+      if (cuentaId) {
+        const prev = costosPorCuenta.get(cuentaId) || { act: 0, ant: 0 };
+        prev.act += c.monto_total || 0;
+        costosPorCuenta.set(cuentaId, prev);
+      } else {
+        sinCuentaCostosAct += c.monto_total || 0;
+      }
+    }
+    for (const c of comprasAnt) {
+      const cuentaId = provCuentaMap.get(c.rut_proveedor || "");
+      if (cuentaId) {
+        const prev = costosPorCuenta.get(cuentaId) || { act: 0, ant: 0 };
+        prev.ant += c.monto_total || 0;
+        costosPorCuenta.set(cuentaId, prev);
+      } else {
+        sinCuentaCostosAnt += c.monto_total || 0;
+      }
+    }
+
+    // Mostrar cuentas de costo con montos
     const cuentasCosto = planCuentas.filter(c => c.tipo === "costo" && c.es_hoja && c.activa).sort((a, b) => a.codigo.localeCompare(b.codigo));
     for (const cuenta of cuentasCosto) {
+      const montos = costosPorCuenta.get(cuenta.id!) || { act: 0, ant: 0 };
       result.push({
         id: cuenta.id!, codigo: cuenta.codigo, nombre: cuenta.nombre, tipo: "costo",
-        esHoja: true, nivel: 1,
-        montoActual: cuenta === cuentasCosto[0] ? totalCostosAct : 0,
-        montoAnterior: cuenta === cuentasCosto[0] ? totalCostosAnt : 0,
+        esHoja: true, nivel: 1, montoActual: montos.act, montoAnterior: montos.ant,
       });
     }
-    if (cuentasCosto.length === 0) {
+    // Compras sin cuenta asignada
+    if (sinCuentaCostosAct > 0 || sinCuentaCostosAnt > 0) {
+      result.push({ id: "cos_sin_cat", codigo: "", nombre: "Sin categorizar", tipo: "costo", esHoja: true, nivel: 1, montoActual: sinCuentaCostosAct, montoAnterior: sinCuentaCostosAnt });
+    }
+    if (cuentasCosto.length === 0 && sinCuentaCostosAct === 0 && sinCuentaCostosAnt === 0) {
       result.push({ id: "cos_total", codigo: "", nombre: "Compras totales", tipo: "costo", esHoja: true, nivel: 1, montoActual: totalCostosAct, montoAnterior: totalCostosAnt });
     }
 
@@ -226,7 +262,13 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
       return ventasAct.map(v => ({ tipo: "Venta", doc: TIPO_DOC[v.tipo_doc] || String(v.tipo_doc), nro: v.folio || v.nro || "—", rut: v.rut_emisor || "—", fecha: v.fecha_docto || "—", monto: v.monto_total || 0 }));
     }
     if (cuenta.tipo === "costo") {
-      return comprasAct.map(c => ({ tipo: "Compra", doc: TIPO_DOC[c.tipo_doc] || String(c.tipo_doc), nro: c.nro_doc || "—", rut: c.rut_proveedor || "—", fecha: c.fecha_docto || "—", monto: c.monto_total || 0 }));
+      // Filtrar compras cuyos proveedores tienen esta cuenta asignada
+      const provRuts = provCuentas.filter(p => p.categoria_cuenta_id === cuenta.id).map(p => p.rut_proveedor);
+      const rutsSet = new Set(provRuts);
+      const filteredCompras = rutsSet.size > 0
+        ? comprasAct.filter(c => rutsSet.has(c.rut_proveedor || ""))
+        : comprasAct;
+      return filteredCompras.map(c => ({ tipo: "Compra", doc: TIPO_DOC[c.tipo_doc] || String(c.tipo_doc), nro: c.nro_doc || "—", rut: c.rut_proveedor || "—", razon: c.razon_social || "", fecha: c.fecha_docto || "—", monto: c.monto_total || 0 }));
     }
     // Gastos: movimientos banco de esa categoría
     const movs = movBanco.filter(m => m.monto < 0 && m.categoria_cuenta_id === cuenta.id);
