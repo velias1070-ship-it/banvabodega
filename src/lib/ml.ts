@@ -756,11 +756,11 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
       }
     }
   } else if (wasReserved && shouldReleaseDespacho) {
-    // Delivered — release reservation AND deduct stock
+    // Delivered — release reservation only (stock already deducted during picking)
     for (const [sku, qty] of skuEntries) {
       try {
         await sb.rpc("liberar_reserva", {
-          p_sku: sku, p_cantidad: qty, p_descontar: true,
+          p_sku: sku, p_cantidad: qty, p_descontar: false,
           p_motivo: "despacho_ml", p_operario: "webhook",
         });
       } catch (e) {
