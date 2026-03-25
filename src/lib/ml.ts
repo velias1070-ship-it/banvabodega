@@ -728,12 +728,12 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
   const RELEASE_CANCEL_STATUSES = ["cancelled", "not_delivered"];
 
   // Collect SKU quantities from this shipment's items
-  const skuQtys = new Map<string, number>();
+  const skuQtys: Record<string, number> = {};
   {
     const { data: currentItems } = await sb.from("ml_shipment_items")
       .select("seller_sku, quantity").eq("shipment_id", shipmentId);
     for (const item of (currentItems || []) as { seller_sku: string; quantity: number }[]) {
-      skuQtys.set(item.seller_sku, (skuQtys.get(item.seller_sku) || 0) + item.quantity);
+      skuQtys[item.seller_sku] = (skuQtys[item.seller_sku] || 0) + item.quantity;
     }
   }
 
@@ -741,10 +741,11 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
   const shouldReserve = RESERVE_STATUSES.includes(newStatus);
   const shouldReleaseDespacho = RELEASE_DESPACHO_STATUSES.includes(newStatus);
   const shouldReleaseCancel = RELEASE_CANCEL_STATUSES.includes(newStatus);
+  const skuEntries = Object.entries(skuQtys);
 
   if (!wasReserved && shouldReserve) {
     // New shipment or transition to ready_to_ship — reserve stock
-    for (const [sku, qty] of skuQtys) {
+    for (const [sku, qty] of skuEntries) {
       try {
         const ok = await sb.rpc("reservar_stock", { p_sku: sku, p_cantidad: qty });
         if (ok.data === false) {
@@ -756,7 +757,7 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
     }
   } else if (wasReserved && shouldReleaseDespacho) {
     // Delivered — release reservation AND deduct stock
-    for (const [sku, qty] of skuQtys) {
+    for (const [sku, qty] of skuEntries) {
       try {
         await sb.rpc("liberar_reserva", {
           p_sku: sku, p_cantidad: qty, p_descontar: true,
@@ -768,7 +769,7 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
     }
   } else if (wasReserved && shouldReleaseCancel) {
     // Cancelled — release reservation only
-    for (const [sku, qty] of skuQtys) {
+    for (const [sku, qty] of skuEntries) {
       try {
         await sb.rpc("liberar_reserva", {
           p_sku: sku, p_cantidad: qty, p_descontar: false,
