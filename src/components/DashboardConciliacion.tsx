@@ -64,7 +64,7 @@ function getRecentPeriods(): string[] {
   return periods;
 }
 
-export default function DashboardConciliacion({ empresa, periodo, onChangePeriodo }: { empresa: DBEmpresa; periodo: string; onChangePeriodo: (p: string) => void }) {
+export default function DashboardConciliacion({ empresa, periodo, onChangePeriodo, onNavigate }: { empresa: DBEmpresa; periodo: string; onChangePeriodo: (p: string) => void; onNavigate?: (tab: string) => void }) {
   const [compras, setCompras] = useState<DBRcvCompra[]>([]);
   const [ventas, setVentas] = useState<DBRcvVenta[]>([]);
   const [movBanco, setMovBanco] = useState<DBMovimientoBanco[]>([]);
@@ -179,21 +179,15 @@ export default function DashboardConciliacion({ empresa, periodo, onChangePeriod
 
         {abonosPend.length > 0 && (
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid var(--bg4)" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: 14 }}>{ }</span>
-              <span style={{ fontSize: 13 }}><strong>{abonosPend.length}</strong> abonos por conciliar, que suman <strong className="mono">{fmtMoney(abonosPend.reduce((s, m) => s + m.monto, 0))}</strong></span>
-            </div>
-            <button onClick={() => onChangePeriodo(periodo)} style={{ fontSize: 12, color: "var(--cyan)", background: "none", border: "none", cursor: "pointer", fontWeight: 600 }}>Revisar</button>
+            <span style={{ fontSize: 13 }}><strong>{abonosPend.length}</strong> abonos por conciliar, que suman <strong className="mono">{fmtMoney(abonosPend.reduce((s, m) => s + m.monto, 0))}</strong></span>
+            <button onClick={() => onNavigate?.("banco")} style={{ fontSize: 12, color: "var(--cyan)", background: "none", border: "none", cursor: "pointer", fontWeight: 600 }}>Revisar</button>
           </div>
         )}
 
         {cargosPend.length > 0 && (
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid var(--bg4)" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: 14 }}>{ }</span>
-              <span style={{ fontSize: 13 }}><strong>{cargosPend.length}</strong> cargos por conciliar, que suman <strong className="mono">{fmtMoney(Math.abs(cargosPend.reduce((s, m) => s + m.monto, 0)))}</strong></span>
-            </div>
-            <button onClick={() => onChangePeriodo(periodo)} style={{ fontSize: 12, color: "var(--cyan)", background: "none", border: "none", cursor: "pointer", fontWeight: 600 }}>Revisar</button>
+            <span style={{ fontSize: 13 }}><strong>{cargosPend.length}</strong> cargos por conciliar, que suman <strong className="mono">{fmtMoney(Math.abs(cargosPend.reduce((s, m) => s + m.monto, 0)))}</strong></span>
+            <button onClick={() => onNavigate?.("banco")} style={{ fontSize: 12, color: "var(--cyan)", background: "none", border: "none", cursor: "pointer", fontWeight: 600 }}>Revisar</button>
           </div>
         )}
 
@@ -218,7 +212,7 @@ export default function DashboardConciliacion({ empresa, periodo, onChangePeriod
         {ventasPendientes.length > 0 && (
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid var(--bg4)" }}>
             <span style={{ fontSize: 13 }}><strong>{ventasPendientes.length}</strong> facturas de venta por cobrar</span>
-            <button style={{ fontSize: 12, color: "var(--cyan)", background: "none", border: "none", cursor: "pointer", fontWeight: 600 }}>Revisar</button>
+            <button onClick={() => onNavigate?.("ventas")} style={{ fontSize: 12, color: "var(--cyan)", background: "none", border: "none", cursor: "pointer", fontWeight: 600 }}>Revisar</button>
           </div>
         )}
 
@@ -237,14 +231,14 @@ export default function DashboardConciliacion({ empresa, periodo, onChangePeriod
         {comprasPendientes.length > 0 && (
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid var(--bg4)" }}>
             <span style={{ fontSize: 13 }}><strong>{comprasPendientes.length}</strong> facturas de compra por pagar</span>
-            <button style={{ fontSize: 12, color: "var(--cyan)", background: "none", border: "none", cursor: "pointer", fontWeight: 600 }}>Revisar</button>
+            <button onClick={() => onNavigate?.("compras")} style={{ fontSize: 12, color: "var(--cyan)", background: "none", border: "none", cursor: "pointer", fontWeight: 600 }}>Revisar</button>
           </div>
         )}
 
         {honorariosPend.length > 0 && (
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid var(--bg4)" }}>
             <span style={{ fontSize: 13 }}><strong>{honorariosPend.length}</strong> honorarios por pagar</span>
-            <button style={{ fontSize: 12, color: "var(--cyan)", background: "none", border: "none", cursor: "pointer", fontWeight: 600 }}>Revisar</button>
+            <button onClick={() => onNavigate?.("compras")} style={{ fontSize: 12, color: "var(--cyan)", background: "none", border: "none", cursor: "pointer", fontWeight: 600 }}>Revisar</button>
           </div>
         )}
 

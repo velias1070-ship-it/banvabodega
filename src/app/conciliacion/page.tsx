@@ -1494,7 +1494,7 @@ export default function ConciliacionPage() {
             ))}
           </div>
           <div className="admin-content">
-            {empresa && tab === "dash" && <DashboardConciliacion empresa={empresa} periodo={periodo} onChangePeriodo={setPeriodo} />}
+            {empresa && tab === "dash" && <DashboardConciliacion empresa={empresa} periodo={periodo} onChangePeriodo={setPeriodo} onNavigate={(t: string) => setTab(t as TabKey)} />}
             {empresa && tab === "compras" && <TabRcvCompras empresa={empresa} periodo={periodo} />}
             {empresa && tab === "ventas" && <TabRcvVentas empresa={empresa} periodo={periodo} />}
             {empresa && tab === "banco" && <ConciliacionTabla empresa={empresa} periodo={periodo} />}
