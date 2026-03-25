@@ -274,7 +274,7 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
   const [downloading,setDownloading]=useState(false);
   const [shipments,setShipments]=useState<ShipmentWithItems[]>([]);
   const [mlCfg,setMlCfg]=useState<DBMLConfig|null>(null);
-  const [armados, setArmados] = useState<Set<number>>(() => {
+  const [armados, setArmados] = useState<Set<string | number>>(() => {
     if (typeof window === "undefined") return new Set();
     try {
       const saved = localStorage.getItem(`flex_armados_${session.id}`);
@@ -335,11 +335,11 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
     setResetting(false);
   };
 
-  const marcarArmado = (shipmentId: number) => {
-    setArmados(prev => { const next = new Set(prev); next.add(shipmentId); return next; });
+  const marcarArmado = (id: string | number) => {
+    setArmados(prev => { const next = new Set(prev); next.add(id); return next; });
   };
-  const desmarcarArmado = (shipmentId: number) => {
-    setArmados(prev => { const next = new Set(prev); next.delete(shipmentId); return next; });
+  const desmarcarArmado = (id: string | number) => {
+    setArmados(prev => { const next = new Set(prev); next.delete(id); return next; });
   };
 
   // Ruta inteligente
@@ -362,11 +362,12 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
     return null;
   }, [session, rutaOrdenada]);
 
-  // Counts
-  const totalPedidos = todayShipments.length || session.lineas.length;
+  // Counts — based on session lines, not shipments
+  const totalPedidos = session.lineas.length;
   const totalArmados = armados.size;
   const pedidosPendientesArmar = totalPedidos - totalArmados;
   const hayNuevosPorRecolectar = !allRecolectado && fase === "armado";
+  const todoCompleto = allRecolectado && totalArmados >= totalPedidos;
 
   // Cutoff
   const now = new Date();
@@ -499,7 +500,7 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
         })}
       </>)}
 
-      {/* ==================== FASE 2: ARMADO (por pedido/shipment) ==================== */}
+      {/* ==================== FASE 2: ARMADO (por linea de picking + info shipment) ==================== */}
       {fase === "armado" && (<>
         {hayNuevosPorRecolectar && (
           <div onClick={()=>setFase("recoleccion")}
@@ -518,61 +519,66 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
           )}
         </div>
 
-        {totalArmados === totalPedidos && totalPedidos > 0 && (
+        {todoCompleto && (
           <div style={{textAlign:"center",padding:20,marginBottom:12}}>
             <div style={{fontSize:48}}>🎉</div>
             <div style={{fontSize:18,fontWeight:700,color:"var(--green)",marginTop:8}}>Todos los pedidos armados!</div>
             <div style={{fontSize:12,color:"var(--txt3)",marginTop:4}}>{totalArmados} pedidos listos para despacho</div>
+            {pastCutoff && <div style={{fontSize:11,color:"var(--txt3)",marginTop:4}}>Cutoff pasado — no llegaran mas pedidos hoy</div>}
           </div>
         )}
 
-        {/* Pending orders first, then armados */}
-        {[...todayShipments].sort((a,b) => {
-          const aArm = armados.has(a.shipment_id) ? 1 : 0;
-          const bArm = armados.has(b.shipment_id) ? 1 : 0;
+        {/* Show picking lines as armado cards — match with shipment for extra info */}
+        {!todoCompleto && [...session.lineas].filter(l => l.estado === "PICKEADO").sort((a,b) => {
+          const aArm = armados.has(a.id) ? 1 : 0;
+          const bArm = armados.has(b.id) ? 1 : 0;
           return aArm - bArm;
-        }).map(ship => {
-          const isArmado = armados.has(ship.shipment_id);
-          const orderId = ship.order_ids?.[0];
+        }).map(linea => {
+          const isArmado = armados.has(linea.id);
+          const skuUp = linea.skuVenta.toUpperCase();
+          const shipMatch = shipments.find(s => s.items.some(it =>
+            (it.seller_sku?.toUpperCase() === skuUp || it.item_id?.toUpperCase() === skuUp)
+          ));
+          const orderId = shipMatch?.order_ids?.[0];
+          const comp = linea.componentes[0];
+
           return (
-            <div key={ship.shipment_id} style={{padding:14,marginBottom:8,borderRadius:10,
+            <div key={linea.id} style={{padding:14,marginBottom:8,borderRadius:10,
               background:isArmado?"#10b98110":"var(--bg2)",
               border:`1px solid ${isArmado?"#10b98133":"var(--bg3)"}`,
               opacity:isArmado?0.6:1}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
                 <div>
-                  <span style={{fontSize:10,color:"#94a3b8",fontWeight:600}}>Venta {orderId || ship.shipment_id}</span>
-                  {ship.receiver_name && <div style={{fontSize:12,fontWeight:600,marginTop:2}}>{ship.receiver_name}</div>}
-                  {ship.destination_city && <div style={{fontSize:10,color:"var(--txt3)"}}>{ship.destination_city}</div>}
+                  <span style={{fontSize:10,color:"#94a3b8",fontWeight:600}}>Pedido {linea.id}{orderId ? ` · Venta ${orderId}` : ""}</span>
+                  {shipMatch?.receiver_name && <div style={{fontSize:12,fontWeight:600,marginTop:2}}>{shipMatch.receiver_name}</div>}
+                  {shipMatch?.destination_city && <div style={{fontSize:10,color:"var(--txt3)"}}>{shipMatch.destination_city}</div>}
                 </div>
                 <div style={{display:"flex",alignItems:"center",gap:6}}>
                   {isArmado && <span style={{fontSize:18}}>✅</span>}
-                  <button onClick={(e) => { e.stopPropagation(); doDownloadLabels([ship.shipment_id]); }}
-                    style={{padding:"4px 8px",borderRadius:4,background:"#a855f722",color:"#a855f7",fontSize:10,fontWeight:700,border:"1px solid #a855f744"}}>
-                    Etiqueta
-                  </button>
+                  {shipMatch && (
+                    <button onClick={(e) => { e.stopPropagation(); doDownloadLabels([shipMatch.shipment_id]); }}
+                      style={{padding:"4px 8px",borderRadius:4,background:"#a855f722",color:"#a855f7",fontSize:10,fontWeight:700,border:"1px solid #a855f744"}}>
+                      Etiqueta
+                    </button>
+                  )}
                 </div>
               </div>
 
-              {/* Items in this shipment */}
-              {ship.items.map((item, i) => (
-                <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 10px",marginBottom:3,borderRadius:6,background:"var(--bg3)",border:"1px solid var(--bg4)"}}>
-                  <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontSize:12,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{item.title}</div>
-                    <span className="mono" style={{fontSize:10,color:"var(--txt3)"}}>{item.seller_sku}</span>
-                  </div>
-                  <span className="mono" style={{fontSize:14,fontWeight:800,color:"var(--cyan)",marginLeft:8}}>x{item.quantity}</span>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 10px",borderRadius:6,background:"var(--bg3)",border:"1px solid var(--bg4)"}}>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:12,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{comp?.nombre || linea.skuVenta}</div>
+                  <span className="mono" style={{fontSize:10,color:"var(--txt3)"}}>{linea.skuVenta}</span>
                 </div>
-              ))}
+                <span className="mono" style={{fontSize:14,fontWeight:800,color:"var(--cyan)",marginLeft:8}}>x{linea.qtyPedida}</span>
+              </div>
 
-              {ship.items.reduce((s, it) => s + it.quantity, 0) > 1 && (
+              {linea.qtyPedida > 1 && (
                 <div style={{fontSize:11,fontWeight:700,color:"var(--amber)",background:"var(--amberBg)",padding:"3px 8px",borderRadius:4,marginTop:6,textAlign:"center",border:"1px solid var(--amberBd)"}}>
-                  BULTO: {ship.items.reduce((s, it) => s + it.quantity, 0)} unidades — 1 etiqueta
+                  BULTO: {linea.qtyPedida} unidades — 1 etiqueta
                 </div>
               )}
 
-              {/* Armar / Desarmar button */}
-              <button onClick={() => isArmado ? desmarcarArmado(ship.shipment_id) : marcarArmado(ship.shipment_id)}
+              <button onClick={() => isArmado ? desmarcarArmado(linea.id) : marcarArmado(linea.id)}
                 style={{width:"100%",marginTop:8,padding:12,borderRadius:8,fontWeight:700,fontSize:13,border:"none",
                   background:isArmado?"var(--bg3)":"linear-gradient(135deg,#059669,#10b981)",
                   color:isArmado?"var(--txt3)":"#fff"}}>
@@ -581,12 +587,6 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
             </div>
           );
         })}
-
-        {todayShipments.length === 0 && (
-          <div style={{textAlign:"center",padding:20,color:"var(--txt3)",fontSize:12}}>
-            Sin shipments cargados. Refresca o espera la sincronizacion.
-          </div>
-        )}
       </>)}
     </div>
   );
