@@ -1950,13 +1950,13 @@ export default function ConciliacionPage() {
   }, [tab]);
 
   return (
-    <div className="app-admin">
+    <div className="app-admin chipax-theme">
       {/* Topbar */}
       <div className="admin-topbar">
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <Link href="/admin"><button className="back-btn">&#8592;</button></Link>
           <div>
-            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", color: "var(--cyan)", textTransform: "uppercase" }}>BANVA</div>
+            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase" }}>BANVA</div>
             <h1 style={{ fontSize: 16, fontWeight: 700, margin: 0 }}>Conciliador Tributario-Bancario</h1>
           </div>
         </div>

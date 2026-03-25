@@ -238,3 +238,114 @@ a { color: inherit; text-decoration: none; }
 .app-admin .tbl td { padding: 8px 12px; vertical-align: middle; }
 .app-admin .tbl tr:hover { background: rgba(6,182,212,0.03); }
 .app-admin .card { max-width: none; }
+
+/* ==================== Chipax Light Theme ==================== */
+.chipax-theme {
+  --cpx-teal: #4db6ac;
+  --cpx-teal-dark: #3a9e93;
+  --cpx-bg: #f5f7fa;
+  --cpx-white: #ffffff;
+  --cpx-border: #e8ecf1;
+  --cpx-txt: #2d3748;
+  --cpx-txt2: #718096;
+  --cpx-txt3: #a0aec0;
+  --cpx-hover: #f0f4f8;
+  --cpx-active-bg: #e6f7f5;
+  background: var(--cpx-bg) !important;
+  color: var(--cpx-txt) !important;
+}
+.chipax-theme .admin-topbar {
+  background: var(--cpx-teal) !important;
+  border-bottom: none !important;
+  color: #fff !important;
+}
+.chipax-theme .admin-topbar h1 { color: #fff !important; }
+.chipax-theme .admin-topbar div { color: rgba(255,255,255,0.9) !important; }
+.chipax-theme .admin-topbar .back-btn {
+  color: #fff !important;
+  border-color: rgba(255,255,255,0.3) !important;
+  background: rgba(255,255,255,0.1) !important;
+}
+.chipax-theme .admin-topbar select {
+  background: rgba(255,255,255,0.15) !important;
+  color: #fff !important;
+  border-color: rgba(255,255,255,0.3) !important;
+}
+.chipax-theme .admin-topbar button[style*="red"] {
+  background: rgba(255,255,255,0.15) !important;
+  color: #fff !important;
+  border-color: rgba(255,255,255,0.3) !important;
+}
+@media (min-width: 768px) {
+  .chipax-theme .admin-sidebar {
+    background: var(--cpx-white) !important;
+    border-right: 1px solid var(--cpx-border) !important;
+  }
+  .chipax-theme .sidebar-btn {
+    color: var(--cpx-txt2) !important;
+    font-weight: 500 !important;
+  }
+  .chipax-theme .sidebar-btn:hover {
+    background: var(--cpx-hover) !important;
+    color: var(--cpx-txt) !important;
+  }
+  .chipax-theme .sidebar-btn.active {
+    background: var(--cpx-active-bg) !important;
+    color: var(--cpx-teal) !important;
+    font-weight: 700 !important;
+  }
+  .chipax-theme .sidebar-section-btn {
+    color: var(--cpx-txt) !important;
+    font-weight: 600 !important;
+  }
+  .chipax-theme .sidebar-section-btn:hover {
+    background: var(--cpx-hover) !important;
+  }
+  .chipax-theme .sidebar-section-btn.has-active {
+    color: var(--cpx-teal) !important;
+  }
+  .chipax-theme .sidebar-chevron { color: var(--cpx-txt3) !important; }
+  .chipax-theme .sidebar-child {
+    color: var(--cpx-txt2) !important;
+  }
+}
+.chipax-theme .admin-main { background: var(--cpx-bg) !important; }
+.chipax-theme .card {
+  background: var(--cpx-white) !important;
+  border-color: var(--cpx-border) !important;
+  color: var(--cpx-txt) !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04) !important;
+}
+.chipax-theme .card-title { color: var(--cpx-txt) !important; }
+.chipax-theme .tbl th {
+  color: var(--cpx-txt2) !important;
+  background: var(--cpx-white) !important;
+  border-bottom-color: var(--cpx-border) !important;
+}
+.chipax-theme .tbl td {
+  color: var(--cpx-txt) !important;
+  border-bottom-color: var(--cpx-border) !important;
+}
+.chipax-theme .tbl tr:hover { background: var(--cpx-hover) !important; }
+.chipax-theme .form-input, .chipax-theme .form-select {
+  background: var(--cpx-white) !important;
+  border-color: var(--cpx-border) !important;
+  color: var(--cpx-txt) !important;
+}
+.chipax-theme .form-input:focus, .chipax-theme .form-select:focus {
+  border-color: var(--cpx-teal) !important;
+}
+.chipax-theme .form-label { color: var(--cpx-txt2) !important; }
+.chipax-theme .kpi {
+  background: var(--cpx-white) !important;
+  border-color: var(--cpx-border) !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04) !important;
+}
+.chipax-theme .kpi .label { color: var(--cpx-txt2) !important; }
+.chipax-theme .kpi .val { color: var(--cpx-txt) !important; }
+.chipax-theme .tab { color: var(--cpx-txt3) !important; }
+.chipax-theme .tab.active-cyan { color: var(--cpx-teal) !important; border-bottom-color: var(--cpx-teal) !important; }
+.chipax-theme .admin-mobile-tabs {
+  background: var(--cpx-white) !important;
+  border-bottom-color: var(--cpx-border) !important;
+}
