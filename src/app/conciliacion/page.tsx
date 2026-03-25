@@ -860,9 +860,11 @@ function Dashboard({ empresa, periodo, onChangePeriodo }: { empresa: DBEmpresa; 
 // ==================== RCV COMPRAS ====================
 function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: string }) {
   const [data, setData] = useState<DBRcvCompra[]>([]);
+  const [conciliaciones, setConciliaciones] = useState<DBConciliacion[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("");
   const [tipoFilter, setTipoFilter] = useState<string>("todos");
+  const [concFilter, setConcFilter] = useState<"todos" | "conciliada" | "sin_pago">("todos");
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
   const [showBheModal, setShowBheModal] = useState(false);
@@ -872,8 +874,9 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const load = useCallback(async () => {
     if (!empresa.id) return;
     setLoading(true);
+    const [conc] = await Promise.all([fetchConciliaciones(empresa.id)]);
+    setConciliaciones(conc);
     if (isAnual) {
-      // Cargar todos los meses del año
       const promises = [];
       for (let m = 1; m <= 12; m++) {
         promises.push(fetchRcvCompras(empresa.id!, `${periodo}${String(m).padStart(2, "0")}`));
@@ -939,14 +942,22 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   // Tipos disponibles para el filtro
   const tiposDisponibles = Array.from(new Set(data.map(c => String(c.tipo_doc))));
 
-  // Filtrar por texto y tipo
+  // IDs de compras conciliadas
+  const concCompraIds = new Set(conciliaciones.filter(c => c.estado === "confirmado" && c.rcv_compra_id).map(c => c.rcv_compra_id));
+
+  // Filtrar por texto, tipo y estado conciliación
   let filtered = data;
   if (tipoFilter !== "todos") filtered = filtered.filter(c => String(c.tipo_doc) === tipoFilter);
+  if (concFilter === "conciliada") filtered = filtered.filter(c => concCompraIds.has(c.id!));
+  else if (concFilter === "sin_pago") filtered = filtered.filter(c => !concCompraIds.has(c.id!));
   if (filter) filtered = filtered.filter(c =>
     (c.razon_social || "").toLowerCase().includes(filter.toLowerCase()) ||
     (c.rut_proveedor || "").includes(filter) ||
     (c.nro_doc || "").includes(filter)
   );
+
+  const totalSinPago = data.filter(c => !concCompraIds.has(c.id!)).length;
+  const totalConciliadas = data.filter(c => concCompraIds.has(c.id!)).length;
 
   const totalNeto = filtered.reduce((s, c) => s + (c.monto_neto || 0), 0);
   const totalExento = filtered.reduce((s, c) => s + (c.monto_exento || 0), 0);
@@ -1014,7 +1025,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
       </div>
 
       {/* Filtros */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
         <input className="form-input" placeholder="Buscar por proveedor, RUT o N° doc..." value={filter} onChange={e => setFilter(e.target.value)}
           style={{ fontSize: 13, flex: 1 }} />
         <select value={tipoFilter} onChange={e => setTipoFilter(e.target.value)}
@@ -1024,6 +1035,18 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
             <option key={t} value={t}>{TIPO_DOC_NAMES[t] || `Tipo ${t}`}</option>
           ))}
         </select>
+        <div style={{ display: "flex", gap: 2, background: "var(--bg3)", borderRadius: 6, padding: 2 }}>
+          {(["todos", "sin_pago", "conciliada"] as const).map(f => (
+            <button key={f} onClick={() => setConcFilter(f)}
+              style={{
+                padding: "4px 10px", borderRadius: 4, fontSize: 10, fontWeight: 600, cursor: "pointer", border: "none",
+                background: concFilter === f ? (f === "sin_pago" ? "var(--amberBg)" : f === "conciliada" ? "var(--greenBg)" : "var(--cyanBg)") : "transparent",
+                color: concFilter === f ? (f === "sin_pago" ? "var(--amber)" : f === "conciliada" ? "var(--green)" : "var(--cyan)") : "var(--txt3)",
+              }}>
+              {f === "todos" ? `Todas (${data.length})` : f === "sin_pago" ? `Sin pago (${totalSinPago})` : `Conciliadas (${totalConciliadas})`}
+            </button>
+          ))}
+        </div>
       </div>
 
       {data.length === 0 ? (
@@ -1042,7 +1065,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
             <thead>
               <tr>
                 <th>Tipo</th><th>N° Doc</th><th>RUT Proveedor</th><th>Razón Social</th><th>Fecha</th>
-                <th style={{ textAlign: "right" }}>Neto</th><th style={{ textAlign: "right" }}>IVA</th><th style={{ textAlign: "right" }}>Total</th><th>Estado</th>
+                <th style={{ textAlign: "right" }}>Neto</th><th style={{ textAlign: "right" }}>IVA</th><th style={{ textAlign: "right" }}>Total</th><th>Pago</th>
               </tr>
             </thead>
             <tbody>
@@ -1061,11 +1084,15 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                   <td className="mono" style={{ textAlign: "right", color: "var(--amber)" }}>{fmtMoney(c.monto_iva || 0)}</td>
                   <td className="mono" style={{ textAlign: "right", fontWeight: 700 }}>{fmtMoney(c.monto_total || 0)}</td>
                   <td>
-                    <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 4,
-                      background: c.estado === "REGISTRO" ? "var(--greenBg)" : c.estado === "RECLAMADO" ? "var(--redBg)" : "var(--amberBg)",
-                      color: c.estado === "REGISTRO" ? "var(--green)" : c.estado === "RECLAMADO" ? "var(--red)" : "var(--amber)" }}>
-                      {c.estado}
-                    </span>
+                    {concCompraIds.has(c.id!) ? (
+                      <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 4, background: "var(--greenBg)", color: "var(--green)" }}>
+                        CONCILIADA
+                      </span>
+                    ) : (
+                      <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 4, background: "var(--amberBg)", color: "var(--amber)" }}>
+                        SIN PAGO
+                      </span>
+                    )}
                   </td>
                 </tr>
               ))}
