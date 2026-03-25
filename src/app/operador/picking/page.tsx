@@ -367,9 +367,6 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
   const totalArmados = armados.size;
   const pedidosPendientesArmar = totalPedidos - totalArmados;
   const hayNuevosPorRecolectar = !allRecolectado && fase === "armado";
-  // Session COMPLETADA + all picked + cutoff passed = everything is done
-  const todoCompleto = (allRecolectado && totalArmados >= totalPedidos)
-    || (session.estado === "COMPLETADA" && allRecolectado && pastCutoff);
 
   // Cutoff
   const now = new Date();
@@ -384,6 +381,8 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
     : chileDay === "Sat" ? `Sabado — hasta las ${cutoffSab}:00`
     : `Lunes a Viernes — hasta las ${cutoffLV}:00`;
   const pastCutoff = cutoffHora !== null && chileHour >= cutoffHora;
+  const todoCompleto = (allRecolectado && totalArmados >= totalPedidos)
+    || (session.estado === "COMPLETADA" && allRecolectado && pastCutoff);
 
   return(
     <div>
