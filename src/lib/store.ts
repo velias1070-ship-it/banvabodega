@@ -1060,22 +1060,17 @@ export async function ubicarLinea(lineaId: string, sku: string, posicionId: stri
   }
   if (skuVenta) nota += ` [${skuVenta}]`;
 
-  // Update stock + movimiento FIRST — if these fail, do NOT update the line
+  // Update stock + movimiento atómicamente — if fails, do NOT update the line
   if (isConfigured()) {
     try {
-      await db.updateStock(sku, posicionId, qty, skuVenta);
+      await db.registrarMovimientoStock({
+        sku, posicion: posicionId, delta: qty, tipo: "entrada",
+        sku_venta: skuVenta, motivo: "recepcion",
+        operario, nota, recepcion_id: recepcionId,
+      });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       throw new Error(`Error al registrar stock de ${sku}: ${msg}. La linea NO fue marcada como ubicada.`);
-    }
-    try {
-      await db.insertMovimiento({
-        tipo: "entrada", motivo: "recepcion", sku, posicion_id: posicionId,
-        cantidad: qty, recepcion_id: recepcionId, operario, nota,
-      });
-    } catch (e: unknown) {
-      // Stock already updated — log but don't block (movimiento is secondary)
-      console.error("Movimiento insert failed (stock was updated):", e);
     }
   }
 
@@ -1218,18 +1213,11 @@ export async function ajustarLineaAdmin(
   // Auto-etiquetar si delta positivo (entrada)
   const autoSv = delta > 0 ? resolveAutoSkuVenta(sku) : null;
 
-  // Adjust stock
-  await db.updateStock(sku, posicion, delta, autoSv);
-
-  // Create adjustment movement
-  await db.insertMovimiento({
-    tipo: delta > 0 ? "entrada" : "salida",
-    motivo: "recepcion",
-    sku,
-    posicion_id: posicion,
-    cantidad: Math.abs(delta),
-    recepcion_id: recepcionId,
-    operario: "admin",
+  // Adjust stock + movimiento atómicamente
+  await db.registrarMovimientoStock({
+    sku, posicion, delta, tipo: delta > 0 ? "entrada" : "salida",
+    sku_venta: autoSv, motivo: "recepcion",
+    operario: "admin", recepcion_id: recepcionId,
     nota: `Ajuste admin: ${oldQtyUbicada} → ${newQtyUbicada} (${delta > 0 ? "+" : ""}${delta})` + (autoSv ? ` [${autoSv}]` : ""),
   });
 
@@ -1347,28 +1335,20 @@ export async function repararRecepcion(recepcionId: string, posicionDestino: str
       }
     }
 
-    // Step 2: Register missing stock
+    // Step 2: Register missing stock + movimiento atómicamente
     if (faltante > 0) {
       try {
-        await db.updateStock(l.sku, posicionDestino, faltante);
-        result.detalle += `Stock +${faltante} en ${posicionDestino}. `;
-      } catch (e: unknown) {
-        result.problema = `Error stock: ${e instanceof Error ? e.message : e}`;
-        results.push(result);
-        continue;
-      }
-
-      // Step 3: Register missing movimiento
-      try {
-        await db.insertMovimiento({
-          tipo: "entrada", motivo: "recepcion", sku: l.sku, posicion_id: posicionDestino,
-          cantidad: faltante, recepcion_id: recepcionId,
+        await db.registrarMovimientoStock({
+          sku: l.sku, posicion: posicionDestino, delta: faltante, tipo: "entrada",
+          motivo: "recepcion", recepcion_id: recepcionId,
           operario: l.operario_ubicacion || "admin-reparacion",
           nota: `Reparacion automatica — faltaban ${faltante} uds sin registrar`,
         });
-        result.detalle += `Movimiento +${faltante} registrado. `;
+        result.detalle += `Stock +${faltante} y movimiento registrados en ${posicionDestino}. `;
       } catch (e: unknown) {
-        result.detalle += `Movimiento falló (stock sí se registró): ${e instanceof Error ? e.message : e}. `;
+        result.problema = `Error reparación: ${e instanceof Error ? e.message : e}`;
+        results.push(result);
+        continue;
       }
     } else if (stockLinea === 0 && totalMovido > 0) {
       // Movements exist but stock is 0 — re-register stock

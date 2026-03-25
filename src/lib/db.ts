@@ -68,7 +68,7 @@ export interface DBStock {
 
 export interface DBMovimiento {
   id?: string;
-  tipo: "entrada" | "salida" | "transferencia";
+  tipo: "entrada" | "salida" | "transferencia" | "ajuste";
   motivo: string;
   sku: string;
   posicion_id: string;
@@ -329,6 +329,33 @@ export async function insertMovimiento(m: Omit<DBMovimiento, "id" | "created_at"
   const sb = getSupabase(); if (!sb) return;
   const { error } = await sb.from("movimientos").insert({ ...m, sku: (m.sku || "").toUpperCase().trim() });
   if (error) throw new Error(`insertMovimiento failed for ${m.sku}: ${error.message}`);
+}
+
+export async function registrarMovimientoStock(params: {
+  sku: string;
+  posicion: string;
+  delta: number;
+  tipo: DBMovimiento["tipo"];
+  sku_venta?: string | null;
+  motivo?: string | null;
+  operario?: string;
+  nota?: string;
+  recepcion_id?: string | null;
+}): Promise<string | null> {
+  const sb = getSupabase(); if (!sb) return null;
+  const { data, error } = await sb.rpc("registrar_movimiento_stock", {
+    p_sku: (params.sku || "").toUpperCase().trim(),
+    p_posicion: params.posicion,
+    p_delta: params.delta,
+    p_tipo: params.tipo,
+    p_sku_venta: params.sku_venta ? params.sku_venta.toUpperCase().trim() : null,
+    p_motivo: params.motivo ?? null,
+    p_operario: params.operario ?? "",
+    p_nota: params.nota ?? "",
+    p_recepcion_id: params.recepcion_id ?? null,
+  });
+  if (error) throw new Error(`registrarMovimientoStock failed for ${params.sku}: ${error.message}`);
+  return data as string | null;
 }
 
 export async function updateMovimiento(id: string, fields: Partial<DBMovimiento>) {
