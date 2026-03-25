@@ -5,7 +5,6 @@ import {
   updateMovimientoBanco,
   insertConciliacionItems,
   categorizarMovimiento,
-  fetchProveedorCuentas,
   upsertProveedorCuenta,
 } from "@/lib/db";
 import type {
@@ -17,7 +16,7 @@ const fmtMoney = (n: number) => n.toLocaleString("es-CL", { style: "currency", c
 const fmtDate = (d: string | null) => d ? new Date(d + "T12:00:00").toLocaleDateString("es-CL", { day: "2-digit", month: "2-digit", year: "numeric" }) : "—";
 
 const TIPO_DOC: Record<number | string, string> = {
-  33: "FAC", 34: "FAC-EX", 39: "BOL", 41: "BOL-EX",
+  33: "FAC-EL", 34: "FAC-EX", 39: "BOL", 41: "BOL-EX",
   46: "FC", 52: "GUIA", 56: "ND", 61: "NC", 71: "BHE",
 };
 
@@ -25,6 +24,7 @@ interface DocSeleccionado {
   id: string;
   tipo: "rcv_compra" | "rcv_venta";
   tipo_doc: string;
+  tipo_doc_num: number | string;
   nro: string;
   rut: string;
   razon_social: string;
@@ -56,20 +56,21 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
   const totalAsignado = selected.reduce((s, d) => s + d.monto_aplicado, 0);
   const saldoPorAsignar = movAbs - totalAsignado;
 
-  // IDs ya conciliados (de otras conciliaciones)
+  // IDs ya conciliados
   const concCompraIds = new Set(conciliaciones.filter(c => c.estado === "confirmado" && c.rcv_compra_id).map(c => c.rcv_compra_id));
   const concVentaIds = new Set(conciliaciones.filter(c => c.estado === "confirmado" && c.rcv_venta_id).map(c => c.rcv_venta_id));
   const selectedIds = new Set(selected.map(d => d.id));
 
   // Documentos disponibles
   const docsDisponibles = useMemo(() => {
-    const docs: { id: string; tipo: "rcv_compra" | "rcv_venta"; tipo_doc: string; nro: string; rut: string; razon_social: string; fecha: string; monto_total: number }[] = [];
+    const docs: { id: string; tipo: "rcv_compra" | "rcv_venta"; tipo_doc: string; tipo_doc_num: number | string; nro: string; rut: string; razon_social: string; fecha: string; monto_total: number }[] = [];
 
     if (tipoFiltro !== "ventas") {
       for (const c of compras) {
         if (concCompraIds.has(c.id!) || selectedIds.has(c.id!)) continue;
         docs.push({
           id: c.id!, tipo: "rcv_compra", tipo_doc: TIPO_DOC[c.tipo_doc] || String(c.tipo_doc),
+          tipo_doc_num: c.tipo_doc,
           nro: c.nro_doc || "", rut: c.rut_proveedor || "", razon_social: c.razon_social || "",
           fecha: c.fecha_docto || "", monto_total: c.monto_total || 0,
         });
@@ -80,53 +81,42 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
         if (concVentaIds.has(v.id!) || selectedIds.has(v.id!)) continue;
         docs.push({
           id: v.id!, tipo: "rcv_venta", tipo_doc: TIPO_DOC[v.tipo_doc] || String(v.tipo_doc),
+          tipo_doc_num: v.tipo_doc,
           nro: v.folio || v.nro || "", rut: v.rut_emisor || "", razon_social: "",
           fecha: v.fecha_docto || "", monto_total: v.monto_total || 0,
         });
       }
     }
 
-    // Filtro de búsqueda
     if (search) {
       const q = search.toLowerCase();
-      return docs.filter(d =>
-        d.razon_social.toLowerCase().includes(q) ||
-        d.rut.includes(q) ||
-        d.nro.includes(q)
-      );
+      return docs.filter(d => d.razon_social.toLowerCase().includes(q) || d.rut.includes(q) || d.nro.includes(q));
     }
 
-    // Ordenar por monto más cercano al saldo
     return docs.sort((a, b) => {
-      const diffA = Math.abs(a.monto_total - saldoPorAsignar);
-      const diffB = Math.abs(b.monto_total - saldoPorAsignar);
+      const diffA = Math.abs(a.monto_total - (saldoPorAsignar > 0 ? saldoPorAsignar : movAbs));
+      const diffB = Math.abs(b.monto_total - (saldoPorAsignar > 0 ? saldoPorAsignar : movAbs));
       return diffA - diffB;
     });
-  }, [compras, ventas, tipoFiltro, search, concCompraIds, concVentaIds, selectedIds, saldoPorAsignar]);
+  }, [compras, ventas, tipoFiltro, search, concCompraIds, concVentaIds, selectedIds, saldoPorAsignar, movAbs]);
 
-  // Seleccionar documento
   const handleSelect = (doc: typeof docsDisponibles[0]) => {
-    const montoAplicar = Math.min(doc.monto_total, saldoPorAsignar);
-    setSelected(prev => [...prev, { ...doc, monto_aplicado: montoAplicar > 0 ? montoAplicar : doc.monto_total }]);
+    const montoAplicar = saldoPorAsignar > 0 ? Math.min(doc.monto_total, saldoPorAsignar) : doc.monto_total;
+    setSelected(prev => [...prev, { ...doc, monto_aplicado: montoAplicar }]);
   };
 
-  // Quitar documento
   const handleRemove = (id: string) => {
     setSelected(prev => prev.filter(d => d.id !== id));
   };
 
-  // Editar monto aplicado
   const handleEditMonto = (id: string, monto: number) => {
     setSelected(prev => prev.map(d => d.id === id ? { ...d, monto_aplicado: monto } : d));
   };
 
-  // Guardar
   const handleSave = async () => {
     if (selected.length === 0) return;
     setSaving(true);
-
     try {
-      // 1. Crear conciliación principal
       const c: DBConciliacion = {
         empresa_id: empresaId,
         movimiento_banco_id: mov.id!,
@@ -141,20 +131,16 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
       };
       await upsertConciliacion(c);
 
-      // 2. Obtener el ID de la conciliación creada (buscar la más reciente)
       const { getSupabase } = await import("@/lib/supabase");
       const sb = getSupabase();
       let concId = "";
       if (sb) {
         const { data } = await sb.from("conciliaciones").select("id")
-          .eq("movimiento_banco_id", mov.id!)
-          .eq("estado", "confirmado")
-          .order("created_at", { ascending: false })
-          .limit(1);
+          .eq("movimiento_banco_id", mov.id!).eq("estado", "confirmado")
+          .order("created_at", { ascending: false }).limit(1);
         concId = data?.[0]?.id || "";
       }
 
-      // 3. Crear items si hay múltiples documentos
       if (concId && selected.length > 0) {
         const items: DBConciliacionItem[] = selected.map(d => ({
           conciliacion_id: concId,
@@ -165,10 +151,8 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
         await insertConciliacionItems(items);
       }
 
-      // 4. Marcar movimiento como conciliado
       await updateMovimientoBanco(mov.id!, { estado_conciliacion: "conciliado" } as Partial<DBMovimientoBanco>);
 
-      // 5. Asignar cuenta contable si el proveedor tiene una
       if (selected.length > 0 && selected[0].rut) {
         const pc = provCuentas.find(p => p.rut_proveedor === selected[0].rut);
         if (pc?.categoria_cuenta_id && !pc.cuenta_variable) {
@@ -187,137 +171,169 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center" }}
       onClick={e => { if (e.target === e.currentTarget && !saving) onClose(); }}>
-      <div style={{ width: "95%", maxWidth: 900, maxHeight: "90vh", background: "var(--bg2)", borderRadius: 16, border: "1px solid var(--bg4)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div style={{ width: "95%", maxWidth: 1000, maxHeight: "92vh", background: "var(--bg2)", borderRadius: 16, border: "1px solid var(--bg4)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
 
         {/* Header */}
-        <div style={{ padding: "16px 20px", background: "var(--bg3)", borderBottom: "1px solid var(--bg4)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ padding: "14px 20px", background: "var(--bg3)", borderBottom: "1px solid var(--bg4)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>Conciliar</h3>
-          <button onClick={onClose} disabled={saving}
-            style={{ background: "none", border: "none", color: "var(--txt3)", fontSize: 20, cursor: "pointer" }}>✕</button>
+          <button onClick={onClose} disabled={saving} style={{ background: "none", border: "none", color: "var(--txt3)", fontSize: 20, cursor: "pointer" }}>✕</button>
         </div>
 
-        {/* Top: Movimiento + Documentos seleccionados */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, padding: 16 }}>
-          {/* Movimiento bancario */}
-          <div>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--txt3)", textTransform: "uppercase", marginBottom: 6 }}>Movimiento Bancario</div>
-            <div className="card" style={{ padding: 12 }}>
+        {/* 3 columnas: Movimiento → Montos → Facturas */}
+        <div style={{ display: "grid", gridTemplateColumns: "280px 1fr 320px", gap: 0, flex: 1, overflow: "hidden" }}>
+
+          {/* IZQUIERDA: Movimiento Bancario */}
+          <div style={{ padding: 16, borderRight: "1px solid var(--bg4)", display: "flex", flexDirection: "column" }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--txt3)", textTransform: "uppercase", marginBottom: 8 }}>Movimiento Bancario</div>
+            <div className="card" style={{ padding: 12, flex: 0 }}>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
                 <span className="mono" style={{ fontSize: 11 }}>{fmtDate(mov.fecha)}</span>
-                <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 4, background: mov.monto < 0 ? "var(--redBg)" : "var(--greenBg)", color: mov.monto < 0 ? "var(--red)" : "var(--green)", fontWeight: 600 }}>
+                <span style={{ fontSize: 9, padding: "2px 6px", borderRadius: 4, background: mov.monto < 0 ? "var(--redBg)" : "var(--greenBg)", color: mov.monto < 0 ? "var(--red)" : "var(--green)", fontWeight: 600 }}>
                   {mov.monto < 0 ? "Egreso" : "Ingreso"}
                 </span>
               </div>
-              <div style={{ fontSize: 12, marginBottom: 4 }}>{mov.descripcion || "—"}</div>
-              <div className="mono" style={{ fontSize: 22, fontWeight: 800 }}>{fmtMoney(movAbs)}</div>
-              <div style={{ marginTop: 8, fontSize: 12, fontWeight: 600, color: saldoPorAsignar === 0 ? "var(--green)" : "var(--amber)" }}>
-                Saldo por asignar: {fmtMoney(Math.max(0, saldoPorAsignar))}
-              </div>
+              <div style={{ fontSize: 12, marginBottom: 6, color: "var(--txt2)" }}>{mov.descripcion || "—"}</div>
+              <div className="mono" style={{ fontSize: 24, fontWeight: 800 }}>{fmtMoney(movAbs)}</div>
+              <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 4 }}>{mov.banco}</div>
             </div>
+            <div style={{
+              marginTop: 12, padding: "8px 12px", borderRadius: 8, textAlign: "center",
+              fontSize: 13, fontWeight: 700,
+              background: saldoPorAsignar === 0 ? "var(--greenBg)" : saldoPorAsignar < 0 ? "var(--redBg)" : "var(--amberBg)",
+              color: saldoPorAsignar === 0 ? "var(--green)" : saldoPorAsignar < 0 ? "var(--red)" : "var(--amber)",
+            }}>
+              Saldo por asignar {fmtMoney(Math.max(0, saldoPorAsignar))} {saldoPorAsignar === 0 && "✓"}
+            </div>
+
+            {/* Nota */}
+            <input value={nota} onChange={e => setNota(e.target.value)} placeholder="Nota opcional..."
+              style={{ marginTop: 12, width: "100%", padding: "6px 8px", fontSize: 11, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 6, boxSizing: "border-box" }} />
+
+            {/* Botón guardar */}
+            <button onClick={handleSave} disabled={selected.length === 0 || saving}
+              className="scan-btn green" style={{ marginTop: 12, width: "100%", padding: "10px 0", fontSize: 13, opacity: selected.length === 0 ? 0.5 : 1 }}>
+              {saving ? "Guardando..." : "Guardar conciliación"}
+            </button>
           </div>
 
-          {/* Documentos seleccionados */}
-          <div>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--txt3)", textTransform: "uppercase", marginBottom: 6 }}>Documentos de respaldo</div>
-            <div className="card" style={{ padding: 12, minHeight: 100 }}>
-              {selected.length === 0 ? (
-                <div style={{ color: "var(--txt3)", fontSize: 12, textAlign: "center", padding: 20 }}>
-                  Selecciona documentos abajo para conciliar
-                </div>
-              ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  {selected.map(d => (
-                    <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", borderRadius: 6, background: "var(--bg3)" }}>
-                      <span style={{ fontSize: 9, fontWeight: 600, padding: "1px 4px", borderRadius: 3, background: "var(--cyanBg)", color: "var(--cyan)" }}>
-                        {d.tipo_doc} {d.nro}
-                      </span>
-                      <span style={{ fontSize: 10, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {d.razon_social || d.rut}
-                      </span>
-                      <input type="number" value={d.monto_aplicado} onChange={e => handleEditMonto(d.id, Number(e.target.value))}
-                        className="mono" style={{ width: 90, padding: "2px 4px", fontSize: 11, textAlign: "right", background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 4, color: "var(--txt)" }} />
-                      <button onClick={() => handleRemove(d.id)}
-                        style={{ background: "none", border: "none", color: "var(--red)", cursor: "pointer", fontSize: 14, padding: 0 }}>✕</button>
-                    </div>
-                  ))}
-                  <div className="mono" style={{ textAlign: "right", fontSize: 11, fontWeight: 600, color: "var(--txt3)", marginTop: 4 }}>
-                    Total: {fmtMoney(totalAsignado)}
+          {/* CENTRO: Montos a asignar (conectores) */}
+          <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 8, justifyContent: selected.length > 0 ? "flex-start" : "center", alignItems: "center", overflow: "auto" }}>
+            {selected.length === 0 ? (
+              <div style={{ textAlign: "center", color: "var(--txt3)", fontSize: 12 }}>
+                <div style={{ fontSize: 28, marginBottom: 8, opacity: 0.3 }}>→</div>
+                Selecciona facturas de la derecha
+              </div>
+            ) : selected.map(d => (
+              <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%" }}>
+                <div style={{ textAlign: "center", flex: 1 }}>
+                  <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 4 }}>Monto a asignar</div>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
+                    <span style={{ fontSize: 12, color: "var(--txt3)" }}>$</span>
+                    <input type="text" value={d.monto_aplicado.toLocaleString("es-CL")}
+                      onChange={e => {
+                        const val = parseInt(e.target.value.replace(/\D/g, "")) || 0;
+                        handleEditMonto(d.id, val);
+                      }}
+                      className="mono"
+                      style={{ width: 110, padding: "6px 8px", fontSize: 14, fontWeight: 700, textAlign: "right", background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 6 }} />
                   </div>
                 </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Nota opcional */}
-        <div style={{ padding: "0 16px 8px" }}>
-          <input value={nota} onChange={e => setNota(e.target.value)} placeholder="Nota opcional..."
-            style={{ width: "100%", padding: "6px 10px", fontSize: 11, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 6 }} />
-        </div>
-
-        {/* Botón guardar */}
-        <div style={{ padding: "0 16px 12px", display: "flex", gap: 8, justifyContent: "center" }}>
-          <button onClick={handleSave} disabled={selected.length === 0 || saving}
-            className="scan-btn green" style={{ padding: "8px 24px", fontSize: 12, opacity: selected.length === 0 ? 0.5 : 1 }}>
-            {saving ? "Guardando..." : saldoPorAsignar === 0 ? "Guardar conciliación" : `Guardar (saldo: ${fmtMoney(saldoPorAsignar)})`}
-          </button>
-        </div>
-
-        {/* Filtros + lista de documentos */}
-        <div style={{ borderTop: "1px solid var(--bg4)", padding: "12px 16px 0", flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-          <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
-            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar por RUT, razón social, N° doc..."
-              style={{ flex: 1, padding: "6px 10px", fontSize: 11, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 6 }} />
-            <div style={{ display: "flex", gap: 2, background: "var(--bg3)", borderRadius: 6, padding: 2 }}>
-              {(["compras", "ventas", "todos"] as const).map(f => (
-                <button key={f} onClick={() => setTipoFiltro(f)}
-                  style={{
-                    padding: "3px 10px", borderRadius: 4, fontSize: 10, fontWeight: 600, cursor: "pointer", border: "none",
-                    background: tipoFiltro === f ? "var(--cyanBg)" : "transparent",
-                    color: tipoFiltro === f ? "var(--cyan)" : "var(--txt3)",
-                  }}>
-                  {f === "compras" ? "Facturas Compra" : f === "ventas" ? "Facturas Venta" : "Todos"}
-                </button>
-              ))}
-            </div>
+                <span style={{ fontSize: 16, color: "var(--txt3)" }}>→</span>
+              </div>
+            ))}
           </div>
 
-          {/* Tabla de documentos */}
-          <div style={{ flex: 1, overflowY: "auto", paddingBottom: 12 }}>
-            <table className="tbl" style={{ fontSize: 11 }}>
-              <thead>
-                <tr>
-                  <th>Saldo</th><th>Monto</th><th>Fecha</th><th>Tipo</th><th>Proveedor/Cliente</th><th>RUT</th><th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {docsDisponibles.slice(0, 50).map(d => (
-                  <tr key={d.id} style={{ background: Math.abs(d.monto_total - saldoPorAsignar) < 100 ? "var(--greenBg)" : "transparent" }}>
-                    <td className="mono" style={{ fontWeight: 700 }}>{fmtMoney(d.monto_total)}</td>
-                    <td className="mono">{fmtMoney(d.monto_total)}</td>
-                    <td className="mono">{fmtDate(d.fecha)}</td>
-                    <td>
-                      <span style={{ fontSize: 9, fontWeight: 600, padding: "1px 6px", borderRadius: 3, background: d.tipo === "rcv_compra" ? "var(--redBg)" : "var(--greenBg)", color: d.tipo === "rcv_compra" ? "var(--red)" : "var(--green)" }}>
-                        {d.tipo_doc} {d.nro}
-                      </span>
-                    </td>
-                    <td style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {d.razon_social || "—"}
-                    </td>
-                    <td className="mono" style={{ fontSize: 10 }}>{d.rut}</td>
-                    <td>
-                      <button onClick={() => handleSelect(d)}
-                        style={{ padding: "3px 12px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: "var(--amberBg)", color: "var(--amber)", border: "none", cursor: "pointer" }}>
-                        Seleccionar
-                      </button>
-                    </td>
+          {/* DERECHA: Documentos de respaldo (seleccionados + lista) */}
+          <div style={{ borderLeft: "1px solid var(--bg4)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--txt3)", textTransform: "uppercase", padding: "12px 12px 8px" }}>Documentos de respaldo</div>
+
+            {/* Facturas seleccionadas */}
+            {selected.length > 0 && (
+              <div style={{ padding: "0 12px 8px", borderBottom: "1px solid var(--bg4)" }}>
+                {selected.map(d => {
+                  const saldoPorPagar = d.monto_total - d.monto_aplicado;
+                  return (
+                    <div key={d.id} style={{ padding: "8px 0", borderBottom: "1px solid var(--bg4)" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                        <div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                            <span className="mono" style={{ fontSize: 10 }}>{fmtDate(d.fecha)}</span>
+                            <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 3, background: "var(--redBg)", color: "var(--red)" }}>
+                              {d.tipo_doc} {d.nro}
+                            </span>
+                          </div>
+                          <div style={{ fontSize: 11, fontWeight: 600 }}>{d.razon_social || d.rut}</div>
+                          <div className="mono" style={{ fontSize: 10, color: "var(--txt3)" }}>{d.rut}</div>
+                        </div>
+                        <div style={{ textAlign: "right" }}>
+                          <button onClick={() => handleRemove(d.id)}
+                            style={{ background: "none", border: "none", color: "var(--txt3)", cursor: "pointer", fontSize: 14 }}>✕</button>
+                          <div className="mono" style={{ fontSize: 16, fontWeight: 800 }}>{fmtMoney(d.monto_total)}</div>
+                        </div>
+                      </div>
+                      <div style={{ textAlign: "right", fontSize: 11, fontWeight: 600, marginTop: 2, color: saldoPorPagar === 0 ? "var(--green)" : "var(--cyan)" }}>
+                        Saldo por pagar {fmtMoney(Math.max(0, saldoPorPagar))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Buscador + filtros */}
+            <div style={{ padding: "8px 12px", display: "flex", gap: 6, alignItems: "center" }}>
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar RUT, nombre, N°..."
+                style={{ flex: 1, padding: "5px 8px", fontSize: 10, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 4 }} />
+              <select value={tipoFiltro} onChange={e => setTipoFiltro(e.target.value as typeof tipoFiltro)}
+                style={{ padding: "5px 6px", fontSize: 10, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 4 }}>
+                <option value="compras">Compras</option>
+                <option value="ventas">Ventas</option>
+                <option value="todos">Todos</option>
+              </select>
+            </div>
+
+            {/* Lista de facturas */}
+            <div style={{ flex: 1, overflowY: "auto", padding: "0 12px 12px" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+                <thead>
+                  <tr style={{ borderBottom: "1px solid var(--bg4)" }}>
+                    <th style={{ textAlign: "left", padding: "4px 0", color: "var(--txt3)", fontWeight: 600 }}>Saldo</th>
+                    <th style={{ textAlign: "left", padding: "4px 0", color: "var(--txt3)", fontWeight: 600 }}>Fecha</th>
+                    <th style={{ textAlign: "left", padding: "4px 0", color: "var(--txt3)", fontWeight: 600 }}>Tipo</th>
+                    <th style={{ textAlign: "left", padding: "4px 0", color: "var(--txt3)", fontWeight: 600 }}>Descripción</th>
+                    <th></th>
                   </tr>
-                ))}
-                {docsDisponibles.length === 0 && (
-                  <tr><td colSpan={7} style={{ textAlign: "center", padding: 20, color: "var(--txt3)" }}>Sin documentos disponibles</td></tr>
-                )}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {docsDisponibles.slice(0, 50).map(d => {
+                    const isMatch = Math.abs(d.monto_total - saldoPorAsignar) < 100 && saldoPorAsignar > 0;
+                    return (
+                      <tr key={d.id} style={{ borderBottom: "1px solid var(--bg4)", background: isMatch ? "var(--greenBg)" : "transparent" }}>
+                        <td className="mono" style={{ padding: "6px 0", fontWeight: 700 }}>{fmtMoney(d.monto_total)}</td>
+                        <td className="mono" style={{ padding: "6px 0" }}>{fmtDate(d.fecha)}</td>
+                        <td>
+                          <span style={{ fontSize: 8, fontWeight: 700, padding: "1px 4px", borderRadius: 3, background: d.tipo === "rcv_compra" ? "var(--redBg)" : "var(--greenBg)", color: d.tipo === "rcv_compra" ? "var(--red)" : "var(--green)" }}>
+                            {d.tipo_doc} {d.nro}
+                          </span>
+                        </td>
+                        <td style={{ maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", padding: "6px 4px" }}>
+                          {d.razon_social || d.rut || "—"}
+                        </td>
+                        <td style={{ textAlign: "right" }}>
+                          <button onClick={() => handleSelect(d)}
+                            style={{ padding: "2px 8px", borderRadius: 4, fontSize: 9, fontWeight: 600, background: "var(--amberBg)", color: "var(--amber)", border: "none", cursor: "pointer" }}>
+                            Seleccionar
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {docsDisponibles.length === 0 && (
+                    <tr><td colSpan={5} style={{ textAlign: "center", padding: 20, color: "var(--txt3)" }}>Sin documentos</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>
