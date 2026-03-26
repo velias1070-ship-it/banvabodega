@@ -1794,14 +1794,24 @@ export async function syncFlexPickingSession(): Promise<{ created: boolean; upda
     doneQtyBySku.set(key, (doneQtyBySku.get(key) || 0) + l.qtyPedida);
   }
 
-  const newLineas: typeof lineas = [];
+  // Accumulate total needed per SKU from shipments
+  const neededBySku = new Map<string, number>();
   for (const l of lineas) {
     const key = l.skuVenta.toUpperCase();
+    neededBySku.set(key, (neededBySku.get(key) || 0) + l.qtyPedida);
+  }
+
+  // Compare totals and add extra lines
+  const newLineas: typeof lineas = [];
+  for (const [key, totalNeeded] of Array.from(neededBySku.entries())) {
     const alreadyDone = doneQtyBySku.get(key) || 0;
-    if (l.qtyPedida > alreadyDone) {
-      const extra = l.qtyPedida - alreadyDone;
-      newLineas.push({ ...l, qtyPedida: extra, componentes: l.componentes.map(c => ({ ...c, unidades: extra })) });
-      doneQtyBySku.set(key, l.qtyPedida);
+    if (totalNeeded > alreadyDone) {
+      const extra = totalNeeded - alreadyDone;
+      // Find the original line to use as template
+      const template = lineas.find(l => l.skuVenta.toUpperCase() === key);
+      if (template) {
+        newLineas.push({ ...template, qtyPedida: extra, componentes: template.componentes.map(c => ({ ...c, unidades: extra })) });
+      }
     }
   }
 
