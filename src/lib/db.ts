@@ -255,6 +255,31 @@ export async function deletePosicion(id: string) {
   await sb.from("posiciones").delete().eq("id", id);
 }
 
+// ==================== AUDIT LOG ====================
+export async function auditLog(accion: string, params: {
+  entidad?: string;
+  entidad_id?: string;
+  params?: Record<string, unknown>;
+  resultado?: Record<string, unknown>;
+  operario?: string;
+  error?: string;
+}) {
+  try {
+    const sb = getSupabase(); if (!sb) return;
+    await sb.from("audit_log").insert({
+      accion,
+      entidad: params.entidad ?? null,
+      entidad_id: params.entidad_id ?? null,
+      params: params.params ?? null,
+      resultado: params.resultado ?? null,
+      operario: params.operario ?? "",
+      error: params.error ?? null,
+    });
+  } catch {
+    // Never block on audit failures
+  }
+}
+
 // ==================== STOCK ====================
 export async function fetchStock(): Promise<DBStock[]> {
   const sb = getSupabase(); if (!sb) return [];

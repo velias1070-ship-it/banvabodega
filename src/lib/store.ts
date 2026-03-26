@@ -1038,6 +1038,11 @@ export async function contarLinea(lineaId: string, qtyCaja: number, operario: st
     qty_recibida: newQtyRecibida, estado: "CONTADA",
     operario_conteo: operario, ts_conteo: new Date().toISOString(),
   });
+  await db.auditLog("contarLinea", {
+    entidad: "recepcion_linea", entidad_id: lineaId, operario,
+    params: { sku: linea?.sku, recepcionId, qtyCaja },
+    resultado: { prevRecibida, newQtyRecibida },
+  });
 }
 
 // Etiquetar línea: operario marca unidades etiquetadas
@@ -1047,6 +1052,10 @@ export async function etiquetarLinea(lineaId: string, qtyEtiquetada: number, ope
     qty_etiquetada: qtyEtiquetada, estado,
     operario_etiquetado: operario,
     ...(estado === "ETIQUETADA" ? { ts_etiquetado: new Date().toISOString() } : {}),
+  });
+  await db.auditLog("etiquetarLinea", {
+    entidad: "recepcion_linea", entidad_id: lineaId, operario,
+    params: { qtyEtiquetada, totalLinea, estado },
   });
 }
 
@@ -1062,6 +1071,12 @@ export async function ubicarLinea(lineaId: string, sku: string, posicionId: stri
   }
   if (skuVenta) nota += ` [${skuVenta}]`;
 
+  // Audit: log the call params BEFORE doing anything
+  await db.auditLog("ubicarLinea", {
+    entidad: "recepcion_linea", entidad_id: lineaId, operario,
+    params: { sku, posicionId, qty, recepcionId, skuVenta, folio: opts?.folio },
+  });
+
   // Update stock + movimiento atómicamente — if fails, do NOT update the line
   if (isConfigured()) {
     try {
@@ -1072,6 +1087,10 @@ export async function ubicarLinea(lineaId: string, sku: string, posicionId: stri
       });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
+      await db.auditLog("ubicarLinea:error", {
+        entidad: "recepcion_linea", entidad_id: lineaId, operario,
+        params: { sku, posicionId, qty }, error: msg,
+      });
       throw new Error(`Error al registrar stock de ${sku}: ${msg}. La linea NO fue marcada como ubicada.`);
     }
   }
@@ -1089,7 +1108,8 @@ export async function ubicarLinea(lineaId: string, sku: string, posicionId: stri
   const lineas = await db.fetchRecepcionLineas(recepcionId);
   const linea = lineas.find(l => l.id === lineaId);
   if (!linea) return;
-  const newQtyUbicada = (linea.qty_ubicada || 0) + qty;
+  const prevQtyUbicada = linea.qty_ubicada || 0;
+  const newQtyUbicada = prevQtyUbicada + qty;
   const qtyTotal = linea.qty_recibida || linea.qty_factura || 0;
 
   const allLocated = newQtyUbicada >= qtyTotal && qtyTotal > 0;
@@ -1106,6 +1126,12 @@ export async function ubicarLinea(lineaId: string, sku: string, posicionId: stri
     estado: nextEstado,
     operario_ubicacion: operario,
     ...extraFields,
+  });
+
+  // Audit: log result with before/after
+  await db.auditLog("ubicarLinea:ok", {
+    entidad: "recepcion_linea", entidad_id: lineaId, operario,
+    resultado: { sku, posicionId, qty, prevQtyUbicada, newQtyUbicada, qtyTotal, estado: nextEstado },
   });
 }
 
@@ -1199,6 +1225,11 @@ export async function ajustarLineaAdmin(
 ) {
   const delta = newQtyUbicada - oldQtyUbicada;
   if (delta === 0) return;
+
+  await db.auditLog("ajustarLineaAdmin", {
+    entidad: "recepcion_linea", entidad_id: lineaId, operario: "admin",
+    params: { sku, recepcionId, oldQtyUbicada, newQtyUbicada, delta },
+  });
 
   // Find the position used in the original movements for this SKU+recepcion
   const movimientos = await db.fetchMovimientosByRecepcion(recepcionId);
@@ -2110,11 +2141,20 @@ export async function pickearComponente(
   sessionId: string, lineaId: string, compIdx: number, operario: string,
   _session: db.DBPickingSession, skuVenta?: string
 ): Promise<boolean> {
+  await db.auditLog("pickearComponente", {
+    entidad: "picking_session", entidad_id: sessionId, operario,
+    params: { lineaId, compIdx, skuVenta, tipo: _session.tipo },
+  });
+
   // Read fresh session from DB to avoid stale state overwrites
   const sessions = await db.getActivePickingSessions();
   const freshSession = sessions.find(s => s.id === sessionId);
   if (!freshSession) {
     console.warn("[Picking] Could not read fresh session, using FALLBACK");
+    await db.auditLog("pickearComponente:fallback", {
+      entidad: "picking_session", entidad_id: sessionId, operario,
+      params: { lineaId, compIdx, reason: "fresh_session_not_found" },
+    });
     return pickearComponenteFallback(sessionId, lineaId, compIdx, operario, _session);
   }
 
@@ -2155,6 +2195,11 @@ export async function pickearComponente(
       motivo: "venta_flex", operario,
     });
   }
+
+  await db.auditLog("pickearComponente:ok", {
+    entidad: "picking_session", entidad_id: sessionId, operario,
+    resultado: { lineaId, compIdx, sku: comp.skuOrigen, qty: comp.unidades, posicion: comp.posicion, skuVenta: linea.skuVenta, allDone },
+  });
 
   if (allDone && sessionId) {
     import("./agents-triggers").then(m => m.dispararTrigger("picking_completado", { session_id: sessionId, tipo: "flex" })).catch(() => {});
@@ -2238,6 +2283,11 @@ export async function pickearLineaFull(
   sessionId: string, lineaId: string, operario: string,
   _session: db.DBPickingSession, skuVenta?: string
 ): Promise<boolean> {
+  await db.auditLog("pickearLineaFull", {
+    entidad: "picking_session", entidad_id: sessionId, operario,
+    params: { lineaId, skuVenta },
+  });
+
   // Read fresh session from DB to avoid stale state overwrites
   const sessions = await db.getActivePickingSessions();
   const freshSession = sessions.find(s => s.id === sessionId);
@@ -2293,6 +2343,11 @@ export async function pickearLineaFull(
       motivo: "envio_full", operario,
     });
   }
+
+  await db.auditLog("pickearLineaFull:ok", {
+    entidad: "picking_session", entidad_id: sessionId, operario,
+    resultado: { lineaId, sku: comp.skuOrigen, qty: comp.unidades, posicion: comp.posicion, skuVenta: linea.skuVenta, sessionDone },
+  });
 
   if (sessionDone) {
     import("./agents-triggers").then(m => m.dispararTrigger("picking_completado", { session_id: sessionId, tipo: "envio_full" })).catch(() => {});
