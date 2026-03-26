@@ -1104,12 +1104,16 @@ export async function ubicarLinea(lineaId: string, sku: string, posicionId: stri
   if (!_cache.stockDetalle[sku][sv]) _cache.stockDetalle[sku][sv] = {};
   _cache.stockDetalle[sku][sv][posicionId] = (_cache.stockDetalle[sku][sv][posicionId] || 0) + qty;
 
-  // Fetch current line to calculate new qty_ubicada (read closest to write to minimize race window)
+  // Derive qty_ubicada from movimientos (single source of truth)
   const lineas = await db.fetchRecepcionLineas(recepcionId);
   const linea = lineas.find(l => l.id === lineaId);
   if (!linea) return;
   const prevQtyUbicada = linea.qty_ubicada || 0;
-  const newQtyUbicada = prevQtyUbicada + qty;
+  const sb = db.getSupabase();
+  const { data: calcResult } = sb
+    ? await sb.rpc("calcular_qty_ubicada", { p_recepcion_id: recepcionId, p_sku: sku })
+    : { data: null };
+  const newQtyUbicada = (calcResult as number) ?? (prevQtyUbicada + qty);
   const qtyTotal = linea.qty_recibida || linea.qty_factura || 0;
 
   const allLocated = newQtyUbicada >= qtyTotal && qtyTotal > 0;
@@ -1128,11 +1132,29 @@ export async function ubicarLinea(lineaId: string, sku: string, posicionId: stri
     ...extraFields,
   });
 
-  // Audit: log result with before/after
+  // Audit: log result with before/after + derivation method
   await db.auditLog("ubicarLinea:ok", {
     entidad: "recepcion_linea", entidad_id: lineaId, operario,
-    resultado: { sku, posicionId, qty, prevQtyUbicada, newQtyUbicada, qtyTotal, estado: nextEstado },
+    resultado: { sku, posicionId, qty, prevQtyUbicada, newQtyUbicada, qtyTotal, estado: nextEstado, derivado: calcResult !== null },
   });
+}
+
+// Recalculate qty_ubicada from movimientos for all lines in a reception
+export async function recalcularQtyUbicadaRecepcion(recepcionId: string): Promise<{ sku: string; antes: number; despues: number }[]> {
+  const lineas = await db.fetchRecepcionLineas(recepcionId);
+  const sb = db.getSupabase();
+  if (!sb) return [];
+  const cambios: { sku: string; antes: number; despues: number }[] = [];
+  for (const l of lineas) {
+    const { data: calc } = await sb.rpc("calcular_qty_ubicada", { p_recepcion_id: recepcionId, p_sku: l.sku });
+    const real = (calc as number) ?? 0;
+    const actual = l.qty_ubicada || 0;
+    if (real !== actual) {
+      await db.updateRecepcionLinea(l.id!, { qty_ubicada: real });
+      cambios.push({ sku: l.sku, antes: actual, despues: real });
+    }
+  }
+  return cambios;
 }
 
 // ==================== REASIGNAR FORMATO DE VENTA ====================
@@ -1247,6 +1269,15 @@ export async function ajustarLineaAdmin(
     operario: "admin", recepcion_id: recepcionId,
     nota: `Ajuste admin: ${oldQtyUbicada} → ${newQtyUbicada} (${delta > 0 ? "+" : ""}${delta})` + (autoSv ? ` [${autoSv}]` : ""),
   });
+
+  // Re-derive qty_ubicada from movimientos and update the line
+  const sb = db.getSupabase();
+  if (sb) {
+    const { data: calcResult } = await sb.rpc("calcular_qty_ubicada", { p_recepcion_id: recepcionId, p_sku: sku });
+    if (calcResult !== null) {
+      await db.updateRecepcionLinea(lineaId, { qty_ubicada: calcResult as number });
+    }
+  }
 
   // Update cache
   if (!_cache.stock[sku]) _cache.stock[sku] = {};
@@ -2437,7 +2468,53 @@ export async function reactivarRecepcion(id: string) {
   await db.updateRecepcion(id, { estado: "CREADA" });
 }
 
-export async function cerrarRecepcion(id: string): Promise<{ ok: boolean; pendientes?: number; pendientesQty?: number }> {
+export interface IntegrityError {
+  sku: string;
+  tipo: "mov_vs_ubicada" | "ubicada_vs_recibida";
+  esperado: number;
+  actual: number;
+  diferencia: number;
+}
+
+// Verify integrity of a reception: movimientos match qty_ubicada, qty_ubicada match qty_recibida
+export async function verificarIntegridadRecepcion(recepcionId: string): Promise<IntegrityError[]> {
+  const lineas = await db.fetchRecepcionLineas(recepcionId);
+  const sb = db.getSupabase();
+  const errores: IntegrityError[] = [];
+  for (const l of lineas) {
+    if ((l.qty_ubicada || 0) === 0 && (l.qty_recibida || 0) === 0) continue;
+    // Check movimientos vs qty_ubicada
+    if (sb) {
+      const { data: calc } = await sb.rpc("calcular_qty_ubicada", { p_recepcion_id: recepcionId, p_sku: l.sku });
+      const movTotal = (calc as number) ?? 0;
+      const ubicada = l.qty_ubicada || 0;
+      if (movTotal !== ubicada) {
+        errores.push({ sku: l.sku, tipo: "mov_vs_ubicada", esperado: ubicada, actual: movTotal, diferencia: movTotal - ubicada });
+      }
+    }
+    // Check qty_ubicada vs qty_recibida (warning, not blocking — there may be resolved discrepancies)
+    const recibida = l.qty_recibida || 0;
+    const ubicada = l.qty_ubicada || 0;
+    if (recibida > 0 && ubicada !== recibida) {
+      errores.push({ sku: l.sku, tipo: "ubicada_vs_recibida", esperado: recibida, actual: ubicada, diferencia: ubicada - recibida });
+    }
+  }
+  return errores;
+}
+
+export async function cerrarRecepcion(id: string): Promise<{ ok: boolean; pendientes?: number; pendientesQty?: number; integridad?: IntegrityError[] }> {
+  // 1. First recalculate qty_ubicada from movimientos to fix any drift
+  await recalcularQtyUbicadaRecepcion(id);
+
+  // 2. Verify integrity
+  const integridad = await verificarIntegridadRecepcion(id);
+  const erroresCriticos = integridad.filter(e => e.tipo === "mov_vs_ubicada");
+  if (erroresCriticos.length > 0) {
+    // Block close — movimientos don't match qty_ubicada (shouldn't happen after recalc, but safety net)
+    return { ok: false, integridad: erroresCriticos };
+  }
+
+  // 3. Check discrepancies
   const [discs, discsQty] = await Promise.all([
     db.fetchDiscrepancias(id),
     db.fetchDiscrepanciasQty(id),
@@ -2445,8 +2522,13 @@ export async function cerrarRecepcion(id: string): Promise<{ ok: boolean; pendie
   const pendientes = discs.filter(d => d.estado === "PENDIENTE").length;
   const pendientesQty = discsQty.filter(d => d.estado === "PENDIENTE").length;
   if (pendientes > 0 || pendientesQty > 0) return { ok: false, pendientes, pendientesQty };
+
+  // 4. All good — close
   await db.updateRecepcion(id, { estado: "CERRADA" });
-  // Trigger: recepción cerrada
+  await db.auditLog("cerrarRecepcion:ok", {
+    entidad: "recepcion", entidad_id: id,
+    resultado: { integridad_warnings: integridad.filter(e => e.tipo === "ubicada_vs_recibida").length },
+  });
   import("./agents-triggers").then(m => m.dispararTrigger("recepcion_cerrada", { recepcion_id: id })).catch(() => {});
   return { ok: true };
 }
@@ -2652,20 +2734,32 @@ export function getResolucionesQty(tipo: db.DiscrepanciaQtyTipo) {
   return DISC_QTY_RESOLUCIONES[tipo] || [];
 }
 
-export async function detectarDiscrepanciasQty(recepcionId: string, lineas: db.DBRecepcionLinea[]): Promise<db.DBDiscrepanciaQty[]> {
+export async function detectarDiscrepanciasQty(recepcionId: string, lineas?: db.DBRecepcionLinea[]): Promise<db.DBDiscrepanciaQty[]> {
+  // Always read fresh lines from DB — never rely on potentially stale passed data
+  const freshLineas = lineas && lineas.length > 0 ? lineas : await db.fetchRecepcionLineas(recepcionId);
+
+  // Return resolved discrepancies as-is, only re-evaluate pending ones
   const existentes = await db.fetchDiscrepanciasQty(recepcionId);
-  if (existentes.length > 0) return existentes;
+  const resueltas = existentes.filter(d => d.estado !== "PENDIENTE");
+
+  // Delete stale pending discrepancies — we'll re-detect from current state
+  if (existentes.some(d => d.estado === "PENDIENTE")) {
+    await db.deleteDiscrepanciasQtyPendientes(recepcionId);
+  }
 
   const nuevas: Omit<db.DBDiscrepanciaQty, "id" | "created_at">[] = [];
-  for (const l of lineas) {
+  for (const l of freshLineas) {
     const qf = l.qty_factura || 0;
     const qr = l.qty_recibida || 0;
 
-    // No discrepancy if both are 0 or line hasn't been counted yet
-    if (qr === 0 && l.estado === "PENDIENTE") continue;
+    // Skip lines that haven't been fully counted yet
+    const ESTADOS_CONTADOS = ["CONTADA", "EN_ETIQUETADO", "ETIQUETADA", "UBICADA"];
+    if (!ESTADOS_CONTADOS.includes(l.estado)) continue;
+
+    // Skip if there's already a resolved discrepancy for this line
+    if (resueltas.some(d => d.linea_id === l.id)) continue;
 
     if (qf === 0 && qr > 0) {
-      // Producto no estaba en factura
       nuevas.push({
         recepcion_id: recepcionId, linea_id: l.id, sku: l.sku,
         tipo: "NO_EN_FACTURA", qty_factura: qf, qty_recibida: qr,
@@ -2684,7 +2778,6 @@ export async function detectarDiscrepanciasQty(recepcionId: string, lineas: db.D
         diferencia: qr - qf, estado: "PENDIENTE",
       });
     }
-    // qr === qf → no discrepancy
   }
 
   if (nuevas.length > 0) await db.insertDiscrepanciasQty(nuevas);
@@ -2692,10 +2785,11 @@ export async function detectarDiscrepanciasQty(recepcionId: string, lineas: db.D
 }
 
 export async function getDiscrepanciasQty(recepcionId: string): Promise<db.DBDiscrepanciaQty[]> {
-  return db.fetchDiscrepanciasQty(recepcionId);
+  // Always re-detect to get fresh values
+  return detectarDiscrepanciasQty(recepcionId);
 }
 
-export async function recalcularDiscrepanciasQty(recepcionId: string, lineas: db.DBRecepcionLinea[]): Promise<db.DBDiscrepanciaQty[]> {
+export async function recalcularDiscrepanciasQty(recepcionId: string, lineas?: db.DBRecepcionLinea[]): Promise<db.DBDiscrepanciaQty[]> {
   await db.deleteDiscrepanciasQtyPendientes(recepcionId);
   return detectarDiscrepanciasQty(recepcionId, lineas);
 }

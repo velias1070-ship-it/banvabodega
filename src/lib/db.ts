@@ -255,6 +255,9 @@ export async function deletePosicion(id: string) {
   await sb.from("posiciones").delete().eq("id", id);
 }
 
+// Re-export for store.ts to use directly
+export { getSupabase };
+
 // ==================== AUDIT LOG ====================
 export async function auditLog(accion: string, params: {
   entidad?: string;
