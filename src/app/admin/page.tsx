@@ -5,7 +5,7 @@ import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, s
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia, IntegrityError } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
-import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado, transferirStock, reconciliarReservas, fetchResumenMovimientosHoy } from "@/lib/db";
+import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado, transferirStock, reconciliarReservas, fetchResumenMovimientosHoy, fetchStockDisponible } from "@/lib/db";
 import type { DBStockProyectado, DBReconciliacion } from "@/lib/db";
 import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap, ShipmentWithItems } from "@/lib/db";
 import { getOAuthUrl } from "@/lib/ml";
@@ -5158,7 +5158,7 @@ function Inventario() {
     }
   };
 
-  const doExportFull = () => {
+  const doExportFull = async () => {
     const s = getStore();
     // Build map: skuVenta → total qty (summing across all positions)
     const skuVentaQty: Record<string, number> = {};
@@ -5244,15 +5244,25 @@ function Inventario() {
       }
     }
 
-    // 6. Generate CSV
+    // 6. Fetch comprometido por SKU desde v_stock_disponible
+    const stockDisp = await fetchStockDisponible();
+    const reservedBySku: Record<string, number> = {};
+    for (const r of stockDisp) {
+      reservedBySku[r.sku] = (reservedBySku[r.sku] || 0) + r.reserved;
+    }
+
+    // 7. Generate CSV
     const rows: string[] = [];
-    rows.push(["sku_venta","nombre","cantidad","nota"].join(","));
+    rows.push(["sku_venta","nombre","stock_total","comprometido","disponible","nota"].join(","));
     const sorted = Object.entries(skuVentaQty).sort((a, b) => b[1] - a[1]);
     for (const [sv, qty] of sorted) {
+      const comp = reservedBySku[sv] || 0;
       rows.push([
         csvEscape(sv),
         csvEscape(skuVentaNombre[sv] || ""),
         String(qty),
+        String(comp),
+        String(qty - comp),
         csvEscape(skuVentaNotas[sv] || ""),
       ].join(","));
     }
