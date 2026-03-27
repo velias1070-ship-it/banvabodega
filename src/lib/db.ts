@@ -410,6 +410,16 @@ export async function fetchStockProyectado(): Promise<DBStockProyectado[]> {
   return (data || []) as DBStockProyectado[];
 }
 
+export async function fetchResumenMovimientosHoy(): Promise<{ total: number; entradas: number; salidas: number }> {
+  const sb = getSupabase(); if (!sb) return { total: 0, entradas: 0, salidas: 0 };
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
+  const { data } = await sb.from("movimientos").select("tipo, cantidad").gte("created_at", today + "T00:00:00-03:00");
+  if (!data) return { total: 0, entradas: 0, salidas: 0 };
+  const entradas = data.filter((m: { tipo: string }) => m.tipo === "entrada").reduce((s: number, m: { cantidad: number }) => s + m.cantidad, 0);
+  const salidas = data.filter((m: { tipo: string }) => m.tipo === "salida").reduce((s: number, m: { cantidad: number }) => s + m.cantidad, 0);
+  return { total: data.length, entradas, salidas };
+}
+
 // ==================== MOVIMIENTOS ====================
 export async function fetchMovimientos(limit = 200): Promise<DBMovimiento[]> {
   const sb = getSupabase(); if (!sb) return [];

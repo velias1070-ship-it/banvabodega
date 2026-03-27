@@ -5,7 +5,7 @@ import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, s
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia, IntegrityError } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
-import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado, transferirStock, reconciliarReservas } from "@/lib/db";
+import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado, transferirStock, reconciliarReservas, fetchResumenMovimientosHoy } from "@/lib/db";
 import type { DBStockProyectado, DBReconciliacion } from "@/lib/db";
 import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap, ShipmentWithItems } from "@/lib/db";
 import { getOAuthUrl } from "@/lib/ml";
@@ -4728,6 +4728,10 @@ function Dashboard() {
   const [dashStock, setDashStock] = useState<{comprometido:number;disponible:number;enRiesgo:number}>({comprometido:0,disponible:0,enRiesgo:0});
   const [reconciling, setReconciling] = useState(false);
   const [lastReconcDiff, setLastReconcDiff] = useState<DBReconciliacion[]>([]);
+  const [movsHoy, setMovsHoy] = useState<{total:number;entradas:number;salidas:number}>({total:0,entradas:0,salidas:0});
+  const [pickingActivo, setPickingActivo] = useState<{flex:number;full:number}>({flex:0,full:0});
+  const [recepcionesActivas, setRecepcionesActivas] = useState<{total:number;lineasPendientes:number}>({total:0,lineasPendientes:0});
+  const [lastUpdate, setLastUpdate] = useState<string>("");
 
   const loadDashStock = useCallback(async () => {
     const rows = await fetchStockProyectado();
@@ -4735,6 +4739,27 @@ function Dashboard() {
     const disp = rows.reduce((s, r) => s + r.disponible, 0);
     const risk = rows.filter(r => r.disponible > 0 && r.disponible <= 5).length;
     setDashStock({comprometido:comp, disponible:disp, enRiesgo:risk});
+  }, []);
+
+  const loadDashData = useCallback(async () => {
+    // Movimientos desde la DB (no memoria)
+    const movs = await fetchResumenMovimientosHoy();
+    setMovsHoy(movs);
+    // Picking activo
+    const sessions = await getActivePickings();
+    setPickingActivo({
+      flex: sessions.filter(s => s.tipo === "flex" && s.estado !== "COMPLETADA").length,
+      full: sessions.filter(s => s.tipo === "envio_full" && s.estado !== "COMPLETADA").length,
+    });
+    // Recepciones activas
+    const recs = await getRecepcionesActivas();
+    let lineasPend = 0;
+    for (const r of recs) {
+      const lineas = await getRecepcionLineas(r.id!);
+      lineasPend += lineas.filter(l => l.estado !== "UBICADA").length;
+    }
+    setRecepcionesActivas({total: recs.length, lineasPendientes: lineasPend});
+    setLastUpdate(new Date().toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" }));
   }, []);
 
   const runReconciliacion = useCallback(async () => {
@@ -4749,34 +4774,49 @@ function Dashboard() {
   }, [loadDashStock]);
 
   useEffect(() => {
-    // Auto-reconciliar al cargar dashboard para mantener qty_reserved sincronizado
     runReconciliacion();
+    loadDashData();
   }, []);
+
   const usedPos = activePositions().filter(p => posContents(p.id).length > 0).length;
   const totalPos = activePositions().length;
-  const today = fmtDate(new Date().toISOString());
-  const todayMovs = s.movements.filter(m => fmtDate(m.ts) === today);
-  const todayIn = todayMovs.filter(m=>m.type==="in").reduce((s,m)=>s+m.qty,0);
-  const todayOut = todayMovs.filter(m=>m.type==="out").reduce((s,m)=>s+m.qty,0);
-
-  // Movements by reason
-  const reasonCounts: Record<string,number> = {};
-  s.movements.slice(0,100).forEach(m => { reasonCounts[m.reason] = (reasonCounts[m.reason]||0) + m.qty; });
 
   return (
     <div>
+      {lastUpdate && <div style={{fontSize:10,color:"var(--txt3)",textAlign:"right",marginBottom:8}}>Actualizado a las {lastUpdate} <button onClick={loadDashData} style={{background:"none",border:"none",color:"var(--cyan)",cursor:"pointer",fontSize:10,fontWeight:600}}>Actualizar</button></div>}
+
       <div className="admin-kpi-grid">
-        <div className="kpi"><div className="kpi-label">SKUs en bodega</div><div className="kpi-val">{skusWithStock.length}</div><div className="kpi-sub">de {Object.keys(s.products).length} registrados</div></div>
-        <div className="kpi"><div className="kpi-label">Unidades totales</div><div className="kpi-val blue">{totalUnits.toLocaleString("es-CL")}</div></div>
+        <div className="kpi"><div className="kpi-label">Unidades totales</div><div className="kpi-val blue">{totalUnits.toLocaleString("es-CL")}</div><div className="kpi-sub">{skusWithStock.length} SKUs</div></div>
+        <div className="kpi"><div className="kpi-label">Disponible</div><div className="kpi-val green">{dashStock.disponible.toLocaleString("es-CL")}</div></div>
+        <div className="kpi"><div className="kpi-label">Comprometido</div><div className="kpi-val" style={{color:"var(--amber)"}}>{dashStock.comprometido}</div><div className="kpi-sub"><button onClick={runReconciliacion} disabled={reconciling} style={{background:"none",border:"1px solid var(--amber)",color:"var(--amber)",borderRadius:6,padding:"2px 8px",fontSize:11,cursor:"pointer",opacity:reconciling?0.5:1}}>{reconciling ? "Reconciliando..." : "Reconciliar"}</button></div></div>
+        {dashStock.enRiesgo > 0 && <div className="kpi"><div className="kpi-label">SKUs en riesgo</div><div className="kpi-val" style={{color:"var(--red)"}}>{dashStock.enRiesgo}</div><div className="kpi-sub">disponible &le; 5</div></div>}
+        <div className="kpi"><div className="kpi-label">Movimientos hoy</div><div className="kpi-val cyan">{movsHoy.total}</div><div className="kpi-sub"><span style={{color:"var(--green)"}}>+{movsHoy.entradas}</span> <span style={{color:"var(--red)"}}>-{movsHoy.salidas}</span></div></div>
         <div className="kpi"><div className="kpi-label">Valor inventario</div><div className="kpi-val green">{fmtMoney(totalValue)}</div><div className="kpi-sub">a costo</div></div>
         <div className="kpi"><div className="kpi-label">Posiciones</div><div className="kpi-val">{usedPos}<span style={{fontSize:14,color:"var(--txt3)"}}> / {totalPos}</span></div><div className="kpi-sub">{totalPos-usedPos} libres</div></div>
-        <div className="kpi"><div className="kpi-label">Movimientos hoy</div><div className="kpi-val cyan">{todayMovs.length}</div></div>
-        <div className="kpi"><div className="kpi-label">Flujo hoy</div><div className="kpi-val"><span style={{color:"var(--green)"}}>+{todayIn}</span> <span style={{color:"var(--red)"}}>-{todayOut}</span></div></div>
-        <div className="kpi"><div className="kpi-label">Comprometido</div><div className="kpi-val" style={{color:"var(--amber)"}}>{dashStock.comprometido}</div><div className="kpi-sub"><button onClick={runReconciliacion} disabled={reconciling} style={{background:"none",border:"1px solid var(--amber)",color:"var(--amber)",borderRadius:6,padding:"2px 8px",fontSize:11,cursor:"pointer",opacity:reconciling?0.5:1}}>{reconciling ? "Reconciliando..." : "Reconciliar"}</button></div></div>
-        <div className="kpi"><div className="kpi-label">Disponible</div><div className="kpi-val green">{dashStock.disponible.toLocaleString("es-CL")}</div></div>
-        {dashStock.enRiesgo > 0 && <div className="kpi"><div className="kpi-label">SKUs en riesgo</div><div className="kpi-val" style={{color:"var(--red)"}}>{dashStock.enRiesgo}</div><div className="kpi-sub">disponible ≤ 5</div></div>}
       </div>
-      {lastReconcDiff.length > 0 && <div className="card" style={{padding:10,marginBottom:12,fontSize:12}}>
+
+      {/* Operaciones activas */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginTop:12}}>
+        <div className="card" style={{padding:12}}>
+          <div style={{fontSize:12,fontWeight:700,marginBottom:8}}>Picking activo</div>
+          {pickingActivo.flex === 0 && pickingActivo.full === 0
+            ? <div style={{fontSize:12,color:"var(--txt3)"}}>Sin picking en proceso</div>
+            : <div style={{display:"flex",gap:12}}>
+                {pickingActivo.flex > 0 && <div style={{fontSize:12}}><span style={{color:"var(--cyan)",fontWeight:700}}>{pickingActivo.flex}</span> Flex</div>}
+                {pickingActivo.full > 0 && <div style={{fontSize:12}}><span style={{color:"var(--blue)",fontWeight:700}}>{pickingActivo.full}</span> Envío Full</div>}
+              </div>
+          }
+        </div>
+        <div className="card" style={{padding:12}}>
+          <div style={{fontSize:12,fontWeight:700,marginBottom:8}}>Recepciones activas</div>
+          {recepcionesActivas.total === 0
+            ? <div style={{fontSize:12,color:"var(--txt3)"}}>Sin recepciones activas</div>
+            : <div style={{fontSize:12}}><span style={{color:"var(--amber)",fontWeight:700}}>{recepcionesActivas.total}</span> recepcion{recepcionesActivas.total > 1 ? "es" : ""} &middot; <span style={{fontWeight:700}}>{recepcionesActivas.lineasPendientes}</span> líneas pendientes</div>
+          }
+        </div>
+      </div>
+
+      {lastReconcDiff.length > 0 && <div className="card" style={{padding:10,marginTop:12,fontSize:12}}>
         <div style={{fontWeight:700,marginBottom:6,color:"var(--amber)"}}>Reconciliación: {lastReconcDiff.length} SKU{lastReconcDiff.length>1?"s":""} ajustados</div>
         <table className="tbl" style={{width:"100%"}}><thead><tr><th>SKU</th><th>Antes</th><th>Ahora</th></tr></thead><tbody>
           {lastReconcDiff.map(d => <tr key={d.out_sku}><td className="mono">{d.out_sku}</td><td style={{textAlign:"right",color:"var(--red)"}}>{d.reserva_anterior}</td><td style={{textAlign:"right",color:"var(--green)"}}>{d.reserva_nueva}</td></tr>)}
@@ -4784,55 +4824,30 @@ function Dashboard() {
         <button onClick={() => setLastReconcDiff([])} style={{marginTop:6,background:"none",border:"1px solid var(--bg4)",color:"var(--txt3)",borderRadius:6,padding:"2px 8px",fontSize:11,cursor:"pointer"}}>Cerrar</button>
       </div>}
 
-      <div className="admin-grid-2">
-        <div className="card">
-          <div className="card-title">Últimos movimientos</div>
-          {s.movements.slice(0,12).map(m => {
-            const prod = s.products[m.sku];
-            return (
-              <div key={m.id} className="mov-row">
-                <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:2}}>
-                  <span className="mov-badge" style={{background:m.type==="in"?"var(--greenBg)":"var(--redBg)",color:m.type==="in"?"var(--green)":"var(--red)"}}>
-                    {m.type==="in"?"ENTRADA":"SALIDA"}
-                  </span>
-                  <span className="mono" style={{fontSize:10,color:"var(--txt3)"}}>{m.id}</span>
-                  <span style={{fontSize:10,color:"var(--txt3)"}}>{fmtDate(m.ts)} {fmtTime(m.ts)}</span>
-                </div>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                  <div>
-                    <span className="mono" style={{fontWeight:700,fontSize:12}}>{m.sku}</span>
-                    <span style={{fontSize:11,color:"var(--txt3)",marginLeft:6}}>{prod?.name}</span>
-                    <span style={{fontSize:10,color:"var(--txt3)",marginLeft:6}}>Pos {m.pos}</span>
-                  </div>
-                  <span className="mono" style={{fontWeight:700,fontSize:14,color:m.type==="in"?"var(--green)":"var(--red)"}}>{m.type==="in"?"+":"-"}{m.qty}</span>
-                </div>
-                {m.note && <div style={{fontSize:10,color:"var(--cyan)",marginTop:1}}>{m.note}</div>}
+      {/* Últimos movimientos */}
+      <div className="card" style={{marginTop:12}}>
+        <div className="card-title">Últimos movimientos</div>
+        {s.movements.slice(0,8).map(m => {
+          const prod = s.products[m.sku];
+          return (
+            <div key={m.id} className="mov-row">
+              <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:2}}>
+                <span className="mov-badge" style={{background:m.type==="in"?"var(--greenBg)":"var(--redBg)",color:m.type==="in"?"var(--green)":"var(--red)"}}>
+                  {m.type==="in"?"ENTRADA":"SALIDA"}
+                </span>
+                <span style={{fontSize:10,color:"var(--txt3)"}}>{fmtDate(m.ts)} {fmtTime(m.ts)}</span>
               </div>
-            );
-          })}
-        </div>
-
-        <div className="card">
-          <div className="card-title">Resumen por motivo (últimos 100 mov.)</div>
-          {Object.entries(reasonCounts).sort((a,b)=>b[1]-a[1]).map(([reason,qty])=>(
-            <div key={reason} style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:"1px solid var(--bg3)",fontSize:12}}>
-              <span style={{color:"var(--txt2)"}}>{(IN_REASONS as any)[reason]||(OUT_REASONS as any)[reason]||reason}</span>
-              <span className="mono" style={{fontWeight:700}}>{qty} uds</span>
-            </div>
-          ))}
-          <div style={{marginTop:16}}>
-            <div className="card-title">Top SKUs por volumen</div>
-            {skusWithStock.sort((a,b)=>skuTotal(b)-skuTotal(a)).slice(0,8).map(sku=>{
-              const prod=s.products[sku];
-              return(
-                <div key={sku} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid var(--bg3)",fontSize:12}}>
-                  <div><span className="mono" style={{fontWeight:600}}>{sku}</span> <span style={{color:"var(--txt3)",fontSize:11}}>{prod?.name}</span></div>
-                  <span className="mono" style={{fontWeight:700,color:"var(--blue)"}}>{skuTotal(sku)}</span>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div>
+                  <span className="mono" style={{fontWeight:700,fontSize:12}}>{m.sku}</span>
+                  <span style={{fontSize:11,color:"var(--txt3)",marginLeft:6}}>{prod?.name}</span>
+                  <span style={{fontSize:10,color:"var(--txt3)",marginLeft:6}}>Pos {m.pos}</span>
                 </div>
-              );
-            })}
-          </div>
-        </div>
+                <span className="mono" style={{fontWeight:700,fontSize:14,color:m.type==="in"?"var(--green)":"var(--red)"}}>{m.type==="in"?"+":"-"}{m.qty}</span>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
