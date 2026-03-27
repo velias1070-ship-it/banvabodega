@@ -5245,10 +5245,28 @@ function Inventario() {
     }
 
     // 6. Fetch comprometido por SKU desde v_stock_disponible
+    //    v_stock_disponible usa sku_origen, necesitamos mapear a sku_venta
     const stockDisp = await fetchStockDisponible();
-    const reservedBySku: Record<string, number> = {};
+    const reservedBySkuVenta: Record<string, number> = {};
     for (const r of stockDisp) {
-      reservedBySku[r.sku] = (reservedBySku[r.sku] || 0) + r.reserved;
+      // Try direct match first (sku_venta = sku_origen)
+      if (skuVentaQty[r.sku] !== undefined) {
+        reservedBySkuVenta[r.sku] = (reservedBySkuVenta[r.sku] || 0) + r.reserved;
+      }
+      // Map via composicion: sku_origen → sku_venta(s)
+      const ventas = origenToVentas[r.sku];
+      if (ventas) {
+        if (ventas.length === 1) {
+          reservedBySkuVenta[ventas[0]] = (reservedBySkuVenta[ventas[0]] || 0) + r.reserved;
+        } else {
+          // Multiple sku_venta share this sku_origen — distribute proportionally
+          const totalQtyVentas = ventas.reduce((s, sv) => s + (skuVentaQty[sv] || 0), 0);
+          for (const sv of ventas) {
+            const proportion = totalQtyVentas > 0 ? (skuVentaQty[sv] || 0) / totalQtyVentas : 0;
+            reservedBySkuVenta[sv] = (reservedBySkuVenta[sv] || 0) + Math.round(r.reserved * proportion);
+          }
+        }
+      }
     }
 
     // 7. Generate CSV
@@ -5256,7 +5274,7 @@ function Inventario() {
     rows.push(["sku_venta","nombre","stock_total","comprometido","disponible","nota"].join(","));
     const sorted = Object.entries(skuVentaQty).sort((a, b) => b[1] - a[1]);
     for (const [sv, qty] of sorted) {
-      const comp = reservedBySku[sv] || 0;
+      const comp = reservedBySkuVenta[sv] || 0;
       rows.push([
         csvEscape(sv),
         csvEscape(skuVentaNombre[sv] || ""),
