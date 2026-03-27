@@ -4548,13 +4548,13 @@ function MiniMapPanel({ positions, onSelectProduct, onSetMode, refresh }: {
     setBulkQtyMap(m);
   };
 
-  const executeBulk = () => {
+  const executeBulk = async () => {
     if (!selectedPos || checkedSkus.size === 0) return;
     const items = selItems.filter(i => checkedSkus.has(i.sku));
     let count = 0;
-    items.forEach(item => {
+    for (const item of items) {
       const qty = bulkQtyMap[item.sku] || 0;
-      if (qty <= 0) return;
+      if (qty <= 0) continue;
       if (bulkAction === "out") {
         recordMovement({ ts: new Date().toISOString(), type: "out", reason: "ajuste_salida" as any, sku: item.sku, pos: selectedPos, qty, who: "Admin", note: "Salida rápida desde mapa" });
         count += qty;
@@ -4570,7 +4570,7 @@ function MiniMapPanel({ positions, onSelectProduct, onSetMode, refresh }: {
           }
         } catch { /* skip failed */ }
       }
-    });
+    }
     if (count > 0) {
       setToast(`${bulkAction === "out" ? "Sacadas" : "Movidas"} ${count} uds`);
       setTimeout(() => setToast(""), 2000);
