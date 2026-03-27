@@ -5500,7 +5500,24 @@ function Inventario() {
                                   const sb = (await import("@/lib/supabase")).getSupabase();
                                   if (sb) {
                                     const { data } = await sb.from("reservations").select("*").eq("sku", sku).eq("estado", "active").order("created_at", { ascending: false });
-                                    setReservasData(data || []);
+                                    if (data && data.length > 0) {
+                                      setReservasData(data);
+                                    } else {
+                                      // Fallback: infer from active shipments for this SKU
+                                      const { data: shipItems } = await sb.from("ml_shipment_items").select("shipment_id, seller_sku, quantity").eq("seller_sku", sku);
+                                      if (shipItems && shipItems.length > 0) {
+                                        const shipIds = shipItems.map(si => si.shipment_id);
+                                        const { data: ships } = await sb.from("ml_shipments").select("shipment_id, status, handling_limit").in("shipment_id", shipIds).eq("status", "ready_to_ship");
+                                        const inferred = (ships || []).map(sh => {
+                                          const items = shipItems.filter(si => si.shipment_id === sh.shipment_id);
+                                          const qty = items.reduce((s, i) => s + i.quantity, 0);
+                                          return { id: String(sh.shipment_id), sku, cantidad: qty, tipo: "venta_flex", referencia_tipo: "shipment", referencia_id: String(sh.shipment_id), estado: "active", created_at: sh.handling_limit || "" };
+                                        });
+                                        setReservasData(inferred);
+                                      } else {
+                                        setReservasData([]);
+                                      }
+                                    }
                                   }
                                 } catch { setReservasData([]); }
                                 setReservasLoading(false);
