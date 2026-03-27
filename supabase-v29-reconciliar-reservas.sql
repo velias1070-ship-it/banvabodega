@@ -4,7 +4,7 @@
 -- QUÉ HACE:
 --   Recalcula qty_reserved en tabla stock basándose en shipments pendientes
 --   reales (ready_to_ship + shipped, no fulfillment).
---   Resuelve seller_sku → sku_origen via composicion_venta.
+--   Resuelve seller_sku → sku_origen via composicion_venta (primer mapeo).
 --
 -- CUÁNDO USAR:
 --   - Al cargar el dashboard (auto)
@@ -22,7 +22,8 @@ DECLARE
     v_stock_row RECORD;
 BEGIN
     -- Paso 1: Guardar estado anterior para el reporte
-    CREATE TEMP TABLE IF NOT EXISTS _prev_reserved ON COMMIT DROP AS
+    DROP TABLE IF EXISTS _prev_reserved;
+    CREATE TEMP TABLE _prev_reserved ON COMMIT DROP AS
     SELECT s.sku, SUM(s.qty_reserved)::INTEGER AS prev
     FROM stock s WHERE s.qty_reserved > 0 GROUP BY s.sku;
 
@@ -30,14 +31,20 @@ BEGIN
     UPDATE stock SET qty_reserved = 0 WHERE qty_reserved > 0;
 
     -- Paso 3: Calcular committed real desde shipments pendientes
-    -- Resuelve seller_sku → sku_origen via composicion_venta
+    -- Resuelve seller_sku → sku_origen via composicion_venta (solo primer mapeo por sku_venta)
     FOR v_row IN
         SELECT
             UPPER(COALESCE(cv.sku_origen, si.seller_sku)) AS sku_fisico,
             SUM(si.quantity)::INTEGER AS total_qty
         FROM ml_shipment_items si
         JOIN ml_shipments s ON s.shipment_id = si.shipment_id
-        LEFT JOIN composicion_venta cv ON UPPER(cv.sku_venta) = UPPER(si.seller_sku)
+        LEFT JOIN (
+            SELECT DISTINCT ON (UPPER(sku_venta))
+                UPPER(sku_venta) AS sku_venta_upper,
+                UPPER(sku_origen) AS sku_origen
+            FROM composicion_venta
+            ORDER BY UPPER(sku_venta), id
+        ) cv ON cv.sku_venta_upper = UPPER(si.seller_sku)
         WHERE s.status IN ('ready_to_ship', 'shipped')
           AND s.logistic_type != 'fulfillment'
         GROUP BY UPPER(COALESCE(cv.sku_origen, si.seller_sku))
