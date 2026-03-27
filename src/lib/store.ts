@@ -2794,7 +2794,6 @@ const DISC_QTY_RESOLUCIONES: Record<db.DiscrepanciaQtyTipo, { valor: db.Discrepa
     { valor: "ACEPTADO", label: "Aceptar faltante" },
     { valor: "RECLAMADO", label: "Reclamar al proveedor" },
     { valor: "NOTA_CREDITO", label: "Solicitar nota de crédito" },
-    { valor: "SUSTITUCION", label: "Producto sustituido" },
   ],
   SOBRANTE: [
     { valor: "ACEPTADO", label: "Aceptar sobrante" },
