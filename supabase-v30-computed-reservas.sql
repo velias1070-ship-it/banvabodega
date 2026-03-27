@@ -61,17 +61,24 @@ BEGIN
       AND s.logistic_type != 'fulfillment'
     GROUP BY resolver_sku_fisico(si.seller_sku)
   ),
+  oldest_pending AS (
+    -- Find when the oldest pending shipment was last updated
+    -- Movements before this are from already-delivered shipments
+    SELECT MIN(s.updated_at) AS cutoff
+    FROM ml_shipments s
+    WHERE s.status IN ('ready_to_ship', 'shipped')
+      AND s.logistic_type != 'fulfillment'
+  ),
   picked_qty AS (
-    -- Use movimientos (audit log) instead of picking sessions for precision.
-    -- Each pick creates exactly one salida+venta_flex movement per SKU.
-    -- 48h window covers picks for shipments still in ready_to_ship.
+    -- Count flex picks since the oldest pending shipment arrived.
+    -- This excludes picks from already-delivered shipments.
     SELECT
       UPPER(m.sku) AS sku,
       SUM(m.cantidad)::INTEGER AS qty_picked
-    FROM movimientos m
+    FROM movimientos m, oldest_pending op
     WHERE m.tipo = 'salida'
       AND m.motivo = 'venta_flex'
-      AND m.created_at > now() - INTERVAL '48 hours'
+      AND m.created_at >= COALESCE(op.cutoff, now())
     GROUP BY UPPER(m.sku)
   )
   SELECT
