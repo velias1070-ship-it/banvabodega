@@ -2429,13 +2429,16 @@ export async function pickearLineaFull(
 export async function guardarBultosLinea(
   sessionId: string, lineaId: string,
   bultos: number, bultoCompartido: string | null,
-  session: db.DBPickingSession
+  _session: db.DBPickingSession
 ): Promise<boolean> {
-  const linea = session.lineas.find(l => l.id === lineaId);
+  // Always read fresh session to avoid overwriting recent changes (e.g. pickeo)
+  const sessions = await db.getActivePickingSessions();
+  const freshSession = sessions.find(s => s.id === sessionId) || _session;
+  const linea = freshSession.lineas.find(l => l.id === lineaId);
   if (!linea) return false;
   linea.bultos = bultos;
   linea.bultoCompartido = bultoCompartido;
-  await db.updatePickingSession(sessionId, { lineas: session.lineas });
+  await db.updatePickingSession(sessionId, { lineas: freshSession.lineas });
   return true;
 }
 
