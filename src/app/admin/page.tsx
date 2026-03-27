@@ -5444,10 +5444,10 @@ function Inventario() {
         <>
           {/* Desktop: table view */}
           <div className="desktop-only">
-            <div className="card" style={{padding:0,overflow:"hidden"}}>
-              <table className="tbl">
+            <div className="card" style={{padding:0,overflowX:"auto"}}>
+              <table className="tbl" style={{minWidth:1300}}>
                 <thead><tr>
-                  <th>SKU</th><th>Producto</th><th>Cat.</th><th>Proveedor</th><th>Etiquetado</th><th>Ubicaciones</th><th style={{textAlign:"right"}}>Total</th><th style={{textAlign:"right"}}>Comprom.</th><th style={{textAlign:"right"}}>Disponible</th><th style={{textAlign:"right"}}>En camino</th><th>Estado</th><th style={{textAlign:"right"}}>Valor</th>
+                  <th>SKU</th><th>Producto</th><th>Cat.</th><th>Prov.</th><th>Etiq.</th><th>Ubicaciones</th><th style={{textAlign:"right"}}>Total</th><th style={{textAlign:"right"}}>Comp.</th><th style={{textAlign:"right"}}>Disp.</th><th style={{textAlign:"right"}}>OC</th><th>Estado</th><th style={{textAlign:"right"}}>Valor</th>
                 </tr></thead>
                 <tbody>
                   {filteredSkus.map(sku=>{
