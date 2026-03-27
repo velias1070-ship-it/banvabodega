@@ -26,7 +26,9 @@ BEGIN
     -- Paso 2: Reset todas las reservas a 0
     UPDATE stock SET qty_reserved = 0 WHERE qty_reserved > 0;
 
-    -- Paso 3: Calcular items ya pickeados desde picking_sessions recientes (flex)
+    -- Paso 3: Calcular items ya pickeados desde sesiones ACTIVAS (no completadas)
+    -- Solo sesiones ABIERTA/EN_PROCESO — las COMPLETADA ya deberían tener
+    -- sus shipments en shipped/delivered (ya no aparecen en committed)
     DROP TABLE IF EXISTS _picked;
     CREATE TEMP TABLE _picked ON COMMIT DROP AS
     SELECT
@@ -36,8 +38,7 @@ BEGIN
         jsonb_array_elements(ps.lineas) AS linea,
         jsonb_array_elements(linea->'componentes') AS comp
     WHERE ps.tipo = 'flex'
-      AND ps.estado IN ('ABIERTA', 'EN_PROCESO', 'COMPLETADA')
-      AND ps.fecha >= (CURRENT_DATE - INTERVAL '3 days')::TEXT
+      AND ps.estado IN ('ABIERTA', 'EN_PROCESO')
       AND comp->>'estado' = 'PICKEADO'
     GROUP BY UPPER(comp->>'skuOrigen');
 
