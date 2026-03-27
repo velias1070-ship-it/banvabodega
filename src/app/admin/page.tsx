@@ -5199,7 +5199,7 @@ function Inventario() {
               background:viewMode==="ml"?"var(--amberBg)":"var(--bg3)",color:viewMode==="ml"?"var(--amber)":"var(--txt3)",
               border:viewMode==="ml"?"1px solid var(--amber)":"1px solid var(--bg4)"}}>🛒 Publicaciones ML</button>
           </div>
-          {viewMode === "fisico" && (
+          {viewMode === "fisico" && (<>
             <button onClick={()=>{setSoloSinEtiquetar(!soloSinEtiquetar);setSoloComprometidos(false);}} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
               background:soloSinEtiquetar?"var(--amberBg)":"var(--bg3)",color:soloSinEtiquetar?"var(--amber)":"var(--txt3)",
               border:soloSinEtiquetar?"1px solid var(--amber)":"1px solid var(--bg4)"}}>
@@ -5210,7 +5210,7 @@ function Inventario() {
               border:soloComprometidos?"1px solid var(--amber)":"1px solid var(--bg4)"}}>
               Comprometidos ({skusComprometidos.length})
             </button>
-          )}
+          </>)}
           <button onClick={doExportInventario} disabled={exporting} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
             background:"var(--bg3)",color:"var(--green)",border:"1px solid var(--bg4)",cursor:exporting?"wait":"pointer",opacity:exporting?0.6:1}}>
             {exporting ? "Exportando..." : "Exportar Inventario"}
