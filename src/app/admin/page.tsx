@@ -229,7 +229,6 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   const [showCreate, setShowCreate] = useState(false);
   const [filter, setFilter] = useState<RecFilter>("activas");
   const [selRec, setSelRec] = useState<DBRecepcion|null>(null);
-  const selRecIdRef = useRef<string|null>(null);
   const [lineas, setLineas] = useState<DBRecepcionLinea[]>([]);
   const [operarios, setOperarios] = useState<DBOperario[]>([]);
   const [discrepancias, setDiscrepancias] = useState<DBDiscrepanciaCosto[]>([]);
@@ -316,20 +315,18 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
     }
     setLoading(false);
   };
-  useEffect(() => {
-    loadRecs().then(() => {
-      // Restore selected reception from sessionStorage
-      const savedId = sessionStorage.getItem("banva_admin_selRec");
-      if (savedId) selRecIdRef.current = savedId;
-    });
-  }, []);
+  useEffect(() => { loadRecs(); }, []);
 
-  // When recs load and we have a saved selection, reopen it
+  // Restore selected reception after recs load
+  const restoredRef = useRef(false);
   useEffect(() => {
-    if (selRecIdRef.current && recs.length > 0 && !selRec) {
-      const saved = recs.find(r => r.id === selRecIdRef.current);
-      if (saved) { openRec(saved); selRecIdRef.current = null; }
+    if (restoredRef.current || recs.length === 0) return;
+    const savedId = sessionStorage.getItem("banva_admin_selRec");
+    if (savedId) {
+      const saved = recs.find(r => r.id === savedId);
+      if (saved) openRec(saved);
     }
+    restoredRef.current = true;
   }, [recs]);
 
   // Persist selected reception ID
