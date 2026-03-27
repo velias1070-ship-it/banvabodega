@@ -4806,6 +4806,7 @@ function Inventario() {
   const [expanded, setExpanded] = useState<string|null>(null);
   const [viewMode, setViewMode] = useState<"fisico"|"ml">("fisico");
   const [soloSinEtiquetar, setSoloSinEtiquetar] = useState(false);
+  const [soloComprometidos, setSoloComprometidos] = useState(false);
   const [,setTick] = useState(0);
   const refresh = useCallback(() => setTick(t => t + 1), []);
   const s = getStore();
@@ -4863,7 +4864,8 @@ function Inventario() {
     const detalle = skuStockDetalle(sku);
     return detalle.some(d => d.skuVenta === SIN_ETIQUETAR && d.qty > 0);
   });
-  const filteredSkus = soloSinEtiquetar ? skusSinEtiquetar : allSkus;
+  const skusComprometidos = allSkus.filter(sku => (stockProy.get(sku)?.reserved || 0) > 0);
+  const filteredSkus = soloComprometidos ? skusComprometidos : soloSinEtiquetar ? skusSinEtiquetar : allSkus;
   const grandTotal = filteredSkus.reduce((s,sku)=>s+skuTotal(sku),0);
 
   // KPIs de etiquetado global
@@ -5198,10 +5200,15 @@ function Inventario() {
               border:viewMode==="ml"?"1px solid var(--amber)":"1px solid var(--bg4)"}}>🛒 Publicaciones ML</button>
           </div>
           {viewMode === "fisico" && (
-            <button onClick={()=>setSoloSinEtiquetar(!soloSinEtiquetar)} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
+            <button onClick={()=>{setSoloSinEtiquetar(!soloSinEtiquetar);setSoloComprometidos(false);}} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
               background:soloSinEtiquetar?"var(--amberBg)":"var(--bg3)",color:soloSinEtiquetar?"var(--amber)":"var(--txt3)",
               border:soloSinEtiquetar?"1px solid var(--amber)":"1px solid var(--bg4)"}}>
               Sin etiquetar ({skusSinEtiquetar.length})
+            </button>
+            <button onClick={()=>{setSoloComprometidos(!soloComprometidos);setSoloSinEtiquetar(false);}} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
+              background:soloComprometidos?"var(--amberBg)":"var(--bg3)",color:soloComprometidos?"var(--amber)":"var(--txt3)",
+              border:soloComprometidos?"1px solid var(--amber)":"1px solid var(--bg4)"}}>
+              Comprometidos ({skusComprometidos.length})
             </button>
           )}
           <button onClick={doExportInventario} disabled={exporting} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
