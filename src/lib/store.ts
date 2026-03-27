@@ -1063,7 +1063,7 @@ export async function resetearLineaRecepcion(lineaId: string, recepcionId: strin
   await db.updateRecepcionLinea(lineaId, {
     estado: "PENDIENTE", qty_recibida: 0, qty_etiquetada: 0, qty_ubicada: 0,
     operario_conteo: "", operario_etiquetado: "", operario_ubicacion: "",
-    ts_conteo: null, ts_etiquetado: null, ts_ubicacion: null,
+    ts_conteo: undefined, ts_etiquetado: undefined, ts_ubicacion: undefined,
   });
 
   await db.auditLog("resetearLinea", {
