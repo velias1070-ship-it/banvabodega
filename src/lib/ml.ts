@@ -871,23 +871,25 @@ async function refreshShipmentStatuses(): Promise<{ checked: number; updated: nu
   const sb = getServerSupabase();
   if (!sb) return { checked: 0, updated: 0 };
 
-  // Get all shipments still in ready_to_ship
-  const { data: stale } = await sb.from("ml_shipments").select("shipment_id,substatus")
-    .eq("status", "ready_to_ship");
+  // Get all shipments still in ready_to_ship or shipped (both can become delivered/cancelled)
+  const { data: stale } = await sb.from("ml_shipments").select("shipment_id,status,substatus")
+    .in("status", ["ready_to_ship", "shipped"]);
 
   if (!stale || stale.length === 0) return { checked: 0, updated: 0 };
 
   let updated = 0;
-  for (const row of stale as { shipment_id: number; substatus?: string }[]) {
+  const TERMINAL_STATUSES = ["delivered", "cancelled", "not_delivered"];
+
+  for (const row of stale as { shipment_id: number; status: string; substatus?: string }[]) {
     const shipment = await mlGet<{ id: number; status: string; substatus?: string }>(
       `/shipments/${row.shipment_id}`,
       { "x-format-new": "true" }
     );
     if (!shipment) continue;
 
-    // Update if status changed OR substatus changed (e.g. ready_to_print → printed)
-    const statusChanged = shipment.status && shipment.status !== "ready_to_ship";
+    const statusChanged = shipment.status && shipment.status !== row.status;
     const substatusChanged = shipment.substatus && shipment.substatus !== row.substatus;
+
     if (statusChanged || substatusChanged) {
       await sb.from("ml_shipments").update({
         status: shipment.status,
@@ -895,8 +897,45 @@ async function refreshShipmentStatuses(): Promise<{ checked: number; updated: nu
         updated_at: new Date().toISOString(),
       }).eq("shipment_id", row.shipment_id);
       updated++;
+
       if (statusChanged) {
-        console.log(`[ML] Shipment ${row.shipment_id}: ready_to_ship → ${shipment.status}`);
+        console.log(`[ML] Shipment ${row.shipment_id}: ${row.status} → ${shipment.status}`);
+      }
+
+      // If shipment moved to terminal status, release its reservations
+      if (statusChanged && TERMINAL_STATUSES.includes(shipment.status)) {
+        const { data: items } = await sb.from("ml_shipment_items")
+          .select("seller_sku, quantity").eq("shipment_id", row.shipment_id);
+        if (items && items.length > 0) {
+          // Resolve seller_sku → physical SKU via composicion_venta
+          const sellerSkus = items.map((i: { seller_sku: string }) => i.seller_sku).filter(Boolean);
+          const { data: compMap } = await sb.from("composicion_venta")
+            .select("sku_venta, sku_origen").in("sku_venta", sellerSkus);
+          const skuToOrigen: Record<string, string> = {};
+          for (const c of (compMap || []) as { sku_venta: string; sku_origen: string }[]) {
+            if (!skuToOrigen[c.sku_venta.toUpperCase()]) {
+              skuToOrigen[c.sku_venta.toUpperCase()] = c.sku_origen.toUpperCase();
+            }
+          }
+          // Aggregate by physical SKU
+          const skuQtys: Record<string, number> = {};
+          for (const item of items as { seller_sku: string; quantity: number }[]) {
+            const physicalSku = skuToOrigen[item.seller_sku.toUpperCase()] || item.seller_sku;
+            skuQtys[physicalSku] = (skuQtys[physicalSku] || 0) + item.quantity;
+          }
+          // Release reservations (descontar=false: stock already deducted during picking)
+          for (const [sku, qty] of Object.entries(skuQtys)) {
+            try {
+              await sb.rpc("liberar_reserva", {
+                p_sku: sku, p_cantidad: qty, p_descontar: false,
+                p_motivo: `refresh_${shipment.status}`, p_operario: "sync",
+              });
+            } catch (e) {
+              console.error(`[ML] refreshShipmentStatuses liberar_reserva error for ${sku}:`, e);
+            }
+          }
+          console.log(`[ML] Shipment ${row.shipment_id}: released reservations (${shipment.status})`);
+        }
       }
     }
   }
