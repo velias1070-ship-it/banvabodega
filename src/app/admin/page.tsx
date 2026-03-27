@@ -5249,23 +5249,18 @@ function Inventario() {
     const stockDisp = await fetchStockDisponible();
     const reservedBySkuVenta: Record<string, number> = {};
     for (const r of stockDisp) {
-      // Try direct match first (sku_venta = sku_origen)
-      if (skuVentaQty[r.sku] !== undefined) {
-        reservedBySkuVenta[r.sku] = (reservedBySkuVenta[r.sku] || 0) + r.reserved;
-      }
-      // Map via composicion: sku_origen → sku_venta(s)
+      if (r.reserved <= 0) continue;
       const ventas = origenToVentas[r.sku];
-      if (ventas) {
-        if (ventas.length === 1) {
-          reservedBySkuVenta[ventas[0]] = (reservedBySkuVenta[ventas[0]] || 0) + r.reserved;
-        } else {
-          // Multiple sku_venta share this sku_origen — distribute proportionally
-          const totalQtyVentas = ventas.reduce((s, sv) => s + (skuVentaQty[sv] || 0), 0);
-          for (const sv of ventas) {
-            const proportion = totalQtyVentas > 0 ? (skuVentaQty[sv] || 0) / totalQtyVentas : 0;
-            reservedBySkuVenta[sv] = (reservedBySkuVenta[sv] || 0) + Math.round(r.reserved * proportion);
-          }
+      if (ventas && ventas.length === 1) {
+        reservedBySkuVenta[ventas[0]] = (reservedBySkuVenta[ventas[0]] || 0) + r.reserved;
+      } else if (ventas && ventas.length > 1) {
+        const totalQtyVentas = ventas.reduce((s, sv) => s + (skuVentaQty[sv] || 0), 0);
+        for (const sv of ventas) {
+          const proportion = totalQtyVentas > 0 ? (skuVentaQty[sv] || 0) / totalQtyVentas : 0;
+          reservedBySkuVenta[sv] = (reservedBySkuVenta[sv] || 0) + Math.round(r.reserved * proportion);
         }
+      } else {
+        reservedBySkuVenta[r.sku] = (reservedBySkuVenta[r.sku] || 0) + r.reserved;
       }
     }
 
