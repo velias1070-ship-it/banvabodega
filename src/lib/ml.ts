@@ -1179,9 +1179,24 @@ export async function updateFlexStock(
   stockType: "selling_address" | "seller_warehouse" = "seller_warehouse",
   warehouseLocations: StockLocation[] = []
 ): Promise<{ ok: boolean; error?: string }> {
-  // DESACTIVADO: No enviar stock a MercadoLibre
-  console.warn(`[ML Stock] DESACTIVADO — updateFlexStock(${userProductId}, qty=${quantity}) bloqueado`);
-  return { ok: false, error: "Sync a ML desactivado" };
+  // FASE 1 — DRY RUN: loggear lo que enviaría sin hacer PUT
+  const currentInML = warehouseLocations
+    .filter(l => l.type === stockType)
+    .reduce((s, l) => s + l.quantity, 0);
+  const delta = quantity - currentInML;
+  console.log(`[ML Stock DRY RUN] ${userProductId}: enviaría qty=${quantity} a ML (actual en ML: ${currentInML}, delta: ${delta > 0 ? "+" : ""}${delta}, type: ${stockType})`);
+  // Persist to audit_log for analysis (Vercel logs rotate fast)
+  const sb = getServerSupabase();
+  if (sb) {
+    sb.from("audit_log").insert({
+      accion: "stock_sync:dry_run",
+      entidad: "ml_items_map",
+      entidad_id: userProductId,
+      params: { quantity, currentInML, delta, stockType, version },
+    }).then(() => {}).catch(() => {});
+  }
+  return { ok: true, error: "dry_run" };
+  // END DRY RUN — remove above block to activate real sync (Fase 2)
   try {
     let body: unknown;
     if (stockType === "seller_warehouse") {
@@ -1277,16 +1292,19 @@ export async function syncStockToML(sku: string, availableQty: number): Promise<
         continue;
       }
 
-      // 3. PUT with x-version header
+      // 3. PUT with x-version header (or dry run)
       const result = await updateFlexStock(userProductId, availableQty, stockData.version, stockType, stockData.locations);
 
-      if (result.ok) {
+      if (result.ok && result.error !== "dry_run") {
+        // Real sync succeeded — update cache
         await sb.from("ml_items_map").update({
           ultimo_sync: new Date().toISOString(),
           stock_flex_cache: availableQty,
           stock_version: stockData.version + 1,
         }).eq("id", map.id);
         synced++;
+      } else if (result.ok && result.error === "dry_run") {
+        synced++; // Count as processed for reporting
       } else if (result.error === "VERSION_CONFLICT") {
         // 409: version mismatch — retry up to 3 times with delay
         let retried = false;
