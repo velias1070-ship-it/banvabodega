@@ -722,80 +722,9 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
     }
   }
 
-  // 7. Stock reservation logic based on status transitions
-  const RESERVE_STATUSES = ["ready_to_ship", "shipped"];
-  const RELEASE_DESPACHO_STATUSES = ["delivered"];
-  const RELEASE_CANCEL_STATUSES = ["cancelled", "not_delivered"];
-
-  // Collect SKU quantities from this shipment's items, resolved to physical SKU
-  const skuQtys: Record<string, number> = {};
-  {
-    const { data: currentItems } = await sb.from("ml_shipment_items")
-      .select("seller_sku, quantity").eq("shipment_id", shipmentId);
-    // Build seller_sku → sku_origen mapping from composicion_venta
-    const sellerSkus = (currentItems || []).map((i: { seller_sku: string }) => i.seller_sku).filter(Boolean);
-    const { data: compMap } = await sb.from("composicion_venta")
-      .select("sku_venta, sku_origen").in("sku_venta", sellerSkus);
-    const skuToOrigen: Record<string, string> = {};
-    for (const c of (compMap || []) as { sku_venta: string; sku_origen: string }[]) {
-      const venta = c.sku_venta.toUpperCase();
-      const origen = c.sku_origen.toUpperCase();
-      // Prefer mapping where sku_origen differs from sku_venta (real mapping over self-reference)
-      if (!skuToOrigen[venta] || skuToOrigen[venta] === venta) {
-        skuToOrigen[venta] = origen;
-      }
-    }
-    for (const item of (currentItems || []) as { seller_sku: string; quantity: number }[]) {
-      // Resolve to physical SKU — fallback to seller_sku if no mapping
-      const physicalSku = skuToOrigen[item.seller_sku.toUpperCase()] || item.seller_sku;
-      skuQtys[physicalSku] = (skuQtys[physicalSku] || 0) + item.quantity;
-    }
-  }
-
-  const wasReserved = prevStatus && RESERVE_STATUSES.includes(prevStatus);
-  const shouldReserve = RESERVE_STATUSES.includes(newStatus);
-  const shouldReleaseDespacho = RELEASE_DESPACHO_STATUSES.includes(newStatus);
-  const shouldReleaseCancel = RELEASE_CANCEL_STATUSES.includes(newStatus);
-  const skuEntries = Object.entries(skuQtys);
-
-  if (!wasReserved && shouldReserve) {
-    // New shipment or transition to ready_to_ship — reserve stock
-    for (const [sku, qty] of skuEntries) {
-      try {
-        const ok = await sb.rpc("reservar_stock", {
-          p_sku: sku, p_cantidad: qty,
-        });
-        if (ok.data === false) {
-          console.warn(`[ML] reservar_stock: insufficient stock for ${sku} (need ${qty})`);
-        }
-      } catch (e) {
-        console.error(`[ML] reservar_stock error for ${sku}:`, e);
-      }
-    }
-  } else if (wasReserved && shouldReleaseDespacho) {
-    // Delivered — release reservation only (stock already deducted during picking)
-    for (const [sku, qty] of skuEntries) {
-      try {
-        await sb.rpc("liberar_reserva", {
-          p_sku: sku, p_cantidad: qty, p_descontar: false,
-          p_motivo: "despacho_ml", p_operario: "webhook",
-        });
-      } catch (e) {
-        console.error(`[ML] liberar_reserva (despacho) error for ${sku}:`, e);
-      }
-    }
-  } else if (wasReserved && shouldReleaseCancel) {
-    // Cancelled — release reservation only
-    for (const [sku, qty] of skuEntries) {
-      try {
-        await sb.rpc("liberar_reserva", {
-          p_sku: sku, p_cantidad: qty, p_descontar: false,
-        });
-      } catch (e) {
-        console.error(`[ML] liberar_reserva (cancel) error for ${sku}:`, e);
-      }
-    }
-  }
+  // 7. Stock reservations are now COMPUTED (not incremental).
+  // reconciliar_reservas() runs every sync cycle and computes qty_reserved
+  // from shipment state + picking state. No reservation/release logic here.
 
   const ltLabel = shipInfo.logistic_type === "self_service" ? "Flex"
     : shipInfo.logistic_type === "cross_docking" ? "Colecta"
@@ -880,7 +809,6 @@ async function refreshShipmentStatuses(): Promise<{ checked: number; updated: nu
   if (!stale || stale.length === 0) return { checked: 0, updated: 0 };
 
   let updated = 0;
-  const TERMINAL_STATUSES = ["delivered", "cancelled", "not_delivered"];
 
   for (const row of stale as { shipment_id: number; status: string; substatus?: string }[]) {
     const shipment = await mlGet<{ id: number; status: string; substatus?: string }>(
@@ -903,44 +831,7 @@ async function refreshShipmentStatuses(): Promise<{ checked: number; updated: nu
       if (statusChanged) {
         console.log(`[ML] Shipment ${row.shipment_id}: ${row.status} → ${shipment.status}`);
       }
-
-      // If shipment moved to terminal status, release its reservations
-      if (statusChanged && TERMINAL_STATUSES.includes(shipment.status)) {
-        const { data: items } = await sb.from("ml_shipment_items")
-          .select("seller_sku, quantity").eq("shipment_id", row.shipment_id);
-        if (items && items.length > 0) {
-          // Resolve seller_sku → physical SKU via composicion_venta
-          const sellerSkus = items.map((i: { seller_sku: string }) => i.seller_sku).filter(Boolean);
-          const { data: compMap } = await sb.from("composicion_venta")
-            .select("sku_venta, sku_origen").in("sku_venta", sellerSkus);
-          const skuToOrigen: Record<string, string> = {};
-          for (const c of (compMap || []) as { sku_venta: string; sku_origen: string }[]) {
-            const venta = c.sku_venta.toUpperCase();
-            const origen = c.sku_origen.toUpperCase();
-            if (!skuToOrigen[venta] || skuToOrigen[venta] === venta) {
-              skuToOrigen[venta] = origen;
-            }
-          }
-          // Aggregate by physical SKU
-          const skuQtys: Record<string, number> = {};
-          for (const item of items as { seller_sku: string; quantity: number }[]) {
-            const physicalSku = skuToOrigen[item.seller_sku.toUpperCase()] || item.seller_sku;
-            skuQtys[physicalSku] = (skuQtys[physicalSku] || 0) + item.quantity;
-          }
-          // Release reservations (descontar=false: stock already deducted during picking)
-          for (const [sku, qty] of Object.entries(skuQtys)) {
-            try {
-              await sb.rpc("liberar_reserva", {
-                p_sku: sku, p_cantidad: qty, p_descontar: false,
-                p_motivo: `refresh_${shipment.status}`, p_operario: "sync",
-              });
-            } catch (e) {
-              console.error(`[ML] refreshShipmentStatuses liberar_reserva error for ${sku}:`, e);
-            }
-          }
-          console.log(`[ML] Shipment ${row.shipment_id}: released reservations (${shipment.status})`);
-        }
-      }
+      // Reservations are computed — reconciliar_reservas() handles adjustments
     }
   }
 
@@ -968,6 +859,20 @@ export async function syncRecentOrders(): Promise<{ total: number; new_orders: n
   if (!result) return { total: 0, new_orders: 0 };
 
   const batch = await processOrderBatch(result.results, config);
+
+  // 3. Reconciliar reservas (modelo computado — ajusta qty_reserved desde estado actual)
+  try {
+    const sb = getServerSupabase();
+    if (sb) {
+      const { data: diff } = await sb.rpc("reconciliar_reservas");
+      if (diff && (diff as unknown[]).length > 0) {
+        console.log(`[ML Sync] Reconciliación: ${(diff as unknown[]).length} SKUs ajustados`);
+      }
+    }
+  } catch (e) {
+    console.error("[ML Sync] reconciliar_reservas error:", e);
+  }
+
   return { total: result.paging.total, new_orders: batch.items };
 }
 

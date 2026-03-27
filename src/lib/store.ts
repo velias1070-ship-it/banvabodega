@@ -1772,34 +1772,10 @@ export async function getPickingsByDate(fecha: string): Promise<db.DBPickingSess
 }
 
 // Aggregate and reserve stock for picking lines (by SKU to avoid multiple reserves)
-async function reservarStockPicking(lineas: db.PickingLinea[], sessionId: string) {
-  const skuQtys: Record<string, number> = {};
-  for (const l of lineas) {
-    if (l.estado === "PICKEADO") continue;
-    for (const c of l.componentes) {
-      if (c.estado === "PICKEADO") continue;
-      skuQtys[c.skuOrigen] = (skuQtys[c.skuOrigen] || 0) + c.unidades;
-    }
-  }
-  for (const [sku, qty] of Object.entries(skuQtys)) {
-    try {
-      const ok = await db.reservarStock(sku, qty);
-      if (!ok) console.warn(`[Picking] reservarStock: insufficient stock for ${sku} (need ${qty})`);
-      db.addToStockSyncQueue([sku]).catch(() => {});
-    } catch (e) {
-      console.error(`[Picking] reservarStock error for ${sku}:`, e);
-    }
-  }
-}
-
-// Create picking session + reserve stock for envio_full components
-// NOTE: Flex sessions don't reserve here — the ML webhook already reserved when the shipment was processed
+// Create picking session (reservations are computed by reconciliar_reservas, not managed here)
 export async function crearPickingSession(fecha: string, lineas: db.PickingLinea[], tipo?: db.PickingTipo, titulo?: string): Promise<string | null> {
   const resolvedTipo = tipo || "flex";
   const id = await db.createPickingSession({ fecha, estado: "ABIERTA", lineas, tipo: resolvedTipo, titulo });
-  if (id && isConfigured() && resolvedTipo === "envio_full") {
-    await reservarStockPicking(lineas, id);
-  }
   return id;
 }
 
@@ -2222,21 +2198,14 @@ export async function pickearComponente(
     ...(allDone ? { completed_at: new Date().toISOString() } : {}),
   });
 
-  // Release reservation + deduct stock AFTER session is saved
+  // Deduct stock — reservations are computed by reconciliar_reservas(), not managed here
   if (isConfigured()) {
-    const released = await db.liberarReserva({
-      sku: comp.skuOrigen, cantidad: comp.unidades, descontar: true,
+    await db.registrarMovimientoStock({
+      sku: comp.skuOrigen, posicion: comp.posicion && comp.posicion !== "?" ? comp.posicion : "SIN_ASIGNAR",
+      delta: -comp.unidades, tipo: "salida",
       motivo: "venta_flex", operario,
+      nota: `Picking Flex: ${linea.skuVenta} ×${linea.qtyPedida}`,
     });
-    if (!released) {
-      // No reservation found — fallback to direct movement
-      await db.registrarMovimientoStock({
-        sku: comp.skuOrigen, posicion: comp.posicion && comp.posicion !== "?" ? comp.posicion : "SIN_ASIGNAR",
-        delta: -comp.unidades, tipo: "salida",
-        motivo: "venta_flex", operario,
-        nota: `Picking Flex: ${linea.skuVenta} ×${linea.qtyPedida} [sin reserva]`,
-      });
-    }
     db.addToStockSyncQueue([comp.skuOrigen]).catch(() => {});
   }
 
@@ -2262,18 +2231,12 @@ async function pickearComponenteFallback(
   const comp = linea.componentes[compIdx];
   if (!comp || comp.estado === "PICKEADO") return false;
   if (isConfigured()) {
-    const released = await db.liberarReserva({
-      sku: comp.skuOrigen, cantidad: comp.unidades, descontar: true,
+    await db.registrarMovimientoStock({
+      sku: comp.skuOrigen, posicion: comp.posicion && comp.posicion !== "?" ? comp.posicion : "SIN_ASIGNAR",
+      delta: -comp.unidades, tipo: "salida",
       motivo: "venta_flex", operario,
+      nota: `Picking Flex: ${linea.skuVenta} ×${comp.unidades} [fallback]`,
     });
-    if (!released) {
-      await db.registrarMovimientoStock({
-        sku: comp.skuOrigen, posicion: comp.posicion && comp.posicion !== "?" ? comp.posicion : "SIN_ASIGNAR",
-        delta: -comp.unidades, tipo: "salida",
-        motivo: "venta_flex", operario,
-        nota: `Picking Flex: ${linea.skuVenta} ×${comp.unidades} [sin reserva/fallback]`,
-      });
-    }
   }
   comp.estado = "PICKEADO";
   comp.pickedAt = new Date().toISOString();
@@ -2298,7 +2261,7 @@ export async function despickearComponente(
   const comp = linea.componentes[compIdx];
   if (!comp || comp.estado !== "PICKEADO") return false;
 
-  // Revert: re-enter stock + re-reserve for this component
+  // Revert: re-enter stock (reservations are computed by reconciliar_reservas)
   if (isConfigured()) {
     const pos = comp.posicion;
     await db.registrarMovimientoStock({
@@ -2307,7 +2270,6 @@ export async function despickearComponente(
       motivo: "despick", operario,
       nota: `Reversión picking: ${linea.skuVenta} ×${comp.unidades} (despick)`,
     });
-    await db.reservarStock(comp.skuOrigen, comp.unidades);
   }
 
   // Revertir estado del componente
