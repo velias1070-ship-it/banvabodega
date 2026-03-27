@@ -379,6 +379,22 @@ export async function transferirStock(sku: string, posOrigen: string, posDestino
   return data as boolean;
 }
 
+export interface DBReconciliacion {
+  sku: string;
+  reserva_anterior: number;
+  reserva_nueva: number;
+}
+
+export async function reconciliarReservas(): Promise<DBReconciliacion[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data, error } = await sb.rpc("reconciliar_reservas");
+  if (error) {
+    console.error("reconciliarReservas error:", error.message);
+    return [];
+  }
+  return (data || []) as DBReconciliacion[];
+}
+
 export interface DBStockProyectado {
   sku: string;
   on_hand: number;

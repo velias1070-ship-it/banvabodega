@@ -5,8 +5,8 @@ import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, s
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia, IntegrityError } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
-import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado, transferirStock } from "@/lib/db";
-import type { DBStockProyectado } from "@/lib/db";
+import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado, transferirStock, reconciliarReservas } from "@/lib/db";
+import type { DBStockProyectado, DBReconciliacion } from "@/lib/db";
 import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap, ShipmentWithItems } from "@/lib/db";
 import { getOAuthUrl } from "@/lib/ml";
 import Link from "next/link";
@@ -4727,13 +4727,31 @@ function Dashboard() {
   const totalUnits = skusWithStock.reduce((sum, sku) => sum + skuTotal(sku), 0);
   const totalValue = skusWithStock.reduce((sum, sku) => { const p = s.products[sku]; return sum + (p ? p.cost * skuTotal(sku) : 0); }, 0);
   const [dashStock, setDashStock] = useState<{comprometido:number;disponible:number;enRiesgo:number}>({comprometido:0,disponible:0,enRiesgo:0});
+  const [reconciling, setReconciling] = useState(false);
+  const [lastReconcDiff, setLastReconcDiff] = useState<DBReconciliacion[]>([]);
+
+  const loadDashStock = useCallback(async () => {
+    const rows = await fetchStockProyectado();
+    const comp = rows.reduce((s, r) => s + r.reserved, 0);
+    const disp = rows.reduce((s, r) => s + r.disponible, 0);
+    const risk = rows.filter(r => r.disponible > 0 && r.disponible <= 5).length;
+    setDashStock({comprometido:comp, disponible:disp, enRiesgo:risk});
+  }, []);
+
+  const runReconciliacion = useCallback(async () => {
+    setReconciling(true);
+    try {
+      const diff = await reconciliarReservas();
+      setLastReconcDiff(diff);
+      await loadDashStock();
+    } finally {
+      setReconciling(false);
+    }
+  }, [loadDashStock]);
+
   useEffect(() => {
-    fetchStockProyectado().then(rows => {
-      const comp = rows.reduce((s, r) => s + r.reserved, 0);
-      const disp = rows.reduce((s, r) => s + r.disponible, 0);
-      const risk = rows.filter(r => r.disponible > 0 && r.disponible <= 5).length;
-      setDashStock({comprometido:comp, disponible:disp, enRiesgo:risk});
-    });
+    // Auto-reconciliar al cargar dashboard para mantener qty_reserved sincronizado
+    runReconciliacion();
   }, []);
   const usedPos = activePositions().filter(p => posContents(p.id).length > 0).length;
   const totalPos = activePositions().length;
@@ -4755,10 +4773,17 @@ function Dashboard() {
         <div className="kpi"><div className="kpi-label">Posiciones</div><div className="kpi-val">{usedPos}<span style={{fontSize:14,color:"var(--txt3)"}}> / {totalPos}</span></div><div className="kpi-sub">{totalPos-usedPos} libres</div></div>
         <div className="kpi"><div className="kpi-label">Movimientos hoy</div><div className="kpi-val cyan">{todayMovs.length}</div></div>
         <div className="kpi"><div className="kpi-label">Flujo hoy</div><div className="kpi-val"><span style={{color:"var(--green)"}}>+{todayIn}</span> <span style={{color:"var(--red)"}}>-{todayOut}</span></div></div>
-        <div className="kpi"><div className="kpi-label">Comprometido</div><div className="kpi-val" style={{color:"var(--amber)"}}>{dashStock.comprometido}</div></div>
+        <div className="kpi"><div className="kpi-label">Comprometido</div><div className="kpi-val" style={{color:"var(--amber)"}}>{dashStock.comprometido}</div><div className="kpi-sub"><button onClick={runReconciliacion} disabled={reconciling} style={{background:"none",border:"1px solid var(--amber)",color:"var(--amber)",borderRadius:6,padding:"2px 8px",fontSize:11,cursor:"pointer",opacity:reconciling?0.5:1}}>{reconciling ? "Reconciliando..." : "Reconciliar"}</button></div></div>
         <div className="kpi"><div className="kpi-label">Disponible</div><div className="kpi-val green">{dashStock.disponible.toLocaleString("es-CL")}</div></div>
         {dashStock.enRiesgo > 0 && <div className="kpi"><div className="kpi-label">SKUs en riesgo</div><div className="kpi-val" style={{color:"var(--red)"}}>{dashStock.enRiesgo}</div><div className="kpi-sub">disponible ≤ 5</div></div>}
       </div>
+      {lastReconcDiff.length > 0 && <div className="card" style={{padding:10,marginBottom:12,fontSize:12}}>
+        <div style={{fontWeight:700,marginBottom:6,color:"var(--amber)"}}>Reconciliación: {lastReconcDiff.length} SKU{lastReconcDiff.length>1?"s":""} ajustados</div>
+        <table className="tbl" style={{width:"100%"}}><thead><tr><th>SKU</th><th>Antes</th><th>Ahora</th></tr></thead><tbody>
+          {lastReconcDiff.map(d => <tr key={d.sku}><td className="mono">{d.sku}</td><td style={{textAlign:"right",color:"var(--red)"}}>{d.reserva_anterior}</td><td style={{textAlign:"right",color:"var(--green)"}}>{d.reserva_nueva}</td></tr>)}
+        </tbody></table>
+        <button onClick={() => setLastReconcDiff([])} style={{marginTop:6,background:"none",border:"1px solid var(--bg4)",color:"var(--txt3)",borderRadius:6,padding:"2px 8px",fontSize:11,cursor:"pointer"}}>Cerrar</button>
+      </div>}
 
       <div className="admin-grid-2">
         <div className="card">
