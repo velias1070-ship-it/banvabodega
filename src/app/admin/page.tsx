@@ -64,10 +64,11 @@ function LoginGate({ onLogin }: { onLogin: (pin: string) => boolean }) {
 }
 
 export default function AdminPage() {
-  const [tab, setTab] = useState<"dash"|"rec"|"flex"|"enviosfull"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"intel"|"compras"|"eventos"|"ventasml"|"agentes"|"stockml"|"config">(() => {
+  type AdminTab = "dash"|"rec"|"flex"|"enviosfull"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"intel"|"compras"|"eventos"|"ventasml"|"agentes"|"stockml"|"config";
+  const [tab, setTab] = useState<AdminTab>(() => {
     if (typeof window !== "undefined") {
       const saved = sessionStorage.getItem("banva_admin_tab");
-      if (saved) return saved as typeof tab;
+      if (saved) return saved as AdminTab;
     }
     return "dash";
   });
