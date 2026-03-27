@@ -99,9 +99,16 @@ export default function RecepcionesOperador() {
     if (updated) {
       // Check if all lines of this reception are UBICADA
       if (lineas.every(l => l.estado === "UBICADA")) {
-        await actualizarRecepcion(selLinea.recepcion_id, { estado: "COMPLETADA", completed_at: new Date().toISOString() });
-        // Trigger: recepción completada
-        import("@/lib/agents-triggers").then(m => m.dispararTrigger("recepcion_completada", { recepcion_id: selLinea.recepcion_id })).catch(() => {});
+        // Detectar discrepancias de cantidad antes de cerrar
+        const hasFaltantes = lineas.some(l => (l.qty_recibida || 0) < (l.qty_factura || 0));
+        if (hasFaltantes) {
+          // Hay faltantes — detectar discrepancias pero NO cerrar la recepción
+          import("@/lib/store").then(m => m.detectarDiscrepanciasQty(selLinea.recepcion_id, lineas)).catch(() => {});
+        } else {
+          await actualizarRecepcion(selLinea.recepcion_id, { estado: "COMPLETADA", completed_at: new Date().toISOString() });
+          // Trigger: recepción completada
+          import("@/lib/agents-triggers").then(m => m.dispararTrigger("recepcion_completada", { recepcion_id: selLinea.recepcion_id })).catch(() => {});
+        }
       }
       if (updated.estado === "UBICADA") {
         // Line fully done, unlock and go back
