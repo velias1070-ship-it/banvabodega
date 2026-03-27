@@ -727,13 +727,26 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
   const RELEASE_DESPACHO_STATUSES = ["delivered"];
   const RELEASE_CANCEL_STATUSES = ["cancelled", "not_delivered"];
 
-  // Collect SKU quantities from this shipment's items
+  // Collect SKU quantities from this shipment's items, resolved to physical SKU
   const skuQtys: Record<string, number> = {};
   {
     const { data: currentItems } = await sb.from("ml_shipment_items")
       .select("seller_sku, quantity").eq("shipment_id", shipmentId);
+    // Build seller_sku → sku_origen mapping from composicion_venta
+    const sellerSkus = (currentItems || []).map((i: { seller_sku: string }) => i.seller_sku).filter(Boolean);
+    const { data: compMap } = await sb.from("composicion_venta")
+      .select("sku_venta, sku_origen").in("sku_venta", sellerSkus);
+    const skuToOrigen: Record<string, string> = {};
+    for (const c of (compMap || []) as { sku_venta: string; sku_origen: string }[]) {
+      // Use first match (principal component)
+      if (!skuToOrigen[c.sku_venta.toUpperCase()]) {
+        skuToOrigen[c.sku_venta.toUpperCase()] = c.sku_origen.toUpperCase();
+      }
+    }
     for (const item of (currentItems || []) as { seller_sku: string; quantity: number }[]) {
-      skuQtys[item.seller_sku] = (skuQtys[item.seller_sku] || 0) + item.quantity;
+      // Resolve to physical SKU — fallback to seller_sku if no mapping
+      const physicalSku = skuToOrigen[item.seller_sku.toUpperCase()] || item.seller_sku;
+      skuQtys[physicalSku] = (skuQtys[physicalSku] || 0) + item.quantity;
     }
   }
 
