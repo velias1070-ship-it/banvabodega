@@ -5,7 +5,8 @@ import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, s
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia, IntegrityError } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
-import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas } from "@/lib/db";
+import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado } from "@/lib/db";
+import type { DBStockProyectado } from "@/lib/db";
 import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap, ShipmentWithItems } from "@/lib/db";
 import { getOAuthUrl } from "@/lib/ml";
 import Link from "next/link";
@@ -4711,6 +4712,15 @@ function Dashboard() {
   const skusWithStock = Object.keys(s.stock).filter(sku => skuTotal(sku) > 0);
   const totalUnits = skusWithStock.reduce((sum, sku) => sum + skuTotal(sku), 0);
   const totalValue = skusWithStock.reduce((sum, sku) => { const p = s.products[sku]; return sum + (p ? p.cost * skuTotal(sku) : 0); }, 0);
+  const [dashStock, setDashStock] = useState<{comprometido:number;disponible:number;enRiesgo:number}>({comprometido:0,disponible:0,enRiesgo:0});
+  useEffect(() => {
+    fetchStockProyectado().then(rows => {
+      const comp = rows.reduce((s, r) => s + r.reserved, 0);
+      const disp = rows.reduce((s, r) => s + r.disponible, 0);
+      const risk = rows.filter(r => r.disponible > 0 && r.disponible <= 5).length;
+      setDashStock({comprometido:comp, disponible:disp, enRiesgo:risk});
+    });
+  }, []);
   const usedPos = activePositions().filter(p => posContents(p.id).length > 0).length;
   const totalPos = activePositions().length;
   const today = fmtDate(new Date().toISOString());
@@ -4731,6 +4741,9 @@ function Dashboard() {
         <div className="kpi"><div className="kpi-label">Posiciones</div><div className="kpi-val">{usedPos}<span style={{fontSize:14,color:"var(--txt3)"}}> / {totalPos}</span></div><div className="kpi-sub">{totalPos-usedPos} libres</div></div>
         <div className="kpi"><div className="kpi-label">Movimientos hoy</div><div className="kpi-val cyan">{todayMovs.length}</div></div>
         <div className="kpi"><div className="kpi-label">Flujo hoy</div><div className="kpi-val"><span style={{color:"var(--green)"}}>+{todayIn}</span> <span style={{color:"var(--red)"}}>-{todayOut}</span></div></div>
+        <div className="kpi"><div className="kpi-label">Comprometido</div><div className="kpi-val" style={{color:"var(--amber)"}}>{dashStock.comprometido}</div></div>
+        <div className="kpi"><div className="kpi-label">Disponible</div><div className="kpi-val green">{dashStock.disponible.toLocaleString("es-CL")}</div></div>
+        {dashStock.enRiesgo > 0 && <div className="kpi"><div className="kpi-label">SKUs en riesgo</div><div className="kpi-val" style={{color:"var(--red)"}}>{dashStock.enRiesgo}</div><div className="kpi-sub">disponible ≤ 5</div></div>}
       </div>
 
       <div className="admin-grid-2">
@@ -4798,6 +4811,15 @@ function Inventario() {
   const s = getStore();
   const [skuMovs, setSkuMovs] = useState<Movement[]>([]);
   const [skuMovsLoading, setSkuMovsLoading] = useState(false);
+  const [stockProy, setStockProy] = useState<Map<string, DBStockProyectado>>(new Map());
+
+  useEffect(() => {
+    fetchStockProyectado().then(rows => {
+      const m = new Map<string, DBStockProyectado>();
+      for (const r of rows) m.set(r.sku, r);
+      setStockProy(m);
+    });
+  }, []);
 
   useEffect(() => {
     if (!expanded) { setSkuMovs([]); return; }
@@ -5208,6 +5230,18 @@ function Inventario() {
               <>
                 <div style={{fontSize:10,color:"var(--txt3)"}}>{filteredSkus.length} SKUs{soloSinEtiquetar ? " sin etiquetar" : ""}</div>
                 <div className="mono" style={{fontSize:14,fontWeight:700,color:"var(--blue)"}}>{grandTotal.toLocaleString("es-CL")} uds</div>
+                {stockProy.size > 0 && (() => {
+                  const totalReserved = filteredSkus.reduce((s, sku) => s + (stockProy.get(sku)?.reserved || 0), 0);
+                  const totalDisp = filteredSkus.reduce((s, sku) => s + (stockProy.get(sku)?.disponible || skuTotal(sku)), 0);
+                  const totalEnCamino = filteredSkus.reduce((s, sku) => s + (stockProy.get(sku)?.en_camino || 0), 0);
+                  const enRiesgo = filteredSkus.filter(sku => { const d = stockProy.get(sku)?.disponible ?? skuTotal(sku); return d > 0 && d <= 5; }).length;
+                  return <div style={{display:"flex",gap:8,marginTop:4,fontSize:10}}>
+                    <span style={{color:"var(--amber)"}}>Comprometido: <b>{totalReserved}</b></span>
+                    <span style={{color:"var(--green)"}}>Disponible: <b>{totalDisp}</b></span>
+                    {totalEnCamino > 0 && <span style={{color:"var(--blue)"}}>En camino: <b>{totalEnCamino}</b></span>}
+                    {enRiesgo > 0 && <span style={{color:"var(--red)"}}>{enRiesgo} en riesgo</span>}
+                  </div>;
+                })()}
               </>
             ) : (
               <>
@@ -5410,7 +5444,7 @@ function Inventario() {
             <div className="card" style={{padding:0,overflow:"hidden"}}>
               <table className="tbl">
                 <thead><tr>
-                  <th>SKU</th><th>Producto</th><th>Cat.</th><th>Proveedor</th><th>Etiquetado</th><th>Ubicaciones</th><th style={{textAlign:"right"}}>Total</th><th style={{textAlign:"right"}}>Valor</th>
+                  <th>SKU</th><th>Producto</th><th>Cat.</th><th>Proveedor</th><th>Etiquetado</th><th>Ubicaciones</th><th style={{textAlign:"right"}}>Total</th><th style={{textAlign:"right"}}>Comprom.</th><th style={{textAlign:"right"}}>Disponible</th><th style={{textAlign:"right"}}>En camino</th><th>Estado</th><th style={{textAlign:"right"}}>Valor</th>
                 </tr></thead>
                 <tbody>
                   {filteredSkus.map(sku=>{
@@ -5445,9 +5479,24 @@ function Inventario() {
                         )}</td>
                         <td>{positions.map(p=><span key={p.pos} className="mono" style={{fontSize:10,marginRight:6,padding:"2px 6px",background:"var(--bg3)",borderRadius:4}}>{p.pos}: {p.qty}</span>)}</td>
                         <td className="mono" style={{textAlign:"right",fontWeight:700,color:"var(--blue)"}}>{total}</td>
+                        {(() => {
+                          const sp = stockProy.get(sku);
+                          const reserved = sp?.reserved || 0;
+                          const disponible = sp?.disponible ?? total;
+                          const enCamino = sp?.en_camino || 0;
+                          const estado = disponible > 10 ? "OK" : disponible > 0 ? "Bajo" : reserved > 0 ? "Agotado (comprometido)" : enCamino > 0 ? "Agotado (OC en camino)" : total === 0 ? "Sin stock" : "Agotado";
+                          const estadoColor = disponible > 10 ? "var(--green)" : disponible > 0 ? "var(--amber)" : "var(--red)";
+                          const estadoBg = disponible > 10 ? "var(--greenBg)" : disponible > 0 ? "var(--amberBg)" : "var(--redBg)";
+                          return <>
+                            <td className="mono" style={{textAlign:"right",fontSize:11,color:reserved>0?"var(--amber)":"var(--txt3)"}}>{reserved||"—"}</td>
+                            <td className="mono" style={{textAlign:"right",fontWeight:700,fontSize:12,color:estadoColor}}>{disponible}</td>
+                            <td className="mono" style={{textAlign:"right",fontSize:11,color:enCamino>0?"var(--blue)":"var(--txt3)"}}>{enCamino||"—"}</td>
+                            <td><span style={{padding:"2px 6px",borderRadius:4,fontSize:9,fontWeight:700,background:estadoBg,color:estadoColor,whiteSpace:"nowrap"}}>{estado}</span></td>
+                          </>;
+                        })()}
                         <td className="mono" style={{textAlign:"right",fontSize:11}}>{prod?fmtMoney(prod.cost*total):"-"}</td>
                       </tr>,
-                      isOpen && <tr key={sku+"-detail"}><td colSpan={8} style={{background:"var(--bg3)",padding:16}}>
+                      isOpen && <tr key={sku+"-detail"}><td colSpan={12} style={{background:"var(--bg3)",padding:16}}>
                         {/* Detalle por formato de venta */}
                         {(()=>{const detalle=skuStockDetalle(sku);return detalle.length>0&&(
                           <div style={{marginBottom:16}}>
@@ -8719,7 +8768,16 @@ function AdminStockML() {
   const [diagnostics, setDiagnostics] = useState<string[]>([]);
   const [statusFilter, setStatusFilter] = useState<"todos"|"active"|"paused"|"closed"|"sin_status">("todos");
   const [syncingStatus, setSyncingStatus] = useState(false);
+  const [stockProy2, setStockProy2] = useState<Map<string, DBStockProyectado>>(new Map());
   const s = getStore();
+
+  useEffect(() => {
+    fetchStockProyectado().then(rows => {
+      const m = new Map<string, DBStockProyectado>();
+      for (const r of rows) m.set(r.sku, r);
+      setStockProy2(m);
+    });
+  }, []);
 
   // Carga rápida: WMS + cache ML desde DB (instantáneo, sin llamar a ML API)
   const loadWms = useCallback(async () => {
@@ -9062,6 +9120,7 @@ function AdminStockML() {
                 <th style={{textAlign:"left"}}>SKU</th>
                 <th style={{textAlign:"left"}}>Producto</th>
                 <th style={{textAlign:"right"}}>Stock WMS</th>
+                <th style={{textAlign:"right"}}>Disp. WMS</th>
                 <th style={{textAlign:"right"}}>Flex ML</th>
                 <th style={{textAlign:"right"}}>Full ML</th>
                 <th style={{textAlign:"center",minWidth:100}}>Enviar a Flex</th>
@@ -9082,6 +9141,7 @@ function AdminStockML() {
                     <td style={{fontFamily:"var(--font-mono)",fontWeight:600}}>{r.sku}</td>
                     <td style={{color:"var(--txt2)",maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{prod?.name || "—"}</td>
                     <td style={{textAlign:"right",fontFamily:"var(--font-mono)",fontWeight:700,color:"var(--cyan)"}}>{r.stock_wms}</td>
+                    <td style={{textAlign:"right",fontFamily:"var(--font-mono)",fontWeight:600,color:"var(--green)"}}>{Math.max(0, r.stock_wms - (stockProy2.get(r.sku)?.reserved || 0))}</td>
                     <td style={{textAlign:"right",fontFamily:"var(--font-mono)",fontWeight:700,color:mlNotLoaded?"var(--txt3)":"var(--green)"}}>{mlNotLoaded ? "..." : r.stock_flex_ml}</td>
                     <td style={{textAlign:"right",fontFamily:"var(--font-mono)",color:"var(--txt3)"}}>{mlNotLoaded ? "..." : r.stock_full_ml}</td>
                     <td style={{textAlign:"center"}}>

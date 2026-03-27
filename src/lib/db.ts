@@ -366,6 +366,21 @@ export async function fetchStockDisponible(sku?: string): Promise<DBStockDisponi
   return (data || []) as DBStockDisponible[];
 }
 
+export interface DBStockProyectado {
+  sku: string;
+  on_hand: number;
+  reserved: number;
+  disponible: number;
+  en_camino: number;
+  proyectado: number;
+}
+
+export async function fetchStockProyectado(): Promise<DBStockProyectado[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("v_stock_proyectado").select("*");
+  return (data || []) as DBStockProyectado[];
+}
+
 // ==================== MOVIMIENTOS ====================
 export async function fetchMovimientos(limit = 200): Promise<DBMovimiento[]> {
   const sb = getSupabase(); if (!sb) return [];
