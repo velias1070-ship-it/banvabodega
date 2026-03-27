@@ -2890,7 +2890,14 @@ export async function resolverDiscrepanciaQty(
     await db.updateRecepcionLinea(discInfo.linea_id, { qty_factura: discInfo.qty_recibida });
   }
 
-  // After any resolution, check if all discrepancies are resolved → auto-close recepcion
+  // For RECLAMADO on FALTANTE: reopen the line so operador can receive the missing units later
+  if (estado === "RECLAMADO" && discInfo && discInfo.tipo === "FALTANTE" && discInfo.linea_id) {
+    await db.updateRecepcionLinea(discInfo.linea_id, { estado: "PENDIENTE" as db.DBRecepcionLinea["estado"] });
+  }
+
+  // After any resolution, check if all discrepancies are fully resolved → auto-close recepcion
+  // RECLAMADO = waiting for supplier, does NOT count as fully resolved
+  const ESTADOS_DEFINITIVOS: db.DiscrepanciaQtyEstado[] = ["ACEPTADO", "NOTA_CREDITO", "DEVOLUCION", "SUSTITUCION"];
   if (discInfo?.recepcion_id) {
     const [lineas, discsQty, discsCosto] = await Promise.all([
       db.fetchRecepcionLineas(discInfo.recepcion_id),
@@ -2898,7 +2905,7 @@ export async function resolverDiscrepanciaQty(
       db.fetchDiscrepancias(discInfo.recepcion_id),
     ]);
     const allUbicadas = lineas.every(l => l.estado === "UBICADA" || (l.qty_ubicada || 0) >= l.qty_factura);
-    const sinPendientesQty = discsQty.every(d => d.estado !== "PENDIENTE");
+    const sinPendientesQty = discsQty.every(d => ESTADOS_DEFINITIVOS.includes(d.estado as db.DiscrepanciaQtyEstado));
     const sinPendientesCosto = discsCosto.every(d => d.estado !== "PENDIENTE");
     if (allUbicadas && sinPendientesQty && sinPendientesCosto) {
       await db.updateRecepcion(discInfo.recepcion_id, { estado: "COMPLETADA", completed_at: new Date().toISOString() });
