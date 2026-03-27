@@ -62,21 +62,17 @@ BEGIN
     GROUP BY resolver_sku_fisico(si.seller_sku)
   ),
   picked_qty AS (
+    -- Use movimientos (audit log) instead of picking sessions for precision.
+    -- Each pick creates exactly one salida+venta_flex movement per SKU.
+    -- 48h window covers picks for shipments still in ready_to_ship.
     SELECT
-      UPPER(comp->>'skuOrigen') AS sku,
-      SUM((comp->>'unidades')::INTEGER)::INTEGER AS qty_picked
-    FROM picking_sessions ps,
-      jsonb_array_elements(ps.lineas) AS linea,
-      jsonb_array_elements(linea->'componentes') AS comp
-    WHERE ps.tipo = 'flex'
-      AND comp->>'estado' = 'PICKEADO'
-      AND (
-        ps.estado IN ('ABIERTA', 'EN_PROCESO')
-        OR (ps.estado = 'COMPLETADA'
-            AND ps.completed_at IS NOT NULL
-            AND ps.completed_at::timestamptz > now() - INTERVAL '48 hours')
-      )
-    GROUP BY UPPER(comp->>'skuOrigen')
+      UPPER(m.sku) AS sku,
+      SUM(m.cantidad)::INTEGER AS qty_picked
+    FROM movimientos m
+    WHERE m.tipo = 'salida'
+      AND m.motivo = 'venta_flex'
+      AND m.created_at > now() - INTERVAL '48 hours'
+    GROUP BY UPPER(m.sku)
   )
   SELECT
     sd.sku AS sku_fisico,
