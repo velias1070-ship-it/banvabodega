@@ -2396,27 +2396,39 @@ export async function pickearLineaFull(
     ...(sessionDone ? { completed_at: new Date().toISOString() } : {}),
   });
 
-  // Release reservation + deduct stock AFTER session is saved
+  // Deduct stock fire & forget — don't block UI, session is already saved as PICKEADO
   if (isConfigured()) {
-    const released = await db.liberarReserva({
-      sku: comp.skuOrigen, cantidad: comp.unidades, descontar: true,
-      motivo: "envio_full", operario,
-    });
-    if (!released) {
-      // No reservation found (session created before reservation system) — fallback to direct movement
-      await db.registrarMovimientoStock({
-        sku: comp.skuOrigen, posicion: comp.posicion && comp.posicion !== "?" ? comp.posicion : "SIN_ASIGNAR",
-        delta: -comp.unidades, tipo: "salida",
-        motivo: "envio_full", operario,
-        nota: `Envío Full: ${linea.skuVenta} (${comp.unidades} uds) [sin reserva]`,
-      });
-    }
+    const skuOrigen = comp.skuOrigen;
+    const unidades = comp.unidades;
+    const posicion = comp.posicion && comp.posicion !== "?" ? comp.posicion : "SIN_ASIGNAR";
+    const skuVentaLabel = linea.skuVenta;
+    (async () => {
+      try {
+        const released = await db.liberarReserva({
+          sku: skuOrigen, cantidad: unidades, descontar: true,
+          motivo: "envio_full", operario,
+        });
+        if (!released) {
+          await db.registrarMovimientoStock({
+            sku: skuOrigen, posicion, delta: -unidades, tipo: "salida",
+            motivo: "envio_full", operario,
+            nota: `Envío Full: ${skuVentaLabel} (${unidades} uds) [sin reserva]`,
+          });
+        }
+        await db.auditLog("pickearLineaFull:ok", {
+          entidad: "picking_session", entidad_id: sessionId, operario,
+          resultado: { lineaId, sku: skuOrigen, qty: unidades, posicion, skuVenta: skuVentaLabel, sessionDone },
+        });
+      } catch (e) {
+        console.error("[Picking Full] Stock deduction failed:", e);
+        await db.auditLog("pickearLineaFull:stock_error", {
+          entidad: "picking_session", entidad_id: sessionId, operario,
+          params: { sku: skuOrigen, qty: unidades, posicion },
+          error: e instanceof Error ? e.message : String(e),
+        }).catch(() => {});
+      }
+    })().catch(console.error);
   }
-
-  await db.auditLog("pickearLineaFull:ok", {
-    entidad: "picking_session", entidad_id: sessionId, operario,
-    resultado: { lineaId, sku: comp.skuOrigen, qty: comp.unidades, posicion: comp.posicion, skuVenta: linea.skuVenta, sessionDone },
-  });
 
   if (sessionDone) {
     import("./agents-triggers").then(m => m.dispararTrigger("picking_completado", { session_id: sessionId, tipo: "envio_full" })).catch(() => {});
