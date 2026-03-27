@@ -5,11 +5,7 @@
 --   Recalcula qty_reserved en tabla stock basándose en shipments pendientes
 --   reales (ready_to_ship + shipped, no fulfillment).
 --   Resuelve seller_sku → sku_origen via composicion_venta (primer mapeo).
---
--- CUÁNDO USAR:
---   - Al cargar el dashboard (auto)
---   - Botón manual en admin
---   - Cuando se detecten discrepancias entre reservas y shipments
+--   DESCUENTA items ya pickeados desde picking_sessions (componentes PICKEADO).
 --
 -- EJECUTAR EN: Supabase SQL Editor
 -- ============================================================================
@@ -30,33 +26,55 @@ BEGIN
     -- Paso 2: Reset todas las reservas a 0
     UPDATE stock SET qty_reserved = 0 WHERE qty_reserved > 0;
 
-    -- Paso 3: Calcular committed real desde shipments pendientes
-    -- Resuelve seller_sku → sku_origen via composicion_venta (solo primer mapeo por sku_venta)
+    -- Paso 3: Calcular items ya pickeados desde picking_sessions recientes (flex)
+    DROP TABLE IF EXISTS _picked;
+    CREATE TEMP TABLE _picked ON COMMIT DROP AS
+    SELECT
+        UPPER(comp->>'skuOrigen') AS sku,
+        SUM((comp->>'unidades')::INTEGER) AS qty_picked
+    FROM picking_sessions ps,
+        jsonb_array_elements(ps.lineas) AS linea,
+        jsonb_array_elements(linea->'componentes') AS comp
+    WHERE ps.tipo = 'flex'
+      AND ps.estado IN ('ABIERTA', 'EN_PROCESO', 'COMPLETADA')
+      AND ps.fecha >= (CURRENT_DATE - INTERVAL '3 days')::TEXT
+      AND comp->>'estado' = 'PICKEADO'
+    GROUP BY UPPER(comp->>'skuOrigen');
+
+    -- Paso 4: Calcular committed real desde shipments pendientes
+    -- Resuelve seller_sku → sku_origen via composicion_venta (solo primer mapeo)
+    -- Luego resta lo ya pickeado
     FOR v_row IN
         SELECT
-            UPPER(COALESCE(cv.sku_origen, si.seller_sku)) AS sku_fisico,
-            SUM(si.quantity)::INTEGER AS total_qty
-        FROM ml_shipment_items si
-        JOIN ml_shipments s ON s.shipment_id = si.shipment_id
-        LEFT JOIN (
-            SELECT DISTINCT ON (UPPER(sku_venta))
-                UPPER(sku_venta) AS sku_venta_upper,
-                UPPER(sku_origen) AS sku_origen
-            FROM composicion_venta
-            ORDER BY UPPER(sku_venta), id
-        ) cv ON cv.sku_venta_upper = UPPER(si.seller_sku)
-        WHERE s.status IN ('ready_to_ship', 'shipped')
-          AND s.logistic_type != 'fulfillment'
-        GROUP BY UPPER(COALESCE(cv.sku_origen, si.seller_sku))
+            committed.sku_fisico,
+            GREATEST(0, committed.total_qty - COALESCE(pk.qty_picked, 0))::INTEGER AS net_qty
+        FROM (
+            SELECT
+                UPPER(COALESCE(cv.sku_origen, si.seller_sku)) AS sku_fisico,
+                SUM(si.quantity)::INTEGER AS total_qty
+            FROM ml_shipment_items si
+            JOIN ml_shipments s ON s.shipment_id = si.shipment_id
+            LEFT JOIN (
+                SELECT DISTINCT ON (UPPER(sku_venta))
+                    UPPER(sku_venta) AS sku_venta_upper,
+                    UPPER(sku_origen) AS sku_origen
+                FROM composicion_venta ORDER BY UPPER(sku_venta), id
+            ) cv ON cv.sku_venta_upper = UPPER(si.seller_sku)
+            WHERE s.status IN ('ready_to_ship', 'shipped')
+              AND s.logistic_type != 'fulfillment'
+            GROUP BY UPPER(COALESCE(cv.sku_origen, si.seller_sku))
+        ) committed
+        LEFT JOIN _picked pk ON pk.sku = committed.sku_fisico
+        WHERE GREATEST(0, committed.total_qty - COALESCE(pk.qty_picked, 0)) > 0
     LOOP
         -- Distribuir reserva entre posiciones con stock
-        v_restante := v_row.total_qty;
+        v_restante := v_row.net_qty;
 
         FOR v_stock_row IN
-            SELECT id, cantidad, qty_reserved, (cantidad - qty_reserved) AS libre
+            SELECT stock.id, stock.cantidad, stock.qty_reserved, (stock.cantidad - stock.qty_reserved) AS libre
             FROM stock
-            WHERE sku = v_row.sku_fisico AND cantidad > qty_reserved
-            ORDER BY (cantidad - qty_reserved) DESC, id
+            WHERE stock.sku = v_row.sku_fisico AND stock.cantidad > stock.qty_reserved
+            ORDER BY (stock.cantidad - stock.qty_reserved) DESC, stock.id
             FOR UPDATE
         LOOP
             EXIT WHEN v_restante <= 0;
@@ -73,7 +91,7 @@ BEGIN
         END LOOP;
     END LOOP;
 
-    -- Paso 4: Retornar reporte de cambios
+    -- Paso 5: Retornar reporte de cambios
     RETURN QUERY
     SELECT
         COALESCE(p.sku, n.sku) AS out_sku,
