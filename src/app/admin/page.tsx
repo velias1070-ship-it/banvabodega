@@ -64,7 +64,15 @@ function LoginGate({ onLogin }: { onLogin: (pin: string) => boolean }) {
 }
 
 export default function AdminPage() {
-  const [tab, setTab] = useState<"dash"|"rec"|"flex"|"enviosfull"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"intel"|"compras"|"eventos"|"ventasml"|"agentes"|"stockml"|"config">("dash");
+  const [tab, setTab] = useState<"dash"|"rec"|"flex"|"enviosfull"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"intel"|"compras"|"eventos"|"ventasml"|"agentes"|"stockml"|"config">(() => {
+    if (typeof window !== "undefined") {
+      const saved = sessionStorage.getItem("banva_admin_tab");
+      if (saved) return saved as typeof tab;
+    }
+    return "dash";
+  });
+  useEffect(() => { sessionStorage.setItem("banva_admin_tab", tab); }, [tab]);
+
   const SIDEBAR_GROUPS = [
     {section:"OPERACIONES",icon:"⚡",items:[["rec","Recepciones","📦"],["flex","Ultima Milla","🚚"],["enviosfull","Envios Full","📦"],["ops","Operaciones","⚡"],["reposicion","Reposición","🔄"]] as const},
     {section:"INVENTARIO",icon:"📦",items:[["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["stockml","Stock ML","📡"]] as const},
