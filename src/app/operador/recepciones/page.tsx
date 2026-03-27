@@ -102,8 +102,13 @@ export default function RecepcionesOperador() {
         // Detectar discrepancias de cantidad antes de cerrar
         const hasFaltantes = lineas.some(l => (l.qty_recibida || 0) < (l.qty_factura || 0));
         if (hasFaltantes) {
-          // Hay faltantes — detectar discrepancias pero NO cerrar la recepción
+          // Hay faltantes — detectar discrepancias, reabrir líneas faltantes y NO cerrar
           import("@/lib/store").then(m => m.detectarDiscrepanciasQty(selLinea.recepcion_id, lineas)).catch(() => {});
+          for (const l of lineas) {
+            if ((l.qty_recibida || 0) < (l.qty_factura || 0)) {
+              await actualizarLineaRecepcion(l.id!, { estado: "PENDIENTE" });
+            }
+          }
         } else {
           await actualizarRecepcion(selLinea.recepcion_id, { estado: "COMPLETADA", completed_at: new Date().toISOString() });
           // Trigger: recepción completada
