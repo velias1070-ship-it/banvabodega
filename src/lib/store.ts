@@ -1027,6 +1027,51 @@ export async function actualizarLineaRecepcion(id: string, fields: Partial<db.DB
   await db.updateRecepcionLinea(id, fields);
 }
 
+// Reset línea a PENDIENTE — revierte stock si ya fue ubicada
+export async function resetearLineaRecepcion(lineaId: string, recepcionId: string) {
+  const lineas = await db.fetchRecepcionLineas(recepcionId);
+  const linea = lineas.find(l => l.id === lineaId);
+  if (!linea) return;
+
+  // Si tiene stock ubicado, revertirlo
+  const qtyUbicada = linea.qty_ubicada || 0;
+  if (qtyUbicada > 0 && isConfigured()) {
+    // Buscar en qué posiciones se ubicó (desde movimientos)
+    const movimientos = await db.fetchMovimientosByRecepcion(recepcionId);
+    const movsLinea = movimientos.filter(m => m.sku === linea.sku && m.tipo === "entrada" && m.motivo === "recepcion");
+
+    for (const mov of movsLinea) {
+      await db.registrarMovimientoStock({
+        sku: linea.sku, posicion: mov.posicion_id, delta: -mov.cantidad, tipo: "salida",
+        motivo: "reset_linea", operario: "admin", recepcion_id: recepcionId,
+        nota: `Reset línea: revertir ${mov.cantidad} uds de ${mov.posicion_id}`,
+      });
+    }
+
+    // Update cache
+    if (_cache.stock[linea.sku]) {
+      for (const mov of movsLinea) {
+        if (_cache.stock[linea.sku][mov.posicion_id]) {
+          _cache.stock[linea.sku][mov.posicion_id] = Math.max(0, _cache.stock[linea.sku][mov.posicion_id] - mov.cantidad);
+          if (_cache.stock[linea.sku][mov.posicion_id] === 0) delete _cache.stock[linea.sku][mov.posicion_id];
+        }
+      }
+    }
+  }
+
+  // Limpiar la línea
+  await db.updateRecepcionLinea(lineaId, {
+    estado: "PENDIENTE", qty_recibida: 0, qty_etiquetada: 0, qty_ubicada: 0,
+    operario_conteo: "", operario_etiquetado: "", operario_ubicacion: "",
+    ts_conteo: null, ts_etiquetado: null, ts_ubicacion: null,
+  });
+
+  await db.auditLog("resetearLinea", {
+    entidad: "recepcion_linea", entidad_id: lineaId, operario: "admin",
+    params: { sku: linea.sku, recepcionId, qtyUbicadaRevertida: qtyUbicada },
+  });
+}
+
 // Contar línea: operario confirma cantidad de esta caja (acumulativo)
 export async function contarLinea(lineaId: string, qtyCaja: number, operario: string, recepcionId: string) {
   // Fetch current line to accumulate
