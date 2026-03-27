@@ -1770,7 +1770,7 @@ export async function getPickingsByDate(fecha: string): Promise<db.DBPickingSess
 }
 
 // Aggregate and reserve stock for picking lines (by SKU to avoid multiple reserves)
-async function reservarStockPicking(lineas: db.PickingLinea[]) {
+async function reservarStockPicking(lineas: db.PickingLinea[], sessionId: string) {
   const skuQtys: Record<string, number> = {};
   for (const l of lineas) {
     if (l.estado === "PICKEADO") continue;
@@ -1781,7 +1781,7 @@ async function reservarStockPicking(lineas: db.PickingLinea[]) {
   }
   for (const [sku, qty] of Object.entries(skuQtys)) {
     try {
-      const ok = await db.reservarStock(sku, qty);
+      const ok = await db.reservarStock(sku, qty, "envio_full", "picking_session", sessionId);
       if (!ok) console.warn(`[Picking] reservarStock: insufficient stock for ${sku} (need ${qty})`);
     } catch (e) {
       console.error(`[Picking] reservarStock error for ${sku}:`, e);
@@ -1795,7 +1795,7 @@ export async function crearPickingSession(fecha: string, lineas: db.PickingLinea
   const resolvedTipo = tipo || "flex";
   const id = await db.createPickingSession({ fecha, estado: "ABIERTA", lineas, tipo: resolvedTipo, titulo });
   if (id && isConfigured() && resolvedTipo === "envio_full") {
-    await reservarStockPicking(lineas);
+    await reservarStockPicking(lineas, id);
   }
   return id;
 }
@@ -2223,7 +2223,7 @@ export async function pickearComponente(
   if (isConfigured()) {
     await db.liberarReserva({
       sku: comp.skuOrigen, cantidad: comp.unidades, descontar: true,
-      motivo: "venta_flex", operario,
+      motivo: "venta_flex", operario, referenciaId: sessionId,
     });
   }
 
@@ -2251,7 +2251,7 @@ async function pickearComponenteFallback(
   if (isConfigured()) {
     await db.liberarReserva({
       sku: comp.skuOrigen, cantidad: comp.unidades, descontar: true,
-      motivo: "venta_flex", operario,
+      motivo: "venta_flex", operario, referenciaId: sessionId,
     });
   }
   comp.estado = "PICKEADO";
@@ -2286,7 +2286,7 @@ export async function despickearComponente(
       motivo: "despick", operario,
       nota: `Reversión picking: ${linea.skuVenta} ×${comp.unidades} (despick)`,
     });
-    await db.reservarStock(comp.skuOrigen, comp.unidades);
+    await db.reservarStock(comp.skuOrigen, comp.unidades, session.tipo === "envio_full" ? "envio_full" : "venta_flex", "picking_session", sessionId);
   }
 
   // Revertir estado del componente
@@ -2332,7 +2332,7 @@ export async function pickearLineaFull(
     if (isConfigured()) {
       await db.liberarReserva({
         sku: comp.skuOrigen, cantidad: comp.unidades, descontar: true,
-        motivo: "envio_full", operario,
+        motivo: "envio_full", operario, referenciaId: sessionId,
       });
     }
     comp.estado = "PICKEADO"; comp.pickedAt = new Date().toISOString(); comp.operario = operario; linea.estado = "PICKEADO";
@@ -2371,7 +2371,7 @@ export async function pickearLineaFull(
   if (isConfigured()) {
     await db.liberarReserva({
       sku: comp.skuOrigen, cantidad: comp.unidades, descontar: true,
-      motivo: "envio_full", operario,
+      motivo: "envio_full", operario, referenciaId: sessionId,
     });
   }
 

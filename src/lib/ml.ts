@@ -747,7 +747,10 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
     // New shipment or transition to ready_to_ship — reserve stock
     for (const [sku, qty] of skuEntries) {
       try {
-        const ok = await sb.rpc("reservar_stock", { p_sku: sku, p_cantidad: qty });
+        const ok = await sb.rpc("reservar_stock", {
+          p_sku: sku, p_cantidad: qty,
+          p_tipo: "venta_flex", p_referencia_tipo: "shipment", p_referencia_id: String(shipmentId),
+        });
         if (ok.data === false) {
           console.warn(`[ML] reservar_stock: insufficient stock for ${sku} (need ${qty})`);
         }
@@ -762,6 +765,7 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
         await sb.rpc("liberar_reserva", {
           p_sku: sku, p_cantidad: qty, p_descontar: false,
           p_motivo: "despacho_ml", p_operario: "webhook",
+          p_referencia_id: String(shipmentId),
         });
       } catch (e) {
         console.error(`[ML] liberar_reserva (despacho) error for ${sku}:`, e);
@@ -773,6 +777,7 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
       try {
         await sb.rpc("liberar_reserva", {
           p_sku: sku, p_cantidad: qty, p_descontar: false,
+          p_referencia_id: String(shipmentId),
         });
       } catch (e) {
         console.error(`[ML] liberar_reserva (cancel) error for ${sku}:`, e);

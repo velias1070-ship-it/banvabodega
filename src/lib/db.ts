@@ -322,11 +322,14 @@ export async function deleteStockBySku(sku: string) {
 }
 
 // ==================== RESERVAS ====================
-export async function reservarStock(sku: string, cantidad: number): Promise<boolean> {
+export async function reservarStock(sku: string, cantidad: number, tipo?: string, referenciaTipo?: string, referenciaId?: string): Promise<boolean> {
   const sb = getSupabase(); if (!sb) return false;
   const { data, error } = await sb.rpc("reservar_stock", {
     p_sku: sku.toUpperCase().trim(),
     p_cantidad: cantidad,
+    p_tipo: tipo || "venta_flex",
+    p_referencia_tipo: referenciaTipo || null,
+    p_referencia_id: referenciaId || null,
   });
   if (error) throw new Error(`reservarStock failed for ${sku}: ${error.message}`);
   return data as boolean;
@@ -338,6 +341,7 @@ export async function liberarReserva(params: {
   descontar?: boolean;
   motivo?: string;
   operario?: string;
+  referenciaId?: string;
 }): Promise<boolean> {
   const sb = getSupabase(); if (!sb) return false;
   const { data, error } = await sb.rpc("liberar_reserva", {
@@ -346,6 +350,7 @@ export async function liberarReserva(params: {
     p_descontar: params.descontar ?? false,
     p_motivo: params.motivo ?? null,
     p_operario: params.operario ?? "",
+    p_referencia_id: params.referenciaId ?? null,
   });
   if (error) throw new Error(`liberarReserva failed for ${params.sku}: ${error.message}`);
   return data as boolean;
