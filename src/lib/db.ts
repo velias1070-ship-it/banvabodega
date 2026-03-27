@@ -380,7 +380,7 @@ export async function transferirStock(sku: string, posOrigen: string, posDestino
 }
 
 export interface DBReconciliacion {
-  sku: string;
+  out_sku: string;
   reserva_anterior: number;
   reserva_nueva: number;
 }

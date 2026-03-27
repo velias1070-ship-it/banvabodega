@@ -4780,7 +4780,7 @@ function Dashboard() {
       {lastReconcDiff.length > 0 && <div className="card" style={{padding:10,marginBottom:12,fontSize:12}}>
         <div style={{fontWeight:700,marginBottom:6,color:"var(--amber)"}}>Reconciliación: {lastReconcDiff.length} SKU{lastReconcDiff.length>1?"s":""} ajustados</div>
         <table className="tbl" style={{width:"100%"}}><thead><tr><th>SKU</th><th>Antes</th><th>Ahora</th></tr></thead><tbody>
-          {lastReconcDiff.map(d => <tr key={d.sku}><td className="mono">{d.sku}</td><td style={{textAlign:"right",color:"var(--red)"}}>{d.reserva_anterior}</td><td style={{textAlign:"right",color:"var(--green)"}}>{d.reserva_nueva}</td></tr>)}
+          {lastReconcDiff.map(d => <tr key={d.out_sku}><td className="mono">{d.out_sku}</td><td style={{textAlign:"right",color:"var(--red)"}}>{d.reserva_anterior}</td><td style={{textAlign:"right",color:"var(--green)"}}>{d.reserva_nueva}</td></tr>)}
         </tbody></table>
         <button onClick={() => setLastReconcDiff([])} style={{marginTop:6,background:"none",border:"1px solid var(--bg4)",color:"var(--txt3)",borderRadius:6,padding:"2px 8px",fontSize:11,cursor:"pointer"}}>Cerrar</button>
       </div>}

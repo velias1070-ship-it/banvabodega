@@ -15,7 +15,7 @@
 -- ============================================================================
 
 CREATE OR REPLACE FUNCTION reconciliar_reservas()
-RETURNS TABLE(sku TEXT, reserva_anterior INTEGER, reserva_nueva INTEGER) AS $$
+RETURNS TABLE(out_sku TEXT, reserva_anterior INTEGER, reserva_nueva INTEGER) AS $$
 DECLARE
     v_row RECORD;
     v_restante INTEGER;
@@ -76,13 +76,13 @@ BEGIN
     -- Paso 4: Retornar reporte de cambios
     RETURN QUERY
     SELECT
-        COALESCE(p.sku, n.sku) AS sku,
+        COALESCE(p.sku, n.sku) AS out_sku,
         COALESCE(p.prev, 0)::INTEGER AS reserva_anterior,
         COALESCE(n.nuevo, 0)::INTEGER AS reserva_nueva
     FROM _prev_reserved p
     FULL OUTER JOIN (
-        SELECT s.sku, SUM(s.qty_reserved)::INTEGER AS nuevo
-        FROM stock s WHERE s.qty_reserved > 0 GROUP BY s.sku
+        SELECT st.sku, SUM(st.qty_reserved)::INTEGER AS nuevo
+        FROM stock st WHERE st.qty_reserved > 0 GROUP BY st.sku
     ) n ON n.sku = p.sku
     WHERE COALESCE(p.prev, 0) != COALESCE(n.nuevo, 0);
 END;
