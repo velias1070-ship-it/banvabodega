@@ -2886,13 +2886,22 @@ export async function resolverDiscrepanciaQty(
     notas: notas || "",
   });
 
-  // For NOTA_CREDITO on FALTANTE: adjust qty_factura to qty_recibida so the line can close
-  if (estado === "NOTA_CREDITO" && discInfo && discInfo.tipo === "FALTANTE" && discInfo.linea_id) {
+  // For FALTANTE resolved as NOTA_CREDITO or ACEPTADO: adjust qty_factura to qty_recibida
+  if ((estado === "NOTA_CREDITO" || estado === "ACEPTADO") && discInfo && discInfo.tipo === "FALTANTE" && discInfo.linea_id) {
     await db.updateRecepcionLinea(discInfo.linea_id, { qty_factura: discInfo.qty_recibida });
-    // Check if all lines are now complete → close recepcion
-    const lineas = await db.fetchRecepcionLineas(discInfo.recepcion_id);
+  }
+
+  // After any resolution, check if all discrepancies are resolved → auto-close recepcion
+  if (discInfo?.recepcion_id) {
+    const [lineas, discsQty, discsCosto] = await Promise.all([
+      db.fetchRecepcionLineas(discInfo.recepcion_id),
+      db.fetchDiscrepanciasQty(discInfo.recepcion_id),
+      db.fetchDiscrepancias(discInfo.recepcion_id),
+    ]);
     const allUbicadas = lineas.every(l => l.estado === "UBICADA" || (l.qty_ubicada || 0) >= l.qty_factura);
-    if (allUbicadas) {
+    const sinPendientesQty = discsQty.every(d => d.estado !== "PENDIENTE");
+    const sinPendientesCosto = discsCosto.every(d => d.estado !== "PENDIENTE");
+    if (allUbicadas && sinPendientesQty && sinPendientesCosto) {
       await db.updateRecepcion(discInfo.recepcion_id, { estado: "COMPLETADA", completed_at: new Date().toISOString() });
     }
   }
