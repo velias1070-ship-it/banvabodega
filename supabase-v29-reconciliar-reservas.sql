@@ -59,7 +59,10 @@ BEGIN
                 SELECT DISTINCT ON (UPPER(sku_venta))
                     UPPER(sku_venta) AS sku_venta_upper,
                     UPPER(sku_origen) AS sku_origen
-                FROM composicion_venta ORDER BY UPPER(sku_venta), id
+                FROM composicion_venta
+                ORDER BY UPPER(sku_venta),
+                    CASE WHEN UPPER(sku_origen) != UPPER(sku_venta) THEN 0 ELSE 1 END,
+                    id
             ) cv ON cv.sku_venta_upper = UPPER(si.seller_sku)
             WHERE s.status IN ('ready_to_ship', 'shipped')
               AND s.logistic_type != 'fulfillment'

@@ -738,9 +738,11 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
       .select("sku_venta, sku_origen").in("sku_venta", sellerSkus);
     const skuToOrigen: Record<string, string> = {};
     for (const c of (compMap || []) as { sku_venta: string; sku_origen: string }[]) {
-      // Use first match (principal component)
-      if (!skuToOrigen[c.sku_venta.toUpperCase()]) {
-        skuToOrigen[c.sku_venta.toUpperCase()] = c.sku_origen.toUpperCase();
+      const venta = c.sku_venta.toUpperCase();
+      const origen = c.sku_origen.toUpperCase();
+      // Prefer mapping where sku_origen differs from sku_venta (real mapping over self-reference)
+      if (!skuToOrigen[venta] || skuToOrigen[venta] === venta) {
+        skuToOrigen[venta] = origen;
       }
     }
     for (const item of (currentItems || []) as { seller_sku: string; quantity: number }[]) {
@@ -913,8 +915,10 @@ async function refreshShipmentStatuses(): Promise<{ checked: number; updated: nu
             .select("sku_venta, sku_origen").in("sku_venta", sellerSkus);
           const skuToOrigen: Record<string, string> = {};
           for (const c of (compMap || []) as { sku_venta: string; sku_origen: string }[]) {
-            if (!skuToOrigen[c.sku_venta.toUpperCase()]) {
-              skuToOrigen[c.sku_venta.toUpperCase()] = c.sku_origen.toUpperCase();
+            const venta = c.sku_venta.toUpperCase();
+            const origen = c.sku_origen.toUpperCase();
+            if (!skuToOrigen[venta] || skuToOrigen[venta] === venta) {
+              skuToOrigen[venta] = origen;
             }
           }
           // Aggregate by physical SKU
