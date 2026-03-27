@@ -4812,6 +4812,9 @@ function Inventario() {
   const [skuMovs, setSkuMovs] = useState<Movement[]>([]);
   const [skuMovsLoading, setSkuMovsLoading] = useState(false);
   const [stockProy, setStockProy] = useState<Map<string, DBStockProyectado>>(new Map());
+  const [reservasSku, setReservasSku] = useState<string | null>(null);
+  const [reservasData, setReservasData] = useState<{id:string;sku:string;cantidad:number;tipo:string;referencia_tipo:string|null;referencia_id:string|null;estado:string;created_at:string}[]>([]);
+  const [reservasLoading, setReservasLoading] = useState(false);
 
   useEffect(() => {
     fetchStockProyectado().then(rows => {
@@ -5488,7 +5491,20 @@ function Inventario() {
                           const estadoColor = disponible > 10 ? "var(--green)" : disponible > 0 ? "var(--amber)" : "var(--red)";
                           const estadoBg = disponible > 10 ? "var(--greenBg)" : disponible > 0 ? "var(--amberBg)" : "var(--redBg)";
                           return <>
-                            <td className="mono" style={{textAlign:"right",fontSize:11,color:reserved>0?"var(--amber)":"var(--txt3)"}}>{reserved||"—"}</td>
+                            <td className="mono" style={{textAlign:"right",fontSize:11,color:reserved>0?"var(--amber)":"var(--txt3)",cursor:reserved>0?"pointer":"default",textDecoration:reserved>0?"underline":"none"}}
+                              onClick={reserved > 0 ? async (e) => {
+                                e.stopPropagation();
+                                if (reservasSku === sku) { setReservasSku(null); return; }
+                                setReservasSku(sku); setReservasLoading(true);
+                                try {
+                                  const sb = (await import("@/lib/supabase")).getSupabase();
+                                  if (sb) {
+                                    const { data } = await sb.from("reservations").select("*").eq("sku", sku).eq("estado", "active").order("created_at", { ascending: false });
+                                    setReservasData(data || []);
+                                  }
+                                } catch { setReservasData([]); }
+                                setReservasLoading(false);
+                              } : undefined}>{reserved||"—"}</td>
                             <td className="mono" style={{textAlign:"right",fontWeight:700,fontSize:12,color:estadoColor}}>{disponible}</td>
                             <td className="mono" style={{textAlign:"right",fontSize:11,color:enCamino>0?"var(--blue)":"var(--txt3)"}}>{enCamino||"—"}</td>
                             <td><span style={{padding:"2px 6px",borderRadius:4,fontSize:9,fontWeight:700,background:estadoBg,color:estadoColor,whiteSpace:"nowrap"}}>{estado}</span></td>
@@ -5496,6 +5512,52 @@ function Inventario() {
                         })()}
                         <td className="mono" style={{textAlign:"right",fontSize:11}}>{prod?fmtMoney(prod.cost*total):"-"}</td>
                       </tr>,
+                      reservasSku === sku && <tr key={sku+"-reservas"}><td colSpan={12} style={{background:"var(--amberBg)",padding:12}}>
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                          <span style={{fontSize:12,fontWeight:700,color:"var(--amber)"}}>Reservas activas — {sku}</span>
+                          <button onClick={(e) => { e.stopPropagation(); setReservasSku(null); }} style={{padding:"2px 8px",borderRadius:4,background:"var(--bg3)",color:"var(--txt3)",fontSize:10,border:"1px solid var(--bg4)"}}>X</button>
+                        </div>
+                        {reservasLoading ? <div style={{fontSize:11,color:"var(--txt3)"}}>Cargando...</div> :
+                          reservasData.length === 0 ? <div style={{fontSize:11,color:"var(--txt3)"}}>Sin reservas individuales registradas</div> : (
+                          <div>
+                            {/* Flex reservations */}
+                            {(() => {
+                              const flex = reservasData.filter(r => r.tipo === "venta_flex");
+                              const full = reservasData.filter(r => r.tipo === "envio_full");
+                              const otros = reservasData.filter(r => r.tipo !== "venta_flex" && r.tipo !== "envio_full");
+                              return <>
+                                {flex.length > 0 && <div style={{marginBottom:8}}>
+                                  <div style={{fontSize:10,fontWeight:700,color:"var(--cyan)",marginBottom:4}}>Venta Flex ({flex.length})</div>
+                                  {flex.map(r => (
+                                    <div key={r.id} style={{display:"flex",justifyContent:"space-between",padding:"3px 8px",marginBottom:2,borderRadius:4,background:"var(--bg2)",fontSize:11}}>
+                                      <span className="mono" style={{color:"var(--txt2)"}}>{r.referencia_tipo === "shipment" ? `Shipment ${r.referencia_id}` : r.referencia_id || "—"}</span>
+                                      <span><span className="mono" style={{fontWeight:700,color:"var(--amber)"}}>{r.cantidad} uds</span> <span style={{color:"var(--txt3)",fontSize:9}}>{r.created_at?.slice(0,10)}</span></span>
+                                    </div>
+                                  ))}
+                                </div>}
+                                {full.length > 0 && <div style={{marginBottom:8}}>
+                                  <div style={{fontSize:10,fontWeight:700,color:"var(--blue)",marginBottom:4}}>Envio Full ({full.length})</div>
+                                  {full.map(r => (
+                                    <div key={r.id} style={{display:"flex",justifyContent:"space-between",padding:"3px 8px",marginBottom:2,borderRadius:4,background:"var(--bg2)",fontSize:11}}>
+                                      <span className="mono" style={{color:"var(--txt2)"}}>{r.referencia_tipo === "picking_session" ? `Sesion ${r.referencia_id?.slice(0,8)}...` : r.referencia_id || "—"}</span>
+                                      <span><span className="mono" style={{fontWeight:700,color:"var(--amber)"}}>{r.cantidad} uds</span> <span style={{color:"var(--txt3)",fontSize:9}}>{r.created_at?.slice(0,10)}</span></span>
+                                    </div>
+                                  ))}
+                                </div>}
+                                {otros.length > 0 && <div>
+                                  <div style={{fontSize:10,fontWeight:700,color:"var(--txt3)",marginBottom:4}}>Otros ({otros.length})</div>
+                                  {otros.map(r => (
+                                    <div key={r.id} style={{display:"flex",justifyContent:"space-between",padding:"3px 8px",marginBottom:2,borderRadius:4,background:"var(--bg2)",fontSize:11}}>
+                                      <span className="mono" style={{color:"var(--txt2)"}}>{r.tipo}: {r.referencia_id || "—"}</span>
+                                      <span className="mono" style={{fontWeight:700,color:"var(--amber)"}}>{r.cantidad} uds</span>
+                                    </div>
+                                  ))}
+                                </div>}
+                              </>;
+                            })()}
+                          </div>
+                        )}
+                      </td></tr>,
                       isOpen && <tr key={sku+"-detail"}><td colSpan={12} style={{background:"var(--bg3)",padding:16}}>
                         {/* Detalle por formato de venta */}
                         {(()=>{const detalle=skuStockDetalle(sku);return detalle.length>0&&(
