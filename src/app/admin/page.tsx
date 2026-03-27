@@ -5,7 +5,7 @@ import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, s
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia, IntegrityError } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
-import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado } from "@/lib/db";
+import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado, transferirStock } from "@/lib/db";
 import type { DBStockProyectado } from "@/lib/db";
 import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap, ShipmentWithItems } from "@/lib/db";
 import { getOAuthUrl } from "@/lib/ml";
@@ -4239,13 +4239,20 @@ function Operaciones({ refresh }: { refresh: () => void }) {
     return picks;
   };
 
-  const doConfirm = () => {
+  const doConfirm = async () => {
     if (!selected || !pos || qty < 1) return;
 
     if (mode === "transfer") {
       if (!posFrom || posFrom === pos) return;
-      recordMovement({ ts: new Date().toISOString(), type: "out", reason: "ajuste_salida" as OutReason, sku: selected.sku, pos: posFrom, qty, who: "Admin", note: "Transferencia → " + pos });
-      recordMovement({ ts: new Date().toISOString(), type: "in", reason: "transferencia_in" as InReason, sku: selected.sku, pos, qty, who: "Admin", note: "Transferencia ← " + posFrom });
+      try {
+        const ok = await transferirStock(selected.sku, posFrom, pos, qty, "Admin");
+        if (!ok) { alert(`Stock insuficiente en ${posFrom} para ${selected.sku}`); return; }
+        // Update local cache
+        if (!getStore().stock[selected.sku]) getStore().stock[selected.sku] = {};
+        getStore().stock[selected.sku][posFrom] = Math.max(0, (getStore().stock[selected.sku][posFrom] || 0) - qty);
+        if (getStore().stock[selected.sku][posFrom] === 0) delete getStore().stock[selected.sku][posFrom];
+        getStore().stock[selected.sku][pos] = (getStore().stock[selected.sku][pos] || 0) + qty;
+      } catch (e) { alert(`Error en transferencia: ${e instanceof Error ? e.message : e}`); return; }
       setLog(l => [`${qty}× ${selected.sku} | ${posFrom} → ${pos}`, ...l].slice(0, 10));
       setToast(`Transferido ${qty}× ${selected.sku}`);
     } else {
@@ -4552,9 +4559,16 @@ function MiniMapPanel({ positions, onSelectProduct, onSetMode, refresh }: {
         recordMovement({ ts: new Date().toISOString(), type: "out", reason: "ajuste_salida" as any, sku: item.sku, pos: selectedPos, qty, who: "Admin", note: "Salida rápida desde mapa" });
         count += qty;
       } else if (bulkAction === "transfer" && transferDest && transferDest !== selectedPos) {
-        recordMovement({ ts: new Date().toISOString(), type: "out", reason: "ajuste_salida" as any, sku: item.sku, pos: selectedPos, qty, who: "Admin", note: "Transferencia → " + transferDest });
-        recordMovement({ ts: new Date().toISOString(), type: "in", reason: "transferencia_in" as any, sku: item.sku, pos: transferDest, qty, who: "Admin", note: "Transferencia ← " + selectedPos });
-        count += qty;
+        try {
+          const ok = await transferirStock(item.sku, selectedPos, transferDest, qty, "Admin");
+          if (ok) {
+            if (!getStore().stock[item.sku]) getStore().stock[item.sku] = {};
+            getStore().stock[item.sku][selectedPos] = Math.max(0, (getStore().stock[item.sku][selectedPos] || 0) - qty);
+            if (getStore().stock[item.sku][selectedPos] === 0) delete getStore().stock[item.sku][selectedPos];
+            getStore().stock[item.sku][transferDest] = (getStore().stock[item.sku][transferDest] || 0) + qty;
+            count += qty;
+          }
+        } catch { /* skip failed */ }
       }
     });
     if (count > 0) {

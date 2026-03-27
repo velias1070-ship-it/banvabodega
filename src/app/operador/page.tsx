@@ -1,6 +1,7 @@
 "use client";
 import { useState, useCallback, useEffect, useRef } from "react";
 import { getStore, findProduct, findPosition, activePositions, skuTotal, skuPositions, posContents, recordMovement, IN_REASONS, OUT_REASONS, initStore, refreshStore, isSupabaseConfigured, getMapConfig, getVentasPorSkuOrigen, getComponentesPorML } from "@/lib/store";
+import { transferirStock } from "@/lib/db";
 import type { Product, InReason, OutReason, ComposicionVenta } from "@/lib/store";
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -645,12 +646,23 @@ function Traspaso({ refresh }: { refresh: () => void }) {
     if (p) { setDestPos(p.id); setDestPosLabel(p.label); setStep(3); setCamDest(false); }
   };
 
-  const doConfirm = () => {
+  const doConfirm = async () => {
     if (!product || !sourcePos || !destPos || qty < 1) return;
     const take = Math.min(qty, product.qty);
-    recordMovement({ ts: new Date().toISOString(), type: "out", reason: "ajuste_salida" as OutReason, sku: product.sku, pos: sourcePos, qty: take, who: "Operador", note: `Traspaso → ${destPos}` });
-    recordMovement({ ts: new Date().toISOString(), type: "in", reason: "ajuste_entrada" as InReason, sku: product.sku, pos: destPos, qty: take, who: "Operador", note: `Traspaso ← ${sourcePos}` });
-    show(`🔄 ${take}× ${product.sku}: ${sourcePos} → ${destPos}`);
+    try {
+      const ok = await transferirStock(product.sku, sourcePos, destPos, take, "Operador");
+      if (!ok) { show("Stock insuficiente en origen", "err"); return; }
+      // Update local cache
+      const s = getStore();
+      if (!s.stock[product.sku]) s.stock[product.sku] = {};
+      s.stock[product.sku][sourcePos] = Math.max(0, (s.stock[product.sku][sourcePos] || 0) - take);
+      if (s.stock[product.sku][sourcePos] === 0) delete s.stock[product.sku][sourcePos];
+      s.stock[product.sku][destPos] = (s.stock[product.sku][destPos] || 0) + take;
+      show(`${take}x ${product.sku}: ${sourcePos} → ${destPos}`);
+    } catch (e) {
+      show("Error en transferencia", "err");
+      return;
+    }
     reset(); refresh();
   };
 

@@ -366,6 +366,19 @@ export async function fetchStockDisponible(sku?: string): Promise<DBStockDisponi
   return (data || []) as DBStockDisponible[];
 }
 
+export async function transferirStock(sku: string, posOrigen: string, posDestino: string, cantidad: number, operario: string = "Admin"): Promise<boolean> {
+  const sb = getSupabase(); if (!sb) return false;
+  const { data, error } = await sb.rpc("transferir_stock", {
+    p_sku: sku.toUpperCase().trim(),
+    p_pos_origen: posOrigen,
+    p_pos_destino: posDestino,
+    p_cantidad: cantidad,
+    p_operario: operario,
+  });
+  if (error) throw new Error(`transferirStock failed for ${sku}: ${error.message}`);
+  return data as boolean;
+}
+
 export interface DBStockProyectado {
   sku: string;
   on_hand: number;
