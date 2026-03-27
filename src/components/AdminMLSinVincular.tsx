@@ -245,6 +245,7 @@ export default function AdminMLSinVincular() {
         categoria: nuevoForm.categoria,
         proveedor: nuevoForm.proveedor,
         costo: nuevoForm.costo,
+        costo_promedio: nuevoForm.costo,
         precio: 0,
         reorder: 20,
         requiere_etiqueta: false,

@@ -12,6 +12,7 @@ export interface Product {
   cat: string;
   prov: string;
   cost: number;
+  costAvg: number;
   price: number;
   reorder: number;
   requiresLabel?: boolean;
@@ -140,7 +141,7 @@ export async function initStore(): Promise<void> {
     for (const p of prods) {
       products[p.sku] = {
         sku: p.sku, skuVenta: p.sku_venta || "", name: p.nombre, mlCode: p.codigo_ml,
-        cat: p.categoria, prov: p.proveedor, cost: p.costo,
+        cat: p.categoria, prov: p.proveedor, cost: p.costo, costAvg: p.costo_promedio || p.costo || 0,
         price: p.precio, reorder: p.reorder,
         requiresLabel: p.requiere_etiqueta,
         tamano: p.tamano || "", color: p.color || "",
@@ -260,7 +261,7 @@ async function flushToSupabase() {
     // Flush products
     const dbProds: db.DBProduct[] = Object.values(_cache.products).map(p => ({
       sku: p.sku, sku_venta: "", codigo_ml: p.mlCode, nombre: p.name,
-      categoria: p.cat, proveedor: p.prov, costo: p.cost, precio: p.price,
+      categoria: p.cat, proveedor: p.prov, costo: p.cost, costo_promedio: p.costAvg, precio: p.price,
       reorder: p.reorder, requiere_etiqueta: p.requiresLabel !== false,
       tamano: p.tamano || "", color: p.color || "",
       inner_pack: p.innerPack ?? null,
@@ -778,7 +779,7 @@ export async function saveProductAsync(p: Product) {
   if (isConfigured()) {
     await db.upsertProducto({
       sku: p.sku, sku_venta: "", codigo_ml: p.mlCode, nombre: p.name,
-      categoria: p.cat, proveedor: p.prov, costo: p.cost, precio: p.price,
+      categoria: p.cat, proveedor: p.prov, costo: p.cost, costo_promedio: p.costAvg, precio: p.price,
       reorder: p.reorder, requiere_etiqueta: p.requiresLabel !== false,
       tamano: p.tamano || "", color: p.color || "",
       inner_pack: p.innerPack ?? null,
@@ -852,7 +853,7 @@ export async function syncFromSheet(): Promise<{ added: number; updated: number;
   for (const p of prods) {
     _cache.products[p.sku] = {
       sku: p.sku, skuVenta: p.sku_venta || "", name: p.nombre, mlCode: p.codigo_ml,
-      cat: p.categoria, prov: p.proveedor, cost: p.costo,
+      cat: p.categoria, prov: p.proveedor, cost: p.costo, costAvg: p.costo_promedio || p.costo || 0,
       price: p.precio, reorder: p.reorder,
       requiresLabel: p.requiere_etiqueta,
       tamano: p.tamano || "", color: p.color || "",
@@ -1122,13 +1123,22 @@ export async function ubicarLinea(lineaId: string, sku: string, posicionId: stri
     params: { sku, posicionId, qty, recepcionId, skuVenta, folio: opts?.folio },
   });
 
-  // Update stock + movimiento atómicamente — if fails, do NOT update the line
+  // Leer costo unitario de la línea de recepción
+  let costoUnitario: number | null = null;
+  try {
+    const lineasCosto = await db.fetchRecepcionLineas(recepcionId);
+    const lineaData = lineasCosto.find(l => l.id === lineaId);
+    if (lineaData?.costo_unitario) costoUnitario = lineaData.costo_unitario;
+  } catch { /* si falla, seguimos sin costo */ }
+
+  // Update stock + movimiento + costo promedio atómicamente — if fails, do NOT update the line
   if (isConfigured()) {
     try {
       await db.registrarMovimientoStock({
         sku, posicion: posicionId, delta: qty, tipo: "entrada",
         sku_venta: skuVenta, motivo: "recepcion",
         operario, nota, recepcion_id: recepcionId,
+        costo_unitario: costoUnitario,
       });
       db.addToStockSyncQueue([sku]).catch(() => {});
     } catch (e: unknown) {
@@ -1141,9 +1151,20 @@ export async function ubicarLinea(lineaId: string, sku: string, posicionId: stri
     }
   }
 
-  // Update cache (aggregated)
+  // Update cache (aggregated) — ANTES de recalcular costAvg
+  const stockAntes = skuTotal(sku);
   if (!_cache.stock[sku]) _cache.stock[sku] = {};
   _cache.stock[sku][posicionId] = (_cache.stock[sku][posicionId] || 0) + qty;
+
+  // Actualizar costo promedio en cache
+  if (costoUnitario && _cache.products[sku]) {
+    const p = _cache.products[sku];
+    if (stockAntes <= 0) {
+      p.costAvg = costoUnitario;
+    } else {
+      p.costAvg = Math.round(((stockAntes * p.costAvg) + (qty * costoUnitario)) / (stockAntes + qty) * 100) / 100;
+    }
+  }
   // Update detailed cache
   const sv = skuVenta || SIN_ETIQUETAR;
   if (!_cache.stockDetalle[sku]) _cache.stockDetalle[sku] = {};
@@ -1431,7 +1452,7 @@ export async function repararRecepcion(recepcionId: string, posicionDestino: str
     // Step 1: Create product if missing
     if (!existeProducto) {
       try {
-        await db.upsertProducto({ sku: l.sku, sku_venta: "", codigo_ml: l.codigo_ml || "", nombre: l.nombre, categoria: "Otros", proveedor: "Otro", costo: l.costo_unitario || 0, precio: 0, reorder: 20, requiere_etiqueta: true, tamano: "", color: "" });
+        await db.upsertProducto({ sku: l.sku, sku_venta: "", codigo_ml: l.codigo_ml || "", nombre: l.nombre, categoria: "Otros", proveedor: "Otro", costo: l.costo_unitario || 0, costo_promedio: l.costo_unitario || 0, precio: 0, reorder: 20, requiere_etiqueta: true, tamano: "", color: "" });
         result.detalle += `Producto ${l.sku} creado. `;
       } catch (e: unknown) {
         result.problema = `No se pudo crear producto: ${e instanceof Error ? e.message : e}`;

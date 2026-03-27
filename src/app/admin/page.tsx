@@ -4732,7 +4732,7 @@ function Dashboard() {
   const s = getStore();
   const skusWithStock = Object.keys(s.stock).filter(sku => skuTotal(sku) > 0);
   const totalUnits = skusWithStock.reduce((sum, sku) => sum + skuTotal(sku), 0);
-  const totalValue = skusWithStock.reduce((sum, sku) => { const p = s.products[sku]; return sum + (p ? p.cost * skuTotal(sku) : 0); }, 0);
+  const totalValue = skusWithStock.reduce((sum, sku) => { const p = s.products[sku]; return sum + (p ? (p.costAvg || p.cost) * skuTotal(sku) : 0); }, 0);
   const [dashStock, setDashStock] = useState<{comprometido:number;disponible:number;enRiesgo:number}>({comprometido:0,disponible:0,enRiesgo:0});
   const [reconciling, setReconciling] = useState(false);
   const [lastReconcDiff, setLastReconcDiff] = useState<DBReconciliacion[]>([]);
@@ -4799,7 +4799,7 @@ function Dashboard() {
         <div className="kpi"><div className="kpi-label">Comprometido</div><div className="kpi-val" style={{color:"var(--amber)"}}>{dashStock.comprometido}</div><div className="kpi-sub"><button onClick={runReconciliacion} disabled={reconciling} style={{background:"none",border:"1px solid var(--amber)",color:"var(--amber)",borderRadius:6,padding:"2px 8px",fontSize:11,cursor:"pointer",opacity:reconciling?0.5:1}}>{reconciling ? "Reconciliando..." : "Reconciliar"}</button></div></div>
         {dashStock.enRiesgo > 0 && <div className="kpi"><div className="kpi-label">SKUs en riesgo</div><div className="kpi-val" style={{color:"var(--red)"}}>{dashStock.enRiesgo}</div><div className="kpi-sub">disponible &le; 5</div></div>}
         <div className="kpi"><div className="kpi-label">Movimientos hoy</div><div className="kpi-val cyan">{movsHoy.total}</div><div className="kpi-sub"><span style={{color:"var(--green)"}}>+{movsHoy.entradas}</span> <span style={{color:"var(--red)"}}>-{movsHoy.salidas}</span></div></div>
-        <div className="kpi"><div className="kpi-label">Valor inventario</div><div className="kpi-val green">{fmtMoney(totalValue)}</div><div className="kpi-sub">a costo</div></div>
+        <div className="kpi"><div className="kpi-label">Valor inventario</div><div className="kpi-val green">{fmtMoney(totalValue)}</div><div className="kpi-sub">a costo promedio</div></div>
         <div className="kpi"><div className="kpi-label">Posiciones</div><div className="kpi-val">{usedPos}<span style={{fontSize:14,color:"var(--txt3)"}}> / {totalPos}</span></div><div className="kpi-sub">{totalPos-usedPos} libres</div></div>
       </div>
 
@@ -5595,7 +5595,7 @@ function Inventario() {
                             <td><span style={{padding:"2px 6px",borderRadius:4,fontSize:9,fontWeight:700,background:estadoBg,color:estadoColor,whiteSpace:"nowrap"}}>{estado}</span></td>
                           </>;
                         })()}
-                        <td className="mono" style={{textAlign:"right",fontSize:11}}>{prod?fmtMoney(prod.cost*total):"-"}</td>
+                        <td className="mono" style={{textAlign:"right",fontSize:11}}>{prod?fmtMoney((prod.costAvg||prod.cost)*total):"-"}</td>
                       </tr>,
                       reservasSku === sku && <tr key={sku+"-reservas"}><td colSpan={12} style={{background:"var(--amberBg)",padding:12}}>
                         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
@@ -6099,7 +6099,7 @@ function Productos({ refresh }: { refresh: () => void }) {
   const save=()=>{
     if(!form.sku||!form.name)return;
     const sku=form.sku.toUpperCase();
-    s.products[sku]={sku,skuVenta:"",name:form.name!,mlCode:form.mlCode||"",cat:form.cat||"Otros",prov:form.prov||"Otro",cost:form.cost||0,price:form.price||0,reorder:form.reorder||20};
+    s.products[sku]={sku,skuVenta:"",name:form.name!,mlCode:form.mlCode||"",cat:form.cat||"Otros",prov:form.prov||"Otro",cost:form.cost||0,costAvg:s.products[sku]?.costAvg||form.cost||0,price:form.price||0,reorder:form.reorder||20};
     saveStore();setShowAdd(false);setEditSku(null);refresh();
   };
   const remove=(sku:string)=>{

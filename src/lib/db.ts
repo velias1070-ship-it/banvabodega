@@ -11,6 +11,7 @@ export interface DBProduct {
   categoria: string;
   proveedor: string;
   costo: number;
+  costo_promedio?: number;
   precio: number;
   reorder: number;
   requiere_etiqueta: boolean;
@@ -77,6 +78,7 @@ export interface DBMovimiento {
   recepcion_id?: string;
   operario: string;
   nota: string;
+  costo_unitario?: number | null;
   created_at?: string;
 }
 
@@ -471,6 +473,7 @@ export async function registrarMovimientoStock(params: {
   operario?: string;
   nota?: string;
   recepcion_id?: string | null;
+  costo_unitario?: number | null;
 }): Promise<string | null> {
   const sb = getSupabase(); if (!sb) return null;
   const { data, error } = await sb.rpc("registrar_movimiento_stock", {
@@ -483,6 +486,7 @@ export async function registrarMovimientoStock(params: {
     p_operario: params.operario ?? "",
     p_nota: params.nota ?? "",
     p_recepcion_id: params.recepcion_id ?? null,
+    p_costo_unitario: params.costo_unitario ?? null,
   });
   if (error) throw new Error(`registrarMovimientoStock failed for ${params.sku}: ${error.message}`);
   return data as string | null;
