@@ -1193,12 +1193,12 @@ export async function updateFlexStock(
   // Persist to audit_log for analysis (Vercel logs rotate fast)
   const sb = getServerSupabase();
   if (sb) {
-    sb.from("audit_log").insert({
+    void sb.from("audit_log").insert({
       accion: "stock_sync:dry_run",
       entidad: "ml_items_map",
       entidad_id: userProductId,
       params: { quantity, currentInML, delta, stockType, version },
-    }).catch(() => {});
+    });
   }
   return { ok: true, error: "dry_run" };
   // END DRY RUN — remove above block to activate real sync (Fase 2)
