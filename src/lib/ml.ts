@@ -1198,7 +1198,7 @@ export async function updateFlexStock(
       entidad: "ml_items_map",
       entidad_id: userProductId,
       params: { quantity, currentInML, delta, stockType, version },
-    }).then(() => {}).catch(() => {});
+    }).catch(() => {});
   }
   return { ok: true, error: "dry_run" };
   // END DRY RUN — remove above block to activate real sync (Fase 2)
