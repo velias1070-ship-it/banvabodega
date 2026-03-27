@@ -1085,6 +1085,7 @@ export async function ubicarLinea(lineaId: string, sku: string, posicionId: stri
         sku_venta: skuVenta, motivo: "recepcion",
         operario, nota, recepcion_id: recepcionId,
       });
+      db.addToStockSyncQueue([sku]).catch(() => {});
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       await db.auditLog("ubicarLinea:error", {
@@ -1269,6 +1270,7 @@ export async function ajustarLineaAdmin(
     operario: "admin", recepcion_id: recepcionId,
     nota: `Ajuste admin: ${oldQtyUbicada} → ${newQtyUbicada} (${delta > 0 ? "+" : ""}${delta})` + (autoSv ? ` [${autoSv}]` : ""),
   });
+  db.addToStockSyncQueue([sku]).catch(() => {});
 
   // Re-derive qty_ubicada from movimientos and update the line
   const sb = db.getSupabase();
@@ -1783,6 +1785,7 @@ async function reservarStockPicking(lineas: db.PickingLinea[], sessionId: string
     try {
       const ok = await db.reservarStock(sku, qty, "envio_full", "picking_session", sessionId);
       if (!ok) console.warn(`[Picking] reservarStock: insufficient stock for ${sku} (need ${qty})`);
+      db.addToStockSyncQueue([sku]).catch(() => {});
     } catch (e) {
       console.error(`[Picking] reservarStock error for ${sku}:`, e);
     }
@@ -2225,6 +2228,7 @@ export async function pickearComponente(
       sku: comp.skuOrigen, cantidad: comp.unidades, descontar: true,
       motivo: "venta_flex", operario, referenciaId: sessionId,
     });
+    db.addToStockSyncQueue([comp.skuOrigen]).catch(() => {});
   }
 
   await db.auditLog("pickearComponente:ok", {
