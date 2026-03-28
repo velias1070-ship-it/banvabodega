@@ -681,7 +681,7 @@ export async function recordMovementAsync(m: Omit<Movement, "id">): Promise<Move
       }
     }
     // Queue SKU for ML stock sync (fire & forget)
-    db.addToStockSyncQueue([m.sku]).catch(() => {});
+    db.enqueueAndSync([m.sku]);
   }
   return mov;
 }
@@ -752,7 +752,7 @@ export function recordMovement(m: Omit<Movement, "id">): Movement {
       }
     }
     // Queue SKU for ML stock sync
-    db.addToStockSyncQueue([m.sku]).catch(() => {});
+    db.enqueueAndSync([m.sku]);
   }
   return mov;
 }
@@ -1142,7 +1142,7 @@ export async function ubicarLinea(lineaId: string, sku: string, posicionId: stri
         operario, nota, recepcion_id: recepcionId,
         costo_unitario: costoUnitario,
       });
-      db.addToStockSyncQueue([sku]).catch(() => {});
+      db.enqueueAndSync([sku]);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       await db.auditLog("ubicarLinea:error", {
@@ -1302,7 +1302,7 @@ export async function editarStockVariante(
   if (_cache.stock[sku][posicionId] <= 0) delete _cache.stock[sku][posicionId];
 
   // Queue sync
-  db.addToStockSyncQueue([sku]).catch(() => {});
+  db.enqueueAndSync([sku]);
 }
 
 // ==================== ADMIN LINE ADJUSTMENT ====================
@@ -1338,7 +1338,7 @@ export async function ajustarLineaAdmin(
     operario: "admin", recepcion_id: recepcionId,
     nota: `Ajuste admin: ${oldQtyUbicada} → ${newQtyUbicada} (${delta > 0 ? "+" : ""}${delta})` + (autoSv ? ` [${autoSv}]` : ""),
   });
-  db.addToStockSyncQueue([sku]).catch(() => {});
+  db.enqueueAndSync([sku]);
 
   // Re-derive qty_ubicada from movimientos and update the line
   const sb = db.getSupabase();
@@ -2286,7 +2286,7 @@ export async function pickearComponente(
       motivo: "venta_flex", operario,
       nota: `Picking Flex: ${linea.skuVenta} ×${linea.qtyPedida}${orderLabel}${shipLabel} — ${sessionLabel}`,
     });
-    db.addToStockSyncQueue([comp.skuOrigen]).catch(() => {});
+    db.enqueueAndSync([comp.skuOrigen]);
   }
 
   await db.auditLog("pickearComponente:ok", {

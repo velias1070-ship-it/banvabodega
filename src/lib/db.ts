@@ -1753,6 +1753,16 @@ export async function addToStockSyncQueue(skus: string[]): Promise<void> {
   await sb.from("stock_sync_queue").upsert(rows, { onConflict: "sku" });
 }
 
+/** Enqueue SKUs + fire immediate sync (fire & forget, client-side) */
+export function enqueueAndSync(skus: string[]): void {
+  addToStockSyncQueue(skus).then(() => {
+    fetch("/api/ml/stock-sync", {
+      method: "POST",
+      headers: { "x-internal": "1" },
+    }).catch(() => {});
+  }).catch(() => {});
+}
+
 export async function clearStockSyncQueue(skus: string[]): Promise<void> {
   const sb = getSupabase(); if (!sb) return;
   await sb.from("stock_sync_queue").delete().in("sku", skus);
