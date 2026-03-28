@@ -722,27 +722,72 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
     }
   }
 
-  // 7. Queue immediate stock sync for affected SKUs + pack siblings
-  if (totalItems > 0) {
-    const affectedSkus: string[] = [];
-    const { data: currentItems } = await sb.from("ml_shipment_items")
-      .select("seller_sku").eq("shipment_id", shipmentId);
-    for (const item of (currentItems || []) as { seller_sku: string }[]) {
-      if (!affectedSkus.includes(item.seller_sku)) affectedSkus.push(item.seller_sku);
+  // 7. Reserve/release stock based on status transitions, then sync to ML
+  const RESERVE_STATUSES = ["ready_to_ship", "shipped"];
+  const CANCEL_STATUSES = ["cancelled", "not_delivered"];
+
+  // Collect items with their physical SKUs for reservation
+  const { data: currentItems } = await sb.from("ml_shipment_items")
+    .select("seller_sku, quantity, stock_deducted").eq("shipment_id", shipmentId);
+  const items = (currentItems || []) as { seller_sku: string; quantity: number; stock_deducted: boolean }[];
+
+  // Resolve seller_sku → sku_origen + unidades via composicion_venta
+  const { data: comps } = await sb.from("composicion_venta").select("sku_venta, sku_origen, unidades");
+  const compLookup: Record<string, { sku_origen: string; unidades: number }> = {};
+  for (const c of (comps || []) as { sku_venta: string; sku_origen: string; unidades: number }[]) {
+    compLookup[c.sku_venta.toUpperCase()] = { sku_origen: c.sku_origen.toUpperCase(), unidades: c.unidades };
+  }
+
+  const wasActive = prevStatus && RESERVE_STATUSES.includes(prevStatus);
+  const isActive = RESERVE_STATUSES.includes(newStatus);
+  const isCancelled = CANCEL_STATUSES.includes(newStatus);
+
+  if (!wasActive && isActive) {
+    // New shipment or transition to ready_to_ship → reserve stock
+    for (const item of items) {
+      if (item.stock_deducted) continue; // Already picked, no need to reserve
+      const comp = compLookup[item.seller_sku];
+      const skuFisico = comp?.sku_origen || item.seller_sku;
+      const unidadesFisicas = (comp?.unidades || 1) * item.quantity;
+      try {
+        const ok = await sb.rpc("reservar_stock", { p_sku: skuFisico, p_cantidad: unidadesFisicas });
+        if (ok.data === false) {
+          console.warn(`[ML] reservar_stock: insufficient for ${skuFisico} (need ${unidadesFisicas})`);
+        }
+      } catch (e) {
+        console.error(`[ML] reservar_stock error for ${skuFisico}:`, e);
+      }
     }
-    if (affectedSkus.length > 0) {
-      // Enqueue SKUs for sync
-      const rows = affectedSkus.map(sku => ({ sku, created_at: new Date().toISOString() }));
-      await sb.from("stock_sync_queue").upsert(rows, { onConflict: "sku" }).then(() => {});
-      // Fire immediate sync (fire & forget — don't block webhook response)
-      const baseUrl = process.env.VERCEL_URL
-        ? `https://${process.env.VERCEL_URL}`
-        : "http://localhost:3000";
-      fetch(`${baseUrl}/api/ml/stock-sync`, {
-        method: "POST",
-        headers: { "x-internal": "1" },
-      }).catch(() => {});
+  } else if (wasActive && isCancelled) {
+    // Cancelled → release reservations (don't deduct stock)
+    for (const item of items) {
+      if (item.stock_deducted) continue; // Already picked, nothing to release
+      const comp = compLookup[item.seller_sku];
+      const skuFisico = comp?.sku_origen || item.seller_sku;
+      const unidadesFisicas = (comp?.unidades || 1) * item.quantity;
+      try {
+        await sb.rpc("liberar_reserva", {
+          p_sku: skuFisico, p_cantidad: unidadesFisicas, p_descontar: false,
+          p_motivo: "cancelacion_ml", p_operario: "webhook",
+        });
+      } catch (e) {
+        console.error(`[ML] liberar_reserva (cancel) error for ${skuFisico}:`, e);
+      }
     }
+  }
+
+  // 8. Queue immediate stock sync for affected SKUs
+  const affectedSkus = items.map(i => i.seller_sku).filter((v, i, a) => a.indexOf(v) === i);
+  if (affectedSkus.length > 0) {
+    const rows = affectedSkus.map(sku => ({ sku, created_at: new Date().toISOString() }));
+    void sb.from("stock_sync_queue").upsert(rows, { onConflict: "sku" });
+    const baseUrl = process.env.VERCEL_URL
+      ? `https://${process.env.VERCEL_URL}`
+      : "http://localhost:3000";
+    fetch(`${baseUrl}/api/ml/stock-sync`, {
+      method: "POST",
+      headers: { "x-internal": "1" },
+    }).catch(() => {});
   }
 
   const ltLabel = shipInfo.logistic_type === "self_service" ? "Flex"
