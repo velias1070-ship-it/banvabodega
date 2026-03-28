@@ -2268,11 +2268,12 @@ export async function pickearComponente(
 
   // Deduct stock — reservations are computed by reconciliar_reservas(), not managed here
   if (isConfigured()) {
+    const sessionLabel = freshSession.titulo || `Sesión ${sessionId.slice(0, 8)}`;
     await db.registrarMovimientoStock({
       sku: comp.skuOrigen, posicion: comp.posicion && comp.posicion !== "?" ? comp.posicion : "SIN_ASIGNAR",
       delta: -comp.unidades, tipo: "salida",
       motivo: "venta_flex", operario,
-      nota: `Picking Flex: ${linea.skuVenta} ×${linea.qtyPedida}`,
+      nota: `Picking Flex: ${linea.skuVenta} ×${linea.qtyPedida} — ${sessionLabel}`,
     });
     db.addToStockSyncQueue([comp.skuOrigen]).catch(() => {});
   }
@@ -2303,7 +2304,7 @@ async function pickearComponenteFallback(
       sku: comp.skuOrigen, posicion: comp.posicion && comp.posicion !== "?" ? comp.posicion : "SIN_ASIGNAR",
       delta: -comp.unidades, tipo: "salida",
       motivo: "venta_flex", operario,
-      nota: `Picking Flex: ${linea.skuVenta} ×${comp.unidades} [fallback]`,
+      nota: `Picking Flex: ${linea.skuVenta} ×${comp.unidades} — ${session.titulo || `Sesión ${sessionId.slice(0, 8)}`} [fallback]`,
     });
   }
   comp.estado = "PICKEADO";
@@ -2390,7 +2391,7 @@ export async function pickearLineaFull(
           sku: comp.skuOrigen, posicion: comp.posicion && comp.posicion !== "?" ? comp.posicion : "SIN_ASIGNAR",
           delta: -comp.unidades, tipo: "salida",
           motivo: "envio_full", operario,
-          nota: `Envío Full: ${linea.skuVenta} (${comp.unidades} uds) [sin reserva/fallback]`,
+          nota: `Envío Full: ${linea.skuVenta} (${comp.unidades} uds) — ${_session.titulo || `Sesión ${sessionId.slice(0, 8)}`} [sin reserva/fallback]`,
         });
       }
     }
@@ -2442,7 +2443,7 @@ export async function pickearLineaFull(
           await db.registrarMovimientoStock({
             sku: skuOrigen, posicion, delta: -unidades, tipo: "salida",
             motivo: "envio_full", operario,
-            nota: `Envío Full: ${skuVentaLabel} (${unidades} uds) [sin reserva]`,
+            nota: `Envío Full: ${skuVentaLabel} (${unidades} uds) — ${freshSession.titulo || `Sesión ${sessionId.slice(0, 8)}`} [sin reserva]`,
           });
         }
         await db.auditLog("pickearLineaFull:ok", {
