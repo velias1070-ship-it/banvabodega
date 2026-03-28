@@ -82,9 +82,17 @@ export async function POST(req: NextRequest) {
     const uniqueSkus = Array.from(expandedSkus);
     let synced = 0;
     const errors: string[] = [];
+    const startTime = Date.now();
+    const TIME_LIMIT = 50_000; // 50s to stay within Vercel 60s timeout
+    const processed: string[] = [];
 
     for (let idx = 0; idx < uniqueSkus.length; idx++) {
+      if (Date.now() - startTime > TIME_LIMIT) {
+        console.log(`[ML Stock Sync] Time limit reached, ${uniqueSkus.length - idx} SKUs remaining in queue`);
+        break;
+      }
       const sku = uniqueSkus[idx];
+      processed.push(sku);
       if (idx > 0) await new Promise(r => setTimeout(r, 500));
       try {
         // 6. Resolve sku_origen and unidades
@@ -109,14 +117,16 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 10. Clear all processed items from queue (original + siblings)
-    await sb.from("stock_sync_queue").delete().in("sku", [...skus, ...uniqueSkus]);
+    // 10. Clear only processed items from queue (not timed-out ones)
+    await sb.from("stock_sync_queue").delete().in("sku", processed);
 
-    console.log(`[ML Stock Sync] Done: ${synced}/${uniqueSkus.length} synced`);
+    const remaining = uniqueSkus.length - processed.length;
+    console.log(`[ML Stock Sync] Done: ${synced}/${processed.length} synced, ${remaining} remaining`);
     return NextResponse.json({
       status: "ok",
       synced,
-      total: uniqueSkus.length,
+      total: processed.length,
+      remaining,
       errors: errors.length > 0 ? errors : undefined,
     });
   } catch (err) {

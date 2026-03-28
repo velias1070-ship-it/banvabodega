@@ -9129,6 +9129,50 @@ function AdminStockML() {
     }
   };
 
+  const [syncQueueLoading, setSyncQueueLoading] = useState(false);
+  const [syncQueueResult, setSyncQueueResult] = useState<string|null>(null);
+
+  const syncViaQueue = async () => {
+    if (!confirm("Encolar TODOS los SKUs activos y sincronizar a ML?\nEsto actualiza el stock Flex de todas las publicaciones.")) return;
+    setSyncQueueLoading(true);
+    setSyncQueueResult(null);
+    try {
+      const sb = (await import("@/lib/supabase")).getSupabase();
+      if (!sb) throw new Error("No DB");
+      // Encolar todos los SKUs activos
+      const { data: activeSkus } = await sb.from("ml_items_map").select("sku").eq("activo", true);
+      const skus = (activeSkus || []).map((r: { sku: string }) => r.sku);
+      const rows = skus.map((sku: string) => ({ sku, created_at: new Date().toISOString() }));
+      await sb.from("stock_sync_queue").upsert(rows, { onConflict: "sku" });
+      // Disparar sync en batches (Vercel 60s timeout)
+      let totalSynced = 0;
+      let totalProcessed = 0;
+      let totalErrors = 0;
+      let batch = 0;
+      let remaining = 1;
+      while (remaining > 0) {
+        batch++;
+        setSyncQueueResult(`Batch ${batch}: sincronizando...`);
+        const resp = await fetch("/api/ml/stock-sync", { method: "POST", headers: { "Referer": window.location.href } });
+        const json = await resp.json();
+        totalSynced += json.synced || 0;
+        totalProcessed += json.total || 0;
+        totalErrors += (json.errors || []).length;
+        remaining = json.remaining || 0;
+        if (remaining > 0) {
+          setSyncQueueResult(`Batch ${batch}: ${totalSynced}/${totalProcessed} ok, ${remaining} pendientes...`);
+          await new Promise(r => setTimeout(r, 1000));
+        }
+      }
+      setSyncQueueResult(`${totalSynced}/${totalProcessed} sincronizados en ${batch} batch${batch>1?"es":""}` + (totalErrors > 0 ? ` — ${totalErrors} errores` : ""));
+      loadWms();
+    } catch (err) {
+      setSyncQueueResult(`Error: ${String(err)}`);
+    } finally {
+      setSyncQueueLoading(false);
+    }
+  };
+
   const syncAll = async (force = false) => {
     if (!confirm(`Sincronizar ${vinculados.length} SKUs vinculados a MercadoLibre?`)) return;
     setSyncAllLoading(true);
@@ -9192,13 +9236,14 @@ function AdminStockML() {
             style={{padding:"8px 16px",borderRadius:8,background:mlLoading?"var(--bg3)":"var(--greenBg)",color:mlLoading?"var(--txt3)":"var(--green)",border:`1px solid ${mlLoading?"var(--bg4)":"var(--greenBd)"}`,fontWeight:600,fontSize:12,cursor:"pointer"}}>
             {mlLoading ? "Consultando ML..." : "Refrescar ML"}
           </button>
-          <button onClick={() => syncAll()} disabled={syncAllLoading || vinculados.length === 0}
-            style={{padding:"8px 16px",borderRadius:8,background:"var(--cyan)",color:"#000",border:"none",fontWeight:700,fontSize:12,cursor:"pointer"}}>
-            {syncAllLoading ? "Sincronizando..." : `Sync Todo (${vinculados.length})`}
+          <button onClick={syncViaQueue} disabled={syncQueueLoading}
+            style={{padding:"8px 16px",borderRadius:8,background:"var(--green)",color:"#fff",border:"none",fontWeight:700,fontSize:12,cursor:"pointer",opacity:syncQueueLoading?0.5:1}}>
+            {syncQueueLoading ? "Sincronizando..." : "Sync todo a ML"}
           </button>
         </div>
       </div>
 
+      {syncQueueResult && <div style={{padding:10,borderRadius:8,background:"var(--greenBg)",border:"1px solid var(--greenBd)",color:"var(--green)",fontSize:12,marginBottom:8}}>{syncQueueResult}</div>}
       {error && <div style={{padding:12,borderRadius:8,background:"var(--redBg)",border:"1px solid var(--redBd)",color:"var(--red)",fontSize:12}}>{error}</div>}
 
       {diagnostics.length > 0 && (
