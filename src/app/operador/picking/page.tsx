@@ -19,6 +19,7 @@ export default function PickingPage() {
   const [editBultosMode, setEditBultosMode] = useState(false);
   const [operario, setOperario] = useState("");
   const [flexSession, setFlexSession] = useState<DBPickingSession | null>(null);
+  const [flexShipCount, setFlexShipCount] = useState(0);
 
   useEffect(() => {
     setMounted(true);
@@ -44,6 +45,17 @@ export default function PickingPage() {
     const flex = all.find(s => s.tipo === "flex" && s.fecha === today && s.estado !== "COMPLETADA")
       || all.find(s => s.tipo === "flex" && s.fecha === today && s.estado === "COMPLETADA");
     setFlexSession(flex || null);
+    // Count active shipments (etiquetas/pedidos)
+    try {
+      const ships = await fetchActiveFlexShipments();
+      const todayShips = ships.filter(s => {
+        if (s.status === "pending" && s.substatus === "buffered") return false;
+        if (!s.handling_limit) return true;
+        const limitDay = new Date(s.handling_limit).toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
+        return limitDay <= today;
+      });
+      setFlexShipCount(todayShips.length);
+    } catch { setFlexShipCount(0); }
   }, [loadSessions]);
 
   useEffect(() => { if (!loading) loadFlexSession(); }, [loading, loadFlexSession]);
@@ -139,10 +151,13 @@ export default function PickingPage() {
                   <div style={{fontSize:16,fontWeight:800,color:"#10b981"}}>Flex</div>
                   <div style={{fontSize:12,color:"#94a3b8",marginTop:4}}>Pedidos del dia para despacho Flex</div>
                 </div>
-                {flexSession && (
+                {(flexSession || flexShipCount > 0) && (
                   <div style={{textAlign:"right"}}>
-                    <div style={{fontSize:20,fontWeight:800,color:"#10b981"}}>{flexSession.lineas.length}</div>
-                    <div style={{fontSize:10,color:"#94a3b8"}}>pedidos</div>
+                    <div style={{fontSize:20,fontWeight:800,color:"#10b981"}}>{flexShipCount || flexSession?.lineas.length || 0}</div>
+                    <div style={{fontSize:10,color:"#94a3b8"}}>{flexShipCount === 1 ? "pedido" : "pedidos"}</div>
+                    {flexSession && flexSession.lineas.length !== flexShipCount && (
+                      <div style={{fontSize:10,color:"#64748b"}}>{flexSession.lineas.length} picks</div>
+                    )}
                   </div>
                 )}
                 {!flexSession && <span style={{fontSize:24,color:"#10b981"}}>&#8594;</span>}
