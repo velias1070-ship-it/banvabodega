@@ -394,7 +394,13 @@ export async function reconciliarReservas(): Promise<DBReconciliacion[]> {
     console.error("reconciliarReservas error:", error.message);
     return [];
   }
-  return (data || []) as DBReconciliacion[];
+  const diff = (data || []) as DBReconciliacion[];
+  // Auto-enqueue changed SKUs for ML sync
+  if (diff.length > 0) {
+    const skus = diff.map(d => d.out_sku);
+    enqueueAndSync(skus);
+  }
+  return diff;
 }
 
 export interface DBStockProyectado {
