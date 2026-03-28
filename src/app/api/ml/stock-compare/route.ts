@@ -303,8 +303,17 @@ export async function POST(req: NextRequest) {
         if (overrides && overrides[sku] !== undefined) {
           available = Math.max(0, overrides[sku]);
         } else {
-          const { data: stockRow } = await sb.from("v_stock_disponible")
+          let { data: stockRow } = await sb.from("v_stock_disponible")
             .select("disponible").eq("sku", sku).maybeSingle();
+          if (!stockRow) {
+            const { data: mapRow } = await sb.from("ml_items_map")
+              .select("sku_origen").eq("sku", sku).eq("activo", true).limit(1).maybeSingle();
+            const skuOrigen = (mapRow as { sku_origen: string } | null)?.sku_origen;
+            if (skuOrigen && skuOrigen !== sku) {
+              ({ data: stockRow } = await sb.from("v_stock_disponible")
+                .select("disponible").eq("sku", skuOrigen).maybeSingle());
+            }
+          }
           available = Math.max(0, (stockRow as { disponible: number } | null)?.disponible ?? 0);
         }
 

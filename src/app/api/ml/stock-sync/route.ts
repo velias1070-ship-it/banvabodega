@@ -42,9 +42,20 @@ export async function POST(req: NextRequest) {
       // Throttle: wait 1s between SKUs to avoid ML rate limits
       if (idx > 0) await new Promise(r => setTimeout(r, 1000));
       try {
-        // 2. Get available stock from v_stock_disponible (on_hand - reserved)
-        const { data: stockRow } = await sb.from("v_stock_disponible")
+        // 2. Get available stock from v_stock_disponible
+        //    Try sku first, then check ml_items_map.sku_origen for SKUs where
+        //    sku_venta (ML) differs from sku_origen (bodega), e.g. LA-LA-8 → 9788481693232
+        let { data: stockRow } = await sb.from("v_stock_disponible")
           .select("disponible").eq("sku", sku).maybeSingle();
+        if (!stockRow) {
+          const { data: mapRow } = await sb.from("ml_items_map")
+            .select("sku_origen").eq("sku", sku).eq("activo", true).limit(1).maybeSingle();
+          const skuOrigen = (mapRow as { sku_origen: string } | null)?.sku_origen;
+          if (skuOrigen && skuOrigen !== sku) {
+            ({ data: stockRow } = await sb.from("v_stock_disponible")
+              .select("disponible").eq("sku", skuOrigen).maybeSingle());
+          }
+        }
         const available = Math.max(0, (stockRow as { disponible: number } | null)?.disponible ?? 0);
 
         // 3. Send to ML via distributed stock API

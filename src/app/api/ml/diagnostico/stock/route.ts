@@ -76,9 +76,18 @@ export async function GET(req: NextRequest) {
         .eq("sku", skuBuscar);
       stockWMS = stockRows || [];
 
-      // Get committed from v_stock_disponible
-      const { data: dispRow } = await sb.from("v_stock_disponible")
+      // Get committed from v_stock_disponible (try sku, then sku_origen)
+      let { data: dispRow } = await sb.from("v_stock_disponible")
         .select("reserved").eq("sku", skuBuscar).maybeSingle();
+      if (!dispRow) {
+        const { data: mapRow } = await sb.from("ml_items_map")
+          .select("sku_origen").eq("sku", skuBuscar).eq("activo", true).limit(1).maybeSingle();
+        const skuOrigen = (mapRow as { sku_origen: string } | null)?.sku_origen;
+        if (skuOrigen && skuOrigen !== skuBuscar) {
+          ({ data: dispRow } = await sb.from("v_stock_disponible")
+            .select("reserved").eq("sku", skuOrigen).maybeSingle());
+        }
+      }
       stockComprometido = (dispRow as { reserved: number } | null)?.reserved ?? 0;
     }
 
