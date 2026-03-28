@@ -1240,12 +1240,17 @@ export async function syncStockToML(sku: string, availableQty: number): Promise<
   const sb = getServerSupabase();
   if (!sb) return 0;
 
+  await sb.from("audit_log").insert({ accion: "stock_sync:entry", params: { sku, availableQty } });
+
   const { data: mappings } = await sb.from("ml_items_map")
     .select("*")
     .eq("sku", sku)
     .eq("activo", true);
 
-  if (!mappings || mappings.length === 0) return 0;
+  if (!mappings || mappings.length === 0) {
+    await sb.from("audit_log").insert({ accion: "stock_sync:no_mapping", params: { sku, availableQty } });
+    return 0;
+  }
 
   let synced = 0;
 
