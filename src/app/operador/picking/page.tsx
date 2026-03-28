@@ -185,7 +185,7 @@ export default function PickingPage() {
         {/* FLEX: direct view */}
         {screen==="flex"&&(
           flexSession ? (
-            <SessionDetail session={flexSession} operario={operario} onPickComp={(l,i)=>{setActiveSes(flexSession);setActiveLinea(l);setActiveCompIdx(i);setScreen("pick");}} onRefresh={refreshActiveFlex}/>
+            <SessionDetail session={flexSession} operario={operario} onPickComp={(l,i)=>{setActiveSes(flexSession);setActiveLinea(l);setActiveCompIdx(i);setScreen("pick");}} onRefresh={refreshActiveFlex} shipCount={flexShipCount}/>
           ) : (
             <div style={{textAlign:"center",padding:40,color:"#94a3b8"}}>
               <div style={{fontSize:40,marginBottom:12}}>📋</div>
@@ -278,7 +278,7 @@ function SessionList({sessions,onSelect,onRefresh}:{sessions:DBPickingSession[];
 }
 
 // ==================== SESSION DETAIL (Flex — 2 fases: Recolección + Armado) ====================
-function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickingSession;operario:string;onPickComp:(l:PickingLinea,i:number)=>void;onRefresh:()=>void}) {
+function SessionDetail({session,operario,onPickComp,onRefresh,shipCount}:{session:DBPickingSession;operario:string;onPickComp:(l:PickingLinea,i:number)=>void;onRefresh:()=>void;shipCount?:number}) {
   const tc=session.lineas.reduce((s,l)=>s+l.componentes.length,0);
   const dc=session.lineas.reduce((s,l)=>s+l.componentes.filter(c=>c.estado==="PICKEADO").length,0);
   const pctRecoleccion=tc>0?Math.round((dc/tc)*100):0;
@@ -377,8 +377,8 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
     return null;
   }, [session, rutaOrdenada]);
 
-  // Counts — based on session lines, not shipments
-  const totalPedidos = session.lineas.length;
+  // Counts — shipCount = real shipments/etiquetas, lineas = picks
+  const totalPedidos = shipCount || session.lineas.length;
   const totalArmados = armados.size;
   const pedidosPendientesArmar = totalPedidos - totalArmados;
   const hayNuevosPorRecolectar = !allRecolectado && fase === "armado";
@@ -413,6 +413,7 @@ function SessionDetail({session,operario,onPickComp,onRefresh}:{session:DBPickin
           <div style={{textAlign:"center",padding:"8px 0",borderRadius:8,background:"var(--bg3)"}}>
             <div style={{fontSize:22,fontWeight:800,color:"var(--cyan)"}}>{totalPedidos}</div>
             <div style={{fontSize:10,color:"var(--txt3)"}}>Pedidos</div>
+            {shipCount && shipCount !== session.lineas.length && <div style={{fontSize:9,color:"var(--txt3)"}}>{session.lineas.length} picks</div>}
           </div>
           <div style={{textAlign:"center",padding:"8px 0",borderRadius:8,background:"var(--bg3)"}}>
             <div style={{fontSize:22,fontWeight:800,color:fase==="recoleccion"?"var(--blue)":"var(--amber)"}}>{fase==="recoleccion"?`${pctRecoleccion}%`:pedidosPendientesArmar}</div>
