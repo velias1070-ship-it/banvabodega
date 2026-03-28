@@ -27,12 +27,26 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    // 0. If enqueue_all=1, queue all active SKUs first (server-side, no client limits)
+    const url = new URL(req.url);
+    if (url.searchParams.get("enqueue_all") === "1") {
+      const { data: activeSkus } = await sb.from("ml_items_map").select("sku").eq("activo", true);
+      if (activeSkus && activeSkus.length > 0) {
+        const rows = (activeSkus as { sku: string }[]).map(r => ({ sku: r.sku, created_at: new Date().toISOString() }));
+        // Batch upsert in chunks of 500
+        for (let i = 0; i < rows.length; i += 500) {
+          await sb.from("stock_sync_queue").upsert(rows.slice(i, i + 500), { onConflict: "sku" });
+        }
+        console.log(`[ML Stock Sync] Enqueued ${activeSkus.length} active SKUs`);
+      }
+    }
+
     // 1. Read the sync queue
     const { data: queue } = await sb.from("stock_sync_queue").select("sku").order("created_at");
     const skus = (queue || []).map((d: { sku: string }) => d.sku);
 
     if (skus.length === 0) {
-      return NextResponse.json({ status: "ok", synced: 0, message: "queue empty" });
+      return NextResponse.json({ status: "ok", synced: 0, total: 0, remaining: 0, message: "queue empty" });
     }
 
     // 2. Load composicion_venta for pack resolution

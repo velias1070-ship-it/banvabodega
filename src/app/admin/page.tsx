@@ -9133,32 +9133,27 @@ function AdminStockML() {
   const [syncQueueResult, setSyncQueueResult] = useState<string|null>(null);
 
   const syncViaQueue = async () => {
-    if (!confirm("Encolar TODOS los SKUs activos y sincronizar a ML?\nEsto actualiza el stock Flex de todas las publicaciones.")) return;
+    if (!confirm("Sincronizar TODOS los SKUs activos a MercadoLibre?\nEsto puede tomar varios minutos.")) return;
     setSyncQueueLoading(true);
     setSyncQueueResult(null);
     try {
-      const sb = (await import("@/lib/supabase")).getSupabase();
-      if (!sb) throw new Error("No DB");
-      // Encolar todos los SKUs activos
-      const { data: activeSkus } = await sb.from("ml_items_map").select("sku").eq("activo", true);
-      const skus = (activeSkus || []).map((r: { sku: string }) => r.sku);
-      const rows = skus.map((sku: string) => ({ sku, created_at: new Date().toISOString() }));
-      await sb.from("stock_sync_queue").upsert(rows, { onConflict: "sku" });
-      // Disparar sync en batches (Vercel 60s timeout)
       let totalSynced = 0;
       let totalProcessed = 0;
       let totalErrors = 0;
       let batch = 0;
       let remaining = 1;
+      // First batch enqueues all, subsequent batches just process remaining
+      let enqueueParam = "?enqueue_all=1";
       while (remaining > 0) {
         batch++;
         setSyncQueueResult(`Batch ${batch}: sincronizando...`);
-        const resp = await fetch("/api/ml/stock-sync", { method: "POST", headers: { "Referer": window.location.href } });
+        const resp = await fetch(`/api/ml/stock-sync${enqueueParam}`, { method: "POST", headers: { "Referer": window.location.href } });
         const json = await resp.json();
         totalSynced += json.synced || 0;
         totalProcessed += json.total || 0;
         totalErrors += (json.errors || []).length;
         remaining = json.remaining || 0;
+        enqueueParam = ""; // Only enqueue on first batch
         if (remaining > 0) {
           setSyncQueueResult(`Batch ${batch}: ${totalSynced}/${totalProcessed} ok, ${remaining} pendientes...`);
           await new Promise(r => setTimeout(r, 1000));
