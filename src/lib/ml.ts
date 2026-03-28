@@ -777,7 +777,7 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
   }
 
   // 8. Reconcile reservations (57ms, ensures qty_reserved is correct before sync)
-  await sb.rpc("reconciliar_reservas").catch((e: unknown) => console.error("[ML] reconciliar_reservas error:", e));
+  try { await sb.rpc("reconciliar_reservas"); } catch (e) { console.error("[ML] reconciliar_reservas error:", e); }
 
   // 9. Queue immediate stock sync for affected SKUs
   const affectedSkus = items.map(i => i.seller_sku).filter((v, i, a) => a.indexOf(v) === i);
