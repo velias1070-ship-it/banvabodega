@@ -1663,12 +1663,13 @@ export async function guardarOperario(o: db.DBOperario) { return db.upsertOperar
 export type { PickingLinea, PickingComponente, PickingLineaFullLegacy, PickingTipo, DBPickingSession } from "./db";
 
 // Build picking session from pasted orders
-export function buildPickingLineas(orders: { skuVenta: string; qty: number }[]): { lineas: db.PickingLinea[]; errors: string[] } {
+export function buildPickingLineas(orders: { skuVenta: string; qty: number; orderIds?: number[]; shipmentIds?: number[] }[]): { lineas: db.PickingLinea[]; errors: string[] } {
   const lineas: db.PickingLinea[] = [];
   const errors: string[] = [];
 
   for (let i = 0; i < orders.length; i++) {
-    const { skuVenta, qty } = orders[i];
+    const { skuVenta, qty, orderIds, shipmentIds } = orders[i];
+    const lineasAntes = lineas.length;
     const compsAll = getComponentesPorSkuVenta(skuVenta);
     let comps = compsAll.filter(c => c.tipoRelacion !== "alternativo");
     let alternativos = compsAll.filter(c => c.tipoRelacion === "alternativo");
@@ -1788,6 +1789,14 @@ export function buildPickingLineas(orders: { skuVenta: string; qty: number }[]):
       if (totalDisponible < totalNeeded) {
         const detalle = fuentes.map(f => `${f.sku}(${f.stockTotal})`).join("+");
         errors.push(`⚠️ ${comp.skuOrigen}: necesitas ${totalNeeded}, disponible ${totalDisponible} en ${detalle || "ninguna posición"}`);
+      }
+    }
+
+    // Asignar orderIds/shipmentIds a las líneas generadas para este pedido
+    if (orderIds || shipmentIds) {
+      for (let j = lineasAntes; j < lineas.length; j++) {
+        if (orderIds) lineas[j].orderIds = orderIds;
+        if (shipmentIds) lineas[j].shipmentIds = shipmentIds;
       }
     }
   }
@@ -2268,12 +2277,14 @@ export async function pickearComponente(
 
   // Deduct stock — reservations are computed by reconciliar_reservas(), not managed here
   if (isConfigured()) {
+    const orderLabel = linea.orderIds?.length ? ` OC:${linea.orderIds.join(",")}` : "";
+    const shipLabel = linea.shipmentIds?.length ? ` Envío:${linea.shipmentIds.join(",")}` : "";
     const sessionLabel = freshSession.titulo || `Sesión ${sessionId.slice(0, 8)}`;
     await db.registrarMovimientoStock({
       sku: comp.skuOrigen, posicion: comp.posicion && comp.posicion !== "?" ? comp.posicion : "SIN_ASIGNAR",
       delta: -comp.unidades, tipo: "salida",
       motivo: "venta_flex", operario,
-      nota: `Picking Flex: ${linea.skuVenta} ×${linea.qtyPedida} — ${sessionLabel}`,
+      nota: `Picking Flex: ${linea.skuVenta} ×${linea.qtyPedida}${orderLabel}${shipLabel} — ${sessionLabel}`,
     });
     db.addToStockSyncQueue([comp.skuOrigen]).catch(() => {});
   }

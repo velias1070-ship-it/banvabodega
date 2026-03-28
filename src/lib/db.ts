@@ -1123,6 +1123,9 @@ export interface PickingLinea {
   qtyPedida: number;
   estado: "PENDIENTE" | "PICKEADO";
   componentes: PickingComponente[];
+  // IDs de ventas/envíos ML asociados a esta línea
+  orderIds?: number[];
+  shipmentIds?: number[];
   // Campos adicionales para envio_full (opcionales, no rompen Flex)
   skuOrigen?: string;
   tipoFull?: "simple" | "pack" | "combo";
