@@ -1207,7 +1207,8 @@ export async function updateFlexStock(
   quantity: number,
   version: number,
   stockType: "selling_address" | "seller_warehouse" = "seller_warehouse",
-  warehouseLocations: StockLocation[] = []
+  warehouseLocations: StockLocation[] = [],
+  meta?: { sku?: string; sku_origen?: string }
 ): Promise<{ ok: boolean; error?: string }> {
   const currentInML = warehouseLocations
     .filter(l => l.type === stockType)
@@ -1253,7 +1254,7 @@ export async function updateFlexStock(
           accion: "stock_sync:put_ok",
           entidad: "ml_items_map",
           entidad_id: userProductId,
-          params: { quantity, currentInML, delta, stockType, version },
+          params: { sku: meta?.sku, sku_origen: meta?.sku_origen, quantity, currentInML, delta, stockType, version },
         });
       }
       console.log(`[ML Stock] PUT OK ${userProductId}: ${currentInML} → ${quantity} (delta ${delta > 0 ? "+" : ""}${delta})`);
@@ -1342,7 +1343,7 @@ export async function syncStockToML(sku: string, availableQty: number): Promise<
       }
 
       // 3. PUT with x-version header
-      const result = await updateFlexStock(userProductId, availableQty, stockData.version, stockType, stockData.locations);
+      const result = await updateFlexStock(userProductId, availableQty, stockData.version, stockType, stockData.locations, { sku, sku_origen: map.sku_origen || sku });
       await sb.from("audit_log").insert({ accion: "stock_sync:debug", params: { sku, step: "put_result", userProductId, available: availableQty, ok: result.ok, error: result.error } });
 
       if (result.ok) {
@@ -1360,7 +1361,7 @@ export async function syncStockToML(sku: string, availableQty: number): Promise<
           await new Promise(r => setTimeout(r, attempt * 500)); // 500ms, 1s, 1.5s
           const freshStock = await getDistributedStock(userProductId);
           if (!freshStock) break;
-          const retryResult = await updateFlexStock(userProductId, availableQty, freshStock.version, stockType, freshStock.locations);
+          const retryResult = await updateFlexStock(userProductId, availableQty, freshStock.version, stockType, freshStock.locations, { sku, sku_origen: map.sku_origen || sku });
           if (retryResult.ok) {
             await sb.from("ml_items_map").update({
               ultimo_sync: new Date().toISOString(),
