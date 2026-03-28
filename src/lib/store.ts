@@ -876,6 +876,8 @@ export async function syncFromSheet(): Promise<{ added: number; updated: number;
   }
   // Trigger: proveedor cargado (diccionario de productos actualizado)
   import("./agents-triggers").then(m => m.dispararTrigger("proveedor_cargado")).catch(() => {});
+  // Auto-vincular productos nuevos en ml_items_map (fire & forget)
+  fetch("/api/ml/link-missing", { method: "POST" }).catch(() => {});
   return { ...result.productos, composicionTotal: result.composicion.total };
 }
 
