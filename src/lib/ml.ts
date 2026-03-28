@@ -722,9 +722,28 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
     }
   }
 
-  // 7. Stock reservations are now COMPUTED (not incremental).
-  // reconciliar_reservas() runs every sync cycle and computes qty_reserved
-  // from shipment state + picking state. No reservation/release logic here.
+  // 7. Queue immediate stock sync for affected SKUs + pack siblings
+  if (totalItems > 0) {
+    const affectedSkus: string[] = [];
+    const { data: currentItems } = await sb.from("ml_shipment_items")
+      .select("seller_sku").eq("shipment_id", shipmentId);
+    for (const item of (currentItems || []) as { seller_sku: string }[]) {
+      if (!affectedSkus.includes(item.seller_sku)) affectedSkus.push(item.seller_sku);
+    }
+    if (affectedSkus.length > 0) {
+      // Enqueue SKUs for sync
+      const rows = affectedSkus.map(sku => ({ sku, created_at: new Date().toISOString() }));
+      await sb.from("stock_sync_queue").upsert(rows, { onConflict: "sku" }).then(() => {});
+      // Fire immediate sync (fire & forget — don't block webhook response)
+      const baseUrl = process.env.VERCEL_URL
+        ? `https://${process.env.VERCEL_URL}`
+        : "http://localhost:3000";
+      fetch(`${baseUrl}/api/ml/stock-sync`, {
+        method: "POST",
+        headers: { "x-internal": "1" },
+      }).catch(() => {});
+    }
+  }
 
   const ltLabel = shipInfo.logistic_type === "self_service" ? "Flex"
     : shipInfo.logistic_type === "cross_docking" ? "Colecta"
@@ -1142,33 +1161,18 @@ export async function updateFlexStock(
   stockType: "selling_address" | "seller_warehouse" = "seller_warehouse",
   warehouseLocations: StockLocation[] = []
 ): Promise<{ ok: boolean; error?: string }> {
-  // FASE 1 — DRY RUN: loggear lo que enviaría sin hacer PUT
   const currentInML = warehouseLocations
     .filter(l => l.type === stockType)
     .reduce((s, l) => s + l.quantity, 0);
   const delta = quantity - currentInML;
-  console.log(`[ML Stock DRY RUN] ${userProductId}: enviaría qty=${quantity} a ML (actual en ML: ${currentInML}, delta: ${delta > 0 ? "+" : ""}${delta}, type: ${stockType})`);
-  // Persist to audit_log for analysis (Vercel logs rotate fast)
   const sb = getServerSupabase();
-  if (sb) {
-    void sb.from("audit_log").insert({
-      accion: "stock_sync:dry_run",
-      entidad: "ml_items_map",
-      entidad_id: userProductId,
-      params: { quantity, currentInML, delta, stockType, version },
-    });
-  }
-  return { ok: true, error: "dry_run" };
-  // END DRY RUN — remove above block to activate real sync (Fase 2)
+
   try {
     let body: unknown;
     if (stockType === "seller_warehouse") {
-      // seller_warehouse requires locations array with store_id
       if (warehouseLocations.length === 0) {
         return { ok: false, error: "seller_warehouse requiere locations con store_id" };
       }
-      // Deduplicate by network_node_id — ML rejects repeated network_node_id
-      // Each location needs store_id + network_node_id per ML docs
       const seen = new Set<string>();
       const uniqueLocations: { store_id: string; network_node_id: string; quantity: number }[] = [];
       for (const l of warehouseLocations) {
@@ -1193,9 +1197,33 @@ export async function updateFlexStock(
       body,
       { "x-version": String(version) }
     );
-    return result !== null ? { ok: true } : { ok: false, error: "ML respondió con error (ver logs del server)" };
+
+    if (result !== null) {
+      // Log successful PUT to audit_log
+      if (sb) {
+        void sb.from("audit_log").insert({
+          accion: "stock_sync:put_ok",
+          entidad: "ml_items_map",
+          entidad_id: userProductId,
+          params: { quantity, currentInML, delta, stockType, version },
+        });
+      }
+      console.log(`[ML Stock] PUT OK ${userProductId}: ${currentInML} → ${quantity} (delta ${delta > 0 ? "+" : ""}${delta})`);
+      return { ok: true };
+    }
+    return { ok: false, error: "ML respondió con error (ver logs del server)" };
   } catch (err) {
     const msg = String(err);
+    // Log failed PUT
+    if (sb) {
+      void sb.from("audit_log").insert({
+        accion: "stock_sync:put_error",
+        entidad: "ml_items_map",
+        entidad_id: userProductId,
+        params: { quantity, currentInML, delta, stockType, version },
+        error: msg,
+      });
+    }
     if (msg.includes("VERSION_CONFLICT")) {
       return { ok: false, error: "VERSION_CONFLICT" };
     }
@@ -1225,6 +1253,11 @@ export async function syncStockToML(sku: string, availableQty: number): Promise<
     // Safety: if stock is 0 but last sent was >10, skip auto-sync (needs manual review)
     if (availableQty === 0 && map.stock_flex_cache && map.stock_flex_cache > 10) {
       console.warn(`[ML Stock] Safety block: ${sku} → 0 (was ${map.stock_flex_cache}). Skipping.`);
+      void sb.from("audit_log").insert({
+        accion: "stock_sync:safety_block",
+        entidad: "ml_items_map", entidad_id: map.user_product_id || map.item_id,
+        params: { sku, availableQty, lastSent: map.stock_flex_cache },
+      });
       continue;
     }
 
@@ -1255,19 +1288,16 @@ export async function syncStockToML(sku: string, availableQty: number): Promise<
         continue;
       }
 
-      // 3. PUT with x-version header (or dry run)
+      // 3. PUT with x-version header
       const result = await updateFlexStock(userProductId, availableQty, stockData.version, stockType, stockData.locations);
 
-      if (result.ok && result.error !== "dry_run") {
-        // Real sync succeeded — update cache
+      if (result.ok) {
         await sb.from("ml_items_map").update({
           ultimo_sync: new Date().toISOString(),
           stock_flex_cache: availableQty,
           stock_version: stockData.version + 1,
         }).eq("id", map.id);
         synced++;
-      } else if (result.ok && result.error === "dry_run") {
-        synced++; // Count as processed for reporting
       } else if (result.error === "VERSION_CONFLICT") {
         // 409: version mismatch — retry up to 3 times with delay
         let retried = false;

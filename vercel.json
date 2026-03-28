@@ -5,6 +5,10 @@
       "schedule": "0 8 * * *"
     },
     {
+      "path": "/api/ml/stock-sync",
+      "schedule": "* * * * *"
+    },
+    {
       "path": "/api/ml/sync-stock-full",
       "schedule": "30 7 * * *"
     },

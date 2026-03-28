@@ -4,22 +4,25 @@ import { syncStockToML } from "@/lib/ml";
 
 /**
  * Stock sync endpoint — pushes WMS stock to MercadoLibre using distributed stock API.
- * Uses PUT /user-products/$UP_ID/stock/type/selling_address with x-version header.
- * Processes the stock_sync_queue: for each pending SKU, calculates
- * available stock (total - committed) and sends to ML.
+ *
+ * Pack-aware: when a sku_venta has composicion_venta, calculates:
+ *   publicar = FLOOR((disponible_origen - buffer) / unidades_pack)
+ *
+ * Buffer: 2 for simple SKUs, 4 for SKUs with shared packs (multiple sku_venta
+ * consuming the same sku_origen).
  */
 export async function POST(req: NextRequest) {
   const sb = getServerSupabase();
   if (!sb) return NextResponse.json({ error: "no_db" }, { status: 500 });
 
-  // Verificar autorización: cron de Vercel, dev local, o llamada interna desde admin
   const authHeader = req.headers.get("authorization");
   const isVercelCron = authHeader === `Bearer ${process.env.CRON_SECRET}`;
   const isLocalDev = process.env.NODE_ENV === "development";
   const referer = req.headers.get("referer") || "";
   const isAdminCall = referer.includes("/admin");
+  const isInternal = req.headers.get("x-internal") === "1";
 
-  if (!isVercelCron && !isLocalDev && !isAdminCall) {
+  if (!isVercelCron && !isLocalDev && !isAdminCall && !isInternal) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
@@ -32,33 +35,73 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ status: "ok", synced: 0, message: "queue empty" });
     }
 
-    console.log(`[ML Stock Sync] Processing ${skus.length} SKUs`);
-    const uniqueSkus = Array.from(new Set(skus));
+    // 2. Load composicion_venta for pack resolution
+    const { data: composiciones } = await sb.from("composicion_venta").select("sku_venta, sku_origen, unidades");
+    const compMap: Record<string, { sku_origen: string; unidades: number }> = {};
+    const origenToVentas: Record<string, string[]> = {};
+    for (const c of (composiciones || []) as { sku_venta: string; sku_origen: string; unidades: number }[]) {
+      compMap[c.sku_venta] = { sku_origen: c.sku_origen, unidades: c.unidades };
+      if (!origenToVentas[c.sku_origen]) origenToVentas[c.sku_origen] = [];
+      if (!origenToVentas[c.sku_origen].includes(c.sku_venta)) {
+        origenToVentas[c.sku_origen].push(c.sku_venta);
+      }
+    }
+
+    // 3. Expand queue: for each SKU, also include pack siblings
+    const expandedSkus = new Set<string>();
+    for (const sku of skus) {
+      expandedSkus.add(sku);
+      // If this sku_venta has a composicion, find siblings
+      const comp = compMap[sku];
+      if (comp) {
+        const siblings = origenToVentas[comp.sku_origen] || [];
+        for (const sib of siblings) expandedSkus.add(sib);
+      }
+      // If this IS a sku_origen, find all sku_venta that use it
+      const ventas = origenToVentas[sku];
+      if (ventas) {
+        for (const sv of ventas) expandedSkus.add(sv);
+      }
+    }
+
+    // 4. Load ml_items_map for sku_origen resolution
+    const { data: itemMaps } = await sb.from("ml_items_map")
+      .select("sku, sku_origen").eq("activo", true);
+    const mlSkuOrigen: Record<string, string> = {};
+    for (const m of (itemMaps || []) as { sku: string; sku_origen: string | null }[]) {
+      if (m.sku_origen) mlSkuOrigen[m.sku] = m.sku_origen;
+    }
+
+    // 5. Shared origins (have >1 sku_venta) get bigger buffer
+    const sharedOrigins = new Set<string>();
+    for (const [origen, ventas] of Object.entries(origenToVentas)) {
+      if (ventas.length > 1) sharedOrigins.add(origen);
+    }
+
+    console.log(`[ML Stock Sync] Processing ${expandedSkus.size} SKUs (${skus.length} queued + siblings)`);
+    const uniqueSkus = Array.from(expandedSkus);
     let synced = 0;
     const errors: string[] = [];
 
     for (let idx = 0; idx < uniqueSkus.length; idx++) {
       const sku = uniqueSkus[idx];
-      // Throttle: wait 1s between SKUs to avoid ML rate limits
-      if (idx > 0) await new Promise(r => setTimeout(r, 1000));
+      if (idx > 0) await new Promise(r => setTimeout(r, 500));
       try {
-        // 2. Get available stock from v_stock_disponible
-        //    Try sku first, then check ml_items_map.sku_origen for SKUs where
-        //    sku_venta (ML) differs from sku_origen (bodega), e.g. LA-LA-8 → 9788481693232
-        let { data: stockRow } = await sb.from("v_stock_disponible")
-          .select("disponible").eq("sku", sku).maybeSingle();
-        if (!stockRow) {
-          const { data: mapRow } = await sb.from("ml_items_map")
-            .select("sku_origen").eq("sku", sku).eq("activo", true).limit(1).maybeSingle();
-          const skuOrigen = (mapRow as { sku_origen: string } | null)?.sku_origen;
-          if (skuOrigen && skuOrigen !== sku) {
-            ({ data: stockRow } = await sb.from("v_stock_disponible")
-              .select("disponible").eq("sku", skuOrigen).maybeSingle());
-          }
-        }
-        const available = Math.max(0, (stockRow as { disponible: number } | null)?.disponible ?? 0);
+        // 6. Resolve sku_origen and unidades
+        const comp = compMap[sku];
+        const skuOrigen = comp?.sku_origen || mlSkuOrigen[sku] || sku;
+        const unidadesPack = comp?.unidades || 1;
+        const buffer = sharedOrigins.has(skuOrigen) ? 4 : 2;
 
-        // 3. Send to ML via distributed stock API
+        // 7. Get disponible from v_stock_disponible by sku_origen
+        const { data: stockRow } = await sb.from("v_stock_disponible")
+          .select("disponible").eq("sku", skuOrigen).maybeSingle();
+        const disponibleOrigen = Math.max(0, (stockRow as { disponible: number } | null)?.disponible ?? 0);
+
+        // 8. Calculate: publicar = FLOOR((disponible - buffer) / unidades_pack)
+        const available = Math.max(0, Math.floor((disponibleOrigen - buffer) / unidadesPack));
+
+        // 9. Send to ML
         const count = await syncStockToML(sku, available);
         if (count > 0) synced++;
       } catch (err) {
@@ -66,8 +109,8 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 4. Clear processed items from queue
-    await sb.from("stock_sync_queue").delete().in("sku", uniqueSkus);
+    // 10. Clear all processed items from queue (original + siblings)
+    await sb.from("stock_sync_queue").delete().in("sku", [...skus, ...uniqueSkus]);
 
     console.log(`[ML Stock Sync] Done: ${synced}/${uniqueSkus.length} synced`);
     return NextResponse.json({
