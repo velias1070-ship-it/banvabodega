@@ -2545,7 +2545,7 @@ function CreatePickingSession({ onCreated, onCancel }: { onCreated: () => void; 
   };
 
   const doCreate = async () => {
-    if (!preview || preview.lineas.length === 0) return;
+    if (!preview || preview.lineas.length === 0 || saving) return;
     setSaving(true);
     const id = await crearPickingSession(fecha, preview.lineas);
     setSaving(false);
