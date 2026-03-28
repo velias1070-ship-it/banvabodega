@@ -471,8 +471,16 @@ function SessionDetail({session,operario,onPickComp,onRefresh,shipCount}:{sessio
 
         <button onClick={onRefresh} style={{width:"100%",padding:8,marginBottom:12,borderRadius:6,background:"var(--bg3)",color:"#06b6d4",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>Refrescar</button>
 
-        {/* Consolidated picking lines */}
-        {session.lineas.map(linea=>{
+        {/* Consolidated picking lines — pendientes primero, nuevos arriba */}
+        {[...session.lineas].sort((a, b) => {
+          const aDone = a.componentes.every(c => c.estado === "PICKEADO") ? 1 : 0;
+          const bDone = b.componentes.every(c => c.estado === "PICKEADO") ? 1 : 0;
+          if (aDone !== bDone) return aDone - bDone;
+          // Dentro de pendientes: los que no tienen pickedAt (nuevos) primero
+          const aNew = a.componentes.some(c => !c.pickedAt && c.estado === "PENDIENTE") ? 0 : 1;
+          const bNew = b.componentes.some(c => !c.pickedAt && c.estado === "PENDIENTE") ? 0 : 1;
+          return aNew - bNew;
+        }).map(linea=>{
           const allDone=linea.componentes.every(c=>c.estado==="PICKEADO");
           return(
             <div key={linea.id} style={{padding:14,marginBottom:6,borderRadius:10,
@@ -549,7 +557,11 @@ function SessionDetail({session,operario,onPickComp,onRefresh,shipCount}:{sessio
         {!todoCompleto && [...session.lineas].filter(l => l.estado === "PICKEADO").sort((a,b) => {
           const aArm = armados.has(a.id) ? 1 : 0;
           const bArm = armados.has(b.id) ? 1 : 0;
-          return aArm - bArm;
+          if (aArm !== bArm) return aArm - bArm;
+          // Dentro de no-armados: más recientemente pickeado arriba
+          const aTime = a.componentes[0]?.pickedAt || "";
+          const bTime = b.componentes[0]?.pickedAt || "";
+          return bTime.localeCompare(aTime);
         }).map(linea => {
           const isArmado = armados.has(linea.id);
           const skuUp = linea.skuVenta.toUpperCase();
