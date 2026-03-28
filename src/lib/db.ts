@@ -428,6 +428,22 @@ export async function fetchResumenMovimientosHoy(): Promise<{ total: number; ent
   return { total: data.length, entradas, salidas };
 }
 
+export async function fetchMovimientosHoy(): Promise<DBMovimiento[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
+  const all: DBMovimiento[] = [];
+  const PAGE = 1000;
+  let from = 0;
+  while (true) {
+    const { data } = await sb.from("movimientos").select("*").gte("created_at", today + "T00:00:00-03:00").order("created_at", { ascending: false }).range(from, from + PAGE - 1);
+    if (!data || data.length === 0) break;
+    all.push(...data);
+    if (data.length < PAGE) break;
+    from += PAGE;
+  }
+  return all;
+}
+
 // ==================== MOVIMIENTOS ====================
 export async function fetchMovimientos(limit = 200): Promise<DBMovimiento[]> {
   const sb = getSupabase(); if (!sb) return [];

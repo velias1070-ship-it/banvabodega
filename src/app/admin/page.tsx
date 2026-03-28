@@ -5,7 +5,7 @@ import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, s
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia, IntegrityError } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
-import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado, transferirStock, reconciliarReservas, fetchResumenMovimientosHoy, fetchStockDisponible } from "@/lib/db";
+import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado, transferirStock, reconciliarReservas, fetchResumenMovimientosHoy, fetchStockDisponible, fetchMovimientosHoy } from "@/lib/db";
 import type { DBStockProyectado, DBReconciliacion } from "@/lib/db";
 import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap, ShipmentWithItems } from "@/lib/db";
 import { getOAuthUrl } from "@/lib/ml";
@@ -4792,6 +4792,8 @@ function Dashboard() {
   const runReconciliacion = useCallback(async () => {
     setReconciling(true);
     try {
+      // Refresh shipment statuses from ML API before reconciling
+      await fetch("/api/ml/refresh-shipments", { method: "POST" }).catch(() => {});
       const diff = await reconciliarReservas();
       setLastReconcDiff(diff);
       await loadDashStock();
@@ -4821,6 +4823,31 @@ function Dashboard() {
         <div className="kpi"><div className="kpi-label">Valor inventario</div><div className="kpi-val green">{fmtMoney(totalValue)}</div><div className="kpi-sub">a costo promedio</div></div>
         <div className="kpi"><div className="kpi-label">Posiciones</div><div className="kpi-val">{usedPos}<span style={{fontSize:14,color:"var(--txt3)"}}> / {totalPos}</span></div><div className="kpi-sub">{totalPos-usedPos} libres</div></div>
       </div>
+
+      {/* Exportar movimientos del día */}
+      {movsHoy.total > 0 && <div style={{textAlign:"right",marginTop:8}}>
+        <button onClick={async () => {
+          const movs = await fetchMovimientosHoy();
+          if (movs.length === 0) { alert("No hay movimientos hoy"); return; }
+          const header = "Fecha,Hora,Tipo,Motivo,SKU,Posicion,Cantidad,Operario,Nota";
+          const rows = movs.map(m => {
+            const d = m.created_at ? new Date(m.created_at) : new Date();
+            const fecha = d.toLocaleDateString("es-CL");
+            const hora = d.toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" });
+            const escape = (v: string) => v.includes(",") || v.includes('"') ? '"' + v.replace(/"/g, '""') + '"' : v;
+            return [fecha, hora, m.tipo, escape(m.motivo || ""), escape(m.sku), escape(m.posicion_id || ""), m.cantidad, escape(m.operario || ""), escape(m.nota || "")].join(",");
+          });
+          const csv = "\uFEFF" + header + "\n" + rows.join("\n");
+          const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
+          a.href = url; a.download = `movimientos_${today}.csv`; a.click();
+          URL.revokeObjectURL(url);
+        }} style={{background:"none",border:"1px solid var(--cyan)",color:"var(--cyan)",borderRadius:6,padding:"4px 12px",fontSize:11,fontWeight:600,cursor:"pointer"}}>
+          Exportar movimientos del día (CSV)
+        </button>
+      </div>}
 
       {/* Operaciones activas */}
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginTop:12}}>
