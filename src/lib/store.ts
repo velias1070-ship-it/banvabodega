@@ -2287,11 +2287,24 @@ export async function pickearComponente(
       nota: `Picking Flex: ${linea.skuVenta} ×${linea.qtyPedida}${orderLabel}${shipLabel} — ${sessionLabel}`,
     });
     db.enqueueAndSync([comp.skuOrigen]);
+    // Mark shipment items as stock_deducted (so reservations don't double-count)
+    if (linea.shipmentIds?.length) {
+      const sb = db.getSupabase();
+      if (sb) {
+        for (const shipId of linea.shipmentIds) {
+          sb.from("ml_shipment_items")
+            .update({ stock_deducted: true })
+            .eq("shipment_id", shipId)
+            .eq("seller_sku", linea.skuVenta)
+            .then(() => {}).catch(() => {});
+        }
+      }
+    }
   }
 
   await db.auditLog("pickearComponente:ok", {
     entidad: "picking_session", entidad_id: sessionId, operario,
-    resultado: { lineaId, compIdx, sku: comp.skuOrigen, qty: comp.unidades, posicion: comp.posicion, skuVenta: linea.skuVenta, allDone },
+    resultado: { lineaId, compIdx, sku: comp.skuOrigen, qty: comp.unidades, posicion: comp.posicion, skuVenta: linea.skuVenta, allDone, shipmentIds: linea.shipmentIds },
   });
 
   if (allDone && sessionId) {
