@@ -2292,11 +2292,10 @@ export async function pickearComponente(
       const sb = db.getSupabase();
       if (sb) {
         for (const shipId of linea.shipmentIds) {
-          sb.from("ml_shipment_items")
+          void sb.from("ml_shipment_items")
             .update({ stock_deducted: true })
             .eq("shipment_id", shipId)
-            .eq("seller_sku", linea.skuVenta)
-            .then(() => {}).catch(() => {});
+            .eq("seller_sku", linea.skuVenta);
         }
       }
     }
