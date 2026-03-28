@@ -1277,19 +1277,20 @@ export async function syncStockToML(sku: string, availableQty: number): Promise<
       // 2. GET current stock to obtain version
       const stockData = await getDistributedStock(userProductId);
       if (!stockData) {
-        console.error(`[ML Stock] Cannot read stock for ${userProductId}`);
+        await sb.from("audit_log").insert({ accion: "stock_sync:debug", params: { sku, step: "no_stock_data", userProductId } });
         continue;
       }
 
       // 2b. Determine seller-controlled stock type
       const stockType = getSellerStockType(stockData.locations);
       if (!stockType) {
-        console.warn(`[ML Stock] ${userProductId} has no seller-controlled location — Full-only item, skipping`);
+        await sb.from("audit_log").insert({ accion: "stock_sync:debug", params: { sku, step: "no_stock_type", userProductId, locations: stockData.locations.map(l => l.type) } });
         continue;
       }
 
       // 3. PUT with x-version header
       const result = await updateFlexStock(userProductId, availableQty, stockData.version, stockType, stockData.locations);
+      await sb.from("audit_log").insert({ accion: "stock_sync:debug", params: { sku, step: "put_result", userProductId, available: availableQty, ok: result.ok, error: result.error } });
 
       if (result.ok) {
         await sb.from("ml_items_map").update({
