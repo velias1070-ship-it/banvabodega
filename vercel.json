@@ -6,7 +6,7 @@
     },
     {
       "path": "/api/ml/stock-sync",
-      "schedule": "* * * * *"
+      "schedule": "0 */2 * * *"
     },
     {
       "path": "/api/ml/sync-stock-full",
