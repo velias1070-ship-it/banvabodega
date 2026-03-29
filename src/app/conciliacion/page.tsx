@@ -358,6 +358,9 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
   const [showBheModal, setShowBheModal] = useState(false);
+  const [clasificarItem, setClasificarItem] = useState<DBRcvCompra | null>(null);
+  const [clasificarCuenta, setClasificarCuenta] = useState("");
+  const [clasificarBusca, setClasificarBusca] = useState("");
   const [provFilterSet, setProvFilterSet] = useState<Set<string> | null>(null); // null = todos
   const [showProvFilter, setShowProvFilter] = useState(false);
   const [showProveedores, setShowProveedores] = useState(false);
@@ -554,6 +557,89 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
       {/* Modal Importar BHE */}
       {showBheModal && <SiiImportModal tipo="BHE" empresa={empresa} periodoActual={periodo} onClose={() => setShowBheModal(false)} onImported={() => { setShowBheModal(false); load(); }} />}
 
+      {/* Modal Clasificar Compra — Chipax style */}
+      {clasificarItem && (() => {
+        const cuentasFiltradas = cuentasHoja.filter(c =>
+          !clasificarBusca || c.nombre.toLowerCase().includes(clasificarBusca.toLowerCase()) || c.codigo.toLowerCase().includes(clasificarBusca.toLowerCase())
+        );
+        const handleGuardar = async () => {
+          if (!clasificarCuenta || !clasificarItem.rut_proveedor) return;
+          await upsertProveedorCuenta(clasificarItem.rut_proveedor, clasificarCuenta, clasificarItem.razon_social || undefined);
+          setProvCuentas(await fetchProveedorCuentas());
+          setClasificarItem(null);
+        };
+        return (
+          <div style={{ position: "fixed", inset: 0, zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.4)" }}
+            onClick={() => setClasificarItem(null)}>
+            <div onClick={e => e.stopPropagation()} style={{ background: "var(--bg2)", borderRadius: 12, width: "100%", maxWidth: 700, maxHeight: "90vh", display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 20px 60px rgba(0,0,0,0.15)" }}>
+              {/* Header */}
+              <div style={{ padding: "20px 28px", background: "var(--cyan)", color: "#fff", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontSize: 18, fontWeight: 700 }}>Clasificar Compras</span>
+                <button onClick={() => setClasificarItem(null)} style={{ background: "none", border: "none", color: "#fff", fontSize: 22, cursor: "pointer", lineHeight: 1 }}>&times;</button>
+              </div>
+              {/* Body */}
+              <div style={{ padding: "24px 28px", flex: 1, overflow: "auto" }}>
+                {/* Warning */}
+                <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", border: "1px solid var(--bg4)", borderRadius: 8, marginBottom: 24 }}>
+                  <span style={{ fontSize: 20, color: "var(--amber)" }}>&#9888;</span>
+                  <span style={{ fontSize: 13 }}>
+                    Atenci&oacute;n: Se actualizar&aacute; la clasificaci&oacute;n de <strong>1 Compra</strong> &mdash; {clasificarItem.razon_social} ({fmtRut(clasificarItem.rut_proveedor)})
+                  </span>
+                </div>
+                {/* Fields */}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1.5fr", gap: 16, alignItems: "start" }}>
+                  {/* Periodo */}
+                  <div>
+                    <label style={{ fontSize: 12, fontWeight: 600, color: "var(--txt3)", display: "block", marginBottom: 6 }}>Periodo Clasificaci&oacute;n</label>
+                    <input readOnly value={clasificarItem.fecha_docto?.slice(0, 7) || periodo}
+                      style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt)", fontSize: 13 }} />
+                  </div>
+                  {/* Linea de Negocio */}
+                  <div>
+                    <label style={{ fontSize: 12, fontWeight: 600, color: "var(--txt3)", display: "block", marginBottom: 6 }}>L&iacute;nea de Negocio *</label>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg2)", fontSize: 13 }}>
+                      <span style={{ flex: 1 }}>{empresa.razon_social || "Empresa"}</span>
+                    </div>
+                  </div>
+                  {/* Cuenta */}
+                  <div>
+                    <label style={{ fontSize: 12, fontWeight: 600, color: "var(--txt3)", display: "block", marginBottom: 6 }}>Cuenta *</label>
+                    <input placeholder="Buscar Cuenta..." value={clasificarBusca} onChange={e => { setClasificarBusca(e.target.value); setClasificarCuenta(""); }}
+                      style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg2)", color: "var(--txt)", fontSize: 13 }} />
+                    {clasificarBusca && !clasificarCuenta && (
+                      <div style={{ border: "1px solid var(--bg4)", borderRadius: 8, marginTop: 4, maxHeight: 180, overflowY: "auto", background: "var(--bg2)", boxShadow: "0 4px 12px rgba(0,0,0,0.08)" }}>
+                        {cuentasFiltradas.length === 0 ? (
+                          <div style={{ padding: "10px 12px", fontSize: 12, color: "var(--txt3)" }}>Sin resultados</div>
+                        ) : cuentasFiltradas.slice(0, 15).map(c => (
+                          <div key={c.id} onClick={() => { setClasificarCuenta(c.id); setClasificarBusca(`${c.codigo} \u2014 ${c.nombre}`); }}
+                            style={{ padding: "8px 12px", fontSize: 12, cursor: "pointer", borderBottom: "1px solid var(--bg4)" }}
+                            onMouseOver={e => (e.currentTarget.style.background = "var(--bg3)")}
+                            onMouseOut={e => (e.currentTarget.style.background = "transparent")}>
+                            <span style={{ fontWeight: 600, color: "var(--cyan)" }}>{c.codigo}</span>
+                            <span style={{ marginLeft: 8, color: "var(--txt2)" }}>{c.nombre}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+              {/* Footer */}
+              <div style={{ padding: "16px 28px", borderTop: "1px solid var(--bg4)", display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                <button onClick={() => setClasificarItem(null)}
+                  style={{ padding: "10px 24px", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer", background: "var(--bg2)", color: "var(--txt2)", border: "1px solid var(--bg4)" }}>
+                  Cancelar
+                </button>
+                <button onClick={handleGuardar} disabled={!clasificarCuenta}
+                  style={{ padding: "10px 24px", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: clasificarCuenta ? "pointer" : "not-allowed", background: clasificarCuenta ? "var(--cyan)" : "var(--bg4)", color: clasificarCuenta ? "#fff" : "var(--txt3)", border: "none" }}>
+                  Guardar
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {syncMsg && (
         <div style={{ padding: "8px 14px", borderRadius: 8, marginBottom: 14, fontSize: 12, fontWeight: 600,
           whiteSpace: "pre-wrap", maxHeight: 300, overflow: "auto",
@@ -668,7 +754,8 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                             <span style={{ fontSize: 10, color: "var(--txt2)" }}>{clasificacion}</span>
                           </span>
                         ) : (
-                          <span style={{ fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 6, background: "var(--redBg)", color: "var(--red)" }}>
+                          <span onClick={() => { setClasificarItem(c); setClasificarCuenta(""); setClasificarBusca(""); }}
+                            style={{ fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 6, background: "var(--redBg)", color: "var(--red)", cursor: "pointer" }}>
                             Sin clasificar
                           </span>
                         )}
