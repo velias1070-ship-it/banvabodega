@@ -220,20 +220,23 @@ export async function fetchProductos(): Promise<DBProduct[]> {
 
 export async function upsertProducto(p: DBProduct) {
   const sb = getSupabase(); if (!sb) return;
-  await sb.from("productos").upsert(cleanProduct(p), { onConflict: "sku" });
+  const { error } = await sb.from("productos").upsert(cleanProduct(p), { onConflict: "sku" });
+  if (error) throw new Error(`upsertProducto failed for ${p.sku}: ${error.message}`);
 }
 
 export async function upsertProductos(prods: DBProduct[]) {
   const sb = getSupabase(); if (!sb) return;
   // Batch in chunks of 500
   for (let i = 0; i < prods.length; i += 500) {
-    await sb.from("productos").upsert(prods.slice(i, i + 500).map(cleanProduct), { onConflict: "sku" });
+    const { error } = await sb.from("productos").upsert(prods.slice(i, i + 500).map(cleanProduct), { onConflict: "sku" });
+    if (error) throw new Error(`upsertProductos failed (batch ${i}): ${error.message}`);
   }
 }
 
 export async function deleteProducto(sku: string) {
   const sb = getSupabase(); if (!sb) return;
-  await sb.from("productos").delete().eq("sku", sku.toUpperCase().trim());
+  const { error } = await sb.from("productos").delete().eq("sku", sku.toUpperCase().trim());
+  if (error) throw new Error(`deleteProducto failed for ${sku}: ${error.message}`);
 }
 
 // ==================== POSICIONES ====================
@@ -789,7 +792,7 @@ export async function upsertComposicionVenta(items: DBComposicionVenta[]) {
   for (let i = 0; i < items.length; i += 500) {
     const batch = items.slice(i, i + 500);
     const { error } = await sb.from("composicion_venta").upsert(batch, { onConflict: "sku_venta,sku_origen" });
-    if (error) console.error(`[composicion] upsert error (batch ${i}-${i + batch.length}):`, error.message, error.code, error.details);
+    if (error) throw new Error(`upsertComposicionVenta failed (batch ${i}-${i + batch.length}): ${error.message}`);
     else console.log(`[composicion] upserted batch ${i}-${i + batch.length} OK`);
   }
 }
@@ -821,14 +824,15 @@ export async function upsertNotasOperativas(items: { sku_venta: string; sku_orig
   const sb = getSupabase(); if (!sb) return;
   for (const item of items) {
     // Intentar update primero
-    const { data } = await sb.from("composicion_venta")
+    const { data, error: updateErr } = await sb.from("composicion_venta")
       .update({ nota_operativa: item.nota_operativa })
       .eq("sku_venta", item.sku_venta)
       .eq("sku_origen", item.sku_origen)
       .select("id");
+    if (updateErr) throw new Error(`upsertNotasOperativas update failed for ${item.sku_venta}: ${updateErr.message}`);
     // Si no existe registro (producto simple), crear uno auto-mapeado
     if (!data || data.length === 0) {
-      await sb.from("composicion_venta").upsert({
+      const { error: upsertErr } = await sb.from("composicion_venta").upsert({
         sku_venta: item.sku_venta,
         codigo_ml: "",
         sku_origen: item.sku_origen,
@@ -836,6 +840,7 @@ export async function upsertNotasOperativas(items: { sku_venta: string; sku_orig
         tipo_relacion: "componente",
         nota_operativa: item.nota_operativa,
       }, { onConflict: "sku_venta,sku_origen" });
+      if (upsertErr) throw new Error(`upsertNotasOperativas insert failed for ${item.sku_venta}: ${upsertErr.message}`);
     }
   }
 }
@@ -1745,14 +1750,16 @@ export async function upsertMLConfig(config: Partial<DBMLConfig>): Promise<boole
     const { error } = await sb.from("ml_config").update(
       { ...config, updated_at: new Date().toISOString() }
     ).eq("id", "main");
-    return !error;
+    if (error) throw new Error(`upsertMLConfig update failed: ${error.message}`);
+    return true;
   }
   // Solo usar upsert si no existe el registro aún (primera vez)
   const { error } = await sb.from("ml_config").upsert(
     { id: "main", ...config, updated_at: new Date().toISOString() },
     { onConflict: "id" }
   );
-  return !error;
+  if (error) throw new Error(`upsertMLConfig insert failed: ${error.message}`);
+  return true;
 }
 
 // ==================== ML ITEMS MAP (Stock sync Phase 2) ====================
@@ -1816,7 +1823,8 @@ export async function fetchSkuVentaToFisicoMap(): Promise<Record<string, string>
 export async function upsertMLItemMap(item: DBMLItemMap): Promise<boolean> {
   const sb = getSupabase(); if (!sb) return false;
   const { error } = await sb.from("ml_items_map").upsert(item, { onConflict: "sku,item_id" });
-  return !error;
+  if (error) throw new Error(`upsertMLItemMap failed for ${item.sku}: ${error.message}`);
+  return true;
 }
 
 // ==================== STOCK SYNC QUEUE ====================
@@ -1830,7 +1838,8 @@ export async function getStockSyncQueue(): Promise<string[]> {
 export async function addToStockSyncQueue(skus: string[]): Promise<void> {
   const sb = getSupabase(); if (!sb) return;
   const rows = skus.map(sku => ({ sku: sku.toUpperCase().trim(), created_at: new Date().toISOString() }));
-  await sb.from("stock_sync_queue").upsert(rows, { onConflict: "sku" });
+  const { error } = await sb.from("stock_sync_queue").upsert(rows, { onConflict: "sku" });
+  if (error) throw new Error(`addToStockSyncQueue failed: ${error.message}`);
 }
 
 /** Enqueue SKUs + fire immediate sync (fire & forget, client-side) */
