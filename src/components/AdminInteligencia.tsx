@@ -371,6 +371,7 @@ export default function AdminInteligencia() {
   const [ventaRows, setVentaRows] = useState<VentaRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<string | null>(null);
+  const [lastSyncFull, setLastSyncFull] = useState<string | null>(null);
   const [recalculando, setRecalculando] = useState(false);
   const [recalcResult, setRecalcResult] = useState<string | null>(null);
   const [syncingML, setSyncingML] = useState(false);
@@ -445,6 +446,12 @@ export default function AdminInteligencia() {
     const r = (data || []) as IntelRow[];
     setRows(r);
     if (r.length > 0) setLastUpdate(r[0].updated_at);
+    // Último sync stock Full
+    const { data: sfData } = await sb.from("stock_full_cache")
+      .select("updated_at")
+      .order("updated_at", { ascending: false })
+      .limit(1);
+    if (sfData && sfData.length > 0) setLastSyncFull(sfData[0].updated_at);
   }, []);
 
   const cargarVenta = useCallback(async () => {
@@ -1217,7 +1224,8 @@ export default function AdminInteligencia() {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Inteligencia</h2>
-          {lastUpdate && <span style={{ fontSize: 10, color: "var(--txt3)" }}>{new Date(lastUpdate).toLocaleString("es-CL")}</span>}
+          {lastUpdate && <span style={{ fontSize: 10, color: "var(--txt3)" }}>Intel: {new Date(lastUpdate).toLocaleString("es-CL")}</span>}
+          {lastSyncFull && <span style={{ fontSize: 10, color: "var(--txt3)" }}> | Stock Full: {(() => { const m = Math.round((Date.now() - new Date(lastSyncFull).getTime()) / 60000); return m < 1 ? "ahora" : m < 60 ? `hace ${m}min` : `hace ${Math.round(m / 60)}h`; })()}</span>}
         </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
           <div style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--bg4)" }}>
