@@ -8959,50 +8959,119 @@ interface StockCompareRow {
 }
 
 // ==================== TIMELINE ====================
+interface TimelineRow {ts:string;evento:string;sku:string;detalle:string;delta:number|null;qty_after:number|null;posicion:string|null;operario:string;nota:string|null;referencia_id:string|null}
+
 function AdminTimeline() {
   const [q, setQ] = useState("");
-  const [sku, setSku] = useState<string|null>(null);
-  const [rows, setRows] = useState<Array<{ts:string;evento:string;sku:string;detalle:string;delta:number|null;qty_after:number|null;posicion:string|null;operario:string;nota:string|null;referencia_id:string|null}>>([]);
+  const [selectedSku, setSelectedSku] = useState<string|null>(null);
+  const [skuLabel, setSkuLabel] = useState("");
+  const [rows, setRows] = useState<TimelineRow[]>([]);
   const [loading, setLoading] = useState(false);
+  const [headerData, setHeaderData] = useState<{onHand:number;reserved:number;disponible:number;flexCache:number|null;nombre:string}>({onHand:0,reserved:0,disponible:0,flexCache:null,nombre:""});
   const s = getStore();
 
-  const doSearch = async (searchSku: string) => {
-    if (!searchSku.trim()) return;
-    const skuUp = searchSku.trim().toUpperCase();
-    setSku(skuUp);
+  const doSearch = async (searchTerm: string) => {
+    if (!searchTerm.trim()) return;
+    const term = searchTerm.trim().toUpperCase();
     setLoading(true);
     try {
       const sb = (await import("@/lib/supabase")).getSupabase();
       if (!sb) return;
-      // Search by sku directly + also by sku_origen mapping
+
+      // Resolve: could be SKU, sku_venta, sku_origen, or product name
+      let primarySku = term;
+
+      // Check if it's a product name match
+      const nameMatch = Object.entries(s.products).find(([, p]) => (p.name || "").toUpperCase().includes(term));
+      if (nameMatch && !s.products[term]) primarySku = nameMatch[0];
+
       // Resolve sku_origen ↔ sku_venta mapping
-      const { data: mapRows } = await sb.from("ml_items_map").select("sku, sku_origen").or(`sku.eq.${skuUp},sku_origen.eq.${skuUp}`).limit(5);
-      const allSkus = new Set([skuUp]);
-      for (const m of (mapRows || []) as {sku:string;sku_origen:string|null}[]) {
+      const { data: mapRows } = await sb.from("ml_items_map").select("sku, sku_origen, stock_flex_cache").or(`sku.eq.${primarySku},sku_origen.eq.${primarySku}`).limit(5);
+      const allSkus = new Set([primarySku]);
+      let flexCache: number | null = null;
+      for (const m of (mapRows || []) as {sku:string;sku_origen:string|null;stock_flex_cache:number|null}[]) {
         allSkus.add(m.sku.toUpperCase());
         if (m.sku_origen) allSkus.add(m.sku_origen.toUpperCase());
+        if (m.stock_flex_cache !== null) flexCache = m.stock_flex_cache;
       }
-      // Fetch timeline for all related SKUs (origen + venta)
+
+      // Also check composicion_venta
+      const { data: compRows } = await sb.from("composicion_venta").select("sku_venta, sku_origen").or(`sku_venta.eq.${primarySku},sku_origen.eq.${primarySku}`).limit(5);
+      for (const c of (compRows || []) as {sku_venta:string;sku_origen:string}[]) {
+        allSkus.add(c.sku_venta.toUpperCase());
+        allSkus.add(c.sku_origen.toUpperCase());
+      }
+
       const skuList = Array.from(allSkus);
+
+      // Fetch timeline
       const { data } = await sb.from("v_timeline_sku").select("*").in("sku", skuList).order("ts", { ascending: false }).limit(200);
-      const allRows = (data || []) as typeof rows;
+      const allRows = (data || []) as TimelineRow[];
       allRows.sort((a, b) => b.ts.localeCompare(a.ts));
-      // Show label with mapping if different
-      const label = skuList.length > 1 ? skuList.join(" / ") : skuUp;
-      setSku(label);
+
+      // Fetch header data from v_stock_disponible
+      const { data: dispRow } = await sb.from("v_stock_disponible").select("*").in("sku", skuList).limit(1).maybeSingle();
+      const disp = dispRow as {on_hand:number;reserved:number;disponible:number}|null;
+
+      // Find the physical SKU (the one in stock table)
+      const physSku = skuList.find(sk => skuTotal(sk) > 0) || skuList[0];
+      const prod = s.products[physSku];
+
+      setSelectedSku(physSku);
+      setSkuLabel(skuList.length > 1 ? skuList.join(" / ") : primarySku);
+      setHeaderData({
+        onHand: disp?.on_hand || skuTotal(physSku),
+        reserved: disp?.reserved || 0,
+        disponible: disp?.disponible || skuTotal(physSku),
+        flexCache,
+        nombre: prod?.name || "",
+      });
       setRows(allRows);
     } finally {
       setLoading(false);
     }
   };
 
-  // Autocomplete suggestions
-  const suggestions = q.trim().length >= 2
-    ? Object.keys(s.products).filter(k => k.includes(q.trim().toUpperCase()) || (s.products[k]?.name || "").toUpperCase().includes(q.trim().toUpperCase())).slice(0, 8)
-    : [];
+  // Autocomplete: search by SKU, name, or ML code
+  const suggestions = useMemo(() => {
+    const t = q.trim().toUpperCase();
+    if (t.length < 2) return [];
+    return Object.entries(s.products)
+      .filter(([sku, p]) =>
+        sku.includes(t) ||
+        (p.name || "").toUpperCase().includes(t) ||
+        (p.mlCode || "").toUpperCase().includes(t)
+      )
+      .map(([sku, p]) => ({ sku, name: p.name || "", mlCode: p.mlCode || "" }))
+      .slice(0, 10);
+  }, [q, s.products]);
 
-  const stockActual = sku ? skuTotal(sku.split(" (")[0]) : 0;
-  const prod = sku ? s.products[sku.split(" (")[0]] : null;
+  // Calculate saldo (disponible) for each row
+  const rowsWithSaldo = useMemo(() => {
+    // Count total active reservations (pendiente, not pickeado)
+    const activeReservas = rows.filter(r => r.evento === "reserva" && r.nota && !r.nota.includes("(pickeado)"));
+    const totalReserved = activeReservas.reduce((s, r) => {
+      const match = r.detalle.match(/(\d+) uds/);
+      return s + (match ? parseInt(match[1]) : 0);
+    }, 0);
+
+    return rows.map(r => {
+      let saldo: number | null = null;
+      if (r.evento === "movimiento" && r.qty_after !== null) {
+        // Saldo = stock físico - reservas activas en ese momento
+        // Simplificación: usamos las reservas actuales (no las de ese punto en el tiempo)
+        saldo = r.qty_after - totalReserved;
+        if (saldo < 0) saldo = 0;
+      } else if (r.evento === "reserva") {
+        const isPickeado = r.nota?.includes("(pickeado)");
+        if (!isPickeado) {
+          // Reserva pendiente: mostrar disponible después de reservar
+          saldo = headerData.disponible;
+        }
+      }
+      return { ...r, saldo };
+    });
+  }, [rows, headerData.disponible]);
 
   return (
     <div style={{display:"flex",flexDirection:"column",gap:16}}>
@@ -9011,79 +9080,109 @@ function AdminTimeline() {
       {/* Search */}
       <div style={{display:"flex",gap:8,alignItems:"center"}}>
         <div style={{position:"relative",flex:1}}>
-          <input className="form-input" value={q} onChange={e=>{setQ(e.target.value);}} onKeyDown={e=>{if(e.key==="Enter"&&q.trim())doSearch(q);}}
-            placeholder="Buscar SKU..." style={{width:"100%",fontSize:13}}/>
-          {suggestions.length > 0 && !sku && (
-            <div style={{position:"absolute",top:"100%",left:0,right:0,background:"var(--bg2)",border:"1px solid var(--bg4)",borderRadius:8,maxHeight:200,overflowY:"auto",zIndex:10}}>
-              {suggestions.map(s=>(
-                <div key={s} onClick={()=>{setQ(s);doSearch(s);}} style={{padding:"8px 12px",cursor:"pointer",fontSize:12,borderBottom:"1px solid var(--bg3)"}} className="mono">
-                  {s} <span style={{color:"var(--txt3)",fontSize:11}}>{(getStore().products[s]?.name||"").substring(0,40)}</span>
+          <input className="form-input" value={q}
+            onChange={e=>{setQ(e.target.value); if(selectedSku) {setSelectedSku(null);setRows([]);}}}
+            onKeyDown={e=>{if(e.key==="Enter"&&q.trim())doSearch(q);}}
+            placeholder="Buscar por SKU, nombre de producto, o codigo ML..."
+            style={{width:"100%",fontSize:13}}/>
+          {suggestions.length > 0 && !selectedSku && (
+            <div style={{position:"absolute",top:"100%",left:0,right:0,background:"var(--bg2)",border:"1px solid var(--bg4)",borderRadius:8,maxHeight:250,overflowY:"auto",zIndex:10}}>
+              {suggestions.map(sg=>(
+                <div key={sg.sku} onClick={()=>{setQ(sg.sku);doSearch(sg.sku);}}
+                  style={{padding:"10px 12px",cursor:"pointer",fontSize:12,borderBottom:"1px solid var(--bg3)",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <div>
+                    <span className="mono" style={{fontWeight:700}}>{sg.sku}</span>
+                    <span style={{color:"var(--txt3)",fontSize:11,marginLeft:8}}>{sg.name.substring(0,45)}</span>
+                  </div>
+                  {sg.mlCode && <span className="mono" style={{fontSize:10,color:"var(--txt3)"}}>{sg.mlCode}</span>}
                 </div>
               ))}
             </div>
           )}
         </div>
-        <button onClick={()=>doSearch(q)} disabled={loading||!q.trim()} style={{padding:"8px 16px",borderRadius:8,background:"var(--cyan)",color:"#000",fontWeight:700,fontSize:12,border:"none",cursor:"pointer"}}>
-          {loading ? "Cargando..." : "Buscar"}
+        <button onClick={()=>doSearch(q)} disabled={loading||!q.trim()}
+          style={{padding:"8px 16px",borderRadius:8,background:"var(--cyan)",color:"#000",fontWeight:700,fontSize:12,border:"none",cursor:"pointer"}}>
+          {loading ? "..." : "Buscar"}
         </button>
-        {sku && <button onClick={()=>{setSku(null);setRows([]);setQ("");}} style={{padding:"8px 12px",borderRadius:8,background:"var(--bg3)",color:"var(--txt3)",fontSize:12,border:"1px solid var(--bg4)",cursor:"pointer"}}>Limpiar</button>}
+        {selectedSku && <button onClick={()=>{setSelectedSku(null);setRows([]);setQ("");}}
+          style={{padding:"8px 12px",borderRadius:8,background:"var(--bg3)",color:"var(--txt3)",fontSize:12,border:"1px solid var(--bg4)",cursor:"pointer"}}>Limpiar</button>}
       </div>
 
-      {/* SKU Header */}
-      {sku && (
-        <div className="card" style={{padding:12,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <div>
-            <span className="mono" style={{fontSize:16,fontWeight:700}}>{sku}</span>
-            {prod && <span style={{marginLeft:8,fontSize:13,color:"var(--txt3)"}}>{prod.name}</span>}
+      {/* SKU Header with breakdown */}
+      {selectedSku && (
+        <div className="card" style={{padding:16}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
+            <div>
+              <div className="mono" style={{fontSize:16,fontWeight:700}}>{skuLabel}</div>
+              {headerData.nombre && <div style={{fontSize:13,color:"var(--txt3)",marginTop:2}}>{headerData.nombre}</div>}
+            </div>
           </div>
-          <div style={{textAlign:"right"}}>
-            <div style={{fontSize:12,color:"var(--txt3)"}}>Stock actual</div>
-            <div className="mono" style={{fontSize:20,fontWeight:700,color:"var(--green)"}}>{stockActual}</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12}}>
+            <div style={{textAlign:"center",padding:8,borderRadius:8,background:"var(--bg3)"}}>
+              <div style={{fontSize:10,color:"var(--txt3)",marginBottom:2}}>En bodega</div>
+              <div className="mono" style={{fontSize:20,fontWeight:700}}>{headerData.onHand}</div>
+            </div>
+            <div style={{textAlign:"center",padding:8,borderRadius:8,background:"var(--amberBg)"}}>
+              <div style={{fontSize:10,color:"var(--amber)",marginBottom:2}}>Reservado</div>
+              <div className="mono" style={{fontSize:20,fontWeight:700,color:"var(--amber)"}}>{headerData.reserved}</div>
+            </div>
+            <div style={{textAlign:"center",padding:8,borderRadius:8,background:"var(--greenBg)"}}>
+              <div style={{fontSize:10,color:"var(--green)",marginBottom:2}}>Disponible</div>
+              <div className="mono" style={{fontSize:20,fontWeight:700,color:"var(--green)"}}>{headerData.disponible}</div>
+            </div>
+            <div style={{textAlign:"center",padding:8,borderRadius:8,background:"var(--cyanBg, rgba(0,200,255,0.06))"}}>
+              <div style={{fontSize:10,color:"var(--cyan)",marginBottom:2}}>En ML (Flex)</div>
+              <div className="mono" style={{fontSize:20,fontWeight:700,color:"var(--cyan)"}}>{headerData.flexCache ?? "—"}</div>
+            </div>
           </div>
         </div>
       )}
 
-      {/* Timeline */}
-      {rows.length > 0 && (
+      {/* Timeline table */}
+      {rowsWithSaldo.length > 0 && (
         <div className="card" style={{padding:0,overflow:"hidden"}}>
           <table className="tbl" style={{width:"100%"}}>
             <thead><tr>
-              <th style={{width:140}}>Fecha</th>
+              <th style={{width:130}}>Fecha</th>
               <th style={{width:80}}>Evento</th>
               <th>Detalle</th>
-              <th style={{textAlign:"right",width:70}}>Delta</th>
-              <th style={{textAlign:"right",width:80}}>Stock</th>
-              <th style={{width:80}}>Posicion</th>
-              <th style={{width:100}}>Operario</th>
+              <th style={{textAlign:"right",width:60}}>Delta</th>
+              <th style={{textAlign:"right",width:70}}>Saldo</th>
+              <th style={{width:60}}>Pos.</th>
+              <th style={{width:100}}>Quien</th>
             </tr></thead>
             <tbody>
-              {rows.map((r, i) => {
+              {rowsWithSaldo.map((r, i) => {
                 const isSync = r.evento === "sync_ml";
                 const isReserva = r.evento === "reserva";
+                const isPendiente = isReserva && r.nota && !r.nota.includes("(pickeado)");
+                const isPickeado = isReserva && r.nota?.includes("(pickeado)");
                 const isEntrada = !isSync && !isReserva && (r.delta !== null && r.delta > 0);
                 const isSalida = !isSync && !isReserva && (r.delta !== null && r.delta < 0);
+
                 const bgColor = isReserva ? "var(--amberBg)" : isSync ? "var(--cyanBg, rgba(0,200,255,0.04))" : isSalida ? "var(--redBg)" : isEntrada ? "var(--greenBg)" : "transparent";
                 const fgColor = isReserva ? "var(--amber)" : isSync ? "var(--cyan)" : isEntrada ? "var(--green)" : "var(--red)";
-                const label = isReserva ? "RESERVA" : isSync ? "SYNC ML" : isEntrada ? "ENTRADA" : "SALIDA";
+                const label = isPickeado ? "PICKEADO" : isPendiente ? "RESERVA" : isSync ? "SYNC ML" : isEntrada ? "ENTRADA" : "SALIDA";
+
+                // Delta for reservations
+                const displayDelta = isReserva
+                  ? (isPendiente ? "-" + (r.detalle.match(/(\d+)/)?.[1] || "1") : "0")
+                  : (r.delta !== null ? (r.delta > 0 ? "+" : "") + r.delta : "");
+
                 return (
-                  <tr key={i} style={{background: bgColor, borderBottom:"1px solid var(--bg3)"}}>
-                    <td style={{fontSize:11,color:"var(--txt3)",padding:"8px 10px"}}>{new Date(r.ts).toLocaleString("es-CL",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit"})}</td>
-                    <td style={{padding:"8px 6px"}}>
-                      <span style={{fontSize:10,fontWeight:700,padding:"2px 6px",borderRadius:4,
-                        background: bgColor, color: fgColor,
-                        border: `1px solid ${fgColor}`
-                      }}>{label}</span>
+                  <tr key={i} style={{background: bgColor, borderBottom:"1px solid var(--bg3)", opacity: isPickeado ? 0.5 : 1}}>
+                    <td style={{fontSize:11,color:"var(--txt3)",padding:"8px 8px"}}>{new Date(r.ts).toLocaleString("es-CL",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</td>
+                    <td style={{padding:"8px 4px"}}>
+                      <span style={{fontSize:9,fontWeight:700,padding:"2px 5px",borderRadius:4,background:bgColor,color:fgColor,border:`1px solid ${fgColor}`}}>{label}</span>
                     </td>
                     <td style={{fontSize:11,padding:"8px 6px"}}>
                       <div>{r.detalle}</div>
-                      {r.nota && <div style={{fontSize:10,color:"var(--txt3)",marginTop:2}}>{r.nota}</div>}
+                      {r.nota && <div style={{fontSize:10,color:"var(--txt3)",marginTop:1}}>{r.nota}</div>}
                     </td>
-                    <td className="mono" style={{textAlign:"right",fontWeight:700,fontSize:13,padding:"8px 10px",
-                      color: fgColor
-                    }}>{r.delta !== null ? (r.delta > 0 ? "+" : "") + r.delta : ""}</td>
-                    <td className="mono" style={{textAlign:"right",fontWeight:700,fontSize:13,padding:"8px 10px"}}>{r.qty_after !== null ? r.qty_after : ""}</td>
-                    <td className="mono" style={{fontSize:11,padding:"8px 6px",color:"var(--txt3)"}}>{r.posicion || ""}</td>
-                    <td style={{fontSize:11,padding:"8px 6px",color:"var(--txt2)"}}>{r.operario || ""}</td>
+                    <td className="mono" style={{textAlign:"right",fontWeight:700,fontSize:13,padding:"8px 8px",color:fgColor}}>{displayDelta}</td>
+                    <td className="mono" style={{textAlign:"right",fontWeight:700,fontSize:13,padding:"8px 8px"}}>{r.saldo !== null && r.saldo !== undefined ? r.saldo : ""}</td>
+                    <td className="mono" style={{fontSize:10,padding:"8px 4px",color:"var(--txt3)"}}>{r.posicion || ""}</td>
+                    <td style={{fontSize:10,padding:"8px 4px",color:"var(--txt2)"}}>{r.operario || ""}</td>
                   </tr>
                 );
               })}
@@ -9092,7 +9191,7 @@ function AdminTimeline() {
         </div>
       )}
 
-      {sku && rows.length === 0 && !loading && (
+      {selectedSku && rows.length === 0 && !loading && (
         <div style={{textAlign:"center",padding:40,color:"var(--txt3)"}}>Sin movimientos para este SKU</div>
       )}
     </div>
