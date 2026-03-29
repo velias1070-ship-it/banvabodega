@@ -64,7 +64,7 @@ function LoginGate({ onLogin }: { onLogin: (pin: string) => boolean }) {
 }
 
 export default function AdminPage() {
-  type AdminTab = "dash"|"rec"|"flex"|"enviosfull"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"intel"|"compras"|"eventos"|"ventasml"|"agentes"|"stockml"|"config";
+  type AdminTab = "dash"|"rec"|"flex"|"enviosfull"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"intel"|"compras"|"eventos"|"ventasml"|"agentes"|"stockml"|"timeline"|"config";
   const [tab, setTab] = useState<AdminTab>(() => {
     if (typeof window !== "undefined") {
       const saved = sessionStorage.getItem("banva_admin_tab");
@@ -76,7 +76,7 @@ export default function AdminPage() {
 
   const SIDEBAR_GROUPS = [
     {section:"OPERACIONES",icon:"⚡",items:[["rec","Recepciones","📦"],["flex","Ultima Milla","🚚"],["enviosfull","Envios Full","📦"],["ops","Operaciones","⚡"],["reposicion","Reposición","🔄"]] as const},
-    {section:"INVENTARIO",icon:"📦",items:[["inv","Inventario","📦"],["mov","Movimientos","📋"],["prod","Productos","🏷️"],["stockml","Stock ML","📡"]] as const},
+    {section:"INVENTARIO",icon:"📦",items:[["inv","Inventario","📦"],["mov","Movimientos","📋"],["timeline","Timeline","📊"],["prod","Productos","🏷️"],["stockml","Stock ML","📡"]] as const},
     {section:"INTELIGENCIA",icon:"🧠",items:[["intel","Inteligencia","🧠"],["compras","Compras","🛒"],["eventos","Eventos","📅"],["ventasml","Ventas ML","💰"]] as const},
     {section:"SISTEMA",icon:"⚙️",items:[["agentes","Agentes IA","🤖"],["config","Configuración","⚙️"]] as const},
   ] as const;
@@ -176,7 +176,7 @@ export default function AdminPage() {
         <main className="admin-main">
           {/* Mobile tabs fallback */}
           <div className="admin-mobile-tabs">
-            {([["dash","Dashboard"],["rec","Recepción"],["flex","Ultima Milla"],["enviosfull","Envios Full"],["ops","Ops"],["inv","Inventario"],["mov","Movim."],["prod","Productos"],["reposicion","Reposición"],["intel","Inteligencia"],["compras","Compras"],["eventos","Eventos"],["ventasml","Ventas ML"],["agentes","Agentes IA"],["stockml","Stock ML"],["config","Config"]] as const).map(([key,label])=>(
+            {([["dash","Dashboard"],["rec","Recepción"],["flex","Ultima Milla"],["enviosfull","Envios Full"],["ops","Ops"],["inv","Inventario"],["mov","Movim."],["timeline","Timeline"],["prod","Productos"],["reposicion","Reposición"],["intel","Inteligencia"],["compras","Compras"],["eventos","Eventos"],["ventasml","Ventas ML"],["agentes","Agentes IA"],["stockml","Stock ML"],["config","Config"]] as const).map(([key,label])=>(
               <button key={key} className={`tab ${tab===key?"active-cyan":""}`} onClick={()=>setTab(key as any)}>{label}</button>
             ))}
           </div>
@@ -196,6 +196,7 @@ export default function AdminPage() {
             {tab==="ventasml"&&<AdminVentasML/>}
             {tab==="agentes"&&<AdminAgentes/>}
             {tab==="stockml"&&<AdminStockML/>}
+            {tab==="timeline"&&<AdminTimeline/>}
             {tab==="config"&&<Configuracion refresh={r} initialSubTab={mlAuthReturn ? "ml" : undefined}/>}
           </div>
         </main>
@@ -8955,6 +8956,150 @@ interface StockCompareRow {
   ultimo_sync: string | null;
   cache_updated_at: string | null;
   status_ml: string | null;
+}
+
+// ==================== TIMELINE ====================
+function AdminTimeline() {
+  const [q, setQ] = useState("");
+  const [sku, setSku] = useState<string|null>(null);
+  const [rows, setRows] = useState<Array<{ts:string;evento:string;sku:string;detalle:string;delta:number|null;qty_after:number|null;posicion:string|null;operario:string;nota:string|null;referencia_id:string|null}>>([]);
+  const [loading, setLoading] = useState(false);
+  const s = getStore();
+
+  const doSearch = async (searchSku: string) => {
+    if (!searchSku.trim()) return;
+    const skuUp = searchSku.trim().toUpperCase();
+    setSku(skuUp);
+    setLoading(true);
+    try {
+      const sb = (await import("@/lib/supabase")).getSupabase();
+      if (!sb) return;
+      // Search by sku directly + also by sku_origen mapping
+      const { data } = await sb.from("v_timeline_sku").select("*").eq("sku", skuUp).order("ts", { ascending: false }).limit(100);
+      let allRows = (data || []) as typeof rows;
+      // Also search by sku_venta in case user typed the ML sku
+      if (allRows.length === 0) {
+        const { data: mapRow } = await sb.from("ml_items_map").select("sku_origen").eq("sku", skuUp).limit(1).maybeSingle();
+        const skuOrigen = (mapRow as {sku_origen:string}|null)?.sku_origen;
+        if (skuOrigen && skuOrigen !== skuUp) {
+          const { data: d2 } = await sb.from("v_timeline_sku").select("*").eq("sku", skuOrigen).order("ts", { ascending: false }).limit(100);
+          allRows = (d2 || []) as typeof rows;
+          setSku(skuOrigen + " (" + skuUp + ")");
+        }
+      }
+      // Also fetch sync audits that used this sku_venta
+      const { data: syncRows } = await sb.from("v_timeline_sku").select("*").eq("sku", skuUp).eq("evento", "sync_ml").order("ts", { ascending: false }).limit(50);
+      if (syncRows && syncRows.length > 0) {
+        const existingIds = new Set(allRows.map(r => r.referencia_id));
+        for (const sr of syncRows as typeof rows) {
+          if (!existingIds.has(sr.referencia_id)) allRows.push(sr);
+        }
+        allRows.sort((a, b) => b.ts.localeCompare(a.ts));
+      }
+      setRows(allRows);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Autocomplete suggestions
+  const suggestions = q.trim().length >= 2
+    ? Object.keys(s.products).filter(k => k.includes(q.trim().toUpperCase()) || (s.products[k]?.name || "").toUpperCase().includes(q.trim().toUpperCase())).slice(0, 8)
+    : [];
+
+  const stockActual = sku ? skuTotal(sku.split(" (")[0]) : 0;
+  const prod = sku ? s.products[sku.split(" (")[0]] : null;
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:16}}>
+      <h2 style={{margin:0,fontSize:18}}>Timeline por SKU</h2>
+
+      {/* Search */}
+      <div style={{display:"flex",gap:8,alignItems:"center"}}>
+        <div style={{position:"relative",flex:1}}>
+          <input className="form-input" value={q} onChange={e=>{setQ(e.target.value);}} onKeyDown={e=>{if(e.key==="Enter"&&q.trim())doSearch(q);}}
+            placeholder="Buscar SKU..." style={{width:"100%",fontSize:13}}/>
+          {suggestions.length > 0 && !sku && (
+            <div style={{position:"absolute",top:"100%",left:0,right:0,background:"var(--bg2)",border:"1px solid var(--bg4)",borderRadius:8,maxHeight:200,overflowY:"auto",zIndex:10}}>
+              {suggestions.map(s=>(
+                <div key={s} onClick={()=>{setQ(s);doSearch(s);}} style={{padding:"8px 12px",cursor:"pointer",fontSize:12,borderBottom:"1px solid var(--bg3)"}} className="mono">
+                  {s} <span style={{color:"var(--txt3)",fontSize:11}}>{(getStore().products[s]?.name||"").substring(0,40)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <button onClick={()=>doSearch(q)} disabled={loading||!q.trim()} style={{padding:"8px 16px",borderRadius:8,background:"var(--cyan)",color:"#000",fontWeight:700,fontSize:12,border:"none",cursor:"pointer"}}>
+          {loading ? "Cargando..." : "Buscar"}
+        </button>
+        {sku && <button onClick={()=>{setSku(null);setRows([]);setQ("");}} style={{padding:"8px 12px",borderRadius:8,background:"var(--bg3)",color:"var(--txt3)",fontSize:12,border:"1px solid var(--bg4)",cursor:"pointer"}}>Limpiar</button>}
+      </div>
+
+      {/* SKU Header */}
+      {sku && (
+        <div className="card" style={{padding:12,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div>
+            <span className="mono" style={{fontSize:16,fontWeight:700}}>{sku}</span>
+            {prod && <span style={{marginLeft:8,fontSize:13,color:"var(--txt3)"}}>{prod.name}</span>}
+          </div>
+          <div style={{textAlign:"right"}}>
+            <div style={{fontSize:12,color:"var(--txt3)"}}>Stock actual</div>
+            <div className="mono" style={{fontSize:20,fontWeight:700,color:"var(--green)"}}>{stockActual}</div>
+          </div>
+        </div>
+      )}
+
+      {/* Timeline */}
+      {rows.length > 0 && (
+        <div className="card" style={{padding:0,overflow:"hidden"}}>
+          <table className="tbl" style={{width:"100%"}}>
+            <thead><tr>
+              <th style={{width:140}}>Fecha</th>
+              <th style={{width:80}}>Evento</th>
+              <th>Detalle</th>
+              <th style={{textAlign:"right",width:70}}>Delta</th>
+              <th style={{textAlign:"right",width:80}}>Stock</th>
+              <th style={{width:80}}>Posicion</th>
+              <th style={{width:100}}>Operario</th>
+            </tr></thead>
+            <tbody>
+              {rows.map((r, i) => {
+                const isSync = r.evento === "sync_ml";
+                const isEntrada = !isSync && (r.delta !== null && r.delta > 0);
+                const isSalida = !isSync && (r.delta !== null && r.delta < 0);
+                return (
+                  <tr key={i} style={{background: isSync ? "var(--cyanBg, rgba(0,200,255,0.04))" : isSalida ? "var(--redBg)" : isEntrada ? "var(--greenBg)" : "transparent", borderBottom:"1px solid var(--bg3)"}}>
+                    <td style={{fontSize:11,color:"var(--txt3)",padding:"8px 10px"}}>{new Date(r.ts).toLocaleString("es-CL",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit"})}</td>
+                    <td style={{padding:"8px 6px"}}>
+                      <span style={{fontSize:10,fontWeight:700,padding:"2px 6px",borderRadius:4,
+                        background: isSync ? "var(--cyanBg)" : isEntrada ? "var(--greenBg)" : "var(--redBg)",
+                        color: isSync ? "var(--cyan)" : isEntrada ? "var(--green)" : "var(--red)",
+                        border: `1px solid ${isSync ? "var(--cyanBd, var(--cyan))" : isEntrada ? "var(--greenBd)" : "var(--redBd)"}`
+                      }}>{isSync ? "SYNC ML" : isEntrada ? "ENTRADA" : "SALIDA"}</span>
+                    </td>
+                    <td style={{fontSize:11,padding:"8px 6px"}}>
+                      <div>{r.detalle}</div>
+                      {r.nota && <div style={{fontSize:10,color:"var(--txt3)",marginTop:2}}>{r.nota}</div>}
+                    </td>
+                    <td className="mono" style={{textAlign:"right",fontWeight:700,fontSize:13,padding:"8px 10px",
+                      color: isSync ? "var(--cyan)" : isEntrada ? "var(--green)" : "var(--red)"
+                    }}>{r.delta !== null ? (r.delta > 0 ? "+" : "") + r.delta : ""}</td>
+                    <td className="mono" style={{textAlign:"right",fontWeight:700,fontSize:13,padding:"8px 10px"}}>{r.qty_after !== null ? r.qty_after : ""}</td>
+                    <td className="mono" style={{fontSize:11,padding:"8px 6px",color:"var(--txt3)"}}>{r.posicion || ""}</td>
+                    <td style={{fontSize:11,padding:"8px 6px",color:"var(--txt2)"}}>{r.operario || ""}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {sku && rows.length === 0 && !loading && (
+        <div style={{textAlign:"center",padding:40,color:"var(--txt3)"}}>Sin movimientos para este SKU</div>
+      )}
+    </div>
+  );
 }
 
 function AdminStockML() {
