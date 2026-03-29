@@ -9059,24 +9059,27 @@ function AdminTimeline() {
             <tbody>
               {rows.map((r, i) => {
                 const isSync = r.evento === "sync_ml";
-                const isEntrada = !isSync && (r.delta !== null && r.delta > 0);
-                const isSalida = !isSync && (r.delta !== null && r.delta < 0);
+                const isReserva = r.evento === "reserva";
+                const isEntrada = !isSync && !isReserva && (r.delta !== null && r.delta > 0);
+                const isSalida = !isSync && !isReserva && (r.delta !== null && r.delta < 0);
+                const bgColor = isReserva ? "var(--amberBg)" : isSync ? "var(--cyanBg, rgba(0,200,255,0.04))" : isSalida ? "var(--redBg)" : isEntrada ? "var(--greenBg)" : "transparent";
+                const fgColor = isReserva ? "var(--amber)" : isSync ? "var(--cyan)" : isEntrada ? "var(--green)" : "var(--red)";
+                const label = isReserva ? "RESERVA" : isSync ? "SYNC ML" : isEntrada ? "ENTRADA" : "SALIDA";
                 return (
-                  <tr key={i} style={{background: isSync ? "var(--cyanBg, rgba(0,200,255,0.04))" : isSalida ? "var(--redBg)" : isEntrada ? "var(--greenBg)" : "transparent", borderBottom:"1px solid var(--bg3)"}}>
+                  <tr key={i} style={{background: bgColor, borderBottom:"1px solid var(--bg3)"}}>
                     <td style={{fontSize:11,color:"var(--txt3)",padding:"8px 10px"}}>{new Date(r.ts).toLocaleString("es-CL",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit"})}</td>
                     <td style={{padding:"8px 6px"}}>
                       <span style={{fontSize:10,fontWeight:700,padding:"2px 6px",borderRadius:4,
-                        background: isSync ? "var(--cyanBg)" : isEntrada ? "var(--greenBg)" : "var(--redBg)",
-                        color: isSync ? "var(--cyan)" : isEntrada ? "var(--green)" : "var(--red)",
-                        border: `1px solid ${isSync ? "var(--cyanBd, var(--cyan))" : isEntrada ? "var(--greenBd)" : "var(--redBd)"}`
-                      }}>{isSync ? "SYNC ML" : isEntrada ? "ENTRADA" : "SALIDA"}</span>
+                        background: bgColor, color: fgColor,
+                        border: `1px solid ${fgColor}`
+                      }}>{label}</span>
                     </td>
                     <td style={{fontSize:11,padding:"8px 6px"}}>
                       <div>{r.detalle}</div>
                       {r.nota && <div style={{fontSize:10,color:"var(--txt3)",marginTop:2}}>{r.nota}</div>}
                     </td>
                     <td className="mono" style={{textAlign:"right",fontWeight:700,fontSize:13,padding:"8px 10px",
-                      color: isSync ? "var(--cyan)" : isEntrada ? "var(--green)" : "var(--red)"
+                      color: fgColor
                     }}>{r.delta !== null ? (r.delta > 0 ? "+" : "") + r.delta : ""}</td>
                     <td className="mono" style={{textAlign:"right",fontWeight:700,fontSize:13,padding:"8px 10px"}}>{r.qty_after !== null ? r.qty_after : ""}</td>
                     <td className="mono" style={{fontSize:11,padding:"8px 6px",color:"var(--txt3)"}}>{r.posicion || ""}</td>
