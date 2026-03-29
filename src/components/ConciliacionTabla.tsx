@@ -65,6 +65,9 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
   // Clasificar sin documento
   const [clasificarMov, setClasificarMov] = useState<DBMovimientoBanco | null>(null);
   const [clasificarCuenta, setClasificarCuenta] = useState("");
+  // Sync MP
+  const [syncingMP, setSyncingMP] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
   const periodoOpts = useMemo(() => {
     const opts: { value: string; label: string }[] = [];
@@ -180,6 +183,30 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
     setShowActions(null);
   };
 
+  // Sync MP retiros
+  const handleSyncMP = async () => {
+    setSyncingMP(true);
+    setSyncMsg(null);
+    try {
+      // Sync para cada período seleccionado
+      let totalRetiros = 0;
+      for (const p of periodos) {
+        const res = await fetch("/api/mp/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ periodo: p }) });
+        const d = await res.json();
+        if (d.error) { setSyncMsg(`Error: ${d.error}`); break; }
+        totalRetiros += d.retiros_nuevos || 0;
+      }
+      if (!syncMsg?.startsWith("Error")) {
+        setSyncMsg(totalRetiros > 0 ? `${totalRetiros} retiros importados` : "Sin retiros nuevos");
+      }
+      load();
+    } catch (e) {
+      setSyncMsg(`Error: ${e instanceof Error ? e.message : "sin detalles"}`);
+    } finally {
+      setSyncingMP(false);
+    }
+  };
+
   if (loading) return <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>Cargando...</div>;
 
   return (
@@ -241,8 +268,22 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
           </label>
           <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar..."
             style={{ padding: "5px 10px", fontSize: 11, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 6, width: 160 }} />
+          <button onClick={handleSyncMP} disabled={syncingMP}
+            style={{ padding: "5px 12px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: syncingMP ? "wait" : "pointer", background: "var(--blueBg)", color: "var(--blue)", border: "1px solid var(--blueBd)", opacity: syncingMP ? 0.6 : 1 }}>
+            {syncingMP ? "Sync MP..." : "Sync MP"}
+          </button>
         </div>
       </div>
+
+      {/* Mensaje sync */}
+      {syncMsg && (
+        <div style={{ padding: "6px 12px", borderRadius: 6, marginBottom: 8, fontSize: 11, fontWeight: 600,
+          background: syncMsg.startsWith("Error") ? "var(--redBg)" : "var(--greenBg)",
+          color: syncMsg.startsWith("Error") ? "var(--red)" : "var(--green)",
+          border: `1px solid ${syncMsg.startsWith("Error") ? "var(--redBd)" : "var(--greenBd)"}` }}>
+          {syncMsg}
+        </div>
+      )}
 
       {/* Tabla */}
       <div className="card" style={{ overflow: "hidden" }}>
