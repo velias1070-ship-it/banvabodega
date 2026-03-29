@@ -8975,27 +8975,21 @@ function AdminTimeline() {
       const sb = (await import("@/lib/supabase")).getSupabase();
       if (!sb) return;
       // Search by sku directly + also by sku_origen mapping
-      const { data } = await sb.from("v_timeline_sku").select("*").eq("sku", skuUp).order("ts", { ascending: false }).limit(100);
-      let allRows = (data || []) as typeof rows;
-      // Also search by sku_venta in case user typed the ML sku
-      if (allRows.length === 0) {
-        const { data: mapRow } = await sb.from("ml_items_map").select("sku_origen").eq("sku", skuUp).limit(1).maybeSingle();
-        const skuOrigen = (mapRow as {sku_origen:string}|null)?.sku_origen;
-        if (skuOrigen && skuOrigen !== skuUp) {
-          const { data: d2 } = await sb.from("v_timeline_sku").select("*").eq("sku", skuOrigen).order("ts", { ascending: false }).limit(100);
-          allRows = (d2 || []) as typeof rows;
-          setSku(skuOrigen + " (" + skuUp + ")");
-        }
+      // Resolve sku_origen ↔ sku_venta mapping
+      const { data: mapRows } = await sb.from("ml_items_map").select("sku, sku_origen").or(`sku.eq.${skuUp},sku_origen.eq.${skuUp}`).limit(5);
+      const allSkus = new Set([skuUp]);
+      for (const m of (mapRows || []) as {sku:string;sku_origen:string|null}[]) {
+        allSkus.add(m.sku.toUpperCase());
+        if (m.sku_origen) allSkus.add(m.sku_origen.toUpperCase());
       }
-      // Also fetch sync audits that used this sku_venta
-      const { data: syncRows } = await sb.from("v_timeline_sku").select("*").eq("sku", skuUp).eq("evento", "sync_ml").order("ts", { ascending: false }).limit(50);
-      if (syncRows && syncRows.length > 0) {
-        const existingIds = new Set(allRows.map(r => r.referencia_id));
-        for (const sr of syncRows as typeof rows) {
-          if (!existingIds.has(sr.referencia_id)) allRows.push(sr);
-        }
-        allRows.sort((a, b) => b.ts.localeCompare(a.ts));
-      }
+      // Fetch timeline for all related SKUs (origen + venta)
+      const skuList = Array.from(allSkus);
+      const { data } = await sb.from("v_timeline_sku").select("*").in("sku", skuList).order("ts", { ascending: false }).limit(200);
+      const allRows = (data || []) as typeof rows;
+      allRows.sort((a, b) => b.ts.localeCompare(a.ts));
+      // Show label with mapping if different
+      const label = skuList.length > 1 ? skuList.join(" / ") : skuUp;
+      setSku(label);
       setRows(allRows);
     } finally {
       setLoading(false);
