@@ -82,8 +82,10 @@ export default function AdminPage() {
   ] as const;
   const [openSections, setOpenSections] = useState<Record<string,boolean>>(()=>{
     const init: Record<string,boolean> = {};
+    const savedTab = (typeof window !== "undefined" ? sessionStorage.getItem("banva_admin_tab") : null) || "dash";
     for (const g of SIDEBAR_GROUPS) {
-      init[g.section] = g.items.some(([k])=>k==="rec"); // open OPERACIONES by default
+      // Open only the section that contains the active tab
+      init[g.section] = g.items.some(([k])=>k===savedTab);
     }
     return init;
   });
@@ -317,25 +319,6 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
     setLoading(false);
   };
   useEffect(() => { loadRecs(); }, []);
-
-  // Restore selected reception only on page reload (not tab switch)
-  useEffect(() => {
-    if (recs.length === 0) return;
-    const restored = sessionStorage.getItem("banva_admin_selRec_restored");
-    if (restored) return; // Already restored in this page session
-    const savedId = sessionStorage.getItem("banva_admin_selRec");
-    if (savedId) {
-      const saved = recs.find(r => r.id === savedId);
-      if (saved) openRec(saved);
-    }
-    sessionStorage.setItem("banva_admin_selRec_restored", "1");
-  }, [recs]);
-
-  // Persist selected reception ID
-  useEffect(() => {
-    if (selRec?.id) sessionStorage.setItem("banva_admin_selRec", selRec.id);
-    else sessionStorage.removeItem("banva_admin_selRec");
-  }, [selRec]);
 
   // Load lines for recepcion_dia when date or recs change
   useEffect(() => {
