@@ -412,6 +412,18 @@ export async function reconciliarReservas(): Promise<DBReconciliacion[]> {
   return diff;
 }
 
+export async function fetchDesgloseReservas(): Promise<{ flex: number; full: number }> {
+  const sb = getSupabase(); if (!sb) return { flex: 0, full: 0 };
+  const { data, error } = await sb.rpc("desglose_reservas");
+  if (error) { console.error("desglose_reservas error:", error.message); return { flex: 0, full: 0 }; }
+  const result = { flex: 0, full: 0 };
+  for (const row of (data || []) as { fuente: string; total_reservado: number }[]) {
+    if (row.fuente === "flex") result.flex = row.total_reservado;
+    else if (row.fuente === "full") result.full = row.total_reservado;
+  }
+  return result;
+}
+
 export interface DBStockProyectado {
   sku: string;
   on_hand: number;

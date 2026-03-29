@@ -5,7 +5,7 @@ import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, s
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia, IntegrityError } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
-import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado, transferirStock, reconciliarReservas, fetchResumenMovimientosHoy, fetchStockDisponible, fetchMovimientosHoy } from "@/lib/db";
+import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado, transferirStock, reconciliarReservas, fetchResumenMovimientosHoy, fetchStockDisponible, fetchMovimientosHoy, fetchDesgloseReservas } from "@/lib/db";
 import type { DBStockProyectado, DBReconciliacion } from "@/lib/db";
 import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap, ShipmentWithItems } from "@/lib/db";
 import { getOAuthUrl } from "@/lib/ml";
@@ -4738,6 +4738,7 @@ function Dashboard() {
   const totalUnits = skusWithStock.reduce((sum, sku) => sum + skuTotal(sku), 0);
   const totalValue = skusWithStock.reduce((sum, sku) => { const p = s.products[sku]; return sum + (p ? (p.costAvg || p.cost) * skuTotal(sku) : 0); }, 0);
   const [dashStock, setDashStock] = useState<{comprometido:number;disponible:number;enRiesgo:number}>({comprometido:0,disponible:0,enRiesgo:0});
+  const [desgloseReservas, setDesgloseReservas] = useState<{flex:number;full:number}>({flex:0,full:0});
   const [reconciling, setReconciling] = useState(false);
   const [lastReconcDiff, setLastReconcDiff] = useState<DBReconciliacion[]>([]);
   const [movsHoy, setMovsHoy] = useState<{total:number;entradas:number;salidas:number}>({total:0,entradas:0,salidas:0});
@@ -4746,11 +4747,12 @@ function Dashboard() {
   const [lastUpdate, setLastUpdate] = useState<string>("");
 
   const loadDashStock = useCallback(async () => {
-    const rows = await fetchStockProyectado();
+    const [rows, desglose] = await Promise.all([fetchStockProyectado(), fetchDesgloseReservas()]);
     const comp = rows.reduce((s, r) => s + r.reserved, 0);
     const disp = rows.reduce((s, r) => s + r.disponible, 0);
     const risk = rows.filter(r => r.disponible > 0 && r.disponible <= 5).length;
     setDashStock({comprometido:comp, disponible:disp, enRiesgo:risk});
+    setDesgloseReservas(desglose);
   }, []);
 
   const loadDashData = useCallback(async () => {
@@ -4802,7 +4804,7 @@ function Dashboard() {
       <div className="admin-kpi-grid">
         <div className="kpi"><div className="kpi-label">Unidades totales</div><div className="kpi-val blue">{totalUnits.toLocaleString("es-CL")}</div><div className="kpi-sub">{skusWithStock.length} SKUs</div></div>
         <div className="kpi"><div className="kpi-label">Disponible</div><div className="kpi-val green">{dashStock.disponible.toLocaleString("es-CL")}</div></div>
-        <div className="kpi"><div className="kpi-label">Comprometido</div><div className="kpi-val" style={{color:"var(--amber)"}}>{dashStock.comprometido}</div><div className="kpi-sub"><button onClick={runReconciliacion} disabled={reconciling} style={{background:"none",border:"1px solid var(--amber)",color:"var(--amber)",borderRadius:6,padding:"2px 8px",fontSize:11,cursor:"pointer",opacity:reconciling?0.5:1}}>{reconciling ? "Reconciliando..." : "Reconciliar"}</button></div></div>
+        <div className="kpi"><div className="kpi-label">Comprometido</div><div className="kpi-val" style={{color:"var(--amber)"}}>{dashStock.comprometido}</div><div className="kpi-sub" style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>{(desgloseReservas.flex > 0 || desgloseReservas.full > 0) && <span style={{fontSize:10,color:"var(--txt3)"}}><span style={{color:"var(--cyan)"}}>{desgloseReservas.flex}</span> Flex · <span style={{color:"var(--blue)"}}>{desgloseReservas.full}</span> Full</span>}<button onClick={runReconciliacion} disabled={reconciling} style={{background:"none",border:"1px solid var(--amber)",color:"var(--amber)",borderRadius:6,padding:"2px 8px",fontSize:11,cursor:"pointer",opacity:reconciling?0.5:1}}>{reconciling ? "Reconciliando..." : "Reconciliar"}</button></div></div>
         {dashStock.enRiesgo > 0 && <div className="kpi"><div className="kpi-label">SKUs en riesgo</div><div className="kpi-val" style={{color:"var(--red)"}}>{dashStock.enRiesgo}</div><div className="kpi-sub">disponible &le; 5</div></div>}
         <div className="kpi"><div className="kpi-label">Movimientos hoy</div><div className="kpi-val cyan">{movsHoy.total}</div><div className="kpi-sub"><span style={{color:"var(--green)"}}>+{movsHoy.entradas}</span> <span style={{color:"var(--red)"}}>-{movsHoy.salidas}</span></div></div>
         <div className="kpi"><div className="kpi-label">Valor inventario</div><div className="kpi-val green">{fmtMoney(totalValue)}</div><div className="kpi-sub">a costo promedio</div></div>
