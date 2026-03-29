@@ -2285,6 +2285,7 @@ export async function pickearComponente(
       delta: -comp.unidades, tipo: "salida",
       motivo: "venta_flex", operario,
       nota: `Picking Flex: ${linea.skuVenta} ×${linea.qtyPedida}${orderLabel}${shipLabel} — ${sessionLabel}`,
+      idempotency_key: `flex-pick-${sessionId}-${linea.id}-${compIdx}`,
     });
     db.enqueueAndSync([comp.skuOrigen]);
     // Mark shipment items as stock_deducted + reconcile reservations
@@ -2330,6 +2331,7 @@ async function pickearComponenteFallback(
       delta: -comp.unidades, tipo: "salida",
       motivo: "venta_flex", operario,
       nota: `Picking Flex: ${linea.skuVenta} ×${comp.unidades} — ${session.titulo || `Sesión ${sessionId.slice(0, 8)}`} [fallback]`,
+      idempotency_key: `flex-pick-${sessionId}-${lineaId}-${compIdx}`,
     });
   }
   comp.estado = "PICKEADO";
@@ -2363,6 +2365,7 @@ export async function despickearComponente(
       delta: comp.unidades, tipo: "ajuste",
       motivo: "despick", operario,
       nota: `Reversión picking: ${linea.skuVenta} ×${comp.unidades} (despick)`,
+      idempotency_key: `despick-${sessionId}-${lineaId}-${compIdx}-${Date.now()}`,
     });
   }
 
@@ -2410,6 +2413,7 @@ export async function pickearLineaFull(
       const released = await db.liberarReserva({
         sku: comp.skuOrigen, cantidad: comp.unidades, descontar: true,
         motivo: "envio_full", operario,
+        idempotency_key_prefix: `full-pick-${sessionId}-${lineaId}`,
       });
       if (!released) {
         await db.registrarMovimientoStock({
@@ -2417,6 +2421,7 @@ export async function pickearLineaFull(
           delta: -comp.unidades, tipo: "salida",
           motivo: "envio_full", operario,
           nota: `Envío Full: ${linea.skuVenta} (${comp.unidades} uds) — ${_session.titulo || `Sesión ${sessionId.slice(0, 8)}`} [sin reserva/fallback]`,
+          idempotency_key: `full-pick-${sessionId}-${lineaId}`,
         });
       }
     }
@@ -2463,12 +2468,14 @@ export async function pickearLineaFull(
         const released = await db.liberarReserva({
           sku: skuOrigen, cantidad: unidades, descontar: true,
           motivo: "envio_full", operario,
+          idempotency_key_prefix: `full-pick-${sessionId}-${linea.id}`,
         });
         if (!released) {
           await db.registrarMovimientoStock({
             sku: skuOrigen, posicion, delta: -unidades, tipo: "salida",
             motivo: "envio_full", operario,
             nota: `Envío Full: ${skuVentaLabel} (${unidades} uds) — ${freshSession.titulo || `Sesión ${sessionId.slice(0, 8)}`} [sin reserva]`,
+            idempotency_key: `full-pick-${sessionId}-${linea.id}`,
           });
         }
         await db.auditLog("pickearLineaFull:ok", {

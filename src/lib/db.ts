@@ -79,6 +79,7 @@ export interface DBMovimiento {
   operario: string;
   nota: string;
   costo_unitario?: number | null;
+  idempotency_key?: string | null;
   created_at?: string;
 }
 
@@ -340,6 +341,7 @@ export async function liberarReserva(params: {
   descontar?: boolean;
   motivo?: string;
   operario?: string;
+  idempotency_key_prefix?: string;
 }): Promise<boolean> {
   const sb = getSupabase(); if (!sb) return false;
   const { data, error } = await sb.rpc("liberar_reserva", {
@@ -348,6 +350,7 @@ export async function liberarReserva(params: {
     p_descontar: params.descontar ?? false,
     p_motivo: params.motivo ?? null,
     p_operario: params.operario ?? "",
+    p_idempotency_key_prefix: params.idempotency_key_prefix ?? null,
   });
   if (error) throw new Error(`liberarReserva failed for ${params.sku}: ${error.message}`);
   return data as boolean;
@@ -496,6 +499,7 @@ export async function registrarMovimientoStock(params: {
   nota?: string;
   recepcion_id?: string | null;
   costo_unitario?: number | null;
+  idempotency_key?: string;
 }): Promise<string | null> {
   const sb = getSupabase(); if (!sb) return null;
   const { data, error } = await sb.rpc("registrar_movimiento_stock", {
@@ -509,6 +513,7 @@ export async function registrarMovimientoStock(params: {
     p_nota: params.nota ?? "",
     p_recepcion_id: params.recepcion_id ?? null,
     p_costo_unitario: params.costo_unitario ?? null,
+    p_idempotency_key: params.idempotency_key ?? null,
   });
   if (error) throw new Error(`registrarMovimientoStock failed for ${params.sku}: ${error.message}`);
   return data as string | null;

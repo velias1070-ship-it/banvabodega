@@ -66,16 +66,28 @@ export default function PickingPage() {
     return () => clearInterval(iv);
   }, [loading]);
 
-  // Polling: reload flex session every 30s (without re-syncing from shipments)
+  // Polling: reload flex session every 60s WITH sync from ML
   useEffect(() => {
     if (!mounted || loading || screen !== "flex") return;
     const iv = setInterval(async () => {
+      await syncFlexPickingSession().catch(() => {});
       const all = await loadSessions();
       const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
       const flex = all.find(s => s.tipo === "flex" && s.fecha === today && s.estado !== "COMPLETADA")
-        || all.find(s => s.tipo === "flex" && s.estado !== "COMPLETADA");
+        || all.find(s => s.tipo === "flex" && s.fecha === today && s.estado === "COMPLETADA");
       setFlexSession(flex || null);
-    }, 30_000);
+      // Update ML ship count
+      try {
+        const ships = await fetchActiveFlexShipments();
+        const todayShips = ships.filter(s => {
+          if (s.status === "pending" && s.substatus === "buffered") return false;
+          if (!s.handling_limit) return true;
+          const limitDay = new Date(s.handling_limit).toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
+          return limitDay <= today;
+        });
+        setFlexShipCount(todayShips.length);
+      } catch {}
+    }, 60_000);
     return () => clearInterval(iv);
   }, [mounted, loading, screen, loadSessions]);
 
@@ -183,8 +195,26 @@ export default function PickingPage() {
           </div>
         )}
         {/* FLEX: direct view */}
-        {screen==="flex"&&(
-          flexSession ? (
+        {screen==="flex"&&(<>
+          {/* Validation banner — ML vs App count */}
+          {flexShipCount > 0 && flexSession && flexShipCount !== flexSession.lineas.length && (
+            <div style={{padding:12,borderRadius:10,marginBottom:12,background:"#ef444422",border:"2px solid #ef4444",color:"#fca5a5"}}>
+              <div style={{fontSize:14,fontWeight:800}}>⚠️ ML: {flexShipCount} pedidos | App: {flexSession.lineas.length} picks</div>
+              <div style={{fontSize:11,marginTop:4,color:"#fca5a5"}}>NO DESPACHAR hasta que calcen. Espera 1 min o sincroniza.</div>
+              <button onClick={async()=>{
+                await fetch("/api/ml/sync",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"sync",days:1})}).catch(()=>{});
+                await loadFlexSession();
+              }} style={{marginTop:8,padding:"6px 14px",borderRadius:6,background:"#ef4444",color:"#fff",fontSize:11,fontWeight:700,border:"none",cursor:"pointer"}}>
+                Sincronizar ahora
+              </button>
+            </div>
+          )}
+          {flexShipCount > 0 && flexSession && flexShipCount === flexSession.lineas.length && (
+            <div style={{padding:8,borderRadius:10,marginBottom:12,background:"#10b98122",border:"1px solid #10b98144",color:"#10b981",fontSize:12,fontWeight:600,textAlign:"center"}}>
+              ✅ {flexShipCount} pedidos — calza con MercadoLibre
+            </div>
+          )}
+          {flexSession ? (
             <SessionDetail session={flexSession} operario={operario} onPickComp={(l,i)=>{setActiveSes(flexSession);setActiveLinea(l);setActiveCompIdx(i);setScreen("pick");}} onRefresh={refreshActiveFlex} shipCount={flexShipCount}/>
           ) : (
             <div style={{textAlign:"center",padding:40,color:"#94a3b8"}}>
@@ -193,8 +223,8 @@ export default function PickingPage() {
               <div style={{fontSize:12,marginTop:4}}>Los pedidos se cargan automaticamente desde MercadoLibre</div>
               <button onClick={loadFlexSession} style={{marginTop:16,padding:"8px 16px",borderRadius:8,background:"var(--bg3)",color:"#06b6d4",fontSize:12,fontWeight:600,border:"1px solid var(--bg4)"}}>Refrescar</button>
             </div>
-          )
-        )}
+          )}
+        </>)}
         {/* LIST: envio_full sessions */}
         {screen==="list"&&<SessionList sessions={fullSessions} onSelect={s=>{setActiveSes(s);setScreen("session");}} onRefresh={loadSessions}/>}
         {screen==="session"&&activeSes&&activeSes.tipo==="envio_full"&&<SessionDetailFull session={activeSes} onPickLine={(linea)=>{setEditBultosMode(false);setActiveLinea(linea);setScreen("pickFull");}} onEditBultos={(linea)=>{setEditBultosMode(true);setActiveLinea(linea);setScreen("pickFull");}} operario={operario} onRefresh={async()=>{
@@ -1163,6 +1193,7 @@ function PickFlowFull({session,linea,operario,onDone,editBultos}:{
   const [scanCode,setScanCode]=useState("");
   const [saving,setSaving]=useState(false);
   const [customBultos,setCustomBultos]=useState("");
+  const confirmingRef = useRef(false);
 
   const cfg=getMapConfig();
   const positions=activePositions().filter(p=>p.active&&p.mx!==undefined);
@@ -1195,24 +1226,41 @@ function PickFlowFull({session,linea,operario,onDone,editBultos}:{
   }, [session.lineas, linea.id]);
 
   const goToBultoPhase = useCallback(async () => {
+    if (confirmingRef.current) return;
+    confirmingRef.current = true;
     setSaving(true);
-    await pickearLineaFull(session.id!,linea.id,operario,session,linea.skuVenta);
-    setSaving(false);
-    if(navigator.vibrate)navigator.vibrate([100,50,100]);
-    setPhase("bulto");
+    try {
+      await pickearLineaFull(session.id!,linea.id,operario,session,linea.skuVenta);
+      if(navigator.vibrate)navigator.vibrate([100,50,100]);
+      setPhase("bulto");
+    } catch (e) {
+      alert("Error al confirmar pick. Intenta de nuevo.");
+    } finally {
+      setSaving(false);
+      confirmingRef.current = false;
+    }
   }, [session,linea,operario]);
 
   // Guardar bultos y avanzar
   const saveBultos = useCallback(async (numBultos: number, compartido: string | null) => {
+    if (confirmingRef.current) return;
+    confirmingRef.current = true;
     setSaving(true);
-    await guardarBultosLinea(session.id!, linea.id, numBultos, compartido, session);
-    setSaving(false);
-    setPhase("done");
-    setTimeout(onDone, 800);
+    try {
+      await guardarBultosLinea(session.id!, linea.id, numBultos, compartido, session);
+      setPhase("done");
+      setTimeout(onDone, 800);
+    } catch (e) {
+      alert("Error al guardar bultos. Intenta de nuevo.");
+    } finally {
+      setSaving(false);
+      confirmingRef.current = false;
+    }
   }, [session, linea, onDone]);
 
   // Verify scan: use the standard verificarScanPicking function
   const handleScan=useCallback((code:string)=>{
+    if (confirmingRef.current) return;
     setScanCode(code);
     if (comp && verificarScanPicking(code, comp, linea.skuVenta)) {
       setScanResult("ok"); goToBultoPhase();
