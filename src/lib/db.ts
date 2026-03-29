@@ -310,18 +310,21 @@ export async function setStock(sku: string, posicion_id: string, cantidad: numbe
   if (cantidad <= 0) {
     let q = sb.from("stock").delete().eq("sku", sku).eq("posicion_id", posicion_id);
     if (sv) q = q.eq("sku_venta", sv); else q = q.is("sku_venta", null);
-    await q;
+    const { error } = await q;
+    if (error) throw new Error(`setStock delete failed for ${sku}: ${error.message}`);
   } else {
-    await sb.from("stock").upsert(
+    const { error } = await sb.from("stock").upsert(
       { sku, sku_venta: sv, posicion_id, cantidad, updated_at: new Date().toISOString() },
       { onConflict: "sku,sku_venta_key,posicion_id" }
     );
+    if (error) throw new Error(`setStock upsert failed for ${sku}: ${error.message}`);
   }
 }
 
 export async function deleteStockBySku(sku: string) {
   const sb = getSupabase(); if (!sb) return;
-  await sb.from("stock").delete().eq("sku", sku.toUpperCase().trim());
+  const { error } = await sb.from("stock").delete().eq("sku", sku.toUpperCase().trim());
+  if (error) throw new Error(`deleteStockBySku failed for ${sku}: ${error.message}`);
 }
 
 // ==================== RESERVAS ====================
@@ -548,7 +551,8 @@ export async function insertRecepcion(r: Omit<DBRecepcion, "id" | "created_at">)
 
 export async function updateRecepcion(id: string, fields: Partial<DBRecepcion>) {
   const sb = getSupabase(); if (!sb) return;
-  await sb.from("recepciones").update(fields).eq("id", id);
+  const { error } = await sb.from("recepciones").update(fields).eq("id", id);
+  if (error) throw new Error(`updateRecepcion failed for ${id}: ${error.message}`);
 }
 
 // ==================== RECEPCION LINEAS ====================
@@ -562,18 +566,21 @@ export async function fetchRecepcionLineas(recepcionId: string): Promise<DBRecep
 export async function insertRecepcionLineas(lineas: Omit<DBRecepcionLinea, "id">[]) {
   const sb = getSupabase(); if (!sb) return;
   for (let i = 0; i < lineas.length; i += 500) {
-    await sb.from("recepcion_lineas").insert(lineas.slice(i, i + 500));
+    const { error } = await sb.from("recepcion_lineas").insert(lineas.slice(i, i + 500));
+    if (error) throw new Error(`insertRecepcionLineas failed (batch ${i}): ${error.message}`);
   }
 }
 
 export async function updateRecepcionLinea(id: string, fields: Partial<DBRecepcionLinea>) {
   const sb = getSupabase(); if (!sb) return;
-  await sb.from("recepcion_lineas").update(fields).eq("id", id);
+  const { error } = await sb.from("recepcion_lineas").update(fields).eq("id", id);
+  if (error) throw new Error(`updateRecepcionLinea failed for ${id}: ${error.message}`);
 }
 
 export async function deleteRecepcionLinea(id: string) {
   const sb = getSupabase(); if (!sb) return;
-  await sb.from("recepcion_lineas").delete().eq("id", id);
+  const { error } = await sb.from("recepcion_lineas").delete().eq("id", id);
+  if (error) throw new Error(`deleteRecepcionLinea failed for ${id}: ${error.message}`);
 }
 
 // ==================== DISCREPANCIAS DE COSTO ====================
@@ -846,21 +853,21 @@ export async function fetchBultosSession(pickingSessionId: string): Promise<{ bu
 export async function crearBulto(pickingSessionId: string, numeroBulto: number): Promise<string | null> {
   const sb = getSupabase(); if (!sb) return null;
   const { data, error } = await sb.from("picking_bultos").insert({ picking_session_id: pickingSessionId, numero_bulto: numeroBulto }).select("id").single();
-  if (error) { console.error("[bultos] crear error:", error.message); return null; }
+  if (error) throw new Error(`crearBulto failed for session ${pickingSessionId}: ${error.message}`);
   return data?.id || null;
 }
 
 export async function agregarLineaBulto(bultoId: string, skuVenta: string, skuOrigen: string | null, cantidad: number): Promise<boolean> {
   const sb = getSupabase(); if (!sb) return false;
   const { error } = await sb.from("picking_bultos_lineas").insert({ bulto_id: bultoId, sku_venta: skuVenta, sku_origen: skuOrigen, cantidad });
-  if (error) { console.error("[bultos] agregar linea error:", error.message); return false; }
+  if (error) throw new Error(`agregarLineaBulto failed for bulto ${bultoId}: ${error.message}`);
   return true;
 }
 
 export async function eliminarLineasBulto(bultoId: string, skuVenta: string): Promise<boolean> {
   const sb = getSupabase(); if (!sb) return false;
   const { error } = await sb.from("picking_bultos_lineas").delete().eq("bulto_id", bultoId).eq("sku_venta", skuVenta);
-  if (error) { console.error("[bultos] eliminar lineas error:", error.message); return false; }
+  if (error) throw new Error(`eliminarLineasBulto failed for bulto ${bultoId}: ${error.message}`);
   return true;
 }
 
@@ -1307,9 +1314,8 @@ export async function updatePickingSession(id: string, updates: Partial<DBPickin
 
   const { error } = await sb.from("picking_sessions").update(payload).eq("id", id);
   if (error) {
-    console.error("updatePickingSession error:", error);
     auditLog("updatePickingSession:error", { entidad: "picking_session", entidad_id: id, error: error.message }).catch(() => {});
-    return false;
+    throw new Error(`updatePickingSession failed for ${id}: ${error.message}`);
   }
   return true;
 }
@@ -1461,13 +1467,15 @@ export async function fetchPedidosFlexByEstado(fecha: string, estado: string): P
 export async function updatePedidosFlex(ids: string[], updates: Partial<DBPedidoFlex>): Promise<boolean> {
   const sb = getSupabase(); if (!sb) return false;
   const { error } = await sb.from("pedidos_flex").update(updates).in("id", ids);
-  return !error;
+  if (error) throw new Error(`updatePedidosFlex failed: ${error.message}`);
+  return true;
 }
 
 export async function updatePedidosFlexByPickingSession(sessionId: string, estado: string): Promise<boolean> {
   const sb = getSupabase(); if (!sb) return false;
   const { error } = await sb.from("pedidos_flex").update({ estado }).eq("picking_session_id", sessionId);
-  return !error;
+  if (error) throw new Error(`updatePedidosFlexByPickingSession failed for session ${sessionId}: ${error.message}`);
+  return true;
 }
 
 // ==================== ML SHIPMENTS (new shipment-centric model) ====================
