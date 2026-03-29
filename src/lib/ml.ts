@@ -2027,14 +2027,28 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
   // 6b. Cantidad real desde API distribuida por user_product_id
   // Usar TODOS los mapeos de ml_items_map (no solo los resueltos en esta corrida)
   // para garantizar que todos los SKUs con user_product_id se actualicen.
-  const { data: allMapData } = await sb.from("ml_items_map")
-    .select("sku_venta, user_product_id")
-    .eq("activo", true)
-    .not("sku_venta", "is", null)
-    .not("user_product_id", "is", null);
+  // Paginar para no truncar (Supabase default limit = 1000).
+  const allMapData: { sku_venta: string; user_product_id: string }[] = [];
+  {
+    let from = 0;
+    const PAGE = 1000;
+    while (true) {
+      const { data } = await sb.from("ml_items_map")
+        .select("sku_venta, user_product_id")
+        .eq("activo", true)
+        .not("sku_venta", "is", null)
+        .not("user_product_id", "is", null)
+        .range(from, from + PAGE - 1);
+      if (!data || data.length === 0) break;
+      allMapData.push(...(data as { sku_venta: string; user_product_id: string }[]));
+      if (data.length < PAGE) break;
+      from += PAGE;
+    }
+  }
+  console.log(`[syncStockFull] ${allMapData.length} mapeos sku_venta→user_product_id de ml_items_map`);
 
   const skuToUserProductIds = new Map<string, Set<string>>();
-  for (const row of (allMapData || []) as { sku_venta: string; user_product_id: string }[]) {
+  for (const row of allMapData) {
     if (!skuToUserProductIds.has(row.sku_venta)) skuToUserProductIds.set(row.sku_venta, new Set());
     skuToUserProductIds.get(row.sku_venta)!.add(row.user_product_id);
   }
