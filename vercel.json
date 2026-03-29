@@ -10,11 +10,11 @@
     },
     {
       "path": "/api/ml/sync-stock-full",
-      "schedule": "*/10 * * * *"
+      "schedule": "0 8 * * *"
     },
     {
       "path": "/api/profitguard/sync",
-      "schedule": "0 * * * *"
+      "schedule": "0 9 * * *"
     },
     {
       "path": "/api/agents/cron",
