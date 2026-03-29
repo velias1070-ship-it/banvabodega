@@ -112,9 +112,9 @@ async function findReport(fechaDesde: string, fechaHasta: string): Promise<{ fil
         end_date: fechaHasta,
       });
 
-      // Polling: esperar hasta 3 min
+      // Polling: esperar hasta 4 min (meses anteriores tardan más)
       const startPoll = Date.now();
-      for (let i = 0; i < 18; i++) {
+      for (let i = 0; i < 24; i++) {
         await sleep(10_000);
         const updated = await mpGet("/v1/account/release_report/list") as MPReport[];
         const fresh = (updated || [])
