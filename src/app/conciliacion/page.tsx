@@ -361,6 +361,8 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const [clasificarItem, setClasificarItem] = useState<DBRcvCompra | null>(null);
   const [clasificarCuenta, setClasificarCuenta] = useState("");
   const [clasificarBusca, setClasificarBusca] = useState("");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [comprasTab, setComprasTab] = useState<"registro"|"pendientes"|"no_incluir"|"reclamadas"|"por_pagar"|"por_revisar"|"por_clasificar">("registro");
   const [provFilterSet, setProvFilterSet] = useState<Set<string> | null>(null); // null = todos
   const [showProvFilter, setShowProvFilter] = useState(false);
   const [showProveedores, setShowProveedores] = useState(false);
@@ -540,17 +542,6 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
             {pctConciliado}% conciliado este mes
           </div>
           <span style={{ fontSize: 14, fontWeight: 700 }}>{empresa.razon_social}</span>
-          <button onClick={handleSyncSii} disabled={syncing}
-            style={{ width: 36, height: 36, borderRadius: "50%", background: "var(--cyan)", color: "#fff", border: "none", cursor: syncing ? "not-allowed" : "pointer", fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center", opacity: syncing ? 0.6 : 1 }}
-            title="Importar desde SII">{syncing ? "..." : "\u21BB"}</button>
-          <button onClick={() => setShowBheModal(true)}
-            style={{ width: 36, height: 36, borderRadius: "50%", background: "var(--bg3)", border: "1px solid var(--bg4)", cursor: "pointer", fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center" }}
-            title="Importar BHE">+</button>
-          {empresa.id && (
-            <button onClick={() => window.open(`/api/sii/export?empresa_id=${empresa.id}&anio=${isAnual ? periodo : periodo.slice(0, 4)}&tipo=compras`, "_blank")}
-              style={{ width: 36, height: 36, borderRadius: "50%", background: "var(--bg3)", border: "1px solid var(--bg4)", cursor: "pointer", fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center" }}
-              title="Exportar CSV">{"\u2193"}</button>
-          )}
         </div>
       </div>
 
@@ -651,53 +642,65 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
       )}
 
       {/* Chipax-style filter tabs */}
-      <div style={{ display: "flex", gap: 0, borderBottom: "2px solid var(--bg4)", marginBottom: 16, alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ display: "flex", gap: 0 }}>
-          {([
-            { key: "todos" as typeof concFilter, label: "Registro", count: data.length, showBadge: false },
-            { key: "sin_pago" as typeof concFilter, label: "Pendientes", count: totalSinPago, showBadge: true },
-            { key: "conciliada" as typeof concFilter, label: "Por pagar", count: porPagarList.length, showBadge: true },
-          ]).map(t => (
-            <button key={t.key} onClick={() => setConcFilter(t.key)}
-              style={{
-                padding: "10px 16px", fontSize: 13, fontWeight: concFilter === t.key ? 600 : 400, cursor: "pointer", background: "none", border: "none",
-                borderBottom: concFilter === t.key ? "2px solid var(--cyan)" : "2px solid transparent",
-                color: concFilter === t.key ? "var(--txt)" : "var(--txt3)", marginBottom: -2, whiteSpace: "nowrap",
-              }}>
-              {t.label}
-              {t.showBadge && t.count > 0 && (
-                <span style={{
-                  marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10,
-                  background: concFilter === t.key ? "var(--red)" : "var(--redBg)",
-                  color: concFilter === t.key ? "#fff" : "var(--red)",
-                }}>{t.count}</span>
+      {(() => {
+        const tabs = [
+          { key: "registro" as const, label: "Registro", count: 0 },
+          { key: "pendientes" as const, label: "Pendientes", count: totalSinPago },
+          { key: "no_incluir" as const, label: "No incluir", count: 0 },
+          { key: "reclamadas" as const, label: "Reclamadas", count: 0 },
+          { key: "por_pagar" as const, label: "Por pagar", count: porPagarList.length },
+          { key: "por_revisar" as const, label: "Por revisar", count: porRevisarList.length },
+          { key: "por_clasificar" as const, label: "Por clasificar", count: sinClasificar.length },
+        ];
+        return (
+          <div style={{ display: "flex", gap: 0, borderBottom: "2px solid var(--bg4)", marginBottom: 0, alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ display: "flex", gap: 0 }}>
+              {tabs.map(t => {
+                const isActive = comprasTab === t.key;
+                return (
+                  <button key={t.key} onClick={() => setComprasTab(t.key)}
+                    style={{
+                      padding: "12px 16px", fontSize: 13, fontWeight: isActive ? 600 : 400, cursor: "pointer",
+                      background: isActive ? "var(--cyanBg)" : "none", border: "none",
+                      borderBottom: isActive ? "2px solid var(--cyan)" : "2px solid transparent",
+                      color: isActive ? "var(--txt)" : "var(--txt3)", marginBottom: -2, whiteSpace: "nowrap",
+                      borderRadius: isActive ? "8px 8px 0 0" : 0,
+                    }}>
+                    {t.label}
+                    {t.count > 0 && (
+                      <span style={{
+                        marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10,
+                        background: isActive ? "var(--red)" : "var(--redBg)",
+                        color: isActive ? "#fff" : "var(--red)",
+                      }}>{t.count}</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{ display: "flex", gap: 6, alignItems: "center", paddingBottom: 6 }}>
+              <button onClick={handleSyncSii} disabled={syncing} title="Sincronizar"
+                style={{ width: 32, height: 32, borderRadius: 8, background: "var(--bg3)", border: "1px solid var(--bg4)", cursor: "pointer", fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                {syncing ? "..." : "\u21BB"}
+              </button>
+              <button title="Buscar" onClick={() => { const el = document.getElementById("compras-search"); if (el) el.focus(); }}
+                style={{ width: 32, height: 32, borderRadius: 8, background: "var(--bg3)", border: "1px solid var(--bg4)", cursor: "pointer", fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                \uD83D\uDD0D
+              </button>
+              <button onClick={() => setShowBheModal(true)} title="Agregar"
+                style={{ width: 32, height: 32, borderRadius: 8, background: "var(--bg3)", border: "1px solid var(--bg4)", cursor: "pointer", fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                +
+              </button>
+              {empresa.id && (
+                <button onClick={() => window.open(`/api/sii/export?empresa_id=${empresa.id}&anio=${isAnual ? periodo : periodo.slice(0, 4)}&tipo=compras`, "_blank")} title="Exportar CSV"
+                  style={{ width: 32, height: 32, borderRadius: 8, background: "var(--bg3)", border: "1px solid var(--bg4)", cursor: "pointer", fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  {"\u2193"}
+                </button>
               )}
-            </button>
-          ))}
-          {porRevisarList.length > 0 && (
-            <button onClick={() => setConcFilter("sin_pago")}
-              style={{ padding: "10px 16px", fontSize: 13, fontWeight: 400, cursor: "pointer", background: "none", border: "none", borderBottom: "2px solid transparent", color: "var(--txt3)", marginBottom: -2, whiteSpace: "nowrap" }}>
-              Por revisar
-              <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10, background: "var(--redBg)", color: "var(--red)" }}>{porRevisarList.length}</span>
-            </button>
-          )}
-          {sinClasificar.length > 0 && (
-            <button onClick={() => setConcFilter("todos")}
-              style={{ padding: "10px 16px", fontSize: 13, fontWeight: 400, cursor: "pointer", background: "none", border: "none", borderBottom: "2px solid transparent", color: "var(--txt3)", marginBottom: -2, whiteSpace: "nowrap" }}>
-              Por clasificar
-              <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10, background: "var(--redBg)", color: "var(--red)" }}>{sinClasificar.length}</span>
-            </button>
-          )}
-        </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", paddingBottom: 6 }}>
-          <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, cursor: "pointer", color: "var(--txt3)" }}>
-            <input type="checkbox" checked={concFilter === "sin_pago"} onChange={e => setConcFilter(e.target.checked ? "sin_pago" : "todos")} style={{ accentColor: "var(--cyan)" }} />
-            Por conciliar
-          </label>
-          <input className="form-input" placeholder="Buscar..." value={filter} onChange={e => setFilter(e.target.value)}
-            style={{ fontSize: 12, width: 160, padding: "6px 12px" }} />
-        </div>
-      </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {data.length === 0 ? (
         <div className="card" style={{ padding: 40, textAlign: "center" }}>
@@ -711,10 +714,20 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
         </div>
       ) : (
         <div className="card" style={{ overflow: "hidden", padding: 0 }}>
+          {/* Search bar inline */}
+          <div style={{ padding: "8px 14px", borderBottom: "1px solid var(--bg4)", display: "flex", gap: 8, alignItems: "center" }}>
+            <input id="compras-search" className="form-input" placeholder="Buscar por nombre, RUT o folio..." value={filter} onChange={e => setFilter(e.target.value)}
+              style={{ fontSize: 12, flex: 1, padding: "6px 12px", border: "none", background: "transparent" }} />
+          </div>
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
               <thead>
                 <tr style={{ borderBottom: "2px solid var(--bg4)" }}>
+                  <th style={{ padding: "12px 10px", width: 36 }}>
+                    <input type="checkbox" checked={filtered.length > 0 && selectedIds.size === filtered.length}
+                      onChange={e => setSelectedIds(e.target.checked ? new Set(filtered.map(c => c.id!)) : new Set())}
+                      style={{ accentColor: "var(--cyan)" }} />
+                  </th>
                   <th style={{ padding: "12px 14px", textAlign: "left", fontWeight: 600, fontSize: 12, color: "var(--cyan)" }}>Folio</th>
                   <th style={{ padding: "12px 14px", textAlign: "left", fontWeight: 600, fontSize: 12, color: "var(--txt3)" }}>Clasificaci&oacute;n</th>
                   <th style={{ padding: "12px 14px", textAlign: "left", fontWeight: 600, fontSize: 12, color: "var(--cyan)" }}>Raz&oacute;n Social</th>
@@ -726,9 +739,14 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                 </tr>
               </thead>
               <tbody>
-                {filtered.length === 0 ? (
-                  <tr><td colSpan={8} style={{ textAlign: "center", padding: 32, color: "var(--txt3)" }}>Sin resultados</td></tr>
-                ) : filtered.map((c, i) => {
+                {(() => {
+                  let rows = filtered;
+                  if (comprasTab === "pendientes") rows = rows.filter(c => !concCompraIds.has(c.id!));
+                  else if (comprasTab === "por_pagar") rows = rows.filter(c => !concCompraIds.has(c.id!));
+                  else if (comprasTab === "por_revisar") rows = rows.filter(c => { const v = getVencimiento(c); return v && v.diasRestantes < 0 && !concCompraIds.has(c.id!); });
+                  else if (comprasTab === "por_clasificar") rows = rows.filter(c => !getClasificacion(c));
+                  if (rows.length === 0) return <tr><td colSpan={9} style={{ textAlign: "center", padding: 32, color: "var(--txt3)" }}>Sin resultados</td></tr>;
+                  return rows.map((c, i) => {
                   const venc = getVencimiento(c);
                   const isConciliada = concCompraIds.has(c.id!);
                   const clasificacion = getClasificacion(c);
@@ -737,6 +755,11 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
 
                   return (
                     <tr key={c.id || i} style={{ borderBottom: "1px solid var(--bg4)" }}>
+                      <td style={{ padding: "14px 10px", width: 36 }}>
+                        <input type="checkbox" checked={selectedIds.has(c.id!)}
+                          onChange={e => { const next = new Set(selectedIds); e.target.checked ? next.add(c.id!) : next.delete(c.id!); setSelectedIds(next); }}
+                          style={{ accentColor: "var(--cyan)" }} />
+                      </td>
                       {/* Folio badge */}
                       <td style={{ padding: "14px 14px", whiteSpace: "nowrap" }}>
                         <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
@@ -800,19 +823,30 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                               Pagado
                             </span>
                           ) : (
-                            <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, padding: "4px 12px", borderRadius: 6, background: "var(--cyan)", color: "#fff", cursor: "pointer" }}>
-                              Asignar Pago
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 0 }}>
+                              <span style={{ fontSize: 11, fontWeight: 600, padding: "5px 12px", borderRadius: "6px 0 0 6px", background: "var(--cyan)", color: "#fff", cursor: "pointer" }}>
+                                Asignar Pago
+                              </span>
+                              <span style={{ fontSize: 11, fontWeight: 600, padding: "5px 6px", borderRadius: "0 6px 6px 0", background: "var(--cyan)", color: "#fff", cursor: "pointer", borderLeft: "1px solid rgba(255,255,255,0.3)" }}>
+                                {"\u25BE"}
+                              </span>
+                              <span style={{ marginLeft: 6, width: 28, height: 28, borderRadius: 6, background: "var(--bg3)", border: "1px solid var(--bg4)", display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 12 }}
+                                onClick={() => { setClasificarItem(c); setClasificarCuenta(""); setClasificarBusca(""); }}
+                                title="Clasificar">
+                                {"\u2630"}
+                              </span>
                             </span>
                           )}
                         </div>
                       </td>
                     </tr>
                   );
-                })}
+                })()}
               </tbody>
               {filtered.length > 0 && (
                 <tfoot>
                   <tr style={{ borderTop: "2px solid var(--bg4)", fontWeight: 700 }}>
+                    <td></td>
                     <td colSpan={6} style={{ padding: "12px 14px", fontSize: 13 }}>Total CLP</td>
                     <td className="mono" style={{ padding: "12px 14px", textAlign: "right", fontSize: 14 }}>
                       {fmtMoney(total)}
