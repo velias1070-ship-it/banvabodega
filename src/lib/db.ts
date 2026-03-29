@@ -787,6 +787,7 @@ export async function upsertComposicionVenta(items: DBComposicionVenta[]) {
   }
 }
 
+/** @deprecated Usar upsert diff en syncDiccionarioFromSheet(). Mantener solo por si se necesita reset manual. */
 export async function clearComposicionVenta() {
   const sb = getSupabase(); if (!sb) return;
   const { error } = await sb.from("composicion_venta").delete().neq("sku_venta", "");
@@ -1009,10 +1010,7 @@ export async function syncDiccionarioFromSheet(): Promise<{
 
     if (toUpsert.length > 0) await upsertProductos(toUpsert);
 
-    // 2) Build composicion_venta (packs/combos)
-    // Clear old and re-insert (simpler than diffing)
-    await clearComposicionVenta();
-
+    // 2) Build composicion_venta (packs/combos) — upsert diff preservando campos manuales
     // Deduplicate by (sku_venta, sku_origen) — CSV may have duplicate rows
     const composicionMap = new Map<string, DBComposicionVenta>();
     for (const row of rows) {
@@ -1027,9 +1025,56 @@ export async function syncDiccionarioFromSheet(): Promise<{
     }
     const composicionItems = Array.from(composicionMap.values());
 
-    if (composicionItems.length > 0) {
-      await upsertComposicionVenta(composicionItems);
+    // Leer existentes para preservar nota_operativa y tipo_relacion en el upsert
+    const existingComp = await fetchComposicionVenta();
+    const preserveMap = new Map<string, { nota_operativa: string | null; tipo_relacion: "componente" | "alternativo" }>();
+    for (const c of existingComp) {
+      const key = `${(c.sku_venta || "").toUpperCase()}|${(c.sku_origen || "").toUpperCase()}`;
+      if (c.nota_operativa || c.tipo_relacion === "alternativo") {
+        preserveMap.set(key, {
+          nota_operativa: c.nota_operativa || null,
+          tipo_relacion: c.tipo_relacion || "componente",
+        });
+      }
     }
+
+    // Merge: CSV fields + preserved manual fields
+    const mergedItems: DBComposicionVenta[] = composicionItems.map(item => {
+      const key = `${item.sku_venta.toUpperCase()}|${item.sku_origen.toUpperCase()}`;
+      const preserved = preserveMap.get(key);
+      return {
+        ...item,
+        nota_operativa: preserved?.nota_operativa ?? null,
+        tipo_relacion: preserved?.tipo_relacion ?? "componente",
+      };
+    });
+
+    if (mergedItems.length > 0) {
+      await upsertComposicionVenta(mergedItems);
+    }
+
+    // Borrar huérfanas: filas en DB que ya no están en el CSV
+    // Preservar filas manuales (alternativas o con notas operativas)
+    const csvKeys = new Set(composicionItems.map(i =>
+      `${i.sku_venta.toUpperCase()}|${i.sku_origen.toUpperCase()}`
+    ));
+    const toDelete = existingComp.filter(c => {
+      const key = `${(c.sku_venta || "").toUpperCase()}|${(c.sku_origen || "").toUpperCase()}`;
+      return !csvKeys.has(key) && c.tipo_relacion !== "alternativo" && !c.nota_operativa;
+    });
+    if (toDelete.length > 0) {
+      const sb2 = getSupabase();
+      if (sb2) {
+        for (let i = 0; i < toDelete.length; i += 500) {
+          const ids = toDelete.slice(i, i + 500).map(d => d.id).filter(Boolean) as string[];
+          if (ids.length > 0) {
+            await sb2.from("composicion_venta").delete().in("id", ids);
+          }
+        }
+        console.log(`[composicion] deleted ${toDelete.length} orphan rows`);
+      }
+    }
+
     result.composicion.total = composicionItems.length;
 
   } catch (err) {
