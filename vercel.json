@@ -13,6 +13,10 @@
       "schedule": "*/10 * * * *"
     },
     {
+      "path": "/api/profitguard/sync",
+      "schedule": "0 * * * *"
+    },
+    {
       "path": "/api/agents/cron",
       "schedule": "0 8 * * *"
     }
