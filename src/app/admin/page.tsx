@@ -8967,7 +8967,7 @@ function AdminTimeline() {
   const [skuLabel, setSkuLabel] = useState("");
   const [rows, setRows] = useState<TimelineRow[]>([]);
   const [loading, setLoading] = useState(false);
-  const [headerData, setHeaderData] = useState<{onHand:number;reserved:number;disponible:number;flexCache:number|null;nombre:string}>({onHand:0,reserved:0,disponible:0,flexCache:null,nombre:""});
+  const [headerData, setHeaderData] = useState<{onHand:number;reserved:number;disponible:number;nombre:string;publications:{skuVenta:string;unidades:number;flexCache:number|null}[]}>({onHand:0,reserved:0,disponible:0,nombre:"",publications:[]});
   const s = getStore();
 
   const doSearch = async (searchTerm: string) => {
@@ -8986,20 +8986,22 @@ function AdminTimeline() {
       if (nameMatch && !s.products[term]) primarySku = nameMatch[0];
 
       // Resolve sku_origen ↔ sku_venta mapping
-      const { data: mapRows } = await sb.from("ml_items_map").select("sku, sku_origen, stock_flex_cache").or(`sku.eq.${primarySku},sku_origen.eq.${primarySku}`).limit(5);
+      const { data: mapRows } = await sb.from("ml_items_map").select("sku, sku_origen, stock_flex_cache, activo").or(`sku.eq.${primarySku},sku_origen.eq.${primarySku}`).limit(10);
       const allSkus = new Set([primarySku]);
-      let flexCache: number | null = null;
-      for (const m of (mapRows || []) as {sku:string;sku_origen:string|null;stock_flex_cache:number|null}[]) {
+      const mlPubs: {skuVenta:string;skuOrigen:string;flexCache:number|null}[] = [];
+      for (const m of (mapRows || []) as {sku:string;sku_origen:string|null;stock_flex_cache:number|null;activo:boolean}[]) {
         allSkus.add(m.sku.toUpperCase());
         if (m.sku_origen) allSkus.add(m.sku_origen.toUpperCase());
-        if (m.stock_flex_cache !== null) flexCache = m.stock_flex_cache;
+        if (m.activo) mlPubs.push({ skuVenta: m.sku.toUpperCase(), skuOrigen: (m.sku_origen || m.sku).toUpperCase(), flexCache: m.stock_flex_cache });
       }
 
-      // Also check composicion_venta
-      const { data: compRows } = await sb.from("composicion_venta").select("sku_venta, sku_origen").or(`sku_venta.eq.${primarySku},sku_origen.eq.${primarySku}`).limit(5);
-      for (const c of (compRows || []) as {sku_venta:string;sku_origen:string}[]) {
+      // Check composicion_venta for pack info
+      const { data: compRows } = await sb.from("composicion_venta").select("sku_venta, sku_origen, unidades").or(`sku_venta.eq.${primarySku},sku_origen.eq.${primarySku}`).limit(10);
+      const compMap: Record<string, number> = {};
+      for (const c of (compRows || []) as {sku_venta:string;sku_origen:string;unidades:number}[]) {
         allSkus.add(c.sku_venta.toUpperCase());
         allSkus.add(c.sku_origen.toUpperCase());
+        compMap[c.sku_venta.toUpperCase()] = c.unidades;
       }
 
       const skuList = Array.from(allSkus);
@@ -9017,14 +9019,21 @@ function AdminTimeline() {
       const physSku = skuList.find(sk => skuTotal(sk) > 0) || skuList[0];
       const prod = s.products[physSku];
 
+      // Build publications list with unidades
+      const publications = mlPubs.map(p => ({
+        skuVenta: p.skuVenta,
+        unidades: compMap[p.skuVenta] || 1,
+        flexCache: p.flexCache,
+      }));
+
       setSelectedSku(physSku);
-      setSkuLabel(skuList.length > 1 ? skuList.join(" / ") : primarySku);
+      setSkuLabel(physSku);
       setHeaderData({
         onHand: disp?.on_hand || skuTotal(physSku),
         reserved: disp?.reserved || 0,
         disponible: disp?.disponible || skuTotal(physSku),
-        flexCache,
         nombre: prod?.name || "",
+        publications,
       });
       setRows(allRows);
     } finally {
@@ -9111,30 +9120,38 @@ function AdminTimeline() {
       {/* SKU Header with breakdown */}
       {selectedSku && (
         <div className="card" style={{padding:16}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
-            <div>
-              <div className="mono" style={{fontSize:16,fontWeight:700}}>{skuLabel}</div>
-              {headerData.nombre && <div style={{fontSize:13,color:"var(--txt3)",marginTop:2}}>{headerData.nombre}</div>}
-            </div>
+          <div style={{marginBottom:12}}>
+            <div className="mono" style={{fontSize:16,fontWeight:700}}>{skuLabel}</div>
+            {headerData.nombre && <div style={{fontSize:13,color:"var(--txt3)",marginTop:2}}>{headerData.nombre}</div>}
           </div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12}}>
-            <div style={{textAlign:"center",padding:8,borderRadius:8,background:"var(--bg3)"}}>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom: headerData.publications.length > 0 ? 12 : 0}}>
+            <div style={{textAlign:"center",padding:10,borderRadius:8,background:"var(--bg3)"}}>
               <div style={{fontSize:10,color:"var(--txt3)",marginBottom:2}}>En bodega</div>
-              <div className="mono" style={{fontSize:20,fontWeight:700}}>{headerData.onHand}</div>
+              <div className="mono" style={{fontSize:22,fontWeight:700}}>{headerData.onHand}</div>
             </div>
-            <div style={{textAlign:"center",padding:8,borderRadius:8,background:"var(--amberBg)"}}>
+            <div style={{textAlign:"center",padding:10,borderRadius:8,background:"var(--amberBg)"}}>
               <div style={{fontSize:10,color:"var(--amber)",marginBottom:2}}>Reservado</div>
-              <div className="mono" style={{fontSize:20,fontWeight:700,color:"var(--amber)"}}>{headerData.reserved}</div>
+              <div className="mono" style={{fontSize:22,fontWeight:700,color:"var(--amber)"}}>{headerData.reserved}</div>
             </div>
-            <div style={{textAlign:"center",padding:8,borderRadius:8,background:"var(--greenBg)"}}>
+            <div style={{textAlign:"center",padding:10,borderRadius:8,background:"var(--greenBg)"}}>
               <div style={{fontSize:10,color:"var(--green)",marginBottom:2}}>Disponible</div>
-              <div className="mono" style={{fontSize:20,fontWeight:700,color:"var(--green)"}}>{headerData.disponible}</div>
-            </div>
-            <div style={{textAlign:"center",padding:8,borderRadius:8,background:"var(--cyanBg, rgba(0,200,255,0.06))"}}>
-              <div style={{fontSize:10,color:"var(--cyan)",marginBottom:2}}>En ML (Flex)</div>
-              <div className="mono" style={{fontSize:20,fontWeight:700,color:"var(--cyan)"}}>{headerData.flexCache ?? "—"}</div>
+              <div className="mono" style={{fontSize:22,fontWeight:700,color:"var(--green)"}}>{headerData.disponible}</div>
             </div>
           </div>
+          {headerData.publications.length > 0 && (
+            <div style={{padding:10,borderRadius:8,background:"var(--cyanBg, rgba(0,200,255,0.06))",border:"1px solid var(--cyanBd, rgba(0,200,255,0.15))"}}>
+              <div style={{fontSize:10,color:"var(--cyan)",fontWeight:700,marginBottom:6}}>Publicado en ML</div>
+              {headerData.publications.map(p => (
+                <div key={p.skuVenta} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"4px 0",borderBottom:"1px solid var(--bg3)"}}>
+                  <div>
+                    <span className="mono" style={{fontSize:11,fontWeight:600}}>{p.skuVenta}</span>
+                    <span style={{fontSize:10,color:"var(--txt3)",marginLeft:6}}>({"\u00D7"}{p.unidades}{p.unidades > 1 ? " pack" : " ind."})</span>
+                  </div>
+                  <span className="mono" style={{fontSize:14,fontWeight:700,color:"var(--cyan)"}}>{p.flexCache ?? "—"}{p.unidades > 1 ? " packs" : " uds"}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
