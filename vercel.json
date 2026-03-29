@@ -2,19 +2,19 @@
   "crons": [
     {
       "path": "/api/ml/sync",
-      "schedule": "*/10 * * * *"
+      "schedule": "* * * * *"
     },
     {
       "path": "/api/ml/stock-sync",
-      "schedule": "*/10 * * * *"
+      "schedule": "* * * * *"
     },
     {
       "path": "/api/ml/sync-stock-full",
-      "schedule": "*/10 * * * *"
+      "schedule": "* * * * *"
     },
     {
       "path": "/api/profitguard/sync",
-      "schedule": "0 * * * *"
+      "schedule": "*/5 * * * *"
     },
     {
       "path": "/api/agents/cron",
