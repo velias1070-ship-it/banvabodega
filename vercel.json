@@ -10,7 +10,7 @@
     },
     {
       "path": "/api/ml/sync-stock-full",
-      "schedule": "30 7 * * *"
+      "schedule": "*/10 * * * *"
     },
     {
       "path": "/api/agents/cron",

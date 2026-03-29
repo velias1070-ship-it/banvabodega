@@ -865,7 +865,7 @@ async function processOrderBatch(orders: MLOrder[], config: MLConfig): Promise<{
  * Queries the ML API for current status and updates the DB.
  * This cleans up shipments that were shipped/delivered but not updated.
  */
-async function refreshShipmentStatuses(): Promise<{ checked: number; updated: number }> {
+export async function refreshShipmentStatuses(): Promise<{ checked: number; updated: number }> {
   const sb = getServerSupabase();
   if (!sb) return { checked: 0, updated: 0 };
 
