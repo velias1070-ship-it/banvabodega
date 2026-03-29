@@ -2025,10 +2025,16 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
   }
 
   // 6b. Cantidad real desde API distribuida por user_product_id
-  // Agrupar: sku_venta → user_product_id (deduplicado)
+  // Usar TODOS los mapeos de ml_items_map (no solo los resueltos en esta corrida)
+  // para garantizar que todos los SKUs con user_product_id se actualicen.
+  const { data: allMapData } = await sb.from("ml_items_map")
+    .select("sku_venta, user_product_id")
+    .eq("activo", true)
+    .not("sku_venta", "is", null)
+    .not("user_product_id", "is", null);
+
   const skuToUserProductIds = new Map<string, Set<string>>();
-  for (const row of itemsMapRows) {
-    if (!row.sku_venta || !row.user_product_id) continue;
+  for (const row of (allMapData || []) as { sku_venta: string; user_product_id: string }[]) {
     if (!skuToUserProductIds.has(row.sku_venta)) skuToUserProductIds.set(row.sku_venta, new Set());
     skuToUserProductIds.get(row.sku_venta)!.add(row.user_product_id);
   }
@@ -2098,70 +2104,17 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     if (error) errores.push(`Upsert stock_full_cache error: ${error.message}`);
   }
 
-  // 7. Pase final: actualizar SKUs que tienen user_product_id en ml_items_map
-  //    pero no fueron encontrados por el flujo de listado del seller (resolveSkuVenta).
-  //    Esto garantiza que TODOS los SKUs mapeados tengan su stock Full correcto.
-  console.log("[syncStockFull] Pase final: verificando SKUs de ml_items_map...");
-  const { data: allMappings } = await sb.from("ml_items_map")
-    .select("sku, user_product_id")
-    .eq("activo", true)
-    .not("user_product_id", "is", null);
-
-  let extraUpdated = 0;
-  if (allMappings && allMappings.length > 0) {
-    // Filtrar SKUs que NO fueron actualizados en este sync
-    const skusYaActualizados = allSkus;
-    const pendientes = (allMappings as { sku: string; user_product_id: string }[])
-      .filter(m => !skusYaActualizados.has(m.sku));
-
-    // Deduplicar por user_product_id
-    const upIdToSkus = new Map<string, string[]>();
-    for (const m of pendientes) {
-      if (!upIdToSkus.has(m.user_product_id)) upIdToSkus.set(m.user_product_id, []);
-      upIdToSkus.get(m.user_product_id)!.push(m.sku);
-    }
-
-    const pendUpIds = Array.from(upIdToSkus.keys());
-    console.log(`[syncStockFull] ${pendUpIds.length} user_product_ids pendientes de actualizar`);
-
-    for (let i = 0; i < pendUpIds.length; i += 10) {
-      const batch = pendUpIds.slice(i, i + 10);
-      const promises = batch.map(async (upId) => {
-        try {
-          const stockData = await getDistributedStock(upId);
-          if (!stockData) return;
-          const fullQty = stockData.locations
-            .filter(l => l.type === "meli_facility")
-            .reduce((sum, l) => sum + l.quantity, 0);
-          const skus = upIdToSkus.get(upId) || [];
-          for (const sku of skus) {
-            await sb.from("stock_full_cache").upsert({
-              sku_venta: sku,
-              cantidad: fullQty,
-              fuente: "ml_distributed",
-              updated_at: new Date().toISOString(),
-            }, { onConflict: "sku_venta" });
-            extraUpdated++;
-          }
-        } catch (err) {
-          errores.push(`Extra distributed ${upId}: ${err}`);
-        }
-      });
-      await Promise.all(promises);
-      if (i + 10 < pendUpIds.length) await delay(300);
-    }
-    if (extraUpdated > 0) {
-      console.log(`[syncStockFull] ${extraUpdated} SKUs extra actualizados desde ml_items_map`);
-    }
-  }
+  // 7. Pase final ya no es necesario: el paso 6b ahora usa todos los mapeos
+  //    de ml_items_map directamente, no solo los resueltos en esta corrida.
+  const allMappings = allMapData;
 
   // 8. Limpiar entradas stale: SKUs en stock_full_cache que no fueron tocados en este sync
   //    tienen datos viejos (ej: de ProfitGuard). Poner cantidad=0 para los no actualizados.
   const skusActualizados = new Set<string>();
   allSkus.forEach(s => skusActualizados.add(s.toUpperCase()));
   if (allMappings) {
-    for (const m of allMappings as { sku: string }[]) {
-      skusActualizados.add(m.sku.toUpperCase());
+    for (const m of allMappings as { sku_venta: string }[]) {
+      skusActualizados.add(m.sku_venta.toUpperCase());
     }
   }
 
@@ -2187,7 +2140,7 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
   const result: SyncStockFullResult = {
     ok: errores.length === 0,
     items_sincronizados: itemsMapRows.length,
-    stock_actualizado: allSkus.size + extraUpdated,
+    stock_actualizado: allSkus.size,
     sin_inventory_id: sinInventoryId,
     errores,
     tiempo_ms: Date.now() - start,
