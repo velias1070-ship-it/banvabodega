@@ -318,16 +318,17 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   };
   useEffect(() => { loadRecs(); }, []);
 
-  // Restore selected reception after recs load
-  const restoredRef = useRef(false);
+  // Restore selected reception only on page reload (not tab switch)
   useEffect(() => {
-    if (restoredRef.current || recs.length === 0) return;
+    if (recs.length === 0) return;
+    const restored = sessionStorage.getItem("banva_admin_selRec_restored");
+    if (restored) return; // Already restored in this page session
     const savedId = sessionStorage.getItem("banva_admin_selRec");
     if (savedId) {
       const saved = recs.find(r => r.id === savedId);
       if (saved) openRec(saved);
     }
-    restoredRef.current = true;
+    sessionStorage.setItem("banva_admin_selRec_restored", "1");
   }, [recs]);
 
   // Persist selected reception ID
