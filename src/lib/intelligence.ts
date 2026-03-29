@@ -914,16 +914,25 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     const targetFullUds = velParaPedir * pctFull * targetDiasFull / 7;
     const targetFlexUds = velParaPedir * pctFlex * 30 / 7;
     const disponibleParaFull = Math.max(0, stBodega - Math.ceil(targetFlexUds));
-    const mandarFull = Math.max(0, Math.min(Math.ceil(targetFullUds - stFull), disponibleParaFull));
+    let mandarFull = Math.max(0, Math.min(Math.ceil(targetFullUds - stFull), disponibleParaFull));
     const pedirFull = Math.max(0, Math.ceil(targetFullUds - stFull - stEnTransito));
     const pedirFlex = Math.max(0, Math.ceil(targetFlexUds - stBodega));
     const pedirTotal = pedirFull + pedirFlex;
     const pedirProvBultos = innerPack > 1 && pedirTotal > 0 ? Math.ceil(pedirTotal / innerPack) : pedirTotal;
 
+    // Productos nuevos: si no tiene ventas, tiene stock en bodega y no tiene stock en Full,
+    // sugerir enviar un lote inicial (inner pack o mínimo 2 unidades)
+    const esNuevo = velPonderada === 0 && velPreQuiebre === 0 && stTotal > 0;
+    if (esNuevo && stFull === 0 && stBodega > 0) {
+      const loteInicial = Math.max(innerPack, 2);
+      mandarFull = Math.min(loteInicial, stBodega);
+    }
+
     let accion: AccionIntel;
     let prioridad: number;
     if (velPonderada === 0 && velPreQuiebre === 0 && stTotal === 0) { accion = "INACTIVO"; prioridad = 99; }
-    else if (velPonderada === 0 && velPreQuiebre === 0 && stTotal > 0 && diasSinMov <= 30) { accion = "NUEVO"; prioridad = 50; }
+    else if (esNuevo && stFull === 0 && stBodega > 0) { accion = "MANDAR_FULL"; prioridad = 10; }
+    else if (esNuevo && diasSinMov <= 30) { accion = "NUEVO"; prioridad = 50; }
     else if (velPonderada === 0 && velPreQuiebre === 0 && stTotal > 0) { accion = "DEAD_STOCK"; prioridad = 80; }
     else if (stFull === 0 && (velFull > 0 || enQuiebreProlongado) && stBodega > 0) { accion = "MANDAR_FULL"; prioridad = 10; }
     else if (stFull === 0 && (velFull > 0 || enQuiebreProlongado) && stBodega === 0 && (esQuiebreProveedor || !tieneStockProv)) { accion = "AGOTADO_SIN_PROVEEDOR"; prioridad = 3; }
