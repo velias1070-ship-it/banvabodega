@@ -1962,9 +1962,23 @@ export async function actualizarPicking(id: string, updates: Partial<db.DBPickin
   return db.updatePickingSession(id, updates);
 }
 
-// Delete picking session  
+// Delete picking session — if envio_full, reconcile + sync ML
 export async function eliminarPicking(id: string): Promise<boolean> {
-  return db.deletePickingSession(id);
+  const sessions = await db.getActivePickingSessions();
+  const session = sessions.find(s => s.id === id);
+  const result = await db.deletePickingSession(id);
+  if (result && session?.tipo === "envio_full") {
+    const skus = session.lineas
+      .filter(l => l.estado === "PENDIENTE")
+      .map(l => l.componentes[0]?.skuOrigen)
+      .filter(Boolean);
+    if (skus.length > 0) {
+      const sb = db.getSupabase();
+      if (sb) { try { await sb.rpc("reconciliar_reservas"); } catch {} }
+      db.enqueueAndSync(skus);
+    }
+  }
+  return result;
 }
 
 // ==================== RUTA INTELIGENTE (SERPENTINA) ====================
