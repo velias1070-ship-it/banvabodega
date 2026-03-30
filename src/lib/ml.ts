@@ -2136,6 +2136,14 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     if (error) errores.push(`Upsert stock_full_cache error: ${error.message}`);
   }
 
+  // 6d. Sync stock_full_cache to ml_items_map.stock_full_cache (keep both in sync)
+  for (const row of stockUpsert) {
+    void sb.from("ml_items_map")
+      .update({ stock_full_cache: row.cantidad, cache_updated_at: new Date().toISOString() })
+      .eq("sku_venta", row.sku_venta)
+      .eq("activo", true);
+  }
+
   // 7. Pase final ya no es necesario: el paso 6b ahora usa todos los mapeos
   //    de ml_items_map directamente, no solo los resueltos en esta corrida.
   const allMappings = allMapData;
