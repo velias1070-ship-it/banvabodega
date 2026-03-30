@@ -9271,9 +9271,9 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
         const totalPedir = pedidoLines.reduce((s, l) => s + l.pedir, 0);
 
         const doExportPedido = () => {
-          const rows: string[] = ["sku_venta,sku_origen,nombre,pedir,inner_pack,stock_bodega,viene,envio_full,stock_full,vel_semanal"];
+          const rows: string[] = ["sku_origen,sku_venta,nombre,pedir,inner_pack,stock_bodega,viene,envio_full,stock_full,vel_semanal"];
           for (const l of pedidoLines) {
-            rows.push([l.skuVenta, l.sku, `"${l.nombre}"`, l.pedir, l.innerPack > 1 ? l.innerPack : "", l.stockBodega, l.incoming, l.enviarFull, l.stockFull, l.velSemanal.toFixed(1)].join(","));
+            rows.push([l.sku, l.skuVenta, `"${l.nombre}"`, l.pedir, l.innerPack > 1 ? l.innerPack : "", l.stockBodega, l.incoming, l.enviarFull, l.stockFull, l.velSemanal.toFixed(1)].join(","));
           }
           const blob = new Blob(["\uFEFF" + rows.join("\n")], { type: "text/csv;charset=utf-8;" });
           const url = URL.createObjectURL(blob);
@@ -9299,7 +9299,7 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
             </div>
             <table className="tbl" style={{width:"100%"}}>
               <thead><tr>
-                <th>SKU Venta</th>
+                <th>SKU Origen</th>
                 <th>Producto</th>
                 <th style={{textAlign:"right"}}>Bodega</th>
                 <th style={{textAlign:"right"}}>Viene</th>
@@ -9313,7 +9313,7 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
               <tbody>
                 {pedidoLines.map((l, i) => (
                   <tr key={i} style={{background: l.stockPostEnvioFull <= 0 ? "var(--redBg)" : "transparent", borderBottom:"1px solid var(--bg3)"}}>
-                    <td className="mono" style={{fontSize:11,fontWeight:700,padding:"8px 6px"}}>{l.skuVenta}</td>
+                    <td className="mono" style={{fontSize:11,fontWeight:700,padding:"8px 6px"}}>{l.sku}{l.sku !== l.skuVenta && <div style={{fontSize:9,color:"var(--txt3)",fontWeight:400}}>{l.skuVenta}</div>}</td>
                     <td style={{fontSize:11,padding:"8px 6px",color:"var(--txt2)"}}>{l.nombre.substring(0,28)}</td>
                     <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 6px"}}>{l.stockBodega}</td>
                     <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 6px",color:l.incoming>0?"var(--green)":"var(--txt3)"}}>{l.incoming > 0 ? "+" + l.incoming : "—"}</td>
