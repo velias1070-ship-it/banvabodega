@@ -9042,12 +9042,13 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
           if (velSemanal <= 0) return 0;
           const targetFull = Math.ceil(velSemanal * COB_OBJETIVO / 7);
           let raw = Math.max(0, Math.min(targetFull - stockFull, stockBodegaSimulado));
-          // Round to inner pack if applicable
+          // Round to inner pack if applicable, but NEVER exceed available stock
           if (ip > 1 && raw > 0) {
             const rounded = Math.round(raw / ip) * ip;
-            raw = rounded > 0 ? Math.min(rounded, stockBodegaSimulado) : ip; // at least 1 inner pack
+            raw = rounded > 0 ? rounded : ip;
           }
-          return raw;
+          // Final cap: never send more than what's available
+          return Math.min(raw, stockBodegaSimulado);
         };
 
         // 5. Build lines — both from receptions AND from existing bodega stock
