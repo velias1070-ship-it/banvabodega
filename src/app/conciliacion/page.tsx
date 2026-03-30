@@ -800,8 +800,15 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                               Pagado
                             </span>
                           ) : (
-                            <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, padding: "4px 12px", borderRadius: 6, background: "var(--cyan)", color: "#fff", cursor: "pointer" }}>
-                              Asignar Pago
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 0 }}>
+                              <span onClick={() => { setClasificarItem(c); setClasificarCuenta(""); setClasificarBusca(""); }}
+                                style={{ fontSize: 11, fontWeight: 600, padding: "5px 12px", borderRadius: "6px 0 0 6px", background: "var(--cyan)", color: "#fff", cursor: "pointer" }}>
+                                Asignar Pago
+                              </span>
+                              <span onClick={() => { setClasificarItem(c); setClasificarCuenta(""); setClasificarBusca(""); }}
+                                style={{ fontSize: 11, fontWeight: 600, padding: "5px 6px", borderRadius: "0 6px 6px 0", background: "var(--cyan)", color: "#fff", cursor: "pointer", borderLeft: "1px solid rgba(255,255,255,0.3)" }}>
+                                &#9662;
+                              </span>
                             </span>
                           )}
                         </div>
