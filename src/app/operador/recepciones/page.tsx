@@ -21,6 +21,7 @@ export default function RecepcionesOperador() {
   const [selLinea, setSelLinea] = useState<DBRecepcionLinea | null>(null);
   const [busqueda, setBusqueda] = useState("");
   const [lockError, setLockError] = useState("");
+  const [prioritySkus, setPrioritySkus] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     initStore().then(() => { setMounted(true); setLoading(false); });
@@ -36,6 +37,30 @@ export default function RecepcionesOperador() {
     if (recIds.length > 0) {
       const lineas = await getLineasDeRecepciones(recIds);
       setAllLineas(lineas);
+      // Load priority SKUs: those that need Full replenishment (low coverage)
+      try {
+        const sb = (await import("@/lib/supabase")).getSupabase();
+        if (sb) {
+          const { data: fullCache } = await sb.from("stock_full_cache").select("sku_venta, cantidad, vel_promedio");
+          const { data: comps } = await sb.from("composicion_venta").select("sku_venta, sku_origen");
+          const origenToFull = new Map<string, {stockFull:number;vel:number}>();
+          const ventaToOrigen = new Map<string, string>();
+          for (const c of (comps || []) as {sku_venta:string;sku_origen:string}[]) ventaToOrigen.set(c.sku_venta, c.sku_origen);
+          for (const f of (fullCache || []) as {sku_venta:string;cantidad:number;vel_promedio:number|null}[]) {
+            const origen = ventaToOrigen.get(f.sku_venta) || f.sku_venta;
+            const prev = origenToFull.get(origen) || { stockFull: 0, vel: 0 };
+            prev.stockFull += f.cantidad; prev.vel += (f.vel_promedio || 0);
+            origenToFull.set(origen, prev);
+          }
+          const urgent = new Set<string>();
+          for (const [sku, data] of Array.from(origenToFull.entries())) {
+            if (data.vel <= 0) continue;
+            const cobDias = (data.stockFull / (data.vel / 7));
+            if (cobDias < 21) urgent.add(sku);
+          }
+          setPrioritySkus(urgent);
+        }
+      } catch { /* priority is optional */ }
     } else {
       setAllLineas([]);
     }
@@ -225,7 +250,9 @@ export default function RecepcionesOperador() {
         {pendientes.length > 0 && (
           <div style={{marginBottom:16}}>
             <div style={{fontSize:12,fontWeight:700,color:"var(--red)",marginBottom:6}}>🔴 Pendientes de conteo ({pendientes.length})</div>
-            {pendientes.map(l => <LineaCard key={l.id} linea={l} operario={operario} onTap={() => handleSelectLinea(l)} />)}
+            {[...pendientes].sort((a, b) => (prioritySkus.has(b.sku) ? 1 : 0) - (prioritySkus.has(a.sku) ? 1 : 0)).map(l =>
+              <LineaCard key={l.id} linea={l} operario={operario} onTap={() => handleSelectLinea(l)} priority={prioritySkus.has(l.sku)} />
+            )}
           </div>
         )}
 
@@ -233,7 +260,9 @@ export default function RecepcionesOperador() {
         {enProceso.length > 0 && (
           <div style={{marginBottom:16}}>
             <div style={{fontSize:12,fontWeight:700,color:"var(--amber)",marginBottom:6}}>🟡 En proceso ({enProceso.length})</div>
-            {enProceso.map(l => <LineaCard key={l.id} linea={l} operario={operario} onTap={() => handleSelectLinea(l)} />)}
+            {[...enProceso].sort((a, b) => (prioritySkus.has(b.sku) ? 1 : 0) - (prioritySkus.has(a.sku) ? 1 : 0)).map(l =>
+              <LineaCard key={l.id} linea={l} operario={operario} onTap={() => handleSelectLinea(l)} priority={prioritySkus.has(l.sku)} />
+            )}
           </div>
         )}
 
@@ -272,7 +301,7 @@ function OperarioLogin({ onLogin }: { onLogin: (name: string) => void }) {
 }
 
 // ==================== LINEA CARD (with lock display) ====================
-function LineaCard({ linea: l, operario, onTap }: { linea: DBRecepcionLinea; operario: string; onTap: () => void }) {
+function LineaCard({ linea: l, operario, onTap, priority }: { linea: DBRecepcionLinea; operario: string; onTap: () => void; priority?: boolean }) {
   const icon = ESTADO_ICON[l.estado] || "⚪";
   const lock = isLineaBloqueada(l, operario);
 
@@ -280,8 +309,8 @@ function LineaCard({ linea: l, operario, onTap }: { linea: DBRecepcionLinea; ope
     <div onClick={lock.blocked ? undefined : onTap}
       style={{
         padding:"12px 14px",marginBottom:6,borderRadius:8,
-        background: lock.blocked ? "var(--bg3)" : "var(--bg2)",
-        border: `1px solid ${lock.blocked ? "var(--bg4)" : "var(--bg3)"}`,
+        background: lock.blocked ? "var(--bg3)" : priority ? "rgba(239,68,68,0.08)" : "var(--bg2)",
+        border: `1px solid ${priority ? "var(--red)" : lock.blocked ? "var(--bg4)" : "var(--bg3)"}`,
         cursor: lock.blocked ? "not-allowed" : "pointer",
         opacity: lock.blocked ? 0.6 : 1,
         display:"flex",justifyContent:"space-between",alignItems:"center",
@@ -290,6 +319,7 @@ function LineaCard({ linea: l, operario, onTap }: { linea: DBRecepcionLinea; ope
         <div style={{display:"flex",alignItems:"center",gap:6}}>
           <span>{lock.blocked ? "🔒" : icon}</span>
           <span className="mono" style={{fontWeight:700,fontSize:13}}>{l.sku}</span>
+          {priority && <span style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:3,background:"var(--red)",color:"#fff"}}>FULL</span>}
           {lock.blocked && <span style={{fontSize:10,color:"var(--amber)",fontWeight:600}}>{lock.by}</span>}
         </div>
         <div style={{fontSize:11,color:"var(--txt3)",marginTop:2}}>{l.nombre}</div>
