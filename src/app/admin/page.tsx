@@ -9241,6 +9241,94 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
           </table>
         </div>
       )}
+      {/* Pedido a proveedor section */}
+      {(() => {
+        // Calculate: for ALL SKUs with velocity, what needs to be ordered
+        // pedir = MAX(0, target_total - stockBodega - incoming - stockFull)
+        // target_total = velTotal * COB_OBJETIVO / 7
+        const COB_BODEGA = 30; // días cobertura bodega objetivo
+        const pedidoLines = lines
+          .filter(l => l.velSemanal > 0)
+          .map(l => {
+            const enviarFull = getQty(l.sku, l.mandarFullSugerido);
+            const stockPostRecepcion = l.stockBodega + l.incoming;
+            const stockPostEnvioFull = stockPostRecepcion - enviarFull;
+            const velDiaria = l.velSemanal / 7;
+            // Target bodega: enough to cover COB_BODEGA days of Flex + the envio Full
+            const targetBodega = Math.ceil(velDiaria * COB_BODEGA) + enviarFull;
+            const pedir = Math.max(0, targetBodega - stockPostRecepcion);
+            // Round to inner pack
+            const pedirRedondeado = l.innerPack > 1 && pedir > 0
+              ? Math.ceil(pedir / l.innerPack) * l.innerPack
+              : pedir;
+            const cobPostTodo = velDiaria > 0 ? Math.round((stockPostRecepcion + pedirRedondeado - enviarFull) / velDiaria) : 999;
+            return { ...l, enviarFull, stockPostRecepcion, stockPostEnvioFull, targetBodega, pedir: pedirRedondeado, cobPostTodo };
+          })
+          .filter(l => l.pedir > 0)
+          .sort((a, b) => a.cobPostTodo - b.cobPostTodo);
+
+        const totalPedir = pedidoLines.reduce((s, l) => s + l.pedir, 0);
+
+        const doExportPedido = () => {
+          const rows: string[] = ["sku_venta,sku_origen,nombre,pedir,inner_pack,stock_bodega,viene,envio_full,stock_full,vel_semanal"];
+          for (const l of pedidoLines) {
+            rows.push([l.skuVenta, l.sku, `"${l.nombre}"`, l.pedir, l.innerPack > 1 ? l.innerPack : "", l.stockBodega, l.incoming, l.enviarFull, l.stockFull, l.velSemanal.toFixed(1)].join(","));
+          }
+          const blob = new Blob(["\uFEFF" + rows.join("\n")], { type: "text/csv;charset=utf-8;" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a"); a.href = url;
+          a.download = `pedido_proveedor_${new Date().toISOString().slice(0,10)}.csv`;
+          a.click(); URL.revokeObjectURL(url);
+        };
+
+        if (pedidoLines.length === 0) return null;
+
+        return (
+          <div className="card" style={{padding:0,overflow:"hidden",marginTop:12,border:"1px solid var(--blueBd, #3b82f644)"}}>
+            <div style={{padding:"10px 12px",background:"var(--blueBg, rgba(59,130,246,0.08))",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{fontWeight:700,fontSize:13,color:"var(--blue, #3b82f6)"}}>
+                Pedido a proveedor ({pedidoLines.length} SKUs, {totalPedir} uds)
+              </span>
+              <button onClick={doExportPedido} style={{padding:"4px 12px",borderRadius:6,background:"var(--blue, #3b82f6)",color:"#fff",fontSize:11,fontWeight:700,border:"none",cursor:"pointer"}}>
+                Exportar CSV
+              </button>
+            </div>
+            <div style={{padding:"6px 12px",fontSize:11,color:"var(--txt3)",background:"var(--bg3)"}}>
+              Ya descontando lo que viene en recepciones pendientes y lo que se enviaria a Full
+            </div>
+            <table className="tbl" style={{width:"100%"}}>
+              <thead><tr>
+                <th>SKU Venta</th>
+                <th>Producto</th>
+                <th style={{textAlign:"right"}}>Bodega</th>
+                <th style={{textAlign:"right"}}>Viene</th>
+                <th style={{textAlign:"right"}}>→ Full</th>
+                <th style={{textAlign:"right"}}>Queda</th>
+                <th style={{textAlign:"right",color:"var(--blue, #3b82f6)"}}>Pedir</th>
+                {pedidoLines.some(l => l.innerPack > 1) && <th style={{textAlign:"right"}}>IP</th>}
+                <th style={{textAlign:"right"}}>Vel/sem</th>
+                <th style={{textAlign:"right"}}>Cob. post</th>
+              </tr></thead>
+              <tbody>
+                {pedidoLines.map((l, i) => (
+                  <tr key={i} style={{background: l.stockPostEnvioFull <= 0 ? "var(--redBg)" : "transparent", borderBottom:"1px solid var(--bg3)"}}>
+                    <td className="mono" style={{fontSize:11,fontWeight:700,padding:"8px 6px"}}>{l.skuVenta}</td>
+                    <td style={{fontSize:11,padding:"8px 6px",color:"var(--txt2)"}}>{l.nombre.substring(0,28)}</td>
+                    <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 6px"}}>{l.stockBodega}</td>
+                    <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 6px",color:l.incoming>0?"var(--green)":"var(--txt3)"}}>{l.incoming > 0 ? "+" + l.incoming : "—"}</td>
+                    <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 6px",color:l.enviarFull>0?"var(--amber)":"var(--txt3)"}}>{l.enviarFull > 0 ? "-" + l.enviarFull : "—"}</td>
+                    <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 6px",color:l.stockPostEnvioFull<=0?"var(--red)":"var(--txt)"}}>{l.stockPostEnvioFull}</td>
+                    <td className="mono" style={{textAlign:"right",fontSize:14,padding:"8px 8px",fontWeight:800,color:"var(--blue, #3b82f6)"}}>{l.pedir}</td>
+                    {pedidoLines.some(l2 => l2.innerPack > 1) && <td className="mono" style={{textAlign:"right",fontSize:10,padding:"8px 4px",color:l.innerPack>1?"var(--cyan)":"var(--txt3)"}}>{l.innerPack > 1 ? l.innerPack : ""}</td>}
+                    <td className="mono" style={{textAlign:"right",fontSize:11,padding:"8px 6px",color:"var(--txt3)"}}>{l.velSemanal.toFixed(1)}</td>
+                    <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 6px",color:"var(--green)"}}>{l.cobPostTodo < 999 ? l.cobPostTodo + "d" : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      })()}
     </div>
   );
 }
