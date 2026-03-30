@@ -9,10 +9,6 @@
       "schedule": "* * * * *"
     },
     {
-      "path": "/api/ml/sync-stock-full",
-      "schedule": "* * * * *"
-    },
-    {
       "path": "/api/profitguard/sync",
       "schedule": "*/5 * * * *"
     },
