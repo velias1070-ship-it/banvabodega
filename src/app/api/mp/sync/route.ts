@@ -66,45 +66,64 @@ async function mpPost(path: string, body: unknown): Promise<unknown> {
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 
 /**
- * Busca un release report que cubra TODO el período solicitado.
- * Un reporte "cubre" el período si su begin_date <= fechaDesde Y end_date >= hoy (o fin de mes).
- * Si no hay uno que cubra todo, genera uno nuevo y espera hasta 3 minutos.
- * Fallback: usa el mejor reporte disponible (el más amplio).
+ * Busca un release report que cubra el período solicitado.
+ * Usa margen de 2 días para compensar diferencias de zona horaria.
+ * Para meses pasados, acepta cualquier reporte existente que cubra el rango.
+ * Para el mes actual, necesita un reporte reciente (< 2h) o genera uno nuevo.
+ * Si no hay reporte, genera uno y espera hasta 4.5 min.
  */
 async function findReport(fechaDesde: string, fechaHasta: string): Promise<{ fileName: string; type: "release" | "settlement" } | null> {
   const desdeDate = new Date(fechaDesde).getTime();
   const hastaDate = new Date(fechaHasta).getTime();
   const now = Date.now();
-  // El end_date mínimo aceptable: el menor entre hoy y el fin del período
-  const minEndDate = Math.min(hastaDate, now);
+  const DAY = 86400_000;
+  // Margen de 2 días para timezone (MP puede devolver begin_date 1 día antes en UTC)
+  const desdeMargin = desdeDate + 2 * DAY;
+  // Para meses pasados, end_date del reporte debe ser >= último día del mes
+  // Para mes actual, end_date debe ser >= ayer
+  const isPastMonth = hastaDate < now - DAY;
+  const minEnd = isPastMonth ? hastaDate - DAY : now - DAY;
 
   try {
     const releases = await mpGet("/v1/account/release_report/list") as MPReport[];
     const csvReports = (releases || [])
       .filter(r => (r.status === "enabled" || r.status === "processed") && r.file_name && r.file_name.endsWith(".csv"));
 
-    // Buscar un reporte que cubra TODO el rango: begin_date <= fechaDesde Y end_date >= hoy
-    const fullCoverage = csvReports
-      .filter(r => new Date(r.begin_date).getTime() <= desdeDate && new Date(r.end_date).getTime() >= minEndDate - 86400000)
-      .sort((a, b) => new Date(b.end_date).getTime() - new Date(a.end_date).getTime());
+    // Buscar reporte que cubra el rango (con margen de timezone)
+    const covering = csvReports
+      .filter(r => {
+        const begin = new Date(r.begin_date).getTime();
+        const end = new Date(r.end_date).getTime();
+        return begin <= desdeMargin && end >= minEnd;
+      })
+      .sort((a, b) => {
+        // Preferir el más amplio
+        const rangeA = new Date(a.end_date).getTime() - new Date(a.begin_date).getTime();
+        const rangeB = new Date(b.end_date).getTime() - new Date(b.begin_date).getTime();
+        return rangeB - rangeA;
+      });
 
-    if (fullCoverage.length > 0) {
-      // Verificar si el mejor es reciente (< 2 horas)
-      const best = fullCoverage[0];
+    if (covering.length > 0) {
+      const best = covering[0];
+      // Para meses pasados: usar cualquier reporte que cubra (no necesita ser fresco)
+      if (isPastMonth) {
+        console.log(`[MP Sync] Reporte para mes pasado: ${best.file_name}`);
+        return { fileName: best.file_name, type: "release" };
+      }
+      // Para mes actual: verificar frescura (< 2h)
       const nameMatch = best.file_name.match(/(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})(\d{2})\.csv$/);
       if (nameMatch) {
         const reportDate = new Date(`${nameMatch[1]}-${nameMatch[2]}-${nameMatch[3]}T${nameMatch[4]}:${nameMatch[5]}:${nameMatch[6]}Z`);
-        const ageMs = now - reportDate.getTime();
-        if (ageMs < 7200_000) {
-          console.log(`[MP Sync] Reporte completo y fresco: ${best.file_name}`);
+        if (now - reportDate.getTime() < 7200_000) {
+          console.log(`[MP Sync] Reporte fresco: ${best.file_name}`);
           return { fileName: best.file_name, type: "release" };
         }
       }
     }
 
-    // No hay reporte completo y fresco — generar uno nuevo
-    console.log("[MP Sync] Generando reporte completo del período...");
-    const bestOld = fullCoverage.length > 0 ? fullCoverage[0] : null;
+    // No hay reporte adecuado — generar uno nuevo
+    const reportCount = csvReports.length;
+    console.log(`[MP Sync] Sin reporte adecuado (${reportCount} reportes encontrados). Generando nuevo...`);
 
     try {
       await mpPost("/v1/account/release_report", {
@@ -112,62 +131,54 @@ async function findReport(fechaDesde: string, fechaHasta: string): Promise<{ fil
         end_date: fechaHasta,
       });
 
-      // Polling: esperar hasta 4.5 min (maxDuration=300s, dejando margen)
+      // Polling hasta 4.5 min
       const startPoll = Date.now();
-      const maxPollMs = 270_000; // 4.5 min
-      while (Date.now() - startPoll < maxPollMs) {
+      while (Date.now() - startPoll < 270_000) {
         await sleep(10_000);
         const updated = await mpGet("/v1/account/release_report/list") as MPReport[];
         const fresh = (updated || [])
           .filter(r => (r.status === "enabled" || r.status === "processed") && r.file_name && r.file_name.endsWith(".csv"))
-          .filter(r => new Date(r.begin_date).getTime() <= desdeDate && new Date(r.end_date).getTime() >= minEndDate - 86400000)
-          .sort((a, b) => new Date(b.end_date).getTime() - new Date(a.end_date).getTime());
+          .filter(r => {
+            const begin = new Date(r.begin_date).getTime();
+            const end = new Date(r.end_date).getTime();
+            return begin <= desdeMargin && end >= minEnd;
+          })
+          .sort((a, b) => {
+            const rangeA = new Date(a.end_date).getTime() - new Date(a.begin_date).getTime();
+            const rangeB = new Date(b.end_date).getTime() - new Date(b.begin_date).getTime();
+            return rangeB - rangeA;
+          });
 
-        if (fresh.length > 0 && (!bestOld || fresh[0].file_name !== bestOld.file_name)) {
-          console.log(`[MP Sync] Reporte nuevo listo en ${Math.round((Date.now() - startPoll) / 1000)}s: ${fresh[0].file_name}`);
-          return { fileName: fresh[0].file_name, type: "release" };
+        // Usar el primer reporte nuevo que no estaba antes
+        if (fresh.length > 0) {
+          const isNew = !covering.some(c => c.file_name === fresh[0].file_name);
+          if (isNew || fresh.length > covering.length) {
+            console.log(`[MP Sync] Reporte listo en ${Math.round((Date.now() - startPoll) / 1000)}s: ${fresh[0].file_name}`);
+            return { fileName: fresh[0].file_name, type: "release" };
+          }
         }
-        console.log(`[MP Sync] Esperando reporte... ${Math.round((Date.now() - startPoll) / 1000)}s`);
+        console.log(`[MP Sync] Esperando... ${Math.round((Date.now() - startPoll) / 1000)}s`);
       }
     } catch (err) {
-      console.log("[MP Sync] No se pudo generar reporte:", err);
+      console.log("[MP Sync] Error generando reporte:", err);
     }
 
-    // Fallback: usar el mejor reporte existente (el más amplio)
-    if (bestOld) {
-      console.log(`[MP Sync] Timeout, usando reporte existente: ${bestOld.file_name}`);
-      return { fileName: bestOld.file_name, type: "release" };
+    // Timeout — usar el mejor existente como fallback
+    if (covering.length > 0) {
+      console.log(`[MP Sync] Timeout, usando mejor existente: ${covering[0].file_name}`);
+      return { fileName: covering[0].file_name, type: "release" };
     }
 
-    // Último fallback: cualquier reporte que al menos cubra parte del período
+    // Último fallback: el reporte más amplio que toque el período
     const anyReport = csvReports
-      .filter(r => new Date(r.end_date).getTime() >= desdeDate)
-      .sort((a, b) => {
-        // Preferir el que cubra más rango
-        const rangeA = new Date(a.end_date).getTime() - new Date(a.begin_date).getTime();
-        const rangeB = new Date(b.end_date).getTime() - new Date(b.begin_date).getTime();
-        return rangeB - rangeA;
-      });
+      .filter(r => new Date(r.end_date).getTime() >= desdeDate - DAY)
+      .sort((a, b) => (new Date(b.end_date).getTime() - new Date(b.begin_date).getTime()) - (new Date(a.end_date).getTime() - new Date(a.begin_date).getTime()));
     if (anyReport.length > 0) {
-      console.log(`[MP Sync] Usando reporte parcial: ${anyReport[0].file_name}`);
+      console.log(`[MP Sync] Fallback parcial: ${anyReport[0].file_name}`);
       return { fileName: anyReport[0].file_name, type: "release" };
     }
   } catch (err) {
-    console.log("[MP Sync] Error consultando release_report:", err);
-  }
-
-  // Settlement report como último recurso
-  try {
-    const settlements = await mpGet("/v1/account/settlement_report/list", {
-      begin_date: fechaDesde,
-      end_date: fechaHasta,
-    }) as MPReport[];
-    const ready = (settlements || [])
-      .filter(r => r.status === "processed" && r.file_name)
-      .sort((a, b) => new Date(b.end_date).getTime() - new Date(a.end_date).getTime());
-    if (ready.length > 0) return { fileName: ready[0].file_name, type: "settlement" };
-  } catch (err) {
-    console.log("[MP Sync] Error consultando settlement_report:", err);
+    console.log("[MP Sync] Error:", err);
   }
 
   return null;
