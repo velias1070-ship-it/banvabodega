@@ -218,7 +218,7 @@ const ESTADO_LABELS_A: Record<string, string> = {
 };
 
 type RecFilter = "activas"|"pausadas"|"completadas"|"anuladas"|"todas";
-type RecView = "dia"|"recepcion_dia"|"facturas";
+type RecView = "dia"|"recepcion_dia"|"priorizar"|"facturas";
 
 const LINEA_ESTADO_COLORS: Record<string, string> = {
   PENDIENTE: "var(--red)", CONTADA: "var(--amber)", EN_ETIQUETADO: "var(--blue)",
@@ -1822,6 +1822,12 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
             border:`1px solid ${view==="recepcion_dia"?"var(--cyan)":"var(--bg4)"}`,borderLeft:"none"}}>
           📦 Recepcion del Dia
         </button>
+        <button onClick={()=>setView("priorizar")}
+          style={{padding:"8px 16px",borderRadius:"0",fontSize:12,fontWeight:700,cursor:"pointer",
+            background:view==="priorizar"?"var(--cyan)":"var(--bg3)",color:view==="priorizar"?"#000":"var(--txt2)",
+            border:`1px solid ${view==="priorizar"?"var(--cyan)":"var(--bg4)"}`,borderLeft:"none"}}>
+          Priorizar
+        </button>
         <button onClick={()=>setView("facturas")}
           style={{padding:"8px 16px",borderRadius:"0 6px 6px 0",fontSize:12,fontWeight:700,cursor:"pointer",
             background:view==="facturas"?"var(--cyan)":"var(--bg3)",color:view==="facturas"?"#000":"var(--txt2)",
@@ -2095,6 +2101,9 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
           </div>
         );
       })()}
+
+      {/* ==================== PRIORIZAR VIEW ==================== */}
+      {view === "priorizar" && <PriorizarRecepciones recs={recs} />}
 
       {/* ==================== FACTURAS VIEW (existing) ==================== */}
       {view === "facturas" && (<>
@@ -8947,6 +8956,184 @@ interface StockCompareRow {
 // ==================== TIMELINE ====================
 interface TimelineRow {ts:string;evento:string;sku:string;detalle:string;delta:number|null;qty_after:number|null;posicion:string|null;operario:string;nota:string|null;referencia_id:string|null}
 
+// ==================== PRIORIZAR RECEPCIONES ====================
+function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
+  interface PrioLine {
+    sku: string; nombre: string; qtyFactura: number; folio: string;
+    stockBodega: number; disponible: number; reserved: number;
+    stockFull: number; velSemanal: number; coberturaDias: number;
+    urgencia: "agotado" | "critico" | "reposicion_full" | "normal";
+  }
+  const [lines, setLines] = useState<PrioLine[]>([]);
+  const [loading, setLoading] = useState(true);
+  const s = getStore();
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      try {
+        const sb = (await import("@/lib/supabase")).getSupabase();
+        if (!sb) return;
+
+        // Recepciones activas de hoy (EN_PROCESO)
+        const activeRecs = recs.filter(r => r.estado === "EN_PROCESO" || r.estado === "CREADA");
+        if (activeRecs.length === 0) { setLines([]); return; }
+
+        // Fetch all lines from active receptions
+        const ids = activeRecs.map(r => r.id!);
+        const allLineas: Array<{sku:string;nombre:string;qty_factura:number;recepcion_id:string;estado:string}> = [];
+        for (const id of ids) {
+          const { data } = await sb.from("recepcion_lineas").select("sku, nombre, qty_factura, recepcion_id, estado").eq("recepcion_id", id);
+          if (data) allLineas.push(...(data as typeof allLineas));
+        }
+        // Only pending lines (not yet UBICADA)
+        const pending = allLineas.filter(l => l.estado !== "UBICADA");
+        if (pending.length === 0) { setLines([]); return; }
+
+        // Fetch stock disponible
+        const { data: stockDisp } = await sb.from("v_stock_disponible").select("*");
+        const dispMap = new Map<string, {on_hand:number;reserved:number;disponible:number}>();
+        for (const r of (stockDisp || []) as {sku:string;on_hand:number;reserved:number;disponible:number}[]) {
+          dispMap.set(r.sku, r);
+        }
+
+        // Fetch stock_full_cache
+        const { data: fullCache } = await sb.from("stock_full_cache").select("sku_venta, cantidad, vel_promedio");
+        const fullMap = new Map<string, {cantidad:number;vel:number}>();
+        for (const r of (fullCache || []) as {sku_venta:string;cantidad:number;vel_promedio:number|null}[]) {
+          fullMap.set(r.sku_venta, { cantidad: r.cantidad, vel: r.vel_promedio || 0 });
+        }
+
+        // Resolve composicion for sku_venta lookups
+        const { data: comps } = await sb.from("composicion_venta").select("sku_venta, sku_origen");
+        const origenToVentas = new Map<string, string[]>();
+        for (const c of (comps || []) as {sku_venta:string;sku_origen:string}[]) {
+          if (!origenToVentas.has(c.sku_origen)) origenToVentas.set(c.sku_origen, []);
+          origenToVentas.get(c.sku_origen)!.push(c.sku_venta);
+        }
+
+        // Build folio map
+        const folioMap = new Map<string, string>();
+        for (const r of activeRecs) folioMap.set(r.id!, r.folio);
+
+        // Build priority lines
+        const result: PrioLine[] = [];
+        for (const l of pending) {
+          const disp = dispMap.get(l.sku);
+          const stockBodega = disp?.on_hand || 0;
+          const disponible = disp?.disponible || 0;
+          const reserved = disp?.reserved || 0;
+
+          // Find Full stock via sku_venta mapping
+          const ventaSkus = origenToVentas.get(l.sku) || [l.sku];
+          let stockFull = 0;
+          let velSemanal = 0;
+          for (const sv of ventaSkus) {
+            const f = fullMap.get(sv);
+            if (f) { stockFull += f.cantidad; velSemanal += f.vel; }
+          }
+
+          // Cobertura: días de stock total (bodega + full) / velocidad diaria
+          const velDiaria = velSemanal / 7;
+          const coberturaDias = velDiaria > 0 ? Math.round((disponible + stockFull) / velDiaria) : 999;
+
+          // Urgencia
+          let urgencia: PrioLine["urgencia"] = "normal";
+          if (disponible <= 0 && stockFull <= 0) urgencia = "agotado";
+          else if (coberturaDias < 7) urgencia = "critico";
+          else if (stockFull <= 3 && velSemanal > 0) urgencia = "reposicion_full";
+
+          result.push({
+            sku: l.sku, nombre: l.nombre, qtyFactura: l.qty_factura,
+            folio: folioMap.get(l.recepcion_id) || "?",
+            stockBodega, disponible, reserved, stockFull, velSemanal,
+            coberturaDias, urgencia,
+          });
+        }
+
+        // Sort: agotado > critico > reposicion_full > normal
+        const orden = { agotado: 0, critico: 1, reposicion_full: 2, normal: 3 };
+        result.sort((a, b) => orden[a.urgencia] - orden[b.urgencia] || a.coberturaDias - b.coberturaDias);
+        setLines(result);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [recs]);
+
+  const urgenciaStyle: Record<string, {bg:string;color:string;label:string}> = {
+    agotado: { bg: "var(--redBg)", color: "var(--red)", label: "AGOTADO" },
+    critico: { bg: "var(--amberBg)", color: "var(--amber)", label: "CRITICO" },
+    reposicion_full: { bg: "var(--cyanBg, rgba(0,200,255,0.06))", color: "var(--cyan)", label: "REPO FULL" },
+    normal: { bg: "var(--bg3)", color: "var(--txt3)", label: "NORMAL" },
+  };
+
+  const countByUrgencia = (u: string) => lines.filter(l => l.urgencia === u).length;
+
+  if (loading) return <div style={{padding:40,textAlign:"center",color:"var(--txt3)"}}>Analizando prioridades...</div>;
+  if (lines.length === 0) return <div style={{padding:40,textAlign:"center",color:"var(--txt3)"}}>No hay lineas pendientes de procesar.</div>;
+
+  return (
+    <div>
+      {/* KPIs */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:12}}>
+        {(["agotado","critico","reposicion_full","normal"] as const).map(u => {
+          const st = urgenciaStyle[u];
+          const count = countByUrgencia(u);
+          return (
+            <div key={u} style={{padding:10,borderRadius:8,background:st.bg,textAlign:"center",border:`1px solid ${st.color}22`}}>
+              <div style={{fontSize:22,fontWeight:800,color:st.color}}>{count}</div>
+              <div style={{fontSize:10,color:st.color,fontWeight:600}}>{st.label}</div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Table */}
+      <div className="card" style={{padding:0,overflow:"hidden"}}>
+        <table className="tbl" style={{width:"100%"}}>
+          <thead><tr>
+            <th style={{width:60}}>Prioridad</th>
+            <th>SKU</th>
+            <th>Producto</th>
+            <th style={{textAlign:"right"}}>Viene</th>
+            <th style={{textAlign:"right"}}>Bodega</th>
+            <th style={{textAlign:"right"}}>Disp.</th>
+            <th style={{textAlign:"right"}}>Full</th>
+            <th style={{textAlign:"right"}}>Vel/sem</th>
+            <th style={{textAlign:"right"}}>Cobert.</th>
+            <th>Factura</th>
+          </tr></thead>
+          <tbody>
+            {lines.map((l, i) => {
+              const st = urgenciaStyle[l.urgencia];
+              return (
+                <tr key={i} style={{background:st.bg,borderBottom:"1px solid var(--bg3)"}}>
+                  <td style={{padding:"8px 6px"}}>
+                    <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:4,background:st.bg,color:st.color,border:`1px solid ${st.color}`}}>{st.label}</span>
+                  </td>
+                  <td className="mono" style={{fontSize:11,fontWeight:700,padding:"8px 6px"}}>{l.sku}</td>
+                  <td style={{fontSize:11,padding:"8px 6px",color:"var(--txt2)"}}>{l.nombre.substring(0,35)}</td>
+                  <td className="mono" style={{textAlign:"right",fontWeight:700,fontSize:13,padding:"8px 8px",color:"var(--green)"}}>+{l.qtyFactura}</td>
+                  <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 8px"}}>{l.stockBodega}</td>
+                  <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 8px",color:l.disponible<=0?"var(--red)":"var(--txt)"}}>{l.disponible}</td>
+                  <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 8px",color:"var(--cyan)"}}>{l.stockFull || "—"}</td>
+                  <td className="mono" style={{textAlign:"right",fontSize:11,padding:"8px 8px",color:"var(--txt3)"}}>{l.velSemanal > 0 ? l.velSemanal.toFixed(1) : "—"}</td>
+                  <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 8px",fontWeight:700,
+                    color:l.coberturaDias<7?"var(--red)":l.coberturaDias<14?"var(--amber)":"var(--txt3)"
+                  }}>{l.coberturaDias < 999 ? l.coberturaDias + "d" : "—"}</td>
+                  <td className="mono" style={{fontSize:10,padding:"8px 6px",color:"var(--txt3)"}}>{l.folio}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ==================== TIMELINE ====================
 function AdminTimeline() {
   const [q, setQ] = useState("");
   const [selectedSku, setSelectedSku] = useState<string|null>(null);
