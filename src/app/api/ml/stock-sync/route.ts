@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
 import { syncStockToML } from "@/lib/ml";
 
+// Vercel Pro: allow up to 60s execution
+export const maxDuration = 60;
+
 /**
  * Stock sync endpoint — pushes WMS stock to MercadoLibre using distributed stock API.
  *
@@ -97,7 +100,7 @@ export async function POST(req: NextRequest) {
     let synced = 0;
     const errors: string[] = [];
     const startTime = Date.now();
-    const TIME_LIMIT = 50_000; // 50s to stay within Vercel 60s timeout
+    const TIME_LIMIT = 55_000; // 55s per batch
     const processed: string[] = [];
 
     for (let idx = 0; idx < uniqueSkus.length; idx++) {
@@ -107,7 +110,7 @@ export async function POST(req: NextRequest) {
       }
       const sku = uniqueSkus[idx];
       processed.push(sku);
-      if (idx > 0) await new Promise(r => setTimeout(r, 500));
+      if (idx > 0) await new Promise(r => setTimeout(r, 200));
       try {
         // 6. Resolve sku_origen and unidades
         const comp = compMap[sku];
