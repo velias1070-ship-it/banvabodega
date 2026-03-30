@@ -222,15 +222,19 @@ function parseRetirosRelease(csv: string, empresaId: string, cuentaBancariaId: s
     if (cols.length < 6) continue;
 
     const desc = col(cols, "DESCRIPTION");
-    if (desc !== "payout") continue;
+    const debit = Math.abs(parseFloat(col(cols, "NET_DEBIT_AMOUNT")) || 0);
+
+    // Egresos: payout (transferencias) + payment con debit (compras con saldo MP)
+    const isPayout = desc === "payout";
+    const isCompra = desc === "payment" && debit > 0;
+    if (!isPayout && !isCompra) continue;
 
     const sourceId = col(cols, "SOURCE_ID");
-    const debit = Math.abs(parseFloat(col(cols, "NET_DEBIT_AMOUNT")) || 0);
     const fecha = safeDate(col(cols, "DATE"));
     const payerName = col(cols, "PAYER_NAME");
     if (!debit || !fecha) continue;
 
-    const descParts = ["RETIRO MP"];
+    const descParts = [isPayout ? "RETIRO MP" : "COMPRA MP"];
     if (payerName) descParts.push(payerName);
     descParts.push(`$${debit.toLocaleString("es-CL")}`);
 
@@ -242,14 +246,14 @@ function parseRetirosRelease(csv: string, empresaId: string, cuentaBancariaId: s
       descripcion: descParts.join(" | "),
       monto: -debit,
       saldo: null,
-      referencia: `MP-RETIRO-${sourceId}`,
+      referencia: isPayout ? `MP-RETIRO-${sourceId}` : `MP-COMPRA-${sourceId}`,
       origen: "api" as const,
       cuenta_bancaria_id: cuentaBancariaId,
-      referencia_unica: refHash("mp_retiro", sourceId),
+      referencia_unica: refHash(isPayout ? "mp_retiro" : "mp_compra", sourceId),
       metadata: JSON.stringify({
-        tipo: "retiro",
+        tipo: isPayout ? "retiro" : "compra",
         source_id: sourceId,
-        monto_retirado: debit,
+        monto: debit,
         payer_name: payerName || null,
       }),
     });
