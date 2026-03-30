@@ -347,7 +347,7 @@ function SiiImportModal({ tipo, empresa, periodoActual, onClose, onImported }: S
 }
 
 // ==================== RCV COMPRAS ====================
-function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: string }) {
+function TabRcvCompras({ empresa, periodo, onAsignarPago }: { empresa: DBEmpresa; periodo: string; onAsignarPago?: (compra: DBRcvCompra) => void }) {
   const [data, setData] = useState<DBRcvCompra[]>([]);
   const [conciliaciones, setConciliaciones] = useState<DBConciliacion[]>([]);
   const [provCuentas, setProvCuentas] = useState<DBProveedorCuenta[]>([]);
@@ -801,11 +801,11 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                             </span>
                           ) : (
                             <span style={{ display: "inline-flex", alignItems: "center", gap: 0 }}>
-                              <span onClick={() => { setClasificarItem(c); setClasificarCuenta(""); setClasificarBusca(""); }}
+                              <span onClick={() => onAsignarPago?.(c)}
                                 style={{ fontSize: 11, fontWeight: 600, padding: "5px 12px", borderRadius: "6px 0 0 6px", background: "var(--cyan)", color: "#fff", cursor: "pointer" }}>
                                 Asignar Pago
                               </span>
-                              <span onClick={() => { setClasificarItem(c); setClasificarCuenta(""); setClasificarBusca(""); }}
+                              <span onClick={() => onAsignarPago?.(c)}
                                 style={{ fontSize: 11, fontWeight: 600, padding: "5px 6px", borderRadius: "0 6px 6px 0", background: "var(--cyan)", color: "#fff", cursor: "pointer", borderLeft: "1px solid rgba(255,255,255,0.3)" }}>
                                 &#9662;
                               </span>
@@ -1488,7 +1488,7 @@ export default function ConciliacionPage() {
                 setTab(t as TabKey);
               }
             }} />}
-            {empresa && tab === "compras" && <TabRcvCompras empresa={empresa} periodo={periodo} />}
+            {empresa && tab === "compras" && <TabRcvCompras empresa={empresa} periodo={periodo} onAsignarPago={(compra) => { setBancoFilter(undefined); setTab("banco"); }} />}
             {empresa && tab === "ventas" && <TabRcvVentas empresa={empresa} periodo={periodo} />}
             {empresa && tab === "banco" && <ConciliacionTabla empresa={empresa} periodo={periodo} initialFilter={bancoFilter} />}
             {tab === "cuentas" && <PlanCuentasTree />}
