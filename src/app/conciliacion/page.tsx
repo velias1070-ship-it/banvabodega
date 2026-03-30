@@ -521,7 +521,8 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
     const pc = provCuentas.find(x => x.rut_proveedor === (c.rut_proveedor || ""));
     if (!pc?.categoria_cuenta_id) return null;
     const cuenta = cuentasHoja.find(x => x.id === pc.categoria_cuenta_id);
-    return cuenta ? `${empresa.razon_social || "Empresa"} / ${cuenta.nombre}` : null;
+    const rs = empresa.razon_social || "Empresa";
+    return cuenta ? rs + " / " + cuenta.nombre : null;
   };
 
   const sinClasificar = data.filter(c => !getClasificacion(c));
