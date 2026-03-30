@@ -361,11 +361,6 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const [clasificarItem, setClasificarItem] = useState<DBRcvCompra | null>(null);
   const [clasificarCuenta, setClasificarCuenta] = useState("");
   const [clasificarBusca, setClasificarBusca] = useState("");
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [comprasTab, setComprasTab] = useState<"registro"|"pendientes"|"no_incluir"|"reclamadas"|"por_pagar"|"por_revisar"|"por_clasificar">("registro");
-  const [showAutoView, setShowAutoView] = useState(false);
-  const [autoReglaCuenta, setAutoReglaCuenta] = useState("");
-  const [autoReglaBusca, setAutoReglaBusca] = useState("");
   const [provFilterSet, setProvFilterSet] = useState<Set<string> | null>(null); // null = todos
   const [showProvFilter, setShowProvFilter] = useState(false);
   const [showProveedores, setShowProveedores] = useState(false);
@@ -524,8 +519,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
     const pc = provCuentas.find(x => x.rut_proveedor === (c.rut_proveedor || ""));
     if (!pc?.categoria_cuenta_id) return null;
     const cuenta = cuentasHoja.find(x => x.id === pc.categoria_cuenta_id);
-    const rs = empresa.razon_social || "Empresa";
-    return cuenta ? rs + " / " + cuenta.nombre : null;
+    return cuenta ? `${empresa.razon_social || "Empresa"} / ${cuenta.nombre}` : null;
   };
 
   const sinClasificar = data.filter(c => !getClasificacion(c));
@@ -546,6 +540,17 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
             {pctConciliado}% conciliado este mes
           </div>
           <span style={{ fontSize: 14, fontWeight: 700 }}>{empresa.razon_social}</span>
+          <button onClick={handleSyncSii} disabled={syncing}
+            style={{ width: 36, height: 36, borderRadius: "50%", background: "var(--cyan)", color: "#fff", border: "none", cursor: syncing ? "not-allowed" : "pointer", fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center", opacity: syncing ? 0.6 : 1 }}
+            title="Importar desde SII">{syncing ? "..." : "\u21BB"}</button>
+          <button onClick={() => setShowBheModal(true)}
+            style={{ width: 36, height: 36, borderRadius: "50%", background: "var(--bg3)", border: "1px solid var(--bg4)", cursor: "pointer", fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center" }}
+            title="Importar BHE">+</button>
+          {empresa.id && (
+            <button onClick={() => window.open(`/api/sii/export?empresa_id=${empresa.id}&anio=${isAnual ? periodo : periodo.slice(0, 4)}&tipo=compras`, "_blank")}
+              style={{ width: 36, height: 36, borderRadius: "50%", background: "var(--bg3)", border: "1px solid var(--bg4)", cursor: "pointer", fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center" }}
+              title="Exportar CSV">{"\u2193"}</button>
+          )}
         </div>
       </div>
 
@@ -566,78 +571,70 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
         return (
           <div style={{ position: "fixed", inset: 0, zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.4)" }}
             onClick={() => setClasificarItem(null)}>
-            <div onClick={e => e.stopPropagation()} style={{ background: "var(--bg2)", borderRadius: 12, width: "100%", maxWidth: showAutoView ? 860 : 720, maxHeight: "90vh", display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 20px 60px rgba(0,0,0,0.15)", transition: "max-width 0.3s" }}>
+            <div onClick={e => e.stopPropagation()} style={{ background: "var(--bg2)", borderRadius: 12, width: "100%", maxWidth: 700, maxHeight: "90vh", display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 20px 60px rgba(0,0,0,0.15)" }}>
+              {/* Header */}
               <div style={{ padding: "20px 28px", background: "var(--cyan)", color: "#fff", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontSize: 18, fontWeight: 700 }}>{showAutoView ? "Nueva automatizaci\u00f3n para Clasificaci\u00f3n" : "Clasificar Compras"}</span>
-                <button onClick={() => { if (showAutoView) { setShowAutoView(false); } else { setClasificarItem(null); } }} style={{ background: "none", border: "none", color: "#fff", fontSize: 22, cursor: "pointer", lineHeight: 1 }}>&times;</button>
+                <span style={{ fontSize: 18, fontWeight: 700 }}>Clasificar Compras</span>
+                <button onClick={() => setClasificarItem(null)} style={{ background: "none", border: "none", color: "#fff", fontSize: 22, cursor: "pointer", lineHeight: 1 }}>&times;</button>
               </div>
-              {!showAutoView ? (<div style={{ display: "flex", flexDirection: "column", flex: 1 }}>
-                <div style={{ padding: "24px 28px", flex: 1, overflow: "auto" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", border: "1px solid var(--bg4)", borderRadius: 8, marginBottom: 24 }}>
-                    <span style={{ fontSize: 20, color: "var(--amber)" }}>&#9888;</span>
-                    <span style={{ fontSize: 13 }}>Atenci&oacute;n: Se actualizar&aacute; la clasificaci&oacute;n de <strong>1 Compra</strong> &mdash; {clasificarItem.razon_social} ({fmtRut(clasificarItem.rut_proveedor)})</span>
+              {/* Body */}
+              <div style={{ padding: "24px 28px", flex: 1, overflow: "auto" }}>
+                {/* Warning */}
+                <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", border: "1px solid var(--bg4)", borderRadius: 8, marginBottom: 24 }}>
+                  <span style={{ fontSize: 20, color: "var(--amber)" }}>&#9888;</span>
+                  <span style={{ fontSize: 13 }}>
+                    Atenci&oacute;n: Se actualizar&aacute; la clasificaci&oacute;n de <strong>1 Compra</strong> &mdash; {clasificarItem.razon_social} ({fmtRut(clasificarItem.rut_proveedor)})
+                  </span>
+                </div>
+                {/* Fields */}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1.5fr", gap: 16, alignItems: "start" }}>
+                  {/* Periodo */}
+                  <div>
+                    <label style={{ fontSize: 12, fontWeight: 600, color: "var(--txt3)", display: "block", marginBottom: 6 }}>Periodo Clasificaci&oacute;n</label>
+                    <input readOnly value={clasificarItem.fecha_docto?.slice(0, 7) || periodo}
+                      style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt)", fontSize: 13 }} />
                   </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1.5fr auto", gap: 16, alignItems: "start" }}>
-                    <div>
-                      <label style={{ fontSize: 12, fontWeight: 600, color: "var(--txt3)", display: "block", marginBottom: 6 }}>Periodo Clasificaci&oacute;n</label>
-                      <input readOnly value={clasificarItem.fecha_docto?.slice(0, 7) || periodo} style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt)", fontSize: 13 }} />
+                  {/* Linea de Negocio */}
+                  <div>
+                    <label style={{ fontSize: 12, fontWeight: 600, color: "var(--txt3)", display: "block", marginBottom: 6 }}>L&iacute;nea de Negocio *</label>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg2)", fontSize: 13 }}>
+                      <span style={{ flex: 1 }}>{empresa.razon_social || "Empresa"}</span>
                     </div>
-                    <div>
-                      <label style={{ fontSize: 12, fontWeight: 600, color: "var(--txt3)", display: "block", marginBottom: 6 }}>L&iacute;nea de Negocio *</label>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg2)", fontSize: 13 }}>
-                        <span style={{ flex: 1 }}>{empresa.razon_social || "Empresa"}</span>
-                        <span style={{ cursor: "pointer", color: "var(--txt3)", fontSize: 14 }}>&otimes;</span>
+                  </div>
+                  {/* Cuenta */}
+                  <div>
+                    <label style={{ fontSize: 12, fontWeight: 600, color: "var(--txt3)", display: "block", marginBottom: 6 }}>Cuenta *</label>
+                    <input placeholder="Buscar Cuenta..." value={clasificarBusca} onChange={e => { setClasificarBusca(e.target.value); setClasificarCuenta(""); }}
+                      style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg2)", color: "var(--txt)", fontSize: 13 }} />
+                    {clasificarBusca && !clasificarCuenta && (
+                      <div style={{ border: "1px solid var(--bg4)", borderRadius: 8, marginTop: 4, maxHeight: 180, overflowY: "auto", background: "var(--bg2)", boxShadow: "0 4px 12px rgba(0,0,0,0.08)" }}>
+                        {cuentasFiltradas.length === 0 ? (
+                          <div style={{ padding: "10px 12px", fontSize: 12, color: "var(--txt3)" }}>Sin resultados</div>
+                        ) : cuentasFiltradas.slice(0, 15).map(c => (
+                          <div key={c.id} onClick={() => { setClasificarCuenta(c.id); setClasificarBusca(`${c.codigo} \u2014 ${c.nombre}`); }}
+                            style={{ padding: "8px 12px", fontSize: 12, cursor: "pointer", borderBottom: "1px solid var(--bg4)" }}
+                            onMouseOver={e => (e.currentTarget.style.background = "var(--bg3)")}
+                            onMouseOut={e => (e.currentTarget.style.background = "transparent")}>
+                            <span style={{ fontWeight: 600, color: "var(--cyan)" }}>{c.codigo}</span>
+                            <span style={{ marginLeft: 8, color: "var(--txt2)" }}>{c.nombre}</span>
+                          </div>
+                        ))}
                       </div>
-                    </div>
-                    <div>
-                      <label style={{ fontSize: 12, fontWeight: 600, color: "var(--txt3)", display: "block", marginBottom: 6 }}>Cuenta *</label>
-                      <input placeholder="Buscar Cuenta..." value={clasificarBusca} onChange={e => { setClasificarBusca(e.target.value); setClasificarCuenta(""); }} style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg2)", color: "var(--txt)", fontSize: 13 }} />
-                      {clasificarBusca && !clasificarCuenta && (<div style={{ border: "1px solid var(--bg4)", borderRadius: 8, marginTop: 4, maxHeight: 180, overflowY: "auto", background: "var(--bg2)", boxShadow: "0 4px 12px rgba(0,0,0,0.08)", position: "relative", zIndex: 10 }}>
-                        {cuentasFiltradas.length === 0 ? (<div style={{ padding: "10px 12px", fontSize: 12, color: "var(--txt3)" }}>Sin resultados</div>) : cuentasFiltradas.slice(0, 15).map(ct => (<div key={ct.id} onClick={() => { setClasificarCuenta(ct.id); setClasificarBusca(ct.codigo + " \u2014 " + ct.nombre); }} style={{ padding: "8px 12px", fontSize: 12, cursor: "pointer", borderBottom: "1px solid var(--bg4)" }} onMouseOver={e => { e.currentTarget.style.background = "var(--bg3)"; }} onMouseOut={e => { e.currentTarget.style.background = "transparent"; }}><span style={{ fontWeight: 600, color: "var(--cyan)" }}>{ct.codigo}</span><span style={{ marginLeft: 8, color: "var(--txt2)" }}>{ct.nombre}</span></div>))}
-                      </div>)}
-                    </div>
-                    <div style={{ paddingTop: 24 }}><button style={{ padding: "10px 16px", borderRadius: 8, fontSize: 12, fontWeight: 600, background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)", cursor: "pointer" }}>Dividir</button></div>
-                  </div>
-                  <div onClick={() => { setShowAutoView(true); setAutoReglaCuenta(clasificarCuenta); setAutoReglaBusca(clasificarBusca); }} style={{ marginTop: 24, padding: "14px 18px", borderRadius: 10, background: "var(--cyanBg)", border: "1px solid var(--cyanBd)", display: "flex", alignItems: "center", gap: 12, cursor: "pointer" }}>
-                    <span style={{ display: "flex", alignItems: "center", gap: 6 }}><span style={{ width: 28, height: 28, borderRadius: 6, background: "var(--bg2)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 13 }}>&#128196;</span><span style={{ color: "var(--txt3)" }}>&rarr;</span><span style={{ width: 28, height: 28, borderRadius: 6, background: "var(--cyan)", color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 13 }}>&#128197;</span></span>
-                    <span style={{ flex: 1, fontSize: 13, color: "var(--txt2)" }}>Ahorra tiempo automatizando esta tarea</span>
-                    <span style={{ color: "var(--cyan)", fontSize: 18 }}>&rarr;</span>
+                    )}
                   </div>
                 </div>
-                <div style={{ padding: "16px 28px", borderTop: "1px solid var(--bg4)", display: "flex", justifyContent: "flex-end", gap: 10 }}>
-                  <button onClick={() => setClasificarItem(null)} style={{ padding: "10px 24px", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer", background: "var(--bg2)", color: "var(--txt2)", border: "1px solid var(--bg4)" }}>Cancelar</button>
-                  <button onClick={handleGuardar} disabled={!clasificarCuenta} style={{ padding: "10px 24px", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: clasificarCuenta ? "pointer" : "not-allowed", background: clasificarCuenta ? "var(--cyan)" : "var(--bg4)", color: clasificarCuenta ? "#fff" : "var(--txt3)", border: "none" }}>Guardar</button>
-                </div>
-              </div>) : (<div style={{ display: "flex", flexDirection: "column", flex: 1 }}>
-                <div style={{ padding: "24px 28px", flex: 1, overflow: "auto" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 24 }}>
-                    <button onClick={() => setShowAutoView(false)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 18, color: "var(--txt3)" }}>&larr;</button>
-                    <span style={{ fontSize: 16 }}>Nueva automatizaci&oacute;n para <strong>Clasificaci&oacute;n</strong></span>
-                  </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                      <div style={{ padding: "16px 20px", border: "1px solid var(--bg4)", borderRadius: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}><div><div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>1. Cuando</div><div style={{ fontSize: 13, color: "var(--txt2)" }}>Se cree una factura de compra</div></div><span style={{ color: "var(--txt3)", fontSize: 18 }}>&rsaquo;</span></div>
-                      <div style={{ padding: "16px 20px", border: "1px solid var(--bg4)", borderRadius: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}><div><div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>2. Coincida con</div><div style={{ fontSize: 13, color: "var(--txt2)" }}>{fmtRut(clasificarItem.rut_proveedor)} - {(clasificarItem.razon_social || "").toUpperCase()}</div></div><span style={{ color: "var(--txt3)", fontSize: 18 }}>&rsaquo;</span></div>
-                      <div style={{ padding: "16px 20px", border: "2px dashed var(--cyanBd)", borderRadius: 10, background: "var(--cyanBg)", display: "flex", justifyContent: "space-between", alignItems: "center" }}><div><div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>3. Haz lo siguiente</div><div style={{ fontSize: 13, color: "var(--txt2)" }}>Clasifica 100% en {empresa.razon_social}{autoReglaBusca ? " / " + autoReglaBusca : ""}</div></div><span style={{ color: "var(--txt3)", fontSize: 18 }}>&rsaquo;</span></div>
-                    </div>
-                    <div style={{ border: "2px dashed var(--cyanBd)", borderRadius: 10, padding: 20 }}>
-                      <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 16 }}>Clasifica en</div>
-                      <div style={{ display: "flex", gap: 8, alignItems: "start", marginBottom: 12 }}>
-                        <input readOnly value="100%" style={{ width: 60, padding: "8px 10px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt3)", fontSize: 12, textAlign: "center" }} />
-                        <select style={{ flex: 1, padding: "8px 10px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg2)", color: "var(--txt)", fontSize: 12 }}><option>{empresa.razon_social}</option></select>
-                        <div style={{ flex: 1 }}>
-                          <input placeholder="Cuenta" value={autoReglaBusca} onChange={e => { setAutoReglaCuenta(""); setAutoReglaBusca(e.target.value); }} style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg2)", color: "var(--txt)", fontSize: 12 }} />
-                          {autoReglaBusca && !autoReglaCuenta && (<div style={{ border: "1px solid var(--bg4)", borderRadius: 8, marginTop: 4, maxHeight: 150, overflowY: "auto", background: "var(--bg2)", boxShadow: "0 4px 12px rgba(0,0,0,0.08)" }}>
-                            {cuentasHoja.filter(ct => ct.nombre.toLowerCase().includes(autoReglaBusca.toLowerCase()) || ct.codigo.includes(autoReglaBusca)).slice(0, 10).map(ct => (<div key={ct.id} onClick={() => { setAutoReglaCuenta(ct.id); setAutoReglaBusca(ct.codigo + " \u2014 " + ct.nombre); }} style={{ padding: "6px 10px", fontSize: 11, cursor: "pointer", borderBottom: "1px solid var(--bg4)" }} onMouseOver={e => { e.currentTarget.style.background = "var(--bg3)"; }} onMouseOut={e => { e.currentTarget.style.background = "transparent"; }}><span style={{ fontWeight: 600, color: "var(--cyan)" }}>{ct.codigo}</span> {ct.nombre}</div>))}
-                          </div>)}
-                        </div>
-                      </div>
-                      <button style={{ padding: "8px 16px", borderRadius: 8, fontSize: 12, fontWeight: 600, background: "var(--bg3)", color: "var(--txt2)", border: "1px solid var(--bg4)", cursor: "pointer" }}>Dividir</button>
-                    </div>
-                  </div>
-                </div>
-                <button onClick={async () => { const cId = autoReglaCuenta || clasificarCuenta; if (!cId || !clasificarItem.rut_proveedor) return; await upsertProveedorCuenta(clasificarItem.rut_proveedor, cId, clasificarItem.razon_social || undefined); setProvCuentas(await fetchProveedorCuentas()); setShowAutoView(false); setClasificarItem(null); }} disabled={!autoReglaCuenta && !clasificarCuenta} style={{ width: "100%", padding: 16, fontSize: 14, fontWeight: 700, cursor: (autoReglaCuenta || clasificarCuenta) ? "pointer" : "not-allowed", background: (autoReglaCuenta || clasificarCuenta) ? "var(--cyan)" : "var(--bg4)", color: (autoReglaCuenta || clasificarCuenta) ? "#fff" : "var(--txt3)", border: "none", borderRadius: "0 0 12px 12px" }}>Guardar</button>
-              </div>)}
+              </div>
+              {/* Footer */}
+              <div style={{ padding: "16px 28px", borderTop: "1px solid var(--bg4)", display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                <button onClick={() => setClasificarItem(null)}
+                  style={{ padding: "10px 24px", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer", background: "var(--bg2)", color: "var(--txt2)", border: "1px solid var(--bg4)" }}>
+                  Cancelar
+                </button>
+                <button onClick={handleGuardar} disabled={!clasificarCuenta}
+                  style={{ padding: "10px 24px", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: clasificarCuenta ? "pointer" : "not-allowed", background: clasificarCuenta ? "var(--cyan)" : "var(--bg4)", color: clasificarCuenta ? "#fff" : "var(--txt3)", border: "none" }}>
+                  Guardar
+                </button>
+              </div>
             </div>
           </div>
         );
@@ -654,65 +651,53 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
       )}
 
       {/* Chipax-style filter tabs */}
-      {(() => {
-        const tabs = [
-          { key: "registro" as const, label: "Registro", count: 0 },
-          { key: "pendientes" as const, label: "Pendientes", count: totalSinPago },
-          { key: "no_incluir" as const, label: "No incluir", count: 0 },
-          { key: "reclamadas" as const, label: "Reclamadas", count: 0 },
-          { key: "por_pagar" as const, label: "Por pagar", count: porPagarList.length },
-          { key: "por_revisar" as const, label: "Por revisar", count: porRevisarList.length },
-          { key: "por_clasificar" as const, label: "Por clasificar", count: sinClasificar.length },
-        ];
-        return (
-          <div style={{ display: "flex", gap: 0, borderBottom: "2px solid var(--bg4)", marginBottom: 0, alignItems: "center", justifyContent: "space-between" }}>
-            <div style={{ display: "flex", gap: 0 }}>
-              {tabs.map(t => {
-                const isActive = comprasTab === t.key;
-                return (
-                  <button key={t.key} onClick={() => setComprasTab(t.key)}
-                    style={{
-                      padding: "12px 16px", fontSize: 13, fontWeight: isActive ? 600 : 400, cursor: "pointer",
-                      background: isActive ? "var(--cyanBg)" : "none", border: "none",
-                      borderBottom: isActive ? "2px solid var(--cyan)" : "2px solid transparent",
-                      color: isActive ? "var(--txt)" : "var(--txt3)", marginBottom: -2, whiteSpace: "nowrap",
-                      borderRadius: isActive ? "8px 8px 0 0" : 0,
-                    }}>
-                    {t.label}
-                    {t.count > 0 && (
-                      <span style={{
-                        marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10,
-                        background: isActive ? "var(--red)" : "var(--redBg)",
-                        color: isActive ? "#fff" : "var(--red)",
-                      }}>{t.count}</span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-            <div style={{ display: "flex", gap: 6, alignItems: "center", paddingBottom: 6 }}>
-              <button onClick={handleSyncSii} disabled={syncing} title="Sincronizar"
-                style={{ width: 32, height: 32, borderRadius: 8, background: "var(--bg3)", border: "1px solid var(--bg4)", cursor: "pointer", fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                {syncing ? "..." : "\u21BB"}
-              </button>
-              <button title="Buscar" onClick={() => { const el = document.getElementById("compras-search"); if (el) el.focus(); }}
-                style={{ width: 32, height: 32, borderRadius: 8, background: "var(--bg3)", border: "1px solid var(--bg4)", cursor: "pointer", fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                \uD83D\uDD0D
-              </button>
-              <button onClick={() => setShowBheModal(true)} title="Agregar"
-                style={{ width: 32, height: 32, borderRadius: 8, background: "var(--bg3)", border: "1px solid var(--bg4)", cursor: "pointer", fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                +
-              </button>
-              {empresa.id && (
-                <button onClick={() => window.open(`/api/sii/export?empresa_id=${empresa.id}&anio=${isAnual ? periodo : periodo.slice(0, 4)}&tipo=compras`, "_blank")} title="Exportar CSV"
-                  style={{ width: 32, height: 32, borderRadius: 8, background: "var(--bg3)", border: "1px solid var(--bg4)", cursor: "pointer", fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  {"\u2193"}
-                </button>
+      <div style={{ display: "flex", gap: 0, borderBottom: "2px solid var(--bg4)", marginBottom: 16, alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", gap: 0 }}>
+          {([
+            { key: "todos" as typeof concFilter, label: "Registro", count: data.length, showBadge: false },
+            { key: "sin_pago" as typeof concFilter, label: "Pendientes", count: totalSinPago, showBadge: true },
+            { key: "conciliada" as typeof concFilter, label: "Por pagar", count: porPagarList.length, showBadge: true },
+          ]).map(t => (
+            <button key={t.key} onClick={() => setConcFilter(t.key)}
+              style={{
+                padding: "10px 16px", fontSize: 13, fontWeight: concFilter === t.key ? 600 : 400, cursor: "pointer", background: "none", border: "none",
+                borderBottom: concFilter === t.key ? "2px solid var(--cyan)" : "2px solid transparent",
+                color: concFilter === t.key ? "var(--txt)" : "var(--txt3)", marginBottom: -2, whiteSpace: "nowrap",
+              }}>
+              {t.label}
+              {t.showBadge && t.count > 0 && (
+                <span style={{
+                  marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10,
+                  background: concFilter === t.key ? "var(--red)" : "var(--redBg)",
+                  color: concFilter === t.key ? "#fff" : "var(--red)",
+                }}>{t.count}</span>
               )}
-            </div>
-          </div>
-        );
-      })()}
+            </button>
+          ))}
+          {porRevisarList.length > 0 && (
+            <button onClick={() => setConcFilter("sin_pago")}
+              style={{ padding: "10px 16px", fontSize: 13, fontWeight: 400, cursor: "pointer", background: "none", border: "none", borderBottom: "2px solid transparent", color: "var(--txt3)", marginBottom: -2, whiteSpace: "nowrap" }}>
+              Por revisar
+              <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10, background: "var(--redBg)", color: "var(--red)" }}>{porRevisarList.length}</span>
+            </button>
+          )}
+          {sinClasificar.length > 0 && (
+            <button onClick={() => setConcFilter("todos")}
+              style={{ padding: "10px 16px", fontSize: 13, fontWeight: 400, cursor: "pointer", background: "none", border: "none", borderBottom: "2px solid transparent", color: "var(--txt3)", marginBottom: -2, whiteSpace: "nowrap" }}>
+              Por clasificar
+              <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10, background: "var(--redBg)", color: "var(--red)" }}>{sinClasificar.length}</span>
+            </button>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", paddingBottom: 6 }}>
+          <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, cursor: "pointer", color: "var(--txt3)" }}>
+            <input type="checkbox" checked={concFilter === "sin_pago"} onChange={e => setConcFilter(e.target.checked ? "sin_pago" : "todos")} style={{ accentColor: "var(--cyan)" }} />
+            Por conciliar
+          </label>
+          <input className="form-input" placeholder="Buscar..." value={filter} onChange={e => setFilter(e.target.value)}
+            style={{ fontSize: 12, width: 160, padding: "6px 12px" }} />
+        </div>
+      </div>
 
       {data.length === 0 ? (
         <div className="card" style={{ padding: 40, textAlign: "center" }}>
@@ -726,20 +711,10 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
         </div>
       ) : (
         <div className="card" style={{ overflow: "hidden", padding: 0 }}>
-          {/* Search bar inline */}
-          <div style={{ padding: "8px 14px", borderBottom: "1px solid var(--bg4)", display: "flex", gap: 8, alignItems: "center" }}>
-            <input id="compras-search" className="form-input" placeholder="Buscar por nombre, RUT o folio..." value={filter} onChange={e => setFilter(e.target.value)}
-              style={{ fontSize: 12, flex: 1, padding: "6px 12px", border: "none", background: "transparent" }} />
-          </div>
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
               <thead>
                 <tr style={{ borderBottom: "2px solid var(--bg4)" }}>
-                  <th style={{ padding: "12px 10px", width: 36 }}>
-                    <input type="checkbox" checked={filtered.length > 0 && selectedIds.size === filtered.length}
-                      onChange={e => setSelectedIds(e.target.checked ? new Set(filtered.map(c => c.id!)) : new Set())}
-                      style={{ accentColor: "var(--cyan)" }} />
-                  </th>
                   <th style={{ padding: "12px 14px", textAlign: "left", fontWeight: 600, fontSize: 12, color: "var(--cyan)" }}>Folio</th>
                   <th style={{ padding: "12px 14px", textAlign: "left", fontWeight: 600, fontSize: 12, color: "var(--txt3)" }}>Clasificaci&oacute;n</th>
                   <th style={{ padding: "12px 14px", textAlign: "left", fontWeight: 600, fontSize: 12, color: "var(--cyan)" }}>Raz&oacute;n Social</th>
@@ -751,14 +726,9 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                 </tr>
               </thead>
               <tbody>
-                {(() => {
-                  let rows = filtered;
-                  if (comprasTab === "pendientes") rows = rows.filter(c => !concCompraIds.has(c.id!));
-                  else if (comprasTab === "por_pagar") rows = rows.filter(c => !concCompraIds.has(c.id!));
-                  else if (comprasTab === "por_revisar") rows = rows.filter(c => { const v = getVencimiento(c); return v && v.diasRestantes < 0 && !concCompraIds.has(c.id!); });
-                  else if (comprasTab === "por_clasificar") rows = rows.filter(c => !getClasificacion(c));
-                  if (rows.length === 0) return <tr><td colSpan={9} style={{ textAlign: "center", padding: 32, color: "var(--txt3)" }}>Sin resultados</td></tr>;
-                  return rows.map((c, i) => {
+                {filtered.length === 0 ? (
+                  <tr><td colSpan={8} style={{ textAlign: "center", padding: 32, color: "var(--txt3)" }}>Sin resultados</td></tr>
+                ) : filtered.map((c, i) => {
                   const venc = getVencimiento(c);
                   const isConciliada = concCompraIds.has(c.id!);
                   const clasificacion = getClasificacion(c);
@@ -767,11 +737,6 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
 
                   return (
                     <tr key={c.id || i} style={{ borderBottom: "1px solid var(--bg4)" }}>
-                      <td style={{ padding: "14px 10px", width: 36 }}>
-                        <input type="checkbox" checked={selectedIds.has(c.id!)}
-                          onChange={e => { const next = new Set(selectedIds); e.target.checked ? next.add(c.id!) : next.delete(c.id!); setSelectedIds(next); }}
-                          style={{ accentColor: "var(--cyan)" }} />
-                      </td>
                       {/* Folio badge */}
                       <td style={{ padding: "14px 14px", whiteSpace: "nowrap" }}>
                         <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
@@ -835,30 +800,19 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                               Pagado
                             </span>
                           ) : (
-                            <span style={{ display: "inline-flex", alignItems: "center", gap: 0 }}>
-                              <span style={{ fontSize: 11, fontWeight: 600, padding: "5px 12px", borderRadius: "6px 0 0 6px", background: "var(--cyan)", color: "#fff", cursor: "pointer" }}>
-                                Asignar Pago
-                              </span>
-                              <span style={{ fontSize: 11, fontWeight: 600, padding: "5px 6px", borderRadius: "0 6px 6px 0", background: "var(--cyan)", color: "#fff", cursor: "pointer", borderLeft: "1px solid rgba(255,255,255,0.3)" }}>
-                                {"\u25BE"}
-                              </span>
-                              <span style={{ marginLeft: 6, width: 28, height: 28, borderRadius: 6, background: "var(--bg3)", border: "1px solid var(--bg4)", display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 12 }}
-                                onClick={() => { setClasificarItem(c); setClasificarCuenta(""); setClasificarBusca(""); }}
-                                title="Clasificar">
-                                {"\u2630"}
-                              </span>
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, padding: "4px 12px", borderRadius: 6, background: "var(--cyan)", color: "#fff", cursor: "pointer" }}>
+                              Asignar Pago
                             </span>
                           )}
                         </div>
                       </td>
                     </tr>
                   );
-                })()}
+                })}
               </tbody>
               {filtered.length > 0 && (
                 <tfoot>
                   <tr style={{ borderTop: "2px solid var(--bg4)", fontWeight: 700 }}>
-                    <td></td>
                     <td colSpan={6} style={{ padding: "12px 14px", fontSize: 13 }}>Total CLP</td>
                     <td className="mono" style={{ padding: "12px 14px", textAlign: "right", fontSize: 14 }}>
                       {fmtMoney(total)}
