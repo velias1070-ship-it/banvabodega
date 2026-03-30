@@ -112,9 +112,10 @@ async function findReport(fechaDesde: string, fechaHasta: string): Promise<{ fil
         end_date: fechaHasta,
       });
 
-      // Polling: esperar hasta 4 min (meses anteriores tardan más)
+      // Polling: esperar hasta 4.5 min (maxDuration=300s, dejando margen)
       const startPoll = Date.now();
-      for (let i = 0; i < 24; i++) {
+      const maxPollMs = 270_000; // 4.5 min
+      while (Date.now() - startPoll < maxPollMs) {
         await sleep(10_000);
         const updated = await mpGet("/v1/account/release_report/list") as MPReport[];
         const fresh = (updated || [])
@@ -364,7 +365,7 @@ export async function POST(req: NextRequest) {
         reporte_tipo: reportType,
         mensaje: reportUsado
           ? "Sin retiros nuevos en el periodo"
-          : "No hay reporte disponible. Genera uno desde el panel de MercadoPago en Informes → Liberaciones.",
+          : "El reporte se esta generando en MercadoPago. Espera 2-3 minutos e intenta de nuevo.",
       });
     }
 

@@ -188,16 +188,22 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
     setSyncingMP(true);
     setSyncMsg(null);
     try {
-      // Sync para cada período seleccionado
       let totalRetiros = 0;
+      let lastMsg = "";
       for (const p of periodos) {
+        setSyncMsg(`Sincronizando ${p.slice(0,4)}-${p.slice(4)}...`);
         const res = await fetch("/api/mp/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ periodo: p }) });
         const d = await res.json();
         if (d.error) { setSyncMsg(`Error: ${d.error}`); break; }
         totalRetiros += d.retiros_nuevos || 0;
+        if (d.mensaje) lastMsg = d.mensaje;
       }
       if (!syncMsg?.startsWith("Error")) {
-        setSyncMsg(totalRetiros > 0 ? `${totalRetiros} retiros importados` : "Sin retiros nuevos");
+        if (totalRetiros > 0) {
+          setSyncMsg(`${totalRetiros} retiros importados`);
+        } else {
+          setSyncMsg(lastMsg || "Sin retiros nuevos");
+        }
       }
       load();
     } catch (e) {
