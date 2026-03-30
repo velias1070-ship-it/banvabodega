@@ -9042,13 +9042,14 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
           if (velSemanal <= 0) return 0;
           const targetFull = Math.ceil(velSemanal * COB_OBJETIVO / 7);
           let raw = Math.max(0, Math.min(targetFull - stockFull, stockBodegaSimulado));
-          // Round to inner pack if applicable, but NEVER exceed available stock
-          if (ip > 1 && raw > 0) {
-            const rounded = Math.round(raw / ip) * ip;
-            raw = rounded > 0 ? rounded : ip;
+          if (ip > 1) {
+            // Round down to inner pack — don't send incomplete bultos
+            raw = Math.floor(raw / ip) * ip;
           }
-          // Final cap: never send more than what's available
-          return Math.min(raw, stockBodegaSimulado);
+          // Final cap: never send more than available, and if less than 1 IP don't send
+          raw = Math.min(raw, stockBodegaSimulado);
+          if (ip > 1 && raw < ip) raw = 0;
+          return raw;
         };
 
         // 5. Build lines — both from receptions AND from existing bodega stock
@@ -9143,10 +9144,20 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
   if (loading) return <div style={{padding:40,textAlign:"center",color:"var(--txt3)"}}>Analizando prioridades...</div>;
   if (lines.length === 0) return <div style={{padding:40,textAlign:"center",color:"var(--txt3)"}}>No hay lineas pendientes ni stock para reponer.</div>;
 
+  // Priority receptions: incoming lines that will go to Full
+  const priorityIncoming = needsFull.filter(l => l.incoming > 0 && getQty(l.sku, l.mandarFullSugerido) > 0);
+  const priorityFolios = Array.from(new Set(priorityIncoming.map(l => l.folio).flatMap(f => f.split(", "))));
+
   return (
     <div>
       {/* KPIs */}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:12}}>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:12}}>
+        {priorityFolios.length > 0 && (
+          <div style={{padding:10,borderRadius:8,background:"var(--redBg)",textAlign:"center",border:"1px solid var(--redBd)"}}>
+            <div style={{fontSize:22,fontWeight:800,color:"var(--red)"}}>{priorityIncoming.length}</div>
+            <div style={{fontSize:10,color:"var(--red)",fontWeight:600}}>Procesar primero</div>
+          </div>
+        )}
         <div style={{padding:10,borderRadius:8,background:"var(--amberBg)",textAlign:"center",border:"1px solid var(--amberBd)"}}>
           <div style={{fontSize:22,fontWeight:800,color:"var(--amber)"}}>{needsFull.filter(l => getQty(l.sku, l.mandarFullSugerido) > 0).length}</div>
           <div style={{fontSize:10,color:"var(--amber)",fontWeight:600}}>SKUs para Full</div>
@@ -9160,6 +9171,27 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
           <div style={{fontSize:10,color:"var(--green)",fontWeight:600}}>SKUs en recepcion</div>
         </div>
       </div>
+
+      {/* Procesar primero — recepciones que van a Full */}
+      {priorityIncoming.length > 0 && (
+        <div className="card" style={{padding:12,marginBottom:12,border:"2px solid var(--red)",background:"var(--redBg)"}}>
+          <div style={{fontWeight:700,fontSize:13,color:"var(--red)",marginBottom:8}}>
+            Procesar primero — {priorityIncoming.length} SKUs de recepciones necesitan ir a Full
+          </div>
+          <div style={{fontSize:12,color:"var(--txt2)",marginBottom:8}}>
+            Facturas prioritarias: <strong>{priorityFolios.join(", ")}</strong>
+          </div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+            {priorityIncoming.map(l => (
+              <div key={l.sku} style={{padding:"4px 10px",borderRadius:6,background:"var(--bg2)",border:"1px solid var(--bg4)",fontSize:11}}>
+                <span className="mono" style={{fontWeight:700}}>{l.sku}</span>
+                <span style={{color:"var(--green)",marginLeft:6}}>+{l.incoming}</span>
+                <span style={{color:"var(--amber)",marginLeft:6}}>→ Full {getQty(l.sku, l.mandarFullSugerido)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Enviar a Full section */}
       {needsFull.length > 0 && (
