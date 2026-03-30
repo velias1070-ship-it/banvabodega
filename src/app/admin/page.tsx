@@ -8958,17 +8958,19 @@ interface TimelineRow {ts:string;evento:string;sku:string;detalle:string;delta:n
 
 // ==================== PRIORIZAR RECEPCIONES ====================
 function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
-  const COB_OBJETIVO = 40; // días cobertura objetivo Full
+  const COB_OBJETIVO = 40;
   interface PrioLine {
-    sku: string; nombre: string; incoming: number; folio: string;
+    sku: string; skuVenta: string; nombre: string; incoming: number; folio: string;
     stockBodega: number; disponible: number;
     stockFull: number; velSemanal: number;
-    stockSimulado: number; // bodega + incoming
-    mandarFull: number; // calculado con stock simulado
-    cobFullActual: number; cobFullPost: number;
-    source: "recepcion" | "bodega"; // viene de recepción o ya está en bodega
+    stockSimulado: number;
+    mandarFullSugerido: number; // cálculo original
+    innerPack: number;
+    cobFullActual: number;
+    source: "recepcion" | "bodega";
   }
   const [lines, setLines] = useState<PrioLine[]>([]);
+  const [edits, setEdits] = useState<Record<string, number>>({}); // sku → qty editado
   const [loading, setLoading] = useState(true);
   const s = getStore();
 
@@ -8980,10 +8982,11 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
         if (!sb) return;
 
         // 1. Fetch all data sources
-        const [stockDispRes, fullCacheRes, compsRes] = await Promise.all([
+        const [stockDispRes, fullCacheRes, compsRes, prodRes] = await Promise.all([
           sb.from("v_stock_disponible").select("*"),
           sb.from("stock_full_cache").select("sku_venta, cantidad, vel_promedio"),
           sb.from("composicion_venta").select("sku_venta, sku_origen, unidades"),
+          sb.from("productos").select("sku, inner_pack"),
         ]);
 
         const dispMap = new Map<string, {on_hand:number;reserved:number;disponible:number}>();
@@ -8993,9 +8996,16 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
         for (const r of (fullCacheRes.data || []) as {sku_venta:string;cantidad:number;vel_promedio:number|null}[]) fullMap.set(r.sku_venta, { cantidad: r.cantidad, vel: r.vel_promedio || 0 });
 
         const origenToVentas = new Map<string, string[]>();
+        const origenToFirstVenta = new Map<string, string>();
         for (const c of (compsRes.data || []) as {sku_venta:string;sku_origen:string;unidades:number}[]) {
           if (!origenToVentas.has(c.sku_origen)) origenToVentas.set(c.sku_origen, []);
           if (!origenToVentas.get(c.sku_origen)!.includes(c.sku_venta)) origenToVentas.get(c.sku_origen)!.push(c.sku_venta);
+          if (!origenToFirstVenta.has(c.sku_origen)) origenToFirstVenta.set(c.sku_origen, c.sku_venta);
+        }
+
+        const innerPackMap = new Map<string, number>();
+        for (const p of (prodRes.data || []) as {sku:string;inner_pack:number|null}[]) {
+          if (p.inner_pack && p.inner_pack > 1) innerPackMap.set(p.sku, p.inner_pack);
         }
 
         // 2. Get incoming from active receptions (pending lines)
@@ -9027,11 +9037,17 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
           return { stockFull, velSemanal };
         };
 
-        // 4. Helper: calculate mandarFull
-        const calcMandarFull = (stockBodegaSimulado: number, stockFull: number, velSemanal: number) => {
+        // 4. Helper: calculate mandarFull with inner pack rounding
+        const calcMandarFull = (stockBodegaSimulado: number, stockFull: number, velSemanal: number, ip: number) => {
           if (velSemanal <= 0) return 0;
           const targetFull = Math.ceil(velSemanal * COB_OBJETIVO / 7);
-          return Math.max(0, Math.min(targetFull - stockFull, stockBodegaSimulado));
+          let raw = Math.max(0, Math.min(targetFull - stockFull, stockBodegaSimulado));
+          // Round to inner pack if applicable
+          if (ip > 1 && raw > 0) {
+            const rounded = Math.round(raw / ip) * ip;
+            raw = rounded > 0 ? Math.min(rounded, stockBodegaSimulado) : ip; // at least 1 inner pack
+          }
+          return raw;
         };
 
         // 5. Build lines — both from receptions AND from existing bodega stock
@@ -9046,16 +9062,17 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
           const disponible = disp?.disponible || 0;
           const { stockFull, velSemanal } = getFullData(sku);
           const stockSimulado = disponible + inc.qty;
-          const mandarFull = calcMandarFull(stockSimulado, stockFull, velSemanal);
+          const ip = innerPackMap.get(sku) || 1;
+          const mandarFullSugerido = calcMandarFull(stockSimulado, stockFull, velSemanal, ip);
           const velDiaria = velSemanal / 7;
           const cobFullActual = velDiaria > 0 ? Math.round(stockFull / velDiaria) : 999;
-          const cobFullPost = velDiaria > 0 ? Math.round((stockFull + mandarFull) / velDiaria) : 999;
+          const skuVenta = origenToFirstVenta.get(sku) || sku;
 
           result.push({
-            sku, nombre: s.products[sku]?.name || sku, incoming: inc.qty,
+            sku, skuVenta, nombre: s.products[sku]?.name || sku, incoming: inc.qty,
             folio: inc.folios.join(", "), stockBodega, disponible,
-            stockFull, velSemanal, stockSimulado, mandarFull,
-            cobFullActual, cobFullPost, source: "recepcion",
+            stockFull, velSemanal, stockSimulado, mandarFullSugerido, innerPack: ip,
+            cobFullActual, source: "recepcion",
           });
         }
 
@@ -9065,24 +9082,25 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
           if (disp.disponible <= 0) continue;
           const { stockFull, velSemanal } = getFullData(skuOrigen);
           if (velSemanal <= 0) continue;
-          const mandarFull = calcMandarFull(disp.disponible, stockFull, velSemanal);
-          if (mandarFull <= 0) continue;
+          const ip = innerPackMap.get(skuOrigen) || 1;
+          const mandarFullSugerido = calcMandarFull(disp.disponible, stockFull, velSemanal, ip);
+          if (mandarFullSugerido <= 0) continue;
           const velDiaria = velSemanal / 7;
           const cobFullActual = velDiaria > 0 ? Math.round(stockFull / velDiaria) : 999;
-          const cobFullPost = velDiaria > 0 ? Math.round((stockFull + mandarFull) / velDiaria) : 999;
+          const skuVenta = origenToFirstVenta.get(skuOrigen) || skuOrigen;
 
           result.push({
-            sku: skuOrigen, nombre: s.products[skuOrigen]?.name || skuOrigen,
+            sku: skuOrigen, skuVenta, nombre: s.products[skuOrigen]?.name || skuOrigen,
             incoming: 0, folio: "—", stockBodega: disp.on_hand, disponible: disp.disponible,
-            stockFull, velSemanal, stockSimulado: disp.disponible, mandarFull,
-            cobFullActual, cobFullPost, source: "bodega",
+            stockFull, velSemanal, stockSimulado: disp.disponible, mandarFullSugerido, innerPack: ip,
+            cobFullActual, source: "bodega",
           });
         }
 
         // 6. Sort: mandarFull > 0 first, then by cobFullActual ascending
         result.sort((a, b) => {
-          if (a.mandarFull > 0 && b.mandarFull <= 0) return -1;
-          if (a.mandarFull <= 0 && b.mandarFull > 0) return 1;
+          if (a.mandarFullSugerido > 0 && b.mandarFullSugerido <= 0) return -1;
+          if (a.mandarFullSugerido <= 0 && b.mandarFullSugerido > 0) return 1;
           return a.cobFullActual - b.cobFullActual;
         });
 
@@ -9093,9 +9111,33 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
     })();
   }, [recs]);
 
-  const needsFull = lines.filter(l => l.mandarFull > 0);
-  const noFull = lines.filter(l => l.mandarFull <= 0);
-  const totalMandarFull = needsFull.reduce((s, l) => s + l.mandarFull, 0);
+  // Get effective qty (edited or suggested)
+  const getQty = (sku: string, suggested: number) => edits[sku] ?? suggested;
+  const needsFull = lines.filter(l => l.mandarFullSugerido > 0);
+  const noFull = lines.filter(l => l.mandarFullSugerido <= 0 && l.incoming > 0);
+  const totalMandarFull = needsFull.reduce((s, l) => s + getQty(l.sku, l.mandarFullSugerido), 0);
+
+  // Calculate cobFullPost for a line
+  const cobFullPost = (l: PrioLine) => {
+    const qty = getQty(l.sku, l.mandarFullSugerido);
+    const velDiaria = l.velSemanal / 7;
+    return velDiaria > 0 ? Math.round((l.stockFull + qty) / velDiaria) : 999;
+  };
+
+  // Export CSV
+  const doExport = () => {
+    const rows: string[] = ["sku_venta,nombre,enviar_full,inner_pack,stock_bodega,stock_full,vel_semanal,cob_actual,cob_post,origen"];
+    for (const l of needsFull) {
+      const qty = getQty(l.sku, l.mandarFullSugerido);
+      if (qty <= 0) continue;
+      rows.push([l.skuVenta, `"${l.nombre}"`, qty, l.innerPack > 1 ? l.innerPack : "", l.stockBodega, l.stockFull, l.velSemanal.toFixed(1), l.cobFullActual < 999 ? l.cobFullActual : "", cobFullPost(l) < 999 ? cobFullPost(l) : "", l.source === "recepcion" ? l.folio : "bodega"].join(","));
+    }
+    const blob = new Blob(["\uFEFF" + rows.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url;
+    a.download = `envio_full_preview_${new Date().toISOString().slice(0,10)}.csv`;
+    a.click(); URL.revokeObjectURL(url);
+  };
 
   if (loading) return <div style={{padding:40,textAlign:"center",color:"var(--txt3)"}}>Analizando prioridades...</div>;
   if (lines.length === 0) return <div style={{padding:40,textAlign:"center",color:"var(--txt3)"}}>No hay lineas pendientes ni stock para reponer.</div>;
@@ -9105,7 +9147,7 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
       {/* KPIs */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:12}}>
         <div style={{padding:10,borderRadius:8,background:"var(--amberBg)",textAlign:"center",border:"1px solid var(--amberBd)"}}>
-          <div style={{fontSize:22,fontWeight:800,color:"var(--amber)"}}>{needsFull.length}</div>
+          <div style={{fontSize:22,fontWeight:800,color:"var(--amber)"}}>{needsFull.filter(l => getQty(l.sku, l.mandarFullSugerido) > 0).length}</div>
           <div style={{fontSize:10,color:"var(--amber)",fontWeight:600}}>SKUs para Full</div>
         </div>
         <div style={{padding:10,borderRadius:8,background:"var(--cyanBg, rgba(0,200,255,0.06))",textAlign:"center"}}>
@@ -9121,37 +9163,53 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
       {/* Enviar a Full section */}
       {needsFull.length > 0 && (
         <div className="card" style={{padding:0,overflow:"hidden",marginBottom:12,border:"1px solid var(--amberBd)"}}>
-          <div style={{padding:"10px 12px",background:"var(--amberBg)",fontWeight:700,fontSize:13,color:"var(--amber)"}}>
-            Enviar a Full ({needsFull.length} SKUs, {totalMandarFull} uds)
+          <div style={{padding:"10px 12px",background:"var(--amberBg)",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <span style={{fontWeight:700,fontSize:13,color:"var(--amber)"}}>
+              Enviar a Full ({needsFull.filter(l => getQty(l.sku, l.mandarFullSugerido) > 0).length} SKUs, {totalMandarFull} uds)
+            </span>
+            <button onClick={doExport} style={{padding:"4px 12px",borderRadius:6,background:"var(--amber)",color:"#000",fontSize:11,fontWeight:700,border:"none",cursor:"pointer"}}>
+              Exportar CSV
+            </button>
           </div>
           <table className="tbl" style={{width:"100%"}}>
             <thead><tr>
-              <th>SKU</th>
+              <th>SKU Venta</th>
               <th>Producto</th>
               <th style={{textAlign:"right"}}>Viene</th>
               <th style={{textAlign:"right"}}>Bodega</th>
               <th style={{textAlign:"right"}}>Full</th>
               <th style={{textAlign:"right"}}>Vel/sem</th>
-              <th style={{textAlign:"right"}}>Cob. Full</th>
-              <th style={{textAlign:"right",color:"var(--amber)"}}>Enviar</th>
-              <th style={{textAlign:"right"}}>Cob. Post</th>
+              <th style={{textAlign:"right"}}>Cob.</th>
+              <th style={{textAlign:"center",color:"var(--amber)",width:80}}>Enviar</th>
+              <th style={{textAlign:"right"}}>Post</th>
+              {lines.some(l => l.innerPack > 1) && <th style={{textAlign:"right"}}>IP</th>}
               <th>Origen</th>
             </tr></thead>
             <tbody>
-              {needsFull.map((l, i) => (
-                <tr key={i} style={{background: l.cobFullActual < 7 ? "var(--redBg)" : l.cobFullActual < 14 ? "var(--amberBg)" : "transparent", borderBottom:"1px solid var(--bg3)"}}>
-                  <td className="mono" style={{fontSize:11,fontWeight:700,padding:"8px 6px"}}>{l.sku}</td>
-                  <td style={{fontSize:11,padding:"8px 6px",color:"var(--txt2)"}}>{l.nombre.substring(0,30)}</td>
-                  <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 6px",color:l.incoming>0?"var(--green)":"var(--txt3)"}}>{l.incoming > 0 ? "+" + l.incoming : "—"}</td>
-                  <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 6px"}}>{l.stockBodega}</td>
-                  <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 6px",color:"var(--cyan)"}}>{l.stockFull}</td>
-                  <td className="mono" style={{textAlign:"right",fontSize:11,padding:"8px 6px",color:"var(--txt3)"}}>{l.velSemanal.toFixed(1)}</td>
-                  <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 6px",fontWeight:700,color:l.cobFullActual<7?"var(--red)":l.cobFullActual<14?"var(--amber)":"var(--txt3)"}}>{l.cobFullActual < 999 ? l.cobFullActual + "d" : "—"}</td>
-                  <td className="mono" style={{textAlign:"right",fontSize:14,padding:"8px 8px",fontWeight:800,color:"var(--amber)"}}>{l.mandarFull}</td>
-                  <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 6px",color:"var(--green)"}}>{l.cobFullPost < 999 ? l.cobFullPost + "d" : "—"}</td>
-                  <td style={{fontSize:10,padding:"8px 6px",color:"var(--txt3)"}}>{l.source === "recepcion" ? l.folio : "En bodega"}</td>
-                </tr>
-              ))}
+              {needsFull.map((l, i) => {
+                const qty = getQty(l.sku, l.mandarFullSugerido);
+                const cp = cobFullPost(l);
+                return (
+                  <tr key={i} style={{background: l.cobFullActual < 7 ? "var(--redBg)" : l.cobFullActual < 14 ? "var(--amberBg)" : "transparent", borderBottom:"1px solid var(--bg3)"}}>
+                    <td className="mono" style={{fontSize:11,fontWeight:700,padding:"8px 6px"}}>{l.skuVenta}</td>
+                    <td style={{fontSize:11,padding:"8px 6px",color:"var(--txt2)"}}>{l.nombre.substring(0,28)}</td>
+                    <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 6px",color:l.incoming>0?"var(--green)":"var(--txt3)"}}>{l.incoming > 0 ? "+" + l.incoming : "—"}</td>
+                    <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 6px"}}>{l.stockBodega}</td>
+                    <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 6px",color:"var(--cyan)"}}>{l.stockFull}</td>
+                    <td className="mono" style={{textAlign:"right",fontSize:11,padding:"8px 6px",color:"var(--txt3)"}}>{l.velSemanal.toFixed(1)}</td>
+                    <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 6px",fontWeight:700,color:l.cobFullActual<7?"var(--red)":l.cobFullActual<14?"var(--amber)":"var(--txt3)"}}>{l.cobFullActual < 999 ? l.cobFullActual + "d" : "—"}</td>
+                    <td style={{textAlign:"center",padding:"4px 4px"}}>
+                      <input type="number" min={0} value={qty}
+                        onChange={e => setEdits(prev => ({...prev, [l.sku]: parseInt(e.target.value) || 0}))}
+                        onFocus={e => e.target.select()}
+                        style={{width:55,textAlign:"center",padding:"4px 2px",borderRadius:4,border:"2px solid var(--amber)",background:"var(--bg)",color:"var(--amber)",fontSize:13,fontWeight:800,fontFamily:"var(--font-mono)"}}/>
+                    </td>
+                    <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 6px",color:"var(--green)"}}>{cp < 999 ? cp + "d" : "—"}</td>
+                    {lines.some(l2 => l2.innerPack > 1) && <td className="mono" style={{textAlign:"right",fontSize:10,padding:"8px 4px",color:l.innerPack>1?"var(--cyan)":"var(--txt3)"}}>{l.innerPack > 1 ? l.innerPack : ""}</td>}
+                    <td style={{fontSize:10,padding:"8px 6px",color:"var(--txt3)"}}>{l.source === "recepcion" ? l.folio : "Bodega"}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -9161,28 +9219,20 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
       {noFull.length > 0 && (
         <div className="card" style={{padding:0,overflow:"hidden"}}>
           <div style={{padding:"10px 12px",background:"var(--bg3)",fontWeight:700,fontSize:13,color:"var(--txt3)"}}>
-            Sin envio Full necesario ({noFull.length} SKUs)
+            Recepcion sin envio Full ({noFull.length} SKUs)
           </div>
           <table className="tbl" style={{width:"100%"}}>
             <thead><tr>
-              <th>SKU</th>
-              <th>Producto</th>
-              <th style={{textAlign:"right"}}>Viene</th>
-              <th style={{textAlign:"right"}}>Bodega</th>
-              <th style={{textAlign:"right"}}>Full</th>
-              <th style={{textAlign:"right"}}>Vel/sem</th>
-              <th style={{textAlign:"right"}}>Cob. Full</th>
-              <th>Factura</th>
+              <th>SKU</th><th>Producto</th><th style={{textAlign:"right"}}>Viene</th><th style={{textAlign:"right"}}>Bodega</th><th style={{textAlign:"right"}}>Full</th><th style={{textAlign:"right"}}>Cob.</th><th>Factura</th>
             </tr></thead>
             <tbody>
               {noFull.map((l, i) => (
                 <tr key={i} style={{borderBottom:"1px solid var(--bg3)"}}>
                   <td className="mono" style={{fontSize:11,fontWeight:700,padding:"8px 6px"}}>{l.sku}</td>
                   <td style={{fontSize:11,padding:"8px 6px",color:"var(--txt2)"}}>{l.nombre.substring(0,30)}</td>
-                  <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 6px",color:l.incoming>0?"var(--green)":"var(--txt3)"}}>{l.incoming > 0 ? "+" + l.incoming : "—"}</td>
+                  <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 6px",color:"var(--green)"}}>+{l.incoming}</td>
                   <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 6px"}}>{l.stockBodega}</td>
                   <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 6px",color:"var(--cyan)"}}>{l.stockFull || "—"}</td>
-                  <td className="mono" style={{textAlign:"right",fontSize:11,padding:"8px 6px",color:"var(--txt3)"}}>{l.velSemanal > 0 ? l.velSemanal.toFixed(1) : "—"}</td>
                   <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 6px",color:"var(--txt3)"}}>{l.cobFullActual < 999 ? l.cobFullActual + "d" : "—"}</td>
                   <td className="mono" style={{fontSize:10,padding:"8px 6px",color:"var(--txt3)"}}>{l.folio}</td>
                 </tr>
