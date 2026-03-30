@@ -1304,15 +1304,33 @@ export async function syncStockToML(sku: string, availableQty: number): Promise<
   let synced = 0;
 
   for (const map of mappings as MLItemMap[]) {
-    // Safety: if stock is 0 but last sent was >10, skip auto-sync (needs manual review)
+    // Safety: if stock is 0 but last sent was >10, check if there are recent movements
+    // that justify the drop (ajuste, venta, picking). If yes, allow the sync.
     if (availableQty === 0 && map.stock_flex_cache && map.stock_flex_cache > 10) {
-      console.warn(`[ML Stock] Safety block: ${sku} → 0 (was ${map.stock_flex_cache}). Skipping.`);
+      // Check for recent movements in the last 2 hours for this SKU or its sku_origen
+      const skuOrigen = map.sku_origen || sku;
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+      const { data: recentMovs } = await sb.from("movimientos")
+        .select("id")
+        .or(`sku.eq.${sku},sku.eq.${skuOrigen}`)
+        .gte("created_at", twoHoursAgo)
+        .limit(1);
+      if (!recentMovs || recentMovs.length === 0) {
+        console.warn(`[ML Stock] Safety block: ${sku} → 0 (was ${map.stock_flex_cache}), no recent movements. Skipping.`);
+        void sb.from("audit_log").insert({
+          accion: "stock_sync:safety_block",
+          entidad: "ml_items_map", entidad_id: map.user_product_id || map.item_id,
+          params: { sku, availableQty, lastSent: map.stock_flex_cache, reason: "no_recent_movements" },
+        });
+        continue;
+      }
+      // Recent movements exist — allow sync to 0
+      console.log(`[ML Stock] Safety override: ${sku} → 0 (was ${map.stock_flex_cache}), recent movements found. Proceeding.`);
       void sb.from("audit_log").insert({
-        accion: "stock_sync:safety_block",
+        accion: "stock_sync:safety_override",
         entidad: "ml_items_map", entidad_id: map.user_product_id || map.item_id,
-        params: { sku, availableQty, lastSent: map.stock_flex_cache },
+        params: { sku, availableQty, lastSent: map.stock_flex_cache, reason: "recent_movements_found" },
       });
-      continue;
     }
 
     try {

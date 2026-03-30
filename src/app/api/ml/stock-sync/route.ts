@@ -64,7 +64,20 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 3. Expand queue: for each SKU, also include pack siblings
+    // 3. Load ml_items_map for sku_origen resolution (before expansion so we can use it)
+    const { data: itemMaps } = await sb.from("ml_items_map")
+      .select("sku, sku_origen").eq("activo", true);
+    const mlSkuOrigen: Record<string, string> = {};
+    const mlOrigenToVentas: Record<string, string[]> = {};
+    for (const m of (itemMaps || []) as { sku: string; sku_origen: string | null }[]) {
+      if (m.sku_origen) {
+        mlSkuOrigen[m.sku] = m.sku_origen;
+        if (!mlOrigenToVentas[m.sku_origen]) mlOrigenToVentas[m.sku_origen] = [];
+        if (!mlOrigenToVentas[m.sku_origen].includes(m.sku)) mlOrigenToVentas[m.sku_origen].push(m.sku);
+      }
+    }
+
+    // 4. Expand queue: for each SKU, include pack siblings + ml_items_map sku_venta
     const expandedSkus = new Set<string>();
     for (const sku of skus) {
       expandedSkus.add(sku);
@@ -74,19 +87,16 @@ export async function POST(req: NextRequest) {
         const siblings = origenToVentas[comp.sku_origen] || [];
         for (const sib of siblings) expandedSkus.add(sib);
       }
-      // If this IS a sku_origen, find all sku_venta that use it
+      // If this IS a sku_origen, find all sku_venta via composicion_venta
       const ventas = origenToVentas[sku];
       if (ventas) {
         for (const sv of ventas) expandedSkus.add(sv);
       }
-    }
-
-    // 4. Load ml_items_map for sku_origen resolution
-    const { data: itemMaps } = await sb.from("ml_items_map")
-      .select("sku, sku_origen").eq("activo", true);
-    const mlSkuOrigen: Record<string, string> = {};
-    for (const m of (itemMaps || []) as { sku: string; sku_origen: string | null }[]) {
-      if (m.sku_origen) mlSkuOrigen[m.sku] = m.sku_origen;
+      // Also expand via ml_items_map: sku_origen → sku_venta
+      const mlVentas = mlOrigenToVentas[sku];
+      if (mlVentas) {
+        for (const sv of mlVentas) expandedSkus.add(sv);
+      }
     }
 
     // 5. Shared origins (have >1 sku_venta) get bigger buffer
