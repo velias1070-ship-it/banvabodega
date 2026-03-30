@@ -347,7 +347,7 @@ function SiiImportModal({ tipo, empresa, periodoActual, onClose, onImported }: S
 }
 
 // ==================== RCV COMPRAS ====================
-function TabRcvCompras({ empresa, periodo, onAsignarPago }: { empresa: DBEmpresa; periodo: string; onAsignarPago?: (compra: DBRcvCompra) => void }) {
+function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: string }) {
   const [data, setData] = useState<DBRcvCompra[]>([]);
   const [conciliaciones, setConciliaciones] = useState<DBConciliacion[]>([]);
   const [provCuentas, setProvCuentas] = useState<DBProveedorCuenta[]>([]);
@@ -361,6 +361,11 @@ function TabRcvCompras({ empresa, periodo, onAsignarPago }: { empresa: DBEmpresa
   const [clasificarItem, setClasificarItem] = useState<DBRcvCompra | null>(null);
   const [clasificarCuenta, setClasificarCuenta] = useState("");
   const [clasificarBusca, setClasificarBusca] = useState("");
+  const [pagoItem, setPagoItem] = useState<DBRcvCompra | null>(null);
+  const [movsBanco, setMovsBanco] = useState<DBMovimientoBanco[]>([]);
+  const [pagoLoading, setPagoLoading] = useState(false);
+  const [pagoSaving, setPagoSaving] = useState(false);
+  const [pagoSearch, setPagoSearch] = useState("");
   const [provFilterSet, setProvFilterSet] = useState<Set<string> | null>(null); // null = todos
   const [showProvFilter, setShowProvFilter] = useState(false);
   const [showProveedores, setShowProveedores] = useState(false);
@@ -801,11 +806,23 @@ function TabRcvCompras({ empresa, periodo, onAsignarPago }: { empresa: DBEmpresa
                             </span>
                           ) : (
                             <span style={{ display: "inline-flex", alignItems: "center", gap: 0 }}>
-                              <span onClick={() => onAsignarPago?.(c)}
+                              <span onClick={async () => {
+                                setPagoItem(c); setPagoLoading(true); setPagoSearch("");
+                                const movs = await fetchMovimientosBanco(empresa.id!, { desde: undefined, hasta: undefined });
+                                const concMovIds = new Set(conciliaciones.filter(x => x.estado === "confirmado" && x.movimiento_banco_id).map(x => x.movimiento_banco_id));
+                                setMovsBanco(movs.filter(m => !concMovIds.has(m.id!) && m.monto < 0));
+                                setPagoLoading(false);
+                              }}
                                 style={{ fontSize: 11, fontWeight: 600, padding: "5px 12px", borderRadius: "6px 0 0 6px", background: "var(--cyan)", color: "#fff", cursor: "pointer" }}>
                                 Asignar Pago
                               </span>
-                              <span onClick={() => onAsignarPago?.(c)}
+                              <span onClick={async () => {
+                                setPagoItem(c); setPagoLoading(true); setPagoSearch("");
+                                const movs = await fetchMovimientosBanco(empresa.id!, { desde: undefined, hasta: undefined });
+                                const concMovIds = new Set(conciliaciones.filter(x => x.estado === "confirmado" && x.movimiento_banco_id).map(x => x.movimiento_banco_id));
+                                setMovsBanco(movs.filter(m => !concMovIds.has(m.id!) && m.monto < 0));
+                                setPagoLoading(false);
+                              }}
                                 style={{ fontSize: 11, fontWeight: 600, padding: "5px 6px", borderRadius: "0 6px 6px 0", background: "var(--cyan)", color: "#fff", cursor: "pointer", borderLeft: "1px solid rgba(255,255,255,0.3)" }}>
                                 &#9662;
                               </span>
@@ -829,6 +846,75 @@ function TabRcvCompras({ empresa, periodo, onAsignarPago }: { empresa: DBEmpresa
                 </tfoot>
               )}
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Asignar Pago — seleccionar movimiento bancario */}
+      {pagoItem && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={() => !pagoSaving && setPagoItem(null)}>
+          <div onClick={e => e.stopPropagation()} style={{ background: "var(--bg2)", borderRadius: 12, width: "100%", maxWidth: 700, maxHeight: "90vh", display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 20px 60px rgba(0,0,0,0.15)" }}>
+            <div style={{ padding: "20px 28px", background: "var(--cyan)", color: "#fff", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 18, fontWeight: 700 }}>Asignar Pago</span>
+              <button onClick={() => setPagoItem(null)} disabled={pagoSaving} style={{ background: "none", border: "none", color: "#fff", fontSize: 22, cursor: "pointer", lineHeight: 1 }}>&times;</button>
+            </div>
+            <div style={{ padding: "20px 28px", borderBottom: "1px solid var(--bg4)" }}>
+              <div style={{ fontSize: 13, marginBottom: 4 }}>
+                <strong>{TIPO_DOC_NAMES[pagoItem.tipo_doc] || pagoItem.tipo_doc}</strong> N&deg; {pagoItem.nro_doc} &mdash; {pagoItem.razon_social}
+              </div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "var(--red)" }}>
+                {fmtMoney(pagoItem.monto_total || 0)}
+              </div>
+            </div>
+            <div style={{ padding: "12px 28px", borderBottom: "1px solid var(--bg4)" }}>
+              <input placeholder="Buscar movimiento bancario..." value={pagoSearch} onChange={e => setPagoSearch(e.target.value)}
+                style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg2)", color: "var(--txt)", fontSize: 12 }} />
+            </div>
+            <div style={{ flex: 1, overflow: "auto", maxHeight: 400 }}>
+              {pagoLoading ? (
+                <div style={{ padding: 40, textAlign: "center", color: "var(--txt3)" }}>Cargando movimientos...</div>
+              ) : (() => {
+                const q = pagoSearch.toLowerCase();
+                const filtrados = movsBanco.filter(m => !pagoSearch || (m.descripcion || "").toLowerCase().includes(q) || (m.banco || "").toLowerCase().includes(q) || String(Math.abs(m.monto)).includes(q));
+                const sorted = filtrados.sort((a, b) => Math.abs(Math.abs(a.monto) - (pagoItem.monto_total || 0)) - Math.abs(Math.abs(b.monto) - (pagoItem.monto_total || 0)));
+                if (sorted.length === 0) return <div style={{ padding: 40, textAlign: "center", color: "var(--txt3)" }}>No hay movimientos bancarios pendientes</div>;
+                return sorted.slice(0, 50).map(m => {
+                  const montoAbs = Math.abs(m.monto);
+                  const coincide = montoAbs === (pagoItem.monto_total || 0);
+                  return (
+                    <div key={m.id} onClick={async () => {
+                      if (pagoSaving) return;
+                      setPagoSaving(true);
+                      try {
+                        const { upsertConciliacion, updateMovimientoBanco } = await import("@/lib/db");
+                        await upsertConciliacion({ empresa_id: empresa.id!, movimiento_banco_id: m.id!, rcv_compra_id: pagoItem.id!, rcv_venta_id: null, confianza: 1, estado: "confirmado", tipo_partida: "match", metodo: "manual", notas: null, created_by: "admin" });
+                        await updateMovimientoBanco(m.id!, { estado_conciliacion: "conciliado" } as any);
+                        await load();
+                        setPagoItem(null);
+                      } catch (err) { console.error(err); }
+                      setPagoSaving(false);
+                    }}
+                      style={{ padding: "14px 28px", borderBottom: "1px solid var(--bg4)", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", background: coincide ? "var(--greenBg)" : "transparent" }}
+                      onMouseOver={e => { if (!coincide) e.currentTarget.style.background = "var(--bg3)"; }}
+                      onMouseOut={e => { if (!coincide) e.currentTarget.style.background = "transparent"; }}>
+                      <div>
+                        <div style={{ fontSize: 12, fontWeight: 500 }}>{m.descripcion || "Sin descripcion"}</div>
+                        <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 2 }}>{m.fecha} &middot; {m.banco || "Banco"}</div>
+                      </div>
+                      <div style={{ textAlign: "right" }}>
+                        <div className="mono" style={{ fontSize: 14, fontWeight: 700, color: "var(--red)" }}>{fmtMoney(montoAbs)}</div>
+                        {coincide && <div style={{ fontSize: 10, color: "var(--green)", fontWeight: 600 }}>Coincide exacto</div>}
+                      </div>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+            <div style={{ padding: "12px 28px", borderTop: "1px solid var(--bg4)", display: "flex", justifyContent: "flex-end" }}>
+              <button onClick={() => setPagoItem(null)} disabled={pagoSaving}
+                style={{ padding: "10px 24px", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer", background: "var(--bg2)", color: "var(--txt2)", border: "1px solid var(--bg4)" }}>Cerrar</button>
+            </div>
           </div>
         </div>
       )}
@@ -1488,7 +1574,7 @@ export default function ConciliacionPage() {
                 setTab(t as TabKey);
               }
             }} />}
-            {empresa && tab === "compras" && <TabRcvCompras empresa={empresa} periodo={periodo} onAsignarPago={(compra) => { setBancoFilter(undefined); setTab("banco"); }} />}
+            {empresa && tab === "compras" && <TabRcvCompras empresa={empresa} periodo={periodo} />}
             {empresa && tab === "ventas" && <TabRcvVentas empresa={empresa} periodo={periodo} />}
             {empresa && tab === "banco" && <ConciliacionTabla empresa={empresa} periodo={periodo} initialFilter={bancoFilter} />}
             {tab === "cuentas" && <PlanCuentasTree />}
