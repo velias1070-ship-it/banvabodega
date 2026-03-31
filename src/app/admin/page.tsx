@@ -8981,46 +8981,25 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
         const sb = (await import("@/lib/supabase")).getSupabase();
         if (!sb) return;
 
-        // 1. Fetch all data sources
-        const sixWeeksAgo = new Date(Date.now() - 42 * 24 * 60 * 60 * 1000).toISOString();
-        const [stockDispRes, fullCacheRes, compsRes, prodRes, ordersRes] = await Promise.all([
+        // 1. Fetch all data sources — use sku_intelligence as single source of truth
+        const [stockDispRes, compsRes, prodRes, intelRes] = await Promise.all([
           sb.from("v_stock_disponible").select("*"),
-          sb.from("stock_full_cache").select("sku_venta, cantidad, vel_promedio"),
           sb.from("composicion_venta").select("sku_venta, sku_origen, unidades"),
           sb.from("productos").select("sku, inner_pack"),
-          // Orders from last 6 weeks for velocity calculation
-          sb.from("ml_shipment_items").select("seller_sku, quantity, shipment_id")
-            .gt("shipment_id", 0), // all items; we'll filter by shipment date
+          sb.from("sku_intelligence").select("sku_origen, vel_ponderada, vel_full, stock_full, cob_full, mandar_full, accion"),
         ]);
-
-        // Calculate velocity from orders (last 6 weeks)
-        const velFromOrders = new Map<string, number>();
-        if (ordersRes.data) {
-          const skuQty: Record<string, number> = {};
-          for (const o of ordersRes.data as {seller_sku:string;quantity:number}[]) {
-            skuQty[o.seller_sku] = (skuQty[o.seller_sku] || 0) + o.quantity;
-          }
-          // Rough weekly average (total / 6 weeks)
-          for (const [sku, total] of Object.entries(skuQty)) {
-            velFromOrders.set(sku, total / 6);
-          }
-        }
 
         const dispMap = new Map<string, {on_hand:number;reserved:number;disponible:number}>();
         for (const r of (stockDispRes.data || []) as {sku:string;on_hand:number;reserved:number;disponible:number}[]) dispMap.set(r.sku, r);
 
-        const fullMap = new Map<string, {cantidad:number;vel:number}>();
-        for (const r of (fullCacheRes.data || []) as {sku_venta:string;cantidad:number;vel_promedio:number|null}[]) {
-          // Velocity = MAX(stock_full_cache.vel_promedio, orders velocity) — same logic as Inteligencia
-          const velPG = r.vel_promedio || 0;
-          const velOrd = velFromOrders.get(r.sku_venta) || 0;
-          fullMap.set(r.sku_venta, { cantidad: r.cantidad, vel: Math.max(velPG, velOrd) });
-        }
-        // Also add SKUs that have orders but no stock_full_cache entry
-        for (const [sku, vel] of Array.from(velFromOrders.entries())) {
-          if (!fullMap.has(sku) && vel > 0) {
-            fullMap.set(sku, { cantidad: 0, vel });
-          }
+        // fullMap keyed by sku_origen — from sku_intelligence (same source as Inteligencia)
+        const fullMap = new Map<string, {cantidad:number;vel:number;mandarFullIntel:number}>();
+        for (const r of (intelRes.data || []) as {sku_origen:string;vel_ponderada:number|null;vel_full:number|null;stock_full:number|null;mandar_full:number|null}[]) {
+          fullMap.set(r.sku_origen, {
+            cantidad: r.stock_full || 0,
+            vel: r.vel_full || r.vel_ponderada || 0,
+            mandarFullIntel: r.mandar_full || 0,
+          });
         }
 
         const origenToVentas = new Map<string, string[]>();
@@ -9058,14 +9037,11 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
           }
         }
 
-        // 3. Helper: get Full data for a sku_origen
+        // 3. Helper: get Full data for a sku_origen (from sku_intelligence)
         const getFullData = (skuOrigen: string) => {
-          const ventaSkus = origenToVentas.get(skuOrigen) || [skuOrigen];
-          let stockFull = 0, velSemanal = 0;
-          for (const sv of ventaSkus) {
-            const f = fullMap.get(sv);
-            if (f) { stockFull += f.cantidad; velSemanal += f.vel; }
-          }
+          const f = fullMap.get(skuOrigen);
+          const stockFull = f?.cantidad || 0;
+          const velSemanal = f?.vel || 0;
           return { stockFull, velSemanal };
         };
 
