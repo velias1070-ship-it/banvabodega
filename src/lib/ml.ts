@@ -1291,10 +1291,12 @@ export async function syncStockToML(sku: string, availableQty: number): Promise<
 
   await sb.from("audit_log").insert({ accion: "stock_sync:entry", params: { sku, availableQty } });
 
+  // Buscar por SKU: incluir items con sku_venta aunque estén marcados como inactivos
+  // (activo=false solo debería ignorar items sin vincular, no los mapeados)
   const { data: mappings } = await sb.from("ml_items_map")
     .select("*")
     .eq("sku", sku)
-    .eq("activo", true);
+    .or("activo.eq.true,sku_venta.not.is.null");
 
   if (!mappings || mappings.length === 0) {
     await sb.from("audit_log").insert({ accion: "stock_sync:no_mapping", params: { sku, availableQty } });
