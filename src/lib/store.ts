@@ -2504,6 +2504,7 @@ export async function pickearLineaFull(
     }
     comp.estado = "PICKEADO"; comp.pickedAt = new Date().toISOString(); comp.operario = operario; linea.estado = "PICKEADO";
     await db.updatePickingSession(sessionId, { lineas: _session.lineas, estado: _session.lineas.every(l => l.estado === "PICKEADO") ? "COMPLETADA" : "EN_PROCESO" });
+    db.enqueueAndSync([comp.skuOrigen]);
     return true;
   }
 
@@ -2559,6 +2560,8 @@ export async function pickearLineaFull(
           entidad: "picking_session", entidad_id: sessionId, operario,
           resultado: { lineaId, sku: skuOrigen, qty: unidades, posicion, skuVenta: skuVentaLabel, sessionDone },
         });
+        // Sync stock to ML immediately after deduction
+        db.enqueueAndSync([skuOrigen]);
       } catch (e) {
         console.error("[Picking Full] Stock deduction failed:", e);
         await db.auditLog("pickearLineaFull:stock_error", {
