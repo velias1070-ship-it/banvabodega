@@ -22,7 +22,6 @@ export default function RecepcionesOperador() {
   const [busqueda, setBusqueda] = useState("");
   const [lockError, setLockError] = useState("");
   const [prioritySkus, setPrioritySkus] = useState<Set<string>>(new Set());
-  const [selRecId, setSelRecId] = useState<string|null>(null); // null = list view, string = factura detail
 
   useEffect(() => {
     initStore().then(() => { setMounted(true); setLoading(false); });
@@ -234,124 +233,74 @@ export default function RecepcionesOperador() {
           </div>
         )}
 
-        {/* FACTURA LIST VIEW */}
-        {!selRecId && totalLineas > 0 && (() => {
-          // Group by factura, sort: facturas with FULL priority first
-          const facturas = recs.map(r => {
-            const lineasRec = allLineas.filter(l => l.recepcion_id === r.id);
-            const ubicadas = lineasRec.filter(l => l.estado === "UBICADA").length;
-            const total = lineasRec.length;
-            const hasFull = lineasRec.some(l => prioritySkus.has(l.sku));
-            const pendCount = lineasRec.filter(l => l.estado !== "UBICADA").length;
-            return { rec: r, lineas: lineasRec, ubicadas, total, hasFull, pendCount };
-          }).filter(f => f.total > 0).sort((a, b) => {
-            // FULL priority first, then by pending count desc
-            if (a.hasFull && !b.hasFull) return -1;
-            if (!a.hasFull && b.hasFull) return 1;
-            return b.pendCount - a.pendCount;
+        {/* Search */}
+        <div style={{position:"relative",marginBottom:12}}>
+          <input type="text" value={busqueda} onChange={e => setBusqueda(e.target.value)}
+            placeholder="Buscar por SKU, nombre o codigo ML..."
+            style={{width:"100%",padding:"10px 14px 10px 36px",borderRadius:8,background:"var(--bg2)",border:"1px solid var(--bg3)",color:"var(--txt1)",fontSize:13,outline:"none"}} />
+          <span style={{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",fontSize:16,color:"var(--txt3)",pointerEvents:"none"}}>🔍</span>
+          {busqueda && <button onClick={() => setBusqueda("")} style={{position:"absolute",right:8,top:"50%",transform:"translateY(-50%)",background:"var(--bg3)",border:"1px solid var(--bg4)",borderRadius:4,color:"var(--txt3)",fontSize:11,padding:"2px 8px",cursor:"pointer"}}>✕</button>}
+        </div>
+
+        {/* Line list grouped by factura */}
+        {totalLineas > 0 && (() => {
+          // Sort receptions: FULL priority first, then by pending count
+          const sortedRecs = [...recs].sort((a, b) => {
+            const aLineas = allLineas.filter(l => l.recepcion_id === a.id);
+            const bLineas = allLineas.filter(l => l.recepcion_id === b.id);
+            const aHasFull = aLineas.some(l => prioritySkus.has(l.sku) && l.estado !== "UBICADA");
+            const bHasFull = bLineas.some(l => prioritySkus.has(l.sku) && l.estado !== "UBICADA");
+            if (aHasFull && !bHasFull) return -1;
+            if (!aHasFull && bHasFull) return 1;
+            const aPend = aLineas.filter(l => l.estado !== "UBICADA").length;
+            const bPend = bLineas.filter(l => l.estado !== "UBICADA").length;
+            return bPend - aPend;
           });
 
-          return (
-            <div>
-              {/* Search */}
-              <div style={{position:"relative",marginBottom:12}}>
-                <input type="text" value={busqueda} onChange={e => setBusqueda(e.target.value)}
-                  placeholder="Buscar por SKU, nombre o codigo ML..."
-                  style={{width:"100%",padding:"10px 14px 10px 36px",borderRadius:8,background:"var(--bg2)",border:"1px solid var(--bg3)",color:"var(--txt1)",fontSize:13,outline:"none"}} />
-                <span style={{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",fontSize:16,color:"var(--txt3)",pointerEvents:"none"}}>🔍</span>
-                {busqueda && <button onClick={() => setBusqueda("")} style={{position:"absolute",right:8,top:"50%",transform:"translateY(-50%)",background:"var(--bg3)",border:"1px solid var(--bg4)",borderRadius:4,color:"var(--txt3)",fontSize:11,padding:"2px 8px",cursor:"pointer"}}>✕</button>}
+          // Filter lines if searching
+          const getLineas = (recId: string) => {
+            const recLineas = allLineas.filter(l => l.recepcion_id === recId);
+            if (!q) return recLineas;
+            return recLineas.filter(l => l.sku.toLowerCase().includes(q) || (l.nombre || "").toLowerCase().includes(q) || (l.codigo_ml || "").toLowerCase().includes(q));
+          };
+
+          return sortedRecs.map(r => {
+            const recLineas = getLineas(r.id!);
+            if (recLineas.length === 0) return null;
+            const recPend = recLineas.filter(l => l.estado !== "UBICADA");
+            const recDone = recLineas.filter(l => l.estado === "UBICADA");
+            const hasFull = recPend.some(l => prioritySkus.has(l.sku));
+            const prog = recLineas.length > 0 ? Math.round((recDone.length / recLineas.length) * 100) : 0;
+
+            // Sort: FULL first, then by estado (PENDIENTE > CONTADA > ETIQUETADA > UBICADA)
+            const sorted = [...recLineas].sort((a, b) => {
+              const aDone = a.estado === "UBICADA" ? 1 : 0;
+              const bDone = b.estado === "UBICADA" ? 1 : 0;
+              if (aDone !== bDone) return aDone - bDone;
+              const aPrio = prioritySkus.has(a.sku) ? 0 : 1;
+              const bPrio = prioritySkus.has(b.sku) ? 0 : 1;
+              return aPrio - bPrio;
+            });
+
+            return (
+              <div key={r.id} style={{marginBottom:16}}>
+                {/* Factura header */}
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4,padding:"6px 0"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:6}}>
+                    <span style={{fontSize:13,fontWeight:700}}>{r.proveedor}</span>
+                    <span className="mono" style={{fontSize:11,color:"var(--txt3)"}}>#{r.folio}</span>
+                    {hasFull && <span style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:3,background:"var(--red)",color:"#fff"}}>FULL</span>}
+                  </div>
+                  <span style={{fontSize:11,fontWeight:700,color:prog===100?"var(--green)":"var(--blue)"}}>{recDone.length}/{recLineas.length}</span>
+                </div>
+                <div style={{background:"var(--bg3)",borderRadius:3,height:4,overflow:"hidden",marginBottom:6}}>
+                  <div style={{width:`${prog}%`,height:"100%",background:prog===100?"var(--green)":"var(--blue)",borderRadius:3}}/>
+                </div>
+                {/* Lines */}
+                {sorted.map(l => <LineaCard key={l.id} linea={l} operario={operario} onTap={() => handleSelectLinea(l)} priority={prioritySkus.has(l.sku)} />)}
               </div>
-
-              {q ? (
-                // Search results: flat list
-                <div>
-                  <div style={{fontSize:11,color:"var(--txt3)",marginBottom:8,textAlign:"center"}}>{lineasFiltradas.length} resultado{lineasFiltradas.length !== 1 ? "s" : ""}</div>
-                  {lineasFiltradas.map(l => <LineaCard key={l.id} linea={l} operario={operario} onTap={() => handleSelectLinea(l)} priority={prioritySkus.has(l.sku)} />)}
-                </div>
-              ) : (
-                // Grouped by factura
-                <div>
-                  {facturas.map(f => {
-                    const prog = f.total > 0 ? Math.round((f.ubicadas / f.total) * 100) : 0;
-                    const fullCount = f.lineas.filter(l => prioritySkus.has(l.sku) && l.estado !== "UBICADA").length;
-                    return (
-                      <div key={f.rec.id} onClick={() => setSelRecId(f.rec.id!)}
-                        style={{padding:"14px 16px",marginBottom:8,borderRadius:10,cursor:"pointer",
-                          background: f.hasFull && f.pendCount > 0 ? "rgba(239,68,68,0.06)" : "var(--bg2)",
-                          border: `1px solid ${f.hasFull && f.pendCount > 0 ? "var(--red)" : "var(--bg3)"}`,
-                        }}>
-                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
-                          <div>
-                            <span style={{fontSize:14,fontWeight:700}}>{f.rec.proveedor}</span>
-                            <span className="mono" style={{fontSize:11,color:"var(--txt3)",marginLeft:8}}>#{f.rec.folio}</span>
-                          </div>
-                          <div style={{display:"flex",gap:4,alignItems:"center"}}>
-                            {fullCount > 0 && <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:3,background:"var(--red)",color:"#fff"}}>FULL {fullCount}</span>}
-                            <span style={{fontSize:12,fontWeight:700,color:prog===100?"var(--green)":"var(--blue)"}}>{prog}%</span>
-                          </div>
-                        </div>
-                        <div style={{background:"var(--bg3)",borderRadius:4,height:6,overflow:"hidden"}}>
-                          <div style={{width:`${prog}%`,height:"100%",background:prog===100?"var(--green)":"var(--blue)",borderRadius:4}}/>
-                        </div>
-                        <div style={{display:"flex",justifyContent:"space-between",marginTop:4,fontSize:10,color:"var(--txt3)"}}>
-                          <span>{f.ubicadas}/{f.total} lineas</span>
-                          <span>{f.pendCount > 0 ? `${f.pendCount} pendientes` : "Completada"}</span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          );
-        })()}
-
-        {/* FACTURA DETAIL VIEW */}
-        {selRecId && (() => {
-          const rec = recs.find(r => r.id === selRecId);
-          const facLineas = allLineas.filter(l => l.recepcion_id === selRecId);
-          const facPendientes = facLineas.filter(l => l.estado === "PENDIENTE");
-          const facEnProceso = facLineas.filter(l => ["CONTADA", "EN_ETIQUETADO", "ETIQUETADA"].includes(l.estado));
-          const facCompletadas = facLineas.filter(l => l.estado === "UBICADA");
-          const facProgress = facLineas.length > 0 ? Math.round((facCompletadas.length / facLineas.length) * 100) : 0;
-
-          return (
-            <div>
-              <button onClick={() => setSelRecId(null)} style={{padding:"8px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--txt2)",fontSize:12,fontWeight:600,border:"1px solid var(--bg4)",marginBottom:10}}>
-                ← Volver a facturas
-              </button>
-              <div style={{padding:"12px 14px",borderRadius:8,background:"var(--bg2)",border:"1px solid var(--bg3)",marginBottom:12}}>
-                <div style={{fontSize:14,fontWeight:700}}>{rec?.proveedor} <span className="mono" style={{fontSize:11,color:"var(--txt3)"}}>#{rec?.folio}</span></div>
-                <div style={{background:"var(--bg3)",borderRadius:4,height:8,overflow:"hidden",marginTop:8}}>
-                  <div style={{width:`${facProgress}%`,height:"100%",background:facProgress===100?"var(--green)":"var(--blue)",borderRadius:4}}/>
-                </div>
-                <div style={{fontSize:11,color:"var(--txt3)",marginTop:4}}>{facCompletadas.length}/{facLineas.length} lineas · {facProgress}%</div>
-              </div>
-
-              {facPendientes.length > 0 && (
-                <div style={{marginBottom:16}}>
-                  <div style={{fontSize:12,fontWeight:700,color:"var(--red)",marginBottom:6}}>🔴 Pendientes ({facPendientes.length})</div>
-                  {[...facPendientes].sort((a, b) => (prioritySkus.has(b.sku) ? 1 : 0) - (prioritySkus.has(a.sku) ? 1 : 0)).map(l =>
-                    <LineaCard key={l.id} linea={l} operario={operario} onTap={() => handleSelectLinea(l)} priority={prioritySkus.has(l.sku)} />
-                  )}
-                </div>
-              )}
-              {facEnProceso.length > 0 && (
-                <div style={{marginBottom:16}}>
-                  <div style={{fontSize:12,fontWeight:700,color:"var(--amber)",marginBottom:6}}>🟡 En proceso ({facEnProceso.length})</div>
-                  {[...facEnProceso].sort((a, b) => (prioritySkus.has(b.sku) ? 1 : 0) - (prioritySkus.has(a.sku) ? 1 : 0)).map(l =>
-                    <LineaCard key={l.id} linea={l} operario={operario} onTap={() => handleSelectLinea(l)} priority={prioritySkus.has(l.sku)} />
-                  )}
-                </div>
-              )}
-              {facCompletadas.length > 0 && (
-                <div>
-                  <div style={{fontSize:12,fontWeight:700,color:"var(--green)",marginBottom:6}}>✅ Completadas ({facCompletadas.length})</div>
-                  {facCompletadas.map(l => <LineaCard key={l.id} linea={l} operario={operario} onTap={() => handleSelectLinea(l)} />)}
-                </div>
-              )}
-            </div>
-          );
+            );
+          });
         })()}
       </div>
     </div>
