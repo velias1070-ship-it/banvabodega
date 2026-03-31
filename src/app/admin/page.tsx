@@ -8970,8 +8970,10 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
     source: "recepcion" | "bodega";
   }
   const [lines, setLines] = useState<PrioLine[]>([]);
-  const [edits, setEdits] = useState<Record<string, number>>({}); // sku → qty editado
+  const [edits, setEdits] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
+  const [queueing, setQueueing] = useState(false);
+  const [queueResult, setQueueResult] = useState<string|null>(null);
   const s = getStore();
 
   useEffect(() => {
@@ -9194,10 +9196,40 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
             <span style={{fontWeight:700,fontSize:13,color:"var(--amber)"}}>
               Enviar a Full ({needsFull.filter(l => getQty(l.sku, l.mandarFullSugerido) > 0).length} SKUs, {totalMandarFull} uds)
             </span>
-            <button onClick={doExport} style={{padding:"4px 12px",borderRadius:6,background:"var(--amber)",color:"#000",fontSize:11,fontWeight:700,border:"none",cursor:"pointer"}}>
-              Exportar CSV
-            </button>
+            <div style={{display:"flex",gap:6}}>
+              <button onClick={async () => {
+                const sb = (await import("@/lib/supabase")).getSupabase();
+                if (!sb) return;
+                // Find active envio_full session
+                const { data: sessions } = await sb.from("picking_sessions").select("id").eq("tipo", "envio_full").in("estado", ["ABIERTA", "EN_PROCESO"]).order("created_at", { ascending: false }).limit(1);
+                const sessionId = (sessions as {id:string}[] | null)?.[0]?.id;
+                if (!sessionId) { alert("No hay envío a Full activo. Crea uno primero desde Inteligencia."); return; }
+                if (!confirm(`Agregar ${priorityIncoming.length} SKUs pendientes al envío Full activo?\nSe agregarán automáticamente cuando se procesen las recepciones.`)) return;
+                setQueueing(true);
+                try {
+                  const items = priorityIncoming.map(l => ({
+                    sku: l.sku, sku_venta: l.skuVenta,
+                    cantidad: getQty(l.sku, l.mandarFullSugerido),
+                    picking_session_id: sessionId,
+                  }));
+                  const { upsertEnvioFullPendiente } = await import("@/lib/db");
+                  await upsertEnvioFullPendiente(items);
+                  setQueueResult(`${items.length} SKUs encolados. Se agregarán al envío Full cuando se ubiquen.`);
+                } catch (e) {
+                  setQueueResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
+                } finally {
+                  setQueueing(false);
+                }
+              }} disabled={queueing || priorityIncoming.length === 0}
+                style={{padding:"4px 12px",borderRadius:6,background:"var(--green)",color:"#fff",fontSize:11,fontWeight:700,border:"none",cursor:"pointer",opacity:queueing?0.5:1}}>
+                {queueing ? "Guardando..." : "Agregar al envio Full"}
+              </button>
+              <button onClick={doExport} style={{padding:"4px 12px",borderRadius:6,background:"var(--amber)",color:"#000",fontSize:11,fontWeight:700,border:"none",cursor:"pointer"}}>
+                Exportar CSV
+              </button>
+            </div>
           </div>
+          {queueResult && <div style={{padding:"8px 12px",fontSize:12,color:"var(--green)",background:"var(--greenBg)"}}>{queueResult}</div>}
           <table className="tbl" style={{width:"100%"}}>
             <thead><tr>
               <th>SKU</th>

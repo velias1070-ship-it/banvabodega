@@ -1206,6 +1206,69 @@ export async function ubicarLinea(lineaId: string, sku: string, posicionId: stri
     entidad: "recepcion_linea", entidad_id: lineaId, operario,
     resultado: { sku, posicionId, qty, prevQtyUbicada, newQtyUbicada, qtyTotal, estado: nextEstado, derivado: calcResult !== null },
   });
+
+  // Auto-add to envio_full if this SKU is in envio_full_pendiente
+  if (isConfigured()) {
+    try {
+      const pendientes = await db.fetchEnvioFullPendiente();
+      const match = pendientes.find(p => p.sku === sku && p.cantidad_agregada < p.cantidad);
+      if (match && match.picking_session_id) {
+        const falta = match.cantidad - match.cantidad_agregada;
+        const agregar = Math.min(falta, qty); // don't add more than what was just located
+        if (agregar > 0) {
+          // Find the active picking session
+          const sessions = await db.getActivePickingSessions();
+          const session = sessions.find(s => s.id === match.picking_session_id);
+          if (session && session.tipo === "envio_full") {
+            // Create new picking line — same structure as buildPickingLineasFull
+            const nextId = `FA${String(session.lineas.length + 1).padStart(3, "0")}`;
+            const skuVentaLine = match.sku_venta || sku;
+            const newLinea: db.PickingLinea = {
+              id: nextId,
+              skuVenta: skuVentaLine,
+              qtyPedida: agregar,
+              estado: "PENDIENTE" as const,
+              componentes: [{
+                skuOrigen: sku,
+                codigoMl: "",
+                nombre: s.products[sku]?.name || sku,
+                unidades: agregar,
+                posicion: posicionId,
+                posLabel: posicionId,
+                stockDisponible: qty,
+                estado: "PENDIENTE" as const,
+                pickedAt: null,
+                operario: null,
+              }],
+              skuOrigen: sku,
+              tipoFull: "simple" as const,
+              qtyFisica: agregar,
+              qtyVenta: agregar,
+              unidadesPorPack: 1,
+            };
+
+            // Add line to session
+            const updatedLineas = [...session.lineas, newLinea];
+            await db.updatePickingSession(session.id!, { lineas: updatedLineas });
+
+            // Reserve stock
+            await db.reservarStock(sku, agregar);
+
+            // Update pendiente
+            await db.updateEnvioFullPendiente(match.id!, { cantidad_agregada: match.cantidad_agregada + agregar });
+
+            await db.auditLog("envioFullPendiente:auto_add", {
+              entidad: "picking_session", entidad_id: session.id!, operario,
+              resultado: { sku, posicionId, qty: agregar, lineaId: nextId, skuVenta: skuVentaLine, pendienteId: match.id },
+            });
+          }
+        }
+      }
+    } catch (e) {
+      // Non-blocking — if auto-add fails, stock is still in bodega
+      console.error("[envioFullPendiente] auto-add failed:", e);
+    }
+  }
 }
 
 // Recalculate qty_ubicada from movimientos for all lines in a reception

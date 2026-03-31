@@ -1869,6 +1869,43 @@ export async function clearStockSyncQueue(skus: string[]): Promise<void> {
   await sb.from("stock_sync_queue").delete().in("sku", skus);
 }
 
+// ==================== ENVIO FULL PENDIENTE ====================
+export interface DBEnvioFullPendiente {
+  id?: string;
+  sku: string;
+  sku_venta: string;
+  cantidad: number;
+  cantidad_agregada: number;
+  picking_session_id: string | null;
+  created_at?: string;
+}
+
+export async function fetchEnvioFullPendiente(sessionId?: string): Promise<DBEnvioFullPendiente[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  let q = sb.from("envio_full_pendiente").select("*");
+  if (sessionId) q = q.eq("picking_session_id", sessionId);
+  const { data } = await q.order("created_at");
+  return (data || []) as DBEnvioFullPendiente[];
+}
+
+export async function upsertEnvioFullPendiente(items: Omit<DBEnvioFullPendiente, "id" | "created_at" | "cantidad_agregada">[]): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  const rows = items.map(i => ({ ...i, cantidad_agregada: 0 }));
+  for (let i = 0; i < rows.length; i += 500) {
+    await sb.from("envio_full_pendiente").upsert(rows.slice(i, i + 500), { onConflict: "sku,picking_session_id" });
+  }
+}
+
+export async function deleteEnvioFullPendiente(id: string): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("envio_full_pendiente").delete().eq("id", id);
+}
+
+export async function updateEnvioFullPendiente(id: string, fields: Partial<DBEnvioFullPendiente>): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("envio_full_pendiente").update(fields).eq("id", id);
+}
+
 // ==================== CONCILIADOR — TIPOS ====================
 
 export interface DBEmpresa {
