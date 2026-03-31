@@ -9000,7 +9000,11 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
         for (const c of (compsRes.data || []) as {sku_venta:string;sku_origen:string;unidades:number}[]) {
           if (!origenToVentas.has(c.sku_origen)) origenToVentas.set(c.sku_origen, []);
           if (!origenToVentas.get(c.sku_origen)!.includes(c.sku_venta)) origenToVentas.get(c.sku_origen)!.push(c.sku_venta);
-          if (!origenToFirstVenta.has(c.sku_origen)) origenToFirstVenta.set(c.sku_origen, c.sku_venta);
+          // Prefer individual (unidades=1) or same as origen for display
+          const current = origenToFirstVenta.get(c.sku_origen);
+          if (!current || c.unidades === 1 || c.sku_venta === c.sku_origen) {
+            origenToFirstVenta.set(c.sku_origen, c.sku_venta);
+          }
         }
 
         const innerPackMap = new Map<string, number>();
@@ -9206,7 +9210,7 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
           </div>
           <table className="tbl" style={{width:"100%"}}>
             <thead><tr>
-              <th>SKU Venta</th>
+              <th>SKU</th>
               <th>Producto</th>
               <th style={{textAlign:"right"}}>Viene</th>
               <th style={{textAlign:"right"}}>Bodega</th>
@@ -9224,7 +9228,7 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
                 const cp = cobFullPost(l);
                 return (
                   <tr key={i} style={{background: l.cobFullActual < 7 ? "var(--redBg)" : l.cobFullActual < 14 ? "var(--amberBg)" : "transparent", borderBottom:"1px solid var(--bg3)"}}>
-                    <td className="mono" style={{fontSize:11,fontWeight:700,padding:"8px 6px"}}>{l.skuVenta}</td>
+                    <td className="mono" style={{fontSize:11,fontWeight:700,padding:"8px 6px"}}>{l.sku}{l.sku !== l.skuVenta && <div style={{fontSize:9,color:"var(--txt3)",fontWeight:400}}>{l.skuVenta}</div>}</td>
                     <td style={{fontSize:11,padding:"8px 6px",color:"var(--txt2)"}}>{l.nombre.substring(0,28)}</td>
                     <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 6px",color:l.incoming>0?"var(--green)":"var(--txt3)"}}>{l.incoming > 0 ? "+" + l.incoming : "—"}</td>
                     <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 6px"}}>{l.stockBodega}</td>
