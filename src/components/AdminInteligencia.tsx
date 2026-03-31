@@ -967,6 +967,12 @@ export default function AdminInteligencia() {
       if (id) {
         setPickingCreado(id);
 
+        // Reconciliar reservas → auto-enqueue + sync ML inmediato
+        try {
+          const sb = (await import("@/lib/supabase")).getSupabase();
+          if (sb) await sb.rpc("reconciliar_reservas");
+        } catch { /* no bloquear */ }
+
         // Log historial
         const skusEditados = envioSelected.filter(i => envioEdits.has(i.skuVenta)).map(i => i.skuVenta);
         try {
