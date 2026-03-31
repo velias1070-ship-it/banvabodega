@@ -114,6 +114,30 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // ── Stock en tránsito desde envíos a Full (picking sessions) ──
+    // Sesiones envio_full recientes: COMPLETADA en los últimos 7 días + ABIERTA/EN_PROCESO
+    {
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      const { data: envioSessions } = await sb.from("picking_sessions")
+        .select("lineas, estado, completed_at")
+        .eq("tipo", "envio_full")
+        .or(`estado.in.(ABIERTA,EN_PROCESO),and(estado.eq.COMPLETADA,completed_at.gte.${sevenDaysAgo})`);
+      for (const ses of (envioSessions || []) as { lineas: { skuVenta: string; estado: string; componentes: { skuOrigen: string; unidades: number; estado: string }[] }[]; estado: string }[]) {
+        for (const linea of ses.lineas) {
+          // ABIERTA/EN_PROCESO: todas las líneas cuentan como en tránsito
+          // COMPLETADA: solo líneas que fueron PICKEADO
+          if (ses.estado !== "COMPLETADA" || linea.estado === "PICKEADO") {
+            for (const comp of linea.componentes) {
+              const sku = (comp.skuOrigen || "").toUpperCase();
+              if (sku) {
+                stockEnTransito.set(sku, (stockEnTransito.get(sku) || 0) + comp.unidades);
+              }
+            }
+          }
+        }
+      }
+    }
+
     // ── Inferir quiebres de Full desde orders_history ──
     // Si un SKU con vel_30d > 1 tiene 3+ días consecutivos con 0 ventas Full
     // rodeados de días con ventas, marcar como quiebre retroactivo.

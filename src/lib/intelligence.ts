@@ -914,7 +914,7 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     const targetFullUds = velParaPedir * pctFull * targetDiasFull / 7;
     const targetFlexUds = velParaPedir * pctFlex * 30 / 7;
     const disponibleParaFull = Math.max(0, stBodega - Math.ceil(targetFlexUds));
-    let mandarFull = Math.max(0, Math.min(Math.ceil(targetFullUds - stFull), disponibleParaFull));
+    let mandarFull = Math.max(0, Math.min(Math.ceil(targetFullUds - stFull - stEnTransito), disponibleParaFull));
     const pedirFull = Math.max(0, Math.ceil(targetFullUds - stFull - stEnTransito));
     const pedirFlex = Math.max(0, Math.ceil(targetFlexUds - stBodega));
     const pedirTotal = pedirFull + pedirFlex;
@@ -1141,9 +1141,9 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     const targetFullUds = velParaPedir * r.pct_full * r.target_dias_full / 7;
     const targetFlexUds = velParaPedir * r.pct_flex * 30 / 7;
     const disponibleParaFullR = Math.max(0, r.stock_bodega - Math.ceil(targetFlexUds));
-    r.mandar_full = Math.max(0, Math.min(Math.ceil(targetFullUds - r.stock_full), disponibleParaFullR));
+    r.mandar_full = Math.max(0, Math.min(Math.ceil(targetFullUds - r.stock_full - r.stock_en_transito), disponibleParaFullR));
     // Productos nuevos: mantener lote inicial si vel=0 y sin stock en Full
-    if (r.vel_ponderada === 0 && r.vel_pre_quiebre === 0 && r.stock_full === 0 && r.stock_bodega > 0) {
+    if (r.vel_ponderada === 0 && r.vel_pre_quiebre === 0 && r.stock_full === 0 && r.stock_en_transito === 0 && r.stock_bodega > 0) {
       const loteInicial = Math.max(innerPack, 2);
       r.mandar_full = Math.min(loteInicial, r.stock_bodega);
     }
