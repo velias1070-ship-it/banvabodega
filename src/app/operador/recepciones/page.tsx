@@ -242,65 +242,50 @@ export default function RecepcionesOperador() {
           {busqueda && <button onClick={() => setBusqueda("")} style={{position:"absolute",right:8,top:"50%",transform:"translateY(-50%)",background:"var(--bg3)",border:"1px solid var(--bg4)",borderRadius:4,color:"var(--txt3)",fontSize:11,padding:"2px 8px",cursor:"pointer"}}>✕</button>}
         </div>
 
-        {/* Line list grouped by factura */}
-        {totalLineas > 0 && (() => {
-          // Sort receptions: FULL priority first, then by pending count
-          const sortedRecs = [...recs].sort((a, b) => {
-            const aLineas = allLineas.filter(l => l.recepcion_id === a.id);
-            const bLineas = allLineas.filter(l => l.recepcion_id === b.id);
-            const aHasFull = aLineas.some(l => prioritySkus.has(l.sku) && l.estado !== "UBICADA");
-            const bHasFull = bLineas.some(l => prioritySkus.has(l.sku) && l.estado !== "UBICADA");
-            if (aHasFull && !bHasFull) return -1;
-            if (!aHasFull && bHasFull) return 1;
-            const aPend = aLineas.filter(l => l.estado !== "UBICADA").length;
-            const bPend = bLineas.filter(l => l.estado !== "UBICADA").length;
-            return bPend - aPend;
+        {q && <div style={{fontSize:11,color:"var(--txt3)",marginBottom:8,textAlign:"center"}}>{lineasFiltradas.length} resultado{lineasFiltradas.length !== 1 ? "s" : ""}</div>}
+
+        {/* Flat line list: FULL priority first, then pending, then in progress, then completed */}
+        {(() => {
+          const sorted = [...lineasFiltradas].sort((a, b) => {
+            // 1. Completed at bottom
+            const aDone = a.estado === "UBICADA" ? 1 : 0;
+            const bDone = b.estado === "UBICADA" ? 1 : 0;
+            if (aDone !== bDone) return aDone - bDone;
+            // 2. FULL priority at top
+            const aPrio = prioritySkus.has(a.sku) ? 0 : 1;
+            const bPrio = prioritySkus.has(b.sku) ? 0 : 1;
+            if (aPrio !== bPrio) return aPrio - bPrio;
+            // 3. By estado: PENDIENTE first, then in progress
+            const estadoOrder: Record<string, number> = { PENDIENTE: 0, CONTADA: 1, EN_ETIQUETADO: 2, ETIQUETADA: 3, UBICADA: 4 };
+            return (estadoOrder[a.estado] ?? 9) - (estadoOrder[b.estado] ?? 9);
           });
 
-          // Filter lines if searching
-          const getLineas = (recId: string) => {
-            const recLineas = allLineas.filter(l => l.recepcion_id === recId);
-            if (!q) return recLineas;
-            return recLineas.filter(l => l.sku.toLowerCase().includes(q) || (l.nombre || "").toLowerCase().includes(q) || (l.codigo_ml || "").toLowerCase().includes(q));
-          };
+          const pend = sorted.filter(l => l.estado === "PENDIENTE");
+          const enProc = sorted.filter(l => ["CONTADA", "EN_ETIQUETADO", "ETIQUETADA"].includes(l.estado));
+          const done = sorted.filter(l => l.estado === "UBICADA");
 
-          return sortedRecs.map(r => {
-            const recLineas = getLineas(r.id!);
-            if (recLineas.length === 0) return null;
-            const recPend = recLineas.filter(l => l.estado !== "UBICADA");
-            const recDone = recLineas.filter(l => l.estado === "UBICADA");
-            const hasFull = recPend.some(l => prioritySkus.has(l.sku));
-            const prog = recLineas.length > 0 ? Math.round((recDone.length / recLineas.length) * 100) : 0;
-
-            // Sort: FULL first, then by estado (PENDIENTE > CONTADA > ETIQUETADA > UBICADA)
-            const sorted = [...recLineas].sort((a, b) => {
-              const aDone = a.estado === "UBICADA" ? 1 : 0;
-              const bDone = b.estado === "UBICADA" ? 1 : 0;
-              if (aDone !== bDone) return aDone - bDone;
-              const aPrio = prioritySkus.has(a.sku) ? 0 : 1;
-              const bPrio = prioritySkus.has(b.sku) ? 0 : 1;
-              return aPrio - bPrio;
-            });
-
-            return (
-              <div key={r.id} style={{marginBottom:16}}>
-                {/* Factura header */}
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4,padding:"6px 0"}}>
-                  <div style={{display:"flex",alignItems:"center",gap:6}}>
-                    <span style={{fontSize:13,fontWeight:700}}>{r.proveedor}</span>
-                    <span className="mono" style={{fontSize:11,color:"var(--txt3)"}}>#{r.folio}</span>
-                    {hasFull && <span style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:3,background:"var(--red)",color:"#fff"}}>FULL</span>}
-                  </div>
-                  <span style={{fontSize:11,fontWeight:700,color:prog===100?"var(--green)":"var(--blue)"}}>{recDone.length}/{recLineas.length}</span>
+          return (
+            <>
+              {pend.length > 0 && (
+                <div style={{marginBottom:16}}>
+                  <div style={{fontSize:12,fontWeight:700,color:"var(--red)",marginBottom:6}}>Pendientes ({pend.length})</div>
+                  {pend.map(l => <LineaCard key={l.id} linea={l} operario={operario} onTap={() => handleSelectLinea(l)} priority={prioritySkus.has(l.sku)} />)}
                 </div>
-                <div style={{background:"var(--bg3)",borderRadius:3,height:4,overflow:"hidden",marginBottom:6}}>
-                  <div style={{width:`${prog}%`,height:"100%",background:prog===100?"var(--green)":"var(--blue)",borderRadius:3}}/>
+              )}
+              {enProc.length > 0 && (
+                <div style={{marginBottom:16}}>
+                  <div style={{fontSize:12,fontWeight:700,color:"var(--amber)",marginBottom:6}}>En proceso ({enProc.length})</div>
+                  {enProc.map(l => <LineaCard key={l.id} linea={l} operario={operario} onTap={() => handleSelectLinea(l)} priority={prioritySkus.has(l.sku)} />)}
                 </div>
-                {/* Lines */}
-                {sorted.map(l => <LineaCard key={l.id} linea={l} operario={operario} onTap={() => handleSelectLinea(l)} priority={prioritySkus.has(l.sku)} />)}
-              </div>
-            );
-          });
+              )}
+              {done.length > 0 && (
+                <div>
+                  <div style={{fontSize:12,fontWeight:700,color:"var(--green)",marginBottom:6}}>Completadas ({done.length})</div>
+                  {done.map(l => <LineaCard key={l.id} linea={l} operario={operario} onTap={() => handleSelectLinea(l)} />)}
+                </div>
+              )}
+            </>
+          );
         })()}
       </div>
     </div>
