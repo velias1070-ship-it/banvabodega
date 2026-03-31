@@ -9131,8 +9131,15 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
   if (loading) return <div style={{padding:40,textAlign:"center",color:"var(--txt3)"}}>Analizando prioridades...</div>;
   if (lines.length === 0) return <div style={{padding:40,textAlign:"center",color:"var(--txt3)"}}>No hay lineas pendientes ni stock para reponer.</div>;
 
-  // Priority receptions: incoming lines that will go to Full
-  const priorityIncoming = needsFull.filter(l => l.incoming > 0 && getQty(l.sku, l.mandarFullSugerido) > 0);
+  // Priority receptions: incoming lines where the incoming units are NEEDED for Full
+  // (mandarFull with just bodega < mandarFull with bodega + incoming)
+  const priorityIncoming = needsFull.filter(l => {
+    if (l.incoming <= 0) return false;
+    const qty = getQty(l.sku, l.mandarFullSugerido);
+    if (qty <= 0) return false;
+    // Would we be able to send the same amount without the incoming?
+    return qty > l.disponible; // incoming is needed because bodega alone isn't enough
+  });
   const priorityFolios = Array.from(new Set(priorityIncoming.map(l => l.folio).flatMap(f => f.split(", "))));
 
   return (
