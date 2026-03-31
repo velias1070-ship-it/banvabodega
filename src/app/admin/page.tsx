@@ -9086,27 +9086,6 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
           });
         }
 
-        // 5b. SKUs already in bodega (not in receptions) that need Full replenishment
-        for (const [skuOrigen, disp] of Array.from(dispMap.entries())) {
-          if (processedSkus.has(skuOrigen)) continue;
-          if (disp.disponible <= 0) continue;
-          const { stockFull, velSemanal } = getFullData(skuOrigen);
-          if (velSemanal <= 0) continue;
-          const ip = innerPackMap.get(skuOrigen) || 1;
-          const mandarFullSugerido = calcMandarFull(disp.disponible, stockFull, velSemanal, ip);
-          if (mandarFullSugerido <= 0) continue;
-          const velDiaria = velSemanal / 7;
-          const cobFullActual = velDiaria > 0 ? Math.round(stockFull / velDiaria) : 999;
-          const skuVenta = origenToFirstVenta.get(skuOrigen) || skuOrigen;
-
-          result.push({
-            sku: skuOrigen, skuVenta, nombre: s.products[skuOrigen]?.name || skuOrigen,
-            incoming: 0, folio: "—", stockBodega: disp.on_hand, disponible: disp.disponible,
-            stockFull, velSemanal, stockSimulado: disp.disponible, mandarFullSugerido, innerPack: ip,
-            cobFullActual, source: "bodega",
-          });
-        }
-
         // 6. Sort: mandarFull > 0 first, then by cobFullActual ascending
         result.sort((a, b) => {
           if (a.mandarFullSugerido > 0 && b.mandarFullSugerido <= 0) return -1;
