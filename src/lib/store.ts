@@ -1231,7 +1231,7 @@ export async function ubicarLinea(lineaId: string, sku: string, posicionId: stri
               componentes: [{
                 skuOrigen: sku,
                 codigoMl: "",
-                nombre: s.products[sku]?.name || sku,
+                nombre: _cache.products[sku]?.name || sku,
                 unidades: agregar,
                 posicion: posicionId,
                 posLabel: posicionId,
