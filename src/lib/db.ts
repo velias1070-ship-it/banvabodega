@@ -1854,14 +1854,32 @@ export async function addToStockSyncQueue(skus: string[]): Promise<void> {
   if (error) throw new Error(`addToStockSyncQueue failed: ${error.message}`);
 }
 
-/** Enqueue SKUs + fire immediate sync (fire & forget, client-side) */
+/** Enqueue SKUs + all related sku_venta publications + fire immediate sync */
 export function enqueueAndSync(skus: string[]): void {
-  addToStockSyncQueue(skus).then(() => {
+  // Also enqueue sku_venta variants that share the same sku_origen
+  const sb = getSupabase();
+  const expandAndSync = async () => {
+    if (sb) {
+      const { data } = await sb.from("ml_items_map")
+        .select("sku")
+        .in("sku_origen", skus)
+        .eq("activo", true);
+      if (data) {
+        const extra = (data as { sku: string }[]).map(r => r.sku);
+        const all = Array.from(new Set([...skus, ...extra]));
+        await addToStockSyncQueue(all);
+      } else {
+        await addToStockSyncQueue(skus);
+      }
+    } else {
+      await addToStockSyncQueue(skus);
+    }
     fetch("/api/ml/stock-sync", {
       method: "POST",
       headers: { "x-internal": "1" },
     }).catch(() => {});
-  }).catch(() => {});
+  };
+  expandAndSync().catch(() => {});
 }
 
 export async function clearStockSyncQueue(skus: string[]): Promise<void> {
