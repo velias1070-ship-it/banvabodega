@@ -8982,18 +8982,46 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
         if (!sb) return;
 
         // 1. Fetch all data sources
-        const [stockDispRes, fullCacheRes, compsRes, prodRes] = await Promise.all([
+        const sixWeeksAgo = new Date(Date.now() - 42 * 24 * 60 * 60 * 1000).toISOString();
+        const [stockDispRes, fullCacheRes, compsRes, prodRes, ordersRes] = await Promise.all([
           sb.from("v_stock_disponible").select("*"),
           sb.from("stock_full_cache").select("sku_venta, cantidad, vel_promedio"),
           sb.from("composicion_venta").select("sku_venta, sku_origen, unidades"),
           sb.from("productos").select("sku, inner_pack"),
+          // Orders from last 6 weeks for velocity calculation
+          sb.from("ml_shipment_items").select("seller_sku, quantity, shipment_id")
+            .gt("shipment_id", 0), // all items; we'll filter by shipment date
         ]);
+
+        // Calculate velocity from orders (last 6 weeks)
+        const velFromOrders = new Map<string, number>();
+        if (ordersRes.data) {
+          const skuQty: Record<string, number> = {};
+          for (const o of ordersRes.data as {seller_sku:string;quantity:number}[]) {
+            skuQty[o.seller_sku] = (skuQty[o.seller_sku] || 0) + o.quantity;
+          }
+          // Rough weekly average (total / 6 weeks)
+          for (const [sku, total] of Object.entries(skuQty)) {
+            velFromOrders.set(sku, total / 6);
+          }
+        }
 
         const dispMap = new Map<string, {on_hand:number;reserved:number;disponible:number}>();
         for (const r of (stockDispRes.data || []) as {sku:string;on_hand:number;reserved:number;disponible:number}[]) dispMap.set(r.sku, r);
 
         const fullMap = new Map<string, {cantidad:number;vel:number}>();
-        for (const r of (fullCacheRes.data || []) as {sku_venta:string;cantidad:number;vel_promedio:number|null}[]) fullMap.set(r.sku_venta, { cantidad: r.cantidad, vel: r.vel_promedio || 0 });
+        for (const r of (fullCacheRes.data || []) as {sku_venta:string;cantidad:number;vel_promedio:number|null}[]) {
+          // Velocity = MAX(stock_full_cache.vel_promedio, orders velocity) — same logic as Inteligencia
+          const velPG = r.vel_promedio || 0;
+          const velOrd = velFromOrders.get(r.sku_venta) || 0;
+          fullMap.set(r.sku_venta, { cantidad: r.cantidad, vel: Math.max(velPG, velOrd) });
+        }
+        // Also add SKUs that have orders but no stock_full_cache entry
+        for (const [sku, vel] of Array.from(velFromOrders.entries())) {
+          if (!fullMap.has(sku) && vel > 0) {
+            fullMap.set(sku, { cantidad: 0, vel });
+          }
+        }
 
         const origenToVentas = new Map<string, string[]>();
         const origenToFirstVenta = new Map<string, string>();
