@@ -115,11 +115,12 @@ async function paginatedSelect(query: () => any, pageSize = 1000): Promise<Recor
 export async function queryStockPorSku(): Promise<Map<string, number>> {
   const sb = getServerSupabase();
   if (!sb) return new Map();
-  const data = await paginatedSelect(() => sb.from("stock").select("sku, cantidad"));
+  const data = await paginatedSelect(() => sb.from("stock").select("sku, cantidad, qty_reserved"));
   const map = new Map<string, number>();
   for (const row of data) {
     const sku = row.sku as string;
-    map.set(sku, (map.get(sku) || 0) + ((row.cantidad as number) || 0));
+    const disponible = ((row.cantidad as number) || 0) - ((row.qty_reserved as number) || 0);
+    map.set(sku, (map.get(sku) || 0) + Math.max(0, disponible));
   }
   return map;
 }

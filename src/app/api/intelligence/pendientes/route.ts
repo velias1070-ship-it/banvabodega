@@ -27,14 +27,14 @@ export async function GET() {
     const [cacheRes, prodRes, stockRes, compRes, itemsMapRes] = await Promise.all([
       sb.from("stock_full_cache").select("sku_venta, cantidad").gt("cantidad", 0),
       sb.from("productos").select("sku, nombre, costo, sku_venta"),
-      sb.from("stock").select("sku, cantidad"),
+      sb.from("stock").select("sku, cantidad, qty_reserved"),
       sb.from("composicion_venta").select("sku_venta, sku_origen"),
       sb.from("ml_items_map").select("sku, item_id, sku_venta, titulo").eq("activo", true),
     ]);
 
     const fullCache = (cacheRes.data || []) as { sku_venta: string; cantidad: number }[];
     const productos = (prodRes.data || []) as { sku: string; nombre: string; costo: number; sku_venta: string | null }[];
-    const stock = (stockRes.data || []) as { sku: string; cantidad: number }[];
+    const stock = (stockRes.data || []) as { sku: string; cantidad: number; qty_reserved: number }[];
     const composicion = (compRes.data || []) as { sku_venta: string; sku_origen: string }[];
     const itemsMap = (itemsMapRes.data || []) as { sku: string; item_id: string; sku_venta: string | null; titulo: string | null }[];
 
@@ -67,11 +67,12 @@ export async function GET() {
       compMap.set(c.sku_venta.toUpperCase(), c.sku_origen.toUpperCase());
     }
 
-    // Stock bodega
+    // Stock bodega (disponible = cantidad - reservado)
     const stockBodega = new Map<string, number>();
     for (const s of stock) {
       const key = s.sku.toUpperCase();
-      stockBodega.set(key, (stockBodega.get(key) || 0) + (s.cantidad || 0));
+      const disponible = Math.max(0, (s.cantidad || 0) - (s.qty_reserved || 0));
+      stockBodega.set(key, (stockBodega.get(key) || 0) + disponible);
     }
 
     // Resolver cada entrada de stock_full_cache a un SKU real
