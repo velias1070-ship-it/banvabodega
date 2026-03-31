@@ -9458,7 +9458,7 @@ function AdminTimeline() {
   // Calculate saldo (disponible) for each row
   const rowsWithSaldo = useMemo(() => {
     // Count total active reservations (pendiente, not pickeado)
-    const activeReservas = rows.filter(r => r.evento === "reserva" && r.nota && !r.nota.includes("(pickeado)"));
+    const activeReservas = rows.filter(r => (r.evento === "reserva" || r.evento === "reserva_full") && r.nota && !r.nota.includes("(pickeado)"));
     const totalReserved = activeReservas.reduce((s, r) => {
       const match = r.detalle.match(/(\d+) uds/);
       return s + (match ? parseInt(match[1]) : 0);
@@ -9572,17 +9572,19 @@ function AdminTimeline() {
               {rowsWithSaldo.map((r, i) => {
                 const isSync = r.evento === "sync_ml";
                 const isReserva = r.evento === "reserva";
-                const isPendiente = isReserva && r.nota && !r.nota.includes("(pickeado)");
-                const isPickeado = isReserva && r.nota?.includes("(pickeado)");
-                const isEntrada = !isSync && !isReserva && (r.delta !== null && r.delta > 0);
-                const isSalida = !isSync && !isReserva && (r.delta !== null && r.delta < 0);
+                const isReservaFull = r.evento === "reserva_full";
+                const isAnyReserva = isReserva || isReservaFull;
+                const isPendiente = isAnyReserva && r.nota && !r.nota.includes("(pickeado)");
+                const isPickeado = isAnyReserva && r.nota?.includes("(pickeado)");
+                const isEntrada = !isSync && !isAnyReserva && (r.delta !== null && r.delta > 0);
+                const isSalida = !isSync && !isAnyReserva && (r.delta !== null && r.delta < 0);
 
-                const bgColor = isReserva ? "var(--amberBg)" : isSync ? "var(--cyanBg, rgba(0,200,255,0.04))" : isSalida ? "var(--redBg)" : isEntrada ? "var(--greenBg)" : "transparent";
-                const fgColor = isReserva ? "var(--amber)" : isSync ? "var(--cyan)" : isEntrada ? "var(--green)" : "var(--red)";
-                const label = isPickeado ? "PICKEADO" : isPendiente ? "RESERVA" : isSync ? "SYNC ML" : isEntrada ? "ENTRADA" : "SALIDA";
+                const bgColor = isReservaFull ? "var(--blueBg, rgba(59,130,246,0.08))" : isReserva ? "var(--amberBg)" : isSync ? "var(--cyanBg, rgba(0,200,255,0.04))" : isSalida ? "var(--redBg)" : isEntrada ? "var(--greenBg)" : "transparent";
+                const fgColor = isReservaFull ? "var(--blue)" : isReserva ? "var(--amber)" : isSync ? "var(--cyan)" : isEntrada ? "var(--green)" : "var(--red)";
+                const label = isPickeado ? "PICKEADO" : isReservaFull ? "ENVÍO FULL" : isPendiente ? "RESERVA" : isSync ? "SYNC ML" : isEntrada ? "ENTRADA" : "SALIDA";
 
                 // Delta for reservations
-                const displayDelta = isReserva
+                const displayDelta = isAnyReserva
                   ? (isPendiente ? "-" + (r.detalle.match(/(\d+)/)?.[1] || "1") : "0")
                   : (r.delta !== null ? (r.delta > 0 ? "+" : "") + r.delta : "");
 
