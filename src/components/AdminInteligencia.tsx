@@ -1897,8 +1897,8 @@ export default function AdminInteligencia() {
                 )}
               </div>
 
-              {/* Botón Crear Picking */}
-              <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+              {/* Botón Crear Picking + Exportar CSV */}
+              <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button
                   onClick={crearPickingEnvioFull}
                   disabled={creandoPicking || (envioSelected.length === 0 && envioManualItems.length === 0) || !!pickingCreado}
@@ -1912,6 +1912,32 @@ export default function AdminInteligencia() {
                   }}
                 >
                   {creandoPicking ? "Creando..." : pickingCreado ? "Picking creado" : `Crear Picking Envio a Full (${envioSelected.length} SKUs, ${fmtInt(envioSummary.totalUdsVenta)} uds)`}
+                </button>
+                <button
+                  onClick={() => {
+                    const items = envioItems.filter(i => i.selected && i.mandarEditado > 0);
+                    if (items.length === 0) return;
+                    const headers = "SKU Venta;SKU Origen;Nombre;Mandar;Inner Pack;Bultos;Stock Bodega;Stock Full;Cob Full (dias)";
+                    const csvRows = items.map(i =>
+                      [i.skuVenta, i.skuOrigen, (i.nombre || "").replace(/;/g, ","), i.mandarEditado, i.innerPack > 1 ? i.innerPack : "", i.bultos, i.stockBodega, i.stockFull, i.cobFull].join(";")
+                    );
+                    const csv = "\uFEFF" + headers + "\n" + csvRows.join("\n");
+                    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = `envio_full_${new Date().toISOString().slice(0, 10)}.csv`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  }}
+                  disabled={envioSelected.length === 0}
+                  style={{
+                    padding: "12px 16px", borderRadius: 8, fontWeight: 600, fontSize: 12,
+                    background: "var(--bg3)", color: envioSelected.length > 0 ? "var(--cyan)" : "var(--txt3)",
+                    border: "1px solid var(--bg4)", cursor: envioSelected.length > 0 ? "pointer" : "default",
+                  }}
+                >
+                  Exportar CSV ({envioSelected.length})
                 </button>
               </div>
             </>
