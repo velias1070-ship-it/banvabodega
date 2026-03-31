@@ -2583,13 +2583,15 @@ export async function guardarBultosLinea(
   bultos: number, bultoCompartido: string | null,
   _session: db.DBPickingSession
 ): Promise<boolean> {
-  // Always read fresh session to avoid overwriting recent changes (e.g. pickeo)
+  // Re-read fresh session RIGHT BEFORE writing to avoid overwriting concurrent picks
   const sessions = await db.getActivePickingSessions();
   const freshSession = sessions.find(s => s.id === sessionId) || _session;
   const linea = freshSession.lineas.find(l => l.id === lineaId);
   if (!linea) return false;
+  // Only modify bultos fields — preserve estado/componentes from fresh read
   linea.bultos = bultos;
   linea.bultoCompartido = bultoCompartido;
+  // Don't change estado — let it remain whatever the fresh read has
   await db.updatePickingSession(sessionId, { lineas: freshSession.lineas });
   return true;
 }
@@ -2597,20 +2599,23 @@ export async function guardarBultosLinea(
 // Mark armado as completed for a line in envio_full session
 export async function marcarArmadoFull(
   sessionId: string, lineaId: string, operario: string,
-  session: db.DBPickingSession
+  _session: db.DBPickingSession
 ): Promise<boolean> {
-  const linea = session.lineas.find(l => l.id === lineaId);
+  // Re-read fresh session to avoid overwriting concurrent picks
+  const sessions = await db.getActivePickingSessions();
+  const freshSession = sessions.find(s => s.id === sessionId) || _session;
+  const linea = freshSession.lineas.find(l => l.id === lineaId);
   if (!linea || linea.estadoArmado === "COMPLETADO") return false;
 
   linea.estadoArmado = "COMPLETADO";
 
   // Check if session is fully done
-  const allPicked = session.lineas.every(l => l.estado === "PICKEADO");
-  const allArmado = session.lineas.every(l => !l.estadoArmado || l.estadoArmado === "COMPLETADO");
+  const allPicked = freshSession.lineas.every(l => l.estado === "PICKEADO");
+  const allArmado = freshSession.lineas.every(l => !l.estadoArmado || l.estadoArmado === "COMPLETADO");
   const sessionDone = allPicked && allArmado;
 
   await db.updatePickingSession(sessionId, {
-    lineas: session.lineas,
+    lineas: freshSession.lineas,
     estado: sessionDone ? "COMPLETADA" : "EN_PROCESO",
     ...(sessionDone ? { completed_at: new Date().toISOString() } : {}),
   });
