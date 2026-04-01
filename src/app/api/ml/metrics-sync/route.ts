@@ -183,15 +183,16 @@ export async function POST(req: NextRequest) {
           return { status: resp.status, body: json ?? text.substring(0, 500) };
         };
 
-        const [visits, health, perf, quest, ads] = await Promise.all([
-          rawFetch(`${ML}/items/visits?ids=${idsStr}&date_from=2026-03-01T00:00:00.000-04:00&date_to=2026-03-31T23:59:59.999-04:00`),
+        const [visits, visits2, health, perf, quest, ads] = await Promise.all([
+          rawFetch(`${ML}/items/visits?ids=${idsStr}&date_from=2026-03-01&date_to=2026-03-31`),
+          rawFetch(`${ML}/items/${testId}/visits/time_window?last=30&unit=day`),
           rawFetch(`${ML}/items/${testId}/health`),
           rawFetch(`${ML}/items/${testId}/performance`),
           rawFetch(`${ML}/questions/search?item=${testId}&limit=3`),
           rawFetch(`${ML}/marketplace/advertising/MLC/advertisers/${(cfg as unknown as Record<string, unknown>).advertiser_id || "none"}/product_ads/campaigns/search?limit=2`, { "api-version": "2" }),
         ]);
 
-        return NextResponse.json({ testId, idsStr, visits, health, perf, quest, ads });
+        return NextResponse.json({ testId, idsStr, visits, visits2, health, perf, quest, ads });
       }
 
       case "diagnose": {
