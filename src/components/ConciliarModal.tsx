@@ -96,15 +96,46 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
     }
 
     const target = saldoPorAsignar > 0 ? saldoPorAsignar : movAbs;
+    const movFecha = new Date(mov.fecha + "T12:00:00").getTime();
+    const movDesc = (mov.descripcion || "").toLowerCase();
+    // Mapa de plazos por RUT
+    const plazoByRut = new Map(provCuentas.filter(p => p.plazo_dias).map(p => [p.rut_proveedor, p.plazo_dias!]));
+
+    // Score inteligente: menor = mejor match
+    const scoreDoc = (d: typeof docs[0]): number => {
+      // 1. Monto — diferencia porcentual al target (0 = match perfecto)
+      const montoScore = target > 0 ? Math.abs(d.monto_total - target) / target : 1;
+
+      // 2. Proveedor — si la descripcion del movimiento menciona al proveedor
+      const nombreProv = d.razon_social.toLowerCase();
+      const palabras = nombreProv.split(/\s+/).filter(p => p.length > 3);
+      const provMatch = palabras.some(p => movDesc.includes(p)) ? 0 : 1;
+
+      // 3. Plazo de pago — la fecha del movimiento deberia ser ~plazo dias despues de la factura
+      let fechaScore = 1;
+      if (d.fecha) {
+        const docFecha = new Date(d.fecha + "T12:00:00").getTime();
+        const diasDesdeDoc = (movFecha - docFecha) / 86400000;
+        const plazo = plazoByRut.get(d.rut) || 30;
+        // Que tan cerca esta de los dias esperados (normalizado)
+        fechaScore = Math.abs(diasDesdeDoc - plazo) / plazo;
+        // Penalizar si el pago es antes de la factura
+        if (diasDesdeDoc < 0) fechaScore = 3;
+      }
+
+      // Pesos: monto 40%, proveedor 35%, fecha 25%
+      return montoScore * 0.4 + provMatch * 0.35 + Math.min(fechaScore, 3) * 0.25;
+    };
+
     return docs.sort((a, b) => {
       let cmp = 0;
-      if (sortBy === "cercania") cmp = Math.abs(a.monto_total - target) - Math.abs(b.monto_total - target);
+      if (sortBy === "cercania") cmp = scoreDoc(a) - scoreDoc(b);
       else if (sortBy === "fecha") cmp = (a.fecha || "").localeCompare(b.fecha || "");
       else if (sortBy === "monto") cmp = a.monto_total - b.monto_total;
       else if (sortBy === "descripcion") cmp = (a.razon_social || "").localeCompare(b.razon_social || "");
       return sortDir === "desc" ? -cmp : cmp;
     });
-  }, [compras, ventas, tipoFiltro, search, concCompraIds, concVentaIds, selectedIds, sortBy, sortDir, saldoPorAsignar, movAbs]);
+  }, [compras, ventas, tipoFiltro, search, concCompraIds, concVentaIds, selectedIds, sortBy, sortDir, saldoPorAsignar, movAbs, mov.fecha, mov.descripcion, provCuentas]);
 
   const toggleSort = (key: typeof sortBy) => {
     if (sortBy === key) setSortDir(d => d === "asc" ? "desc" : "asc");
