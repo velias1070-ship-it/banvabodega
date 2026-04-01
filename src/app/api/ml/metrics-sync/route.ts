@@ -183,16 +183,26 @@ export async function POST(req: NextRequest) {
           return { status: resp.status, body: json ?? text.substring(0, 500) };
         };
 
-        const [visits, visits2, health, perf, quest, ads] = await Promise.all([
-          rawFetch(`${ML}/items/visits?ids=${idsStr}&date_from=2026-03-01&date_to=2026-03-31`),
-          rawFetch(`${ML}/items/${testId}/visits/time_window?last=30&unit=day`),
-          rawFetch(`${ML}/items/${testId}/health`),
-          rawFetch(`${ML}/items/${testId}/performance`),
-          rawFetch(`${ML}/questions/search?item=${testId}&limit=3`),
-          rawFetch(`${ML}/marketplace/advertising/MLC/advertisers/${(cfg as unknown as Record<string, unknown>).advertiser_id || "none"}/product_ads/campaigns/search?limit=2`, { "api-version": "2" }),
+        const sellerId = cfg.seller_id;
+        const cfgAny = cfg as unknown as Record<string, unknown>;
+        const advId = cfgAny.advertiser_id;
+        const accId = cfgAny.account_id;
+        const adsBase = `${ML}/marketplace/advertising/MLC/advertisers`;
+        const adsQ = `/product_ads/campaigns/search?limit=2`;
+        const adsH2 = { "api-version": "2" };
+
+        const [ads_advId, ads_sellerId, ads_accId, ads_old] = await Promise.all([
+          rawFetch(`${adsBase}/${advId}${adsQ}`, adsH2),
+          rawFetch(`${adsBase}/${sellerId}${adsQ}`, adsH2),
+          rawFetch(`${adsBase}/${accId}${adsQ}`, adsH2),
+          rawFetch(`${ML}/advertising/product_ads/campaigns?user_id=${sellerId}&limit=2`, adsH2),
         ]);
 
-        return NextResponse.json({ testId, idsStr, visits, visits2, health, perf, quest, ads });
+        return NextResponse.json({
+          testId,
+          ids: { advId, sellerId, accId },
+          ads_advId, ads_sellerId, ads_accId, ads_old,
+        });
       }
 
       case "diagnose": {
