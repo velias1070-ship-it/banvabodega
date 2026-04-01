@@ -130,19 +130,31 @@ function siguienteFase(faseActual: string): string {
 
 export async function getSyncEstado(): Promise<SyncEstado | null> {
   const sb = getServerSupabase();
-  if (!sb) return null;
-  const { data } = await sb.from("ml_sync_estado").select("*").eq("id", "metrics").single();
-  return data as SyncEstado | null;
+  if (!sb) { console.error("[ml-metrics] getSyncEstado: no supabase client"); return null; }
+  try {
+    const { data, error } = await sb.from("ml_sync_estado").select("*").eq("id", "metrics").limit(1);
+    if (error) { console.error("[ml-metrics] getSyncEstado error:", error.message); return null; }
+    return (data && data.length > 0 ? data[0] : null) as SyncEstado | null;
+  } catch (err) {
+    console.error("[ml-metrics] getSyncEstado exception:", err);
+    return null;
+  }
 }
 
 async function updateSyncEstado(updates: Partial<SyncEstado>): Promise<void> {
   const sb = getServerSupabase();
-  if (!sb) return;
-  const { error } = await sb.from("ml_sync_estado").update({
-    ...updates,
-    actualizado_at: new Date().toISOString(),
-  }).eq("id", "metrics");
-  if (error) console.error("[ml-metrics] updateSyncEstado error:", error.message);
+  if (!sb) { console.error("[ml-metrics] updateSyncEstado: no supabase client"); return; }
+  try {
+    // Remove undefined values that could cause issues
+    const clean: Record<string, unknown> = { actualizado_at: new Date().toISOString() };
+    for (const [k, v] of Object.entries(updates)) {
+      if (v !== undefined) clean[k] = v;
+    }
+    const { error } = await sb.from("ml_sync_estado").update(clean).eq("id", "metrics");
+    if (error) console.error("[ml-metrics] updateSyncEstado error:", error.message, error.details, error.hint);
+  } catch (err) {
+    console.error("[ml-metrics] updateSyncEstado exception:", err);
+  }
 }
 
 export async function iniciarSync(periodo: string): Promise<SyncEstado | null> {
