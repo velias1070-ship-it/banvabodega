@@ -160,41 +160,38 @@ export async function POST(req: NextRequest) {
       }
 
       case "test-apis": {
-        // Test actual ML API responses for visits, quality, questions
-        const { mlGet: mlGetFn, getMLConfig: getConfigFn } = await import("@/lib/ml");
+        const { ensureValidToken, getMLConfig: getConfigFn } = await import("@/lib/ml");
         const cfg = await getConfigFn();
         if (!cfg) return NextResponse.json({ error: "no ml config" });
+        const token = await ensureValidToken();
+        if (!token) return NextResponse.json({ error: "no token" });
 
         const sb2 = getServerSupabase();
         const { data: sampleItems } = await sb2!.from("ml_items_map").select("item_id").eq("activo", true).limit(3);
         const testIds = sampleItems?.map((r: { item_id: string }) => r.item_id) || [];
-        if (testIds.length === 0) return NextResponse.json({ error: "no items" });
-
-        const testId = testIds[0];
+        const testId = testIds[0] || "MLC1847580431";
         const idsStr = testIds.join(",");
+        const ML = "https://api.mercadolibre.com";
+        const h = { Authorization: `Bearer ${token}` };
 
-        // Test visits
-        const visitsResp = await mlGetFn(`/items/visits?ids=${idsStr}&date_from=2026-03-01T00:00:00.000-04:00&date_to=2026-03-31T23:59:59.999-04:00`);
-        // Test quality
-        const healthResp = await mlGetFn(`/items/${testId}/health`);
-        const perfResp = await mlGetFn(`/items/${testId}/performance`);
-        // Test questions
-        const questResp = await mlGetFn(`/questions/search?item=${testId}&sort_fields=date_created&sort_types=DESC&limit=5`);
-        // Test ads
-        const cfgAny = cfg as unknown as Record<string, unknown>;
-        const adsResp = cfgAny.advertiser_id
-          ? await mlGetFn(`/marketplace/advertising/MLC/advertisers/${cfgAny.advertiser_id}/product_ads/campaigns/search?limit=2`, { "api-version": "2" })
-          : "no advertiser_id";
+        // Raw fetch each endpoint to see status + body
+        const rawFetch = async (url: string, extra?: Record<string, string>) => {
+          const resp = await fetch(url, { headers: { ...h, ...extra } });
+          const text = await resp.text().catch(() => "");
+          let json = null;
+          try { json = JSON.parse(text); } catch { /* not json */ }
+          return { status: resp.status, body: json ?? text.substring(0, 500) };
+        };
 
-        return NextResponse.json({
-          test_item: testId,
-          test_ids: idsStr,
-          visits_response: visitsResp,
-          health_response: healthResp,
-          performance_response: perfResp,
-          questions_response: questResp,
-          ads_response: adsResp,
-        });
+        const [visits, health, perf, quest, ads] = await Promise.all([
+          rawFetch(`${ML}/items/visits?ids=${idsStr}&date_from=2026-03-01T00:00:00.000-04:00&date_to=2026-03-31T23:59:59.999-04:00`),
+          rawFetch(`${ML}/items/${testId}/health`),
+          rawFetch(`${ML}/items/${testId}/performance`),
+          rawFetch(`${ML}/questions/search?item=${testId}&limit=3`),
+          rawFetch(`${ML}/marketplace/advertising/MLC/advertisers/${(cfg as unknown as Record<string, unknown>).advertiser_id || "none"}/product_ads/campaigns/search?limit=2`, { "api-version": "2" }),
+        ]);
+
+        return NextResponse.json({ testId, idsStr, visits, health, perf, quest, ads });
       }
 
       case "diagnose": {
