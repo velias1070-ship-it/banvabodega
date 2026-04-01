@@ -9463,9 +9463,9 @@ function AdminTimeline() {
       setSelectedSku(physSku);
       setSkuLabel(physSku);
       setHeaderData({
-        onHand: disp?.on_hand || skuTotal(physSku),
-        reserved: disp?.reserved || 0,
-        disponible: disp?.disponible || skuTotal(physSku),
+        onHand: disp?.on_hand ?? skuTotal(physSku),
+        reserved: disp?.reserved ?? 0,
+        disponible: disp?.disponible ?? skuTotal(physSku),
         nombre: prod?.name || "",
         publications,
       });
