@@ -196,7 +196,7 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
         const d = await res.json();
         if (d.error) { setSyncMsg(`Error: ${d.error}`); break; }
         totalRetiros += d.retiros_nuevos || 0;
-        if (d.mensaje) lastMsg = d.mensaje;
+        if (d.mensaje) lastMsg = d.mensaje + (d.debug ? ` (${d.debug})` : "") + (d.reporte ? ` [reporte: ${d.reporte}]` : "");
       }
       if (!syncMsg?.startsWith("Error")) {
         if (totalRetiros > 0) {

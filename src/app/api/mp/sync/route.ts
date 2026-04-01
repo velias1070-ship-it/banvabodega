@@ -361,9 +361,33 @@ export async function POST(req: NextRequest) {
           : `/v1/account/settlement_report/${report.fileName}`;
         const csv = await mpGetText(downloadPath);
 
+        // Debug: log CSV header and line count
+        const csvLines = csv.split("\n");
+        const csvHeader = csvLines[0] || "";
+        const csvDataLines = csvLines.length - 1;
+        console.log(`[MP Sync] CSV header: ${csvHeader.slice(0, 300)}`);
+        console.log(`[MP Sync] CSV data lines: ${csvDataLines}`);
+
+        // Debug: log unique DESCRIPTION values
+        if (report.type === "release" && csvDataLines > 0) {
+          const headerCols = csvHeader.split(";");
+          const descIdx = headerCols.findIndex(h => h.trim() === "DESCRIPTION");
+          if (descIdx >= 0) {
+            const descs = new Set<string>();
+            for (const line of csvLines.slice(1)) {
+              const cols = line.split(";");
+              if (cols[descIdx]) descs.add(cols[descIdx].trim());
+            }
+            console.log(`[MP Sync] DESCRIPTION values found: ${Array.from(descs).join(", ")}`);
+          } else {
+            console.log(`[MP Sync] WARNING: DESCRIPTION column not found in header!`);
+          }
+        }
+
         retiroRows = report.type === "release"
           ? parseRetirosRelease(csv, empresaId, cuentaBancariaId)
           : parseRetirosSettlement(csv, empresaId, cuentaBancariaId);
+        console.log(`[MP Sync] Parsed retiroRows: ${retiroRows.length}`);
       }
     } catch (err) {
       console.error("[MP Sync] Error obteniendo retiros:", err);
@@ -381,6 +405,7 @@ export async function POST(req: NextRequest) {
         mensaje: reportUsado
           ? "Sin retiros nuevos en el periodo"
           : "El reporte se esta generando en MercadoPago. Espera 2-3 minutos e intenta de nuevo.",
+        debug: reportUsado ? "Reporte encontrado pero sin transacciones payout/payment. Revisa logs del servidor." : undefined,
       });
     }
 
