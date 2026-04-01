@@ -435,10 +435,19 @@ async function faseAds(estado: SyncEstado, config: MLConfig & { advertiser_id?: 
   console.log(`[ml-metrics] Found ${campaigns.length} campaigns (total: ${campaignsResp.paging?.total ?? "?"})`);
   if (campaigns.length === 0) return 0;
 
-  // 2. Get ads per campaign
-  const allUpdates: Array<{ item_id: string; [key: string]: unknown }> = [];
+  // 2. Get ads — ML returns same metrics for an item regardless of campaign.
+  // So we deduplicate by item_id, keeping the entry from the best campaign
+  // (active > paused, then highest budget).
+  // Process campaigns sorted: active first, then by budget desc.
+  const sortedCampaigns = campaigns.slice().sort((a, b) => {
+    if (a.status === "active" && b.status !== "active") return -1;
+    if (a.status !== "active" && b.status === "active") return 1;
+    return (b.budget ?? 0) - (a.budget ?? 0);
+  });
 
-  for (const camp of campaigns) {
+  const adsMap = new Map<string, Record<string, unknown>>();
+
+  for (const camp of sortedCampaigns) {
     let offset = 0;
     const limit = 50;
     let hasMore = true;
@@ -453,11 +462,14 @@ async function faseAds(estado: SyncEstado, config: MLConfig & { advertiser_id?: 
 
       const ads = adsResp?.results ?? [];
       for (const ad of ads) {
+        // Only keep first occurrence (best campaign due to sort)
+        if (adsMap.has(ad.item_id)) continue;
+
         const m = ad.metrics || {};
-        allUpdates.push({
+        adsMap.set(ad.item_id, {
           item_id: ad.item_id,
           ads_activo: ad.status === "active",
-          ads_campaign_id: String(ad.campaign_id),
+          ads_campaign_id: String(camp.id),
           ads_campaign_name: camp.name,
           ads_status: ad.status,
           ads_daily_budget: camp.budget ?? 0,
@@ -470,12 +482,12 @@ async function faseAds(estado: SyncEstado, config: MLConfig & { advertiser_id?: 
           ads_cvr: m.cvr ?? 0,
           ads_acos: m.acos ?? 0,
           ads_roas: m.roas ?? 0,
-          ads_sov: m.sov ?? 0,
-          ads_impression_share: m.impression_share ?? 0,
-          ads_top_impression_share: m.top_impression_share ?? 0,
-          ads_lost_by_budget: m.lost_impression_share_by_budget ?? 0,
-          ads_lost_by_rank: m.lost_impression_share_by_ad_rank ?? 0,
-          ads_acos_benchmark: m.acos_benchmark ?? 0,
+          ads_sov: 0,
+          ads_impression_share: 0,
+          ads_top_impression_share: 0,
+          ads_lost_by_budget: 0,
+          ads_lost_by_rank: 0,
+          ads_acos_benchmark: 0,
           ads_direct_amount: m.direct_amount ?? 0,
           ads_indirect_amount: m.indirect_amount ?? 0,
           ads_total_amount: m.total_amount ?? 0,
@@ -493,9 +505,10 @@ async function faseAds(estado: SyncEstado, config: MLConfig & { advertiser_id?: 
     }
   }
 
-  console.log(`[ml-metrics] Ads: ${allUpdates.length} ad-items to update across ${campaigns.length} campaigns`);
+  const allUpdates = Array.from(adsMap.values());
+  console.log(`[ml-metrics] Ads: ${allUpdates.length} unique items across ${campaigns.length} campaigns`);
   if (allUpdates.length > 0) {
-    await batchUpdateSnapshot(estado.periodo, allUpdates);
+    await batchUpdateSnapshot(estado.periodo, allUpdates as Array<{ item_id: string; [key: string]: unknown }>);
   }
   return allUpdates.length;
 }
