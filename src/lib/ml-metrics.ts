@@ -507,8 +507,8 @@ async function faseReputation(estado: SyncEstado, config: MLConfig): Promise<num
   if (!resp?.seller_reputation) return 0;
 
   const rep = resp.seller_reputation;
-  const metricsArr = Array.isArray(rep.metrics) ? rep.metrics : [];
-  const metricsMap = new Map(metricsArr.map(m => [m.type, m.value]));
+  // rep.metrics is an object like { claims: { rate, value }, delayed_handling_time: { rate, value }, ... }
+  const repMetrics = (rep.metrics && typeof rep.metrics === "object") ? rep.metrics as unknown as Record<string, { rate?: number; value?: number }> : {};
 
   const sb = getServerSupabase();
   if (!sb) return 0;
@@ -519,11 +519,11 @@ async function faseReputation(estado: SyncEstado, config: MLConfig): Promise<num
     reputacion_power_seller: rep.power_seller_status ?? null,
     reputacion_completadas: rep.transactions?.completed ?? 0,
     reputacion_canceladas: rep.transactions?.canceled ?? 0,
-    reputacion_pct_positivas: rep.transactions?.ratings?.positive ?? 0,
-    reputacion_pct_negativas: rep.transactions?.ratings?.negative ?? 0,
-    reputacion_reclamos: metricsMap.get("claims") ?? 0,
-    reputacion_demoras: metricsMap.get("delayed_handling_time") ?? 0,
-    reputacion_cancelaciones: metricsMap.get("cancellations") ?? 0,
+    reputacion_pct_positivas: rep.transactions?.ratings?.positive ? rep.transactions.ratings.positive * 100 : 0,
+    reputacion_pct_negativas: rep.transactions?.ratings?.negative ? rep.transactions.ratings.negative * 100 : 0,
+    reputacion_reclamos: repMetrics.claims?.rate ?? 0,
+    reputacion_demoras: repMetrics.delayed_handling_time?.rate ?? 0,
+    reputacion_cancelaciones: repMetrics.cancellations?.rate ?? 0,
   }, { onConflict: "periodo" });
 
   if (error) console.error("[ml-metrics] reputation upsert error:", error.message);
