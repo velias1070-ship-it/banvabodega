@@ -540,13 +540,75 @@ async function faseAggregate(estado: SyncEstado): Promise<number> {
   const dateFrom = `${periodo}-01`;
   const dateTo = lastDayOfMonth(periodo);
 
-  // 1. Aggregate orders_history by sku_venta (PAGINATED — Supabase default limit is 1000)
+  // 1a. Fetch cancelled order_ids from ML API (to exclude from counts)
+  const config = await getMLConfig();
+  const cancelledOrderIds = new Set<string>();
+  if (config) {
+    const tzFrom = `${dateFrom}T00:00:00.000-04:00`;
+    const tzTo = `${dateTo}T23:59:59.999-04:00`;
+    let cancelOffset = 0;
+    while (true) {
+      const resp = await mlGet<{ results?: Array<{ id: number }>; paging?: { total: number } }>(
+        `/orders/search?seller=${config.seller_id}&order.status=cancelled` +
+        `&order.date_created.from=${tzFrom}&order.date_created.to=${tzTo}` +
+        `&limit=50&offset=${cancelOffset}`
+      );
+      const results = resp?.results ?? [];
+      for (const r of results) cancelledOrderIds.add(String(r.id));
+      if (results.length < 50) break;
+      cancelOffset += 50;
+      await delay(300);
+    }
+    console.log(`[ml-metrics] Aggregate: ${cancelledOrderIds.size} cancelled orders fetched from ML`);
+  }
+
+  // 1b. Fetch paid orders directly from ML API for authoritative unit counts
+  // This ensures we have complete data (including days ProfitGuard missed)
+  interface MLOrderItem { item: { id: string; seller_sku?: string }; quantity: number; unit_price: number }
+  interface MLOrderResult { id: number; order_items: MLOrderItem[]; shipping?: { logistic_type?: string }; total_amount: number }
+
+  const mlOrdersByItem = new Map<string, { unidades: number; ingreso: number; envios_full: number; envios_flex: number }>();
+  let mlTotalUnits = 0;
+  if (config) {
+    const tzFrom = `${dateFrom}T00:00:00.000-04:00`;
+    const tzTo = `${dateTo}T23:59:59.999-04:00`;
+    let orderOffset = 0;
+    while (true) {
+      const resp = await mlGet<{ results?: MLOrderResult[]; paging?: { total: number } }>(
+        `/orders/search?seller=${config.seller_id}&order.status=paid` +
+        `&order.date_created.from=${tzFrom}&order.date_created.to=${tzTo}` +
+        `&sort=date_desc&limit=50&offset=${orderOffset}`
+      );
+      const results = resp?.results ?? [];
+      for (const order of results) {
+        // Skip if this order was later cancelled
+        if (cancelledOrderIds.has(String(order.id))) continue;
+        for (const item of order.order_items) {
+          const sku = item.item.seller_sku || item.item.id;
+          const prev = mlOrdersByItem.get(sku) || { unidades: 0, ingreso: 0, envios_full: 0, envios_flex: 0 };
+          prev.unidades += item.quantity;
+          prev.ingreso += item.unit_price * item.quantity;
+          const logType = order.shipping?.logistic_type || "";
+          if (logType.includes("fulfillment") || logType.includes("full")) prev.envios_full++;
+          else prev.envios_flex++;
+          mlOrdersByItem.set(sku, prev);
+          mlTotalUnits += item.quantity;
+        }
+      }
+      if (results.length < 50) break;
+      orderOffset += 50;
+      await delay(200);
+    }
+    console.log(`[ml-metrics] Aggregate: ${mlTotalUnits} units from ML API (${mlOrdersByItem.size} SKUs)`);
+  }
+
+  // 1c. Also load orders_history for financial details (commissions, shipping costs)
   const ordenes: Record<string, unknown>[] = [];
   const PAGE_SIZE = 1000;
   let offset = 0;
   while (true) {
     const { data } = await sb.from("orders_history")
-      .select("sku_venta, cantidad, canal, subtotal, comision_total, costo_envio, ingreso_envio, total, fecha")
+      .select("order_id, sku_venta, cantidad, canal, subtotal, comision_total, costo_envio, ingreso_envio, total, fecha")
       .eq("estado", "Pagada")
       .gte("fecha", dateFrom)
       .lte("fecha", dateTo + "T23:59:59.999Z")
@@ -557,31 +619,43 @@ async function faseAggregate(estado: SyncEstado): Promise<number> {
     if (data.length < PAGE_SIZE) break;
     offset += PAGE_SIZE;
   }
-  console.log(`[ml-metrics] Aggregate: ${ordenes.length} orders loaded for ${periodo}`);
+  console.log(`[ml-metrics] Aggregate: ${ordenes.length} orders from ProfitGuard`);
 
-  // Group by sku_venta
+  // Build financial data from ProfitGuard (commissions, shipping costs)
+  const financialPorSku = new Map<string, {
+    comisiones: number; costo_envio: number; ingreso_envio: number;
+  }>();
+  for (const o of ordenes) {
+    const sku = o.sku_venta as string;
+    if (!sku) continue;
+    // Skip cancelled orders
+    if (o.order_id && cancelledOrderIds.has(String(o.order_id))) continue;
+    const prev = financialPorSku.get(sku) || { comisiones: 0, costo_envio: 0, ingreso_envio: 0 };
+    prev.comisiones += Math.abs((o.comision_total as number) || 0);
+    prev.costo_envio += Math.abs((o.costo_envio as number) || 0);
+    prev.ingreso_envio += (o.ingreso_envio as number) || 0;
+    financialPorSku.set(sku, prev);
+  }
+
+  // Merge: use ML API for units/revenue (authoritative), ProfitGuard for costs
   const ventasPorSku = new Map<string, {
     unidades: number; ingreso_bruto: number; comisiones: number;
     costo_envio: number; ingreso_envio: number; envios_full: number; envios_flex: number;
   }>();
 
-  for (const o of ordenes || []) {
-    const sku = o.sku_venta as string;
-    if (!sku) continue;
-    const prev = ventasPorSku.get(sku) || {
-      unidades: 0, ingreso_bruto: 0, comisiones: 0,
-      costo_envio: 0, ingreso_envio: 0, envios_full: 0, envios_flex: 0,
-    };
-    prev.unidades += (o.cantidad as number) || 0;
-    prev.ingreso_bruto += (o.subtotal as number) || 0;
-    prev.comisiones += Math.abs((o.comision_total as number) || 0);
-    prev.costo_envio += Math.abs((o.costo_envio as number) || 0);
-    prev.ingreso_envio += (o.ingreso_envio as number) || 0;
-    const canal = (o.canal as string) || "";
-    if (canal.toLowerCase().includes("full")) prev.envios_full++;
-    else prev.envios_flex++;
-    ventasPorSku.set(sku, prev);
-  }
+  // Start with ML API data (authoritative units)
+  mlOrdersByItem.forEach((ml, sku) => {
+    const fin = financialPorSku.get(sku) || { comisiones: 0, costo_envio: 0, ingreso_envio: 0 };
+    ventasPorSku.set(sku, {
+      unidades: ml.unidades,
+      ingreso_bruto: ml.ingreso,
+      comisiones: fin.comisiones,
+      costo_envio: fin.costo_envio,
+      ingreso_envio: fin.ingreso_envio,
+      envios_full: ml.envios_full,
+      envios_flex: ml.envios_flex,
+    });
+  });
 
   // 2. Get current sku_intelligence data
   const { data: intelRows } = await sb.from("sku_intelligence")
