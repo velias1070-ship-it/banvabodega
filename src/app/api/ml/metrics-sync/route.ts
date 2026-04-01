@@ -198,10 +198,17 @@ export async function POST(req: NextRequest) {
           rawFetch(`${ML}/advertising/product_ads/campaigns?user_id=${sellerId}&limit=2`, adsH2),
         ]);
 
+        // Also test per-campaign ads
+        const campId = ads_advId.body?.results?.[0]?.id;
+        const ads_items = campId
+          ? await rawFetch(`${adsBase}/${advId}/product_ads/ads?campaign_id=${campId}&date_from=2026-03-01&date_to=2026-03-31&offset=0&limit=5`, adsH2)
+          : "no campaign";
+
         return NextResponse.json({
           testId,
           ids: { advId, sellerId, accId },
-          ads_advId, ads_sellerId, ads_accId, ads_old,
+          ads_campaigns: ads_advId,
+          ads_items,
         });
       }
 
