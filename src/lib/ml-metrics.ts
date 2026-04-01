@@ -488,7 +488,8 @@ async function faseReputation(estado: SyncEstado, config: MLConfig): Promise<num
   if (!resp?.seller_reputation) return 0;
 
   const rep = resp.seller_reputation;
-  const metricsMap = new Map(rep.metrics?.map(m => [m.type, m.value]) ?? []);
+  const metricsArr = Array.isArray(rep.metrics) ? rep.metrics : [];
+  const metricsMap = new Map(metricsArr.map(m => [m.type, m.value]));
 
   const sb = getServerSupabase();
   if (!sb) return 0;
