@@ -181,8 +181,9 @@ export async function POST(req: NextRequest) {
         // Test questions
         const questResp = await mlGetFn(`/questions/search?item=${testId}&sort_fields=date_created&sort_types=DESC&limit=5`);
         // Test ads
-        const adsResp = cfg.advertiser_id
-          ? await mlGetFn(`/marketplace/advertising/MLC/advertisers/${cfg.advertiser_id}/product_ads/campaigns/search?limit=2`, { "api-version": "2" })
+        const cfgAny = cfg as unknown as Record<string, unknown>;
+        const adsResp = cfgAny.advertiser_id
+          ? await mlGetFn(`/marketplace/advertising/MLC/advertisers/${cfgAny.advertiser_id}/product_ads/campaigns/search?limit=2`, { "api-version": "2" })
           : "no advertiser_id";
 
         return NextResponse.json({
