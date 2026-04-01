@@ -134,10 +134,14 @@ BEGIN
     'ml_config', 'pedidos_flex', 'ml_items_map', 'stock_sync_queue'
   ])
   LOOP
-    EXECUTE format('CREATE POLICY IF NOT EXISTS "allow_select_%s" ON %I FOR SELECT USING (true)', t, t);
-    EXECUTE format('CREATE POLICY IF NOT EXISTS "allow_insert_%s" ON %I FOR INSERT WITH CHECK (true)', t, t);
-    EXECUTE format('CREATE POLICY IF NOT EXISTS "allow_update_%s" ON %I FOR UPDATE USING (true)', t, t);
-    EXECUTE format('CREATE POLICY IF NOT EXISTS "allow_delete_%s" ON %I FOR DELETE USING (true)', t, t);
+    EXECUTE format('DROP POLICY IF EXISTS "allow_select_%s" ON %I', t, t);
+    EXECUTE format('CREATE POLICY "allow_select_%s" ON %I FOR SELECT USING (true)', t, t);
+    EXECUTE format('DROP POLICY IF EXISTS "allow_insert_%s" ON %I', t, t);
+    EXECUTE format('CREATE POLICY "allow_insert_%s" ON %I FOR INSERT WITH CHECK (true)', t, t);
+    EXECUTE format('DROP POLICY IF EXISTS "allow_update_%s" ON %I', t, t);
+    EXECUTE format('CREATE POLICY "allow_update_%s" ON %I FOR UPDATE USING (true)', t, t);
+    EXECUTE format('DROP POLICY IF EXISTS "allow_delete_%s" ON %I', t, t);
+    EXECUTE format('CREATE POLICY "allow_delete_%s" ON %I FOR DELETE USING (true)', t, t);
   END LOOP;
 END $$;
 

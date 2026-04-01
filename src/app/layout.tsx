@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import TestModeBanner from "@/components/TestModeBanner";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -25,7 +26,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
       </head>
-      <body>{children}</body>
+      <body>
+        <TestModeBanner />
+        {children}
+      </body>
     </html>
   );
 }

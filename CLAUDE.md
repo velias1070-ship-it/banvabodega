@@ -1,42 +1,92 @@
-# BANVA Bodega — WMS (Warehouse Management System)
+# CLAUDE.md
 
-Sistema de gestión de bodega para BANVA (Chile). Controla inventario, recepciones de mercadería, picking de pedidos Flex MercadoLibre, conteos cíclicos y despacho.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Overview
+
+BANVA Bodega — WMS (Warehouse Management System) para BANVA Chile. Controla inventario, recepciones de mercadería, picking de pedidos Flex MercadoLibre, conteos cíclicos, despacho, y módulos financieros (ProfitGuard, SII, MercadoPago).
+
+## Commands
+
+```bash
+npm run dev          # Next.js dev server → localhost:3000
+npm run build        # Production build (también valida TypeScript)
+npm run test         # Vitest run (una vez)
+npm run test:watch   # Vitest watch mode
+```
+
+No hay linter configurado. `npm run build` es la validación principal de tipos.
 
 ## Stack
 
 - **Framework:** Next.js 14 (App Router) + React 18 + TypeScript
-- **Backend:** API Routes en `src/app/api/`; no hay middleware ni auth server-side
-- **DB:** Supabase (PostgreSQL) — cliente con anon key, sin auth de usuarios
-- **Estilos:** CSS custom con variables en `globals.css` (dark theme). Fonts: Outfit + JetBrains Mono
-- **Libs:** Scanbot Web SDK (barcode), jsPDF, QRCode, JSBarcode, JSZip
-- **Deploy:** Vercel
+- **DB:** Supabase (PostgreSQL) — cliente con anon key, sin auth server-side
+- **Estilos:** CSS custom dark theme en `globals.css` (no component library)
+- **Libs:** Scanbot Web SDK (barcode), jsPDF, QRCode, JSBarcode, JSZip, xlsx, pdfjs-dist
+- **Deploy:** Vercel con crons cada minuto para syncs ML/stock
 
-## Estructura clave
+## Architecture
 
-```
-src/lib/db.ts        → CRUD Supabase (todas las queries)
-src/lib/store.ts     → Estado en memoria + bridge a db.ts
-src/lib/ml.ts        → Integración MercadoLibre API (server-side)
-src/lib/supabase.ts  → Cliente Supabase (client-side singleton)
-src/app/operador/    → UI operador (mobile-first, max-width 480px)
-src/app/admin/       → Panel admin (sidebar + tabs)
-src/app/api/ml/      → API Routes para ML (OAuth, webhooks, sync)
-supabase-v*.sql      → Migraciones SQL incrementales
-```
+### Core lib files (8k+ LOC total)
 
-## Convenciones
+| Archivo | LOC | Rol |
+|---|---|---|
+| `src/lib/store.ts` | ~3100 | Estado en memoria + bridge a db.ts. Composición de ventas, cálculo de stock, detección de discrepancias |
+| `src/lib/db.ts` | ~2700 | CRUD Supabase (todas las queries). Interfaces `DB*` para tipos |
+| `src/lib/ml.ts` | ~2300 | Integración MercadoLibre API (server-side only). OAuth, sync, stock |
+| `src/lib/intelligence.ts` | — | Lógica de inteligencia de negocio (velocidad, reposición) |
+| `src/lib/agents-db.ts` | — | Persistencia del sistema de agentes IA |
+| `src/lib/reposicion.ts` | — | Cálculos de reposición de stock |
+| `src/lib/supabase.ts` | — | Cliente Supabase client-side (singleton) |
+| `src/lib/supabase-server.ts` | — | Cliente Supabase server-side (singleton) |
 
-- Todo el código en español (nombres de tablas, variables de dominio, UI)
+### API Routes (`src/app/api/`)
+
+| Ruta | Descripción |
+|---|---|
+| `ml/` | MercadoLibre: OAuth, webhook, sync órdenes, stock sync, etiquetas, Flex |
+| `agents/` | Sistema multi-agente IA: chat, cron, rules, feedback |
+| `profitguard/` | Análisis de rentabilidad por orden |
+| `mp/` | MercadoPago sync |
+| `sii/` | Integración SII Chile (boletas, RCV, sync) |
+| `intelligence/` | Queries de inteligencia de negocio |
+| `orders/` | Historial de órdenes |
+| `sheet/` | Exportación Excel |
+
+### UI (dos interfaces separadas)
+
+- **`/operador`** — Mobile-first (max-width 480px, PWA). Picking, recepciones, conteos, facturas
+- **`/admin`** — Full-width con sidebar. Dashboard, inventario, productos, posiciones, configuración, mapa de bodega, QR codes
+
+### Vercel Crons
+
+Configurados en `vercel.json`. Sync de ML, stock y ProfitGuard se ejecutan cada 1-5 minutos.
+
+### Migraciones SQL
+
+Archivos `supabase-v*.sql` en la raíz. Se ejecutan manualmente en Supabase SQL Editor. Numerados incrementalmente (v2 → v33+).
+
+## Conventions
+
+- Todo el código en español (tablas, variables de dominio, UI)
 - Archivos `"use client"` por defecto; server-side solo en `api/` y `lib/ml.ts`
 - Queries directas via `sb.from("tabla").select/upsert/update/delete` — no ORM
-- Interfaces `DB*` en `db.ts` para tipos de Supabase; interfaces sin prefijo en `store.ts`
+- Interfaces `DB*` en `db.ts` para tipos Supabase; sin prefijo en `store.ts`
 - Batch upserts en chunks de 500 registros
+- Supabase retorna PromiseLike, no Promise: usar try/catch o void, NUNCA `.catch()`
+- Todo cambio de stock DEBE generar un movimiento via `registrar_movimiento_stock()` — nunca updateStock silencioso
+- Iconos con emojis nativos (no icon library)
+- Inline styles extensivos para variaciones; CSS classes solo para patrones repetidos
 
 ## MercadoLibre API
 
-Ante cualquier duda sobre endpoints, parámetros, respuestas o flujos de la API de MercadoLibre, consultar la documentación oficial: https://developers.mercadolibre.cl
+Ante cualquier duda sobre endpoints, parámetros o flujos de la API de ML, consultar: https://developers.mercadolibre.cl
 
-## Reglas detalladas
+## Testing
+
+Vitest configurado. Un test existente en `src/lib/__tests__/reposicion.test.ts`. Scripts de soporte en `scripts/` para clonar datos y schema de test.
+
+## Detailed Rules
 
 Ver `.claude/rules/` para reglas por dominio:
 
@@ -46,6 +96,6 @@ Ver `.claude/rules/` para reglas por dominio:
 - [security.md](.claude/rules/security.md) — autenticación, roles, permisos
 - [testing.md](.claude/rules/testing.md) — estrategia de testing
 
-
 ## Git
+
 Siempre trabaja directamente en la branch main. No crees branches separadas. Haz commit y push directo a main.
