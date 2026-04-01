@@ -159,8 +159,29 @@ export async function POST(req: NextRequest) {
         });
       }
 
+      case "diagnose": {
+        const sb = getServerSupabase();
+        if (!sb) {
+          return NextResponse.json({
+            status: "error",
+            supabase: "null — no client",
+            env_test_mode: process.env.NEXT_PUBLIC_TEST_MODE ?? "undefined",
+            env_url: process.env.NEXT_PUBLIC_SUPABASE_URL ? "set" : "missing",
+            env_test_url: process.env.NEXT_PUBLIC_SUPABASE_TEST_URL ? "set" : "missing",
+          });
+        }
+        const { data, error } = await sb.from("ml_sync_estado").select("*").limit(1);
+        return NextResponse.json({
+          status: "ok",
+          supabase: "connected",
+          env_test_mode: process.env.NEXT_PUBLIC_TEST_MODE ?? "undefined",
+          query_data: data,
+          query_error: error ? { message: error.message, details: error.details, hint: error.hint, code: error.code } : null,
+        });
+      }
+
       default:
-        return NextResponse.json({ error: "action requerido: start|status|reset|retry" }, { status: 400 });
+        return NextResponse.json({ error: "action requerido: start|status|reset|retry|diagnose" }, { status: 400 });
     }
 
   } catch (err) {
