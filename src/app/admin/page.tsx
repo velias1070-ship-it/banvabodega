@@ -9489,31 +9489,37 @@ function AdminTimeline() {
       .slice(0, 10);
   }, [q, s.products]);
 
-  // Calculate saldo (disponible) for each row
+  // Calculate saldo: running total from current disponible, walking backwards through events
   const rowsWithSaldo = useMemo(() => {
-    // Count total active reservations (pendiente, not pickeado)
-    const activeReservas = rows.filter(r => (r.evento === "reserva" || r.evento === "reserva_full") && r.nota && !r.nota.includes("(pickeado)"));
-    const totalReserved = activeReservas.reduce((s, r) => {
-      const match = r.detalle.match(/(\d+) uds/);
-      return s + (match ? parseInt(match[1]) : 0);
-    }, 0);
+    // Start from current disponible and walk backwards (rows are newest first)
+    let saldo = headerData.disponible;
+    const result: (TimelineRow & { saldo: number | null })[] = [];
 
-    return rows.map(r => {
-      let saldo: number | null = null;
-      if (r.evento === "movimiento" && r.qty_after !== null) {
-        // Saldo = stock físico - reservas activas en ese momento
-        // Simplificación: usamos las reservas actuales (no las de ese punto en el tiempo)
-        saldo = r.qty_after - totalReserved;
-        if (saldo < 0) saldo = 0;
-      } else if (r.evento === "reserva") {
-        const isPickeado = r.nota?.includes("(pickeado)");
-        if (!isPickeado) {
-          // Reserva pendiente: mostrar disponible después de reservar
-          saldo = headerData.disponible;
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      if (r.evento === "movimiento") {
+        // This row shows state AFTER the movement, so saldo = current running total
+        result.push({ ...r, saldo });
+        // Walk backwards: undo this movement to get the state before it
+        if (r.delta !== null) saldo -= r.delta;
+      } else if (r.evento === "reserva" || r.evento === "reserva_full") {
+        const isPendiente = r.nota && !r.nota.includes("(pickeado)");
+        if (isPendiente) {
+          // Pending reservation: show saldo after reserving
+          result.push({ ...r, saldo });
+          // Walk backwards: undo reservation (add back the reserved qty)
+          const match = r.detalle.match(/(\d+) uds/);
+          if (match) saldo += parseInt(match[1]);
+        } else {
+          result.push({ ...r, saldo: null });
         }
+      } else if (r.evento === "sync_ml") {
+        result.push({ ...r, saldo: null });
+      } else {
+        result.push({ ...r, saldo: null });
       }
-      return { ...r, saldo };
-    });
+    }
+    return result;
   }, [rows, headerData.disponible]);
 
   return (
