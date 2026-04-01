@@ -59,7 +59,11 @@ async function mpPost(path: string, body: unknown): Promise<unknown> {
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(30000),
   });
-  if (!res.ok) throw new Error(`MP API POST ${res.status}`);
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => "");
+    console.error(`[MP Sync] POST ${path} => ${res.status}: ${errBody}`);
+    throw new Error(`MP API POST ${res.status}: ${errBody.slice(0, 200)}`);
+  }
   return res.json();
 }
 
@@ -126,6 +130,7 @@ async function findReport(fechaDesde: string, fechaHasta: string): Promise<{ fil
     console.log(`[MP Sync] Sin reporte adecuado (${reportCount} reportes encontrados). Generando nuevo...`);
 
     try {
+      console.log(`[MP Sync] Generando reporte: begin_date=${fechaDesde}, end_date=${fechaHasta}`);
       await mpPost("/v1/account/release_report", {
         begin_date: fechaDesde,
         end_date: fechaHasta,
@@ -160,7 +165,7 @@ async function findReport(fechaDesde: string, fechaHasta: string): Promise<{ fil
         console.log(`[MP Sync] Esperando... ${Math.round((Date.now() - startPoll) / 1000)}s`);
       }
     } catch (err) {
-      console.log("[MP Sync] Error generando reporte:", err);
+      console.log("[MP Sync] Error generando reporte:", err instanceof Error ? err.message : err);
     }
 
     // Timeout — usar el mejor existente como fallback
