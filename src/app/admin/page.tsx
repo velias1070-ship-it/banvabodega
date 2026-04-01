@@ -5,7 +5,7 @@ import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, s
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia, IntegrityError } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
-import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado, transferirStock, reconciliarReservas, fetchResumenMovimientosHoy, fetchStockDisponible, fetchMovimientosHoy, fetchDesgloseReservas, enqueueAndSync } from "@/lib/db";
+import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado, transferirStock, reconciliarReservas, fetchResumenMovimientosHoy, fetchStockDisponible, fetchMovimientosHoy, fetchDesgloseReservas, enqueueAndSync, updateProductoCosto } from "@/lib/db";
 import type { DBStockProyectado, DBReconciliacion } from "@/lib/db";
 import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap, ShipmentWithItems } from "@/lib/db";
 import { getOAuthUrl } from "@/lib/ml";
@@ -17,6 +17,7 @@ import AdminInteligencia from "@/components/AdminInteligencia";
 import AdminCompras from "@/components/AdminCompras";
 import AdminEventos from "@/components/AdminEventos";
 import AdminVentasML from "@/components/AdminVentasML";
+import AdminComercial from "@/components/AdminComercial";
 
 const ADMIN_PIN = "1234"; // Change this
 const AUTH_KEY = "banva_admin_auth";
@@ -64,7 +65,7 @@ function LoginGate({ onLogin }: { onLogin: (pin: string) => boolean }) {
 }
 
 export default function AdminPage() {
-  type AdminTab = "dash"|"rec"|"flex"|"enviosfull"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"intel"|"compras"|"eventos"|"ventasml"|"agentes"|"stockml"|"timeline"|"config";
+  type AdminTab = "dash"|"rec"|"flex"|"enviosfull"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"intel"|"compras"|"eventos"|"ventasml"|"comercial"|"agentes"|"stockml"|"timeline"|"config";
   const [tab, setTab] = useState<AdminTab>(() => {
     if (typeof window !== "undefined") {
       const saved = sessionStorage.getItem("banva_admin_tab");
@@ -78,6 +79,7 @@ export default function AdminPage() {
     {section:"OPERACIONES",icon:"⚡",items:[["rec","Recepciones","📦"],["flex","Ultima Milla","🚚"],["enviosfull","Envios Full","📦"],["ops","Operaciones","⚡"],["reposicion","Reposición","🔄"]] as const},
     {section:"INVENTARIO",icon:"📦",items:[["inv","Inventario","📦"],["mov","Movimientos","📋"],["timeline","Timeline","📊"],["prod","Productos","🏷️"],["stockml","Stock ML","📡"]] as const},
     {section:"INTELIGENCIA",icon:"🧠",items:[["intel","Inteligencia","🧠"],["compras","Compras","🛒"],["eventos","Eventos","📅"],["ventasml","Ventas ML","💰"]] as const},
+    {section:"COMERCIAL",icon:"🏪",items:[["comercial","Publicaciones","📢"]] as const},
     {section:"SISTEMA",icon:"⚙️",items:[["agentes","Agentes IA","🤖"],["config","Configuración","⚙️"]] as const},
   ] as const;
   const [openSections, setOpenSections] = useState<Record<string,boolean>>(()=>{
@@ -178,7 +180,7 @@ export default function AdminPage() {
         <main className="admin-main">
           {/* Mobile tabs fallback */}
           <div className="admin-mobile-tabs">
-            {([["dash","Dashboard"],["rec","Recepción"],["flex","Ultima Milla"],["enviosfull","Envios Full"],["ops","Ops"],["inv","Inventario"],["mov","Movim."],["timeline","Timeline"],["prod","Productos"],["reposicion","Reposición"],["intel","Inteligencia"],["compras","Compras"],["eventos","Eventos"],["ventasml","Ventas ML"],["agentes","Agentes IA"],["stockml","Stock ML"],["config","Config"]] as const).map(([key,label])=>(
+            {([["dash","Dashboard"],["rec","Recepción"],["flex","Ultima Milla"],["enviosfull","Envios Full"],["ops","Ops"],["inv","Inventario"],["mov","Movim."],["timeline","Timeline"],["prod","Productos"],["reposicion","Reposición"],["intel","Inteligencia"],["compras","Compras"],["eventos","Eventos"],["ventasml","Ventas ML"],["comercial","Publicaciones"],["agentes","Agentes IA"],["stockml","Stock ML"],["config","Config"]] as const).map(([key,label])=>(
               <button key={key} className={`tab ${tab===key?"active-cyan":""}`} onClick={()=>setTab(key as any)}>{label}</button>
             ))}
           </div>
@@ -196,6 +198,7 @@ export default function AdminPage() {
             {tab==="compras"&&<AdminCompras/>}
             {tab==="eventos"&&<AdminEventos/>}
             {tab==="ventasml"&&<AdminVentasML/>}
+            {tab==="comercial"&&<AdminComercial/>}
             {tab==="agentes"&&<AdminAgentes/>}
             {tab==="stockml"&&<AdminStockML/>}
             {tab==="timeline"&&<AdminTimeline/>}
@@ -10332,9 +10335,150 @@ function ConfigML() {
   );
 }
 
+// ==================== POR ATENDER ====================
+function PorAtender({ refresh }: { refresh: () => void }) {
+  const s = getStore();
+  const allProducts = Object.values(s.products);
+  const sinCosto = allProducts.filter(p => !p.cost || p.cost <= 0).sort((a, b) => a.name.localeCompare(b.name));
+  const [editingCost, setEditingCost] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState<Record<string, boolean>>({});
+  const [saved, setSaved] = useState<Record<string, boolean>>({});
+  const [filter, setFilter] = useState("");
+
+  const filtered = filter
+    ? sinCosto.filter(p => p.sku.toLowerCase().includes(filter.toLowerCase()) || p.name.toLowerCase().includes(filter.toLowerCase()))
+    : sinCosto;
+
+  const saveCosto = async (sku: string) => {
+    const val = parseFloat(editingCost[sku]);
+    if (!val || val <= 0) return;
+    setSaving(prev => ({ ...prev, [sku]: true }));
+    try {
+      await updateProductoCosto(sku, val);
+      await refreshStore();
+      setSaved(prev => ({ ...prev, [sku]: true }));
+      setTimeout(() => setSaved(prev => ({ ...prev, [sku]: false })), 2000);
+      refresh();
+    } catch (err) {
+      alert("Error: " + String(err));
+    }
+    setSaving(prev => ({ ...prev, [sku]: false }));
+  };
+
+  const conCostoPromedio = sinCosto.filter(p => p.costAvg && p.costAvg > 0);
+
+  const autoRellenar = async () => {
+    if (!conCostoPromedio.length) return;
+    if (!confirm(`Rellenar ${conCostoPromedio.length} productos usando su costo promedio de recepciones?`)) return;
+    for (const p of conCostoPromedio) {
+      await updateProductoCosto(p.sku, p.costAvg);
+    }
+    await refreshStore();
+    refresh();
+  };
+
+  return (
+    <div>
+      <div className="card" style={{ marginBottom: 16, padding: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 700 }}>Productos sin costo ({sinCosto.length})</div>
+            <div style={{ fontSize: 12, color: "var(--txt3)" }}>
+              Estos productos no tienen costo unitario registrado. Sin costo no se puede calcular margen.
+            </div>
+          </div>
+          {conCostoPromedio.length > 0 && (
+            <button onClick={autoRellenar} style={{ padding: "8px 16px", borderRadius: 8, background: "var(--cyan)", color: "#fff", fontWeight: 700, fontSize: 12, whiteSpace: "nowrap" }}>
+              Auto-rellenar {conCostoPromedio.length} desde recepciones
+            </button>
+          )}
+        </div>
+
+        {sinCosto.length === 0 ? (
+          <div style={{ textAlign: "center", padding: 32, color: "var(--green)" }}>
+            Todos los productos tienen costo registrado
+          </div>
+        ) : (
+          <>
+            <input
+              className="form-input"
+              value={filter}
+              onChange={e => setFilter(e.target.value)}
+              placeholder="Buscar por SKU o nombre..."
+              style={{ marginBottom: 12, fontSize: 12 }}
+            />
+
+            <table className="tbl" style={{ width: "100%" }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: "left" }}>SKU</th>
+                  <th style={{ textAlign: "left" }}>Nombre</th>
+                  <th style={{ textAlign: "left" }}>Categoria</th>
+                  <th style={{ textAlign: "left" }}>Proveedor</th>
+                  <th style={{ textAlign: "right" }}>Costo Prom.</th>
+                  <th style={{ textAlign: "right", minWidth: 140 }}>Costo</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map(p => (
+                  <tr key={p.sku} style={{ borderBottom: "1px solid var(--bg3)" }}>
+                    <td style={{ fontSize: 11, fontFamily: "var(--font-mono)" }}>{p.sku}</td>
+                    <td style={{ fontSize: 12, maxWidth: 250, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</td>
+                    <td style={{ fontSize: 11, color: "var(--txt3)" }}>{p.cat}</td>
+                    <td style={{ fontSize: 11, color: "var(--txt3)" }}>{p.prov}</td>
+                    <td style={{ fontSize: 12, textAlign: "right", color: p.costAvg > 0 ? "var(--cyan)" : "var(--txt3)" }}>
+                      {p.costAvg > 0 ? `$${p.costAvg.toLocaleString()}` : "—"}
+                    </td>
+                    <td style={{ textAlign: "right" }}>
+                      {saved[p.sku] ? (
+                        <span style={{ color: "var(--green)", fontWeight: 700, fontSize: 12 }}>Guardado</span>
+                      ) : (
+                        <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
+                          <input
+                            className="form-input"
+                            type="number"
+                            inputMode="numeric"
+                            placeholder={p.costAvg > 0 ? String(p.costAvg) : "Costo..."}
+                            value={editingCost[p.sku] || ""}
+                            onChange={e => setEditingCost(prev => ({ ...prev, [p.sku]: e.target.value }))}
+                            onKeyDown={e => e.key === "Enter" && saveCosto(p.sku)}
+                            style={{ width: 90, fontSize: 12, textAlign: "right" }}
+                          />
+                          <button
+                            onClick={() => saveCosto(p.sku)}
+                            disabled={saving[p.sku] || !editingCost[p.sku]}
+                            style={{
+                              padding: "4px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700,
+                              background: editingCost[p.sku] ? "var(--green)" : "var(--bg3)",
+                              color: editingCost[p.sku] ? "#fff" : "var(--txt3)",
+                            }}
+                          >
+                            {saving[p.sku] ? "..." : "OK"}
+                          </button>
+                        </div>
+                      )}
+                    </td>
+                    <td></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {filtered.length < sinCosto.length && (
+              <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 8 }}>
+                Mostrando {filtered.length} de {sinCosto.length}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ==================== CONFIGURACIÓN ====================
 function Configuracion({ refresh, initialSubTab }: { refresh: () => void; initialSubTab?: string }) {
-  const [configTab, setConfigTab] = useState<"general"|"posiciones"|"mapa"|"etiquetas"|"carga_stock"|"conteos"|"conciliador"|"diccionario"|"ml">(initialSubTab === "ml" ? "ml" : "general");
+  const [configTab, setConfigTab] = useState<"general"|"posiciones"|"mapa"|"etiquetas"|"carga_stock"|"conteos"|"conciliador"|"diccionario"|"ml"|"por_atender">(initialSubTab === "ml" ? "ml" : "general");
   const [conciliadorPin, setConciliadorPin] = useState("");
   const [conciliadorAuth, setConciliadorAuth] = useState(false);
   const CONCILIADOR_PIN = "9461";
@@ -10457,11 +10601,12 @@ function Configuracion({ refresh, initialSubTab }: { refresh: () => void; initia
   return (
     <div>
       <div style={{display:"flex",gap:8,marginBottom:16}}>
-        {([["general","General","⚙️"],["ml","MercadoLibre","🛒"],["diccionario","Diccionario","📖"],["posiciones","Posiciones","📍"],["mapa","Mapa Bodega","🗺️"],["etiquetas","Etiquetas","🖨️"],["carga_stock","Carga Stock","📥"],["conteos","Conteo Cíclico","📋"],["conciliador","Conciliador","🏦"]] as const).map(([key,label,icon])=>(
+        {([["por_atender","Por Atender","🔔"],["general","General","⚙️"],["ml","MercadoLibre","🛒"],["diccionario","Diccionario","📖"],["posiciones","Posiciones","📍"],["mapa","Mapa Bodega","🗺️"],["etiquetas","Etiquetas","🖨️"],["carga_stock","Carga Stock","📥"],["conteos","Conteo Cíclico","📋"],["conciliador","Conciliador","🏦"]] as const).map(([key,label,icon])=>(
           <button key={key} onClick={()=>setConfigTab(key)} style={{padding:"8px 16px",borderRadius:8,background:configTab===key?"var(--cyan)":"var(--bg3)",color:configTab===key?"#fff":"var(--txt2)",fontWeight:configTab===key?700:500,fontSize:13,border:configTab===key?"none":"1px solid var(--bg4)",cursor:"pointer"}}>{icon} {label}</button>
         ))}
       </div>
 
+      {configTab==="por_atender"&&<PorAtender refresh={refresh}/>}
       {configTab==="ml"&&<ConfigML/>}
       {configTab==="diccionario"&&<DiccionarioConfig/>}
       {configTab==="posiciones"&&<Posiciones refresh={refresh}/>}
