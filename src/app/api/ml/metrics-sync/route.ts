@@ -198,17 +198,20 @@ export async function POST(req: NextRequest) {
           rawFetch(`${ML}/advertising/product_ads/campaigns?user_id=${sellerId}&limit=2`, adsH2),
         ]);
 
-        // Also test per-campaign ads
+        // Test per-campaign ads with different URL patterns
         const campId = ads_advId.body?.results?.[0]?.id;
-        const ads_items = campId
-          ? await rawFetch(`${adsBase}/${advId}/product_ads/ads?campaign_id=${campId}&date_from=2026-03-01&date_to=2026-03-31&offset=0&limit=5`, adsH2)
-          : "no campaign";
+        const [ads_v1, ads_v2, ads_v3] = campId ? await Promise.all([
+          rawFetch(`${adsBase}/${advId}/product_ads/ads?campaign_id=${campId}&limit=3`, adsH2),
+          rawFetch(`${adsBase}/${advId}/product_ads/ads/search?campaign_id=${campId}&limit=3`, adsH2),
+          rawFetch(`${adsBase}/${advId}/product_ads/campaigns/${campId}/ads?limit=3`, adsH2),
+        ]) : ["no campaign", "no campaign", "no campaign"];
 
         return NextResponse.json({
-          testId,
+          testId, campId,
           ids: { advId, sellerId, accId },
-          ads_campaigns: ads_advId,
-          ads_items,
+          ads_v1_ads: ads_v1,
+          ads_v2_ads_search: ads_v2,
+          ads_v3_campaigns_id_ads: ads_v3,
         });
       }
 
