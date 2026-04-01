@@ -198,20 +198,26 @@ export async function POST(req: NextRequest) {
           rawFetch(`${ML}/advertising/product_ads/campaigns?user_id=${sellerId}&limit=2`, adsH2),
         ]);
 
-        // Test per-campaign ads with different URL patterns
-        const campId = ads_advId.body?.results?.[0]?.id;
-        const [ads_v1, ads_v2, ads_v3] = campId ? await Promise.all([
-          rawFetch(`${adsBase}/${advId}/product_ads/ads?campaign_id=${campId}&limit=3`, adsH2),
-          rawFetch(`${adsBase}/${advId}/product_ads/ads/search?campaign_id=${campId}&limit=3`, adsH2),
-          rawFetch(`${adsBase}/${advId}/product_ads/campaigns/${campId}/ads?limit=3`, adsH2),
-        ]) : ["no campaign", "no campaign", "no campaign"];
+        // Test the exact same calls faseAds makes
+        const metricsP = "clicks,prints,ctr,cost,cpc,acos,roas,cvr,sov,impression_share,top_impression_share,lost_impression_share_by_budget,lost_impression_share_by_ad_rank,acos_benchmark,direct_amount,indirect_amount,total_amount,direct_units_quantity,indirect_units_quantity,units_quantity,organic_units_quantity,organic_units_amount";
+        // 1. Campaigns (simplified, no metrics)
+        const camps = await rawFetch(`${adsBase}/${advId}/product_ads/campaigns/search?limit=50`, adsH2);
+        // 2. Ads for first campaign (with metrics + dates)
+        const campId = camps.body?.results?.[0]?.id;
+        const ads_with_metrics = campId
+          ? await rawFetch(`${adsBase}/${advId}/product_ads/ads/search?campaign_id=${campId}&date_from=2026-03-01&date_to=2026-03-31&metrics=${metricsP}&offset=0&limit=3`, adsH2)
+          : "no campaign";
+        // 3. Ads without metrics (baseline)
+        const ads_no_metrics = campId
+          ? await rawFetch(`${adsBase}/${advId}/product_ads/ads/search?campaign_id=${campId}&limit=3`, adsH2)
+          : "no campaign";
 
         return NextResponse.json({
-          testId, campId,
           ids: { advId, sellerId, accId },
-          ads_v1_ads: ads_v1,
-          ads_v2_ads_search: ads_v2,
-          ads_v3_campaigns_id_ads: ads_v3,
+          campaigns_count: camps.body?.paging?.total,
+          campId,
+          ads_with_metrics,
+          ads_no_metrics,
         });
       }
 
