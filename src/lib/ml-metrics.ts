@@ -248,32 +248,37 @@ async function batchUpdateSnapshot(
 // ==================== PHASE: VISITS ====================
 
 async function faseVisitas(estado: SyncEstado, itemIds: string[]): Promise<number> {
+  // MLC does NOT support batch visits (/items/visits?ids=...).
+  // Use per-item time_window endpoint instead.
   const updates: Array<{ item_id: string; visitas: number }> = [];
+  const startIdx = estado.ultimo_item_idx;
 
-  for (let i = 0; i < itemIds.length; i += BATCH_VISITS) {
-    const batch = itemIds.slice(i, i + BATCH_VISITS);
-    const ids = batch.join(",");
-    // ML requires date format YYYY-MM-DD (no timestamps)
-    const dateFrom = `${estado.periodo}-01`;
-    const dateTo = lastDayOfMonth(estado.periodo);
+  for (let i = startIdx; i < itemIds.length; i++) {
+    const itemId = itemIds[i];
+    const resp = await mlGet<{
+      total_visits?: number;
+      results?: Array<{ date: string; total: number }>;
+    }>(`/items/${itemId}/visits/time_window?last=30&unit=day`);
 
-    const resp = await mlGet<Record<string, unknown>>(
-      `/items/visits?ids=${ids}&date_from=${dateFrom}&date_to=${dateTo}`
-    );
-
-    if (resp && typeof resp === "object") {
-      // Response is keyed by item_id: { "MLC123": 500, "MLC456": 300 }
-      for (const [itemId, visits] of Object.entries(resp)) {
-        if (typeof visits === "number") {
-          updates.push({ item_id: itemId, visitas: visits });
-        }
-      }
+    if (resp) {
+      // total_visits is the sum, or we can sum results manually
+      const total = resp.total_visits ?? resp.results?.reduce((s, r) => s + (r.total || 0), 0) ?? 0;
+      updates.push({ item_id: itemId, visitas: total });
     }
+
+    if ((i + 1) % SAVE_PROGRESS_EVERY === 0) {
+      await batchUpdateSnapshot(estado.periodo, updates);
+      updates.length = 0;
+      await updateSyncEstado({ ultimo_item_idx: i + 1, items_procesados: i + 1 });
+    }
+
     await delay(DELAY_BETWEEN_REQUESTS_MS);
   }
 
-  await batchUpdateSnapshot(estado.periodo, updates);
-  return updates.length;
+  if (updates.length > 0) {
+    await batchUpdateSnapshot(estado.periodo, updates);
+  }
+  return itemIds.length - startIdx;
 }
 
 // ==================== PHASE: QUALITY ====================
