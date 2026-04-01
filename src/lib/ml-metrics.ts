@@ -446,7 +446,7 @@ async function faseAds(estado: SyncEstado, config: MLConfig & { advertiser_id?: 
 
     while (hasMore) {
       const adsResp = await mlGet<{ results?: AdsAd[] }>(
-        `/marketplace/advertising/${SITE_ID}/advertisers/${advertiserId}/product_ads/ads` +
+        `/marketplace/advertising/${SITE_ID}/advertisers/${advertiserId}/product_ads/ads/search` +
         `?campaign_id=${camp.id}&metrics=${metricsParam}` +
         `&date_from=${dateFrom}&date_to=${dateTo}&offset=${offset}&limit=${limit}`,
         { "api-version": "2" }
