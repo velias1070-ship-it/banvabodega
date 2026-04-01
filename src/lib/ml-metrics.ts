@@ -253,8 +253,9 @@ async function faseVisitas(estado: SyncEstado, itemIds: string[]): Promise<numbe
   for (let i = 0; i < itemIds.length; i += BATCH_VISITS) {
     const batch = itemIds.slice(i, i + BATCH_VISITS);
     const ids = batch.join(",");
-    const dateFrom = `${estado.periodo}-01T00:00:00.000-04:00`;
-    const dateTo = lastDayOfMonth(estado.periodo) + "T23:59:59.999-04:00";
+    // ML requires date format YYYY-MM-DD (no timestamps)
+    const dateFrom = `${estado.periodo}-01`;
+    const dateTo = lastDayOfMonth(estado.periodo);
 
     const resp = await mlGet<Record<string, unknown>>(
       `/items/visits?ids=${ids}&date_from=${dateFrom}&date_to=${dateTo}`
@@ -278,17 +279,22 @@ async function faseVisitas(estado: SyncEstado, itemIds: string[]): Promise<numbe
 // ==================== PHASE: QUALITY ====================
 
 async function faseQuality(estado: SyncEstado, itemIds: string[]): Promise<number> {
+  // Quality/health endpoints return 404 for buy_it_now items in MLC.
+  // Try first item — if 404, skip entire phase.
+  if (itemIds.length > 0) {
+    const testResp = await mlGet<PerformanceResponse>(`/items/${itemIds[0]}/health`);
+    if (!testResp) {
+      console.log("[ml-metrics] Quality/health endpoint not available for this site, skipping phase");
+      return 0;
+    }
+  }
+
   const updates: Array<{ item_id: string; quality_score: number | null; quality_level: string | null; performance_data: unknown }> = [];
   const startIdx = estado.ultimo_item_idx;
 
   for (let i = startIdx; i < itemIds.length; i++) {
     const itemId = itemIds[i];
-
-    // Try /health first (newer), fallback to /performance
-    let resp = await mlGet<PerformanceResponse>(`/items/${itemId}/health`);
-    if (!resp) {
-      resp = await mlGet<PerformanceResponse>(`/items/${itemId}/performance`);
-    }
+    const resp = await mlGet<PerformanceResponse>(`/items/${itemId}/health`);
 
     if (resp) {
       updates.push({
@@ -416,7 +422,13 @@ async function faseAds(estado: SyncEstado, config: MLConfig & { advertiser_id?: 
     { "api-version": "2" }
   );
 
-  const campaigns = campaignsResp?.results ?? [];
+  if (!campaignsResp) {
+    console.log("[ml-metrics] Ads API returned null (possibly 403 unauthorized). Skipping ads phase.");
+    console.log("[ml-metrics] To fix: ensure ML app has 'advertising' scope in OAuth permissions.");
+    return 0;
+  }
+
+  const campaigns = campaignsResp.results ?? [];
   if (campaigns.length === 0) return 0;
 
   // 2. Get ads per campaign
