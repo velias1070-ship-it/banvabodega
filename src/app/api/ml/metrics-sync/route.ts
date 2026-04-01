@@ -186,6 +186,52 @@ export async function POST(req: NextRequest) {
         });
       }
 
+      case "debug-ads": {
+        const { ensureValidToken: ensT3, getMLConfig: getCfg3 } = await import("@/lib/ml");
+        const c3 = await getCfg3();
+        const t3 = await ensT3();
+        if (!c3 || !t3) return NextResponse.json({ error: "no config/token" });
+        const ML3 = "https://api.mercadolibre.com";
+        const h3 = { Authorization: `Bearer ${t3}`, "api-version": "2" };
+        const advId3 = (c3 as unknown as Record<string, unknown>).advertiser_id;
+        const base3 = `${ML3}/marketplace/advertising/MLC/advertisers/${advId3}/product_ads`;
+        const targetItem = body.item_id || "MLC3742340416";
+
+        // 1. Get ALL campaigns (not just active)
+        const campsResp = await fetch(`${base3}/campaigns/search?limit=50`, { headers: h3 });
+        const campsData = await campsResp.json();
+
+        // 2. Search for the item across all campaigns
+        const adsMetrics = "clicks,prints,ctr,cost,cpc,acos,roas,cvr,direct_amount,indirect_amount,total_amount,direct_units_quantity,indirect_units_quantity,units_quantity";
+        const foundIn: Array<Record<string, unknown>> = [];
+        for (const camp of campsData.results || []) {
+          let off = 0;
+          while (true) {
+            const adsResp = await fetch(
+              `${base3}/ads/search?campaign_id=${camp.id}&metrics=${adsMetrics}&date_from=2026-03-01&date_to=2026-03-31&offset=${off}&limit=50`,
+              { headers: h3 }
+            );
+            const adsData = await adsResp.json();
+            const results = adsData.results || [];
+            for (const ad of results) {
+              if (ad.item_id === targetItem) {
+                foundIn.push({ campaign: camp.name, campaign_id: camp.id, campaign_status: camp.status, ad_status: ad.status, metrics: ad.metrics });
+              }
+            }
+            if (results.length < 50) break;
+            off += 50;
+          }
+        }
+
+        return NextResponse.json({
+          targetItem,
+          total_campaigns: campsData.paging?.total,
+          campaigns: (campsData.results || []).map((c: Record<string, unknown>) => ({ id: c.id, name: c.name, status: c.status, budget: c.budget })),
+          item_found_in: foundIn,
+          snapshot_ads: null, // will be filled below
+        });
+      }
+
       case "debug-sku": {
         const { mlGet: mlG, getMLConfig: getCfg } = await import("@/lib/ml");
         const c = await getCfg();
