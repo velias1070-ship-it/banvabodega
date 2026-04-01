@@ -159,6 +159,54 @@ export async function POST(req: NextRequest) {
         });
       }
 
+      case "debug-sku": {
+        const { mlGet: mlG, getMLConfig: getCfg } = await import("@/lib/ml");
+        const c = await getCfg();
+        if (!c) return NextResponse.json({ error: "no config" });
+        const sku = body.sku || body.item_id;
+        if (!sku) return NextResponse.json({ error: "sku or item_id required" });
+
+        const sb3 = getServerSupabase();
+        // Find item_id from sku
+        let itemId = sku.startsWith("MLC") ? sku : null;
+        if (!itemId && sb3) {
+          const { data: m } = await sb3.from("ml_items_map").select("item_id").eq("sku_venta", sku).eq("activo", true).limit(1);
+          itemId = m?.[0]?.item_id;
+        }
+        if (!itemId) return NextResponse.json({ error: `item not found for ${sku}` });
+
+        // Raw API calls
+        const visits = await mlG(`/items/${itemId}/visits/time_window?last=30&unit=day`);
+        const reviews = await mlG(`/reviews/item/${itemId}`);
+        const questions = await mlG(`/questions/search?item=${itemId}&limit=5`);
+        const reputation = await mlG(`/users/${c.seller_id}`);
+        // Snapshot from DB
+        let snapshot = null;
+        if (sb3) {
+          const { data } = await sb3.from("ml_snapshot_mensual").select("*").eq("periodo", "2026-03").eq("item_id", itemId).limit(1);
+          snapshot = data?.[0] ?? null;
+        }
+        // Orders for this SKU
+        let orderCount = 0;
+        if (sb3) {
+          const { data } = await sb3.from("orders_history").select("cantidad, fecha").eq("sku_venta", sku).eq("estado", "Pagada").gte("fecha", "2026-03-01").lte("fecha", "2026-03-31T23:59:59Z");
+          orderCount = data?.reduce((s: number, r: Record<string, unknown>) => s + ((r.cantidad as number) || 0), 0) ?? 0;
+        }
+
+        return NextResponse.json({
+          itemId, sku,
+          visits_total: (visits as Record<string, unknown>)?.total_visits,
+          reviews_avg: (reviews as Record<string, unknown>)?.rating_average,
+          reviews_count: ((reviews as Record<string, unknown>)?.paging as Record<string, unknown>)?.total,
+          questions_total: (questions as Record<string, unknown>)?.total,
+          reputation_raw: (reputation as Record<string, unknown>)?.seller_reputation,
+          orders_units: orderCount,
+          snapshot_visitas: snapshot?.visitas,
+          snapshot_unidades: snapshot?.unidades_vendidas,
+          snapshot_cvr: snapshot?.cvr,
+        });
+      }
+
       case "test-apis": {
         const { ensureValidToken, getMLConfig: getConfigFn } = await import("@/lib/ml");
         const cfg = await getConfigFn();

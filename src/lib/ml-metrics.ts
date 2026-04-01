@@ -540,12 +540,24 @@ async function faseAggregate(estado: SyncEstado): Promise<number> {
   const dateFrom = `${periodo}-01`;
   const dateTo = lastDayOfMonth(periodo);
 
-  // 1. Aggregate orders_history by sku_venta
-  const { data: ordenes } = await sb.from("orders_history")
-    .select("sku_venta, cantidad, canal, subtotal, comision_total, costo_envio, ingreso_envio, total, fecha")
-    .eq("estado", "Pagada")
-    .gte("fecha", dateFrom)
-    .lte("fecha", dateTo + "T23:59:59.999Z");
+  // 1. Aggregate orders_history by sku_venta (PAGINATED — Supabase default limit is 1000)
+  const ordenes: Record<string, unknown>[] = [];
+  const PAGE_SIZE = 1000;
+  let offset = 0;
+  while (true) {
+    const { data } = await sb.from("orders_history")
+      .select("sku_venta, cantidad, canal, subtotal, comision_total, costo_envio, ingreso_envio, total, fecha")
+      .eq("estado", "Pagada")
+      .gte("fecha", dateFrom)
+      .lte("fecha", dateTo + "T23:59:59.999Z")
+      .order("fecha", { ascending: true })
+      .range(offset, offset + PAGE_SIZE - 1);
+    if (!data || data.length === 0) break;
+    ordenes.push(...data);
+    if (data.length < PAGE_SIZE) break;
+    offset += PAGE_SIZE;
+  }
+  console.log(`[ml-metrics] Aggregate: ${ordenes.length} orders loaded for ${periodo}`);
 
   // Group by sku_venta
   const ventasPorSku = new Map<string, {
@@ -860,7 +872,7 @@ async function computeResumenMensual(periodo: string): Promise<void> {
       sumCvr += (s.cvr as number) || 0;
       cvrCount++;
     }
-    if (s.reviews_promedio != null) {
+    if (s.reviews_promedio != null && (s.reviews_promedio as number) > 0) {
       sumReview += s.reviews_promedio as number;
       reviewCount++;
     }
