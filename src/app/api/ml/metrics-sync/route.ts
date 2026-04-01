@@ -159,6 +159,33 @@ export async function POST(req: NextRequest) {
         });
       }
 
+      case "debug-orders": {
+        const { ensureValidToken: ensT2, getMLConfig: getCfg2 } = await import("@/lib/ml");
+        const c2 = await getCfg2();
+        const t2 = await ensT2();
+        if (!c2 || !t2) return NextResponse.json({ error: "no config/token" });
+        const ML2 = "https://api.mercadolibre.com";
+        const h2 = { Authorization: `Bearer ${t2}` };
+
+        // Count orders from ML API for March
+        const r1 = await fetch(`${ML2}/orders/search?seller=${c2.seller_id}&order.status=paid&order.date_created.from=2026-03-01T00:00:00.000-04:00&order.date_created.to=2026-03-31T23:59:59.999-04:00&limit=1`, { headers: h2 });
+        const d1 = await r1.json();
+
+        // Also check date_closed
+        const r2 = await fetch(`${ML2}/orders/search?seller=${c2.seller_id}&order.status=paid&order.date_closed.from=2026-03-01T00:00:00.000-04:00&order.date_closed.to=2026-03-31T23:59:59.999-04:00&limit=1`, { headers: h2 });
+        const d2 = await r2.json();
+
+        // Check cancelled
+        const r3 = await fetch(`${ML2}/orders/search?seller=${c2.seller_id}&order.status=cancelled&order.date_created.from=2026-03-01T00:00:00.000-04:00&order.date_created.to=2026-03-31T23:59:59.999-04:00&limit=1`, { headers: h2 });
+        const d3 = await r3.json();
+
+        return NextResponse.json({
+          paid_by_date_created: d1.paging,
+          paid_by_date_closed: d2.paging,
+          cancelled_by_date_created: d3.paging,
+        });
+      }
+
       case "debug-sku": {
         const { mlGet: mlG, getMLConfig: getCfg } = await import("@/lib/ml");
         const c = await getCfg();
