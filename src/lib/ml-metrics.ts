@@ -411,11 +411,11 @@ async function faseAds(estado: SyncEstado, config: MLConfig & { advertiser_id?: 
 
   const dateFrom = `${estado.periodo}-01`;
   const dateTo = lastDayOfMonth(estado.periodo);
-  const metricsParam = [
-    "clicks", "prints", "ctr", "cost", "cpc", "acos", "roas", "cvr", "sov",
-    "impression_share", "top_impression_share",
-    "lost_impression_share_by_budget", "lost_impression_share_by_ad_rank",
-    "acos_benchmark", "direct_amount", "indirect_amount", "total_amount",
+  // Note: impression_share, top_impression_share, lost_by_budget/rank, sov, acos_benchmark
+  // are NOT allowed on ads_search endpoint (only on campaigns). Use reduced set for ads.
+  const adsMetrics = [
+    "clicks", "prints", "ctr", "cost", "cpc", "acos", "roas", "cvr",
+    "direct_amount", "indirect_amount", "total_amount",
     "direct_units_quantity", "indirect_units_quantity", "units_quantity",
     "organic_units_quantity", "organic_units_amount",
   ].join(",");
@@ -447,7 +447,7 @@ async function faseAds(estado: SyncEstado, config: MLConfig & { advertiser_id?: 
       const adsResp = await mlGet<{ results?: AdsAd[]; paging?: { total: number } }>(
         `/marketplace/advertising/${SITE_ID}/advertisers/${advertiserId}/product_ads/ads/search` +
         `?campaign_id=${camp.id}&date_from=${dateFrom}&date_to=${dateTo}` +
-        `&metrics=${metricsParam}&offset=${offset}&limit=${limit}`,
+        `&metrics=${adsMetrics}&offset=${offset}&limit=${limit}`,
         { "api-version": "2" }
       );
 
