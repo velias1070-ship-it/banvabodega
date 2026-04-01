@@ -49,8 +49,8 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
   const [selected, setSelected] = useState<DocSeleccionado[]>([]);
   const [search, setSearch] = useState("");
   const [tipoFiltro, setTipoFiltro] = useState<"compras" | "ventas" | "todos">(mov.monto < 0 ? "compras" : "ventas");
-  const [sortBy, setSortBy] = useState<"monto" | "fecha" | "descripcion">("monto");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [sortBy, setSortBy] = useState<"cercania" | "monto" | "fecha" | "descripcion">("cercania");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [nota, setNota] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -95,14 +95,16 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
       return docs.filter(d => d.razon_social.toLowerCase().includes(q) || d.rut.includes(q) || d.nro.includes(q));
     }
 
+    const target = saldoPorAsignar > 0 ? saldoPorAsignar : movAbs;
     return docs.sort((a, b) => {
       let cmp = 0;
-      if (sortBy === "fecha") cmp = (a.fecha || "").localeCompare(b.fecha || "");
+      if (sortBy === "cercania") cmp = Math.abs(a.monto_total - target) - Math.abs(b.monto_total - target);
+      else if (sortBy === "fecha") cmp = (a.fecha || "").localeCompare(b.fecha || "");
       else if (sortBy === "monto") cmp = a.monto_total - b.monto_total;
       else if (sortBy === "descripcion") cmp = (a.razon_social || "").localeCompare(b.razon_social || "");
       return sortDir === "desc" ? -cmp : cmp;
     });
-  }, [compras, ventas, tipoFiltro, search, concCompraIds, concVentaIds, selectedIds, sortBy, sortDir]);
+  }, [compras, ventas, tipoFiltro, search, concCompraIds, concVentaIds, selectedIds, sortBy, sortDir, saldoPorAsignar, movAbs]);
 
   const toggleSort = (key: typeof sortBy) => {
     if (sortBy === key) setSortDir(d => d === "asc" ? "desc" : "asc");
@@ -307,7 +309,7 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
                 <thead>
                   <tr style={{ borderBottom: "1px solid var(--bg4)" }}>
-                    <th onClick={() => toggleSort("monto")} style={{ textAlign: "left", padding: "4px 0", color: "var(--cyan)", fontWeight: 600, cursor: "pointer" }}>Saldo{sortIcon("monto")}</th>
+                    <th onClick={() => toggleSort("cercania")} style={{ textAlign: "left", padding: "4px 0", color: sortBy === "cercania" ? "var(--green)" : "var(--cyan)", fontWeight: 600, cursor: "pointer" }}>{sortBy === "cercania" ? "\u2248 Saldo" : "Saldo"}{sortIcon("cercania")}</th>
                     <th onClick={() => toggleSort("fecha")} style={{ textAlign: "left", padding: "4px 0", color: "var(--cyan)", fontWeight: 600, cursor: "pointer" }}>Fecha{sortIcon("fecha")}</th>
                     <th style={{ textAlign: "left", padding: "4px 0", color: "var(--txt3)", fontWeight: 600 }}>Tipo</th>
                     <th onClick={() => toggleSort("descripcion")} style={{ textAlign: "left", padding: "4px 0", color: "var(--cyan)", fontWeight: 600, cursor: "pointer" }}>Descripci&oacute;n{sortIcon("descripcion")}</th>
