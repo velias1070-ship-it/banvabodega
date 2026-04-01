@@ -479,6 +479,32 @@ export async function mlPost<T = unknown>(path: string, body?: unknown): Promise
 }
 
 /**
+ * Make authenticated POST request to ML API — returns error details instead of null
+ */
+export async function mlPostDetailed<T = unknown>(path: string, body?: unknown): Promise<{ data: T | null; error: string | null; status: number }> {
+  const token = await ensureValidToken();
+  if (!token) return { data: null, error: "No valid token", status: 0 };
+
+  const resp = await fetchWithRateLimit(`${ML_API}${path}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  if (!resp.ok) {
+    const errText = await resp.text();
+    console.error(`[ML] POST ${path} failed:`, resp.status, errText);
+    return { data: null, error: errText, status: resp.status };
+  }
+
+  const data = await resp.json() as T;
+  return { data, error: null, status: resp.status };
+}
+
+/**
  * Make authenticated DELETE request to ML API
  */
 export async function mlDelete(path: string): Promise<boolean> {

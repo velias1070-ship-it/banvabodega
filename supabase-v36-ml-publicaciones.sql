@@ -1,0 +1,20 @@
+-- v36: Columnas para gestión de publicaciones ML desde el admin
+ALTER TABLE ml_items_map
+  ADD COLUMN IF NOT EXISTS titulo TEXT,
+  ADD COLUMN IF NOT EXISTS price NUMERIC,
+  ADD COLUMN IF NOT EXISTS status_ml TEXT,
+  ADD COLUMN IF NOT EXISTS thumbnail TEXT,
+  ADD COLUMN IF NOT EXISTS permalink TEXT,
+  ADD COLUMN IF NOT EXISTS available_quantity INTEGER,
+  ADD COLUMN IF NOT EXISTS sold_quantity INTEGER,
+  ADD COLUMN IF NOT EXISTS listing_type TEXT,
+  ADD COLUMN IF NOT EXISTS condition TEXT,
+  ADD COLUMN IF NOT EXISTS category_id TEXT,
+  ADD COLUMN IF NOT EXISTS created_via TEXT DEFAULT 'sync',
+  ADD COLUMN IF NOT EXISTS sku_venta TEXT,
+  ADD COLUMN IF NOT EXISTS sku_origen TEXT,
+  ADD COLUMN IF NOT EXISTS inventory_id TEXT,
+  ADD COLUMN IF NOT EXISTS stock_flex_cache INTEGER,
+  ADD COLUMN IF NOT EXISTS stock_full_cache INTEGER,
+  ADD COLUMN IF NOT EXISTS cache_updated_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
