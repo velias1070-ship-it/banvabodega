@@ -420,20 +420,19 @@ async function faseAds(estado: SyncEstado, config: MLConfig & { advertiser_id?: 
     "organic_units_quantity", "organic_units_amount",
   ].join(",");
 
-  // 1. Get campaigns
-  const campaignsResp = await mlGet<{ results?: AdsCampaign[] }>(
-    `/marketplace/advertising/${SITE_ID}/advertisers/${advertiserId}/product_ads/campaigns/search` +
-    `?metrics_summary=true&metrics=${metricsParam}&date_from=${dateFrom}&date_to=${dateTo}`,
+  // 1. Get campaigns (without metrics — simpler query that works reliably)
+  const campaignsResp = await mlGet<{ results?: AdsCampaign[]; paging?: { total: number } }>(
+    `/marketplace/advertising/${SITE_ID}/advertisers/${advertiserId}/product_ads/campaigns/search?limit=50`,
     { "api-version": "2" }
   );
 
   if (!campaignsResp) {
-    console.log("[ml-metrics] Ads API returned null (possibly 403 unauthorized). Skipping ads phase.");
-    console.log("[ml-metrics] To fix: ensure ML app has 'advertising' scope in OAuth permissions.");
+    console.log("[ml-metrics] Ads campaigns API returned null. Skipping ads phase.");
     return 0;
   }
 
   const campaigns = campaignsResp.results ?? [];
+  console.log(`[ml-metrics] Found ${campaigns.length} campaigns (total: ${campaignsResp.paging?.total ?? "?"})`);
   if (campaigns.length === 0) return 0;
 
   // 2. Get ads per campaign
@@ -445,10 +444,10 @@ async function faseAds(estado: SyncEstado, config: MLConfig & { advertiser_id?: 
     let hasMore = true;
 
     while (hasMore) {
-      const adsResp = await mlGet<{ results?: AdsAd[] }>(
+      const adsResp = await mlGet<{ results?: AdsAd[]; paging?: { total: number } }>(
         `/marketplace/advertising/${SITE_ID}/advertisers/${advertiserId}/product_ads/ads/search` +
-        `?campaign_id=${camp.id}&metrics=${metricsParam}` +
-        `&date_from=${dateFrom}&date_to=${dateTo}&offset=${offset}&limit=${limit}`,
+        `?campaign_id=${camp.id}&date_from=${dateFrom}&date_to=${dateTo}` +
+        `&metrics=${metricsParam}&offset=${offset}&limit=${limit}`,
         { "api-version": "2" }
       );
 
@@ -494,7 +493,10 @@ async function faseAds(estado: SyncEstado, config: MLConfig & { advertiser_id?: 
     }
   }
 
-  await batchUpdateSnapshot(estado.periodo, allUpdates);
+  console.log(`[ml-metrics] Ads: ${allUpdates.length} ad-items to update across ${campaigns.length} campaigns`);
+  if (allUpdates.length > 0) {
+    await batchUpdateSnapshot(estado.periodo, allUpdates);
+  }
   return allUpdates.length;
 }
 
