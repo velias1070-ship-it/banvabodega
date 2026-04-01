@@ -1960,7 +1960,7 @@ export async function syncFlexPickingSession(): Promise<{ created: boolean; upda
     }
   }
 
-  const { lineas } = buildPickingLineas(orders.map(o => ({ skuVenta: o.skuVenta, qty: o.qty })));
+  const { lineas } = buildPickingLineas(orders.map(o => ({ skuVenta: o.skuVenta, qty: o.qty, shipmentIds: [o.shipmentId] })));
   if (lineas.length === 0) return { created: false, updated: false, total: 0 };
 
   // 4. Single session per day — find or create, reopen if needed
@@ -2382,6 +2382,19 @@ export async function pickearComponente(
           void sb.from("ml_shipment_items")
             .update({ stock_deducted: true })
             .eq("shipment_id", shipId)
+            .eq("seller_sku", linea.skuVenta);
+        }
+      } else {
+        // Fallback: mark oldest pending shipment item for this SKU
+        const { data: pending } = await sb.from("ml_shipment_items")
+          .select("shipment_id")
+          .eq("seller_sku", linea.skuVenta)
+          .eq("stock_deducted", false)
+          .limit(1);
+        if (pending && pending.length > 0) {
+          void sb.from("ml_shipment_items")
+            .update({ stock_deducted: true })
+            .eq("shipment_id", pending[0].shipment_id)
             .eq("seller_sku", linea.skuVenta);
         }
       }
