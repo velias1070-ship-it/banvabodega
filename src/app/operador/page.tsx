@@ -1,7 +1,7 @@
 "use client";
 import { useState, useCallback, useEffect, useRef } from "react";
 import { getStore, findProduct, findPosition, activePositions, skuTotal, skuPositions, posContents, recordMovement, IN_REASONS, OUT_REASONS, initStore, refreshStore, isSupabaseConfigured, getMapConfig, getVentasPorSkuOrigen, getComponentesPorML } from "@/lib/store";
-import { transferirStock } from "@/lib/db";
+import { transferirStock, enqueueAndSync } from "@/lib/db";
 import type { Product, InReason, OutReason, ComposicionVenta } from "@/lib/store";
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -652,6 +652,7 @@ function Traspaso({ refresh }: { refresh: () => void }) {
     try {
       const ok = await transferirStock(product.sku, sourcePos, destPos, take, "Operador");
       if (!ok) { show("Stock insuficiente en origen", "err"); return; }
+      enqueueAndSync([product.sku]);
       // Update local cache
       const s = getStore();
       if (!s.stock[product.sku]) s.stock[product.sku] = {};

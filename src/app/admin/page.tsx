@@ -5,7 +5,7 @@ import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, s
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia, IntegrityError } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
-import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado, transferirStock, reconciliarReservas, fetchResumenMovimientosHoy, fetchStockDisponible, fetchMovimientosHoy, fetchDesgloseReservas } from "@/lib/db";
+import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado, transferirStock, reconciliarReservas, fetchResumenMovimientosHoy, fetchStockDisponible, fetchMovimientosHoy, fetchDesgloseReservas, enqueueAndSync } from "@/lib/db";
 import type { DBStockProyectado, DBReconciliacion } from "@/lib/db";
 import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap, ShipmentWithItems } from "@/lib/db";
 import { getOAuthUrl } from "@/lib/ml";
@@ -4267,6 +4267,7 @@ function Operaciones({ refresh }: { refresh: () => void }) {
       try {
         const ok = await transferirStock(selected.sku, posFrom, pos, qty, "Admin");
         if (!ok) { alert(`Stock insuficiente en ${posFrom} para ${selected.sku}`); return; }
+        enqueueAndSync([selected.sku]);
         // Update local cache
         if (!getStore().stock[selected.sku]) getStore().stock[selected.sku] = {};
         getStore().stock[selected.sku][posFrom] = Math.max(0, (getStore().stock[selected.sku][posFrom] || 0) - qty);
@@ -4582,6 +4583,7 @@ function MiniMapPanel({ positions, onSelectProduct, onSetMode, refresh }: {
         try {
           const ok = await transferirStock(item.sku, selectedPos, transferDest, qty, "Admin");
           if (ok) {
+            enqueueAndSync([item.sku]);
             if (!getStore().stock[item.sku]) getStore().stock[item.sku] = {};
             getStore().stock[item.sku][selectedPos] = Math.max(0, (getStore().stock[item.sku][selectedPos] || 0) - qty);
             if (getStore().stock[item.sku][selectedPos] === 0) delete getStore().stock[item.sku][selectedPos];

@@ -961,6 +961,7 @@ export function assignPosition(sku: string, targetPos: string, qty: number): boo
       });
     })().catch(console.error);
   }
+  db.enqueueAndSync([sku]);
   return true;
 }
 
@@ -1567,6 +1568,10 @@ export async function repararRecepcion(recepcionId: string, posicionDestino: str
     results.push(result);
   }
 
+  // Sync repaired SKUs to ML
+  const repairedSkus = Array.from(new Set(results.filter(r => r.reparado).map(r => r.sku)));
+  if (repairedSkus.length > 0) db.enqueueAndSync(repairedSkus);
+
   return results;
 }
 
@@ -1708,6 +1713,10 @@ export async function aplicarReconciliacion(discrepancias: StockDiscrepancia[]):
       errors.push(`${d.sku}@${d.posicion}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
+
+  // Sync all affected SKUs to ML
+  const affectedSkus = Array.from(new Set(discrepancias.map(d => d.sku)));
+  if (affectedSkus.length > 0) db.enqueueAndSync(affectedSkus);
 
   return { fixed, errors };
 }
@@ -2421,6 +2430,7 @@ async function pickearComponenteFallback(
     estado: allDone ? "COMPLETADA" : "EN_PROCESO",
     ...(allDone ? { completed_at: new Date().toISOString() } : {}),
   });
+  db.enqueueAndSync([comp.skuOrigen]);
   return true;
 }
 
@@ -2461,6 +2471,7 @@ export async function despickearComponente(
     estado: "EN_PROCESO",
     completed_at: null,
   });
+  db.enqueueAndSync([comp.skuOrigen]);
 
   return true;
 }
