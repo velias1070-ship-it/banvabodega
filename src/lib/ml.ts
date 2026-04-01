@@ -1611,6 +1611,7 @@ export async function getShippingLabelsZpl(shippingIds: number[]): Promise<strin
 interface MLMarketplaceItem {
   id: string;
   title: string;
+  status?: string;
   inventory_id?: string;
   available_quantity: number;
   sold_quantity: number;
@@ -1853,6 +1854,7 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     sold_quantity: number;
     variation_id: string | null;
     user_product_id: string | null;
+    status_ml: string | null;
   }> = [];
 
   let sinInventoryId = 0;
@@ -1884,6 +1886,7 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
               sold_quantity: v.sold_quantity || 0,
               variation_id: String(v.id),
               user_product_id: v.user_product_id || item.user_product_id || null,
+              status_ml: item.status || null,
             });
           }
         } else {
@@ -1902,6 +1905,7 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
             sold_quantity: item.sold_quantity || 0,
             variation_id: null,
             user_product_id: item.user_product_id || null,
+            status_ml: item.status || null,
           });
         }
       } catch (err) {
@@ -1958,7 +1962,8 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     available_quantity: r.available_quantity,
     sold_quantity: r.sold_quantity,
     user_product_id: r.user_product_id,
-    activo: true,
+    activo: r.status_ml !== "closed",
+    status_ml: r.status_ml,
     updated_at: new Date().toISOString(),
   }));
 
