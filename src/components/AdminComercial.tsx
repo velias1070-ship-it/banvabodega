@@ -351,6 +351,7 @@ function NuevaPublicacion() {
   // Step 2: Form
   const [attributes, setAttributes] = useState<MLAttribute[]>([]);
   const [listingTypes, setListingTypes] = useState<Array<{ id: string; name: string }>>([]);
+  const [familyName, setFamilyName] = useState("");
   const [title, setTitle] = useState("");
   const [price, setPrice] = useState("");
   const [condition, setCondition] = useState<"new" | "used">("new");
@@ -425,12 +426,14 @@ function NuevaPublicacion() {
       .map(([id, value_name]) => ({ id, value_name }));
 
     return {
+      family_name: familyName || title,
       title,
       category_id: selectedCat!.id,
       price: parseInt(price),
       available_quantity: parseInt(quantity),
       listing_type_id: listingType,
       condition,
+      channels: ["marketplace"],
       pictures: pictures.filter(p => p.trim()).map(source => ({ source })),
       attributes: attrs,
       shipping: { mode: "me2", local_pick_up: false, free_shipping: freeShipping },
@@ -469,6 +472,7 @@ function NuevaPublicacion() {
     setCatSearch("");
     setCatResults([]);
     setAttributes([]);
+    setFamilyName("");
     setTitle("");
     setPrice("");
     setCondition("new");
@@ -538,10 +542,18 @@ function NuevaPublicacion() {
               <button onClick={() => setStep(1)} style={{ padding: "4px 10px", borderRadius: 6, fontSize: 11, background: "var(--bg3)", color: "var(--txt3)", border: "1px solid var(--bg4)", cursor: "pointer" }}>Cambiar</button>
             </div>
 
+            {/* Family Name */}
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ fontSize: 11, color: "var(--txt3)", fontWeight: 600, display: "block", marginBottom: 4 }}>Nombre de familia (family_name) *</label>
+              <input type="text" value={familyName} onChange={e => setFamilyName(e.target.value)} placeholder="Nombre genérico del producto (ej: Zapatilla Nike Air Max 90)"
+                style={{ width: "100%", padding: "10px 14px", borderRadius: 8, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 13 }} />
+              <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 2 }}>Agrupa variantes (color, talla) bajo el mismo nombre. ML genera el título final.</div>
+            </div>
+
             {/* Title */}
             <div style={{ marginBottom: 12 }}>
-              <label style={{ fontSize: 11, color: "var(--txt3)", fontWeight: 600, display: "block", marginBottom: 4 }}>Título *</label>
-              <input type="text" value={title} onChange={e => setTitle(e.target.value)} maxLength={60} placeholder="Título de la publicación (máx 60 caracteres)"
+              <label style={{ fontSize: 11, color: "var(--txt3)", fontWeight: 600, display: "block", marginBottom: 4 }}>Título</label>
+              <input type="text" value={title} onChange={e => setTitle(e.target.value)} maxLength={60} placeholder="Título específico de esta variante (opcional, ML puede autogenerar)"
                 style={{ width: "100%", padding: "10px 14px", borderRadius: 8, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 13 }} />
               <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 2, textAlign: "right" }}>{title.length}/60</div>
             </div>
@@ -648,15 +660,15 @@ function NuevaPublicacion() {
           <div className="card" style={{ marginBottom: 12 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
               <div style={{ fontSize: 12, color: "var(--txt3)" }}>
-                {title ? `"${title}"` : "Sin título"} · {fmt(parseInt(price) || 0)} · {parseInt(quantity) || 0} uds · {pictures.filter(p => p.trim()).length} fotos
+                {familyName ? `"${familyName}"` : "Sin nombre"} · {fmt(parseInt(price) || 0)} · {parseInt(quantity) || 0} uds · {pictures.filter(p => p.trim()).length} fotos
               </div>
               <div style={{ display: "flex", gap: 8 }}>
                 <button onClick={() => setStep(1)} style={{ padding: "8px 16px", borderRadius: 8, fontSize: 12, fontWeight: 600, background: "var(--bg3)", color: "var(--txt3)", border: "1px solid var(--bg4)", cursor: "pointer" }}>Volver</button>
-                <button onClick={doPublish} disabled={publishing || !title || !price || pictures.filter(p => p.trim()).length === 0}
+                <button onClick={doPublish} disabled={publishing || !familyName || !price || pictures.filter(p => p.trim()).length === 0}
                   style={{
                     padding: "8px 20px", borderRadius: 8, fontSize: 12, fontWeight: 700,
-                    background: !title || !price ? "var(--bg3)" : "var(--greenBg)", color: !title || !price ? "var(--txt3)" : "var(--green)",
-                    border: `1px solid ${!title || !price ? "var(--bg4)" : "var(--greenBd)"}`, cursor: publishing ? "wait" : "pointer",
+                    background: !familyName || !price ? "var(--bg3)" : "var(--greenBg)", color: !familyName || !price ? "var(--txt3)" : "var(--green)",
+                    border: `1px solid ${!familyName || !price ? "var(--bg4)" : "var(--greenBd)"}`, cursor: publishing ? "wait" : "pointer",
                   }}>
                   {publishing ? "Publicando..." : "Publicar en ML"}
                 </button>
@@ -735,7 +747,9 @@ function OptionalAttrs({ attrs, values, onChange }: { attrs: MLAttribute[]; valu
   );
 }
 
-// ==================== AGREGAR VARIANTES ====================
+// ==================== AGREGAR VARIANTES (User Products model) ====================
+// En el modelo multi-warehouse/User Products, las variantes son items separados
+// que comparten el mismo family_name. No se usa POST /items/{id}/variations.
 
 function AgregarVariantes({ preselectedItemId }: { preselectedItemId: string | null }) {
   const [items, setItems] = useState<DBMLItemMap[]>([]);
@@ -746,16 +760,26 @@ function AgregarVariantes({ preselectedItemId }: { preselectedItemId: string | n
   const [error, setError] = useState<string | null>(null);
 
   // New variation form
-  const [varAttrs, setVarAttrs] = useState<Array<{ id: string; name: string; value_name: string }>>([]);
   const [varPrice, setVarPrice] = useState("");
   const [varQty, setVarQty] = useState("1");
   const [varPictures, setVarPictures] = useState<string[]>([""]);
+  const [varAttrs, setVarAttrs] = useState<Array<{ id: string; value_name: string }>>([]);
+  const [varLinkedSku, setVarLinkedSku] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
 
+  // Products for SKU linking
+  const [productos, setProductos] = useState<Array<{ sku: string; name: string }>>([]);
+  useEffect(() => {
+    const s = getStore();
+    if (s.products) {
+      const prods = Object.values(s.products).map(p => ({ sku: p.sku, name: p.name }));
+      setProductos(prods.sort((a, b) => a.sku.localeCompare(b.sku)));
+    }
+  }, []);
+
   useEffect(() => {
     fetchMLItemsMap().then(data => {
-      // Deduplicate by item_id
       const unique = new Map<string, DBMLItemMap>();
       for (const item of data) {
         if (!unique.has(item.item_id)) unique.set(item.item_id, item);
@@ -777,15 +801,6 @@ function AgregarVariantes({ preselectedItemId }: { preselectedItemId: string | n
         const wrapper = (json.items || [])[0] as MLItemDetail | undefined;
         if (wrapper?.code === 200 && wrapper.body) {
           setItemDetail(wrapper.body);
-          // Detect variation axes from existing variations
-          if (wrapper.body.variations && wrapper.body.variations.length > 0) {
-            const axes = wrapper.body.variations[0].attribute_combinations.map(a => ({
-              id: a.id, name: a.name, value_name: "",
-            }));
-            setVarAttrs(axes);
-          } else {
-            setVarAttrs([]);
-          }
         } else {
           setError("No se pudo cargar el item de ML");
         }
@@ -801,42 +816,38 @@ function AgregarVariantes({ preselectedItemId }: { preselectedItemId: string | n
   const addVarPicture = () => setVarPictures(prev => [...prev, ""]);
   const removeVarPicture = (idx: number) => setVarPictures(prev => prev.filter((_, i) => i !== idx));
   const updateVarPicture = (idx: number, val: string) => setVarPictures(prev => prev.map((p, i) => i === idx ? val : p));
-  const updateVarAttr = (idx: number, field: string, val: string) => {
-    setVarAttrs(prev => prev.map((a, i) => i === idx ? { ...a, [field]: val } : a));
-  };
 
   const addVariation = async () => {
-    if (!selectedItemId || varAttrs.some(a => !a.value_name)) return;
+    if (!selectedItemId || !varPrice) return;
     setSubmitting(true);
     setResult(null);
     setError(null);
     try {
-      const selectedItem = items.find(i => i.item_id === selectedItemId);
-      const variation: Record<string, unknown> = {
-        attribute_combinations: varAttrs.map(a => ({ id: a.id, name: a.name, value_name: a.value_name })),
-        available_quantity: parseInt(varQty) || 1,
-      };
-      if (varPrice) variation.price = parseInt(varPrice);
       const pics = varPictures.filter(p => p.trim());
-      if (pics.length > 0) variation.picture_ids = pics;
+      const attrs = varAttrs.filter(a => a.value_name.trim());
 
       const res = await fetch("/api/ml/variations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           item_id: selectedItemId,
-          sku: selectedItem?.sku || "",
-          variation,
+          sku: varLinkedSku || "",
+          price: parseInt(varPrice),
+          available_quantity: parseInt(varQty) || 1,
+          pictures: pics.map(source => ({ source })),
+          attributes: attrs,
         }),
       });
       const json = await res.json();
       if (json.error) {
-        setResult({ ok: false, message: typeof json.error === "string" ? json.error : JSON.stringify(json.error) });
+        setResult({ ok: false, message: typeof json.error === "string" ? json.error : JSON.stringify(json.error, null, 2) });
       } else {
-        setResult({ ok: true, message: `Variante creada (ID: ${json.variation?.id})` });
-        // Refresh detail
-        setSelectedItemId(""); // trigger re-fetch
-        setTimeout(() => setSelectedItemId(selectedItemId), 100);
+        setResult({ ok: true, message: `Variante publicada como nuevo item (ID: ${json.variation?.id}). Comparte family_name con ${selectedItemId}.` });
+        setVarPrice("");
+        setVarQty("1");
+        setVarPictures([""]);
+        setVarAttrs([]);
+        setVarLinkedSku("");
       }
     } catch (err) {
       setResult({ ok: false, message: String(err) });
@@ -847,17 +858,21 @@ function AgregarVariantes({ preselectedItemId }: { preselectedItemId: string | n
 
   return (
     <div>
+      {/* Info banner */}
+      <div style={{ marginBottom: 12, padding: "10px 14px", borderRadius: 8, background: "var(--blueBg)", color: "var(--blue)", fontSize: 12, border: "1px solid var(--blueBd)" }}>
+        En el modelo User Products, cada variante es un <strong>item separado</strong> que comparte el mismo <code>family_name</code>. ML los agrupa automáticamente en la misma página.
+      </div>
+
       <div className="card" style={{ marginBottom: 12 }}>
         <h3 style={{ fontSize: 16, fontWeight: 700, margin: "0 0 12px 0" }}>🔀 Agregar Variante</h3>
 
-        {/* Item selector */}
-        <label style={{ fontSize: 11, color: "var(--txt3)", fontWeight: 600, display: "block", marginBottom: 4 }}>Selecciona una publicación</label>
+        <label style={{ fontSize: 11, color: "var(--txt3)", fontWeight: 600, display: "block", marginBottom: 4 }}>Item de referencia (se copiará family_name, categoría y config)</label>
         {loading ? (
           <div style={{ fontSize: 12, color: "var(--txt3)" }}>Cargando items...</div>
         ) : (
           <select value={selectedItemId} onChange={e => setSelectedItemId(e.target.value)}
             style={{ width: "100%", padding: "10px 14px", borderRadius: 8, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 13 }}>
-            <option value="">— Seleccionar item —</option>
+            <option value="">— Seleccionar item de referencia —</option>
             {items.map(item => (
               <option key={item.item_id} value={item.item_id}>{item.item_id} · {item.sku} · {item.titulo || "Sin título"}</option>
             ))}
@@ -868,74 +883,29 @@ function AgregarVariantes({ preselectedItemId }: { preselectedItemId: string | n
       {loadingDetail && <div className="card" style={{ textAlign: "center", padding: 20, color: "var(--amber)", fontSize: 12 }}>Cargando detalles del item...</div>}
       {error && <div style={{ marginBottom: 12, padding: "8px 12px", borderRadius: 8, background: "var(--redBg)", color: "var(--red)", fontSize: 12, border: "1px solid var(--redBd)" }}>{error}</div>}
 
-      {/* Current variations */}
+      {/* Reference item info */}
       {itemDetail && (
         <div className="card" style={{ marginBottom: 12 }}>
-          <h4 style={{ fontSize: 14, fontWeight: 700, margin: "0 0 8px 0" }}>Variantes actuales ({itemDetail.variations?.length || 0})</h4>
-          {itemDetail.variations && itemDetail.variations.length > 0 ? (
-            <div className="card" style={{ overflowX: "auto", padding: 0, margin: 0, border: "none" }}>
-              <table className="tbl" style={{ width: "100%", fontSize: 11 }}>
-                <thead>
-                  <tr>
-                    <th>ID</th>
-                    {itemDetail.variations[0].attribute_combinations.map(a => <th key={a.id}>{a.name}</th>)}
-                    <th style={{ textAlign: "right" }}>Precio</th>
-                    <th style={{ textAlign: "center" }}>Stock</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {itemDetail.variations.map(v => (
-                    <tr key={v.id}>
-                      <td className="mono" style={{ fontSize: 10 }}>{v.id}</td>
-                      {v.attribute_combinations.map(a => <td key={a.id}>{a.value_name}</td>)}
-                      <td className="mono" style={{ textAlign: "right" }}>{fmt(v.price)}</td>
-                      <td style={{ textAlign: "center" }}>{v.available_quantity}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+            {itemDetail.thumbnail && <img src={itemDetail.thumbnail} alt="" style={{ width: 50, height: 50, borderRadius: 6, objectFit: "cover" }} />}
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>{itemDetail.title}</div>
+              <div style={{ fontSize: 11, color: "var(--txt3)" }}>{fmt(itemDetail.price)} · {itemDetail.category_id} · {itemDetail.status}</div>
             </div>
-          ) : (
-            <div style={{ fontSize: 12, color: "var(--txt3)" }}>Este item no tiene variantes. Al agregar una, ML convertirá el item a multi-variante.</div>
-          )}
+          </div>
         </div>
       )}
 
       {/* New variation form */}
       {itemDetail && (
         <div className="card" style={{ marginBottom: 12 }}>
-          <h4 style={{ fontSize: 14, fontWeight: 700, margin: "0 0 12px 0" }}>Nueva variante</h4>
-
-          {/* Attribute combinations */}
-          {varAttrs.length > 0 ? (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
-              {varAttrs.map((attr, idx) => (
-                <div key={idx}>
-                  <label style={{ fontSize: 11, color: "var(--txt3)", fontWeight: 600, display: "block", marginBottom: 4 }}>{attr.name}</label>
-                  <input type="text" value={attr.value_name} onChange={e => updateVarAttr(idx, "value_name", e.target.value)} placeholder={`Ej: Rojo, M, 256GB...`}
-                    style={{ width: "100%", padding: "8px 10px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 12 }} />
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div style={{ marginBottom: 12 }}>
-              <div style={{ fontSize: 12, color: "var(--txt3)", marginBottom: 8 }}>Define los atributos de la variante (ej: Color, Talla)</div>
-              <button onClick={() => setVarAttrs([{ id: "COLOR", name: "Color", value_name: "" }])}
-                style={{ padding: "6px 12px", borderRadius: 6, fontSize: 11, background: "var(--bg3)", color: "var(--cyan)", border: "1px solid var(--bg4)", cursor: "pointer", marginRight: 8 }}>
-                + Color
-              </button>
-              <button onClick={() => setVarAttrs([{ id: "SIZE", name: "Talla", value_name: "" }])}
-                style={{ padding: "6px 12px", borderRadius: 6, fontSize: 11, background: "var(--bg3)", color: "var(--cyan)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
-                + Talla
-              </button>
-            </div>
-          )}
+          <h4 style={{ fontSize: 14, fontWeight: 700, margin: "0 0 12px 0" }}>Nueva variante (nuevo item con mismo family_name)</h4>
 
           {/* Price + Qty */}
           <div style={{ display: "flex", gap: 12, marginBottom: 12 }}>
             <div style={{ flex: 1 }}>
-              <label style={{ fontSize: 11, color: "var(--txt3)", fontWeight: 600, display: "block", marginBottom: 4 }}>Precio (CLP, opcional)</label>
-              <input type="number" value={varPrice} onChange={e => setVarPrice(e.target.value)} placeholder={itemDetail.price ? String(itemDetail.price) : ""}
+              <label style={{ fontSize: 11, color: "var(--txt3)", fontWeight: 600, display: "block", marginBottom: 4 }}>Precio (CLP) *</label>
+              <input type="number" value={varPrice} onChange={e => setVarPrice(e.target.value)} placeholder={String(itemDetail.price)}
                 style={{ width: "100%", padding: "8px 10px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 12 }} />
             </div>
             <div style={{ flex: 1 }}>
@@ -945,12 +915,31 @@ function AgregarVariantes({ preselectedItemId }: { preselectedItemId: string | n
             </div>
           </div>
 
+          {/* Attributes that differentiate this variant */}
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 11, color: "var(--txt3)", fontWeight: 600, display: "block", marginBottom: 4 }}>Atributos diferenciadores (lo que cambia en esta variante)</label>
+            {varAttrs.map((attr, idx) => (
+              <div key={idx} style={{ display: "flex", gap: 8, marginBottom: 4 }}>
+                <input type="text" value={attr.id} onChange={e => setVarAttrs(prev => prev.map((a, i) => i === idx ? { ...a, id: e.target.value } : a))} placeholder="ID (ej: COLOR, SIZE)"
+                  style={{ width: 140, padding: "6px 10px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 11 }} />
+                <input type="text" value={attr.value_name} onChange={e => setVarAttrs(prev => prev.map((a, i) => i === idx ? { ...a, value_name: e.target.value } : a))} placeholder="Valor (ej: Rojo, M)"
+                  style={{ flex: 1, padding: "6px 10px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 11 }} />
+                <button onClick={() => setVarAttrs(prev => prev.filter((_, i) => i !== idx))}
+                  style={{ padding: "2px 6px", borderRadius: 4, background: "var(--redBg)", color: "var(--red)", border: "1px solid var(--redBd)", fontSize: 10, cursor: "pointer" }}>✕</button>
+              </div>
+            ))}
+            <button onClick={() => setVarAttrs(prev => [...prev, { id: "", value_name: "" }])}
+              style={{ padding: "4px 10px", borderRadius: 6, fontSize: 10, background: "var(--bg3)", color: "var(--cyan)", border: "1px solid var(--bg4)", cursor: "pointer", marginTop: 4 }}>
+              + Agregar atributo
+            </button>
+          </div>
+
           {/* Pictures */}
           <div style={{ marginBottom: 12 }}>
-            <label style={{ fontSize: 11, color: "var(--txt3)", fontWeight: 600, display: "block", marginBottom: 4 }}>Fotos (IDs o URLs)</label>
+            <label style={{ fontSize: 11, color: "var(--txt3)", fontWeight: 600, display: "block", marginBottom: 4 }}>Fotos (URLs)</label>
             {varPictures.map((pic, idx) => (
               <div key={idx} style={{ display: "flex", gap: 8, marginBottom: 4 }}>
-                <input type="text" value={pic} onChange={e => updateVarPicture(idx, e.target.value)} placeholder="ID de foto o URL"
+                <input type="text" value={pic} onChange={e => updateVarPicture(idx, e.target.value)} placeholder="https://..."
                   style={{ flex: 1, padding: "6px 10px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 11 }} />
                 {varPictures.length > 1 && (
                   <button onClick={() => removeVarPicture(idx)} style={{ padding: "2px 6px", borderRadius: 4, background: "var(--redBg)", color: "var(--red)", border: "1px solid var(--redBd)", fontSize: 10, cursor: "pointer" }}>✕</button>
@@ -962,21 +951,31 @@ function AgregarVariantes({ preselectedItemId }: { preselectedItemId: string | n
             )}
           </div>
 
-          {/* Submit */}
+          {/* Link to SKU */}
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 11, color: "var(--txt3)", fontWeight: 600, display: "block", marginBottom: 4 }}>Vincular a SKU (opcional)</label>
+            <select value={varLinkedSku} onChange={e => setVarLinkedSku(e.target.value)}
+              style={{ width: "100%", padding: "8px 10px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 12 }}>
+              <option value="">— Sin vincular —</option>
+              {productos.map(p => <option key={p.sku} value={p.sku}>{p.sku} — {p.name}</option>)}
+            </select>
+          </div>
+
+          {/* Result */}
           {result && (
-            <div style={{ marginBottom: 12, padding: "8px 12px", borderRadius: 8, background: result.ok ? "var(--greenBg)" : "var(--redBg)", color: result.ok ? "var(--green)" : "var(--red)", fontSize: 12, border: `1px solid ${result.ok ? "var(--greenBd)" : "var(--redBd)"}` }}>
+            <div style={{ marginBottom: 12, padding: "8px 12px", borderRadius: 8, background: result.ok ? "var(--greenBg)" : "var(--redBg)", color: result.ok ? "var(--green)" : "var(--red)", fontSize: 12, border: `1px solid ${result.ok ? "var(--greenBd)" : "var(--redBd)"}`, whiteSpace: "pre-wrap" }}>
               {result.message}
             </div>
           )}
-          <button onClick={addVariation} disabled={submitting || varAttrs.length === 0 || varAttrs.some(a => !a.value_name)}
+          <button onClick={addVariation} disabled={submitting || !varPrice}
             style={{
               padding: "10px 20px", borderRadius: 8, fontSize: 13, fontWeight: 700,
-              background: varAttrs.length === 0 ? "var(--bg3)" : "var(--greenBg)",
-              color: varAttrs.length === 0 ? "var(--txt3)" : "var(--green)",
-              border: `1px solid ${varAttrs.length === 0 ? "var(--bg4)" : "var(--greenBd)"}`,
+              background: !varPrice ? "var(--bg3)" : "var(--greenBg)",
+              color: !varPrice ? "var(--txt3)" : "var(--green)",
+              border: `1px solid ${!varPrice ? "var(--bg4)" : "var(--greenBd)"}`,
               cursor: submitting ? "wait" : "pointer",
             }}>
-            {submitting ? "Agregando..." : "Agregar variante"}
+            {submitting ? "Publicando variante..." : "Publicar como nueva variante"}
           </button>
         </div>
       )}
@@ -985,8 +984,8 @@ function AgregarVariantes({ preselectedItemId }: { preselectedItemId: string | n
       {!selectedItemId && !loading && (
         <div className="card" style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>
           <div style={{ fontSize: 32, marginBottom: 8 }}>🔀</div>
-          <div style={{ fontSize: 14, fontWeight: 600 }}>Selecciona un item</div>
-          <div style={{ fontSize: 12, marginTop: 4 }}>Elige una publicación existente para agregar variantes</div>
+          <div style={{ fontSize: 14, fontWeight: 600 }}>Selecciona un item de referencia</div>
+          <div style={{ fontSize: 12, marginTop: 4 }}>Se creará un nuevo item con el mismo family_name, agrupándose como variante</div>
         </div>
       )}
     </div>
