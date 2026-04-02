@@ -802,10 +802,18 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
     }
   }
 
-  // 8. Reconcile reservations (57ms, ensures qty_reserved is correct before sync)
+  // 8. Mark items as deducted when shipment reaches terminal status
+  if (newStatus === "delivered" || newStatus === "cancelled" || newStatus === "not_delivered") {
+    await sb.from("ml_shipment_items")
+      .update({ stock_deducted: true })
+      .eq("shipment_id", shipmentId)
+      .eq("stock_deducted", false);
+  }
+
+  // 9. Reconcile reservations (57ms, ensures qty_reserved is correct before sync)
   try { await sb.rpc("reconciliar_reservas"); } catch (e) { console.error("[ML] reconciliar_reservas error:", e); }
 
-  // 9. Queue immediate stock sync for affected SKUs
+  // 10. Queue immediate stock sync for affected SKUs
   const affectedSkus = items.map(i => i.seller_sku).filter((v, i, a) => a.indexOf(v) === i);
   if (affectedSkus.length > 0) {
     const rows = affectedSkus.map(sku => ({ sku, created_at: new Date().toISOString() }));
@@ -924,7 +932,14 @@ export async function refreshShipmentStatuses(): Promise<{ checked: number; upda
       if (statusChanged) {
         console.log(`[ML] Shipment ${row.shipment_id}: ${row.status} → ${shipment.status}`);
       }
-      // Reservations are computed — reconciliar_reservas() handles adjustments
+
+      // When shipment reaches terminal status, mark all items as stock_deducted
+      if (shipment.status === "delivered" || shipment.status === "cancelled" || shipment.status === "not_delivered") {
+        await sb.from("ml_shipment_items")
+          .update({ stock_deducted: true })
+          .eq("shipment_id", row.shipment_id)
+          .eq("stock_deducted", false);
+      }
     }
   }
 
