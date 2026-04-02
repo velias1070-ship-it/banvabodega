@@ -747,6 +747,74 @@ function OptionalAttrs({ attrs, values, onChange }: { attrs: MLAttribute[]; valu
   );
 }
 
+// ==================== ITEM SEARCH SELECT ====================
+
+function ItemSearchSelect({ items, selectedId, onSelect }: { items: DBMLItemMap[]; selectedId: string; onSelect: (id: string) => void }) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const filtered = items.filter(item => {
+    if (!query) return true;
+    const q = query.toLowerCase();
+    return item.item_id.toLowerCase().includes(q) ||
+      item.sku.toLowerCase().includes(q) ||
+      (item.titulo || "").toLowerCase().includes(q);
+  });
+
+  const selected = items.find(i => i.item_id === selectedId);
+
+  return (
+    <div ref={wrapperRef} style={{ position: "relative" }}>
+      <input
+        type="text"
+        value={open ? query : (selected ? `${selected.item_id} · ${selected.sku} · ${selected.titulo || "Sin título"}` : "")}
+        onChange={e => { setQuery(e.target.value); if (!open) setOpen(true); }}
+        onFocus={() => { setOpen(true); setQuery(""); }}
+        placeholder="Buscar por SKU, item ID o título..."
+        style={{ width: "100%", padding: "10px 14px", borderRadius: 8, background: "var(--bg3)", color: "var(--txt)", border: `1px solid ${open ? "var(--cyan)" : "var(--bg4)"}`, fontSize: 13 }}
+      />
+      {selected && !open && (
+        <button onClick={() => { onSelect(""); setQuery(""); }}
+          style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "var(--txt3)", cursor: "pointer", fontSize: 14 }}>
+          ✕
+        </button>
+      )}
+      {open && (
+        <div style={{
+          position: "absolute", top: "100%", left: 0, right: 0, zIndex: 50, marginTop: 4,
+          background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 8,
+          maxHeight: 280, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+        }}>
+          {filtered.length === 0 ? (
+            <div style={{ padding: "12px 14px", fontSize: 12, color: "var(--txt3)" }}>Sin resultados</div>
+          ) : (
+            filtered.slice(0, 50).map(item => (
+              <button key={item.item_id} onClick={() => { onSelect(item.item_id); setOpen(false); setQuery(""); }}
+                style={{
+                  display: "block", width: "100%", padding: "10px 14px", textAlign: "left", background: item.item_id === selectedId ? "var(--bg3)" : "transparent",
+                  border: "none", borderBottom: "1px solid var(--bg3)", color: "var(--txt)", cursor: "pointer", fontSize: 12,
+                }}>
+                <div style={{ fontWeight: 600 }}>{item.sku}</div>
+                <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 2 }}>{item.item_id} · {item.titulo || "Sin título"}</div>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ==================== AGREGAR VARIANTES (User Products model) ====================
 // En el modelo multi-warehouse/User Products, las variantes son items separados
 // que comparten el mismo family_name. No se usa POST /items/{id}/variations.
@@ -870,13 +938,7 @@ function AgregarVariantes({ preselectedItemId }: { preselectedItemId: string | n
         {loading ? (
           <div style={{ fontSize: 12, color: "var(--txt3)" }}>Cargando items...</div>
         ) : (
-          <select value={selectedItemId} onChange={e => setSelectedItemId(e.target.value)}
-            style={{ width: "100%", padding: "10px 14px", borderRadius: 8, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 13 }}>
-            <option value="">— Seleccionar item de referencia —</option>
-            {items.map(item => (
-              <option key={item.item_id} value={item.item_id}>{item.item_id} · {item.sku} · {item.titulo || "Sin título"}</option>
-            ))}
-          </select>
+          <ItemSearchSelect items={items} selectedId={selectedItemId} onSelect={setSelectedItemId} />
         )}
       </div>
 
