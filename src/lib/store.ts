@@ -1932,8 +1932,15 @@ export async function crearPickingSession(fecha: string, lineas: db.PickingLinea
  * Sync Flex picking session for today.
  * Auto-creates or updates a picking session from today's shipments (DESPACHAR_HOY + ATRASADO).
  * Called after each ML sync to keep the picking list up to date.
+ * Uses a concurrency lock to prevent duplicate session creation from parallel calls.
  */
-export async function syncFlexPickingSession(): Promise<{ created: boolean; updated: boolean; total: number }> {
+let _syncFlexLock: Promise<{ created: boolean; updated: boolean; total: number }> | null = null;
+export function syncFlexPickingSession(): Promise<{ created: boolean; updated: boolean; total: number }> {
+  if (_syncFlexLock) return _syncFlexLock;
+  _syncFlexLock = _syncFlexPickingSessionImpl().finally(() => { _syncFlexLock = null; });
+  return _syncFlexLock;
+}
+async function _syncFlexPickingSessionImpl(): Promise<{ created: boolean; updated: boolean; total: number }> {
   const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Santiago" }); // YYYY-MM-DD Chile
 
   // 1. Get active shipments
@@ -1965,7 +1972,32 @@ export async function syncFlexPickingSession(): Promise<{ created: boolean; upda
 
   // 4. Single session per day — find or create, reopen if needed
   const todaySessions = await db.getPickingSessionsByDate(today);
-  const flexSession = todaySessions.find(s => s.tipo === "flex");
+  const flexSessions = todaySessions.filter(s => s.tipo === "flex");
+
+  // If multiple flex sessions exist (race condition), pick the one with most progress
+  // and delete the empty duplicates
+  let flexSession: db.DBPickingSession | undefined;
+  if (flexSessions.length > 1) {
+    // Prefer: EN_PROCESO/COMPLETADA with picked lines > ABIERTA with 0 picked
+    flexSessions.sort((a, b) => {
+      const aPicked = a.lineas.filter(l => l.estado === "PICKEADO").length;
+      const bPicked = b.lineas.filter(l => l.estado === "PICKEADO").length;
+      if (aPicked !== bPicked) return bPicked - aPicked; // more picked first
+      return b.lineas.length - a.lineas.length; // more lines first
+    });
+    flexSession = flexSessions[0];
+    // Delete duplicates (the ones with no progress)
+    for (let i = 1; i < flexSessions.length; i++) {
+      const dup = flexSessions[i];
+      const dupPicked = dup.lineas.filter(l => l.estado === "PICKEADO").length;
+      if (dupPicked === 0 && dup.id) {
+        await db.deletePickingSession(dup.id);
+        void db.auditLog("syncFlex:delete_duplicate", { entidad: "picking_session", entidad_id: dup.id, params: { reason: "race_condition_duplicate", lineas: dup.lineas.length } });
+      }
+    }
+  } else {
+    flexSession = flexSessions[0];
+  }
 
   if (!flexSession) {
     // No session at all — create fresh

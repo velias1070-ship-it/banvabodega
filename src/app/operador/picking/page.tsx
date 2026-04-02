@@ -42,9 +42,18 @@ export default function PickingPage() {
     await syncFlexPickingSession().catch(() => {});
     const all = await loadSessions();
     const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
-    const flex = all.find(s => s.tipo === "flex" && s.fecha === today && s.estado !== "COMPLETADA")
-      || all.find(s => s.tipo === "flex" && s.fecha === today && s.estado === "COMPLETADA");
-    setFlexSession(flex || null);
+    // Pick the flex session with most progress (handles duplicates from race conditions)
+    const flexCandidates = all.filter(s => s.tipo === "flex" && s.fecha === today);
+    flexCandidates.sort((a, b) => {
+      const aPicked = a.lineas.filter(l => l.estado === "PICKEADO").length;
+      const bPicked = b.lineas.filter(l => l.estado === "PICKEADO").length;
+      if (aPicked !== bPicked) return bPicked - aPicked;
+      // Prefer non-completed (active) if same progress
+      if (a.estado !== "COMPLETADA" && b.estado === "COMPLETADA") return -1;
+      if (a.estado === "COMPLETADA" && b.estado !== "COMPLETADA") return 1;
+      return b.lineas.length - a.lineas.length;
+    });
+    setFlexSession(flexCandidates[0] || null);
     // Count active shipments (etiquetas/pedidos)
     try {
       const ships = await fetchActiveFlexShipments();
@@ -73,9 +82,16 @@ export default function PickingPage() {
       await syncFlexPickingSession().catch(() => {});
       const all = await loadSessions();
       const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
-      const flex = all.find(s => s.tipo === "flex" && s.fecha === today && s.estado !== "COMPLETADA")
-        || all.find(s => s.tipo === "flex" && s.fecha === today && s.estado === "COMPLETADA");
-      setFlexSession(flex || null);
+      const flexC = all.filter(s => s.tipo === "flex" && s.fecha === today);
+      flexC.sort((a, b) => {
+        const ap = a.lineas.filter(l => l.estado === "PICKEADO").length;
+        const bp = b.lineas.filter(l => l.estado === "PICKEADO").length;
+        if (ap !== bp) return bp - ap;
+        if (a.estado !== "COMPLETADA" && b.estado === "COMPLETADA") return -1;
+        if (a.estado === "COMPLETADA" && b.estado !== "COMPLETADA") return 1;
+        return b.lineas.length - a.lineas.length;
+      });
+      setFlexSession(flexC[0] || null);
       // Update ML ship count
       try {
         const ships = await fetchActiveFlexShipments();
@@ -136,9 +152,16 @@ export default function PickingPage() {
     await syncFlexPickingSession().catch(() => {});
     const all = await loadSessions();
     const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
-    const flex = all.find(s => s.tipo === "flex" && s.fecha === today && s.estado !== "COMPLETADA")
-      || all.find(s => s.tipo === "flex" && s.fecha === today && s.estado === "COMPLETADA");
-    setFlexSession(flex || null);
+    const flexC = all.filter(s => s.tipo === "flex" && s.fecha === today);
+    flexC.sort((a, b) => {
+      const ap = a.lineas.filter(l => l.estado === "PICKEADO").length;
+      const bp = b.lineas.filter(l => l.estado === "PICKEADO").length;
+      if (ap !== bp) return bp - ap;
+      if (a.estado !== "COMPLETADA" && b.estado === "COMPLETADA") return -1;
+      if (a.estado === "COMPLETADA" && b.estado !== "COMPLETADA") return 1;
+      return b.lineas.length - a.lineas.length;
+    });
+    setFlexSession(flexC[0] || null);
   };
 
   const fullSessions = sessions.filter(s => s.tipo === "envio_full" && s.estado !== "COMPLETADA");
