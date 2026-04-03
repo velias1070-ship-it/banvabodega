@@ -1680,7 +1680,7 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
             </div>
             <div style={{ padding: "20px 28px", borderBottom: "1px solid var(--bg4)" }}>
               <div style={{ fontSize: 13, marginBottom: 4 }}>
-                <strong>BHE</strong> N&deg; {pagoItem.nro_doc} &mdash; {pagoItem.razon_social}
+                <strong>BHE</strong> N&deg; {pagoItem.nro_doc} &mdash; {pagoItem.razon_social} &mdash; {pagoItem.fecha_docto || ""}
               </div>
               <div style={{ fontSize: 14, fontWeight: 700, color: "var(--red)" }}>
                 {fmtMoney(pagoItem.monto_total || 0)} (l&iacute;quido)
@@ -1742,7 +1742,17 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
 }
 
 export default function ConciliacionPage() {
-  const [tab, setTab] = useState<TabKey>("dash");
+  const [tab, setTabRaw] = useState<TabKey>(() => {
+    if (typeof window !== "undefined") {
+      const h = window.location.hash.replace("#", "");
+      if (h) return h as TabKey;
+    }
+    return "dash";
+  });
+  const setTab = (t: TabKey) => {
+    setTabRaw(t);
+    window.location.hash = t;
+  };
   const [bancoFilter, setBancoFilter] = useState<string | undefined>(undefined);
   const [empresa, setEmpresa] = useState<DBEmpresa | null>(null);
   const [periodo, setPeriodo] = useState(currentPeriodo());
