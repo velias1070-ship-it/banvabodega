@@ -921,6 +921,24 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                                 </tfoot>
                               </table>
                             )}
+                            <div style={{ marginTop: 12, display: "flex", justifyContent: "flex-end" }}>
+                              <button onClick={async () => {
+                                if (!confirm("Deshacer esta conciliacion? La factura volvera a estado pendiente.")) return;
+                                const conc = conciliaciones.find(x => x.estado === "confirmado" && x.rcv_compra_id === c.id);
+                                if (conc?.id) {
+                                  const { updateConciliacion, updateMovimientoBanco } = await import("@/lib/db");
+                                  await updateConciliacion(conc.id, { estado: "anulado" });
+                                  if (conc.movimiento_banco_id) {
+                                    await updateMovimientoBanco(conc.movimiento_banco_id, { estado_conciliacion: "pendiente" } as any);
+                                  }
+                                  setDetalleConc(null);
+                                  await load();
+                                }
+                              }}
+                                style={{ padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 600, background: "var(--redBg)", color: "var(--red)", border: "1px solid var(--redBd)", cursor: "pointer" }}>
+                                Deshacer conciliaci&oacute;n
+                              </button>
+                            </div>
                           </div>
                         )}
                       </td>
