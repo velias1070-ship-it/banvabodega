@@ -1454,13 +1454,18 @@ function TabBanco({ empresa, periodo }: { empresa: DBEmpresa; periodo: string })
 type TabKey = "dash" | "compras" | "ventas" | "banco" | "conciliacion" | "cuentas" | "reglas" | "resultados" | "flujo" | "proyectado" | "presupuesto" | "gastos" | "honorarios" | "remuneraciones" | "impuestos" | "proveedores";
 
 // ==================== BOLETAS DE HONORARIOS ====================
-function TabHonorarios({ empresa, periodo, onNavigate }: { empresa: DBEmpresa; periodo: string; onNavigate?: (tab: string) => void }) {
+function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: string }) {
   const [data, setData] = useState<DBRcvCompra[]>([]);
   const [conciliaciones, setConciliaciones] = useState<DBConciliacion[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
   const [concFilter, setConcFilter] = useState<"todos" | "pendiente" | "conciliada">("todos");
+  const [pagoItem, setPagoItem] = useState<DBRcvCompra | null>(null);
+  const [movsBanco, setMovsBanco] = useState<DBMovimientoBanco[]>([]);
+  const [pagoLoading, setPagoLoading] = useState(false);
+  const [pagoSaving, setPagoSaving] = useState(false);
+  const [pagoSearch, setPagoSearch] = useState("");
 
   const load = useCallback(async () => {
     if (!empresa.id) return;
@@ -1615,17 +1620,39 @@ function TabHonorarios({ empresa, periodo, onNavigate }: { empresa: DBEmpresa; p
                   <td className="mono" style={{ textAlign: "right", color: "var(--amber)" }}>{fmtMoney(c.monto_iva || 0)}</td>
                   <td className="mono" style={{ textAlign: "right", fontWeight: 600, color: "var(--green)" }}>{fmtMoney(c.monto_total || 0)}</td>
                   <td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
-                    {concCompraIds.has(c.id!) ? (
-                      <span style={{ fontSize: 9, fontWeight: 600, padding: "2px 6px", borderRadius: 4, background: "var(--greenBg)", color: "var(--green)" }}>PAGADA</span>
-                    ) : (
-                      <div style={{ display: "flex", gap: 4, justifyContent: "flex-end", alignItems: "center" }}>
-                        <span className="mono" style={{ fontSize: 10, color: "var(--txt3)" }}>{fmtMoney(c.monto_total || 0)} por conciliar</span>
-                        <button onClick={() => onNavigate?.("banco")}
-                          style={{ padding: "3px 10px", borderRadius: 6, fontSize: 10, fontWeight: 700, background: "var(--green)", color: "#fff", border: "none", cursor: "pointer" }}>
-                          Conciliar
-                        </button>
-                      </div>
-                    )}
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+                      <span style={{ fontSize: 10, color: "var(--txt3)" }}>
+                        {fmtMoney(c.monto_total || 0)} {concCompraIds.has(c.id!) ? "" : "por pagar"}
+                      </span>
+                      {concCompraIds.has(c.id!) ? (
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, padding: "4px 12px", borderRadius: 6, background: "var(--greenBg)", color: "var(--green)" }}>
+                          Pagado
+                        </span>
+                      ) : (
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 0 }}>
+                          <span onClick={async () => {
+                            setPagoItem(c); setPagoLoading(true); setPagoSearch("");
+                            const movs = await fetchMovimientosBanco(empresa.id!);
+                            const concMovIds = new Set(conciliaciones.filter(x => x.estado === "confirmado" && x.movimiento_banco_id).map(x => x.movimiento_banco_id));
+                            setMovsBanco(movs.filter(m => !concMovIds.has(m.id!) && m.monto < 0));
+                            setPagoLoading(false);
+                          }}
+                            style={{ fontSize: 11, fontWeight: 600, padding: "5px 12px", borderRadius: "6px 0 0 6px", background: "var(--cyan)", color: "#fff", cursor: "pointer" }}>
+                            Asignar Pago
+                          </span>
+                          <span onClick={async () => {
+                            setPagoItem(c); setPagoLoading(true); setPagoSearch("");
+                            const movs = await fetchMovimientosBanco(empresa.id!);
+                            const concMovIds = new Set(conciliaciones.filter(x => x.estado === "confirmado" && x.movimiento_banco_id).map(x => x.movimiento_banco_id));
+                            setMovsBanco(movs.filter(m => !concMovIds.has(m.id!) && m.monto < 0));
+                            setPagoLoading(false);
+                          }}
+                            style={{ fontSize: 11, fontWeight: 600, padding: "5px 6px", borderRadius: "0 6px 6px 0", background: "var(--cyan)", color: "#fff", cursor: "pointer", borderLeft: "1px solid rgba(255,255,255,0.3)" }}>
+                            &#9662;
+                          </span>
+                        </span>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -1639,6 +1666,75 @@ function TabHonorarios({ empresa, periodo, onNavigate }: { empresa: DBEmpresa; p
               </tr>
             </tfoot>
           </table>
+        </div>
+      )}
+
+      {/* Modal Asignar Pago */}
+      {pagoItem && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={() => !pagoSaving && setPagoItem(null)}>
+          <div onClick={e => e.stopPropagation()} style={{ background: "var(--bg2)", borderRadius: 12, width: "100%", maxWidth: 700, maxHeight: "90vh", display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 20px 60px rgba(0,0,0,0.15)" }}>
+            <div style={{ padding: "20px 28px", background: "var(--cyan)", color: "#fff", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 18, fontWeight: 700 }}>Asignar Pago</span>
+              <button onClick={() => setPagoItem(null)} disabled={pagoSaving} style={{ background: "none", border: "none", color: "#fff", fontSize: 22, cursor: "pointer", lineHeight: 1 }}>&times;</button>
+            </div>
+            <div style={{ padding: "20px 28px", borderBottom: "1px solid var(--bg4)" }}>
+              <div style={{ fontSize: 13, marginBottom: 4 }}>
+                <strong>BHE</strong> N&deg; {pagoItem.nro_doc} &mdash; {pagoItem.razon_social}
+              </div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "var(--red)" }}>
+                {fmtMoney(pagoItem.monto_total || 0)} (l&iacute;quido)
+              </div>
+            </div>
+            <div style={{ padding: "12px 28px", borderBottom: "1px solid var(--bg4)" }}>
+              <input placeholder="Buscar movimiento bancario..." value={pagoSearch} onChange={e => setPagoSearch(e.target.value)}
+                style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg2)", color: "var(--txt)", fontSize: 12 }} />
+            </div>
+            <div style={{ flex: 1, overflow: "auto", maxHeight: 400 }}>
+              {pagoLoading ? (
+                <div style={{ padding: 40, textAlign: "center", color: "var(--txt3)" }}>Cargando movimientos...</div>
+              ) : (() => {
+                const q = pagoSearch.toLowerCase();
+                const filtrados = movsBanco.filter(m => !pagoSearch || (m.descripcion || "").toLowerCase().includes(q) || (m.banco || "").toLowerCase().includes(q) || String(Math.abs(m.monto)).includes(q));
+                const sorted = filtrados.sort((a, b) => Math.abs(Math.abs(a.monto) - (pagoItem.monto_total || 0)) - Math.abs(Math.abs(b.monto) - (pagoItem.monto_total || 0)));
+                if (sorted.length === 0) return <div style={{ padding: 40, textAlign: "center", color: "var(--txt3)" }}>No hay movimientos bancarios pendientes</div>;
+                return sorted.slice(0, 50).map(m => {
+                  const montoAbs = Math.abs(m.monto);
+                  const coincide = montoAbs === (pagoItem.monto_total || 0);
+                  return (
+                    <div key={m.id} onClick={async () => {
+                      if (pagoSaving) return;
+                      setPagoSaving(true);
+                      try {
+                        const { upsertConciliacion, updateMovimientoBanco } = await import("@/lib/db");
+                        await upsertConciliacion({ empresa_id: empresa.id!, movimiento_banco_id: m.id!, rcv_compra_id: pagoItem.id!, rcv_venta_id: null, confianza: 1, estado: "confirmado", tipo_partida: "match", metodo: "manual", notas: null, created_by: "admin" });
+                        await updateMovimientoBanco(m.id!, { estado_conciliacion: "conciliado" } as Partial<DBMovimientoBanco>);
+                        await load();
+                        setPagoItem(null);
+                      } catch (err) { console.error(err); }
+                      setPagoSaving(false);
+                    }}
+                      style={{ padding: "14px 28px", borderBottom: "1px solid var(--bg4)", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", background: coincide ? "var(--greenBg)" : "transparent" }}
+                      onMouseOver={e => { if (!coincide) e.currentTarget.style.background = "var(--bg3)"; }}
+                      onMouseOut={e => { if (!coincide) e.currentTarget.style.background = "transparent"; }}>
+                      <div>
+                        <div style={{ fontSize: 12, fontWeight: 500 }}>{m.descripcion || "Sin descripcion"}</div>
+                        <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 2 }}>{m.fecha} &middot; {m.banco || "Banco"}</div>
+                      </div>
+                      <div style={{ textAlign: "right" }}>
+                        <div className="mono" style={{ fontSize: 14, fontWeight: 700, color: "var(--red)" }}>{fmtMoney(montoAbs)}</div>
+                        {coincide && <div style={{ fontSize: 10, color: "var(--green)", fontWeight: 600 }}>Coincide exacto</div>}
+                      </div>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+            <div style={{ padding: "12px 28px", borderTop: "1px solid var(--bg4)", display: "flex", justifyContent: "flex-end" }}>
+              <button onClick={() => setPagoItem(null)} disabled={pagoSaving}
+                style={{ padding: "10px 24px", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer", background: "var(--bg2)", color: "var(--txt2)", border: "1px solid var(--bg4)" }}>Cerrar</button>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -1775,7 +1871,7 @@ export default function ConciliacionPage() {
             {empresa && tab === "flujo" && <FlujoCaja empresa={empresa} periodo={periodo} />}
             {empresa && tab === "proyectado" && <FlujoProyectado empresa={empresa} periodo={periodo} />}
             {empresa && tab === "presupuesto" && <TabPresupuesto empresa={empresa} periodo={periodo} />}
-            {empresa && tab === "honorarios" && <TabHonorarios empresa={empresa} periodo={periodo} onNavigate={(t: string) => setTab(t as TabKey)} />}
+            {empresa && tab === "honorarios" && <TabHonorarios empresa={empresa} periodo={periodo} />}
             {["gastos","remuneraciones","impuestos","proveedores"].includes(tab) && (
               <div className="card" style={{ padding: 32, textAlign: "center" }}>
                 <div style={{ fontSize: 32, marginBottom: 8 }}>🚧</div>
