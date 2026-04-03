@@ -100,6 +100,7 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
   const [filter, setFilter] = useState<"all" | "active" | "paused" | "closed" | "paused_with_stock">("all");
   const [search, setSearch] = useState("");
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const loadItems = useCallback(async (autoRefresh = false) => {
     setLoading(true);
@@ -163,22 +164,28 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
   const toggleStatus = async (itemId: string, currentStatus: string) => {
     const newStatus = currentStatus === "active" ? "paused" : "active";
     setActionLoading(itemId);
+    setActionError(null);
     try {
       const res = await fetch("/api/ml/item-update", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ item_id: itemId, updates: { status: newStatus } }),
       });
-      if (res.ok) {
+      const json = await res.json();
+      if (res.ok && !json.error) {
         await loadItems();
-        // Update live data
         setLiveData(prev => {
           const next = new Map(prev);
           const existing = next.get(itemId);
           if (existing) next.set(itemId, { ...existing, status: newStatus });
           return next;
         });
+      } else {
+        const errMsg = typeof json.error === "string" ? json.error : JSON.stringify(json.error);
+        setActionError(`Error al ${newStatus === "active" ? "activar" : "pausar"} ${itemId}: ${errMsg}`);
       }
+    } catch (err) {
+      setActionError(`Error de red al ${newStatus === "active" ? "activar" : "pausar"} ${itemId}: ${String(err)}`);
     } finally {
       setActionLoading(null);
     }
@@ -230,6 +237,14 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
     active: "var(--green)", paused: "var(--amber)", closed: "var(--txt3)", under_review: "var(--blue)",
   };
 
+  const getItemStatus = (i: DBMLItemMap) => liveData.get(i.item_id)?.status || i.status_ml || null;
+  const itemsWithStatus = displayItems.filter(i => getItemStatus(i) !== null);
+  const kpiActivos = itemsWithStatus.filter(i => getItemStatus(i) === "active").length;
+  const kpiPausados = itemsWithStatus.filter(i => getItemStatus(i) === "paused").length;
+  const kpiCerrados = itemsWithStatus.filter(i => getItemStatus(i) === "closed").length;
+  const kpiPausadosConStock = itemsWithStatus.filter(i => getItemStatus(i) === "paused" && skuTotal(i.sku) > 0).length;
+  const kpiPendientes = displayItems.length - itemsWithStatus.length;
+
   return (
     <div>
       {/* Header */}
@@ -259,24 +274,15 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
       </div>
 
       {/* KPI */}
-      {displayItems.length > 0 && (() => {
-        const getStatus = (i: DBMLItemMap) => liveData.get(i.item_id)?.status || i.status_ml || null;
-        const withStatus = displayItems.filter(i => getStatus(i) !== null);
-        const activos = withStatus.filter(i => getStatus(i) === "active").length;
-        const pausados = withStatus.filter(i => getStatus(i) === "paused").length;
-        const cerrados = withStatus.filter(i => getStatus(i) === "closed").length;
-        const pausadosConStock = withStatus.filter(i => getStatus(i) === "paused" && skuTotal(i.sku) > 0).length;
-        const sinDatos = displayItems.length - withStatus.length;
-        return (
-          <div className="kpi-grid" style={{ marginBottom: 16 }}>
-            <div className="kpi"><div className="kpi-label">Total</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4 }}>{displayItems.length}</div></div>
-            <div className="kpi"><div className="kpi-label">Activos</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: "var(--green)" }}>{activos}{sinDatos > 0 && refreshing ? <span style={{ fontSize: 10, color: "var(--txt3)", fontWeight: 400 }}> ...</span> : null}</div></div>
-            <div className="kpi"><div className="kpi-label">Pausados</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: "var(--amber)" }}>{pausados}{sinDatos > 0 && refreshing ? <span style={{ fontSize: 10, color: "var(--txt3)", fontWeight: 400 }}> ...</span> : null}</div></div>
-            <div className="kpi"><div className="kpi-label">Cerrados</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: "var(--txt3)" }}>{cerrados}</div></div>
-            <div className="kpi" style={{ cursor: "pointer", border: filter === "paused_with_stock" ? "1px solid var(--cyanBd)" : undefined }} onClick={() => setFilter(f => f === "paused_with_stock" ? "all" : "paused_with_stock")}><div className="kpi-label">Pausados c/stock</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: "var(--red)" }}>{pausadosConStock}{sinDatos > 0 && refreshing ? <span style={{ fontSize: 10, color: "var(--txt3)", fontWeight: 400 }}> ...</span> : null}</div></div>
-          </div>
-        );
-      })()}
+      {displayItems.length > 0 && (
+        <div className="kpi-grid" style={{ marginBottom: 16 }}>
+          <div className="kpi"><div className="kpi-label">Total</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4 }}>{displayItems.length}</div></div>
+          <div className="kpi"><div className="kpi-label">Activos</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: "var(--green)" }}>{kpiActivos}{kpiPendientes > 0 && refreshing ? <span style={{ fontSize: 10, color: "var(--txt3)", fontWeight: 400 }}> ...</span> : null}</div></div>
+          <div className="kpi"><div className="kpi-label">Pausados</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: "var(--amber)" }}>{kpiPausados}{kpiPendientes > 0 && refreshing ? <span style={{ fontSize: 10, color: "var(--txt3)", fontWeight: 400 }}> ...</span> : null}</div></div>
+          <div className="kpi"><div className="kpi-label">Cerrados</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: "var(--txt3)" }}>{kpiCerrados}</div></div>
+          <div className="kpi" style={{ cursor: "pointer", border: filter === "paused_with_stock" ? "1px solid var(--cyanBd)" : undefined }} onClick={() => setFilter(f => f === "paused_with_stock" ? "all" : "paused_with_stock")}><div className="kpi-label">Pausados c/stock</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: "var(--red)" }}>{kpiPausadosConStock}{kpiPendientes > 0 && refreshing ? <span style={{ fontSize: 10, color: "var(--txt3)", fontWeight: 400 }}> ...</span> : null}</div></div>
+        </div>
+      )}
 
       {/* Table */}
       {loading ? (
@@ -288,6 +294,13 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
           <div style={{ fontSize: 12, marginTop: 4 }}>Usa "Refresh ML" para sincronizar o crea una nueva publicación</div>
         </div>
       ) : (
+        <>
+        {actionError && (
+          <div style={{ marginBottom: 12, padding: "10px 14px", borderRadius: 8, background: "var(--redBg)", color: "var(--red)", fontSize: 12, border: "1px solid var(--redBd)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span>{actionError}</span>
+            <button onClick={() => setActionError(null)} style={{ background: "none", border: "none", color: "var(--red)", cursor: "pointer", fontSize: 14 }}>✕</button>
+          </div>
+        )}
         <div className="card" style={{ overflowX: "auto" }}>
           <table className="tbl" style={{ width: "100%", fontSize: 11 }}>
             <thead>
@@ -372,6 +385,7 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
             </tbody>
           </table>
         </div>
+        </>
       )}
     </div>
   );
