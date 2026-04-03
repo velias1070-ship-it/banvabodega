@@ -104,12 +104,19 @@ export async function POST(req: NextRequest) {
     }
     steps.push("Stock enviado OK");
 
-    // Step 6: Activate item
-    steps.push("Activando publicación...");
-    const activateResult = await mlPut<{ id: string; status: string }>(`/items/${item_id}`, { status: "active" });
+    // Step 6: Activate item with retries (ML needs time to process stock)
+    let activateResult = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const waitSec = attempt * 3;
+      steps.push(`Esperando ${waitSec}s para que ML procese el stock (intento ${attempt}/3)...`);
+      await new Promise(r => setTimeout(r, waitSec * 1000));
+      steps.push("Activando publicación...");
+      activateResult = await mlPut<{ id: string; status: string }>(`/items/${item_id}`, { status: "active" });
+      if (activateResult) break;
+    }
     if (!activateResult) {
       return NextResponse.json({
-        error: "Stock enviado pero activación falló. ML puede necesitar unos segundos. Intenta de nuevo.",
+        error: "Stock enviado pero activación falló después de 3 intentos. ML puede necesitar más tiempo. Intenta activar manualmente en unos minutos.",
         steps,
         stock_synced: true,
       }, { status: 502 });
