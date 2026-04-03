@@ -1614,7 +1614,7 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                   <td className="mono" style={{ textAlign: "right" }}>{fmtMoney(c.monto_neto || 0)}</td>
                   <td className="mono" style={{ textAlign: "right", color: "var(--amber)" }}>{fmtMoney(c.monto_iva || 0)}</td>
                   <td className="mono" style={{ textAlign: "right", fontWeight: 600, color: "var(--green)" }}>{fmtMoney(c.monto_total || 0)}</td>
-                  <td>
+                  <td style={{ whiteSpace: "nowrap" }}>
                     {concCompraIds.has(c.id!) ? (
                       <span style={{ fontSize: 9, fontWeight: 600, padding: "2px 6px", borderRadius: 4, background: "var(--greenBg)", color: "var(--green)" }}>PAGADA</span>
                     ) : (
