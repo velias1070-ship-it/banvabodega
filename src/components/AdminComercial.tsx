@@ -216,7 +216,8 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
         });
       } else {
         const errMsg = typeof json.error === "string" ? json.error : JSON.stringify(json.error);
-        setActionError(`${itemId}: ${errMsg}`);
+        const stepsInfo = json.steps ? `\nPasos: ${json.steps.join(" → ")}` : "";
+        setActionError(`${itemId}: ${errMsg}${stepsInfo}`);
       }
     } catch (err) {
       setActionError(`Error al activar con stock ${itemId}: ${String(err)}`);
