@@ -1453,6 +1453,139 @@ function TabBanco({ empresa, periodo }: { empresa: DBEmpresa; periodo: string })
 // ==================== PÁGINA PRINCIPAL ====================
 type TabKey = "dash" | "compras" | "ventas" | "banco" | "conciliacion" | "cuentas" | "reglas" | "resultados" | "flujo" | "proyectado" | "presupuesto" | "gastos" | "honorarios" | "remuneraciones" | "impuestos" | "proveedores";
 
+// ==================== BOLETAS DE HONORARIOS ====================
+function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: string }) {
+  const [data, setData] = useState<DBRcvCompra[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    if (!empresa.id) return;
+    setLoading(true);
+    const d = await fetchRcvCompras(empresa.id, periodo);
+    setData(d.filter(c => c.tipo_doc === 71));
+    setLoading(false);
+  }, [empresa.id, periodo]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleSync = async () => {
+    setSyncing(true);
+    setSyncMsg(null);
+    try {
+      const res = await fetch("/api/sii/bhe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ periodo }),
+      });
+      const d = await res.json();
+      if (d.error) {
+        setSyncMsg(`Error: ${d.error}`);
+      } else {
+        setSyncMsg(`${d.registros || 0} boletas importadas`);
+        if (d.registros > 0) load();
+      }
+    } catch (e) {
+      setSyncMsg(`Error: ${e instanceof Error ? e.message : "sin detalles"}`);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const total = data.reduce((s, c) => s + (c.monto_neto || 0), 0);
+  const totalRet = data.reduce((s, c) => s + (c.monto_iva || 0), 0);
+  const totalLiq = data.reduce((s, c) => s + (c.monto_total || 0), 0);
+
+  if (loading) return <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>Cargando...</div>;
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <div>
+          <h2 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>Boletas de Honorarios</h2>
+          <div style={{ fontSize: 12, color: "var(--txt3)", marginTop: 2 }}>{formatPeriodo(periodo)} · {data.length} boletas</div>
+        </div>
+        <button onClick={handleSync} disabled={syncing}
+          style={{ padding: "8px 16px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: syncing ? "wait" : "pointer", background: syncing ? "var(--bg4)" : "var(--cyan)", color: syncing ? "var(--txt3)" : "#fff", border: "none" }}>
+          {syncing ? "Importando..." : "Importar BTE del SII"}
+        </button>
+      </div>
+
+      {syncMsg && (
+        <div style={{ padding: "8px 12px", borderRadius: 8, marginBottom: 12, fontSize: 12, fontWeight: 600,
+          background: syncMsg.startsWith("Error") ? "var(--redBg)" : "var(--greenBg)",
+          color: syncMsg.startsWith("Error") ? "var(--red)" : "var(--green)",
+          border: `1px solid ${syncMsg.startsWith("Error") ? "var(--redBd)" : "var(--greenBd)"}` }}>
+          {syncMsg}
+        </div>
+      )}
+
+      {/* KPIs */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 16 }}>
+        <div style={{ padding: 12, background: "var(--bg3)", borderRadius: 8, textAlign: "center" }}>
+          <div style={{ fontSize: 10, color: "var(--txt3)" }}>Bruto</div>
+          <div className="mono" style={{ fontSize: 16, fontWeight: 700 }}>{fmtMoney(total)}</div>
+        </div>
+        <div style={{ padding: 12, background: "var(--amberBg)", borderRadius: 8, textAlign: "center" }}>
+          <div style={{ fontSize: 10, color: "var(--amber)" }}>Retención</div>
+          <div className="mono" style={{ fontSize: 16, fontWeight: 700, color: "var(--amber)" }}>{fmtMoney(totalRet)}</div>
+        </div>
+        <div style={{ padding: 12, background: "var(--greenBg)", borderRadius: 8, textAlign: "center" }}>
+          <div style={{ fontSize: 10, color: "var(--green)" }}>Líquido pagado</div>
+          <div className="mono" style={{ fontSize: 16, fontWeight: 700, color: "var(--green)" }}>{fmtMoney(totalLiq)}</div>
+        </div>
+      </div>
+
+      {data.length === 0 ? (
+        <div className="card" style={{ padding: 32, textAlign: "center" }}>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>📋</div>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Sin boletas para este período</div>
+          <div style={{ fontSize: 12, color: "var(--txt3)", marginBottom: 12 }}>Importa las boletas desde el SII</div>
+          <button onClick={handleSync} disabled={syncing}
+            style={{ padding: "10px 20px", borderRadius: 10, background: "var(--cyan)", color: "#fff", fontWeight: 700, fontSize: 13, border: "none", cursor: "pointer" }}>
+            Importar BTE del SII
+          </button>
+        </div>
+      ) : (
+        <div className="card" style={{ overflow: "hidden" }}>
+          <table className="tbl" style={{ fontSize: 11 }}>
+            <thead>
+              <tr>
+                <th>N°</th><th>Fecha</th><th>RUT Emisor</th><th>Nombre</th>
+                <th style={{ textAlign: "right" }}>Bruto</th>
+                <th style={{ textAlign: "right" }}>Retención</th>
+                <th style={{ textAlign: "right" }}>Líquido</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((c, i) => (
+                <tr key={c.id || i}>
+                  <td className="mono" style={{ fontWeight: 600 }}>{c.nro_doc}</td>
+                  <td className="mono">{fmtDate(c.fecha_docto)}</td>
+                  <td className="mono" style={{ fontSize: 10 }}>{c.rut_proveedor}</td>
+                  <td style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.razon_social || "—"}</td>
+                  <td className="mono" style={{ textAlign: "right" }}>{fmtMoney(c.monto_neto || 0)}</td>
+                  <td className="mono" style={{ textAlign: "right", color: "var(--amber)" }}>{fmtMoney(c.monto_iva || 0)}</td>
+                  <td className="mono" style={{ textAlign: "right", fontWeight: 600, color: "var(--green)" }}>{fmtMoney(c.monto_total || 0)}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr style={{ fontWeight: 700, background: "var(--bg3)" }}>
+                <td colSpan={4}>TOTAL</td>
+                <td className="mono" style={{ textAlign: "right" }}>{fmtMoney(total)}</td>
+                <td className="mono" style={{ textAlign: "right", color: "var(--amber)" }}>{fmtMoney(totalRet)}</td>
+                <td className="mono" style={{ textAlign: "right", color: "var(--green)" }}>{fmtMoney(totalLiq)}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function ConciliacionPage() {
   const [tab, setTab] = useState<TabKey>("dash");
   const [bancoFilter, setBancoFilter] = useState<string | undefined>(undefined);
@@ -1583,12 +1716,12 @@ export default function ConciliacionPage() {
             {empresa && tab === "flujo" && <FlujoCaja empresa={empresa} periodo={periodo} />}
             {empresa && tab === "proyectado" && <FlujoProyectado empresa={empresa} periodo={periodo} />}
             {empresa && tab === "presupuesto" && <TabPresupuesto empresa={empresa} periodo={periodo} />}
-            {["gastos","honorarios","remuneraciones","impuestos","proveedores"].includes(tab) && (
+            {empresa && tab === "honorarios" && <TabHonorarios empresa={empresa} periodo={periodo} />}
+            {["gastos","remuneraciones","impuestos","proveedores"].includes(tab) && (
               <div className="card" style={{ padding: 32, textAlign: "center" }}>
                 <div style={{ fontSize: 32, marginBottom: 8 }}>🚧</div>
                 <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
                   {tab === "gastos" && "Gastos — Boletas, invoice y más"}
-                  {tab === "honorarios" && "Boletas de honorarios — BHEs y BTEs"}
                   {tab === "remuneraciones" && "Remuneraciones — Sueldos y Previred"}
                   {tab === "impuestos" && "Impuestos — F29, F22 y más"}
                   {tab === "proveedores" && "Proveedores — Plazo de pago y contactos"}
