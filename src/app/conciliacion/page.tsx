@@ -904,14 +904,22 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                                     <td style={{ padding: "8px", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.razon_social}</td>
                                     <td className="mono" style={{ padding: "8px", textAlign: "right", fontWeight: 700 }}>{fmtMoney(c.monto_total || 0)}</td>
                                   </tr>
-                                  {detalleMov && (
-                                    <tr style={{ borderBottom: "1px solid var(--bg4)" }}>
-                                      <td style={{ padding: "8px" }}><span style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 4, background: "var(--cyanBg)", color: "var(--cyan)" }}>Mov. bancario</span></td>
-                                      <td className="mono" style={{ padding: "8px", fontSize: 11 }}>{detalleMov.fecha}</td>
-                                      <td style={{ padding: "8px", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--cyan)" }}>{detalleMov.descripcion}</td>
-                                      <td className="mono" style={{ padding: "8px", textAlign: "right", fontWeight: 700, color: "var(--red)" }}>{fmtMoney(Math.abs(detalleMov.monto))}</td>
-                                    </tr>
-                                  )}
+                                  {detalleMov && (() => {
+                                    const fechaFac = c.fecha_docto || "";
+                                    const fechaMov = detalleMov.fecha || "";
+                                    const mismaFecha = fechaFac === fechaMov;
+                                    const montoFac = c.monto_total || 0;
+                                    const montoMov = Math.abs(detalleMov.monto);
+                                    const mismoMonto = montoFac === montoMov;
+                                    return (
+                                      <tr style={{ borderBottom: "1px solid var(--bg4)" }}>
+                                        <td style={{ padding: "8px" }}><span style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 4, background: "var(--cyanBg)", color: "var(--cyan)" }}>Mov. bancario &bull; CC</span></td>
+                                        <td className="mono" style={{ padding: "8px", fontSize: 11, color: mismaFecha ? "var(--green)" : "var(--amber)" }}>{fmtDate(fechaMov)}{!mismaFecha && <span style={{ fontSize: 9, display: "block", color: "var(--amber)" }}>{Math.abs(Math.round((new Date(fechaFac + "T12:00:00").getTime() - new Date(fechaMov + "T12:00:00").getTime()) / 86400000))}d dif</span>}</td>
+                                        <td style={{ padding: "8px", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--cyan)" }}>{detalleMov.descripcion}</td>
+                                        <td className="mono" style={{ padding: "8px", textAlign: "right", fontWeight: 700, color: mismoMonto ? "var(--green)" : "var(--red)" }}>{fmtMoney(montoMov)}{!mismoMonto && <span style={{ fontSize: 9, display: "block", color: "var(--amber)" }}>dif {fmtMoney(Math.abs(montoFac - montoMov))}</span>}</td>
+                                      </tr>
+                                    );
+                                  })()}
                                 </tbody>
                                 <tfoot>
                                   <tr>
