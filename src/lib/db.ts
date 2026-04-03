@@ -1795,6 +1795,15 @@ export interface DBMLItemMap {
   stock_full_cache: number | null;
   cache_updated_at: string | null;
   updated_at: string | null;
+  // Campos de publicación (v36)
+  status_ml: string | null;
+  price: number | null;
+  thumbnail: string | null;
+  permalink: string | null;
+  listing_type: string | null;
+  condition: string | null;
+  category_id: string | null;
+  created_via: string | null;
 }
 
 export async function fetchMLItemsMap(): Promise<DBMLItemMap[]> {

@@ -112,67 +112,53 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
     }
   }, []);
 
+  /** Fetch live data from ML in batches, updating state progressively */
+  const fetchLiveBatched = useCallback(async (itemIds: string[]) => {
+    setRefreshing(true);
+    try {
+      for (let i = 0; i < itemIds.length; i += 20) {
+        const batch = itemIds.slice(i, i + 20);
+        try {
+          const res = await fetch(`/api/ml/items-details?ids=${batch.join(",")}`);
+          const json = await res.json();
+          if (json.items) {
+            // Update liveData progressively per batch
+            setLiveData(prev => {
+              const next = new Map(prev);
+              for (const wrapper of json.items as MLItemDetail[]) {
+                if (wrapper.code === 200 && wrapper.body) {
+                  next.set(wrapper.body.id, wrapper.body);
+                }
+              }
+              return next;
+            });
+          }
+        } catch { /* skip failed batch, continue with next */ }
+      }
+      // Reload cached data from DB after all batches
+      await loadItems();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadItems]);
+
   // Auto-refresh live data on mount
   const didAutoRefresh = useRef(false);
   useEffect(() => {
     loadItems().then(data => {
       if (data && data.length > 0 && !didAutoRefresh.current) {
         didAutoRefresh.current = true;
-        // Refresh live in background
         const uniqueIds = Array.from(new Set(data.map(i => i.item_id)));
-        setRefreshing(true);
-        (async () => {
-          try {
-            const newMap = new Map<string, MLItemDetail["body"]>();
-            for (let i = 0; i < uniqueIds.length; i += 20) {
-              const batch = uniqueIds.slice(i, i + 20);
-              const res = await fetch(`/api/ml/items-details?ids=${batch.join(",")}`);
-              const json = await res.json();
-              if (json.items) {
-                for (const wrapper of json.items as MLItemDetail[]) {
-                  if (wrapper.code === 200 && wrapper.body) {
-                    newMap.set(wrapper.body.id, wrapper.body);
-                  }
-                }
-              }
-            }
-            setLiveData(newMap);
-            // Reload cached data
-            await loadItems();
-          } finally {
-            setRefreshing(false);
-          }
-        })();
+        fetchLiveBatched(uniqueIds);
       }
     });
-  }, [loadItems]);
+  }, [loadItems, fetchLiveBatched]);
 
   const refreshLive = useCallback(async () => {
     if (items.length === 0) return;
-    setRefreshing(true);
-    try {
-      const uniqueIds = Array.from(new Set(items.map(i => i.item_id)));
-      const newMap = new Map<string, MLItemDetail["body"]>();
-      // Batch in groups of 20
-      for (let i = 0; i < uniqueIds.length; i += 20) {
-        const batch = uniqueIds.slice(i, i + 20);
-        const res = await fetch(`/api/ml/items-details?ids=${batch.join(",")}`);
-        const json = await res.json();
-        if (json.items) {
-          for (const wrapper of json.items as MLItemDetail[]) {
-            if (wrapper.code === 200 && wrapper.body) {
-              newMap.set(wrapper.body.id, wrapper.body);
-            }
-          }
-        }
-      }
-      setLiveData(newMap);
-      // Reload items to get updated cache
-      await loadItems();
-    } finally {
-      setRefreshing(false);
-    }
-  }, [items, loadItems]);
+    const uniqueIds = Array.from(new Set(items.map(i => i.item_id)));
+    await fetchLiveBatched(uniqueIds);
+  }, [items, fetchLiveBatched]);
 
   const toggleStatus = async (itemId: string, currentStatus: string) => {
     const newStatus = currentStatus === "active" ? "paused" : "active";
@@ -222,7 +208,7 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
 
   const filtered = displayItems.filter(item => {
     const live = liveData.get(item.item_id);
-    const status = live?.status || (item as unknown as Record<string, unknown>).status_ml as string || "unknown";
+    const status = live?.status || item.status_ml || "unknown";
     if (filter === "paused_with_stock") {
       if (status !== "paused") return false;
       const wmsStock = skuTotal(item.sku);
@@ -273,15 +259,24 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
       </div>
 
       {/* KPI */}
-      {displayItems.length > 0 && (
-        <div className="kpi-grid" style={{ marginBottom: 16 }}>
-          <div className="kpi"><div className="kpi-label">Total</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4 }}>{displayItems.length}</div></div>
-          <div className="kpi"><div className="kpi-label">Activos</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: "var(--green)" }}>{displayItems.filter(i => (liveData.get(i.item_id)?.status || (i as unknown as Record<string, unknown>).status_ml) === "active").length}</div></div>
-          <div className="kpi"><div className="kpi-label">Pausados</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: "var(--amber)" }}>{displayItems.filter(i => (liveData.get(i.item_id)?.status || (i as unknown as Record<string, unknown>).status_ml) === "paused").length}</div></div>
-          <div className="kpi"><div className="kpi-label">Cerrados</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: "var(--txt3)" }}>{displayItems.filter(i => (liveData.get(i.item_id)?.status || (i as unknown as Record<string, unknown>).status_ml) === "closed").length}</div></div>
-          <div className="kpi" style={{ cursor: "pointer", border: filter === "paused_with_stock" ? "1px solid var(--cyanBd)" : undefined }} onClick={() => setFilter(f => f === "paused_with_stock" ? "all" : "paused_with_stock")}><div className="kpi-label">Pausados c/stock</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: "var(--red)" }}>{displayItems.filter(i => (liveData.get(i.item_id)?.status || (i as unknown as Record<string, unknown>).status_ml) === "paused" && skuTotal(i.sku) > 0).length}</div></div>
-        </div>
-      )}
+      {displayItems.length > 0 && (() => {
+        const getStatus = (i: DBMLItemMap) => liveData.get(i.item_id)?.status || i.status_ml || null;
+        const withStatus = displayItems.filter(i => getStatus(i) !== null);
+        const activos = withStatus.filter(i => getStatus(i) === "active").length;
+        const pausados = withStatus.filter(i => getStatus(i) === "paused").length;
+        const cerrados = withStatus.filter(i => getStatus(i) === "closed").length;
+        const pausadosConStock = withStatus.filter(i => getStatus(i) === "paused" && skuTotal(i.sku) > 0).length;
+        const sinDatos = displayItems.length - withStatus.length;
+        return (
+          <div className="kpi-grid" style={{ marginBottom: 16 }}>
+            <div className="kpi"><div className="kpi-label">Total</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4 }}>{displayItems.length}</div></div>
+            <div className="kpi"><div className="kpi-label">Activos</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: "var(--green)" }}>{activos}{sinDatos > 0 && refreshing ? <span style={{ fontSize: 10, color: "var(--txt3)", fontWeight: 400 }}> ...</span> : null}</div></div>
+            <div className="kpi"><div className="kpi-label">Pausados</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: "var(--amber)" }}>{pausados}{sinDatos > 0 && refreshing ? <span style={{ fontSize: 10, color: "var(--txt3)", fontWeight: 400 }}> ...</span> : null}</div></div>
+            <div className="kpi"><div className="kpi-label">Cerrados</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: "var(--txt3)" }}>{cerrados}</div></div>
+            <div className="kpi" style={{ cursor: "pointer", border: filter === "paused_with_stock" ? "1px solid var(--cyanBd)" : undefined }} onClick={() => setFilter(f => f === "paused_with_stock" ? "all" : "paused_with_stock")}><div className="kpi-label">Pausados c/stock</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: "var(--red)" }}>{pausadosConStock}{sinDatos > 0 && refreshing ? <span style={{ fontSize: 10, color: "var(--txt3)", fontWeight: 400 }}> ...</span> : null}</div></div>
+          </div>
+        );
+      })()}
 
       {/* Table */}
       {loading ? (
@@ -313,10 +308,10 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
               {filtered.map(item => {
                 const live = liveData.get(item.item_id);
                 const title = live?.title || item.titulo || "—";
-                const price = live?.price || (item as unknown as Record<string, number>).price || 0;
-                const status = live?.status || (item as unknown as Record<string, string>).status_ml || "unknown";
-                const thumb = live?.thumbnail || (item as unknown as Record<string, string>).thumbnail || "";
-                const permalink = live?.permalink || (item as unknown as Record<string, string>).permalink || "";
+                const price = live?.price || item.price || 0;
+                const status = live?.status || item.status_ml || "unknown";
+                const thumb = live?.thumbnail || item.thumbnail || "";
+                const permalink = live?.permalink || item.permalink || "";
                 const qty = live?.available_quantity ?? item.available_quantity ?? 0;
                 const sold = live?.sold_quantity ?? item.sold_quantity ?? 0;
                 const statusColor = STATUS_COLORS[status] || "var(--txt3)";
