@@ -35,30 +35,32 @@ function isMovReal(m: DBMovimientoBanco): boolean {
   return true;
 }
 
-// Scoring para conciliación rápida (misma lógica que ConciliarModal)
+// Scoring para conciliación rápida: fecha 40%, monto 35%, proveedor 25%
 function scoreDoc(
   doc: { monto_total: number; razon_social: string; rut: string; fecha: string },
   target: number, movFechaMs: number, movDescLower: string, plazoByRut: Map<string, number>
-): number {
+): { score: number; diasDiff: number } {
   const montoScore = target > 0 ? Math.abs(doc.monto_total - target) / target : 1;
   const nombreProv = (doc.razon_social || "").toLowerCase();
   const palabras = nombreProv.split(/\s+/).filter(p => p.length > 3);
   const provMatch = palabras.some(p => movDescLower.includes(p)) ? 0 : 1;
   let fechaScore = 1;
+  let diasDiff = 0;
   if (doc.fecha) {
     const docFechaMs = new Date(doc.fecha + "T12:00:00").getTime();
-    const diasDesdeDoc = (movFechaMs - docFechaMs) / 86400000;
+    diasDiff = Math.round((movFechaMs - docFechaMs) / 86400000);
     const plazo = plazoByRut.get(doc.rut) || 30;
-    fechaScore = Math.abs(diasDesdeDoc - plazo) / plazo;
-    if (diasDesdeDoc < 0) fechaScore = 3;
+    fechaScore = Math.abs(diasDiff - plazo) / plazo;
+    if (diasDiff < 0) fechaScore = 3;
   }
-  return montoScore * 0.4 + provMatch * 0.35 + Math.min(fechaScore, 3) * 0.25;
+  return { score: Math.min(fechaScore, 3) * 0.4 + montoScore * 0.35 + provMatch * 0.25, diasDiff };
 }
 
 interface ConcRapidaMatch {
   mov: DBMovimientoBanco;
   doc: { id: string; tipo: "rcv_compra" | "rcv_venta"; nro: string; rut: string; razon_social: string; fecha: string; monto_total: number; tipo_doc_label: string };
   score: number;
+  diasDiff: number;
   estado: "pendiente" | "aprobado" | "rechazado";
 }
 
@@ -257,7 +259,7 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
     const cVentaIds = new Set(conciliaciones.filter(c => c.estado !== "rechazado" && c.rcv_venta_id).map(c => c.rcv_venta_id));
     const plazoByRut = new Map(provCuentas.filter(p => p.plazo_dias).map(p => [p.rut_proveedor, p.plazo_dias!]));
 
-    const pairs: { mov: DBMovimientoBanco; doc: ConcRapidaMatch["doc"]; score: number }[] = [];
+    const pairs: { mov: DBMovimientoBanco; doc: ConcRapidaMatch["doc"]; score: number; diasDiff: number }[] = [];
 
     for (const mov of pendList) {
       const movAbs = Math.abs(mov.monto);
@@ -269,16 +271,16 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
         for (const c of compras) {
           if (cCompraIds.has(c.id!)) continue;
           const doc = { id: c.id!, tipo: "rcv_compra" as const, nro: c.nro_doc || "", rut: c.rut_proveedor || "", razon_social: c.razon_social || "", fecha: c.fecha_docto || "", monto_total: c.monto_total || 0, tipo_doc_label: tipoDocLabel(c.tipo_doc) };
-          const score = scoreDoc(doc, movAbs, movFechaMs, movDescLower, plazoByRut);
-          if (score < 0.5) pairs.push({ mov, doc, score });
+          const { score, diasDiff } = scoreDoc(doc, movAbs, movFechaMs, movDescLower, plazoByRut);
+          if (score < 0.5) pairs.push({ mov, doc, score, diasDiff });
         }
       } else {
         // Abonos -> ventas
         for (const v of ventas) {
           if (cVentaIds.has(v.id!)) continue;
           const doc = { id: v.id!, tipo: "rcv_venta" as const, nro: v.nro || v.folio || "", rut: v.rut_receptor || "", razon_social: v.razon_social || "", fecha: v.fecha_docto || "", monto_total: v.monto_total || 0, tipo_doc_label: v.tipo_doc || "FAC" };
-          const score = scoreDoc(doc, movAbs, movFechaMs, movDescLower, plazoByRut);
-          if (score < 0.5) pairs.push({ mov, doc, score });
+          const { score, diasDiff } = scoreDoc(doc, movAbs, movFechaMs, movDescLower, plazoByRut);
+          if (score < 0.5) pairs.push({ mov, doc, score, diasDiff });
         }
       }
     }
@@ -648,8 +650,15 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.mov.descripcion || "--"}</div>
                         <div className="mono" style={{ fontSize: 10, color: "var(--txt3)" }}>{r.mov.fecha} - {r.mov.banco}</div>
-                        <div className="mono" style={{ fontSize: 14, fontWeight: 700, color: r.mov.monto < 0 ? "var(--red)" : "var(--green)", marginTop: 2 }}>
-                          {fmtMoney(Math.abs(r.mov.monto))}
+                        <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 2 }}>
+                          <span className="mono" style={{ fontSize: 14, fontWeight: 700, color: r.mov.monto < 0 ? "var(--red)" : "var(--green)" }}>
+                            {fmtMoney(Math.abs(r.mov.monto))}
+                          </span>
+                          {Math.abs(r.mov.monto) !== r.doc.monto_total && (
+                            <span className="mono" style={{ fontSize: 10, color: "var(--amber)" }}>
+                              diff {fmtMoney(Math.abs(Math.abs(r.mov.monto) - r.doc.monto_total))}
+                            </span>
+                          )}
                         </div>
                       </div>
 
@@ -676,8 +685,11 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
                           N{"\u00B0"} {r.doc.nro} - {r.doc.razon_social}
                         </div>
                         <div className="mono" style={{ fontSize: 10, color: "var(--txt3)" }}>{r.doc.fecha} - {r.doc.rut}</div>
-                        <div className="mono" style={{ fontSize: 14, fontWeight: 700, marginTop: 2 }}>
-                          {fmtMoney(r.doc.monto_total)}
+                        <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 2 }}>
+                          <span className="mono" style={{ fontSize: 14, fontWeight: 700 }}>{fmtMoney(r.doc.monto_total)}</span>
+                          <span className="mono" style={{ fontSize: 10, color: r.diasDiff < 0 ? "var(--red)" : r.diasDiff <= 45 ? "var(--green)" : "var(--amber)" }}>
+                            {r.diasDiff}d {r.diasDiff < 0 ? "(antes)" : "despues"}
+                          </span>
                         </div>
                       </div>
 
