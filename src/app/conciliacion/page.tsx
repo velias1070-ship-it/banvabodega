@@ -373,6 +373,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const [pagoLoading, setPagoLoading] = useState(false);
   const [pagoSaving, setPagoSaving] = useState(false);
   const [pagoSearch, setPagoSearch] = useState("");
+  const [pagoSelected, setPagoSelected] = useState<{ mov: DBMovimientoBanco; monto_aplicado: number }[]>([]);
   const [provFilterSet, setProvFilterSet] = useState<Set<string> | null>(null); // null = todos
   const [showProvFilter, setShowProvFilter] = useState(false);
   const [showProveedores, setShowProveedores] = useState(false);
@@ -479,8 +480,18 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   // Tipos disponibles para el filtro
   const tiposDisponibles = Array.from(new Set(data.map(c => String(c.tipo_doc))));
 
-  // IDs de compras conciliadas
-  const concCompraIds = new Set(conciliaciones.filter(c => c.estado === "confirmado" && c.rcv_compra_id).map(c => c.rcv_compra_id));
+  // Mapa de monto pagado por compra (sumando todas las conciliaciones)
+  const pagadoPorCompra = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const c of conciliaciones) {
+      if (c.estado === "confirmado" && c.rcv_compra_id) {
+        map.set(c.rcv_compra_id, (map.get(c.rcv_compra_id) || 0) + 1);
+      }
+    }
+    return map;
+  }, [conciliaciones]);
+  // IDs de compras conciliadas (al menos 1 pago)
+  const concCompraIds = new Set(pagadoPorCompra.keys());
 
   // Handler para guardar proveedor
   const handleSaveProv = async (rut: string) => {
@@ -836,7 +847,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                             <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
                               <span style={{ display: "inline-flex", alignItems: "center", gap: 0 }}>
                                 <span onClick={async () => {
-                                  setPagoItem(c); setPagoLoading(true); setPagoSearch("");
+                                  setPagoItem(c); setPagoLoading(true); setPagoSearch(""); setPagoSelected([]);
                                   const movs = await fetchMovimientosBanco(empresa.id!, { desde: undefined, hasta: undefined });
                                   const concMovIds = new Set(conciliaciones.filter(x => x.estado === "confirmado" && x.movimiento_banco_id).map(x => x.movimiento_banco_id));
                                   setMovsBanco(movs.filter(m => !concMovIds.has(m.id!) && m.monto < 0 && isMovReal(m)));
@@ -846,7 +857,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                                   Asignar Pago
                                 </span>
                                 <span onClick={async () => {
-                                  setPagoItem(c); setPagoLoading(true); setPagoSearch("");
+                                  setPagoItem(c); setPagoLoading(true); setPagoSearch(""); setPagoSelected([]);
                                   const movs = await fetchMovimientosBanco(empresa.id!, { desde: undefined, hasta: undefined });
                                   const concMovIds = new Set(conciliaciones.filter(x => x.estado === "confirmado" && x.movimiento_banco_id).map(x => x.movimiento_banco_id));
                                   setMovsBanco(movs.filter(m => !concMovIds.has(m.id!) && m.monto < 0 && isMovReal(m)));
@@ -970,54 +981,105 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
         </div>
       )}
 
-      {/* Modal Asignar Pago — seleccionar movimiento bancario */}
-      {pagoItem && (
+      {/* Modal Asignar Pago -- multi-movimiento */}
+      {pagoItem && (() => {
+        const totalFac = pagoItem.monto_total || 0;
+        const totalSeleccionado = pagoSelected.reduce((s, x) => s + x.monto_aplicado, 0);
+        const saldoRestante = totalFac - totalSeleccionado;
+        const selectedIds = new Set(pagoSelected.map(x => x.mov.id));
+        const facFecha = pagoItem.fecha_docto ? new Date(pagoItem.fecha_docto + "T12:00:00").getTime() : 0;
+
+        const handleToggleMov = (m: DBMovimientoBanco) => {
+          if (selectedIds.has(m.id)) {
+            setPagoSelected(prev => prev.filter(x => x.mov.id !== m.id));
+          } else {
+            const montoAbs = Math.abs(m.monto);
+            const aplicar = saldoRestante > 0 ? Math.min(montoAbs, saldoRestante) : montoAbs;
+            setPagoSelected(prev => [...prev, { mov: m, monto_aplicado: aplicar }]);
+          }
+        };
+
+        const handleEditMonto = (movId: string, val: number) => {
+          setPagoSelected(prev => prev.map(x => x.mov.id === movId ? { ...x, monto_aplicado: val } : x));
+        };
+
+        const handleGuardarPago = async () => {
+          if (pagoSelected.length === 0) return;
+          setPagoSaving(true);
+          try {
+            const { upsertConciliacion, updateMovimientoBanco } = await import("@/lib/db");
+            for (const sel of pagoSelected) {
+              await upsertConciliacion({ empresa_id: empresa.id!, movimiento_banco_id: sel.mov.id!, rcv_compra_id: pagoItem.id!, rcv_venta_id: null, confianza: 1, estado: "confirmado", tipo_partida: pagoSelected.length === 1 ? "match" : "multi_pago", metodo: "manual", notas: null, created_by: "admin" });
+              await updateMovimientoBanco(sel.mov.id!, { estado_conciliacion: "conciliado" } as any);
+            }
+            await load();
+            setPagoItem(null);
+          } catch (err) { console.error(err); }
+          setPagoSaving(false);
+        };
+
+        return (
         <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center" }}
           onClick={() => !pagoSaving && setPagoItem(null)}>
-          <div onClick={e => e.stopPropagation()} style={{ background: "var(--bg2)", borderRadius: 12, width: "100%", maxWidth: 700, maxHeight: "90vh", display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 20px 60px rgba(0,0,0,0.15)" }}>
+          <div onClick={e => e.stopPropagation()} style={{ background: "var(--bg2)", borderRadius: 12, width: "100%", maxWidth: 750, maxHeight: "90vh", display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 20px 60px rgba(0,0,0,0.15)" }}>
             <div style={{ padding: "20px 28px", background: "var(--cyan)", color: "#fff", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span style={{ fontSize: 18, fontWeight: 700 }}>Asignar Pago</span>
               <button onClick={() => setPagoItem(null)} disabled={pagoSaving} style={{ background: "none", border: "none", color: "#fff", fontSize: 22, cursor: "pointer", lineHeight: 1 }}>&times;</button>
             </div>
-            <div style={{ padding: "20px 28px", borderBottom: "1px solid var(--bg4)" }}>
+            {/* Info factura + barra progreso */}
+            <div style={{ padding: "16px 28px", borderBottom: "1px solid var(--bg4)" }}>
               <div style={{ fontSize: 13, marginBottom: 4 }}>
                 <strong>{TIPO_DOC_NAMES[pagoItem.tipo_doc] || pagoItem.tipo_doc}</strong> N&deg; {pagoItem.nro_doc} &mdash; {pagoItem.razon_social} &mdash; {fmtDate(pagoItem.fecha_docto)}
               </div>
-              <div style={{ fontSize: 14, fontWeight: 700, color: "var(--red)" }}>
-                {fmtMoney(pagoItem.monto_total || 0)}
+              <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8 }}>
+                <div className="mono" style={{ fontSize: 18, fontWeight: 800, color: "var(--red)" }}>{fmtMoney(totalFac)}</div>
+                <div style={{ flex: 1, height: 6, background: "var(--bg4)", borderRadius: 3, overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: `${Math.min(100, totalFac > 0 ? (totalSeleccionado / totalFac) * 100 : 0)}%`, background: saldoRestante <= 0 ? "var(--green)" : "var(--amber)", borderRadius: 3, transition: "width 0.2s" }} />
+                </div>
+                <div className="mono" style={{ fontSize: 12, fontWeight: 700, color: saldoRestante <= 0 ? "var(--green)" : "var(--amber)", whiteSpace: "nowrap" }}>
+                  {saldoRestante <= 0 ? "Cubierto" : `Faltan ${fmtMoney(saldoRestante)}`}
+                </div>
               </div>
             </div>
+            {/* Movimientos seleccionados */}
+            {pagoSelected.length > 0 && (
+              <div style={{ padding: "8px 28px", borderBottom: "1px solid var(--bg4)", background: "var(--bg3)" }}>
+                <div style={{ fontSize: 10, fontWeight: 600, color: "var(--txt3)", marginBottom: 4 }}>Movimientos seleccionados ({pagoSelected.length})</div>
+                {pagoSelected.map(sel => (
+                  <div key={sel.mov.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", borderBottom: "1px solid var(--bg4)" }}>
+                    <div style={{ flex: 1, fontSize: 11 }}>
+                      {sel.mov.descripcion || "--"} <span style={{ color: "var(--txt3)" }}>{sel.mov.fecha}</span>
+                    </div>
+                    <span style={{ fontSize: 10, color: "var(--txt3)" }}>$</span>
+                    <input type="text" value={sel.monto_aplicado.toLocaleString("es-CL")}
+                      onChange={e => handleEditMonto(sel.mov.id!, parseInt(e.target.value.replace(/\D/g, "")) || 0)}
+                      className="mono" style={{ width: 90, padding: "3px 6px", fontSize: 12, fontWeight: 700, textAlign: "right", background: "var(--bg2)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 4 }} />
+                    <button onClick={() => setPagoSelected(prev => prev.filter(x => x.mov.id !== sel.mov.id))}
+                      style={{ background: "none", border: "none", color: "var(--red)", fontSize: 14, cursor: "pointer" }}>x</button>
+                  </div>
+                ))}
+              </div>
+            )}
             <div style={{ padding: "12px 28px", borderBottom: "1px solid var(--bg4)" }}>
               <input placeholder="Buscar movimiento bancario..." value={pagoSearch} onChange={e => setPagoSearch(e.target.value)}
                 style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg2)", color: "var(--txt)", fontSize: 12 }} />
             </div>
-            <div style={{ flex: 1, overflow: "auto", maxHeight: 400 }}>
+            <div style={{ flex: 1, overflow: "auto", maxHeight: 350 }}>
               {pagoLoading ? (
                 <div style={{ padding: 40, textAlign: "center", color: "var(--txt3)" }}>Cargando movimientos...</div>
               ) : (() => {
                 const q = pagoSearch.toLowerCase();
-                const filtrados = movsBanco.filter(m => !pagoSearch || (m.descripcion || "").toLowerCase().includes(q) || (m.banco || "").toLowerCase().includes(q) || String(Math.abs(m.monto)).includes(q));
-                const sorted = filtrados.sort((a, b) => Math.abs(Math.abs(a.monto) - (pagoItem.monto_total || 0)) - Math.abs(Math.abs(b.monto) - (pagoItem.monto_total || 0)));
+                const target = saldoRestante > 0 ? saldoRestante : totalFac;
+                const filtrados = movsBanco.filter(m => !selectedIds.has(m.id) && (!pagoSearch || (m.descripcion || "").toLowerCase().includes(q) || (m.banco || "").toLowerCase().includes(q) || String(Math.abs(m.monto)).includes(q)));
+                const sorted = filtrados.sort((a, b) => Math.abs(Math.abs(a.monto) - target) - Math.abs(Math.abs(b.monto) - target));
                 if (sorted.length === 0) return <div style={{ padding: 40, textAlign: "center", color: "var(--txt3)" }}>No hay movimientos bancarios pendientes</div>;
-                const facFecha = pagoItem.fecha_docto ? new Date(pagoItem.fecha_docto + "T12:00:00").getTime() : 0;
                 return sorted.slice(0, 50).map(m => {
                   const montoAbs = Math.abs(m.monto);
-                  const coincide = montoAbs === (pagoItem.monto_total || 0);
-                  const montoDiff = Math.abs(montoAbs - (pagoItem.monto_total || 0));
+                  const coincide = montoAbs === target;
+                  const montoDiff = Math.abs(montoAbs - target);
                   const diasDiff = facFecha && m.fecha ? Math.round((new Date(m.fecha + "T12:00:00").getTime() - facFecha) / 86400000) : null;
                   return (
-                    <div key={m.id} onClick={async () => {
-                      if (pagoSaving) return;
-                      setPagoSaving(true);
-                      try {
-                        const { upsertConciliacion, updateMovimientoBanco } = await import("@/lib/db");
-                        await upsertConciliacion({ empresa_id: empresa.id!, movimiento_banco_id: m.id!, rcv_compra_id: pagoItem.id!, rcv_venta_id: null, confianza: 1, estado: "confirmado", tipo_partida: "match", metodo: "manual", notas: null, created_by: "admin" });
-                        await updateMovimientoBanco(m.id!, { estado_conciliacion: "conciliado" } as any);
-                        await load();
-                        setPagoItem(null);
-                      } catch (err) { console.error(err); }
-                      setPagoSaving(false);
-                    }}
+                    <div key={m.id} onClick={() => handleToggleMov(m)}
                       style={{ padding: "14px 28px", borderBottom: "1px solid var(--bg4)", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", background: coincide ? "var(--greenBg)" : "transparent" }}
                       onMouseOver={e => { if (!coincide) e.currentTarget.style.background = "var(--bg3)"; }}
                       onMouseOut={e => { if (!coincide) e.currentTarget.style.background = "transparent"; }}>
@@ -1038,13 +1100,23 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                 });
               })()}
             </div>
-            <div style={{ padding: "12px 28px", borderTop: "1px solid var(--bg4)", display: "flex", justifyContent: "flex-end" }}>
-              <button onClick={() => setPagoItem(null)} disabled={pagoSaving}
-                style={{ padding: "10px 24px", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer", background: "var(--bg2)", color: "var(--txt2)", border: "1px solid var(--bg4)" }}>Cerrar</button>
+            <div style={{ padding: "12px 28px", borderTop: "1px solid var(--bg4)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div className="mono" style={{ fontSize: 12, color: "var(--txt3)" }}>
+                {pagoSelected.length > 0 && `${pagoSelected.length} mov. = ${fmtMoney(totalSeleccionado)}`}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => setPagoItem(null)} disabled={pagoSaving}
+                  style={{ padding: "10px 24px", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer", background: "var(--bg2)", color: "var(--txt2)", border: "1px solid var(--bg4)" }}>Cerrar</button>
+                <button onClick={handleGuardarPago} disabled={pagoSelected.length === 0 || pagoSaving}
+                  className="scan-btn green" style={{ padding: "10px 24px", fontSize: 13, opacity: pagoSelected.length === 0 ? 0.5 : 1 }}>
+                  {pagoSaving ? "Guardando..." : "Guardar"}
+                </button>
+              </div>
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
