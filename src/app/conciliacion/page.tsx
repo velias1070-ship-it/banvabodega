@@ -1456,15 +1456,18 @@ type TabKey = "dash" | "compras" | "ventas" | "banco" | "conciliacion" | "cuenta
 // ==================== BOLETAS DE HONORARIOS ====================
 function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: string }) {
   const [data, setData] = useState<DBRcvCompra[]>([]);
+  const [conciliaciones, setConciliaciones] = useState<DBConciliacion[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
+  const [concFilter, setConcFilter] = useState<"todos" | "pendiente" | "conciliada">("todos");
 
   const load = useCallback(async () => {
     if (!empresa.id) return;
     setLoading(true);
-    const d = await fetchRcvCompras(empresa.id, periodo);
+    const [d, conc] = await Promise.all([fetchRcvCompras(empresa.id, periodo), fetchConciliaciones(empresa.id)]);
     setData(d.filter(c => c.tipo_doc === 71));
+    setConciliaciones(conc);
     setLoading(false);
   }, [empresa.id, periodo]);
 
@@ -1493,9 +1496,17 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
     }
   };
 
-  const total = data.reduce((s, c) => s + (c.monto_neto || 0), 0);
-  const totalRet = data.reduce((s, c) => s + (c.monto_iva || 0), 0);
-  const totalLiq = data.reduce((s, c) => s + (c.monto_total || 0), 0);
+  const concCompraIds = new Set(conciliaciones.filter(c => c.estado === "confirmado" && c.rcv_compra_id).map(c => c.rcv_compra_id));
+  const totalConciliadas = data.filter(c => concCompraIds.has(c.id!)).length;
+  const totalPendientes = data.filter(c => !concCompraIds.has(c.id!)).length;
+
+  const filtered = concFilter === "pendiente" ? data.filter(c => !concCompraIds.has(c.id!))
+    : concFilter === "conciliada" ? data.filter(c => concCompraIds.has(c.id!))
+    : data;
+
+  const total = filtered.reduce((s, c) => s + (c.monto_neto || 0), 0);
+  const totalRet = filtered.reduce((s, c) => s + (c.monto_iva || 0), 0);
+  const totalLiq = filtered.reduce((s, c) => s + (c.monto_total || 0), 0);
 
   if (loading) return <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>Cargando...</div>;
 
@@ -1537,6 +1548,24 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
         </div>
       )}
 
+      {/* Filtro conciliación */}
+      <div style={{ display: "flex", gap: 2, background: "var(--bg3)", borderRadius: 8, padding: 2, marginBottom: 12, width: "fit-content" }}>
+        {([
+          { key: "todos" as const, label: `Todas (${data.length})` },
+          { key: "pendiente" as const, label: `Por conciliar (${totalPendientes})` },
+          { key: "conciliada" as const, label: `Conciliadas (${totalConciliadas})` },
+        ]).map(f => (
+          <button key={f.key} onClick={() => setConcFilter(f.key)}
+            style={{
+              padding: "5px 12px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: "pointer", border: "none",
+              background: concFilter === f.key ? (f.key === "pendiente" ? "var(--amberBg)" : f.key === "conciliada" ? "var(--greenBg)" : "var(--cyanBg)") : "transparent",
+              color: concFilter === f.key ? (f.key === "pendiente" ? "var(--amber)" : f.key === "conciliada" ? "var(--green)" : "var(--cyan)") : "var(--txt3)",
+            }}>
+            {f.label}
+          </button>
+        ))}
+      </div>
+
       {/* KPIs */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 16 }}>
         <div style={{ padding: 12, background: "var(--bg3)", borderRadius: 8, textAlign: "center" }}>
@@ -1553,15 +1582,15 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
         </div>
       </div>
 
-      {data.length === 0 ? (
+      {filtered.length === 0 ? (
         <div className="card" style={{ padding: 32, textAlign: "center" }}>
           <div style={{ fontSize: 32, marginBottom: 8 }}>📋</div>
-          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Sin boletas para este período</div>
-          <div style={{ fontSize: 12, color: "var(--txt3)", marginBottom: 12 }}>Importa las boletas desde el SII</div>
-          <button onClick={handleSync} disabled={syncing}
-            style={{ padding: "10px 20px", borderRadius: 10, background: "var(--cyan)", color: "#fff", fontWeight: 700, fontSize: 13, border: "none", cursor: "pointer" }}>
-            Importar BTE del SII
-          </button>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
+            {concFilter === "pendiente" ? "Todas las boletas están conciliadas" : concFilter === "conciliada" ? "Sin boletas conciliadas" : "Sin boletas para este período"}
+          </div>
+          {concFilter === "todos" && (
+            <div style={{ fontSize: 12, color: "var(--txt3)", marginBottom: 12 }}>Importa las boletas desde el SII</div>
+          )}
         </div>
       ) : (
         <div className="card" style={{ overflow: "hidden" }}>
@@ -1572,10 +1601,11 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                 <th style={{ textAlign: "right" }}>Bruto</th>
                 <th style={{ textAlign: "right" }}>Retención</th>
                 <th style={{ textAlign: "right" }}>Líquido</th>
+                <th>Pago</th>
               </tr>
             </thead>
             <tbody>
-              {data.map((c, i) => (
+              {filtered.map((c, i) => (
                 <tr key={c.id || i}>
                   <td className="mono" style={{ fontWeight: 600 }}>{c.nro_doc}</td>
                   <td className="mono">{fmtDate(c.fecha_docto)}</td>
@@ -1584,6 +1614,13 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                   <td className="mono" style={{ textAlign: "right" }}>{fmtMoney(c.monto_neto || 0)}</td>
                   <td className="mono" style={{ textAlign: "right", color: "var(--amber)" }}>{fmtMoney(c.monto_iva || 0)}</td>
                   <td className="mono" style={{ textAlign: "right", fontWeight: 600, color: "var(--green)" }}>{fmtMoney(c.monto_total || 0)}</td>
+                  <td>
+                    {concCompraIds.has(c.id!) ? (
+                      <span style={{ fontSize: 9, fontWeight: 600, padding: "2px 6px", borderRadius: 4, background: "var(--greenBg)", color: "var(--green)" }}>PAGADA</span>
+                    ) : (
+                      <span style={{ fontSize: 9, fontWeight: 600, padding: "2px 6px", borderRadius: 4, background: "var(--amberBg)", color: "var(--amber)" }}>PENDIENTE</span>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
