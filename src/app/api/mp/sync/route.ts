@@ -85,10 +85,23 @@ async function findReport(fechaDesde: string, fechaHasta: string, log: string[])
   const isPastMonth = hastaDate < now - DAY;
 
   try {
-    const releases = await mpGet("/v1/account/release_report/list") as MPReport[];
-    const csvReports = (releases || [])
+    // Usar search endpoint que incluye reportes pending
+    const searchResult = await mpGet("/v1/account/bank_report/search?limit=50&offset=0") as { results?: MPReport[] } | MPReport[];
+    const allReports = Array.isArray(searchResult) ? searchResult : (searchResult.results || []);
+
+    const csvReports = allReports
       .filter(r => (r.status === "enabled" || r.status === "processed") && r.file_name && r.file_name.endsWith(".csv"));
-    log.push(`Reportes disponibles en MP: ${csvReports.length}`);
+    const pendingReports = allReports.filter(r => r.status === "pending");
+    log.push(`Reportes en MP: ${csvReports.length} listos, ${pendingReports.length} pendientes`);
+
+    // Si hay un reporte pending que cubre el periodo, avisar
+    const pendingForPeriod = pendingReports.filter(r => {
+      const begin = new Date(r.begin_date).getTime();
+      return begin <= desdeMargin;
+    });
+    if (pendingForPeriod.length > 0) {
+      log.push(`Reporte en generacion: begin=${pendingForPeriod[0].begin_date}, end=${pendingForPeriod[0].end_date} (reintenta en unos minutos)`);
+    }
 
     // Buscar el reporte mas reciente que cubra desde el inicio del periodo
     const matching = csvReports
@@ -114,17 +127,19 @@ async function findReport(fechaDesde: string, fechaHasta: string, log: string[])
         const hoursOld = (now - bestEnd) / 3600_000;
         log.push(`Mejor reporte: ${best.file_name} (datos hasta ${best.end_date}, ${Math.round(hoursOld)}h atras)`);
 
-        // Solicitar reporte fresco en background (no esperar)
-        const endDate = new Date().toISOString().replace(/\.\d{3}/, "");
-        try {
-          await mpPost("/v1/account/release_report", { begin_date: fechaDesde, end_date: endDate });
-          log.push("Reporte fresco solicitado a MP (estara listo en proximo sync)");
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : "";
-          if (msg.includes("409") || msg.includes("already")) {
-            log.push("Ya hay un reporte en generacion en MP");
-          } else {
-            log.push(`No se pudo solicitar reporte fresco: ${msg}`);
+        // Solicitar reporte fresco si no hay uno pending
+        if (pendingForPeriod.length === 0) {
+          const endDate = new Date().toISOString().replace(/\.\d{3}/, "");
+          try {
+            await mpPost("/v1/account/release_report", { begin_date: fechaDesde, end_date: endDate });
+            log.push("Reporte fresco solicitado a MP (reintenta en 5-10 min)");
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : "";
+            if (msg.includes("409") || msg.includes("already") || msg.includes("400")) {
+              log.push("Ya hay un reporte en generacion en MP, reintenta en unos minutos");
+            } else {
+              log.push(`No se pudo solicitar reporte fresco: ${msg}`);
+            }
           }
         }
 
