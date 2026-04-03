@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { fetchMLItemsMap } from "@/lib/db";
 import type { DBMLItemMap } from "@/lib/db";
-import { getStore } from "@/lib/store";
+import { getStore, skuTotal } from "@/lib/store";
 
 // ==================== TYPES ====================
 
@@ -97,7 +97,7 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
   const [liveData, setLiveData] = useState<Map<string, MLItemDetail["body"]>>(new Map());
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [filter, setFilter] = useState<"all" | "active" | "paused" | "closed">("all");
+  const [filter, setFilter] = useState<"all" | "active" | "paused" | "closed" | "paused_with_stock">("all");
   const [search, setSearch] = useState("");
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
@@ -189,7 +189,13 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
   const filtered = displayItems.filter(item => {
     const live = liveData.get(item.item_id);
     const status = live?.status || (item as unknown as Record<string, unknown>).status_ml as string || "unknown";
-    if (filter !== "all" && status !== filter) return false;
+    if (filter === "paused_with_stock") {
+      if (status !== "paused") return false;
+      const wmsStock = skuTotal(item.sku);
+      if (wmsStock <= 0) return false;
+    } else if (filter !== "all" && status !== filter) {
+      return false;
+    }
     if (search) {
       const q = search.toLowerCase();
       const title = (live?.title || item.titulo || "").toLowerCase();
@@ -221,6 +227,7 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
               <option value="all">Todos</option>
               <option value="active">Activos</option>
               <option value="paused">Pausados</option>
+              <option value="paused_with_stock">Pausados con stock</option>
               <option value="closed">Cerrados</option>
             </select>
             <button onClick={refreshLive} disabled={refreshing}
@@ -238,6 +245,7 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
           <div className="kpi"><div className="kpi-label">Activos</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: "var(--green)" }}>{displayItems.filter(i => (liveData.get(i.item_id)?.status || (i as unknown as Record<string, unknown>).status_ml) === "active").length}</div></div>
           <div className="kpi"><div className="kpi-label">Pausados</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: "var(--amber)" }}>{displayItems.filter(i => (liveData.get(i.item_id)?.status || (i as unknown as Record<string, unknown>).status_ml) === "paused").length}</div></div>
           <div className="kpi"><div className="kpi-label">Cerrados</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: "var(--txt3)" }}>{displayItems.filter(i => (liveData.get(i.item_id)?.status || (i as unknown as Record<string, unknown>).status_ml) === "closed").length}</div></div>
+          <div className="kpi" style={{ cursor: "pointer", border: filter === "paused_with_stock" ? "1px solid var(--cyanBd)" : undefined }} onClick={() => setFilter(f => f === "paused_with_stock" ? "all" : "paused_with_stock")}><div className="kpi-label">Pausados c/stock</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: "var(--red)" }}>{displayItems.filter(i => (liveData.get(i.item_id)?.status || (i as unknown as Record<string, unknown>).status_ml) === "paused" && skuTotal(i.sku) > 0).length}</div></div>
         </div>
       )}
 
@@ -260,7 +268,8 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                 <th>SKU</th>
                 <th>Item ID</th>
                 <th style={{ textAlign: "right" }}>Precio</th>
-                <th style={{ textAlign: "center" }}>Stock</th>
+                <th style={{ textAlign: "center" }}>Stock ML</th>
+                <th style={{ textAlign: "center" }}>Stock WMS</th>
                 <th style={{ textAlign: "center" }}>Vendidos</th>
                 <th>Estado</th>
                 <th>Acciones</th>
@@ -296,6 +305,7 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                     </td>
                     <td className="mono" style={{ textAlign: "right" }}>{price ? fmt(price) : "—"}</td>
                     <td style={{ textAlign: "center" }}>{qty}</td>
+                    <td style={{ textAlign: "center", fontWeight: 700, color: skuTotal(item.sku) > 0 ? "var(--green)" : "var(--txt3)" }}>{skuTotal(item.sku)}</td>
                     <td style={{ textAlign: "center" }}>{sold}</td>
                     <td>
                       <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 4, background: statusColor + "22", color: statusColor, fontWeight: 700 }}>
