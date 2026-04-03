@@ -33,6 +33,13 @@ const FlujoProyectado = dynamic(() => import("@/components/FlujoProyectado"), { 
 const TabPresupuesto = dynamic(() => import("@/components/TabPresupuesto"), { ssr: false });
 const MpLiquidacionUpload = dynamic(() => import("@/components/MpLiquidacionUpload"), { ssr: false });
 
+// Filtrar movimientos internos MP (no conciliables)
+function isMovReal(m: DBMovimientoBanco): boolean {
+  const desc = (m.descripcion || "").toUpperCase();
+  if (desc.startsWith("VENTA ML") || desc.startsWith("BONIFICACION") || desc.startsWith("DEVOLUCION") || desc.startsWith("PAGO MP #")) return false;
+  return true;
+}
+
 // ==================== AUTH (mismo patrón que admin) ====================
 const ADMIN_PIN = "1234";
 const AUTH_KEY = "banva_admin_auth";
@@ -810,7 +817,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                                 setPagoItem(c); setPagoLoading(true); setPagoSearch("");
                                 const movs = await fetchMovimientosBanco(empresa.id!, { desde: undefined, hasta: undefined });
                                 const concMovIds = new Set(conciliaciones.filter(x => x.estado === "confirmado" && x.movimiento_banco_id).map(x => x.movimiento_banco_id));
-                                setMovsBanco(movs.filter(m => !concMovIds.has(m.id!) && m.monto < 0));
+                                setMovsBanco(movs.filter(m => !concMovIds.has(m.id!) && m.monto < 0 && isMovReal(m)));
                                 setPagoLoading(false);
                               }}
                                 style={{ fontSize: 11, fontWeight: 600, padding: "5px 12px", borderRadius: "6px 0 0 6px", background: "var(--cyan)", color: "#fff", cursor: "pointer" }}>
@@ -820,7 +827,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                                 setPagoItem(c); setPagoLoading(true); setPagoSearch("");
                                 const movs = await fetchMovimientosBanco(empresa.id!, { desde: undefined, hasta: undefined });
                                 const concMovIds = new Set(conciliaciones.filter(x => x.estado === "confirmado" && x.movimiento_banco_id).map(x => x.movimiento_banco_id));
-                                setMovsBanco(movs.filter(m => !concMovIds.has(m.id!) && m.monto < 0));
+                                setMovsBanco(movs.filter(m => !concMovIds.has(m.id!) && m.monto < 0 && isMovReal(m)));
                                 setPagoLoading(false);
                               }}
                                 style={{ fontSize: 11, fontWeight: 600, padding: "5px 6px", borderRadius: "0 6px 6px 0", background: "var(--cyan)", color: "#fff", cursor: "pointer", borderLeft: "1px solid rgba(255,255,255,0.3)" }}>
@@ -1117,6 +1124,7 @@ function TabBanco({ empresa, periodo }: { empresa: DBEmpresa; periodo: string })
   const [bancoFilter, setBancoFilter] = useState("todos");
   const [tipoFilter, setTipoFilter] = useState<"todos" | "ingresos" | "egresos">("todos");
   const [descFilter, setDescFilter] = useState("todos");
+  const [ocultarInternos, setOcultarInternos] = useState(true);
   const [fechaDesde, setFechaDesde] = useState("");
   const [fechaHasta, setFechaHasta] = useState("");
   const [page, setPage] = useState(0);
@@ -1226,6 +1234,7 @@ function TabBanco({ empresa, periodo }: { empresa: DBEmpresa; periodo: string })
 
   // Filtrado: por banco + tipo + descripcion + fecha + texto
   const filtered = data.filter(m => {
+    if (ocultarInternos && !isMovReal(m)) return false;
     if (bancoFilter !== "todos" && m.banco !== bancoFilter) return false;
     if (tipoFilter === "ingresos" && m.monto < 0) return false;
     if (tipoFilter === "egresos" && m.monto >= 0) return false;
@@ -1377,6 +1386,10 @@ function TabBanco({ empresa, periodo }: { empresa: DBEmpresa; periodo: string })
                 ))}
               </select>
             )}
+            <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, color: "var(--txt3)", cursor: "pointer", whiteSpace: "nowrap" }}>
+              <input type="checkbox" checked={ocultarInternos} onChange={e => setOcultarInternos(e.target.checked)} style={{ accentColor: "var(--cyan)" }} />
+              Ocultar internos MP
+            </label>
             <div style={{ fontSize: 11, color: "var(--txt3)", whiteSpace: "nowrap" }}>
               {filtered.length.toLocaleString()} de {data.length.toLocaleString()}
             </div>
@@ -1634,7 +1647,7 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                             setPagoItem(c); setPagoLoading(true); setPagoSearch("");
                             const movs = await fetchMovimientosBanco(empresa.id!);
                             const concMovIds = new Set(conciliaciones.filter(x => x.estado === "confirmado" && x.movimiento_banco_id).map(x => x.movimiento_banco_id));
-                            setMovsBanco(movs.filter(m => !concMovIds.has(m.id!) && m.monto < 0));
+                            setMovsBanco(movs.filter(m => !concMovIds.has(m.id!) && m.monto < 0 && isMovReal(m)));
                             setPagoLoading(false);
                           }}
                             style={{ fontSize: 11, fontWeight: 600, padding: "5px 12px", borderRadius: "6px 0 0 6px", background: "var(--cyan)", color: "#fff", cursor: "pointer" }}>
@@ -1644,7 +1657,7 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                             setPagoItem(c); setPagoLoading(true); setPagoSearch("");
                             const movs = await fetchMovimientosBanco(empresa.id!);
                             const concMovIds = new Set(conciliaciones.filter(x => x.estado === "confirmado" && x.movimiento_banco_id).map(x => x.movimiento_banco_id));
-                            setMovsBanco(movs.filter(m => !concMovIds.has(m.id!) && m.monto < 0));
+                            setMovsBanco(movs.filter(m => !concMovIds.has(m.id!) && m.monto < 0 && isMovReal(m)));
                             setPagoLoading(false);
                           }}
                             style={{ fontSize: 11, fontWeight: 600, padding: "5px 6px", borderRadius: "0 6px 6px 0", background: "var(--cyan)", color: "#fff", cursor: "pointer", borderLeft: "1px solid rgba(255,255,255,0.3)" }}>
