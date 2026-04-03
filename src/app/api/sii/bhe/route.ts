@@ -58,7 +58,8 @@ async function login(): Promise<string | null> {
   // Verificar login
   const html = await resp.text();
   if (html.includes("Rechazada")) {
-    console.error("[BHE] Login rechazado");
+    console.error(`[BHE] Login rechazado. Status: ${resp.status}. RUT: ${SII_RUT}. Clave length: ${SII_CLAVE.length}`);
+    console.error(`[BHE] Response snippet: ${html.slice(0, 200)}`);
     return null;
   }
 
@@ -225,7 +226,10 @@ export async function POST(req: NextRequest) {
     console.log(`[BHE] Autenticando empresa ${SII_RUT}-${SII_DV}...`);
     const cookieStr = await login();
     if (!cookieStr) {
-      return NextResponse.json({ error: "No se pudo autenticar con el SII" }, { status: 401 });
+      return NextResponse.json({
+        error: "No se pudo autenticar con el SII",
+        debug: { rut: SII_RUT, dv: SII_DV, claveLen: SII_CLAVE.length, rutcntr: SII_RUTCNTR }
+      }, { status: 401 });
     }
 
     // 2. Fetch BTE
