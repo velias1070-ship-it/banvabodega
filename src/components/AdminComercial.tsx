@@ -203,7 +203,7 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
       const res = await fetch("/api/ml/activate-with-stock", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ item_id: itemId, sku, quantity: wmsStock }),
+        body: JSON.stringify({ item_id: itemId, sku }),
       });
       const json = await res.json();
       if (json.ok) {
