@@ -199,7 +199,7 @@ function SiiImportModal({ tipo, empresa, periodoActual, onClose, onImported }: S
       const resp = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(tipo === "BHE" ? { rut, clave, periodo } : { rut, clave, periodo, tipo }),
+        body: JSON.stringify(tipo === "BHE" ? { periodo } : { rut, clave, periodo, tipo }),
       });
 
       const json = await resp.json();
