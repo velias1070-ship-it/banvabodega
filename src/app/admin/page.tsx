@@ -2172,13 +2172,17 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
       </>)}
 
       {/* ==================== PRECIOS VIEW ==================== */}
-      {view === "precios" && <PreciosHistorico />}
+      {view === "precios" && <PreciosHistorico onGoToRecepcion={async (recId) => {
+        const all = await getRecepciones();
+        const rec = all.find(r => r.id === recId);
+        if (rec) { setSelRec(rec); setView("facturas"); }
+      }} />}
     </div>
   );
 }
 
-function PreciosHistorico() {
-  const [rows, setRows] = useState<{sku:string;nombre:string;proveedor:string;costoPromedio:number;ultimoPrecio:number;ultimaFecha:string;historial:{precio:number;fecha:string;folio:string;qty:number;proveedor:string}[]}[]>([]);
+function PreciosHistorico({ onGoToRecepcion }: { onGoToRecepcion?: (recId: string) => void }) {
+  const [rows, setRows] = useState<{sku:string;nombre:string;proveedor:string;costoPromedio:number;ultimoPrecio:number;ultimaFecha:string;historial:{precio:number;fecha:string;folio:string;qty:number;proveedor:string;recepcionId:string}[]}[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<string|null>(null);
@@ -2212,7 +2216,7 @@ function PreciosHistorico() {
       }
 
       // Group by SKU
-      const bySku = new Map<string, {nombre:string;historial:{precio:number;fecha:string;folio:string;qty:number;proveedor:string}[]}>();
+      const bySku = new Map<string, {nombre:string;historial:{precio:number;fecha:string;folio:string;qty:number;proveedor:string;recepcionId:string}[]}>();
       for (const l of lineas as {sku:string;nombre:string;costo_unitario:number;qty_factura:number;recepcion_id:string}[]) {
         const skuUp = l.sku.toUpperCase();
         const rec = recMap.get(l.recepcion_id);
@@ -2224,6 +2228,7 @@ function PreciosHistorico() {
           folio: rec.folio,
           qty: l.qty_factura,
           proveedor: rec.proveedor,
+          recepcionId: l.recepcion_id,
         });
       }
 
@@ -2313,7 +2318,7 @@ function PreciosHistorico() {
                       {r.historial.map((h, i) => (
                         <tr key={i} style={{borderBottom:"1px solid var(--bg4)"}}>
                           <td style={{padding:"4px 8px"}}>{fmtDate(h.fecha)}</td>
-                          <td className="mono" style={{padding:"4px 8px"}}>{h.folio}</td>
+                          <td className="mono" style={{padding:"4px 8px"}}>{onGoToRecepcion ? <button onClick={(e)=>{e.stopPropagation();onGoToRecepcion(h.recepcionId);}} style={{background:"none",border:"none",color:"var(--cyan)",cursor:"pointer",textDecoration:"underline",fontFamily:"inherit",fontSize:"inherit",padding:0}}>{h.folio}</button> : h.folio}</td>
                           <td style={{padding:"4px 8px"}}>{h.proveedor}</td>
                           <td className="mono" style={{textAlign:"right",padding:"4px 8px"}}>{h.qty}</td>
                           <td className="mono" style={{textAlign:"right",padding:"4px 8px"}}>{fmtMoney(h.precio)}</td>
