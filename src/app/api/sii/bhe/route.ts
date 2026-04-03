@@ -123,9 +123,14 @@ async function fetchBTE(cookieStr: string, anio: number, mes: number): Promise<B
     // Parsear filas
     const rows = html.split("</tr>");
     for (const row of rows) {
-      const cells = Array.from(row.matchAll(/<font class="reporte">(.*?)<\/font>/gs))
-        .map(m => m[1].trim())
-        .filter(c => c.length > 0);
+      const cellMatches: string[] = [];
+      const cellRegex = /<font class="reporte">([\s\S]*?)<\/font>/g;
+      let cellMatch;
+      while ((cellMatch = cellRegex.exec(row)) !== null) {
+        const val = cellMatch[1].trim();
+        if (val.length > 0) cellMatches.push(val);
+      }
+      const cells = cellMatches;
 
       if (cells.length >= 8 && /^\d+$/.test(cells[0])) {
         // cells: [nro, estado_link, fecha_emi, rut_emi, nombre_emi, fecha_rec, rut_rec, nombre_rec, bruto, ret, pago]
