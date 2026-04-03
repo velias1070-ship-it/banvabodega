@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { fetchMLItemsMap, enqueueAndSync } from "@/lib/db";
+import { fetchMLItemsMap } from "@/lib/db";
 import type { DBMLItemMap } from "@/lib/db";
 import { getStore, skuTotal } from "@/lib/store";
 
@@ -200,18 +200,13 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
     setActionLoading(itemId);
     setActionError(null);
     try {
-      // 1. Sync stock to ML
-      enqueueAndSync([sku]);
-      // 2. Wait for stock sync to process
-      await new Promise(r => setTimeout(r, 3000));
-      // 3. Activate item
-      const res = await fetch("/api/ml/item-update", {
-        method: "PUT",
+      const res = await fetch("/api/ml/activate-with-stock", {
+        method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ item_id: itemId, updates: { status: "active" } }),
+        body: JSON.stringify({ item_id: itemId, sku, quantity: wmsStock }),
       });
       const json = await res.json();
-      if (res.ok && !json.error) {
+      if (json.ok) {
         await loadItems();
         setLiveData(prev => {
           const next = new Map(prev);
@@ -221,7 +216,7 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
         });
       } else {
         const errMsg = typeof json.error === "string" ? json.error : JSON.stringify(json.error);
-        setActionError(`Stock enviado pero activación falló para ${itemId}: ${errMsg}`);
+        setActionError(`${itemId}: ${errMsg}`);
       }
     } catch (err) {
       setActionError(`Error al activar con stock ${itemId}: ${String(err)}`);
