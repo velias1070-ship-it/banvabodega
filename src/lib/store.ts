@@ -2405,13 +2405,13 @@ export async function pickearComponente(
       nota: `Picking Flex: ${linea.skuVenta} ×${linea.qtyPedida}${orderLabel}${shipLabel} — ${sessionLabel}`,
       idempotency_key: `flex-pick-${sessionId}-${linea.id}-${compIdx}`,
     });
-    db.enqueueAndSync([comp.skuOrigen]);
-    // Mark shipment items as stock_deducted + reconcile reservations
+    // Mark shipment items as stock_deducted FIRST, then reconcile, THEN sync ML
+    // Order matters: sync must see updated disponible (after reservation is released)
     const sb = db.getSupabase();
     if (sb) {
       if (linea.shipmentIds?.length) {
         for (const shipId of linea.shipmentIds) {
-          void sb.from("ml_shipment_items")
+          await sb.from("ml_shipment_items")
             .update({ stock_deducted: true })
             .eq("shipment_id", shipId)
             .eq("seller_sku", linea.skuVenta);
@@ -2424,15 +2424,17 @@ export async function pickearComponente(
           .eq("stock_deducted", false)
           .limit(1);
         if (pending && pending.length > 0) {
-          void sb.from("ml_shipment_items")
+          await sb.from("ml_shipment_items")
             .update({ stock_deducted: true })
             .eq("shipment_id", pending[0].shipment_id)
             .eq("seller_sku", linea.skuVenta);
         }
       }
-      // Reconcile reservations (57ms, ensures qty_reserved reflects the pick)
-      void sb.rpc("reconciliar_reservas");
+      // Reconcile reservations — releases qty_reserved so disponible is correct
+      try { await sb.rpc("reconciliar_reservas"); } catch { /* no bloquear */ }
     }
+    // NOW sync to ML with correct disponible
+    db.enqueueAndSync([comp.skuOrigen]);
   }
 
   await db.auditLog("pickearComponente:ok", {
