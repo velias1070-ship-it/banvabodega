@@ -378,6 +378,9 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const [showProveedores, setShowProveedores] = useState(false);
   const [editingNota, setEditingNota] = useState<string | null>(null);
   const [notaText, setNotaText] = useState("");
+  const [detalleConc, setDetalleConc] = useState<string | null>(null);
+  const [detalleMov, setDetalleMov] = useState<DBMovimientoBanco | null>(null);
+  const [detalleLoading, setDetalleLoading] = useState(false);
   const [editingProv, setEditingProv] = useState<string | null>(null);
   const [editPlazo, setEditPlazo] = useState("");
   const [editCuenta, setEditCuenta] = useState("");
@@ -809,7 +812,18 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                           </span>
                           {isConciliada ? (
                             <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                              <span style={{ fontSize: 11, fontWeight: 600, padding: "4px 12px", borderRadius: 6, background: "var(--greenBg)", color: "var(--green)" }}>
+                              <span onClick={async () => {
+                                if (detalleConc === c.id) { setDetalleConc(null); return; }
+                                setDetalleConc(c.id!); setDetalleMov(null); setDetalleLoading(true);
+                                const conc = conciliaciones.find(x => x.estado === "confirmado" && x.rcv_compra_id === c.id);
+                                if (conc?.movimiento_banco_id) {
+                                  const movs = await fetchMovimientosBanco(empresa.id!, { desde: undefined, hasta: undefined });
+                                  setDetalleMov(movs.find(m => m.id === conc.movimiento_banco_id) || null);
+                                }
+                                setDetalleLoading(false);
+                              }}
+                                style={{ fontSize: 11, fontWeight: 600, padding: "4px 12px", borderRadius: 6, background: "var(--greenBg)", color: "var(--green)", cursor: "pointer" }}
+                                title="Ver detalle">
                                 Pagado
                               </span>
                               <span onClick={() => { setEditingNota(c.id!); setNotaText(c.notas || ""); }}
@@ -850,6 +864,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                             </span>
                           )}
                         </div>
+                        {/* Popover comentario */}
                         {editingNota === c.id && (
                           <div style={{ position: "absolute", right: 0, top: "100%", marginTop: 4, zIndex: 50, background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 8, padding: 12, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", width: 260 }}>
                             <div style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", marginBottom: 6 }}>Comentario</div>
@@ -861,6 +876,51 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                               <button onClick={() => { updateRcvCompra(c.id!, { notas: notaText.trim() || null }); setData(prev => prev.map(x => x.id === c.id ? { ...x, notas: notaText.trim() || null } : x)); setEditingNota(null); }}
                                 style={{ padding: "4px 12px", borderRadius: 6, fontSize: 11, fontWeight: 600, background: "var(--cyan)", color: "#fff", border: "none", cursor: "pointer" }}>Guardar</button>
                             </div>
+                          </div>
+                        )}
+                        {/* Popover detalle conciliacion */}
+                        {detalleConc === c.id && (
+                          <div style={{ position: "absolute", right: 0, top: "100%", marginTop: 4, zIndex: 50, background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 10, padding: 16, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", width: 380 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                              <span style={{ fontSize: 13, fontWeight: 600 }}>Ver detalle</span>
+                              <button onClick={() => setDetalleConc(null)} style={{ background: "none", border: "none", fontSize: 16, cursor: "pointer", color: "var(--txt3)" }}>&times;</button>
+                            </div>
+                            {detalleLoading ? (
+                              <div style={{ padding: 16, textAlign: "center", color: "var(--txt3)", fontSize: 12 }}>Cargando...</div>
+                            ) : (
+                              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                                <thead>
+                                  <tr style={{ borderBottom: "1px solid var(--bg4)" }}>
+                                    <th style={{ textAlign: "left", padding: "6px 8px", color: "var(--txt3)", fontWeight: 600 }}>Tipo</th>
+                                    <th style={{ textAlign: "left", padding: "6px 8px", color: "var(--txt3)", fontWeight: 600 }}>Fecha</th>
+                                    <th style={{ textAlign: "left", padding: "6px 8px", color: "var(--txt3)", fontWeight: 600 }}>Descripci&oacute;n</th>
+                                    <th style={{ textAlign: "right", padding: "6px 8px", color: "var(--txt3)", fontWeight: 600 }}>Monto</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  <tr style={{ borderBottom: "1px solid var(--bg4)" }}>
+                                    <td style={{ padding: "8px" }}><span className="mono" style={{ fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 4, background: "var(--cyan)", color: "#fff" }}>{TIPO_DOC_NAMES[c.tipo_doc]?.slice(0, 3).toUpperCase() || "DOC"}-EL</span> <span className="mono" style={{ fontWeight: 600 }}>{c.nro_doc}</span></td>
+                                    <td className="mono" style={{ padding: "8px", fontSize: 11 }}>{fmtDate(c.fecha_docto)}</td>
+                                    <td style={{ padding: "8px", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.razon_social}</td>
+                                    <td className="mono" style={{ padding: "8px", textAlign: "right", fontWeight: 700 }}>{fmtMoney(c.monto_total || 0)}</td>
+                                  </tr>
+                                  {detalleMov && (
+                                    <tr style={{ borderBottom: "1px solid var(--bg4)" }}>
+                                      <td style={{ padding: "8px" }}><span style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 4, background: "var(--cyanBg)", color: "var(--cyan)" }}>Mov. bancario</span></td>
+                                      <td className="mono" style={{ padding: "8px", fontSize: 11 }}>{detalleMov.fecha}</td>
+                                      <td style={{ padding: "8px", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--cyan)" }}>{detalleMov.descripcion}</td>
+                                      <td className="mono" style={{ padding: "8px", textAlign: "right", fontWeight: 700, color: "var(--red)" }}>{fmtMoney(Math.abs(detalleMov.monto))}</td>
+                                    </tr>
+                                  )}
+                                </tbody>
+                                <tfoot>
+                                  <tr>
+                                    <td colSpan={3} style={{ padding: "8px", fontSize: 12, fontWeight: 600 }}>Saldo por pagar</td>
+                                    <td className="mono" style={{ padding: "8px", textAlign: "right", fontWeight: 700 }}>$0</td>
+                                  </tr>
+                                </tfoot>
+                              </table>
+                            )}
                           </div>
                         )}
                       </td>
