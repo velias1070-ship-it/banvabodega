@@ -138,13 +138,12 @@ export async function POST(req: NextRequest) {
 
         // 9. Send to ML
         const count = await syncStockToML(sku, available);
-        if (count > 0) {
-          synced++;
-          // Update stock_flex_cache so timeline shows current value
-          await sb.from("ml_items_map")
-            .update({ stock_flex_cache: available, cache_updated_at: new Date().toISOString() })
-            .eq("sku", sku).eq("activo", true);
-        }
+        if (count > 0) synced++;
+        // Always update stock_flex_cache so timeline shows current value
+        await sb.from("ml_items_map")
+          .update({ stock_flex_cache: available, cache_updated_at: new Date().toISOString() })
+          .eq("sku", sku)
+          .or("activo.eq.true,sku_venta.not.is.null");
       } catch (err) {
         errors.push(`${sku}: ${String(err)}`);
       }
