@@ -802,40 +802,67 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                         <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 1 }}>Incluye IVA</div>
                       </td>
                       {/* Estado / Accion */}
-                      <td style={{ padding: "14px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
+                      <td style={{ padding: "14px 14px", textAlign: "right", whiteSpace: "nowrap", position: "relative" }}>
                         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
                           <span style={{ fontSize: 10, color: "var(--txt3)" }}>
                             {fmtMoney(c.monto_total || 0)} {isConciliada ? "" : "por pagar"}
                           </span>
                           {isConciliada ? (
-                            <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, padding: "4px 12px", borderRadius: 6, background: "var(--greenBg)", color: "var(--green)" }}>
-                              Pagado
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                              <span style={{ fontSize: 11, fontWeight: 600, padding: "4px 12px", borderRadius: 6, background: "var(--greenBg)", color: "var(--green)" }}>
+                                Pagado
+                              </span>
+                              <span onClick={() => { setEditingNota(c.id!); setNotaText(c.notas || ""); }}
+                                title={c.notas || "Agregar un comentario"}
+                                style={{ width: 28, height: 28, borderRadius: 6, background: c.notas ? "var(--cyanBg)" : "var(--bg3)", border: "1px solid var(--bg4)", display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 12, color: c.notas ? "var(--cyan)" : "var(--txt3)" }}>
+                                &#9776;
+                              </span>
                             </span>
                           ) : (
-                            <span style={{ display: "inline-flex", alignItems: "center", gap: 0 }}>
-                              <span onClick={async () => {
-                                setPagoItem(c); setPagoLoading(true); setPagoSearch("");
-                                const movs = await fetchMovimientosBanco(empresa.id!, { desde: undefined, hasta: undefined });
-                                const concMovIds = new Set(conciliaciones.filter(x => x.estado === "confirmado" && x.movimiento_banco_id).map(x => x.movimiento_banco_id));
-                                setMovsBanco(movs.filter(m => !concMovIds.has(m.id!) && m.monto < 0 && isMovReal(m)));
-                                setPagoLoading(false);
-                              }}
-                                style={{ fontSize: 11, fontWeight: 600, padding: "5px 12px", borderRadius: "6px 0 0 6px", background: "var(--cyan)", color: "#fff", cursor: "pointer" }}>
-                                Asignar Pago
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                              <span style={{ display: "inline-flex", alignItems: "center", gap: 0 }}>
+                                <span onClick={async () => {
+                                  setPagoItem(c); setPagoLoading(true); setPagoSearch("");
+                                  const movs = await fetchMovimientosBanco(empresa.id!, { desde: undefined, hasta: undefined });
+                                  const concMovIds = new Set(conciliaciones.filter(x => x.estado === "confirmado" && x.movimiento_banco_id).map(x => x.movimiento_banco_id));
+                                  setMovsBanco(movs.filter(m => !concMovIds.has(m.id!) && m.monto < 0 && isMovReal(m)));
+                                  setPagoLoading(false);
+                                }}
+                                  style={{ fontSize: 11, fontWeight: 600, padding: "5px 12px", borderRadius: "6px 0 0 6px", background: "var(--cyan)", color: "#fff", cursor: "pointer" }}>
+                                  Asignar Pago
+                                </span>
+                                <span onClick={async () => {
+                                  setPagoItem(c); setPagoLoading(true); setPagoSearch("");
+                                  const movs = await fetchMovimientosBanco(empresa.id!, { desde: undefined, hasta: undefined });
+                                  const concMovIds = new Set(conciliaciones.filter(x => x.estado === "confirmado" && x.movimiento_banco_id).map(x => x.movimiento_banco_id));
+                                  setMovsBanco(movs.filter(m => !concMovIds.has(m.id!) && m.monto < 0 && isMovReal(m)));
+                                  setPagoLoading(false);
+                                }}
+                                  style={{ fontSize: 11, fontWeight: 600, padding: "5px 6px", borderRadius: "0 6px 6px 0", background: "var(--cyan)", color: "#fff", cursor: "pointer", borderLeft: "1px solid rgba(255,255,255,0.3)" }}>
+                                  &#9662;
+                                </span>
                               </span>
-                              <span onClick={async () => {
-                                setPagoItem(c); setPagoLoading(true); setPagoSearch("");
-                                const movs = await fetchMovimientosBanco(empresa.id!, { desde: undefined, hasta: undefined });
-                                const concMovIds = new Set(conciliaciones.filter(x => x.estado === "confirmado" && x.movimiento_banco_id).map(x => x.movimiento_banco_id));
-                                setMovsBanco(movs.filter(m => !concMovIds.has(m.id!) && m.monto < 0 && isMovReal(m)));
-                                setPagoLoading(false);
-                              }}
-                                style={{ fontSize: 11, fontWeight: 600, padding: "5px 6px", borderRadius: "0 6px 6px 0", background: "var(--cyan)", color: "#fff", cursor: "pointer", borderLeft: "1px solid rgba(255,255,255,0.3)" }}>
-                                &#9662;
+                              <span onClick={() => { setEditingNota(c.id!); setNotaText(c.notas || ""); }}
+                                title={c.notas || "Agregar un comentario"}
+                                style={{ width: 28, height: 28, borderRadius: 6, background: c.notas ? "var(--cyanBg)" : "var(--bg3)", border: "1px solid var(--bg4)", display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 12, color: c.notas ? "var(--cyan)" : "var(--txt3)" }}>
+                                &#9776;
                               </span>
                             </span>
                           )}
                         </div>
+                        {editingNota === c.id && (
+                          <div style={{ position: "absolute", right: 0, top: "100%", marginTop: 4, zIndex: 50, background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 8, padding: 12, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", width: 260 }}>
+                            <div style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", marginBottom: 6 }}>Comentario</div>
+                            <textarea value={notaText} onChange={e => setNotaText(e.target.value)} autoFocus placeholder="Agregar un comentario..."
+                              style={{ width: "100%", padding: "8px 10px", fontSize: 12, borderRadius: 6, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt)", resize: "vertical", minHeight: 60 }} />
+                            <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 8 }}>
+                              <button onClick={() => setEditingNota(null)}
+                                style={{ padding: "4px 12px", borderRadius: 6, fontSize: 11, background: "var(--bg3)", color: "var(--txt3)", border: "1px solid var(--bg4)", cursor: "pointer" }}>Cancelar</button>
+                              <button onClick={() => { updateRcvCompra(c.id!, { notas: notaText.trim() || null }); setData(prev => prev.map(x => x.id === c.id ? { ...x, notas: notaText.trim() || null } : x)); setEditingNota(null); }}
+                                style={{ padding: "4px 12px", borderRadius: 6, fontSize: 11, fontWeight: 600, background: "var(--cyan)", color: "#fff", border: "none", cursor: "pointer" }}>Guardar</button>
+                            </div>
+                          </div>
+                        )}
                       </td>
                     </tr>
                   );
