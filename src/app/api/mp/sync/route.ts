@@ -124,10 +124,10 @@ async function findReport(fechaDesde: string, fechaHasta: string, log: string[])
         end_date: endDate,
       });
 
-      // Polling hasta 4.5 min
+      // Polling hasta 90s (Vercel free tier timeout = 60s, pro = 300s)
       const startPoll = Date.now();
-      while (Date.now() - startPoll < 270_000) {
-        await sleep(10_000);
+      while (Date.now() - startPoll < 90_000) {
+        await sleep(8_000);
         const elapsed = Math.round((Date.now() - startPoll) / 1000);
         const updated = await mpGet("/v1/account/release_report/list") as MPReport[];
         const fresh = (updated || [])

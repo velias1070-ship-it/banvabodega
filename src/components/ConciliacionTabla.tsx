@@ -191,8 +191,8 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
       let totalRetiros = 0;
       const allLogs: string[] = [];
       for (const p of periodos) {
-        setSyncMsg(`Sincronizando ${p.slice(0,4)}-${p.slice(4)}...`);
-        const res = await fetch("/api/mp/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ periodo: p }) });
+        setSyncMsg(`Sincronizando ${p.slice(0,4)}-${p.slice(4)}... (generando reporte en MP, puede tardar hasta 90s)`);
+        const res = await fetch("/api/mp/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ periodo: p }), signal: AbortSignal.timeout(120_000) });
         const d = await res.json();
         if (d.log) allLogs.push(...d.log);
         if (d.error) { allLogs.push(`ERROR: ${d.error}`); break; }
