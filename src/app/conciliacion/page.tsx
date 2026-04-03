@@ -1506,10 +1506,26 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
           <h2 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>Boletas de Honorarios</h2>
           <div style={{ fontSize: 12, color: "var(--txt3)", marginTop: 2 }}>{formatPeriodo(periodo)} · {data.length} boletas</div>
         </div>
-        <button onClick={handleSync} disabled={syncing}
-          style={{ padding: "8px 16px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: syncing ? "wait" : "pointer", background: syncing ? "var(--bg4)" : "var(--cyan)", color: syncing ? "var(--txt3)" : "#fff", border: "none" }}>
-          {syncing ? "Importando..." : "Importar BTE del SII"}
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={handleSync} disabled={syncing}
+            style={{ padding: "8px 16px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: syncing ? "wait" : "pointer", background: syncing ? "var(--bg4)" : "var(--cyan)", color: syncing ? "var(--txt3)" : "#fff", border: "none" }}>
+            {syncing ? "Importando..." : "Importar BTE emitidas"}
+          </button>
+          <button onClick={async () => {
+            setSyncing(true); setSyncMsg(null);
+            try {
+              const siiUrl = process.env.NEXT_PUBLIC_SII_SERVER_URL || "https://rcv-sii-server-production.up.railway.app";
+              const res = await fetch(`/api/sii/bhe-rec`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ periodo }) });
+              const d = await res.json();
+              if (d.error) setSyncMsg(`Error: ${d.error}`);
+              else { setSyncMsg(`${d.registros || 0} BHE recibidas importadas`); if (d.registros > 0) load(); }
+            } catch (e) { setSyncMsg(`Error: ${e instanceof Error ? e.message : "sin detalles"}`); }
+            finally { setSyncing(false); }
+          }} disabled={syncing}
+            style={{ padding: "8px 16px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: syncing ? "wait" : "pointer", background: syncing ? "var(--bg4)" : "var(--amberBg)", color: syncing ? "var(--txt3)" : "var(--amber)", border: "1px solid var(--amberBd)" }}>
+            {syncing ? "..." : "Importar BHE recibidas"}
+          </button>
+        </div>
       </div>
 
       {syncMsg && (
