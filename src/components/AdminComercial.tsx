@@ -296,7 +296,10 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                         <div style={{ width: 40, height: 40, borderRadius: 6, background: "var(--bg3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>📦</div>
                       )}
                     </td>
-                    <td style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</td>
+                    <td style={{ maxWidth: 320, minWidth: 180 }}>
+                      <div style={{ fontWeight: 600, fontSize: 11 }}>{title}</div>
+                      {(() => { const s = getStore(); const p = s.products[item.sku]; return p?.name && p.name !== title ? <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 2 }}>{p.name}</div> : null; })()}
+                    </td>
                     <td className="mono" style={{ fontSize: 10 }}>{item.sku}</td>
                     <td className="mono" style={{ fontSize: 10 }}>
                       {permalink ? (
