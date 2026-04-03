@@ -35,6 +35,33 @@ function isMovReal(m: DBMovimientoBanco): boolean {
   return true;
 }
 
+// Scoring para conciliación rápida (misma lógica que ConciliarModal)
+function scoreDoc(
+  doc: { monto_total: number; razon_social: string; rut: string; fecha: string },
+  target: number, movFechaMs: number, movDescLower: string, plazoByRut: Map<string, number>
+): number {
+  const montoScore = target > 0 ? Math.abs(doc.monto_total - target) / target : 1;
+  const nombreProv = (doc.razon_social || "").toLowerCase();
+  const palabras = nombreProv.split(/\s+/).filter(p => p.length > 3);
+  const provMatch = palabras.some(p => movDescLower.includes(p)) ? 0 : 1;
+  let fechaScore = 1;
+  if (doc.fecha) {
+    const docFechaMs = new Date(doc.fecha + "T12:00:00").getTime();
+    const diasDesdeDoc = (movFechaMs - docFechaMs) / 86400000;
+    const plazo = plazoByRut.get(doc.rut) || 30;
+    fechaScore = Math.abs(diasDesdeDoc - plazo) / plazo;
+    if (diasDesdeDoc < 0) fechaScore = 3;
+  }
+  return montoScore * 0.4 + provMatch * 0.35 + Math.min(fechaScore, 3) * 0.25;
+}
+
+interface ConcRapidaMatch {
+  mov: DBMovimientoBanco;
+  doc: { id: string; tipo: "rcv_compra" | "rcv_venta"; nro: string; rut: string; razon_social: string; fecha: string; monto_total: number; tipo_doc_label: string };
+  score: number;
+  estado: "pendiente" | "aprobado" | "rechazado";
+}
+
 type SortKey = "fecha" | "descripcion" | "monto";
 type SortDir = "asc" | "desc";
 type TabFilter = "todos" | "abonos" | "cargos";
@@ -68,6 +95,10 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
   // Sync MP
   const [syncingMP, setSyncingMP] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
+  // Conciliación rápida
+  const [showConcRapida, setShowConcRapida] = useState(false);
+  const [concRapidaResults, setConcRapidaResults] = useState<ConcRapidaMatch[]>([]);
+  const [concRapidaSaving, setConcRapidaSaving] = useState(false);
 
   const periodoOpts = useMemo(() => {
     const opts: { value: string; label: string }[] = [];
@@ -212,6 +243,113 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
     }
   };
 
+  // --- Conciliación Rápida ---
+  const tipoDocLabel = (tipo: number | string) => {
+    const map: Record<string, string> = { "33": "FAC", "34": "FAC EX", "39": "BOL", "41": "BOL EX", "46": "FC", "56": "ND", "61": "NC", "71": "BHE" };
+    return map[String(tipo)] || String(tipo);
+  };
+
+  const runConciliacionRapida = () => {
+    const pendList = movBanco.filter(m =>
+      isMovReal(m) && !concMovIds.has(m.id!) && m.estado_conciliacion !== "ignorado" && m.estado_conciliacion !== "conciliado"
+    );
+    const cCompraIds = new Set(conciliaciones.filter(c => c.estado !== "rechazado" && c.rcv_compra_id).map(c => c.rcv_compra_id));
+    const cVentaIds = new Set(conciliaciones.filter(c => c.estado !== "rechazado" && c.rcv_venta_id).map(c => c.rcv_venta_id));
+    const plazoByRut = new Map(provCuentas.filter(p => p.plazo_dias).map(p => [p.rut_proveedor, p.plazo_dias!]));
+
+    const pairs: { mov: DBMovimientoBanco; doc: ConcRapidaMatch["doc"]; score: number }[] = [];
+
+    for (const mov of pendList) {
+      const movAbs = Math.abs(mov.monto);
+      const movFechaMs = new Date(mov.fecha + "T12:00:00").getTime();
+      const movDescLower = (mov.descripcion || "").toLowerCase();
+
+      if (mov.monto < 0) {
+        // Cargos -> compras
+        for (const c of compras) {
+          if (cCompraIds.has(c.id!)) continue;
+          const doc = { id: c.id!, tipo: "rcv_compra" as const, nro: c.nro_doc || "", rut: c.rut_proveedor || "", razon_social: c.razon_social || "", fecha: c.fecha_docto || "", monto_total: c.monto_total || 0, tipo_doc_label: tipoDocLabel(c.tipo_doc) };
+          const score = scoreDoc(doc, movAbs, movFechaMs, movDescLower, plazoByRut);
+          if (score < 0.5) pairs.push({ mov, doc, score });
+        }
+      } else {
+        // Abonos -> ventas
+        for (const v of ventas) {
+          if (cVentaIds.has(v.id!)) continue;
+          const doc = { id: v.id!, tipo: "rcv_venta" as const, nro: v.nro || v.folio || "", rut: v.rut_receptor || "", razon_social: v.razon_social || "", fecha: v.fecha_docto || "", monto_total: v.monto_total || 0, tipo_doc_label: v.tipo_doc || "FAC" };
+          const score = scoreDoc(doc, movAbs, movFechaMs, movDescLower, plazoByRut);
+          if (score < 0.5) pairs.push({ mov, doc, score });
+        }
+      }
+    }
+
+    // Greedy 1:1 assignment (best score first)
+    pairs.sort((a, b) => a.score - b.score);
+    const usedMovIds = new Set<string>();
+    const usedDocIds = new Set<string>();
+    const results: ConcRapidaMatch[] = [];
+    for (const p of pairs) {
+      if (usedMovIds.has(p.mov.id!) || usedDocIds.has(p.doc.id)) continue;
+      usedMovIds.add(p.mov.id!);
+      usedDocIds.add(p.doc.id);
+      results.push({ ...p, estado: "pendiente" });
+    }
+
+    setConcRapidaResults(results);
+    setShowConcRapida(true);
+  };
+
+  const handleAprobarMatch = async (match: ConcRapidaMatch) => {
+    try {
+      await upsertConciliacion({
+        empresa_id: empresa.id!, movimiento_banco_id: match.mov.id!,
+        rcv_compra_id: match.doc.tipo === "rcv_compra" ? match.doc.id : null,
+        rcv_venta_id: match.doc.tipo === "rcv_venta" ? match.doc.id : null,
+        confianza: Math.round((1 - match.score) * 100) / 100,
+        estado: "confirmado", tipo_partida: "match", metodo: "auto_rapida", notas: null, created_by: "admin",
+      });
+      await updateMovimientoBanco(match.mov.id!, { estado_conciliacion: "conciliado" } as Partial<DBMovimientoBanco>);
+      if (match.doc.rut) {
+        const pc = provCuentas.find(p => p.rut_proveedor === match.doc.rut);
+        if (pc?.categoria_cuenta_id && !pc.cuenta_variable) {
+          await categorizarMovimiento(match.mov.id!, pc.categoria_cuenta_id);
+        }
+      }
+      setConcRapidaResults(prev => prev.map(r => r.mov.id === match.mov.id ? { ...r, estado: "aprobado" } : r));
+      setMovBanco(prev => prev.map(m => m.id === match.mov.id ? { ...m, estado_conciliacion: "conciliado" } : m));
+    } catch (e) { console.error("Error aprobando:", e); }
+  };
+
+  const handleRechazarMatch = (movId: string) => {
+    setConcRapidaResults(prev => prev.map(r => r.mov.id === movId ? { ...r, estado: "rechazado" } : r));
+  };
+
+  const handleAprobarAlta = async () => {
+    const alta = concRapidaResults.filter(r => r.score < 0.15 && r.estado === "pendiente");
+    if (alta.length === 0) return;
+    setConcRapidaSaving(true);
+    for (const match of alta) {
+      await handleAprobarMatch(match);
+    }
+    setConcRapidaSaving(false);
+  };
+
+  const handleCloseConcRapida = () => {
+    setShowConcRapida(false);
+    if (concRapidaResults.some(r => r.estado === "aprobado")) load();
+    setConcRapidaResults([]);
+  };
+
+  const concRapidaStats = useMemo(() => {
+    const total = concRapidaResults.length;
+    const alta = concRapidaResults.filter(r => r.score < 0.15).length;
+    const media = concRapidaResults.filter(r => r.score >= 0.15).length;
+    const revisados = concRapidaResults.filter(r => r.estado !== "pendiente").length;
+    const aprobados = concRapidaResults.filter(r => r.estado === "aprobado").length;
+    const altaPend = concRapidaResults.filter(r => r.score < 0.15 && r.estado === "pendiente").length;
+    return { total, alta, media, revisados, aprobados, altaPend };
+  }, [concRapidaResults]);
+
   if (loading) return <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>Cargando...</div>;
 
   return (
@@ -276,6 +414,10 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
           <button onClick={handleSyncMP} disabled={syncingMP}
             style={{ padding: "5px 12px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: syncingMP ? "wait" : "pointer", background: "var(--blueBg)", color: "var(--blue)", border: "1px solid var(--blueBd)", opacity: syncingMP ? 0.6 : 1 }}>
             {syncingMP ? "Sync MP..." : "Sync MP"}
+          </button>
+          <button onClick={runConciliacionRapida} disabled={pendientes.length === 0}
+            style={{ padding: "5px 12px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: pendientes.length === 0 ? "not-allowed" : "pointer", background: "var(--greenBg)", color: "var(--green)", border: "1px solid var(--greenBd)", opacity: pendientes.length === 0 ? 0.5 : 1 }}>
+            Conciliacion Rapida
           </button>
         </div>
       </div>
@@ -452,6 +594,134 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
       {/* Click fuera cierra dropdown */}
       {showActions && (
         <div style={{ position: "fixed", inset: 0, zIndex: 40 }} onClick={() => setShowActions(null)} />
+      )}
+
+      {/* Modal Conciliación Rápida */}
+      {showConcRapida && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={() => !concRapidaSaving && handleCloseConcRapida()}>
+          <div className="card" style={{ width: "95%", maxWidth: 960, maxHeight: "90vh", display: "flex", flexDirection: "column" }} onClick={e => e.stopPropagation()}>
+            {/* Header */}
+            <div style={{ padding: "16px 24px", borderBottom: "1px solid var(--bg4)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <div style={{ fontSize: 18, fontWeight: 700 }}>Conciliacion Rapida</div>
+                <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 2 }}>
+                  {concRapidaStats.total} sugerencias - {concRapidaStats.alta} alta confianza, {concRapidaStats.media} media - {concRapidaStats.aprobados} aprobadas
+                </div>
+              </div>
+              <button onClick={handleCloseConcRapida} disabled={concRapidaSaving} style={{ background: "none", border: "none", color: "#fff", fontSize: 22, cursor: "pointer" }}>&times;</button>
+            </div>
+
+            {/* Bulk action bar */}
+            {concRapidaStats.altaPend > 0 && (
+              <div style={{ padding: "10px 24px", borderBottom: "1px solid var(--bg4)", display: "flex", alignItems: "center", gap: 12, background: "var(--greenBg)" }}>
+                <button onClick={handleAprobarAlta} disabled={concRapidaSaving}
+                  style={{ padding: "6px 16px", borderRadius: 6, fontSize: 12, fontWeight: 700, cursor: concRapidaSaving ? "wait" : "pointer", background: "var(--green)", color: "#fff", border: "none" }}>
+                  {concRapidaSaving ? "Aprobando..." : `Aprobar todas de alta confianza (${concRapidaStats.altaPend})`}
+                </button>
+                <span style={{ fontSize: 11, color: "var(--green)" }}>Monto exacto + proveedor coincide</span>
+              </div>
+            )}
+
+            {/* Empty state */}
+            {concRapidaResults.length === 0 ? (
+              <div style={{ padding: 48, textAlign: "center", color: "var(--txt3)" }}>
+                <div style={{ fontSize: 32, marginBottom: 8 }}>--</div>
+                <div style={{ fontSize: 14, fontWeight: 600 }}>Sin sugerencias de conciliacion</div>
+                <div style={{ fontSize: 12, marginTop: 4 }}>No se encontraron matches con suficiente confianza</div>
+              </div>
+            ) : (
+              /* Scrollable list */
+              <div style={{ flex: 1, overflowY: "auto", padding: "8px 0" }}>
+                {concRapidaResults.map((r, i) => {
+                  const isAlta = r.score < 0.15;
+                  const isDone = r.estado !== "pendiente";
+                  return (
+                    <div key={r.mov.id! + r.doc.id} style={{
+                      padding: "12px 24px", borderBottom: "1px solid var(--bg4)",
+                      opacity: isDone ? 0.45 : 1, display: "flex", gap: 12, alignItems: "center",
+                    }}>
+                      {/* Numero */}
+                      <div style={{ fontSize: 10, color: "var(--txt3)", minWidth: 20, textAlign: "center" }}>{i + 1}</div>
+
+                      {/* Movimiento banco */}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.mov.descripcion || "--"}</div>
+                        <div className="mono" style={{ fontSize: 10, color: "var(--txt3)" }}>{r.mov.fecha} - {r.mov.banco}</div>
+                        <div className="mono" style={{ fontSize: 14, fontWeight: 700, color: r.mov.monto < 0 ? "var(--red)" : "var(--green)", marginTop: 2 }}>
+                          {fmtMoney(Math.abs(r.mov.monto))}
+                        </div>
+                      </div>
+
+                      {/* Confianza badge */}
+                      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", minWidth: 60 }}>
+                        <span style={{
+                          fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 4, textTransform: "uppercase",
+                          background: isAlta ? "var(--greenBg)" : "var(--amberBg)",
+                          color: isAlta ? "var(--green)" : "var(--amber)",
+                          border: `1px solid ${isAlta ? "var(--greenBd)" : "var(--amberBd)"}`,
+                        }}>
+                          {isAlta ? "Alta" : "Media"}
+                        </span>
+                        <span className="mono" style={{ fontSize: 9, color: "var(--txt3)", marginTop: 2 }}>{(r.score * 100).toFixed(0)}%</span>
+                      </div>
+
+                      {/* Flecha */}
+                      <div style={{ fontSize: 16, color: "var(--txt3)" }}>→</div>
+
+                      {/* Documento */}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          <span style={{ fontSize: 10, padding: "1px 5px", borderRadius: 3, background: "var(--bg4)", marginRight: 4 }}>{r.doc.tipo_doc_label}</span>
+                          N{"\u00B0"} {r.doc.nro} - {r.doc.razon_social}
+                        </div>
+                        <div className="mono" style={{ fontSize: 10, color: "var(--txt3)" }}>{r.doc.fecha} - {r.doc.rut}</div>
+                        <div className="mono" style={{ fontSize: 14, fontWeight: 700, marginTop: 2 }}>
+                          {fmtMoney(r.doc.monto_total)}
+                        </div>
+                      </div>
+
+                      {/* Acciones */}
+                      <div style={{ display: "flex", gap: 6, minWidth: 100, justifyContent: "flex-end" }}>
+                        {r.estado === "pendiente" ? (
+                          <>
+                            <button onClick={() => handleAprobarMatch(r)} disabled={concRapidaSaving}
+                              style={{ padding: "6px 12px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer", background: "var(--green)", color: "#fff", border: "none" }}>
+                              Aprobar
+                            </button>
+                            <button onClick={() => handleRechazarMatch(r.mov.id!)}
+                              style={{ padding: "6px 10px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: "pointer", background: "var(--bg3)", color: "var(--red)", border: "1px solid var(--bg4)" }}>
+                              X
+                            </button>
+                          </>
+                        ) : (
+                          <span style={{
+                            fontSize: 10, fontWeight: 600, padding: "4px 10px", borderRadius: 4,
+                            background: r.estado === "aprobado" ? "var(--greenBg)" : "var(--redBg)",
+                            color: r.estado === "aprobado" ? "var(--green)" : "var(--red)",
+                          }}>
+                            {r.estado === "aprobado" ? "Aprobado" : "Rechazado"}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Footer */}
+            <div style={{ padding: "12px 24px", borderTop: "1px solid var(--bg4)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ fontSize: 11, color: "var(--txt3)" }}>
+                {concRapidaStats.revisados} de {concRapidaStats.total} revisados
+              </div>
+              <button onClick={handleCloseConcRapida} disabled={concRapidaSaving}
+                style={{ padding: "8px 20px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)" }}>
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
