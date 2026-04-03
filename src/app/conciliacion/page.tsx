@@ -935,7 +935,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                                 const conc = conciliaciones.find(x => x.estado === "confirmado" && x.rcv_compra_id === c.id);
                                 if (conc?.id) {
                                   const { updateConciliacion, updateMovimientoBanco } = await import("@/lib/db");
-                                  await updateConciliacion(conc.id, { estado: "anulado" });
+                                  await updateConciliacion(conc.id, { estado: "rechazado" });
                                   if (conc.movimiento_banco_id) {
                                     await updateMovimientoBanco(conc.movimiento_banco_id, { estado_conciliacion: "pendiente" } as any);
                                   }
