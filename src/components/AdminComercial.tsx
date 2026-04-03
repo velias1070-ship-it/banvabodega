@@ -101,17 +101,51 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
   const [search, setSearch] = useState("");
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
-  const loadItems = useCallback(async () => {
+  const loadItems = useCallback(async (autoRefresh = false) => {
     setLoading(true);
     try {
       const data = await fetchMLItemsMap();
       setItems(data);
+      return data;
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => { loadItems(); }, [loadItems]);
+  // Auto-refresh live data on mount
+  const didAutoRefresh = useRef(false);
+  useEffect(() => {
+    loadItems().then(data => {
+      if (data && data.length > 0 && !didAutoRefresh.current) {
+        didAutoRefresh.current = true;
+        // Refresh live in background
+        const uniqueIds = Array.from(new Set(data.map(i => i.item_id)));
+        setRefreshing(true);
+        (async () => {
+          try {
+            const newMap = new Map<string, MLItemDetail["body"]>();
+            for (let i = 0; i < uniqueIds.length; i += 20) {
+              const batch = uniqueIds.slice(i, i + 20);
+              const res = await fetch(`/api/ml/items-details?ids=${batch.join(",")}`);
+              const json = await res.json();
+              if (json.items) {
+                for (const wrapper of json.items as MLItemDetail[]) {
+                  if (wrapper.code === 200 && wrapper.body) {
+                    newMap.set(wrapper.body.id, wrapper.body);
+                  }
+                }
+              }
+            }
+            setLiveData(newMap);
+            // Reload cached data
+            await loadItems();
+          } finally {
+            setRefreshing(false);
+          }
+        })();
+      }
+    });
+  }, [loadItems]);
 
   const refreshLive = useCallback(async () => {
     if (items.length === 0) return;
