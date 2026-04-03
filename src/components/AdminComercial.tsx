@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { fetchMLItemsMap } from "@/lib/db";
+import { fetchMLItemsMap, enqueueAndSync } from "@/lib/db";
 import type { DBMLItemMap } from "@/lib/db";
 import { getStore, skuTotal } from "@/lib/store";
 
@@ -191,6 +191,45 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
     }
   };
 
+  const activateWithStock = async (itemId: string, sku: string) => {
+    const wmsStock = skuTotal(sku);
+    if (wmsStock <= 0) {
+      setActionError(`No hay stock en WMS para ${sku} — no se puede activar`);
+      return;
+    }
+    setActionLoading(itemId);
+    setActionError(null);
+    try {
+      // 1. Sync stock to ML
+      enqueueAndSync([sku]);
+      // 2. Wait for stock sync to process
+      await new Promise(r => setTimeout(r, 3000));
+      // 3. Activate item
+      const res = await fetch("/api/ml/item-update", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ item_id: itemId, updates: { status: "active" } }),
+      });
+      const json = await res.json();
+      if (res.ok && !json.error) {
+        await loadItems();
+        setLiveData(prev => {
+          const next = new Map(prev);
+          const existing = next.get(itemId);
+          if (existing) next.set(itemId, { ...existing, status: "active" });
+          return next;
+        });
+      } else {
+        const errMsg = typeof json.error === "string" ? json.error : JSON.stringify(json.error);
+        setActionError(`Stock enviado pero activación falló para ${itemId}: ${errMsg}`);
+      }
+    } catch (err) {
+      setActionError(`Error al activar con stock ${itemId}: ${String(err)}`);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   const closeItem = async (itemId: string) => {
     if (!confirm("¿Cerrar esta publicación? No se puede revertir.")) return;
     setActionLoading(itemId);
@@ -359,10 +398,22 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                     </td>
                     <td>
                       <div style={{ display: "flex", gap: 4 }}>
-                        {status !== "closed" && (
+                        {status === "active" && (
                           <button onClick={() => toggleStatus(item.item_id, status)} disabled={actionLoading === item.item_id}
-                            style={{ padding: "3px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: "var(--bg3)", color: status === "active" ? "var(--amber)" : "var(--green)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
-                            {status === "active" ? "Pausar" : "Activar"}
+                            style={{ padding: "3px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: "var(--bg3)", color: "var(--amber)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
+                            Pausar
+                          </button>
+                        )}
+                        {status === "paused" && skuTotal(item.sku) > 0 && (
+                          <button onClick={() => activateWithStock(item.item_id, item.sku)} disabled={actionLoading === item.item_id}
+                            style={{ padding: "3px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: "var(--greenBg)", color: "var(--green)", border: "1px solid var(--greenBd)", cursor: actionLoading === item.item_id ? "wait" : "pointer" }}>
+                            {actionLoading === item.item_id ? "Sync..." : "Activar + Stock"}
+                          </button>
+                        )}
+                        {status === "paused" && skuTotal(item.sku) <= 0 && (
+                          <button onClick={() => toggleStatus(item.item_id, status)} disabled={actionLoading === item.item_id}
+                            style={{ padding: "3px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: "var(--bg3)", color: "var(--green)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
+                            Activar
                           </button>
                         )}
                         {status !== "closed" && (
