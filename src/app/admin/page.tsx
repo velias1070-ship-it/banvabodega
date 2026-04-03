@@ -221,7 +221,7 @@ const ESTADO_LABELS_A: Record<string, string> = {
 };
 
 type RecFilter = "activas"|"pausadas"|"completadas"|"anuladas"|"todas";
-type RecView = "dia"|"recepcion_dia"|"priorizar"|"facturas";
+type RecView = "dia"|"recepcion_dia"|"priorizar"|"facturas"|"precios";
 
 const LINEA_ESTADO_COLORS: Record<string, string> = {
   PENDIENTE: "var(--red)", CONTADA: "var(--amber)", EN_ETIQUETADO: "var(--blue)",
@@ -1832,10 +1832,16 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
           Priorizar
         </button>
         <button onClick={()=>setView("facturas")}
-          style={{padding:"8px 16px",borderRadius:"0 6px 6px 0",fontSize:12,fontWeight:700,cursor:"pointer",
+          style={{padding:"8px 16px",borderRadius:"0",fontSize:12,fontWeight:700,cursor:"pointer",
             background:view==="facturas"?"var(--cyan)":"var(--bg3)",color:view==="facturas"?"#000":"var(--txt2)",
             border:`1px solid ${view==="facturas"?"var(--cyan)":"var(--bg4)"}`,borderLeft:"none"}}>
           📄 Facturas
+        </button>
+        <button onClick={()=>setView("precios")}
+          style={{padding:"8px 16px",borderRadius:"0 6px 6px 0",fontSize:12,fontWeight:700,cursor:"pointer",
+            background:view==="precios"?"var(--cyan)":"var(--bg3)",color:view==="precios"?"#000":"var(--txt2)",
+            border:`1px solid ${view==="precios"?"var(--cyan)":"var(--bg4)"}`,borderLeft:"none"}}>
+          💰 Precios
         </button>
       </div>
 
@@ -2164,6 +2170,164 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
         })}
       </div>
       </>)}
+
+      {/* ==================== PRECIOS VIEW ==================== */}
+      {view === "precios" && <PreciosHistorico />}
+    </div>
+  );
+}
+
+function PreciosHistorico() {
+  const [rows, setRows] = useState<{sku:string;nombre:string;proveedor:string;costoPromedio:number;ultimoPrecio:number;ultimaFecha:string;historial:{precio:number;fecha:string;folio:string;qty:number;proveedor:string}[]}[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [expanded, setExpanded] = useState<string|null>(null);
+
+  useEffect(() => {
+    (async () => {
+      const sb = (await import("@/lib/supabase")).getSupabase();
+      if (!sb) { setLoading(false); return; }
+
+      // Get all reception lines with their reception info
+      const { data: lineas } = await sb.from("recepcion_lineas")
+        .select("sku, nombre, costo_unitario, qty_factura, recepcion_id")
+        .gt("costo_unitario", 0)
+        .order("sku");
+
+      const { data: recepciones } = await sb.from("recepciones")
+        .select("id, proveedor, folio, created_at, estado")
+        .in("estado", ["EN_PROCESO", "COMPLETADA"]);
+
+      const { data: productos } = await sb.from("productos")
+        .select("sku, costo_promedio, proveedor");
+
+      if (!lineas || !recepciones || !productos) { setLoading(false); return; }
+
+      const recMap = new Map<string, {proveedor:string;folio:string;fecha:string}>();
+      for (const r of recepciones) recMap.set(r.id, { proveedor: r.proveedor || "", folio: r.folio || "", fecha: r.created_at || "" });
+
+      const prodMap = new Map<string, {costoPromedio:number;proveedor:string}>();
+      for (const p of productos as {sku:string;costo_promedio:number|null;proveedor:string|null}[]) {
+        prodMap.set(p.sku.toUpperCase(), { costoPromedio: p.costo_promedio || 0, proveedor: p.proveedor || "" });
+      }
+
+      // Group by SKU
+      const bySku = new Map<string, {nombre:string;historial:{precio:number;fecha:string;folio:string;qty:number;proveedor:string}[]}>();
+      for (const l of lineas as {sku:string;nombre:string;costo_unitario:number;qty_factura:number;recepcion_id:string}[]) {
+        const skuUp = l.sku.toUpperCase();
+        const rec = recMap.get(l.recepcion_id);
+        if (!rec) continue;
+        if (!bySku.has(skuUp)) bySku.set(skuUp, { nombre: l.nombre || skuUp, historial: [] });
+        bySku.get(skuUp)!.historial.push({
+          precio: l.costo_unitario,
+          fecha: rec.fecha,
+          folio: rec.folio,
+          qty: l.qty_factura,
+          proveedor: rec.proveedor,
+        });
+      }
+
+      // Build rows sorted by SKU
+      const result: typeof rows = [];
+      bySku.forEach((val, sku) => {
+        val.historial.sort((a, b) => b.fecha.localeCompare(a.fecha));
+        const ultimo = val.historial[0];
+        const prod = prodMap.get(sku);
+        result.push({
+          sku,
+          nombre: val.nombre,
+          proveedor: prod?.proveedor || ultimo?.proveedor || "",
+          costoPromedio: prod?.costoPromedio || 0,
+          ultimoPrecio: ultimo?.precio || 0,
+          ultimaFecha: ultimo?.fecha || "",
+          historial: val.historial,
+        });
+      });
+
+      result.sort((a, b) => b.ultimaFecha.localeCompare(a.ultimaFecha));
+      setRows(result);
+      setLoading(false);
+    })();
+  }, []);
+
+  const filtered = search.trim()
+    ? rows.filter(r => r.sku.includes(search.toUpperCase()) || r.nombre.toUpperCase().includes(search.toUpperCase()) || r.proveedor.toUpperCase().includes(search.toUpperCase()))
+    : rows;
+
+  const fmtMoney = (n: number) => "$" + Math.round(n).toLocaleString("es-CL");
+  const fmtDate = (s: string) => s ? new Date(s).toLocaleDateString("es-CL", { day: "2-digit", month: "short", year: "numeric" }) : "—";
+
+  if (loading) return <div style={{padding:40,textAlign:"center",color:"var(--txt3)"}}>Cargando precios...</div>;
+
+  return (
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+        <div style={{fontSize:12,color:"var(--txt3)"}}>{filtered.length} SKUs con historial de precios</div>
+        <input className="form-input" value={search} onChange={e=>setSearch(e.target.value)}
+          placeholder="Buscar SKU, producto o proveedor..." style={{width:300,fontSize:12}} />
+      </div>
+
+      <table className="tbl" style={{width:"100%",fontSize:12}}>
+        <thead><tr>
+          <th>SKU</th>
+          <th>Producto</th>
+          <th>Proveedor</th>
+          <th style={{textAlign:"right"}}>Último Precio</th>
+          <th style={{textAlign:"right"}}>Costo Promedio</th>
+          <th style={{textAlign:"right"}}>Variación</th>
+          <th>Última Compra</th>
+          <th style={{textAlign:"center"}}>Hist.</th>
+        </tr></thead>
+        <tbody>
+          {filtered.slice(0, 200).map(r => {
+            const variacion = r.costoPromedio > 0 && r.ultimoPrecio > 0
+              ? Math.round(((r.ultimoPrecio - r.costoPromedio) / r.costoPromedio) * 100)
+              : null;
+            const isExpanded = expanded === r.sku;
+            return (<React.Fragment key={r.sku}>
+              <tr style={{cursor:"pointer",background:isExpanded?"var(--bg3)":"transparent"}} onClick={()=>setExpanded(isExpanded?null:r.sku)}>
+                <td className="mono" style={{fontWeight:700}}>{r.sku}</td>
+                <td style={{maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.nombre}</td>
+                <td>{r.proveedor}</td>
+                <td className="mono" style={{textAlign:"right"}}>{fmtMoney(r.ultimoPrecio)}</td>
+                <td className="mono" style={{textAlign:"right",color:"var(--cyan)"}}>{fmtMoney(r.costoPromedio)}</td>
+                <td className="mono" style={{textAlign:"right",color:variacion===null?"var(--txt3)":variacion>5?"var(--red)":variacion<-5?"var(--green)":"var(--txt)"}}>
+                  {variacion !== null ? (variacion > 0 ? "+" : "") + variacion + "%" : "—"}
+                </td>
+                <td>{fmtDate(r.ultimaFecha)}</td>
+                <td style={{textAlign:"center",color:"var(--txt3)"}}>{r.historial.length}</td>
+              </tr>
+              {isExpanded && (
+                <tr><td colSpan={8} style={{padding:"8px 16px",background:"var(--bg3)"}}>
+                  <div style={{fontSize:11,fontWeight:700,marginBottom:6}}>Historial de precios — {r.sku}</div>
+                  <table style={{width:"100%",fontSize:11,borderCollapse:"collapse"}}>
+                    <thead><tr style={{borderBottom:"1px solid var(--bg4)"}}>
+                      <th style={{textAlign:"left",padding:"4px 8px"}}>Fecha</th>
+                      <th style={{textAlign:"left",padding:"4px 8px"}}>Folio</th>
+                      <th style={{textAlign:"left",padding:"4px 8px"}}>Proveedor</th>
+                      <th style={{textAlign:"right",padding:"4px 8px"}}>Cantidad</th>
+                      <th style={{textAlign:"right",padding:"4px 8px"}}>Precio Unit.</th>
+                      <th style={{textAlign:"right",padding:"4px 8px"}}>Subtotal</th>
+                    </tr></thead>
+                    <tbody>
+                      {r.historial.map((h, i) => (
+                        <tr key={i} style={{borderBottom:"1px solid var(--bg4)"}}>
+                          <td style={{padding:"4px 8px"}}>{fmtDate(h.fecha)}</td>
+                          <td className="mono" style={{padding:"4px 8px"}}>{h.folio}</td>
+                          <td style={{padding:"4px 8px"}}>{h.proveedor}</td>
+                          <td className="mono" style={{textAlign:"right",padding:"4px 8px"}}>{h.qty}</td>
+                          <td className="mono" style={{textAlign:"right",padding:"4px 8px"}}>{fmtMoney(h.precio)}</td>
+                          <td className="mono" style={{textAlign:"right",padding:"4px 8px"}}>{fmtMoney(h.precio * h.qty)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </td></tr>
+              )}
+            </React.Fragment>);
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
