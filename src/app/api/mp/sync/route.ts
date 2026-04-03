@@ -76,7 +76,7 @@ function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
  * Para el mes actual, necesita un reporte reciente (< 2h) o genera uno nuevo.
  * Si no hay reporte, genera uno y espera hasta 4.5 min.
  */
-async function findReport(fechaDesde: string, fechaHasta: string, log: string[]): Promise<{ fileName: string; type: "release" | "settlement" } | null> {
+async function findReport(fechaDesde: string, fechaHasta: string, log: string[], lastMovFecha?: string | null): Promise<{ fileName: string; type: "release" | "settlement" } | null> {
   const desdeDate = new Date(fechaDesde).getTime();
   const hastaDate = new Date(fechaHasta).getTime();
   const now = Date.now();
@@ -127,12 +127,20 @@ async function findReport(fechaDesde: string, fechaHasta: string, log: string[])
         const hoursOld = (now - bestEnd) / 3600_000;
         log.push(`Mejor reporte: ${best.file_name} (datos hasta ${best.end_date}, ${Math.round(hoursOld)}h atras)`);
 
-        // Solicitar reporte fresco si no hay uno pending
+        // Solicitar reporte fresco desde ultimo movimiento (rango corto = mas rapido)
         if (pendingForPeriod.length === 0) {
           const endDate = new Date().toISOString().replace(/\.\d{3}/, "");
+          // begin = ultimo movimiento que tenemos (o inicio del mes si no hay)
+          let freshBegin = fechaDesde;
+          if (lastMovFecha) {
+            // Convertir fecha local a UTC (Chile = UTC-3/-4)
+            const d = new Date(lastMovFecha + "T00:00:00-04:00");
+            freshBegin = d.toISOString().replace(/\.\d{3}Z/, "Z");
+          }
           try {
-            await mpPost("/v1/account/release_report", { begin_date: fechaDesde, end_date: endDate });
-            log.push("Reporte fresco solicitado a MP (reintenta en 5-10 min)");
+            log.push(`Solicitando reporte fresco: ${freshBegin} a ${endDate}`);
+            await mpPost("/v1/account/release_report", { begin_date: freshBegin, end_date: endDate });
+            log.push("Reporte solicitado a MP (reintenta en 5-10 min)");
           } catch (err) {
             const msg = err instanceof Error ? err.message : "";
             if (msg.includes("409") || msg.includes("already") || msg.includes("400")) {
@@ -151,10 +159,15 @@ async function findReport(fechaDesde: string, fechaHasta: string, log: string[])
     // No hay reporte — generar y hacer polling corto (30s)
     const existingNames = new Set(csvReports.map(r => r.file_name));
     const endDate = isPastMonth ? fechaHasta : new Date().toISOString().replace(/\.\d{3}/, "");
+    let genBegin = fechaDesde;
+    if (!isPastMonth && lastMovFecha) {
+      const d = new Date(lastMovFecha + "T00:00:00-04:00");
+      genBegin = d.toISOString().replace(/\.\d{3}Z/, "Z");
+    }
 
     try {
-      log.push(`Solicitando reporte: ${fechaDesde} a ${endDate}`);
-      await mpPost("/v1/account/release_report", { begin_date: fechaDesde, end_date: endDate });
+      log.push(`Solicitando reporte: ${genBegin} a ${endDate}`);
+      await mpPost("/v1/account/release_report", { begin_date: genBegin, end_date: endDate });
 
       // Polling corto (30s) — si no esta listo, el usuario reintenta despues
       const startPoll = Date.now();
@@ -346,8 +359,18 @@ export async function POST(req: NextRequest) {
       .select("id").eq("empresa_id", empresaId).eq("banco", "MercadoPago").limit(1);
     const cuentaBancariaId = cuentas?.[0]?.id || null;
 
+    // Buscar fecha del ultimo movimiento MP que ya tenemos
+    const { data: lastMov } = await sb.from("movimientos_banco")
+      .select("fecha")
+      .eq("empresa_id", empresaId)
+      .eq("banco", "MercadoPago")
+      .order("fecha", { ascending: false })
+      .limit(1);
+    const lastMovFecha = lastMov?.[0]?.fecha || null;
+
     const log: string[] = [];
     log.push(`Periodo: ${periodo} (${fechaDesde} a ${fechaHasta})`);
+    if (lastMovFecha) log.push(`Ultimo movimiento MP en sistema: ${lastMovFecha}`);
 
     // ══════════════════════════════════════
     // RETIROS (PAYOUTS) desde release o settlement report
@@ -357,7 +380,7 @@ export async function POST(req: NextRequest) {
     let reportType: string | null = null;
 
     try {
-      const report = await findReport(fechaDesde, fechaHasta, log);
+      const report = await findReport(fechaDesde, fechaHasta, log, lastMovFecha);
 
       if (report) {
         reportUsado = report.fileName;
