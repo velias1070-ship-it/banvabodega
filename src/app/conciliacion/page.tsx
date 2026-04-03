@@ -981,7 +981,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
             </div>
             <div style={{ padding: "20px 28px", borderBottom: "1px solid var(--bg4)" }}>
               <div style={{ fontSize: 13, marginBottom: 4 }}>
-                <strong>{TIPO_DOC_NAMES[pagoItem.tipo_doc] || pagoItem.tipo_doc}</strong> N&deg; {pagoItem.nro_doc} &mdash; {pagoItem.razon_social}
+                <strong>{TIPO_DOC_NAMES[pagoItem.tipo_doc] || pagoItem.tipo_doc}</strong> N&deg; {pagoItem.nro_doc} &mdash; {pagoItem.razon_social} &mdash; {fmtDate(pagoItem.fecha_docto)}
               </div>
               <div style={{ fontSize: 14, fontWeight: 700, color: "var(--red)" }}>
                 {fmtMoney(pagoItem.monto_total || 0)}
@@ -999,9 +999,12 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                 const filtrados = movsBanco.filter(m => !pagoSearch || (m.descripcion || "").toLowerCase().includes(q) || (m.banco || "").toLowerCase().includes(q) || String(Math.abs(m.monto)).includes(q));
                 const sorted = filtrados.sort((a, b) => Math.abs(Math.abs(a.monto) - (pagoItem.monto_total || 0)) - Math.abs(Math.abs(b.monto) - (pagoItem.monto_total || 0)));
                 if (sorted.length === 0) return <div style={{ padding: 40, textAlign: "center", color: "var(--txt3)" }}>No hay movimientos bancarios pendientes</div>;
+                const facFecha = pagoItem.fecha_docto ? new Date(pagoItem.fecha_docto + "T12:00:00").getTime() : 0;
                 return sorted.slice(0, 50).map(m => {
                   const montoAbs = Math.abs(m.monto);
                   const coincide = montoAbs === (pagoItem.monto_total || 0);
+                  const montoDiff = Math.abs(montoAbs - (pagoItem.monto_total || 0));
+                  const diasDiff = facFecha && m.fecha ? Math.round((new Date(m.fecha + "T12:00:00").getTime() - facFecha) / 86400000) : null;
                   return (
                     <div key={m.id} onClick={async () => {
                       if (pagoSaving) return;
@@ -1020,11 +1023,15 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                       onMouseOut={e => { if (!coincide) e.currentTarget.style.background = "transparent"; }}>
                       <div>
                         <div style={{ fontSize: 12, fontWeight: 500 }}>{m.descripcion || "Sin descripcion"}</div>
-                        <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 2 }}>{m.fecha} &middot; {m.banco || "Banco"}</div>
+                        <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 2 }}>
+                          {m.fecha} &middot; {m.banco || "Banco"}
+                          {diasDiff !== null && <span className="mono" style={{ marginLeft: 8, fontSize: 10, color: diasDiff < 0 ? "var(--red)" : diasDiff <= 45 ? "var(--green)" : "var(--amber)" }}>{diasDiff}d {diasDiff < 0 ? "antes" : "despues"}</span>}
+                        </div>
                       </div>
                       <div style={{ textAlign: "right" }}>
                         <div className="mono" style={{ fontSize: 14, fontWeight: 700, color: "var(--red)" }}>{fmtMoney(montoAbs)}</div>
-                        {coincide && <div style={{ fontSize: 10, color: "var(--green)", fontWeight: 600 }}>Coincide exacto</div>}
+                        {coincide ? <div style={{ fontSize: 10, color: "var(--green)", fontWeight: 600 }}>Coincide exacto</div>
+                          : montoDiff > 0 && <div className="mono" style={{ fontSize: 10, color: "var(--amber)" }}>diff {fmtMoney(montoDiff)}</div>}
                       </div>
                     </div>
                   );
@@ -1824,9 +1831,12 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                 const filtrados = movsBanco.filter(m => !pagoSearch || (m.descripcion || "").toLowerCase().includes(q) || (m.banco || "").toLowerCase().includes(q) || String(Math.abs(m.monto)).includes(q));
                 const sorted = filtrados.sort((a, b) => Math.abs(Math.abs(a.monto) - (pagoItem.monto_total || 0)) - Math.abs(Math.abs(b.monto) - (pagoItem.monto_total || 0)));
                 if (sorted.length === 0) return <div style={{ padding: 40, textAlign: "center", color: "var(--txt3)" }}>No hay movimientos bancarios pendientes</div>;
+                const facFechaH = pagoItem.fecha_docto ? new Date(pagoItem.fecha_docto + "T12:00:00").getTime() : 0;
                 return sorted.slice(0, 50).map(m => {
                   const montoAbs = Math.abs(m.monto);
                   const coincide = montoAbs === (pagoItem.monto_total || 0);
+                  const montoDiff = Math.abs(montoAbs - (pagoItem.monto_total || 0));
+                  const diasDiff = facFechaH && m.fecha ? Math.round((new Date(m.fecha + "T12:00:00").getTime() - facFechaH) / 86400000) : null;
                   return (
                     <div key={m.id} onClick={async () => {
                       if (pagoSaving) return;
@@ -1845,11 +1855,15 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                       onMouseOut={e => { if (!coincide) e.currentTarget.style.background = "transparent"; }}>
                       <div>
                         <div style={{ fontSize: 12, fontWeight: 500 }}>{m.descripcion || "Sin descripcion"}</div>
-                        <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 2 }}>{m.fecha} &middot; {m.banco || "Banco"}</div>
+                        <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 2 }}>
+                          {m.fecha} &middot; {m.banco || "Banco"}
+                          {diasDiff !== null && <span className="mono" style={{ marginLeft: 8, fontSize: 10, color: diasDiff < 0 ? "var(--red)" : diasDiff <= 45 ? "var(--green)" : "var(--amber)" }}>{diasDiff}d {diasDiff < 0 ? "antes" : "despues"}</span>}
+                        </div>
                       </div>
                       <div style={{ textAlign: "right" }}>
                         <div className="mono" style={{ fontSize: 14, fontWeight: 700, color: "var(--red)" }}>{fmtMoney(montoAbs)}</div>
-                        {coincide && <div style={{ fontSize: 10, color: "var(--green)", fontWeight: 600 }}>Coincide exacto</div>}
+                        {coincide ? <div style={{ fontSize: 10, color: "var(--green)", fontWeight: 600 }}>Coincide exacto</div>
+                          : montoDiff > 0 && <div className="mono" style={{ fontSize: 10, color: "var(--amber)" }}>diff {fmtMoney(montoDiff)}</div>}
                       </div>
                     </div>
                   );
