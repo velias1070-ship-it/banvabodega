@@ -158,13 +158,27 @@ async function findReport(fechaDesde: string, fechaHasta: string, log: string[])
       log.push(`Error generando reporte: ${err instanceof Error ? err.message : String(err)}`);
     }
 
+    // Ultimo intento: re-listar y buscar cualquier reporte nuevo
+    try {
+      const finalList = await mpGet("/v1/account/release_report/list") as MPReport[];
+      const newOnes = (finalList || [])
+        .filter(r => (r.status === "enabled" || r.status === "processed") && r.file_name && r.file_name.endsWith(".csv"))
+        .filter(r => !existingNames.has(r.file_name));
+      if (newOnes.length > 0) {
+        log.push(`Reporte encontrado post-timeout: ${newOnes[0].file_name}`);
+        return { fileName: newOnes[0].file_name, type: "release" };
+      }
+    } catch {}
+
     // Fallback: usar el reporte mas reciente que toque el periodo
-    const fallback = csvReports
+    const allReports = await mpGet("/v1/account/release_report/list") as MPReport[];
+    const fallbackList = (allReports || [])
+      .filter(r => (r.status === "enabled" || r.status === "processed") && r.file_name && r.file_name.endsWith(".csv"))
       .filter(r => new Date(r.begin_date).getTime() <= desdeMargin)
       .sort((a, b) => new Date(b.end_date).getTime() - new Date(a.end_date).getTime());
-    if (fallback.length > 0) {
-      log.push(`Usando fallback: ${fallback[0].file_name} (puede no tener datos de hoy)`);
-      return { fileName: fallback[0].file_name, type: "release" };
+    if (fallbackList.length > 0) {
+      log.push(`Usando fallback: ${fallbackList[0].file_name} (puede no tener datos de hoy)`);
+      return { fileName: fallbackList[0].file_name, type: "release" };
     }
   } catch (err) {
     log.push(`Error: ${err instanceof Error ? err.message : String(err)}`);
