@@ -353,6 +353,9 @@ export async function POST(req: NextRequest) {
       .select("id").eq("empresa_id", empresaId).eq("banco", "MercadoPago").limit(1);
     const cuentaBancariaId = cuentas?.[0]?.id || null;
 
+    const log: string[] = [];
+    log.push(`Periodo: ${periodo} (${fechaDesde} a ${fechaHasta})`);
+
     // ══════════════════════════════════════
     // RETIROS (PAYOUTS) desde release o settlement report
     // ══════════════════════════════════════
@@ -361,46 +364,47 @@ export async function POST(req: NextRequest) {
     let reportType: string | null = null;
 
     try {
+      log.push("Buscando reporte en MercadoPago...");
       const report = await findReport(fechaDesde, fechaHasta);
 
       if (report) {
         reportUsado = report.fileName;
         reportType = report.type;
+        log.push(`Reporte encontrado: ${report.fileName} (${report.type})`);
         const downloadPath = report.type === "release"
           ? `/v1/account/release_report/${report.fileName}`
           : `/v1/account/settlement_report/${report.fileName}`;
         const csv = await mpGetText(downloadPath);
 
-        // Debug: log CSV header and line count
         const csvLines = csv.split("\n");
-        const csvHeader = csvLines[0] || "";
         const csvDataLines = csvLines.length - 1;
-        console.log(`[MP Sync] CSV header: ${csvHeader.slice(0, 300)}`);
-        console.log(`[MP Sync] CSV data lines: ${csvDataLines}`);
+        log.push(`CSV descargado: ${csvDataLines} lineas de datos`);
 
-        // Debug: log unique DESCRIPTION values
+        // Count DESCRIPTION types
         if (report.type === "release" && csvDataLines > 0) {
-          const headerCols = csvHeader.split(";");
+          const headerCols = csvLines[0].split(";");
           const descIdx = headerCols.findIndex(h => h.trim() === "DESCRIPTION");
           if (descIdx >= 0) {
-            const descs = new Set<string>();
+            const counts: Record<string, number> = {};
             for (const line of csvLines.slice(1)) {
-              const cols = line.split(";");
-              if (cols[descIdx]) descs.add(cols[descIdx].trim());
+              const d = line.split(";")[descIdx]?.trim() || "(vacio)";
+              counts[d] = (counts[d] || 0) + 1;
             }
-            console.log(`[MP Sync] DESCRIPTION values found: ${Array.from(descs).join(", ")}`);
-          } else {
-            console.log(`[MP Sync] WARNING: DESCRIPTION column not found in header!`);
+            const summary = Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}:${v}`).join(", ");
+            log.push(`Tipos en CSV: ${summary}`);
           }
         }
 
         retiroRows = report.type === "release"
           ? parseRetirosRelease(csv, empresaId, cuentaBancariaId)
           : parseRetirosSettlement(csv, empresaId, cuentaBancariaId);
-        console.log(`[MP Sync] Parsed retiroRows: ${retiroRows.length}`);
+        log.push(`Retiros parseados: ${retiroRows.length} (payouts + compras con debito)`);
+      } else {
+        log.push("No se encontro reporte. Se solicito generar uno nuevo a MP (puede tardar 2-3 min).");
       }
     } catch (err) {
-      console.error("[MP Sync] Error obteniendo retiros:", err);
+      const errMsg = err instanceof Error ? err.message : String(err);
+      log.push(`ERROR obteniendo retiros: ${errMsg}`);
     }
 
     // ══════════════════════════════════════
@@ -408,54 +412,41 @@ export async function POST(req: NextRequest) {
     // ══════════════════════════════════════
     if (retiroRows.length === 0) {
       return NextResponse.json({
-        periodo,
-        retiros_nuevos: 0,
-        reporte: reportUsado,
-        reporte_tipo: reportType,
-        mensaje: reportUsado
-          ? "Sin retiros nuevos en el periodo"
-          : "El reporte se esta generando en MercadoPago. Espera 2-3 minutos e intenta de nuevo.",
-        debug: reportUsado ? "Reporte encontrado pero sin transacciones payout/payment. Revisa logs del servidor." : undefined,
+        periodo, retiros_nuevos: 0, reporte: reportUsado, reporte_tipo: reportType,
+        mensaje: reportUsado ? "Sin retiros nuevos en el periodo" : "El reporte se esta generando. Espera 2-3 min e intenta de nuevo.",
+        log,
       });
     }
 
-    // Dedup
     const existingRefs = new Set<string>();
     const allRefs = retiroRows.map(r => r.referencia_unica);
     for (let i = 0; i < allRefs.length; i += 100) {
       const batch = allRefs.slice(i, i + 100);
       const { data: existing } = await sb.from("movimientos_banco")
-        .select("referencia_unica")
-        .eq("empresa_id", empresaId)
-        .in("referencia_unica", batch);
+        .select("referencia_unica").eq("empresa_id", empresaId).in("referencia_unica", batch);
       for (const r of (existing || [])) existingRefs.add(r.referencia_unica);
     }
 
     const newRows = retiroRows.filter(r => !existingRefs.has(r.referencia_unica));
+    log.push(`Dedup: ${retiroRows.length} encontrados, ${existingRefs.size} ya existian, ${newRows.length} nuevos`);
 
     let inserted = 0;
     for (let i = 0; i < newRows.length; i += 500) {
       const batch = newRows.slice(i, i + 500);
       const { error } = await sb.from("movimientos_banco").insert(batch);
-      if (error) console.error(`[MP Sync] Insert error:`, error.message);
+      if (error) { log.push(`ERROR insertando: ${error.message}`); }
       else inserted += batch.length;
     }
 
-    // Sync log
-    await sb.from("sync_log").insert({
-      empresa_id: empresaId,
-      periodo,
-      tipo: "mercadopago",
-      registros: inserted,
-    });
+    if (inserted > 0) log.push(`${inserted} retiros importados exitosamente`);
+    else log.push("Sin retiros nuevos para importar");
+
+    await sb.from("sync_log").insert({ empresa_id: empresaId, periodo, tipo: "mercadopago", registros: inserted });
 
     return NextResponse.json({
-      periodo,
-      reporte: reportUsado,
-      reporte_tipo: reportType,
-      retiros_encontrados: retiroRows.length,
-      ya_existentes: existingRefs.size,
-      retiros_nuevos: inserted,
+      periodo, reporte: reportUsado, reporte_tipo: reportType,
+      retiros_encontrados: retiroRows.length, ya_existentes: existingRefs.size, retiros_nuevos: inserted,
+      log,
     });
   } catch (err) {
     console.error("[MP Sync] Error:", err);

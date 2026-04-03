@@ -189,21 +189,20 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
     setSyncMsg(null);
     try {
       let totalRetiros = 0;
-      let lastMsg = "";
+      const allLogs: string[] = [];
       for (const p of periodos) {
         setSyncMsg(`Sincronizando ${p.slice(0,4)}-${p.slice(4)}...`);
         const res = await fetch("/api/mp/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ periodo: p }) });
         const d = await res.json();
-        if (d.error) { setSyncMsg(`Error: ${d.error}`); break; }
+        if (d.log) allLogs.push(...d.log);
+        if (d.error) { allLogs.push(`ERROR: ${d.error}`); break; }
         totalRetiros += d.retiros_nuevos || 0;
-        if (d.mensaje) lastMsg = d.mensaje + (d.debug ? ` (${d.debug})` : "") + (d.reporte ? ` [reporte: ${d.reporte}]` : "");
       }
-      if (!syncMsg?.startsWith("Error")) {
-        if (totalRetiros > 0) {
-          setSyncMsg(`${totalRetiros} retiros importados`);
-        } else {
-          setSyncMsg(lastMsg || "Sin retiros nuevos");
-        }
+      const logText = allLogs.join("\n");
+      if (totalRetiros > 0) {
+        setSyncMsg(`${totalRetiros} retiros importados\n${logText}`);
+      } else {
+        setSyncMsg(logText || "Sin retiros nuevos");
       }
       load();
     } catch (e) {
@@ -283,10 +282,11 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
 
       {/* Mensaje sync */}
       {syncMsg && (
-        <div style={{ padding: "6px 12px", borderRadius: 6, marginBottom: 8, fontSize: 11, fontWeight: 600,
-          background: syncMsg.startsWith("Error") ? "var(--redBg)" : "var(--greenBg)",
-          color: syncMsg.startsWith("Error") ? "var(--red)" : "var(--green)",
-          border: `1px solid ${syncMsg.startsWith("Error") ? "var(--redBd)" : "var(--greenBd)"}` }}>
+        <div style={{ padding: "8px 12px", borderRadius: 6, marginBottom: 8, fontSize: 11,
+          whiteSpace: "pre-wrap", maxHeight: 200, overflowY: "auto",
+          background: syncMsg.includes("ERROR") ? "var(--redBg)" : "var(--greenBg)",
+          color: syncMsg.includes("ERROR") ? "var(--red)" : "var(--green)",
+          border: `1px solid ${syncMsg.includes("ERROR") ? "var(--redBd)" : "var(--greenBd)"}` }}>
           {syncMsg}
         </div>
       )}
