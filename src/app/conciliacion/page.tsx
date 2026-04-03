@@ -1454,7 +1454,7 @@ function TabBanco({ empresa, periodo }: { empresa: DBEmpresa; periodo: string })
 type TabKey = "dash" | "compras" | "ventas" | "banco" | "conciliacion" | "cuentas" | "reglas" | "resultados" | "flujo" | "proyectado" | "presupuesto" | "gastos" | "honorarios" | "remuneraciones" | "impuestos" | "proveedores";
 
 // ==================== BOLETAS DE HONORARIOS ====================
-function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: string }) {
+function TabHonorarios({ empresa, periodo, onNavigate }: { empresa: DBEmpresa; periodo: string; onNavigate?: (tab: string) => void }) {
   const [data, setData] = useState<DBRcvCompra[]>([]);
   const [conciliaciones, setConciliaciones] = useState<DBConciliacion[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1614,11 +1614,17 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                   <td className="mono" style={{ textAlign: "right" }}>{fmtMoney(c.monto_neto || 0)}</td>
                   <td className="mono" style={{ textAlign: "right", color: "var(--amber)" }}>{fmtMoney(c.monto_iva || 0)}</td>
                   <td className="mono" style={{ textAlign: "right", fontWeight: 600, color: "var(--green)" }}>{fmtMoney(c.monto_total || 0)}</td>
-                  <td style={{ whiteSpace: "nowrap" }}>
+                  <td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
                     {concCompraIds.has(c.id!) ? (
                       <span style={{ fontSize: 9, fontWeight: 600, padding: "2px 6px", borderRadius: 4, background: "var(--greenBg)", color: "var(--green)" }}>PAGADA</span>
                     ) : (
-                      <span style={{ fontSize: 9, fontWeight: 600, padding: "2px 6px", borderRadius: 4, background: "var(--amberBg)", color: "var(--amber)" }}>PENDIENTE</span>
+                      <div style={{ display: "flex", gap: 4, justifyContent: "flex-end", alignItems: "center" }}>
+                        <span className="mono" style={{ fontSize: 10, color: "var(--txt3)" }}>{fmtMoney(c.monto_total || 0)} por conciliar</span>
+                        <button onClick={() => onNavigate?.("banco")}
+                          style={{ padding: "3px 10px", borderRadius: 6, fontSize: 10, fontWeight: 700, background: "var(--green)", color: "#fff", border: "none", cursor: "pointer" }}>
+                          Conciliar
+                        </button>
+                      </div>
                     )}
                   </td>
                 </tr>
@@ -1769,7 +1775,7 @@ export default function ConciliacionPage() {
             {empresa && tab === "flujo" && <FlujoCaja empresa={empresa} periodo={periodo} />}
             {empresa && tab === "proyectado" && <FlujoProyectado empresa={empresa} periodo={periodo} />}
             {empresa && tab === "presupuesto" && <TabPresupuesto empresa={empresa} periodo={periodo} />}
-            {empresa && tab === "honorarios" && <TabHonorarios empresa={empresa} periodo={periodo} />}
+            {empresa && tab === "honorarios" && <TabHonorarios empresa={empresa} periodo={periodo} onNavigate={(t: string) => setTab(t as TabKey)} />}
             {["gastos","remuneraciones","impuestos","proveedores"].includes(tab) && (
               <div className="card" style={{ padding: 32, textAlign: "center" }}>
                 <div style={{ fontSize: 32, marginBottom: 8 }}>🚧</div>
