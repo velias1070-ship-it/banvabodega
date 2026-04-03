@@ -475,11 +475,6 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
     return Array.from(map.values()).sort((a, b) => b.total - a.total);
   }, [data]);
 
-  if (loading) return <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>Cargando...</div>;
-
-  // Tipos disponibles para el filtro
-  const tiposDisponibles = Array.from(new Set(data.map(c => String(c.tipo_doc))));
-
   // Mapa de monto pagado por compra (sumando todas las conciliaciones)
   const pagadoPorCompra = useMemo(() => {
     const map = new Map<string, number>();
@@ -492,6 +487,11 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   }, [conciliaciones]);
   // IDs de compras conciliadas (al menos 1 pago)
   const concCompraIds = new Set(pagadoPorCompra.keys());
+
+  if (loading) return <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>Cargando...</div>;
+
+  // Tipos disponibles para el filtro
+  const tiposDisponibles = Array.from(new Set(data.map(c => String(c.tipo_doc))));
 
   // Handler para guardar proveedor
   const handleSaveProv = async (rut: string) => {
