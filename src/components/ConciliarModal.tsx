@@ -90,51 +90,55 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
       }
     }
 
-    if (search) {
-      const q = search.toLowerCase();
-      return docs.filter(d => d.razon_social.toLowerCase().includes(q) || d.rut.includes(q) || d.nro.includes(q));
-    }
-
     const target = saldoPorAsignar > 0 ? saldoPorAsignar : movAbs;
     const movFecha = new Date(mov.fecha + "T12:00:00").getTime();
     const movDesc = (mov.descripcion || "").toLowerCase();
     // Mapa de plazos por RUT
     const plazoByRut = new Map(provCuentas.filter(p => p.plazo_dias).map(p => [p.rut_proveedor, p.plazo_dias!]));
 
-    // Score inteligente: menor = mejor match
-    const scoreDoc = (d: typeof docs[0]): number => {
-      // 1. Monto — diferencia porcentual al target (0 = match perfecto)
-      const montoScore = target > 0 ? Math.abs(d.monto_total - target) / target : 1;
+    let filteredDocs = docs;
+    if (search) {
+      const q = search.toLowerCase();
+      filteredDocs = docs.filter(d => d.razon_social.toLowerCase().includes(q) || d.rut.includes(q) || d.nro.includes(q));
+    }
 
-      // 2. Proveedor — si la descripcion del movimiento menciona al proveedor
+    // Score inteligente: menor = mejor match
+    const scoreDoc = (d: typeof docs[0]): { score: number; diasDiff: number; montoDiff: number } => {
+      // 1. Monto -- diferencia porcentual al target (0 = match perfecto)
+      const montoScore = target > 0 ? Math.abs(d.monto_total - target) / target : 1;
+      const montoDiff = Math.abs(d.monto_total - target);
+
+      // 2. Proveedor -- si la descripcion del movimiento menciona al proveedor
       const nombreProv = d.razon_social.toLowerCase();
       const palabras = nombreProv.split(/\s+/).filter(p => p.length > 3);
       const provMatch = palabras.some(p => movDesc.includes(p)) ? 0 : 1;
 
-      // 3. Plazo de pago — la fecha del movimiento deberia ser ~plazo dias despues de la factura
+      // 3. Plazo de pago -- la fecha del movimiento deberia ser ~plazo dias despues de la factura
       let fechaScore = 1;
+      let diasDiff = 0;
       if (d.fecha) {
         const docFecha = new Date(d.fecha + "T12:00:00").getTime();
-        const diasDesdeDoc = (movFecha - docFecha) / 86400000;
+        diasDiff = Math.round((movFecha - docFecha) / 86400000);
         const plazo = plazoByRut.get(d.rut) || 30;
-        // Que tan cerca esta de los dias esperados (normalizado)
-        fechaScore = Math.abs(diasDesdeDoc - plazo) / plazo;
-        // Penalizar si el pago es antes de la factura
-        if (diasDesdeDoc < 0) fechaScore = 3;
+        fechaScore = Math.abs(diasDiff - plazo) / plazo;
+        if (diasDiff < 0) fechaScore = 3;
       }
 
-      // Pesos: monto 40%, proveedor 35%, fecha 25%
-      return montoScore * 0.4 + provMatch * 0.35 + Math.min(fechaScore, 3) * 0.25;
+      // Pesos: fecha 40%, monto 35%, proveedor 25%
+      return { score: Math.min(fechaScore, 3) * 0.4 + montoScore * 0.35 + provMatch * 0.25, diasDiff, montoDiff };
     };
 
-    return docs.sort((a, b) => {
+    // Pre-compute scores for sorting and display
+    const scored = filteredDocs.map(d => ({ ...d, ...scoreDoc(d) }));
+    scored.sort((a, b) => {
       let cmp = 0;
-      if (sortBy === "cercania") cmp = scoreDoc(a) - scoreDoc(b);
+      if (sortBy === "cercania") cmp = a.score - b.score;
       else if (sortBy === "fecha") cmp = (a.fecha || "").localeCompare(b.fecha || "");
       else if (sortBy === "monto") cmp = a.monto_total - b.monto_total;
       else if (sortBy === "descripcion") cmp = (a.razon_social || "").localeCompare(b.razon_social || "");
       return sortDir === "desc" ? -cmp : cmp;
     });
+    return scored;
   }, [compras, ventas, tipoFiltro, search, concCompraIds, concVentaIds, selectedIds, sortBy, sortDir, saldoPorAsignar, movAbs, mov.fecha, mov.descripcion, provCuentas]);
 
   const toggleSort = (key: typeof sortBy) => {
@@ -349,22 +353,30 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
                 </thead>
                 <tbody>
                   {docsDisponibles.slice(0, 50).map(d => {
-                    const isMatch = Math.abs(d.monto_total - saldoPorAsignar) < 100 && saldoPorAsignar > 0;
+                    const isAlta = d.score < 0.15;
+                    const isMedia = d.score >= 0.15 && d.score < 0.5;
                     return (
-                      <tr key={d.id} style={{ borderBottom: "1px solid var(--bg4)", background: isMatch ? "var(--greenBg)" : "transparent" }}>
-                        <td className="mono" style={{ padding: "6px 0", fontWeight: 700 }}>{fmtMoney(d.monto_total)}</td>
-                        <td className="mono" style={{ padding: "6px 0" }}>{fmtDate(d.fecha)}</td>
+                      <tr key={d.id} style={{ borderBottom: "1px solid var(--bg4)", background: isAlta ? "var(--greenBg)" : "transparent" }}>
+                        <td className="mono" style={{ padding: "6px 0", fontWeight: 700 }}>
+                          {fmtMoney(d.monto_total)}
+                          {d.montoDiff > 0 && <div style={{ fontSize: 8, color: "var(--amber)" }}>diff {fmtMoney(d.montoDiff)}</div>}
+                        </td>
+                        <td className="mono" style={{ padding: "6px 0" }}>
+                          {fmtDate(d.fecha)}
+                          {d.fecha && <div style={{ fontSize: 8, color: d.diasDiff < 0 ? "var(--red)" : d.diasDiff <= 45 ? "var(--green)" : "var(--amber)" }}>{d.diasDiff}d</div>}
+                        </td>
                         <td>
                           <span style={{ fontSize: 8, fontWeight: 700, padding: "1px 4px", borderRadius: 3, background: d.tipo === "rcv_compra" ? "var(--redBg)" : "var(--greenBg)", color: d.tipo === "rcv_compra" ? "var(--red)" : "var(--green)" }}>
                             {d.tipo_doc} {d.nro}
                           </span>
+                          {(isAlta || isMedia) && <span style={{ fontSize: 7, fontWeight: 700, marginLeft: 3, padding: "1px 4px", borderRadius: 3, background: isAlta ? "var(--greenBg)" : "var(--amberBg)", color: isAlta ? "var(--green)" : "var(--amber)" }}>{isAlta ? "ALTA" : "MEDIA"}</span>}
                         </td>
                         <td style={{ maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", padding: "6px 4px" }}>
-                          {d.razon_social || d.rut || "—"}
+                          {d.razon_social || d.rut || "\u2014"}
                         </td>
                         <td style={{ textAlign: "right" }}>
                           <button onClick={() => handleSelect(d)}
-                            style={{ padding: "2px 8px", borderRadius: 4, fontSize: 9, fontWeight: 600, background: "var(--amberBg)", color: "var(--amber)", border: "none", cursor: "pointer" }}>
+                            style={{ padding: "2px 8px", borderRadius: 4, fontSize: 9, fontWeight: 600, background: isAlta ? "var(--greenBg)" : "var(--amberBg)", color: isAlta ? "var(--green)" : "var(--amber)", border: "none", cursor: "pointer" }}>
                             Seleccionar
                           </button>
                         </td>
