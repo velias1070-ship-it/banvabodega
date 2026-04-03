@@ -14,52 +14,97 @@ const BHE_CGI_URL = "https://palena.sii.cl/cgi_IMT/TMBCOC_InformeMensualBheRec.c
 
 // ==================== AUTH ====================
 
+/**
+ * Auth SII real: 2 pasos
+ * 1. POST CAutInicio.cgi con rut, dv, referencia, rutcntr, clave → obtiene cookies de sesion
+ * 2. POST AutTknData.cgi → obtiene cookie token (TSdf5d7d41027=...)
+ * Retorna el string de cookies para usar en requests posteriores.
+ */
 async function autenticarSII(rut: string, dv: string, clave: string): Promise<string | null> {
   try {
-    const body = new URLSearchParams({ rut, dv, referession: "", cession: clave });
-    const resp = await fetch(SII_AUTH_URL, {
+    const rutFmt = `${rut.replace(/\B(?=(\d{3})+(?!\d))/g, ".")}-${dv}`;
+
+    // Paso 1: CAutInicio.cgi
+    const loginBody = new URLSearchParams({
+      rut,
+      dv,
+      referencia: "https://misiir.sii.cl/cgi_misii/siihome.cgi",
+      "411": "",
+      rutcntr: rutFmt,
+      clave,
+    });
+
+    console.log(`[BHE Auth] Paso 1: CAutInicio.cgi rut=${rut}-${dv}`);
+    const loginResp = await fetch(SII_AUTH_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
       },
-      body: body.toString(),
+      body: loginBody.toString(),
       redirect: "manual",
     });
 
-    // Buscar TOKEN en set-cookie (puede venir como redirect 302 o response 200)
-    let token = "";
-
-    // Método 1: getSetCookie
-    const cookies = resp.headers.getSetCookie?.() || [];
-    for (const c of cookies) {
-      const match = c.match(/TOKEN=([^;]+)/);
-      if (match) { token = match[1]; break; }
+    // Recoger cookies del paso 1
+    const allCookies: string[] = [];
+    const setCookies1 = loginResp.headers.getSetCookie?.() || [];
+    for (const c of setCookies1) {
+      const nameVal = c.split(";")[0];
+      if (nameVal && !nameVal.includes("=DEL")) allCookies.push(nameVal);
     }
-
-    // Método 2: header raw
-    if (!token) {
-      const raw = resp.headers.get("set-cookie") || "";
-      const match = raw.match(/TOKEN=([^;]+)/);
-      if (match) token = match[1];
-    }
-
-    // Método 3: buscar en el body HTML (zeusr puede devolver token en un script)
-    if (!token) {
-      const html = await resp.text();
-      // Verificar si la respuesta indica error
-      if (html.includes("Transaccion Rechazada")) {
-        console.error(`[BHE Auth] Transaccion Rechazada. Status: ${resp.status}`);
-        return null;
+    if (!setCookies1.length) {
+      const raw = loginResp.headers.get("set-cookie") || "";
+      for (const part of raw.split(",")) {
+        const nameVal = part.trim().split(";")[0];
+        if (nameVal && nameVal.includes("=") && !nameVal.includes("=DEL")) allCookies.push(nameVal);
       }
-      const bodyMatch = html.match(/TOKEN[=:][\s'"]*([A-Za-z0-9]+)/);
-      if (bodyMatch) token = bodyMatch[1];
     }
 
-    if (!token) {
-      console.error(`[BHE Auth] No TOKEN. Status: ${resp.status}, headers: ${JSON.stringify(Object.fromEntries(resp.headers.entries()))}`);
+    // Verificar si el login falló
+    const loginHtml = await loginResp.text();
+    if (loginHtml.includes("Transaccion Rechazada")) {
+      console.error("[BHE Auth] Transaccion Rechazada en CAutInicio");
+      return null;
     }
-    return token || null;
+
+    console.log(`[BHE Auth] Paso 1 OK. Cookies: ${allCookies.length}`);
+
+    // Paso 2: AutTknData.cgi — obtener token de sesion
+    const rnd = Math.random();
+    const tknUrl = `https://zeusr.sii.cl/cgi_AUT2000/AutTknData.cgi?rnd=${rnd}`;
+    const cookieStr = allCookies.join("; ");
+
+    const tknResp = await fetch(tknUrl, {
+      method: "POST",
+      headers: {
+        "Cookie": cookieStr,
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+      },
+    });
+
+    // Recoger cookie token del paso 2
+    const setCookies2 = tknResp.headers.getSetCookie?.() || [];
+    for (const c of setCookies2) {
+      const nameVal = c.split(";")[0];
+      if (nameVal && !nameVal.includes("=DEL") && nameVal.includes("=")) allCookies.push(nameVal);
+    }
+    if (!setCookies2.length) {
+      const raw = tknResp.headers.get("set-cookie") || "";
+      for (const part of raw.split(",")) {
+        const nameVal = part.trim().split(";")[0];
+        if (nameVal && nameVal.includes("=") && !nameVal.includes("=DEL")) allCookies.push(nameVal);
+      }
+    }
+
+    const finalCookies = allCookies.join("; ");
+    console.log(`[BHE Auth] Paso 2 OK. Total cookies: ${allCookies.length}`);
+
+    if (allCookies.length < 2) {
+      console.error("[BHE Auth] Pocas cookies, auth probablemente fallo");
+      return null;
+    }
+
+    return finalCookies;
   } catch (err) {
     console.error("[BHE Auth] Error:", err);
     return null;
@@ -78,7 +123,7 @@ interface BHEBoleta {
   monto_liquido: number;
 }
 
-async function fetchBHE(token: string, rutEmpresa: string, dvEmpresa: string, anio: string, mes: string): Promise<{ boletas: BHEBoleta[]; total: number; pages: number }> {
+async function fetchBHE(cookieStr: string, rutEmpresa: string, dvEmpresa: string, anio: string, mes: string): Promise<{ boletas: BHEBoleta[]; total: number; pages: number }> {
   const allBoletas: BHEBoleta[] = [];
   let page = 0;
   let totalPages = 1;
@@ -88,8 +133,8 @@ async function fetchBHE(token: string, rutEmpresa: string, dvEmpresa: string, an
 
     const resp = await fetch(url, {
       headers: {
-        "Cookie": `TOKEN=${token}`,
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Cookie": cookieStr,
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
       },
     });
 
@@ -173,7 +218,7 @@ function splitRut(rutCompleto: string): { rut: string; dv: string } {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { rut: rutCompleto, clave, periodo } = body as { rut: string; clave: string; periodo: string };
+    const { rut: rutCompleto, clave, periodo, rutEmpresa: rutEmpresaParam } = body as { rut: string; clave: string; periodo: string; rutEmpresa?: string };
 
     if (!rutCompleto || !clave || !periodo) {
       return NextResponse.json({ error: "Faltan parámetros: rut, clave, periodo" }, { status: 400 });
@@ -182,21 +227,25 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "periodo debe ser YYYYMM" }, { status: 400 });
     }
 
-    const { rut, dv } = splitRut(rutCompleto);
+    // RUT de login (persona que se autentica)
+    const { rut: rutLogin, dv: dvLogin } = splitRut(rutCompleto);
+    // RUT de empresa (para consultar BHE recibidas — puede ser diferente al de login)
+    const rutEmpresaStr = rutEmpresaParam || rutCompleto;
+    const { rut: rutEmpresa, dv: dvEmpresa } = splitRut(rutEmpresaStr);
     const anio = periodo.slice(0, 4);
     const mes = periodo.slice(4, 6);
 
-    // 1. Autenticar
-    console.log(`[BHE] Autenticando RUT ${rut}-${dv}...`);
-    const token = await autenticarSII(rut, dv, clave);
-    if (!token) {
-      return NextResponse.json({ error: "No se pudo autenticar con el SII. Verifica RUT y clave tributaria de la empresa." }, { status: 401 });
+    // 1. Autenticar con RUT de la persona
+    console.log(`[BHE] Autenticando RUT ${rutLogin}-${dvLogin}...`);
+    const cookieStr = await autenticarSII(rutLogin, dvLogin, clave);
+    if (!cookieStr) {
+      return NextResponse.json({ error: "No se pudo autenticar con el SII. Verifica RUT y clave tributaria." }, { status: 401 });
     }
-    console.log(`[BHE] Token obtenido: ${token.slice(0, 8)}...`);
+    console.log(`[BHE] Auth OK. Cookies: ${cookieStr.slice(0, 40)}...`);
 
-    // 2. Descargar BHE
-    console.log(`[BHE] Descargando BHE ${anio}-${mes}...`);
-    const { boletas, total } = await fetchBHE(token, rut, dv, anio, mes);
+    // 2. Descargar BHE de la empresa
+    console.log(`[BHE] Descargando BHE empresa ${rutEmpresa}-${dvEmpresa} ${anio}-${mes}...`);
+    const { boletas, total } = await fetchBHE(cookieStr, rutEmpresa, dvEmpresa, anio, mes);
     console.log(`[BHE] ${total} boletas encontradas`);
 
     if (boletas.length === 0) {
