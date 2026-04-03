@@ -55,16 +55,50 @@ export async function POST(req: NextRequest) {
     steps.push(`Stock actual: version=${stockData.version}, locations=${JSON.stringify(stockData.locations.map(l => ({ type: l.type, qty: l.quantity })))}`);
 
     // Step 4: Determine stock type
-    const sellerTypes = stockData.locations.filter(l => l.type === "selling_address" || l.type === "seller_warehouse");
-    if (sellerTypes.length === 0) {
-      return NextResponse.json({ error: `No hay stock type controlable (selling_address/seller_warehouse) para ${userProductId}`, steps }, { status: 502 });
+    let sellerTypes = stockData.locations.filter(l => l.type === "selling_address" || l.type === "seller_warehouse");
+    let stockType: "selling_address" | "seller_warehouse";
+    let locationsForPut = stockData.locations;
+
+    if (sellerTypes.length > 0) {
+      stockType = sellerTypes[0].type as "selling_address" | "seller_warehouse";
+      steps.push(`Stock type: ${stockType}`);
+    } else {
+      // No seller locations in response — get them from another item that has them
+      steps.push("No hay seller locations en este item, buscando de otro item...");
+      const { data: otherItems } = await sb.from("ml_items_map")
+        .select("user_product_id")
+        .eq("activo", true)
+        .not("user_product_id", "is", null)
+        .neq("user_product_id", userProductId)
+        .limit(10);
+
+      let foundLocations: typeof stockData.locations | null = null;
+      for (const other of (otherItems || [])) {
+        const otherStock = await getDistributedStock(other.user_product_id);
+        if (otherStock) {
+          const otherSeller = otherStock.locations.filter(l => l.type === "selling_address" || l.type === "seller_warehouse");
+          if (otherSeller.length > 0) {
+            foundLocations = otherStock.locations;
+            steps.push(`Locations encontradas en ${other.user_product_id}: ${otherSeller.map(l => l.type).join(", ")}`);
+            break;
+          }
+        }
+      }
+
+      if (!foundLocations) {
+        return NextResponse.json({ error: `No se encontraron seller locations en ningún item`, steps }, { status: 502 });
+      }
+
+      sellerTypes = foundLocations.filter(l => l.type === "selling_address" || l.type === "seller_warehouse");
+      stockType = sellerTypes[0].type as "selling_address" | "seller_warehouse";
+      // Merge: use found seller locations + current item's other locations
+      locationsForPut = [...stockData.locations, ...sellerTypes];
+      steps.push(`Usando stock type: ${stockType} (de otro item)`);
     }
-    const stockType = sellerTypes[0].type as "selling_address" | "seller_warehouse";
-    steps.push(`Stock type: ${stockType}`);
 
     // Step 5: Push stock
-    steps.push(`Enviando ${qty} unidades a ML...`);
-    const pushResult = await updateFlexStock(userProductId, qty, stockData.version, stockType, stockData.locations, { sku });
+    steps.push(`Enviando ${qty} unidades a ML (${stockType})...`);
+    const pushResult = await updateFlexStock(userProductId, qty, stockData.version, stockType, locationsForPut, { sku });
     if (!pushResult.ok) {
       return NextResponse.json({ error: `Stock push falló: ${pushResult.error}`, steps }, { status: 502 });
     }
