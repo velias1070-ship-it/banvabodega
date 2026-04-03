@@ -335,8 +335,13 @@ export async function POST(req: NextRequest) {
     const anio = parseInt(periodo.slice(0, 4));
     const mes = parseInt(periodo.slice(4, 6));
     const lastDay = new Date(anio, mes, 0).getDate();
-    const fechaDesde = `${anio}-${String(mes).padStart(2, "0")}-01T00:00:00.000-03:00`;
-    const fechaHasta = `${anio}-${String(mes).padStart(2, "0")}-${lastDay}T23:59:59.999-03:00`;
+    // MP API requires UTC format (T03:00:00Z for Chile = midnight -03:00)
+    const mesStr = String(mes).padStart(2, "0");
+    const fechaDesde = `${anio}-${mesStr}-01T03:00:00Z`;
+    // End: first day of next month at 02:59:59Z (= last second of the month in Chile)
+    const nextMonth = mes === 12 ? 1 : mes + 1;
+    const nextYear = mes === 12 ? anio + 1 : anio;
+    const fechaHasta = `${nextYear}-${String(nextMonth).padStart(2, "0")}-01T02:59:59Z`;
 
     // Empresa
     const { data: empresas } = await sb.from("empresas").select("id").limit(1);
