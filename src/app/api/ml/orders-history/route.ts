@@ -412,24 +412,28 @@ export async function GET(req: NextRequest) {
       let packCostoEnvio = 0;
       let packBonificacion = 0;
 
+      const isFlex = groupLogisticType === "self_service";
+
       if (shipCosts) {
-        // Real data from ML API — sender cost is what we actually pay
+        // senderCost = what we actually pay for shipping (already net for both Full and Flex)
         packCostoEnvio = Math.round(shipCosts.senderCost);
-        packBonificacion = Math.round(shipCosts.bonificacion);
+        // Bonificación only applies to Flex — for Full the discount is internal to ML
+        // (already deducted from senderCost) and doesn't appear in seller's "Detalle de cobro"
+        packBonificacion = isFlex ? Math.round(shipCosts.bonificacion) : 0;
       } else {
-        // Fallback to billing API (for Full orders that have CFF detail)
+        // Fallback to billing API
         for (const order of packOrders) {
           const billing = billingMap.get(order.id);
           const billingData = extractBillingData(billing);
           if (billingData.has_shipping_detail) {
-            // For billing CFF: detail_amount is net, discount_amount is the bonificación
-            // sender cost = detail_amount, bonificación = discount_amount
+            // CFF detail_amount = net shipping cost (already discounted for Full)
             packCostoEnvio += billingData.costo_envio;
-            packBonificacion += billingData.ingreso_envio;
+            // Only Flex gets bonificación as real income; Full discount is internal
+            if (isFlex) packBonificacion += billingData.ingreso_envio;
           }
         }
         // If still no shipping info, use tarifa fija for Flex
-        if (packCostoEnvio === 0 && groupLogisticType === "self_service") {
+        if (packCostoEnvio === 0 && isFlex) {
           packCostoEnvio = tarifaFlex;
         }
       }
