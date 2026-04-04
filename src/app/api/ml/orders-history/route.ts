@@ -28,6 +28,7 @@ interface MLOrderFull {
   buyer: { id: number; nickname: string };
   total_amount: number;
   currency_id: string;
+  tags?: string[];
 }
 
 interface BillingOrderDetail {
@@ -134,24 +135,96 @@ interface ShipmentCosts {
   }>;
 }
 
-/** Fetch shipment costs (sender cost + bonificación) in parallel batches */
-async function fetchShipmentCosts(shippingIds: number[]): Promise<Map<number, { senderCost: number; bonificacion: number }>> {
+/** Tags on orders that indicate costs may have changed (claim, return, refund) */
+const REFETCH_TAGS = new Set(["claim", "returned", "refund", "mediation"]);
+
+/**
+ * Fetch shipment costs with DB cache.
+ * 1. Read cached costs from ml_shipments
+ * 2. Only call /shipments/{id}/costs for uncached or stale shipments
+ * 3. Save new costs to DB
+ * Stale = order was cancelled, has claim/return tags, or shipment status changed
+ */
+async function fetchShipmentCostsWithCache(
+  shippingIds: number[],
+  orderTagsByShipment: Map<number, string[]>,
+): Promise<Map<number, { senderCost: number; bonificacion: number }>> {
   const map = new Map<number, { senderCost: number; bonificacion: number }>();
+  if (shippingIds.length === 0) return map;
+
+  const sb = getServerSupabase();
+
+  // 1. Read cached costs from DB
+  const needsFetch: number[] = [];
+  if (sb) {
+    for (let i = 0; i < shippingIds.length; i += 500) {
+      const chunk = shippingIds.slice(i, i + 500);
+      const { data } = await sb.from("ml_shipments")
+        .select("shipment_id, sender_cost, bonificacion, costs_cached_at, status")
+        .in("shipment_id", chunk);
+      if (data) {
+        for (const row of data as { shipment_id: number; sender_cost: number | null; bonificacion: number | null; costs_cached_at: string | null; status: string }[]) {
+          // Check if we need to re-fetch (no cache, or order has claim/return tags)
+          const tags = orderTagsByShipment.get(row.shipment_id) || [];
+          const hasRefetchTag = tags.some(t => REFETCH_TAGS.has(t));
+          const isCancelled = row.status === "cancelled" || row.status === "not_delivered";
+
+          if (row.costs_cached_at && row.sender_cost !== null && !hasRefetchTag && !isCancelled) {
+            // Use cached value
+            map.set(row.shipment_id, { senderCost: row.sender_cost, bonificacion: row.bonificacion || 0 });
+          } else {
+            needsFetch.push(row.shipment_id);
+          }
+        }
+      }
+    }
+    // Also add any shipment IDs not found in DB at all
+    for (const sid of shippingIds) {
+      if (!map.has(sid) && !needsFetch.includes(sid)) needsFetch.push(sid);
+    }
+  } else {
+    needsFetch.push(...shippingIds);
+  }
+
+  const cachedCount = map.size;
+  console.log(`[ML Orders History] Costs: ${cachedCount} cached, ${needsFetch.length} to fetch from API`);
+
+  // 2. Fetch uncached costs from ML API in parallel
   const BATCH = 10;
-  for (let i = 0; i < shippingIds.length; i += BATCH) {
-    const batch = shippingIds.slice(i, i + BATCH);
+  const newCosts: Array<{ shipment_id: number; sender_cost: number; bonificacion: number }> = [];
+  for (let i = 0; i < needsFetch.length; i += BATCH) {
+    const batch = needsFetch.slice(i, i + BATCH);
     await Promise.all(batch.map(async (sid) => {
       try {
         const costs = await mlGet<ShipmentCosts>(`/shipments/${sid}/costs`);
         if (costs?.senders?.length) {
           const sender = costs.senders[0];
           const bonif = sender.discounts?.reduce((s, d) => s + (d.promoted_amount || 0), 0) || 0;
-          map.set(sid, { senderCost: sender.cost || 0, bonificacion: bonif });
+          const senderCost = Math.round(sender.cost || 0);
+          const bonificacion = Math.round(bonif);
+          map.set(sid, { senderCost, bonificacion });
+          newCosts.push({ shipment_id: sid, sender_cost: senderCost, bonificacion });
         }
       } catch { /* skip */ }
     }));
-    if (i + BATCH < shippingIds.length) await new Promise(r => setTimeout(r, 150));
+    if (i + BATCH < needsFetch.length) await new Promise(r => setTimeout(r, 150));
   }
+
+  // 3. Save new costs to DB
+  if (sb && newCosts.length > 0) {
+    for (let i = 0; i < newCosts.length; i += 100) {
+      const chunk = newCosts.slice(i, i + 100);
+      for (const c of chunk) {
+        void sb.from("ml_shipments").update({
+          sender_cost: c.sender_cost,
+          bonificacion: c.bonificacion,
+          costs_cached_at: new Date().toISOString(),
+        }).eq("shipment_id", c.shipment_id);
+      }
+    }
+    console.log(`[ML Orders History] Saved ${newCosts.length} new costs to cache`);
+  }
+
   return map;
 }
 
@@ -286,9 +359,18 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // 4. Fetch shipment costs (sender cost + bonificación) from /shipments/{id}/costs
+    // 4. Fetch shipment costs (with DB cache) — only calls ML API for uncached shipments
+    //    Re-fetches if order has claim/return/cancelled tags
+    const orderTagsByShipment = new Map<number, string[]>();
+    for (const order of orders) {
+      const sid = order.shipping?.id;
+      if (sid && order.tags) {
+        const existing = orderTagsByShipment.get(sid) || [];
+        orderTagsByShipment.set(sid, [...existing, ...order.tags]);
+      }
+    }
     console.log(`[ML Orders History] Fetching shipment costs for ${allShippingIds.length} shipments`);
-    const shipmentCostsMap = await fetchShipmentCosts(allShippingIds);
+    const shipmentCostsMap = await fetchShipmentCostsWithCache(allShippingIds, orderTagsByShipment);
     console.log(`[ML Orders History] Got costs for ${shipmentCostsMap.size} shipments`);
 
     // 5. Group orders by shipping_id to handle shared shipping costs
