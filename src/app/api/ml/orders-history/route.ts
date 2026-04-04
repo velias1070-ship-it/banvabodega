@@ -414,27 +414,24 @@ export async function GET(req: NextRequest) {
 
       const isFlex = groupLogisticType === "self_service";
 
-      if (shipCosts) {
-        // senderCost = what we actually pay for shipping (already net for both Full and Flex)
+      if (isFlex) {
+        // Flex: ML no cobra envío al seller. El costo es la tarifa fija del transportista.
+        // /shipments/{id}/costs → sender.cost es referencia logística, NO se cobra.
+        // Bonificación sí viene de /shipments/costs (sender.discounts)
+        packCostoEnvio = tarifaFlex;
+        packBonificacion = shipCosts ? Math.round(shipCosts.bonificacion) : 0;
+      } else if (shipCosts) {
+        // Full: ML cobra envío al seller via CFF/CXD. sender.cost = costo real.
         packCostoEnvio = Math.round(shipCosts.senderCost);
-        // Bonificación only applies to Flex — for Full the discount is internal to ML
-        // (already deducted from senderCost) and doesn't appear in seller's "Detalle de cobro"
-        packBonificacion = isFlex ? Math.round(shipCosts.bonificacion) : 0;
+        packBonificacion = 0; // Full discounts are internal to ML
       } else {
-        // Fallback to billing API
+        // Fallback to billing API for Full
         for (const order of packOrders) {
           const billing = billingMap.get(order.id);
           const billingData = extractBillingData(billing);
           if (billingData.has_shipping_detail) {
-            // CFF detail_amount = net shipping cost (already discounted for Full)
             packCostoEnvio += billingData.costo_envio;
-            // Only Flex gets bonificación as real income; Full discount is internal
-            if (isFlex) packBonificacion += billingData.ingreso_envio;
           }
-        }
-        // If still no shipping info, use tarifa fija for Flex
-        if (packCostoEnvio === 0 && isFlex) {
-          packCostoEnvio = tarifaFlex;
         }
       }
 
