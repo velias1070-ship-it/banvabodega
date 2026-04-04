@@ -103,8 +103,10 @@ function mapEstado(status: string): string {
 /** Fetch all paid orders in date range with pagination */
 async function fetchOrdersInRange(sellerId: string, from: string, to: string): Promise<MLOrderFull[]> {
   // Chile uses -03:00 in summer (CLST) and -04:00 in winter (CLT)
-  // Use -03:00 as safe default — may include a few extra hours but won't miss orders
-  const fromISO = new Date(from + "T00:00:00-03:00").toISOString();
+  // Use -04:00 for "from" (starts earlier in UTC) and -03:00 for "to" (ends later in UTC)
+  // This ensures we capture all orders in the Chile date range regardless of DST
+  // The caller filters by Chile date after to remove edge cases
+  const fromISO = new Date(from + "T00:00:00-04:00").toISOString();
   const toISO = new Date(to + "T23:59:59-03:00").toISOString();
 
   const allOrders: MLOrderFull[] = [];
@@ -326,13 +328,19 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // 1. Fetch all paid orders in range
+    // 1. Fetch all paid orders in range (ML may return edge-case orders from adjacent days due to timezone)
     console.log(`[ML Orders History] Fetching orders ${from} → ${to}`);
-    const orders = await fetchOrdersInRange(config.seller_id, from, to);
-    console.log(`[ML Orders History] ${orders.length} orders found`);
+    const rawOrders = await fetchOrdersInRange(config.seller_id, from, to);
+
+    // Filter by Chile date to exclude orders that ML returned but belong to adjacent days
+    const orders = rawOrders.filter(o => {
+      const chileDate = toChileISO(o.date_created).slice(0, 10); // YYYY-MM-DD in Chile
+      return chileDate >= from && chileDate <= to;
+    });
+    console.log(`[ML Orders History] ${orders.length} orders in range (${rawOrders.length} from API, ${rawOrders.length - orders.length} filtered out by timezone)`);
 
     if (orders.length === 0) {
-      return NextResponse.json({ ordenes: [], total: 0, total_raw: 0 });
+      return NextResponse.json({ ordenes: [], total: 0, total_raw: rawOrders.length });
     }
 
     // 2. Fetch billing details
