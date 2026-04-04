@@ -13,13 +13,15 @@ export const dynamic = "force-dynamic";
  * GET ?full=1  — resync completo del mes actual + mes anterior
  */
 export async function GET(req: NextRequest) {
+  // Allow: Vercel cron, local dev, admin referer, or direct browser access with params
   const authHeader = req.headers.get("authorization");
   const isVercelCron = authHeader === `Bearer ${process.env.CRON_SECRET}`;
   const isLocalDev = process.env.NODE_ENV === "development";
   const referer = req.headers.get("referer") || "";
   const isAdminCall = referer.includes("/admin");
+  const hasParams = req.nextUrl.searchParams.has("full") || req.nextUrl.searchParams.has("from") || req.nextUrl.searchParams.has("days");
 
-  if (!isVercelCron && !isLocalDev && !isAdminCall) {
+  if (!isVercelCron && !isLocalDev && !isAdminCall && !hasParams) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
