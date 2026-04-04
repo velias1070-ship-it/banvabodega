@@ -64,8 +64,85 @@ function LoginGate({ onLogin }: { onLogin: (pin: string) => boolean }) {
   );
 }
 
+type AdminTab = "dash"|"rec"|"flex"|"enviosfull"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"intel"|"compras"|"eventos"|"ventasml"|"comercial"|"agentes"|"stockml"|"timeline"|"config";
+
+const MOBILE_MENU_SECTIONS = [
+  { section: "Principal", items: [
+    ["dash","Dashboard","📊"],
+    ["rec","Recepción","📦"],
+    ["flex","Ultima Milla","🚚"],
+    ["enviosfull","Envios Full","📤"],
+  ] as const },
+  { section: "Inventario", items: [
+    ["ops","Operaciones","⚡"],
+    ["inv","Inventario","📋"],
+    ["mov","Movimientos","↔️"],
+    ["timeline","Timeline","📈"],
+    ["prod","Productos","🏷️"],
+    ["stockml","Stock ML","🔗"],
+  ] as const },
+  { section: "Comercial", items: [
+    ["reposicion","Reposición","🔄"],
+    ["intel","Inteligencia","🧠"],
+    ["compras","Compras","🛒"],
+    ["eventos","Eventos","📅"],
+    ["ventasml","Ventas ML","💰"],
+    ["comercial","Publicaciones","📣"],
+  ] as const },
+  { section: "Sistema", items: [
+    ["agentes","Agentes IA","🤖"],
+    ["config","Configuración","⚙️"],
+  ] as const },
+];
+
+function MobileMenu({ tab, setTab }: { tab: AdminTab; setTab: (t: AdminTab) => void }) {
+  const [open, setOpen] = useState(false);
+  const allItems = MOBILE_MENU_SECTIONS.flatMap(s => [...s.items]);
+  const found = allItems.find(([k]) => k === tab);
+  const currentLabel = found ? found[1] : "Dashboard";
+  const currentIcon = found ? found[2] : "📊";
+
+  return (
+    <div className="mobile-only">
+      <div style={{ padding: "8px 16px", position: "sticky", top: 52, zIndex: 99, background: "var(--bg)", borderBottom: "1px solid var(--bg4)" }}>
+        <button className="admin-mobile-menu-btn" onClick={() => setOpen(true)} style={{ width: "100%" }}>
+          <span>{currentIcon}</span>
+          <span style={{ flex: 1, textAlign: "left" }}>{currentLabel}</span>
+          <span style={{ fontSize: 10, color: "var(--txt3)" }}>&#9660;</span>
+        </button>
+      </div>
+      {open && (
+        <div className="admin-mobile-menu-overlay" onClick={() => setOpen(false)}>
+          <div className="admin-mobile-menu-sheet" onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <span style={{ fontWeight: 700, fontSize: 15 }}>Navegación</span>
+              <button onClick={() => setOpen(false)} style={{ padding: "4px 12px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt3)", fontSize: 12 }}>Cerrar</button>
+            </div>
+            {MOBILE_MENU_SECTIONS.map(section => (
+              <div key={section.section}>
+                <div className="menu-section">{section.section}</div>
+                <div className="menu-grid">
+                  {section.items.map(([key, label, icon]) => (
+                    <button
+                      key={key}
+                      className={`menu-item ${tab === key ? "active" : ""}`}
+                      onClick={() => { setTab(key as AdminTab); setOpen(false); }}
+                    >
+                      <span className="menu-icon">{icon}</span>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function AdminPage() {
-  type AdminTab = "dash"|"rec"|"flex"|"enviosfull"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"intel"|"compras"|"eventos"|"ventasml"|"comercial"|"agentes"|"stockml"|"timeline"|"config";
   const [tab, setTab] = useState<AdminTab>(() => {
     if (typeof window !== "undefined") {
       const saved = sessionStorage.getItem("banva_admin_tab");
@@ -138,7 +215,7 @@ export default function AdminPage() {
           </div>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:12}}>
-          <span style={{fontSize:11,color:"var(--txt3)"}}>{new Date().toLocaleDateString("es-CL",{weekday:"long",day:"numeric",month:"long",year:"numeric"})}</span>
+          <span className="admin-topbar-date" style={{fontSize:11,color:"var(--txt3)"}}>{new Date().toLocaleDateString("es-CL",{weekday:"long",day:"numeric",month:"long",year:"numeric"})}</span>
           <button onClick={auth.logout} style={{padding:"6px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--red)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>Cerrar sesión</button>
         </div>
       </div>
@@ -178,12 +255,8 @@ export default function AdminPage() {
         </nav>
 
         <main className="admin-main">
-          {/* Mobile tabs fallback */}
-          <div className="admin-mobile-tabs">
-            {([["dash","Dashboard"],["rec","Recepción"],["flex","Ultima Milla"],["enviosfull","Envios Full"],["ops","Ops"],["inv","Inventario"],["mov","Movim."],["timeline","Timeline"],["prod","Productos"],["reposicion","Reposición"],["intel","Inteligencia"],["compras","Compras"],["eventos","Eventos"],["ventasml","Ventas ML"],["comercial","Publicaciones"],["agentes","Agentes IA"],["stockml","Stock ML"],["config","Config"]] as const).map(([key,label])=>(
-              <button key={key} className={`tab ${tab===key?"active-cyan":""}`} onClick={()=>setTab(key as any)}>{label}</button>
-            ))}
-          </div>
+          {/* Mobile menu */}
+          <MobileMenu tab={tab} setTab={setTab}/>
           <div className="admin-content">
             {tab==="dash"&&<Dashboard/>}
             {tab==="rec"&&<AdminRecepciones refresh={r}/>}
