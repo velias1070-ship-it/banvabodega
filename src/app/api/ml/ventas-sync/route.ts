@@ -59,14 +59,21 @@ export async function GET(req: NextRequest) {
 
     console.log(`[Ventas Sync] Syncing ${fromDate} → ${toDate} (${isFull ? "full" : "incremental"})`);
 
-    // Fetch from orders-history endpoint (reuse all the logic already built)
-    const baseUrl = process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
-      : process.env.NEXT_PUBLIC_VERCEL_URL
-        ? `https://${process.env.NEXT_PUBLIC_VERCEL_URL}`
-        : "http://localhost:3000";
+    // Resolve base URL — try multiple sources
+    const resolveBaseUrl = () => {
+      // 1. Explicit production URL
+      if (process.env.NEXT_PUBLIC_SITE_URL) return process.env.NEXT_PUBLIC_SITE_URL;
+      // 2. Vercel system URL (includes protocol for VERCEL_PROJECT_PRODUCTION_URL)
+      if (process.env.VERCEL_PROJECT_PRODUCTION_URL) return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
+      // 3. Vercel URL (deployment-specific)
+      if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
+      // 4. Fallback
+      return "http://localhost:3000";
+    };
+    const baseUrl = resolveBaseUrl();
+    console.log(`[Ventas Sync] Using baseUrl: ${baseUrl}`);
 
-    // Fetch in 15-day chunks to avoid timeout
+    // Fetch in 15-day chunks
     const allOrdenes: Array<Record<string, unknown>> = [];
     const cursor = new Date(fromDate + "T00:00:00");
     const end = new Date(toDate + "T00:00:00");
@@ -79,15 +86,20 @@ export async function GET(req: NextRequest) {
       const chunkTo = actualEnd.toISOString().slice(0, 10);
 
       console.log(`[Ventas Sync] Chunk ${chunkFrom} → ${chunkTo}`);
-      const res = await fetch(`${baseUrl}/api/ml/orders-history?from=${chunkFrom}&to=${chunkTo}&tarifa_flex=3320`, {
-        headers: { "x-internal": "1" },
-      });
-
-      if (res.ok) {
-        const json = await res.json();
-        if (json.ordenes) allOrdenes.push(...json.ordenes);
-      } else {
-        console.warn(`[Ventas Sync] Chunk ${chunkFrom}→${chunkTo} failed: ${res.status}`);
+      try {
+        const res = await fetch(`${baseUrl}/api/ml/orders-history?from=${chunkFrom}&to=${chunkTo}&tarifa_flex=3320`, {
+          headers: { "x-internal": "1" },
+        });
+        if (res.ok) {
+          const json = await res.json();
+          if (json.ordenes) allOrdenes.push(...json.ordenes);
+          console.log(`[Ventas Sync] Chunk ${chunkFrom}→${chunkTo}: ${json.ordenes?.length || 0} orders`);
+        } else {
+          const errText = await res.text().catch(() => "");
+          console.warn(`[Ventas Sync] Chunk ${chunkFrom}→${chunkTo} failed: ${res.status} ${errText.slice(0, 200)}`);
+        }
+      } catch (fetchErr) {
+        console.warn(`[Ventas Sync] Chunk ${chunkFrom}→${chunkTo} fetch error: ${fetchErr}`);
       }
 
       cursor.setDate(actualEnd.getDate() + 1);
@@ -135,7 +147,7 @@ export async function GET(req: NextRequest) {
     }
 
     console.log(`[Ventas Sync] Done: ${upserted} rows upserted for ${fromDate} → ${toDate}`);
-    return NextResponse.json({ status: "ok", synced: upserted, total_orders: allOrdenes.length, range: `${fromDate} → ${toDate}` });
+    return NextResponse.json({ status: "ok", synced: upserted, total_orders: allOrdenes.length, range: `${fromDate} → ${toDate}`, baseUrl });
   } catch (err) {
     console.error("[Ventas Sync] Error:", err);
     return NextResponse.json({ error: String(err) }, { status: 500 });
