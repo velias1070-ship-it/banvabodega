@@ -20,6 +20,7 @@ export default function PickingPage() {
   const [operario, setOperario] = useState("");
   const [flexSession, setFlexSession] = useState<DBPickingSession | null>(null);
   const [flexShipCount, setFlexShipCount] = useState(0);
+  const [flexMlShipIds, setFlexMlShipIds] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     setMounted(true);
@@ -64,7 +65,8 @@ export default function PickingPage() {
         return limitDay <= today;
       });
       setFlexShipCount(todayShips.length);
-    } catch { setFlexShipCount(0); }
+      setFlexMlShipIds(new Set(todayShips.map(s => s.shipment_id)));
+    } catch { setFlexShipCount(0); setFlexMlShipIds(new Set()); }
   }, [loadSessions]);
 
   useEffect(() => { if (!loading) loadFlexSession(); }, [loading, loadFlexSession]);
@@ -102,6 +104,7 @@ export default function PickingPage() {
           return limitDay <= today;
         });
         setFlexShipCount(todayShips.length);
+        setFlexMlShipIds(new Set(todayShips.map(s => s.shipment_id)));
       } catch {}
     }, 60_000);
     return () => clearInterval(iv);
@@ -219,24 +222,33 @@ export default function PickingPage() {
         )}
         {/* FLEX: direct view */}
         {screen==="flex"&&(<>
-          {/* Validation banner — ML vs App count */}
-          {flexShipCount > 0 && flexSession && flexShipCount !== flexSession.lineas.length && (
-            <div style={{padding:12,borderRadius:10,marginBottom:12,background:"#ef444422",border:"2px solid #ef4444",color:"#fca5a5"}}>
-              <div style={{fontSize:14,fontWeight:800}}>⚠️ ML: {flexShipCount} pedidos | App: {flexSession.lineas.length} picks</div>
-              <div style={{fontSize:11,marginTop:4,color:"#fca5a5"}}>NO DESPACHAR hasta que calcen. Espera 1 min o sincroniza.</div>
-              <button onClick={async()=>{
-                await fetch("/api/ml/sync",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"sync",days:1})}).catch(()=>{});
-                await loadFlexSession();
-              }} style={{marginTop:8,padding:"6px 14px",borderRadius:6,background:"#ef4444",color:"#fff",fontSize:11,fontWeight:700,border:"none",cursor:"pointer"}}>
-                Sincronizar ahora
-              </button>
-            </div>
-          )}
-          {flexShipCount > 0 && flexSession && flexShipCount === flexSession.lineas.length && (
-            <div style={{padding:8,borderRadius:10,marginBottom:12,background:"#10b98122",border:"1px solid #10b98144",color:"#10b981",fontSize:12,fontWeight:600,textAlign:"center"}}>
-              ✅ {flexShipCount} pedidos — calza con MercadoLibre
-            </div>
-          )}
+          {/* Validation banner — compare shipment IDs (not line counts, since 1 shipment can have multiple items/picks) */}
+          {flexShipCount > 0 && flexSession && (() => {
+            const appShipIds = new Set<number>();
+            for (const l of flexSession.lineas) { for (const sid of (l.shipmentIds || [])) appShipIds.add(sid); }
+            const mlMissing = Array.from(flexMlShipIds).filter(id => !appShipIds.has(id));
+            const appExtra = Array.from(appShipIds).filter(id => !flexMlShipIds.has(id));
+            const isMatch = mlMissing.length === 0 && appExtra.length === 0;
+            if (isMatch) return (
+              <div style={{padding:8,borderRadius:10,marginBottom:12,background:"#10b98122",border:"1px solid #10b98144",color:"#10b981",fontSize:12,fontWeight:600,textAlign:"center"}}>
+                ✅ {flexShipCount} pedidos — calza con MercadoLibre
+              </div>
+            );
+            return (
+              <div style={{padding:12,borderRadius:10,marginBottom:12,background:"#ef444422",border:"2px solid #ef4444",color:"#fca5a5"}}>
+                <div style={{fontSize:14,fontWeight:800}}>⚠️ ML: {flexShipCount} pedidos | App: {appShipIds.size} shipments ({flexSession.lineas.length} picks)</div>
+                {mlMissing.length > 0 && <div style={{fontSize:11,marginTop:4}}>Faltan en app: {mlMissing.length} pedido{mlMissing.length > 1 ? "s" : ""}</div>}
+                {appExtra.length > 0 && <div style={{fontSize:11,marginTop:2}}>Sobran en app: {appExtra.length} (cancelados?)</div>}
+                <div style={{fontSize:11,marginTop:4,color:"#fca5a5"}}>NO DESPACHAR hasta que calcen. Espera 1 min o sincroniza.</div>
+                <button onClick={async()=>{
+                  await fetch("/api/ml/sync",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"sync",days:1})}).catch(()=>{});
+                  await loadFlexSession();
+                }} style={{marginTop:8,padding:"6px 14px",borderRadius:6,background:"#ef4444",color:"#fff",fontSize:11,fontWeight:700,border:"none",cursor:"pointer"}}>
+                  Sincronizar ahora
+                </button>
+              </div>
+            );
+          })()}
           {flexSession ? (
             <SessionDetail session={flexSession} operario={operario} onPickComp={(l,i)=>{setActiveSes(flexSession);setActiveLinea(l);setActiveCompIdx(i);setScreen("pick");}} onRefresh={refreshActiveFlex} shipCount={flexShipCount}/>
           ) : (
