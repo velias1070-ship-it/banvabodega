@@ -223,7 +223,16 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
     try {
       let totalRetiros = 0;
       const allLogs: string[] = [];
+      // Expandir periodos anuales (YYYY) a meses (YYYYMM)
+      const periodosExp: string[] = [];
       for (const p of periodos) {
+        if (p.length === 4) {
+          for (let m = 1; m <= 12; m++) periodosExp.push(`${p}${String(m).padStart(2, "0")}`);
+        } else {
+          periodosExp.push(p);
+        }
+      }
+      for (const p of periodosExp) {
         setSyncMsg(`Sincronizando ${p.slice(0,4)}-${p.slice(4)}... (generando reporte en MP, puede tardar hasta 90s)`);
         const res = await fetch("/api/mp/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ periodo: p }), signal: AbortSignal.timeout(120_000) });
         const d = await res.json();
