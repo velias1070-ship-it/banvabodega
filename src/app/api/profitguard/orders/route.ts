@@ -61,6 +61,10 @@ async function fetchAllPages(apiKey: string, baseUrl: string): Promise<PGOrder[]
   const sep = baseUrl.includes("?") ? "&" : "?";
 
   const firstResponse = await fetchPage(apiKey, `${baseUrl}${sep}page=1`);
+  if (!firstResponse.data || !Array.isArray(firstResponse.data)) {
+    console.error("[ProfitGuard] Respuesta inesperada — data no es array:", JSON.stringify(firstResponse).slice(0, 500));
+    return [];
+  }
   allOrders.push(...firstResponse.data);
   const totalPages = firstResponse.pagination?.pages ?? 1;
 
@@ -70,6 +74,10 @@ async function fetchAllPages(apiKey: string, baseUrl: string): Promise<PGOrder[]
   while (page <= totalPages) {
     await new Promise(r => setTimeout(r, 100));
     const pageRes = await fetchPage(apiKey, `${baseUrl}${sep}page=${page}`);
+    if (!pageRes.data || !Array.isArray(pageRes.data)) {
+      console.error(`[ProfitGuard] Página ${page} respuesta inválida, abortando paginación`);
+      break;
+    }
     allOrders.push(...pageRes.data);
     console.log(`[ProfitGuard] Página ${page}/${totalPages} — ${pageRes.data.length} órdenes`);
     page++;
