@@ -254,32 +254,34 @@ async function fetchShipmentCostsWithCache(
   return map;
 }
 
-/** Fetch billing details for a batch of order IDs */
+/** Fetch billing details for a batch of order IDs (parallel, 3 concurrent) */
 async function fetchBillingForOrders(orderIds: number[]): Promise<Map<number, BillingOrderDetail>> {
   const map = new Map<number, BillingOrderDetail>();
   if (orderIds.length === 0) return map;
 
-  // Batch in groups of 20
+  const batches: number[][] = [];
   for (let i = 0; i < orderIds.length; i += 20) {
-    const batch = orderIds.slice(i, i + 20);
-    const idsParam = batch.join(",");
+    batches.push(orderIds.slice(i, i + 20));
+  }
 
-    try {
-      const result = await mlGet<BillingResponse>(
-        `/billing/integration/group/ML/order/details?order_ids=${idsParam}`
-      );
-      if (result?.results) {
-        for (const detail of result.results) {
-          if (detail.order_id) map.set(detail.order_id, detail);
+  // Process 3 batches in parallel
+  for (let i = 0; i < batches.length; i += 3) {
+    const group = batches.slice(i, i + 3);
+    await Promise.all(group.map(async (batch) => {
+      try {
+        const result = await mlGet<BillingResponse>(
+          `/billing/integration/group/ML/order/details?order_ids=${batch.join(",")}`
+        );
+        if (result?.results) {
+          for (const detail of result.results) {
+            if (detail.order_id) map.set(detail.order_id, detail);
+          }
         }
+      } catch (err) {
+        console.warn(`[ML Orders History] Billing fetch failed for batch: ${err}`);
       }
-    } catch (err) {
-      console.warn(`[ML Orders History] Billing fetch failed for batch: ${err}`);
-    }
-
-    if (i + 20 < orderIds.length) {
-      await new Promise(r => setTimeout(r, 200));
-    }
+    }));
+    if (i + 3 < batches.length) await new Promise(r => setTimeout(r, 100));
   }
 
   return map;

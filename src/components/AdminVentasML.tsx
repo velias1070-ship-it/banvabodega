@@ -115,7 +115,7 @@ export default function AdminVentasML() {
     setLoading("Cargando ambas fuentes...");
     setError(null);
     try {
-      // ML directo in 2-day chunks
+      // ML directo in 15-day chunks
       const allMl: OrderRow[] = [];
       const start = new Date(from + "T00:00:00");
       const end = new Date(to + "T00:00:00");
@@ -123,7 +123,7 @@ export default function AdminVentasML() {
       const cursor = new Date(start);
       while (cursor <= end) {
         const chunkEnd = new Date(cursor);
-        chunkEnd.setDate(chunkEnd.getDate() + 1);
+        chunkEnd.setDate(chunkEnd.getDate() + 14); // 15-day chunks
         const actualEnd = chunkEnd > end ? end : chunkEnd;
         chunks.push({ from: cursor.toISOString().slice(0, 10), to: actualEnd.toISOString().slice(0, 10) });
         cursor.setDate(actualEnd.getDate() + 1);
@@ -175,7 +175,7 @@ export default function AdminVentasML() {
       const cursor = new Date(start);
       while (cursor <= end) {
         const chunkEnd = new Date(cursor);
-        chunkEnd.setDate(chunkEnd.getDate() + 4); // 5-day chunks
+        chunkEnd.setDate(chunkEnd.getDate() + 29); // 30-day chunks
         const actualEnd = chunkEnd > end ? end : chunkEnd;
         chunks.push({ from: cursor.toISOString().slice(0, 10), to: actualEnd.toISOString().slice(0, 10) });
         cursor.setDate(actualEnd.getDate() + 1);
