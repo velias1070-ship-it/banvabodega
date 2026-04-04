@@ -105,9 +105,11 @@ function mapEstado(status: string): string {
 async function fetchOrdersInRange(sellerId: string, from: string, to: string): Promise<MLOrderFull[]> {
   // Chile uses -03:00 in summer (CLST) and -04:00 in winter (CLT)
   // Use -04:00 for "from" (starts earlier in UTC) and -03:00 for "to" (ends later in UTC)
-  // This ensures we capture all orders in the Chile date range regardless of DST
-  // The caller filters by Chile date after to remove edge cases
-  const fromISO = new Date(from + "T00:00:00-04:00").toISOString();
+  // Expand "from" by 1 day to catch orders created late prev day but closed (paid) on target day
+  // The caller filters by date_closed in Chile timezone after fetching
+  const expandedFrom = new Date(from + "T00:00:00-04:00");
+  expandedFrom.setDate(expandedFrom.getDate() - 1);
+  const expandedFromISO = expandedFrom.toISOString();
   const toISO = new Date(to + "T23:59:59-03:00").toISOString();
 
   const allOrders: MLOrderFull[] = [];
@@ -116,7 +118,9 @@ async function fetchOrdersInRange(sellerId: string, from: string, to: string): P
   const maxPages = 40; // Safety: max 2000 orders
 
   for (let page = 0; page < maxPages; page++) {
-    const url = `/orders/search?seller=${sellerId}&order.status=paid&sort=date_desc&order.date_closed.from=${encodeURIComponent(fromISO)}&order.date_closed.to=${encodeURIComponent(toISO)}&limit=${limit}&offset=${offset}`;
+    // ML only supports filtering by date_created (not date_closed)
+    // We expand the range by 1 day earlier to catch orders created late on prev day but closed on target day
+    const url = `/orders/search?seller=${sellerId}&order.status=paid&sort=date_desc&order.date_created.from=${encodeURIComponent(expandedFromISO)}&order.date_created.to=${encodeURIComponent(toISO)}&limit=${limit}&offset=${offset}`;
     const result = await mlGet<MLSearchResult>(url);
     if (!result || !result.results || result.results.length === 0) break;
 
