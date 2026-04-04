@@ -1,8 +1,13 @@
 "use client";
 import { useState } from "react";
+import * as XLSX from "xlsx";
 
 interface OrderRow {
   order_id: string;
+  order_number?: string;
+  fecha?: string;
+  cliente?: string;
+  razon_social?: string;
   sku_venta: string;
   nombre_producto: string;
   cantidad: number;
@@ -11,6 +16,7 @@ interface OrderRow {
   subtotal: number;
   comision_unitaria: number;
   comision_total: number;
+  estado?: string;
   costo_envio: number;
   ingreso_envio: number;
   ingreso_adicional_tc: number;
@@ -18,6 +24,8 @@ interface OrderRow {
   total_neto?: number;
   logistic_type: string;
   fuente: string;
+  documento_tributario?: string;
+  estado_documento?: string;
 }
 
 interface ComparisonRow {
@@ -153,6 +161,37 @@ export default function AdminVentasML() {
     matchStats[f] = rows.filter(r => r.pg && r.ml && r.pg[f] === r.ml[f]).length;
   }
 
+  const exportToExcel = () => {
+    if (mlOrders.length === 0) return;
+    const rows = mlOrders.map(o => ({
+      "Cliente": o.cliente || "",
+      "Razón Social": o.razon_social || "",
+      "Canal": o.canal,
+      "Order ID": o.order_id,
+      "Order Number": o.order_number || o.order_id,
+      "Fecha": o.fecha || "",
+      "Producto": o.nombre_producto,
+      "SKU": o.sku_venta,
+      "Cantidad": o.cantidad,
+      "Precio Unitario": o.precio_unitario,
+      "Subtotal": o.subtotal,
+      "Comision Unitaria": o.comision_unitaria,
+      "Comision Total": o.comision_total,
+      "Estado": o.estado || "",
+      "Costo Envío": o.costo_envio,
+      "Ingreso Envío": o.ingreso_envio || 0,
+      "Ingreso Adicional Tarjeta de Crédito": o.ingreso_adicional_tc || 0,
+      "Total": o.total_neto ?? (o.subtotal - o.comision_total - o.costo_envio + (o.ingreso_envio || 0)),
+      "Logística": o.logistic_type,
+      "Documento Tributario": o.documento_tributario || "",
+      "Estado Documento": o.estado_documento || "",
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Ventas ML");
+    XLSX.writeFile(wb, `ventas_ml_${from}_${to}.xlsx`);
+  };
+
   // Totals for ML directo
   const mlTotals = mlOrders.reduce((acc, o) => ({
     subtotal: acc.subtotal + o.subtotal,
@@ -191,6 +230,12 @@ export default function AdminVentasML() {
               style={{ padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)", cursor: loading ? "wait" : "pointer" }}>
               Comparar
             </button>
+            {mlOrders.length > 0 && (
+              <button onClick={exportToExcel}
+                style={{ padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: "var(--greenBg)", color: "var(--green)", border: "1px solid var(--greenBd)", cursor: "pointer" }}>
+                Exportar
+              </button>
+            )}
           </div>
         </div>
         {loading && <div style={{ marginTop: 8, fontSize: 12, color: "var(--amber)" }}>{loading}</div>}

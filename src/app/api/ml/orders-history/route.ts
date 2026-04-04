@@ -35,7 +35,7 @@ interface BillingOrderDetail {
   order_id: number;
   sale_fee?: { gross: number; net: number; rebate: number } | null;
   details?: Array<{
-    charge_info?: { detail_amount: number; detail_sub_type: string; detail_type: string; transaction_detail: string };
+    charge_info?: { detail_amount: number; detail_sub_type: string; detail_type: string; transaction_detail: string; legal_document_number: string | null; legal_document_status: string | null; legal_document_status_description: string | null };
     discount_info?: { charge_amount_without_discount: number; discount_amount: number; discount_reason: string };
     sales_info?: Array<{ order_id: number; transaction_amount: number; sale_fee?: { gross: number; net: number; rebate: number } }>;
     shipping_info?: { shipping_id: string; pack_id?: string; receiver_shipping_cost: number };
@@ -54,6 +54,8 @@ interface MappedOrder {
   order_id: string;
   order_number: string;
   fecha: string;
+  cliente: string;
+  razon_social: string;
   sku_venta: string;
   nombre_producto: string;
   cantidad: number;
@@ -70,6 +72,8 @@ interface MappedOrder {
   logistic_type: string;
   estado: string;
   fuente: string;
+  documento_tributario: string;
+  estado_documento: string;
 }
 
 /** Convert any date string to Chile timezone (America/Santiago) */
@@ -471,10 +475,18 @@ export async function GET(req: NextRequest) {
           // Neto = lo que recibimos: subtotal - comisión - envío + bonificación
           const totalNeto = subtotal - comisionTotal - costoEnvio + bonificacion;
 
+          // Extract billing document info
+          const billing = billingMap.get(order.id);
+          const cvDetail = billing?.details?.find(d => d.charge_info?.detail_sub_type === "CV");
+          const docNum = cvDetail?.charge_info?.legal_document_number || "";
+          const docStatus = cvDetail?.charge_info?.legal_document_status_description || cvDetail?.charge_info?.legal_document_status || "";
+
           ordenes.push({
             order_id: String(order.id),
             order_number: String(order.pack_id || order.id),
             fecha: toChileISO(order.date_created),
+            cliente: order.buyer?.nickname || "",
+            razon_social: "",
             sku_venta: skuVenta,
             nombre_producto: item.item.title,
             cantidad: item.quantity,
@@ -491,6 +503,8 @@ export async function GET(req: NextRequest) {
             logistic_type: logisticType,
             estado: mapEstado(order.status),
             fuente: "ml_directo",
+            documento_tributario: docNum,
+            estado_documento: docStatus,
           });
         }
       }
