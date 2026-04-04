@@ -95,20 +95,48 @@ export default function AdminVentasML() {
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<"comparativa" | "ml_directo">("comparativa");
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+  const [source, setSource] = useState<"cache" | "live" | "session">("cache");
 
-  // Restore from cache on mount
+  // Load from DB cache (instant)
+  const loadFromDBCache = async (f: string, t: string) => {
+    setLoading("Cargando desde cache...");
+    setError(null);
+    try {
+      const res = await fetch(`/api/ml/ventas-cache?from=${f}&to=${t}`);
+      const json = await res.json();
+      if (json.ordenes && json.ordenes.length > 0) {
+        setMlOrders(json.ordenes);
+        setPgOrders([]);
+        setView("ml_directo");
+        setSource("cache");
+        const syncTime = json.last_sync ? new Date(json.last_sync).toLocaleString("es-CL", { timeZone: "America/Santiago" }) : null;
+        setLastUpdated(syncTime);
+        saveCache({ from: f, to: t, tarifaFlex, mlOrders: json.ordenes, pgOrders: [], updatedAt: syncTime || "" });
+        return true;
+      }
+      return false;
+    } catch { return false; }
+    finally { setLoading(null); }
+  };
+
+  // On mount: try sessionStorage first, then DB cache for today
   useEffect(() => {
     const cached = loadCache();
-    if (cached) {
+    if (cached && cached.mlOrders.length > 0) {
       setFrom(cached.from);
       setTo(cached.to);
       setTarifaFlex(cached.tarifaFlex);
       setMlOrders(cached.mlOrders);
       setPgOrders(cached.pgOrders);
       setLastUpdated(cached.updatedAt);
+      setSource("session");
       if (cached.pgOrders.length > 0) setView("comparativa");
-      else if (cached.mlOrders.length > 0) setView("ml_directo");
+      else setView("ml_directo");
+    } else {
+      // Load today from DB cache
+      loadFromDBCache(today, today);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchBoth = async () => {
@@ -155,6 +183,7 @@ export default function AdminVentasML() {
       }
       const now = new Date().toLocaleString("es-CL", { timeZone: "America/Santiago" });
       setLastUpdated(now);
+      setSource("live");
       saveCache({ from, to, tarifaFlex, mlOrders: allMl, pgOrders: pgData?.ordenes || [], updatedAt: now });
     } catch (err) {
       setError(String(err));
@@ -196,6 +225,7 @@ export default function AdminVentasML() {
       setPgOrders([]);
       const now = new Date().toLocaleString("es-CL", { timeZone: "America/Santiago" });
       setLastUpdated(now);
+      setSource("live");
       saveCache({ from, to, tarifaFlex, mlOrders: allOrdenes, pgOrders: [], updatedAt: now });
     } catch (err) {
       setError(String(err));
@@ -351,7 +381,7 @@ export default function AdminVentasML() {
           {getDatePresets().map(p => {
             const isActive = from === p.from && to === p.to;
             return (
-              <button key={p.label} onClick={() => { setFrom(p.from); setTo(p.to); }}
+              <button key={p.label} onClick={() => { setFrom(p.from); setTo(p.to); loadFromDBCache(p.from, p.to); }}
                 style={{ padding: "4px 10px", borderRadius: 6, fontSize: 10, fontWeight: isActive ? 700 : 500, background: isActive ? "var(--cyanBg)" : "var(--bg3)", color: isActive ? "var(--cyan)" : "var(--txt3)", border: `1px solid ${isActive ? "var(--cyanBd)" : "var(--bg4)"}`, cursor: "pointer" }}>
                 {p.label}
               </button>
@@ -376,7 +406,7 @@ export default function AdminVentasML() {
         </div>
         {loading && <div style={{ marginTop: 8, fontSize: 12, color: "var(--amber)" }}>{loading}</div>}
         {error && <div style={{ marginTop: 8, fontSize: 12, color: "var(--red)" }}>{error}</div>}
-        {lastUpdated && !loading && <div style={{ marginTop: 8, fontSize: 11, color: "var(--txt3)" }}>Última actualización: {lastUpdated}</div>}
+        {lastUpdated && !loading && <div style={{ marginTop: 8, fontSize: 11, color: "var(--txt3)" }}>Última sync: {lastUpdated} · Fuente: {source === "cache" ? "Cache DB (auto)" : source === "live" ? "ML API (live)" : "Sesión"}</div>}
       </div>
 
       {/* KPIs */}
