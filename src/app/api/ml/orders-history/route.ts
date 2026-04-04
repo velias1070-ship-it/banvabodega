@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { mlGet, getMLConfig } from "@/lib/ml";
 import { getServerSupabase } from "@/lib/supabase-server";
 
-export const maxDuration = 60;
+export const maxDuration = 300; // 5 min (Vercel Pro)
 export const dynamic = "force-dynamic";
 
 /* ───── Tipos ML API ───── */
@@ -134,20 +134,23 @@ interface ShipmentCosts {
   }>;
 }
 
-/** Fetch shipment costs (sender cost + bonificación) */
+/** Fetch shipment costs (sender cost + bonificación) in parallel batches */
 async function fetchShipmentCosts(shippingIds: number[]): Promise<Map<number, { senderCost: number; bonificacion: number }>> {
   const map = new Map<number, { senderCost: number; bonificacion: number }>();
-  for (let i = 0; i < shippingIds.length; i++) {
-    const sid = shippingIds[i];
-    try {
-      const costs = await mlGet<ShipmentCosts>(`/shipments/${sid}/costs`);
-      if (costs?.senders?.length) {
-        const sender = costs.senders[0];
-        const bonif = sender.discounts?.reduce((s, d) => s + (d.promoted_amount || 0), 0) || 0;
-        map.set(sid, { senderCost: sender.cost || 0, bonificacion: bonif });
-      }
-    } catch { /* skip */ }
-    if (i > 0 && i % 10 === 0) await new Promise(r => setTimeout(r, 200));
+  const BATCH = 10;
+  for (let i = 0; i < shippingIds.length; i += BATCH) {
+    const batch = shippingIds.slice(i, i + BATCH);
+    await Promise.all(batch.map(async (sid) => {
+      try {
+        const costs = await mlGet<ShipmentCosts>(`/shipments/${sid}/costs`);
+        if (costs?.senders?.length) {
+          const sender = costs.senders[0];
+          const bonif = sender.discounts?.reduce((s, d) => s + (d.promoted_amount || 0), 0) || 0;
+          map.set(sid, { senderCost: sender.cost || 0, bonificacion: bonif });
+        }
+      } catch { /* skip */ }
+    }));
+    if (i + BATCH < shippingIds.length) await new Promise(r => setTimeout(r, 150));
   }
   return map;
 }
