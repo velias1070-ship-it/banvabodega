@@ -15,6 +15,7 @@ interface MLSearchResult {
 interface MLOrderFull {
   id: number;
   date_created: string;
+  date_closed: string;
   status: string;
   order_items: Array<{
     item: { id: string; title: string; seller_sku: string | null; variation_id?: number };
@@ -115,7 +116,7 @@ async function fetchOrdersInRange(sellerId: string, from: string, to: string): P
   const maxPages = 40; // Safety: max 2000 orders
 
   for (let page = 0; page < maxPages; page++) {
-    const url = `/orders/search?seller=${sellerId}&order.status=paid&sort=date_desc&order.date_created.from=${encodeURIComponent(fromISO)}&order.date_created.to=${encodeURIComponent(toISO)}&limit=${limit}&offset=${offset}`;
+    const url = `/orders/search?seller=${sellerId}&order.status=paid&sort=date_desc&order.date_closed.from=${encodeURIComponent(fromISO)}&order.date_closed.to=${encodeURIComponent(toISO)}&limit=${limit}&offset=${offset}`;
     const result = await mlGet<MLSearchResult>(url);
     if (!result || !result.results || result.results.length === 0) break;
 
@@ -332,9 +333,9 @@ export async function GET(req: NextRequest) {
     console.log(`[ML Orders History] Fetching orders ${from} → ${to}`);
     const rawOrders = await fetchOrdersInRange(config.seller_id, from, to);
 
-    // Filter by Chile date to exclude orders that ML returned but belong to adjacent days
+    // Filter by Chile date (using date_closed = when payment was accredited, matches ML panel)
     const orders = rawOrders.filter(o => {
-      const chileDate = toChileISO(o.date_created).slice(0, 10); // YYYY-MM-DD in Chile
+      const chileDate = toChileISO(o.date_closed || o.date_created).slice(0, 10);
       return chileDate >= from && chileDate <= to;
     });
     console.log(`[ML Orders History] ${orders.length} orders in range (${rawOrders.length} from API, ${rawOrders.length - orders.length} filtered out by timezone)`);
@@ -492,7 +493,7 @@ export async function GET(req: NextRequest) {
           ordenes.push({
             order_id: String(order.id),
             order_number: String(order.pack_id || order.id),
-            fecha: toChileISO(order.date_created),
+            fecha: toChileISO(order.date_closed || order.date_created),
             cliente: [order.buyer?.first_name, order.buyer?.last_name].filter(Boolean).join(" ") || order.buyer?.nickname || "",
             razon_social: "",
             sku_venta: skuVenta,
