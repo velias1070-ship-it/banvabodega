@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import * as XLSX from "xlsx";
 
 interface OrderRow {
@@ -38,6 +38,19 @@ interface ComparisonRow {
 
 const fmt = (n: number) => "$" + n.toLocaleString("es-CL");
 
+const CACHE_KEY = "banva_ventas_ml_cache";
+
+function saveCache(data: { from: string; to: string; tarifaFlex: number; mlOrders: OrderRow[]; pgOrders: OrderRow[]; updatedAt: string }) {
+  try { sessionStorage.setItem(CACHE_KEY, JSON.stringify(data)); } catch { /* ignore */ }
+}
+
+function loadCache(): { from: string; to: string; tarifaFlex: number; mlOrders: OrderRow[]; pgOrders: OrderRow[]; updatedAt: string } | null {
+  try {
+    const raw = sessionStorage.getItem(CACHE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
 export default function AdminVentasML() {
   const today = new Date().toISOString().slice(0, 10);
   const [from, setFrom] = useState(today);
@@ -48,6 +61,22 @@ export default function AdminVentasML() {
   const [mlOrders, setMlOrders] = useState<OrderRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<"comparativa" | "ml_directo">("comparativa");
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+
+  // Restore from cache on mount
+  useEffect(() => {
+    const cached = loadCache();
+    if (cached) {
+      setFrom(cached.from);
+      setTo(cached.to);
+      setTarifaFlex(cached.tarifaFlex);
+      setMlOrders(cached.mlOrders);
+      setPgOrders(cached.pgOrders);
+      setLastUpdated(cached.updatedAt);
+      if (cached.pgOrders.length > 0) setView("comparativa");
+      else if (cached.mlOrders.length > 0) setView("ml_directo");
+    }
+  }, []);
 
   const fetchBoth = async () => {
     setLoading("Cargando ambas fuentes...");
@@ -91,6 +120,9 @@ export default function AdminVentasML() {
       } else {
         setPgOrders(pgData.ordenes || []);
       }
+      const now = new Date().toLocaleString("es-CL", { timeZone: "America/Santiago" });
+      setLastUpdated(now);
+      saveCache({ from, to, tarifaFlex, mlOrders: allMl, pgOrders: pgData?.ordenes || [], updatedAt: now });
     } catch (err) {
       setError(String(err));
     } finally {
@@ -129,6 +161,9 @@ export default function AdminVentasML() {
       }
       setMlOrders(allOrdenes);
       setPgOrders([]);
+      const now = new Date().toLocaleString("es-CL", { timeZone: "America/Santiago" });
+      setLastUpdated(now);
+      saveCache({ from, to, tarifaFlex, mlOrders: allOrdenes, pgOrders: [], updatedAt: now });
     } catch (err) {
       setError(String(err));
     } finally {
@@ -242,6 +277,7 @@ export default function AdminVentasML() {
         </div>
         {loading && <div style={{ marginTop: 8, fontSize: 12, color: "var(--amber)" }}>{loading}</div>}
         {error && <div style={{ marginTop: 8, fontSize: 12, color: "var(--red)" }}>{error}</div>}
+        {lastUpdated && !loading && <div style={{ marginTop: 8, fontSize: 11, color: "var(--txt3)" }}>Última actualización: {lastUpdated}</div>}
       </div>
 
       {/* KPIs */}
