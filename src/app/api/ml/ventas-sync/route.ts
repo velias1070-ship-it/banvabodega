@@ -6,8 +6,10 @@ export const maxDuration = 300;
 export const dynamic = "force-dynamic";
 
 /**
- * Cron: sync ventas ML al cache.
- * Llama directamente a ML API (no HTTP a sí mismo) y guarda en ventas_ml_cache.
+ * Cron: sync ventas ML al cache (versión rápida).
+ * Solo usa datos de /orders/search (sin billing ni shipment costs individuales).
+ * El costo de envío se calcula con tarifa fija para Flex.
+ * Bonificaciones se enriquecen en el endpoint orders-history bajo demanda.
  *
  * GET (cron)         — últimos 3 días
  * GET ?days=N        — últimos N días
@@ -18,11 +20,9 @@ export async function GET(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
   const isVercelCron = authHeader === `Bearer ${process.env.CRON_SECRET}`;
   const isLocalDev = process.env.NODE_ENV === "development";
-  const referer = req.headers.get("referer") || "";
-  const isAdminCall = referer.includes("/admin");
   const hasParams = req.nextUrl.searchParams.has("full") || req.nextUrl.searchParams.has("from") || req.nextUrl.searchParams.has("days");
 
-  if (!isVercelCron && !isLocalDev && !isAdminCall && !hasParams) {
+  if (!isVercelCron && !isLocalDev && !hasParams) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
@@ -57,10 +57,10 @@ export async function GET(req: NextRequest) {
     toDate = today.toISOString().slice(0, 10);
   }
 
-  console.log(`[Ventas Sync] Syncing ${fromDate} → ${toDate}`);
+  console.log(`[Ventas Sync] ${fromDate} → ${toDate}`);
 
   try {
-    // 1. Fetch orders from ML API in 15-day chunks
+    // 1. Fetch orders from ML (fast — only /orders/search, no billing/costs)
     const allOrders: MLOrder[] = [];
     const cursor = new Date(fromDate + "T00:00:00");
     const end = new Date(toDate + "T00:00:00");
@@ -69,14 +69,11 @@ export async function GET(req: NextRequest) {
       const chunkEnd = new Date(cursor);
       chunkEnd.setDate(chunkEnd.getDate() + 14);
       const actualEnd = chunkEnd > end ? end : chunkEnd;
-      const cf = cursor.toISOString().slice(0, 10);
-      const ct = actualEnd.toISOString().slice(0, 10);
 
-      // Expand range by 1 day to catch timezone edge cases
-      const expandedFrom = new Date(cf + "T00:00:00-04:00");
+      const expandedFrom = new Date(cursor);
       expandedFrom.setDate(expandedFrom.getDate() - 1);
-      const fromISO = expandedFrom.toISOString();
-      const toISO = new Date(ct + "T23:59:59-03:00").toISOString();
+      const fromISO = new Date(expandedFrom.toISOString().slice(0, 10) + "T00:00:00-04:00").toISOString();
+      const toISO = new Date(actualEnd.toISOString().slice(0, 10) + "T23:59:59-03:00").toISOString();
 
       let offset = 0;
       for (let page = 0; page < 40; page++) {
@@ -86,9 +83,8 @@ export async function GET(req: NextRequest) {
         allOrders.push(...result.results);
         offset += 50;
         if (offset >= result.paging.total) break;
-        await new Promise(r => setTimeout(r, 100));
+        await new Promise(r => setTimeout(r, 50));
       }
-
       cursor.setDate(actualEnd.getDate() + 1);
     }
 
@@ -97,13 +93,13 @@ export async function GET(req: NextRequest) {
       const chileDate = toChileISO(o.date_closed || o.date_created).slice(0, 10);
       return chileDate >= fromDate && chileDate <= toDate;
     });
-    console.log(`[Ventas Sync] ${orders.length} orders in range (${allOrders.length} raw)`);
+    console.log(`[Ventas Sync] ${orders.length} orders (${allOrders.length} raw)`);
 
     if (orders.length === 0) {
       return NextResponse.json({ status: "ok", synced: 0, range: `${fromDate} → ${toDate}` });
     }
 
-    // 3. Fetch open claims
+    // 3. Check claims (1 single API call)
     const claimOrderIds = new Set<number>();
     try {
       const claims = await mlGet<{ data: Array<{ resource_id: number }> }>("/post-purchase/v1/claims/search?status=opened&limit=100");
@@ -113,132 +109,69 @@ export async function GET(req: NextRequest) {
       if (o.mediations?.length) claimOrderIds.add(o.id);
     }
 
-    // 4. Fetch shipment costs (batch)
-    const shippingIds = Array.from(new Set(orders.map(o => o.shipping?.id).filter(Boolean))) as number[];
-    const shipCostsMap = new Map<number, { senderCost: number; receiverCost: number; senderBonif: number; receiverLoyalBonif: number }>();
-
-    for (let i = 0; i < shippingIds.length; i += 10) {
-      const batch = shippingIds.slice(i, i + 10);
-      await Promise.all(batch.map(async (sid) => {
-        try {
-          const costs = await mlGet<{ senders: Array<{ cost: number; discounts: Array<{ type: string; promoted_amount: number }> }>; receiver?: { cost: number; discounts: Array<{ type: string; promoted_amount: number }> } }>(`/shipments/${sid}/costs`);
-          if (costs) {
-            const sender = costs.senders?.[0];
-            shipCostsMap.set(sid, {
-              senderCost: Math.round(sender?.cost || 0),
-              receiverCost: Math.round(costs.receiver?.cost || 0),
-              senderBonif: sender?.discounts?.reduce((s, d) => s + (d.promoted_amount || 0), 0) || 0,
-              receiverLoyalBonif: costs.receiver?.discounts?.filter(d => d.type === "loyal")?.reduce((s, d) => s + (d.promoted_amount || 0), 0) || 0,
-            });
-          }
-        } catch { /* skip */ }
-      }));
-      if (i + 10 < shippingIds.length) await new Promise(r => setTimeout(r, 150));
-    }
-
-    // 5. Resolve logistic types
+    // 4. Resolve logistic types from DB cache (fast, no ML API calls)
+    const shipIds = Array.from(new Set(orders.map(o => o.shipping?.id).filter(Boolean))) as number[];
     const logisticMap = new Map<number, string>();
-    const missingLogistic: number[] = [];
-    for (const sid of shippingIds) {
-      // Check DB cache first
-      const { data } = await sb.from("ml_shipments").select("logistic_type").eq("shipment_id", sid).maybeSingle();
-      if (data?.logistic_type) logisticMap.set(sid, data.logistic_type);
-      else missingLogistic.push(sid);
+    for (let i = 0; i < shipIds.length; i += 500) {
+      const chunk = shipIds.slice(i, i + 500);
+      const { data } = await sb.from("ml_shipments").select("shipment_id, logistic_type").in("shipment_id", chunk);
+      if (data) for (const r of data as { shipment_id: number; logistic_type: string }[]) logisticMap.set(r.shipment_id, r.logistic_type);
     }
-    for (let i = 0; i < missingLogistic.length; i += 10) {
-      const batch = missingLogistic.slice(i, i + 10);
-      await Promise.all(batch.map(async (sid) => {
-        try {
-          const ship = await mlGet<{ logistic_type?: string; logistic?: { type?: string } }>(`/shipments/${sid}`, { "x-format-new": "true" });
-          const lt = ship?.logistic?.type || ship?.logistic_type;
-          if (lt) logisticMap.set(sid, lt);
-        } catch { /* skip */ }
-      }));
-    }
-
-    // 6. Fetch billing
-    const billingMap = new Map<number, { docNum: string; docStatus: string }>();
-    const orderIds = orders.map(o => o.id);
-    for (let i = 0; i < orderIds.length; i += 20) {
-      const batch = orderIds.slice(i, i + 20);
-      try {
-        const result = await mlGet<{ results: Array<{ order_id: number; details?: Array<{ charge_info?: { legal_document_number: string | null; legal_document_status_description: string | null; detail_sub_type: string } }> }> }>(`/billing/integration/group/ML/order/details?order_ids=${batch.join(",")}`);
-        if (result?.results) {
-          for (const r of result.results) {
-            const cv = r.details?.find(d => d.charge_info?.detail_sub_type === "CV");
-            billingMap.set(r.order_id, {
-              docNum: cv?.charge_info?.legal_document_number || "",
-              docStatus: cv?.charge_info?.legal_document_status_description || "",
-            });
-          }
-        }
-      } catch { /* skip */ }
-    }
-
-    // 7. Map to cache rows
-    const rows: Array<Record<string, unknown>> = [];
-    // Group by shipping for pack handling
-    const shipGroups = new Map<string, MLOrder[]>();
+    // For orders without cached logistic_type, use the one from the order itself
     for (const o of orders) {
-      const key = o.shipping?.id ? String(o.shipping.id) : `solo_${o.id}`;
-      const g = shipGroups.get(key) || [];
-      g.push(o);
-      shipGroups.set(key, g);
-    }
-
-    for (const [, packOrders] of Array.from(shipGroups.entries())) {
-      const packItemCount = packOrders.reduce((s, o) => s + (o.order_items?.length || 1), 0);
-      const shipId = packOrders[0]?.shipping?.id;
-      const lt = shipId ? logisticMap.get(shipId) || "" : "";
-      const isFlex = lt === "self_service";
-      const canal = isFlex ? "Flex" : (lt === "fulfillment" || lt === "xd_drop_off" ? "Full" : "Flex");
-
-      const costs = shipId ? shipCostsMap.get(shipId) : undefined;
-      const packCostoEnvio = isFlex ? tarifaFlex : Math.round(costs?.senderCost || 0);
-      const packBonificacion = Math.round((costs?.senderBonif || 0) + (costs?.receiverLoyalBonif || 0) + (costs?.receiverCost || 0));
-
-      for (const order of packOrders) {
-        const billing = billingMap.get(order.id);
-        for (const item of (order.order_items || [])) {
-          const sku = (item.item?.seller_sku || `ML-${item.item?.id}`).toUpperCase();
-          const subtotal = Math.round(item.unit_price * item.quantity);
-          const comisionUnit = Math.round(item.sale_fee || 0);
-          const comisionTotal = comisionUnit * item.quantity;
-          const costoEnvio = Math.round(packCostoEnvio / packItemCount);
-          const bonificacion = Math.round(packBonificacion / packItemCount);
-          const totalNeto = subtotal - comisionTotal - costoEnvio + bonificacion;
-
-          rows.push({
-            order_id: String(order.id),
-            order_number: String(order.pack_id || order.id),
-            fecha: toChileISO(order.date_closed || order.date_created),
-            fecha_date: toChileISO(order.date_closed || order.date_created).slice(0, 10),
-            cliente: [order.buyer?.first_name, order.buyer?.last_name].filter(Boolean).join(" ") || order.buyer?.nickname || "",
-            razon_social: "",
-            sku_venta: sku,
-            nombre_producto: item.item?.title || "",
-            cantidad: item.quantity,
-            canal,
-            precio_unitario: Math.round(item.unit_price),
-            subtotal,
-            comision_unitaria: comisionUnit,
-            comision_total: comisionTotal,
-            costo_envio: costoEnvio,
-            ingreso_envio: bonificacion,
-            ingreso_adicional_tc: 0,
-            total: subtotal,
-            total_neto: totalNeto,
-            logistic_type: lt,
-            estado: claimOrderIds.has(order.id) ? "En mediación" : "Pagada",
-            documento_tributario: billing?.docNum || "",
-            estado_documento: billing?.docStatus || "",
-            updated_at: new Date().toISOString(),
-          });
-        }
+      if (o.shipping?.id && !logisticMap.has(o.shipping.id) && o.shipping.logistic_type) {
+        logisticMap.set(o.shipping.id, o.shipping.logistic_type);
       }
     }
 
-    // 8. Upsert to DB
+    // 5. Map to cache rows (fast — use sale_fee from order, tarifa fija for shipping)
+    const rows: Array<Record<string, unknown>> = [];
+
+    for (const order of orders) {
+      const shipId = order.shipping?.id;
+      const lt = shipId ? logisticMap.get(shipId) || "" : "";
+      const isFlex = lt === "self_service" || lt === "";
+      const canal = isFlex ? "Flex" : "Full";
+      const itemCount = order.order_items?.length || 1;
+      const costoEnvioPorItem = Math.round(tarifaFlex / itemCount);
+
+      for (const item of (order.order_items || [])) {
+        const sku = (item.item?.seller_sku || `ML-${item.item?.id}`).toUpperCase();
+        const subtotal = Math.round(item.unit_price * item.quantity);
+        const comisionUnit = Math.round(item.sale_fee || 0);
+        const comisionTotal = comisionUnit * item.quantity;
+        const totalNeto = subtotal - comisionTotal - costoEnvioPorItem;
+
+        rows.push({
+          order_id: String(order.id),
+          order_number: String(order.pack_id || order.id),
+          fecha: toChileISO(order.date_closed || order.date_created),
+          fecha_date: toChileISO(order.date_closed || order.date_created).slice(0, 10),
+          cliente: [order.buyer?.first_name, order.buyer?.last_name].filter(Boolean).join(" ") || order.buyer?.nickname || "",
+          razon_social: "",
+          sku_venta: sku,
+          nombre_producto: item.item?.title || "",
+          cantidad: item.quantity,
+          canal,
+          precio_unitario: Math.round(item.unit_price),
+          subtotal,
+          comision_unitaria: comisionUnit,
+          comision_total: comisionTotal,
+          costo_envio: costoEnvioPorItem,
+          ingreso_envio: 0,
+          ingreso_adicional_tc: 0,
+          total: subtotal,
+          total_neto: totalNeto,
+          logistic_type: lt,
+          estado: claimOrderIds.has(order.id) ? "En mediación" : "Pagada",
+          documento_tributario: "",
+          estado_documento: "",
+          updated_at: new Date().toISOString(),
+        });
+      }
+    }
+
+    // 6. Upsert to DB
     let upserted = 0;
     for (let i = 0; i < rows.length; i += 500) {
       const chunk = rows.slice(i, i + 500);
@@ -247,27 +180,20 @@ export async function GET(req: NextRequest) {
       else upserted += chunk.length;
     }
 
-    console.log(`[Ventas Sync] Done: ${upserted} rows for ${fromDate} → ${toDate}`);
-    return NextResponse.json({ status: "ok", synced: upserted, total_orders: orders.length, claims: claimOrderIds.size, range: `${fromDate} → ${toDate}` });
+    console.log(`[Ventas Sync] Done: ${upserted} rows`);
+    return NextResponse.json({ status: "ok", synced: upserted, orders: orders.length, claims: claimOrderIds.size, range: `${fromDate} → ${toDate}` });
   } catch (err) {
     console.error("[Ventas Sync] Error:", err);
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
 
-/* ───── Types ───── */
-
 interface MLOrder {
   id: number;
   date_created: string;
   date_closed: string;
   status: string;
-  order_items: Array<{
-    item: { id: string; title: string; seller_sku: string | null };
-    quantity: number;
-    unit_price: number;
-    sale_fee: number;
-  }>;
+  order_items: Array<{ item: { id: string; title: string; seller_sku: string | null }; quantity: number; unit_price: number; sale_fee: number }>;
   shipping: { id: number; logistic_type?: string };
   pack_id: number | null;
   buyer: { id: number; nickname: string; first_name?: string; last_name?: string };
@@ -277,10 +203,6 @@ interface MLOrder {
 }
 
 function toChileISO(dateStr: string): string {
-  try {
-    const d = new Date(dateStr);
-    return d.toLocaleString("sv-SE", { timeZone: "America/Santiago" }).replace(" ", "T");
-  } catch {
-    return dateStr;
-  }
+  try { return new Date(dateStr).toLocaleString("sv-SE", { timeZone: "America/Santiago" }).replace(" ", "T"); }
+  catch { return dateStr; }
 }
