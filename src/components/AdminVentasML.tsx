@@ -45,15 +45,38 @@ export default function AdminVentasML() {
     setLoading("Cargando ambas fuentes...");
     setError(null);
     try {
-      setLoading("Cargando ML Directo...");
-      const mlRes = await fetch(`/api/ml/orders-history?from=${from}&to=${to}&tarifa_flex=${tarifaFlex}`);
-      const mlData = await mlRes.json();
-      if (mlData.error) throw new Error("ML: " + mlData.error);
-      setMlOrders(mlData.ordenes || []);
+      // ML directo in 2-day chunks
+      const allMl: OrderRow[] = [];
+      const start = new Date(from + "T00:00:00");
+      const end = new Date(to + "T00:00:00");
+      const chunks: { from: string; to: string }[] = [];
+      const cursor = new Date(start);
+      while (cursor <= end) {
+        const chunkEnd = new Date(cursor);
+        chunkEnd.setDate(chunkEnd.getDate() + 1);
+        const actualEnd = chunkEnd > end ? end : chunkEnd;
+        chunks.push({ from: cursor.toISOString().slice(0, 10), to: actualEnd.toISOString().slice(0, 10) });
+        cursor.setDate(actualEnd.getDate() + 1);
+      }
+      if (chunks.length === 0) chunks.push({ from, to });
+
+      for (let i = 0; i < chunks.length; i++) {
+        const c = chunks[i];
+        setLoading(`Cargando ML ${c.from} → ${c.to} (${i + 1}/${chunks.length})...`);
+        const res = await fetch(`/api/ml/orders-history?from=${c.from}&to=${c.to}&tarifa_flex=${tarifaFlex}`);
+        const text = await res.text();
+        let data;
+        try { data = JSON.parse(text); } catch { throw new Error(`Respuesta inválida de ML (${c.from}→${c.to}). Posible timeout.`); }
+        if (data.error) throw new Error("ML: " + data.error);
+        allMl.push(...(data.ordenes || []));
+      }
+      setMlOrders(allMl);
 
       setLoading("Cargando ProfitGuard...");
       const pgRes = await fetch(`/api/profitguard/orders?from=${from}&to=${to}`);
-      const pgData = await pgRes.json();
+      const pgText = await pgRes.text();
+      let pgData;
+      try { pgData = JSON.parse(pgText); } catch { setError("ProfitGuard: respuesta inválida"); setPgOrders([]); return; }
       if (pgData.error) {
         setError("ProfitGuard falló: " + pgData.error);
         setPgOrders([]);
@@ -71,10 +94,32 @@ export default function AdminVentasML() {
     setLoading("Cargando ML Directo...");
     setError(null);
     try {
-      const res = await fetch(`/api/ml/orders-history?from=${from}&to=${to}&tarifa_flex=${tarifaFlex}`);
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      setMlOrders(data.ordenes || []);
+      // Split into chunks of 2 days to avoid Vercel timeout
+      const allOrdenes: OrderRow[] = [];
+      const start = new Date(from + "T00:00:00");
+      const end = new Date(to + "T00:00:00");
+      const chunks: { from: string; to: string }[] = [];
+      const cursor = new Date(start);
+      while (cursor <= end) {
+        const chunkEnd = new Date(cursor);
+        chunkEnd.setDate(chunkEnd.getDate() + 1); // 2-day chunks
+        const actualEnd = chunkEnd > end ? end : chunkEnd;
+        chunks.push({ from: cursor.toISOString().slice(0, 10), to: actualEnd.toISOString().slice(0, 10) });
+        cursor.setDate(actualEnd.getDate() + 1);
+      }
+      if (chunks.length === 0) chunks.push({ from, to });
+
+      for (let i = 0; i < chunks.length; i++) {
+        const c = chunks[i];
+        setLoading(`Cargando ML ${c.from} → ${c.to} (${i + 1}/${chunks.length})...`);
+        const res = await fetch(`/api/ml/orders-history?from=${c.from}&to=${c.to}&tarifa_flex=${tarifaFlex}`);
+        const text = await res.text();
+        let data;
+        try { data = JSON.parse(text); } catch { throw new Error(`Respuesta inválida de ML (${c.from}→${c.to}). Posible timeout — intenta un rango más corto.`); }
+        if (data.error) throw new Error("ML: " + data.error);
+        allOrdenes.push(...(data.ordenes || []));
+      }
+      setMlOrders(allOrdenes);
       setPgOrders([]);
     } catch (err) {
       setError(String(err));
