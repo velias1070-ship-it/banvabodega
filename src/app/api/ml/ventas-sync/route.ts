@@ -35,7 +35,14 @@ export async function GET(req: NextRequest) {
     let fromDate: string;
     let toDate: string;
 
-    if (isFull) {
+    const customFrom = searchParams.get("from");
+    const customTo = searchParams.get("to");
+
+    if (customFrom && customTo) {
+      // Custom range
+      fromDate = customFrom;
+      toDate = customTo;
+    } else if (isFull) {
       // Full sync: this month + last month
       const lastMonthStart = new Date(today.getFullYear(), today.getMonth() - 1, 1);
       fromDate = lastMonthStart.toISOString().slice(0, 10);
