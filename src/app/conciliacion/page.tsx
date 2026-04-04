@@ -114,6 +114,7 @@ const TIPO_DOC_NAMES: Record<number | string, string> = {
   52: "Guía Despacho",
   56: "Nota Débito",
   61: "Nota Crédito",
+  71: "BHE",
 };
 
 // Periodo actual (YYYYMM)
@@ -1086,7 +1087,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                       <div>
                         <div style={{ fontSize: 12, fontWeight: 500 }}>{m.descripcion || "Sin descripcion"}</div>
                         <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 2 }}>
-                          {m.fecha} &middot; {m.banco || "Banco"}
+                          {fmtDate(m.fecha)} &middot; {m.banco || "Banco"}
                           {diasDiff !== null && <span className="mono" style={{ marginLeft: 8, fontSize: 10, color: diasDiff < 0 ? "var(--red)" : diasDiff <= 45 ? "var(--green)" : "var(--amber)" }}>{diasDiff}d {diasDiff < 0 ? "antes" : "despues"}</span>}
                         </div>
                       </div>
@@ -1928,7 +1929,7 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                       <div>
                         <div style={{ fontSize: 12, fontWeight: 500 }}>{m.descripcion || "Sin descripcion"}</div>
                         <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 2 }}>
-                          {m.fecha} &middot; {m.banco || "Banco"}
+                          {fmtDate(m.fecha)} &middot; {m.banco || "Banco"}
                           {diasDiff !== null && <span className="mono" style={{ marginLeft: 8, fontSize: 10, color: diasDiff < 0 ? "var(--red)" : diasDiff <= 45 ? "var(--green)" : "var(--amber)" }}>{diasDiff}d {diasDiff < 0 ? "antes" : "despues"}</span>}
                         </div>
                       </div>
