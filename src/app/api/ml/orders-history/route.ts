@@ -217,15 +217,17 @@ async function fetchShipmentCostsWithCache(
         if (costs) {
           const sender = costs.senders?.[0];
           const senderCost = Math.round(sender?.cost || 0);
-          // Bonificación al vendedor =
-          //   sender.discounts (siempre) +
-          //   receiver.discounts tipo "loyal" (ML compensa al vendedor por envío gratis de lealtad)
+          // Ingreso envío para el vendedor tiene 3 fuentes:
+          //   1. sender.discounts → bonificación ML al vendedor
+          //   2. receiver.discounts tipo "loyal" → ML compensa por envío gratis de lealtad
+          //   3. receiver.cost → comprador pagó envío, ese dinero va al vendedor
           // NO incluir receiver.discounts tipo "ratio" (descuento interno ML al comprador)
           const senderBonif = sender?.discounts?.reduce((s, d) => s + (d.promoted_amount || 0), 0) || 0;
           const receiverLoyalBonif = costs.receiver?.discounts
             ?.filter(d => d.type === "loyal")
             ?.reduce((s, d) => s + (d.promoted_amount || 0), 0) || 0;
-          const bonificacion = Math.round(senderBonif + receiverLoyalBonif);
+          const receiverPaidShipping = Math.round(costs.receiver?.cost || 0);
+          const bonificacion = Math.round(senderBonif + receiverLoyalBonif + receiverPaidShipping);
           map.set(sid, { senderCost, bonificacion });
           newCosts.push({ shipment_id: sid, sender_cost: senderCost, bonificacion });
         }
