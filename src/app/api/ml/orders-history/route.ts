@@ -123,6 +123,35 @@ async function fetchOrdersInRange(sellerId: string, from: string, to: string): P
   return allOrders;
 }
 
+/** Shipment costs from /shipments/{id}/costs */
+interface ShipmentCosts {
+  gross_amount: number;
+  senders: Array<{
+    user_id: number;
+    cost: number;
+    compensation: number;
+    discounts: Array<{ rate: number; type: string; promoted_amount: number }>;
+  }>;
+}
+
+/** Fetch shipment costs (sender cost + bonificación) */
+async function fetchShipmentCosts(shippingIds: number[]): Promise<Map<number, { senderCost: number; bonificacion: number }>> {
+  const map = new Map<number, { senderCost: number; bonificacion: number }>();
+  for (let i = 0; i < shippingIds.length; i++) {
+    const sid = shippingIds[i];
+    try {
+      const costs = await mlGet<ShipmentCosts>(`/shipments/${sid}/costs`);
+      if (costs?.senders?.length) {
+        const sender = costs.senders[0];
+        const bonif = sender.discounts?.reduce((s, d) => s + (d.promoted_amount || 0), 0) || 0;
+        map.set(sid, { senderCost: sender.cost || 0, bonificacion: bonif });
+      }
+    } catch { /* skip */ }
+    if (i > 0 && i % 10 === 0) await new Promise(r => setTimeout(r, 200));
+  }
+  return map;
+}
+
 /** Fetch billing details for a batch of order IDs */
 async function fetchBillingForOrders(orderIds: number[]): Promise<Map<number, BillingOrderDetail>> {
   const map = new Map<number, BillingOrderDetail>();
@@ -254,7 +283,12 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // 4. Group orders by shipping_id to handle shared shipping costs
+    // 4. Fetch shipment costs (sender cost + bonificación) from /shipments/{id}/costs
+    console.log(`[ML Orders History] Fetching shipment costs for ${allShippingIds.length} shipments`);
+    const shipmentCostsMap = await fetchShipmentCosts(allShippingIds);
+    console.log(`[ML Orders History] Got costs for ${shipmentCostsMap.size} shipments`);
+
+    // 5. Group orders by shipping_id to handle shared shipping costs
     //    Orders in same pack share shipping_id. Billing CFF only appears on one order.
     const shipGroups = new Map<string, MLOrderFull[]>();
     for (const order of orders) {
@@ -269,22 +303,8 @@ export async function GET(req: NextRequest) {
     const ordenes: MappedOrder[] = [];
     const debugData: Array<{ order_id: number; billing: BillingOrderDetail | undefined; order: MLOrderFull }> = [];
 
-    for (const [, packOrders] of Array.from(shipGroups.entries())) {
-      // Aggregate billing for all orders sharing this shipment
-      let packCostoEnvio = 0;
-      let packIngresoEnvio = 0;
-      let packIngresoTC = 0;
-      let hasShippingDetail = false;
-      for (const order of packOrders) {
-        const billing = billingMap.get(order.id);
-        const billingData = extractBillingData(billing);
-        packCostoEnvio += billingData.costo_envio;
-        packIngresoEnvio += billingData.ingreso_envio;
-        packIngresoTC += billingData.ingreso_adicional_tc;
-        if (billingData.has_shipping_detail) hasShippingDetail = true;
-      }
-
-      // Count total items in pack for equal split (like ProfitGuard)
+    for (const [shipKey, packOrders] of Array.from(shipGroups.entries())) {
+      // Count total items in pack for equal split
       const packItemCount = packOrders.reduce((s, o) => s + o.order_items.length, 0);
 
       // Resolve logistic_type for the shipment group
@@ -293,7 +313,6 @@ export async function GET(req: NextRequest) {
           const lt = o.shipping?.logistic_type || shipmentLogisticMap.get(o.shipping?.id);
           if (lt) return lt;
         }
-        // Fallback: check billing marketplace
         for (const o of packOrders) {
           const billing = billingMap.get(o.id);
           if (billing?.details?.[0]?.marketplace_info?.marketplace === "SHIPPING") return "self_service";
@@ -301,10 +320,33 @@ export async function GET(req: NextRequest) {
         return "";
       })();
 
-      // Flex fallback: if billing has no shipping detail but it's a confirmed Flex order, apply fixed rate
-      if (!hasShippingDetail && groupLogisticType === "self_service") {
-        packCostoEnvio = tarifaFlex;
-        // No bonificación data available without billing — leave ingreso_envio as 0
+      // Get shipping costs: prefer /shipments/{id}/costs (has real sender cost + bonificación)
+      const shippingId = packOrders[0]?.shipping?.id;
+      const shipCosts = shippingId ? shipmentCostsMap.get(shippingId) : undefined;
+
+      let packCostoEnvio = 0;
+      let packBonificacion = 0;
+
+      if (shipCosts) {
+        // Real data from ML API — sender cost is what we actually pay
+        packCostoEnvio = Math.round(shipCosts.senderCost);
+        packBonificacion = Math.round(shipCosts.bonificacion);
+      } else {
+        // Fallback to billing API (for Full orders that have CFF detail)
+        for (const order of packOrders) {
+          const billing = billingMap.get(order.id);
+          const billingData = extractBillingData(billing);
+          if (billingData.has_shipping_detail) {
+            // For billing CFF: detail_amount is net, discount_amount is the bonificación
+            // sender cost = detail_amount, bonificación = discount_amount
+            packCostoEnvio += billingData.costo_envio;
+            packBonificacion += billingData.ingreso_envio;
+          }
+        }
+        // If still no shipping info, use tarifa fija for Flex
+        if (packCostoEnvio === 0 && groupLogisticType === "self_service") {
+          packCostoEnvio = tarifaFlex;
+        }
       }
 
       for (const order of packOrders) {
@@ -321,18 +363,15 @@ export async function GET(req: NextRequest) {
           const comisionUnitaria = Math.round(item.sale_fee || 0);
           const comisionTotal = comisionUnitaria * item.quantity;
 
-          // Shipping split equally across all items in the shipment group (like ProfitGuard)
-          let costoEnvio = Math.round(packCostoEnvio / packItemCount);
-          let ingresoEnvio = Math.round(packIngresoEnvio / packItemCount);
-          const ingresoTC = Math.round(packIngresoTC / packItemCount);
-
+          // Shipping split equally across all items in the shipment group
+          const costoEnvio = Math.round(packCostoEnvio / packItemCount);
+          const bonificacion = Math.round(packBonificacion / packItemCount);
 
           const precioUnit = Math.round(item.unit_price);
           const subtotal = Math.round(itemSubtotal);
           const total = subtotal;
-          // detail_amount (costoEnvio) is already net (post-bonificación)
-          // Do NOT add ingresoEnvio — it's already deducted from costoEnvio
-          const totalNeto = subtotal - comisionTotal - costoEnvio + ingresoTC;
+          // Neto = lo que recibimos: subtotal - comisión - envío + bonificación
+          const totalNeto = subtotal - comisionTotal - costoEnvio + bonificacion;
 
           ordenes.push({
             order_id: String(order.id),
@@ -347,8 +386,8 @@ export async function GET(req: NextRequest) {
             comision_unitaria: comisionUnitaria,
             comision_total: comisionTotal,
             costo_envio: costoEnvio,
-            ingreso_envio: ingresoEnvio,
-            ingreso_adicional_tc: ingresoTC,
+            ingreso_envio: bonificacion,
+            ingreso_adicional_tc: 0,
             total,
             total_neto: totalNeto,
             logistic_type: logisticType,

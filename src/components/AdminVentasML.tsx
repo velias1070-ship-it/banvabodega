@@ -158,9 +158,10 @@ export default function AdminVentasML() {
     subtotal: acc.subtotal + o.subtotal,
     comision: acc.comision + o.comision_total,
     envio: acc.envio + o.costo_envio,
-    neto: acc.neto + (o.total_neto ?? (o.subtotal - o.comision_total - o.costo_envio)),
+    bonif: acc.bonif + (o.ingreso_envio || 0),
+    neto: acc.neto + (o.total_neto ?? (o.subtotal - o.comision_total - o.costo_envio + (o.ingreso_envio || 0))),
     items: acc.items + o.cantidad,
-  }), { subtotal: 0, comision: 0, envio: 0, neto: 0, items: 0 });
+  }), { subtotal: 0, comision: 0, envio: 0, bonif: 0, neto: 0, items: 0 });
 
   return (
     <div>
@@ -204,6 +205,7 @@ export default function AdminVentasML() {
           <div className="kpi"><div className="kpi-label">Venta bruta</div><div className="kpi-value" style={{ fontSize: 16 }}>{fmt(mlTotals.subtotal)}</div></div>
           <div className="kpi"><div className="kpi-label">Comisiones</div><div className="kpi-value" style={{ color: "var(--red)", fontSize: 16 }}>{fmt(mlTotals.comision)}</div></div>
           <div className="kpi"><div className="kpi-label">Envío</div><div className="kpi-value" style={{ color: "var(--amber)", fontSize: 16 }}>{fmt(mlTotals.envio)}</div></div>
+          {mlTotals.bonif > 0 && <div className="kpi"><div className="kpi-label">Bonificación</div><div className="kpi-value" style={{ color: "var(--green)", fontSize: 16 }}>+{fmt(mlTotals.bonif)}</div></div>}
           <div className="kpi"><div className="kpi-label">Ingreso neto</div><div className="kpi-value" style={{ color: "var(--green)", fontSize: 16 }}>{fmt(mlTotals.neto)}</div></div>
         </div>
       )}
@@ -254,6 +256,7 @@ export default function AdminVentasML() {
                 <th style={{ textAlign: "right" }}>Subtotal</th>
                 <th style={{ textAlign: "right" }}>Comisión</th>
                 <th style={{ textAlign: "right" }}>Envío</th>
+                <th style={{ textAlign: "right" }}>Bonif.</th>
                 <th style={{ textAlign: "right" }}>Neto</th>
               </tr>
             </thead>
@@ -268,7 +271,8 @@ export default function AdminVentasML() {
                   <td className="mono" style={{ textAlign: "right" }}>{fmt(o.subtotal)}</td>
                   <td className="mono" style={{ textAlign: "right", color: "var(--red)" }}>{fmt(o.comision_total)}</td>
                   <td className="mono" style={{ textAlign: "right", color: o.costo_envio > 0 ? "var(--amber)" : "var(--txt3)" }}>{fmt(o.costo_envio)}</td>
-                  <td className="mono" style={{ textAlign: "right", fontWeight: 700, color: "var(--green)" }}>{fmt(o.total_neto ?? (o.subtotal - o.comision_total - o.costo_envio))}</td>
+                  <td className="mono" style={{ textAlign: "right", color: o.ingreso_envio > 0 ? "var(--green)" : "var(--txt3)" }}>{o.ingreso_envio > 0 ? `+${fmt(o.ingreso_envio)}` : "-"}</td>
+                  <td className="mono" style={{ textAlign: "right", fontWeight: 700, color: "var(--green)" }}>{fmt(o.total_neto ?? (o.subtotal - o.comision_total - o.costo_envio + (o.ingreso_envio || 0)))}</td>
                 </tr>
               ))}
             </tbody>
