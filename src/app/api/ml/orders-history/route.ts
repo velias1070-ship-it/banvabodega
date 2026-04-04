@@ -330,7 +330,9 @@ export async function GET(req: NextRequest) {
           const precioUnit = Math.round(item.unit_price);
           const subtotal = Math.round(itemSubtotal);
           const total = subtotal;
-          const totalNeto = subtotal - comisionTotal - costoEnvio + ingresoEnvio + ingresoTC;
+          // detail_amount (costoEnvio) is already net (post-bonificación)
+          // Do NOT add ingresoEnvio — it's already deducted from costoEnvio
+          const totalNeto = subtotal - comisionTotal - costoEnvio + ingresoTC;
 
           ordenes.push({
             order_id: String(order.id),
