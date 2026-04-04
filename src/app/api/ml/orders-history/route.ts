@@ -133,6 +133,11 @@ interface ShipmentCosts {
     compensation: number;
     discounts: Array<{ rate: number; type: string; promoted_amount: number }>;
   }>;
+  receiver?: {
+    user_id: number;
+    cost: number;
+    discounts: Array<{ rate: number; type: string; promoted_amount: number }>;
+  };
 }
 
 /** Tags on orders that indicate costs may have changed (claim, return, refund) */
@@ -197,11 +202,13 @@ async function fetchShipmentCostsWithCache(
     await Promise.all(batch.map(async (sid) => {
       try {
         const costs = await mlGet<ShipmentCosts>(`/shipments/${sid}/costs`);
-        if (costs?.senders?.length) {
-          const sender = costs.senders[0];
-          const bonif = sender.discounts?.reduce((s, d) => s + (d.promoted_amount || 0), 0) || 0;
-          const senderCost = Math.round(sender.cost || 0);
-          const bonificacion = Math.round(bonif);
+        if (costs) {
+          const sender = costs.senders?.[0];
+          const senderCost = Math.round(sender?.cost || 0);
+          // Bonificación = sender discounts + receiver discounts (envío gratis por lealtad, etc.)
+          const senderBonif = sender?.discounts?.reduce((s, d) => s + (d.promoted_amount || 0), 0) || 0;
+          const receiverBonif = costs.receiver?.discounts?.reduce((s, d) => s + (d.promoted_amount || 0), 0) || 0;
+          const bonificacion = Math.round(senderBonif + receiverBonif);
           map.set(sid, { senderCost, bonificacion });
           newCosts.push({ shipment_id: sid, sender_cost: senderCost, bonificacion });
         }
