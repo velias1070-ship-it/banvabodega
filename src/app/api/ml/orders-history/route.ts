@@ -30,6 +30,7 @@ interface MLOrderFull {
   total_amount: number;
   currency_id: string;
   tags?: string[];
+  mediations?: Array<{ id: number }>;
 }
 
 interface BillingOrderDetail {
@@ -314,6 +315,37 @@ function extractBillingData(billing: BillingOrderDetail | undefined) {
   return data;
 }
 
+/** Fetch all open claims/mediations to identify orders that should not count as sales */
+async function fetchOpenClaimOrderIds(): Promise<Set<number>> {
+  const claimOrderIds = new Set<number>();
+  try {
+    // status=opened catches both "claim" and "dispute" stages
+    const result = await mlGet<{ paging: { total: number }; data: Array<{ resource_id: number; status: string }> }>(
+      "/post-purchase/v1/claims/search?status=opened&limit=100"
+    );
+    if (result?.data) {
+      for (const claim of result.data) {
+        if (claim.resource_id) claimOrderIds.add(claim.resource_id);
+      }
+    }
+    // Also fetch claims with status=closed that were resolved with refund (seller lost)
+    const closedResult = await mlGet<{ paging: { total: number }; data: Array<{ resource_id: number; status: string; resolution: { reason: string } | null }> }>(
+      "/post-purchase/v1/claims/search?status=closed&limit=100"
+    );
+    if (closedResult?.data) {
+      for (const claim of closedResult.data) {
+        // If resolution resulted in refund to buyer, exclude this order
+        if (claim.resolution?.reason === "refunded" || claim.resolution?.reason === "buyer_refunded") {
+          claimOrderIds.add(claim.resource_id);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("[ML Orders History] Could not fetch claims:", err);
+  }
+  return claimOrderIds;
+}
+
 /* ───── Route Handler ───── */
 
 export async function GET(req: NextRequest) {
@@ -348,7 +380,18 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ordenes: [], total: 0, total_raw: rawOrders.length });
     }
 
-    // 2. Fetch billing details
+    // 2. Fetch open claims to identify orders in mediation
+    console.log(`[ML Orders History] Fetching open claims`);
+    const claimOrderIds = await fetchOpenClaimOrderIds();
+    // Also check mediations array on each order
+    for (const order of orders) {
+      if (order.mediations && order.mediations.length > 0) {
+        claimOrderIds.add(order.id);
+      }
+    }
+    console.log(`[ML Orders History] ${claimOrderIds.size} orders in mediation/claims`);
+
+    // 3. Fetch billing details
     const orderIds = orders.map(o => o.id);
     console.log(`[ML Orders History] Fetching billing for ${orderIds.length} orders`);
     const billingMap = await fetchBillingForOrders(orderIds);
@@ -514,7 +557,7 @@ export async function GET(req: NextRequest) {
             total,
             total_neto: totalNeto,
             logistic_type: logisticType,
-            estado: mapEstado(order.status),
+            estado: claimOrderIds.has(order.id) ? "En mediación" : mapEstado(order.status),
             fuente: "ml_directo",
             documento_tributario: docNum,
             estado_documento: docStatus,

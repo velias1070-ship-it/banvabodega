@@ -192,8 +192,10 @@ export default function AdminVentasML() {
     XLSX.writeFile(wb, `ventas_ml_${from}_${to}.xlsx`);
   };
 
-  // Totals for ML directo
-  const mlTotals = mlOrders.reduce((acc, o) => ({
+  // Totals for ML directo (exclude orders in mediation)
+  const validOrders = mlOrders.filter(o => o.estado !== "En mediación");
+  const mediacionCount = mlOrders.length - validOrders.length;
+  const mlTotals = validOrders.reduce((acc, o) => ({
     subtotal: acc.subtotal + o.subtotal,
     comision: acc.comision + o.comision_total,
     envio: acc.envio + o.costo_envio,
@@ -245,7 +247,7 @@ export default function AdminVentasML() {
       {/* KPIs */}
       {mlOrders.length > 0 && (
         <div className="kpi-grid" style={{ marginBottom: 16 }}>
-          <div className="kpi"><div className="kpi-label">Órdenes ML</div><div className="kpi-value">{mlOrders.length}</div></div>
+          <div className="kpi"><div className="kpi-label">Órdenes ML</div><div className="kpi-value">{validOrders.length}{mediacionCount > 0 ? <span style={{ fontSize: 10, color: "var(--amber)", fontWeight: 400 }}> ({mediacionCount} en mediación)</span> : null}</div></div>
           <div className="kpi"><div className="kpi-label">Items</div><div className="kpi-value">{mlTotals.items}</div></div>
           <div className="kpi"><div className="kpi-label">Venta bruta</div><div className="kpi-value" style={{ fontSize: 16 }}>{fmt(mlTotals.subtotal)}</div></div>
           <div className="kpi"><div className="kpi-label">Comisiones</div><div className="kpi-value" style={{ color: "var(--red)", fontSize: 16 }}>{fmt(mlTotals.comision)}</div></div>
@@ -306,9 +308,11 @@ export default function AdminVentasML() {
               </tr>
             </thead>
             <tbody>
-              {mlOrders.map((o, i) => (
-                <tr key={i}>
-                  <td className="mono" style={{ fontSize: 10 }}>{o.order_id}</td>
+              {mlOrders.map((o, i) => {
+                const enMediacion = o.estado === "En mediación";
+                return (
+                <tr key={i} style={enMediacion ? { opacity: 0.5, textDecoration: "line-through" } : undefined}>
+                  <td className="mono" style={{ fontSize: 10 }}>{o.order_id}{enMediacion && <span style={{ display: "block", fontSize: 9, color: "var(--amber)", textDecoration: "none" }}>MEDIACIÓN</span>}</td>
                   <td style={{ maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.sku_venta}</td>
                   <td style={{ textAlign: "center" }}>{o.cantidad}</td>
                   <td><span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: o.canal === "Full" ? "var(--blueBg)" : "var(--cyanBg)", color: o.canal === "Full" ? "var(--blue)" : "var(--cyan)" }}>{o.canal}</span></td>
@@ -317,9 +321,10 @@ export default function AdminVentasML() {
                   <td className="mono" style={{ textAlign: "right", color: "var(--red)" }}>{fmt(o.comision_total)}</td>
                   <td className="mono" style={{ textAlign: "right", color: o.costo_envio > 0 ? "var(--amber)" : "var(--txt3)" }}>{fmt(o.costo_envio)}</td>
                   <td className="mono" style={{ textAlign: "right", color: o.ingreso_envio > 0 ? "var(--green)" : "var(--txt3)" }}>{o.ingreso_envio > 0 ? `+${fmt(o.ingreso_envio)}` : "-"}</td>
-                  <td className="mono" style={{ textAlign: "right", fontWeight: 700, color: "var(--green)" }}>{fmt(o.total_neto ?? (o.subtotal - o.comision_total - o.costo_envio + (o.ingreso_envio || 0)))}</td>
+                  <td className="mono" style={{ textAlign: "right", fontWeight: 700, color: enMediacion ? "var(--txt3)" : "var(--green)" }}>{fmt(o.total_neto ?? (o.subtotal - o.comision_total - o.costo_envio + (o.ingreso_envio || 0)))}</td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
