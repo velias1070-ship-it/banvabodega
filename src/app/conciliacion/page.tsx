@@ -1072,7 +1072,20 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                 const q = pagoSearch.toLowerCase();
                 const target = saldoRestante > 0 ? saldoRestante : totalFac;
                 const filtrados = movsBanco.filter(m => !selectedIds.has(m.id) && (!pagoSearch || (m.descripcion || "").toLowerCase().includes(q) || (m.banco || "").toLowerCase().includes(q) || String(Math.abs(m.monto)).includes(q)));
-                const sorted = filtrados.sort((a, b) => Math.abs(Math.abs(a.monto) - target) - Math.abs(Math.abs(b.monto) - target));
+                const provName = (pagoItem.razon_social || "").toLowerCase();
+                const provWords = provName.split(/\s+/).filter(w => w.length > 3);
+                const scoreMov = (m: DBMovimientoBanco) => {
+                  const montoScore = target > 0 ? Math.abs(Math.abs(m.monto) - target) / target : 1;
+                  const desc = (m.descripcion || "").toLowerCase();
+                  const provMatch = provWords.some(w => desc.includes(w)) ? 0 : 1;
+                  let fechaScore = 1;
+                  if (facFecha && m.fecha) {
+                    const dias = (new Date(m.fecha + "T12:00:00").getTime() - facFecha) / 86400000;
+                    fechaScore = dias < 0 ? 3 : Math.min(dias / 30, 3);
+                  }
+                  return fechaScore * 0.4 + montoScore * 0.35 + provMatch * 0.25;
+                };
+                const sorted = filtrados.sort((a, b) => scoreMov(a) - scoreMov(b));
                 if (sorted.length === 0) return <div style={{ padding: 40, textAlign: "center", color: "var(--txt3)" }}>No hay movimientos bancarios pendientes</div>;
                 return sorted.slice(0, 50).map(m => {
                   const montoAbs = Math.abs(m.monto);
@@ -1901,10 +1914,24 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                 <div style={{ padding: 40, textAlign: "center", color: "var(--txt3)" }}>Cargando movimientos...</div>
               ) : (() => {
                 const q = pagoSearch.toLowerCase();
-                const filtrados = movsBanco.filter(m => !pagoSearch || (m.descripcion || "").toLowerCase().includes(q) || (m.banco || "").toLowerCase().includes(q) || String(Math.abs(m.monto)).includes(q));
-                const sorted = filtrados.sort((a, b) => Math.abs(Math.abs(a.monto) - (pagoItem.monto_total || 0)) - Math.abs(Math.abs(b.monto) - (pagoItem.monto_total || 0)));
-                if (sorted.length === 0) return <div style={{ padding: 40, textAlign: "center", color: "var(--txt3)" }}>No hay movimientos bancarios pendientes</div>;
+                const targetH = pagoItem.monto_total || 0;
                 const facFechaH = pagoItem.fecha_docto ? new Date(pagoItem.fecha_docto + "T12:00:00").getTime() : 0;
+                const provNameH = (pagoItem.razon_social || "").toLowerCase();
+                const provWordsH = provNameH.split(/\s+/).filter(w => w.length > 3);
+                const filtrados = movsBanco.filter(m => !pagoSearch || (m.descripcion || "").toLowerCase().includes(q) || (m.banco || "").toLowerCase().includes(q) || String(Math.abs(m.monto)).includes(q));
+                const scoreMovH = (m: DBMovimientoBanco) => {
+                  const montoScore = targetH > 0 ? Math.abs(Math.abs(m.monto) - targetH) / targetH : 1;
+                  const desc = (m.descripcion || "").toLowerCase();
+                  const provMatch = provWordsH.some(w => desc.includes(w)) ? 0 : 1;
+                  let fechaScore = 1;
+                  if (facFechaH && m.fecha) {
+                    const dias = (new Date(m.fecha + "T12:00:00").getTime() - facFechaH) / 86400000;
+                    fechaScore = dias < 0 ? 3 : Math.min(dias / 30, 3);
+                  }
+                  return fechaScore * 0.4 + montoScore * 0.35 + provMatch * 0.25;
+                };
+                const sorted = filtrados.sort((a, b) => scoreMovH(a) - scoreMovH(b));
+                if (sorted.length === 0) return <div style={{ padding: 40, textAlign: "center", color: "var(--txt3)" }}>No hay movimientos bancarios pendientes</div>;
                 return sorted.slice(0, 50).map(m => {
                   const montoAbs = Math.abs(m.monto);
                   const coincide = montoAbs === (pagoItem.monto_total || 0);
