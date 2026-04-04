@@ -25,7 +25,7 @@ interface MLOrderFull {
   shipping: { id: number; logistic_type?: string };
   shipping_cost: number | null;
   pack_id: number | null;
-  buyer: { id: number; nickname: string };
+  buyer: { id: number; nickname: string; first_name?: string; last_name?: string };
   total_amount: number;
   currency_id: string;
   tags?: string[];
@@ -485,7 +485,7 @@ export async function GET(req: NextRequest) {
             order_id: String(order.id),
             order_number: String(order.pack_id || order.id),
             fecha: toChileISO(order.date_created),
-            cliente: order.buyer?.nickname || "",
+            cliente: [order.buyer?.first_name, order.buyer?.last_name].filter(Boolean).join(" ") || order.buyer?.nickname || "",
             razon_social: "",
             sku_venta: skuVenta,
             nombre_producto: item.item.title,
