@@ -2009,31 +2009,20 @@ async function _syncFlexPickingSessionImpl(): Promise<{ created: boolean; update
     return { created: true, updated: false, total: lineas.length };
   }
 
-  // Session exists — check if there are new SKUs/quantities to add
-  const doneQtyBySku = new Map<string, number>();
+  // Session exists — find shipments already in session vs new ones
+  const existingShipIds = new Set<number>();
   for (const l of flexSession.lineas) {
-    const key = l.skuVenta.toUpperCase();
-    doneQtyBySku.set(key, (doneQtyBySku.get(key) || 0) + l.qtyPedida);
+    for (const sid of (l.shipmentIds || [])) existingShipIds.add(sid);
   }
 
-  // Accumulate total needed per SKU from shipments
-  const neededBySku = new Map<string, number>();
-  for (const l of lineas) {
-    const key = l.skuVenta.toUpperCase();
-    neededBySku.set(key, (neededBySku.get(key) || 0) + l.qtyPedida);
-  }
-
-  // Compare totals and add extra lines
+  // Add lines for shipments NOT already in the session (preserves correct shipmentIds)
   const newLineas: typeof lineas = [];
-  for (const [key, totalNeeded] of Array.from(neededBySku.entries())) {
-    const alreadyDone = doneQtyBySku.get(key) || 0;
-    if (totalNeeded > alreadyDone) {
-      const extra = totalNeeded - alreadyDone;
-      // Find the original line to use as template
-      const template = lineas.find(l => l.skuVenta.toUpperCase() === key);
-      if (template) {
-        newLineas.push({ ...template, qtyPedida: extra, componentes: template.componentes.map(c => ({ ...c, unidades: extra })) });
-      }
+  for (const l of lineas) {
+    const lineShipIds = l.shipmentIds || [];
+    // Check if ALL shipmentIds of this line are already in the session
+    const isNew = lineShipIds.length === 0 || lineShipIds.some(sid => !existingShipIds.has(sid));
+    if (isNew) {
+      newLineas.push(l);
     }
   }
 
