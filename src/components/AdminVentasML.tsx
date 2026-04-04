@@ -51,6 +51,39 @@ function loadCache(): { from: string; to: string; tarifaFlex: number; mlOrders: 
   } catch { return null; }
 }
 
+function getDatePresets() {
+  const today = new Date();
+  const fmt = (d: Date) => d.toISOString().slice(0, 10);
+  const todayStr = fmt(today);
+
+  const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
+
+  const weekStart = new Date(today); weekStart.setDate(weekStart.getDate() - weekStart.getDay() + 1); // Monday
+  const lastWeekStart = new Date(weekStart); lastWeekStart.setDate(lastWeekStart.getDate() - 7);
+  const lastWeekEnd = new Date(weekStart); lastWeekEnd.setDate(lastWeekEnd.getDate() - 1);
+
+  const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+  const lastMonthStart = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+  const lastMonthEnd = new Date(today.getFullYear(), today.getMonth(), 0);
+
+  const yearStart = new Date(today.getFullYear(), 0, 1);
+
+  const last7 = new Date(today); last7.setDate(last7.getDate() - 6);
+  const last30 = new Date(today); last30.setDate(last30.getDate() - 29);
+
+  return [
+    { label: "Hoy", from: todayStr, to: todayStr },
+    { label: "Ayer", from: fmt(yesterday), to: fmt(yesterday) },
+    { label: "Últ. 7 días", from: fmt(last7), to: todayStr },
+    { label: "Esta semana", from: fmt(weekStart), to: todayStr },
+    { label: "Sem. pasada", from: fmt(lastWeekStart), to: fmt(lastWeekEnd) },
+    { label: "Últ. 30 días", from: fmt(last30), to: todayStr },
+    { label: "Este mes", from: fmt(monthStart), to: todayStr },
+    { label: "Mes pasado", from: fmt(lastMonthStart), to: fmt(lastMonthEnd) },
+    { label: "Este año", from: fmt(yearStart), to: todayStr },
+  ];
+}
+
 export default function AdminVentasML() {
   const today = new Date().toISOString().slice(0, 10);
   const [from, setFrom] = useState(today);
@@ -239,6 +272,57 @@ export default function AdminVentasML() {
     items: acc.items + o.cantidad,
   }), { subtotal: 0, comision: 0, envio: 0, bonif: 0, neto: 0, items: 0 });
 
+  // Daily chart data
+  const dailyChart = (() => {
+    if (validOrders.length === 0) return null;
+    const dailyMap = new Map<string, { venta: number; neto: number; orders: number }>();
+    for (const o of validOrders) {
+      const day = (o.fecha || "").slice(0, 10);
+      if (!day) continue;
+      const prev = dailyMap.get(day) || { venta: 0, neto: 0, orders: 0 };
+      prev.venta += o.subtotal;
+      prev.neto += o.total_neto ?? (o.subtotal - o.comision_total - o.costo_envio + (o.ingreso_envio || 0));
+      prev.orders += 1;
+      dailyMap.set(day, prev);
+    }
+    const days = Array.from(dailyMap.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+    if (days.length <= 1) return null;
+    const maxVenta = Math.max(...days.map(([, d]) => d.venta), 1);
+    return (
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 700 }}>📊 Ventas por día</div>
+          <div style={{ fontSize: 10, color: "var(--txt3)" }}>{days.length} días</div>
+        </div>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 120 }}>
+          {days.map(([day, d]) => {
+            const h = Math.max(4, (d.venta / maxVenta) * 100);
+            const netoH = Math.max(2, (Math.max(0, d.neto) / maxVenta) * 100);
+            const dayLabel = day.slice(5);
+            return (
+              <div key={day} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", minWidth: 0 }} title={`${day}\nVenta: ${fmt(d.venta)}\nNeto: ${fmt(d.neto)}\nÓrdenes: ${d.orders}`}>
+                <div style={{ width: "100%", display: "flex", flexDirection: "column", alignItems: "center", gap: 1 }}>
+                  <div style={{ width: "80%", maxWidth: 40, height: h, background: "var(--cyanBg)", borderRadius: "3px 3px 0 0", border: "1px solid var(--cyanBd)", position: "relative" }}>
+                    <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: netoH, background: "var(--cyan)", borderRadius: "0 0 0 0", opacity: 0.6 }} />
+                  </div>
+                </div>
+                <div style={{ fontSize: 8, color: "var(--txt3)", marginTop: 4, transform: days.length > 15 ? "rotate(-45deg)" : undefined, whiteSpace: "nowrap" }}>{dayLabel}</div>
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", gap: 16, marginTop: 8, justifyContent: "center" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, color: "var(--txt3)" }}>
+            <div style={{ width: 10, height: 10, borderRadius: 2, background: "var(--cyanBg)", border: "1px solid var(--cyanBd)" }} /> Venta bruta
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, color: "var(--txt3)" }}>
+            <div style={{ width: 10, height: 10, borderRadius: 2, background: "var(--cyan)", opacity: 0.6 }} /> Neto
+          </div>
+        </div>
+      </div>
+    );
+  })();
+
   return (
     <div>
       {/* Header */}
@@ -248,32 +332,47 @@ export default function AdminVentasML() {
             <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>💰 Ventas MercadoLibre</h2>
             <div style={{ fontSize: 12, color: "var(--txt3)", marginTop: 4 }}>Comparativa ProfitGuard vs API ML Directa</div>
           </div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <input type="date" value={from} onChange={e => setFrom(e.target.value)}
-              style={{ padding: "6px 10px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 12 }} />
-            <span style={{ color: "var(--txt3)", fontSize: 12 }}>→</span>
-            <input type="date" value={to} onChange={e => setTo(e.target.value)}
-              style={{ padding: "6px 10px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 12 }} />
+          <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
               <label style={{ fontSize: 10, color: "var(--txt3)" }}>Tarifa Flex:</label>
               <input type="number" value={tarifaFlex} onChange={e => setTarifaFlex(parseInt(e.target.value) || 0)}
-                style={{ width: 70, padding: "6px 8px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 12, textAlign: "right" }} />
+                style={{ width: 60, padding: "5px 6px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 11, textAlign: "right" }} />
             </div>
-            <button onClick={fetchMLOnly} disabled={!!loading}
-              style={{ padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: "var(--bg3)", color: "var(--cyan)", border: "1px solid var(--cyanBd)", cursor: loading ? "wait" : "pointer" }}>
-              Solo ML
-            </button>
-            <button onClick={fetchBoth} disabled={!!loading}
-              style={{ padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)", cursor: loading ? "wait" : "pointer" }}>
-              Comparar
-            </button>
             {mlOrders.length > 0 && (
               <button onClick={exportToExcel}
-                style={{ padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: "var(--greenBg)", color: "var(--green)", border: "1px solid var(--greenBd)", cursor: "pointer" }}>
+                style={{ padding: "5px 10px", borderRadius: 6, fontSize: 10, fontWeight: 700, background: "var(--greenBg)", color: "var(--green)", border: "1px solid var(--greenBd)", cursor: "pointer" }}>
                 Exportar
               </button>
             )}
           </div>
+        </div>
+        {/* Date presets */}
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 12 }}>
+          {getDatePresets().map(p => {
+            const isActive = from === p.from && to === p.to;
+            return (
+              <button key={p.label} onClick={() => { setFrom(p.from); setTo(p.to); }}
+                style={{ padding: "4px 10px", borderRadius: 6, fontSize: 10, fontWeight: isActive ? 700 : 500, background: isActive ? "var(--cyanBg)" : "var(--bg3)", color: isActive ? "var(--cyan)" : "var(--txt3)", border: `1px solid ${isActive ? "var(--cyanBd)" : "var(--bg4)"}`, cursor: "pointer" }}>
+                {p.label}
+              </button>
+            );
+          })}
+        </div>
+        {/* Custom date range + actions */}
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
+          <input type="date" value={from} onChange={e => setFrom(e.target.value)}
+            style={{ padding: "5px 8px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 11 }} />
+          <span style={{ color: "var(--txt3)", fontSize: 11 }}>→</span>
+          <input type="date" value={to} onChange={e => setTo(e.target.value)}
+            style={{ padding: "5px 8px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 11 }} />
+          <button onClick={fetchMLOnly} disabled={!!loading}
+            style={{ padding: "5px 12px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)", cursor: loading ? "wait" : "pointer" }}>
+            {loading ? "Cargando..." : "Cargar"}
+          </button>
+          <button onClick={fetchBoth} disabled={!!loading}
+            style={{ padding: "5px 12px", borderRadius: 6, fontSize: 10, fontWeight: 600, background: "var(--bg3)", color: "var(--txt3)", border: "1px solid var(--bg4)", cursor: loading ? "wait" : "pointer" }}>
+            + ProfitGuard
+          </button>
         </div>
         {loading && <div style={{ marginTop: 8, fontSize: 12, color: "var(--amber)" }}>{loading}</div>}
         {error && <div style={{ marginTop: 8, fontSize: 12, color: "var(--red)" }}>{error}</div>}
@@ -292,6 +391,9 @@ export default function AdminVentasML() {
           <div className="kpi"><div className="kpi-label">Ingreso neto</div><div className="kpi-value" style={{ color: "var(--green)", fontSize: 16 }}>{fmt(mlTotals.neto)}</div></div>
         </div>
       )}
+
+      {/* Daily chart */}
+      {dailyChart}
 
       {/* View toggle */}
       {mlOrders.length > 0 && (
