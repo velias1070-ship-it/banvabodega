@@ -134,6 +134,23 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // 4b. Fetch logistic_type from ML API for shipments still missing
+    const missingLogistic = shipIds.filter(id => !logisticMap.has(id));
+    if (missingLogistic.length > 0) {
+      console.log(`[Ventas Sync] Fetching logistic_type for ${missingLogistic.length} shipments`);
+      for (let i = 0; i < missingLogistic.length; i += 10) {
+        const batch = missingLogistic.slice(i, i + 10);
+        await Promise.all(batch.map(async (sid) => {
+          try {
+            const ship = await mlGet<{ logistic_type?: string; logistic?: { type?: string } }>(`/shipments/${sid}`, { "x-format-new": "true" });
+            const lt = ship?.logistic?.type || ship?.logistic_type;
+            if (lt) logisticMap.set(sid, lt);
+          } catch { /* skip */ }
+        }));
+        if (i + 10 < missingLogistic.length) await new Promise(r => setTimeout(r, 100));
+      }
+    }
+
     // 5. Fetch shipment costs from ML API for uncached ones (parallel, 10 at a time)
     const uncachedShipIds = shipIds.filter(id => !costsCache.has(id));
     console.log(`[Ventas Sync] Costs: ${costsCache.size} cached, ${uncachedShipIds.length} to fetch`);
@@ -179,8 +196,9 @@ export async function GET(req: NextRequest) {
       const packItemCount = packOrders.reduce((s, o) => s + (o.order_items?.length || 1), 0);
       const shipId = packOrders[0]?.shipping?.id;
       const lt = shipId ? logisticMap.get(shipId) || "" : "";
-      const isFlex = lt === "self_service" || lt === "";
-      const canal = isFlex ? "Flex" : "Full";
+      const isFull = lt === "fulfillment" || lt === "xd_drop_off" || lt === "cross_docking" || lt === "drop_off";
+      const isFlex = !isFull;
+      const canal = isFull ? "Full" : "Flex";
 
       // Shipping costs
       const costs = shipId ? costsCache.get(shipId) : undefined;
