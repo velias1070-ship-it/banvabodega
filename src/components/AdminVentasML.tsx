@@ -119,26 +119,9 @@ export default function AdminVentasML() {
     finally { setLoading(null); }
   };
 
-  // On mount: load from DB cache (always fresh), sessionStorage as instant fallback
+  // On mount: always load from DB cache
   useEffect(() => {
-    const cached = loadCache();
-    const targetFrom = cached?.from || today;
-    const targetTo = cached?.to || today;
-    if (cached) {
-      setFrom(cached.from);
-      setTo(cached.to);
-      setTarifaFlex(cached.tarifaFlex);
-    }
-    // Show sessionStorage data instantly while DB loads
-    if (cached?.mlOrders?.length) {
-      setMlOrders(cached.mlOrders);
-      setPgOrders(cached.pgOrders);
-      setSource("session");
-      if (cached.pgOrders.length > 0) setView("comparativa");
-      else setView("ml_directo");
-    }
-    // Then load fresh from DB cache (overwrites session data)
-    loadFromDBCache(targetFrom, targetTo);
+    loadFromDBCache(today, today);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
