@@ -173,15 +173,21 @@ export async function GET(req: NextRequest) {
 
     // 6. Upsert to DB
     let upserted = 0;
+    const upsertErrors: string[] = [];
     for (let i = 0; i < rows.length; i += 500) {
       const chunk = rows.slice(i, i + 500);
       const { error } = await sb.from("ventas_ml_cache").upsert(chunk, { onConflict: "order_id,sku_venta" });
-      if (error) console.warn(`[Ventas Sync] Upsert error:`, error.message);
+      if (error) upsertErrors.push(error.message);
       else upserted += chunk.length;
     }
 
     console.log(`[Ventas Sync] Done: ${upserted} rows`);
-    return NextResponse.json({ status: "ok", synced: upserted, orders: orders.length, claims: claimOrderIds.size, range: `${fromDate} → ${toDate}` });
+    return NextResponse.json({
+      status: "ok", synced: upserted, orders: orders.length, rows: rows.length,
+      claims: claimOrderIds.size, range: `${fromDate} → ${toDate}`,
+      ...(upsertErrors.length > 0 ? { upsert_errors: upsertErrors } : {}),
+      ...(rows.length > 0 && upserted === 0 ? { sample_row: rows[0] } : {}),
+    });
   } catch (err) {
     console.error("[Ventas Sync] Error:", err);
     return NextResponse.json({ error: String(err) }, { status: 500 });
