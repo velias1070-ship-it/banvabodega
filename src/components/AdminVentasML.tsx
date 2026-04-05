@@ -58,7 +58,9 @@ function getDatePresets() {
 
   const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
 
-  const weekStart = new Date(today); weekStart.setDate(weekStart.getDate() - weekStart.getDay() + 1); // Monday
+  const weekStart = new Date(today);
+  const dayOfWeek = weekStart.getDay();
+  weekStart.setDate(weekStart.getDate() + (dayOfWeek === 0 ? -6 : 1 - dayOfWeek)); // Monday of current week
   const lastWeekStart = new Date(weekStart); lastWeekStart.setDate(lastWeekStart.getDate() - 7);
   const lastWeekEnd = new Date(weekStart); lastWeekEnd.setDate(lastWeekEnd.getDate() - 1);
 
