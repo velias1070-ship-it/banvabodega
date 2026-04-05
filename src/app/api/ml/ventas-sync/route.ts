@@ -110,66 +110,120 @@ export async function GET(req: NextRequest) {
       if (o.mediations?.length) claimOrderIds.add(o.id);
     }
 
-    // 4. Resolve logistic types from DB cache (fast, no ML API calls)
+    // 4. Resolve logistic types + cached costs from ml_shipments (DB, fast)
     const shipIds = Array.from(new Set(orders.map(o => o.shipping?.id).filter(Boolean))) as number[];
     const logisticMap = new Map<number, string>();
+    const costsCache = new Map<number, { sender_cost: number; bonificacion: number }>();
     for (let i = 0; i < shipIds.length; i += 500) {
       const chunk = shipIds.slice(i, i + 500);
-      const { data } = await sb.from("ml_shipments").select("shipment_id, logistic_type").in("shipment_id", chunk);
-      if (data) for (const r of data as { shipment_id: number; logistic_type: string }[]) logisticMap.set(r.shipment_id, r.logistic_type);
+      const { data } = await sb.from("ml_shipments")
+        .select("shipment_id, logistic_type, sender_cost, bonificacion, costs_cached_at")
+        .in("shipment_id", chunk);
+      if (data) {
+        for (const r of data as { shipment_id: number; logistic_type: string; sender_cost: number | null; bonificacion: number | null; costs_cached_at: string | null }[]) {
+          logisticMap.set(r.shipment_id, r.logistic_type);
+          if (r.costs_cached_at && r.sender_cost !== null) {
+            costsCache.set(r.shipment_id, { sender_cost: r.sender_cost, bonificacion: r.bonificacion || 0 });
+          }
+        }
+      }
     }
-    // For orders without cached logistic_type, use the one from the order itself
     for (const o of orders) {
       if (o.shipping?.id && !logisticMap.has(o.shipping.id) && o.shipping.logistic_type) {
         logisticMap.set(o.shipping.id, o.shipping.logistic_type);
       }
     }
 
-    // 5. Map to cache rows (fast — use sale_fee from order, tarifa fija for shipping)
+    // 5. Fetch shipment costs from ML API for uncached ones (parallel, 10 at a time)
+    const uncachedShipIds = shipIds.filter(id => !costsCache.has(id));
+    console.log(`[Ventas Sync] Costs: ${costsCache.size} cached, ${uncachedShipIds.length} to fetch`);
+    for (let i = 0; i < uncachedShipIds.length; i += 10) {
+      const batch = uncachedShipIds.slice(i, i + 10);
+      await Promise.all(batch.map(async (sid) => {
+        try {
+          const costs = await mlGet<{
+            senders: Array<{ cost: number; discounts: Array<{ type: string; promoted_amount: number }> }>;
+            receiver?: { cost: number; discounts: Array<{ type: string; promoted_amount: number }> };
+          }>(`/shipments/${sid}/costs`);
+          if (costs) {
+            const sender = costs.senders?.[0];
+            const senderCost = Math.round(sender?.cost || 0);
+            const senderBonif = sender?.discounts?.reduce((s, d) => s + (d.promoted_amount || 0), 0) || 0;
+            const receiverLoyalBonif = costs.receiver?.discounts?.filter(d => d.type === "loyal")?.reduce((s, d) => s + (d.promoted_amount || 0), 0) || 0;
+            const receiverPaid = Math.round(costs.receiver?.cost || 0);
+            const bonificacion = Math.round(senderBonif + receiverLoyalBonif + receiverPaid);
+            costsCache.set(sid, { sender_cost: senderCost, bonificacion });
+            // Save to ml_shipments cache
+            void sb.from("ml_shipments").update({
+              sender_cost: senderCost, bonificacion, costs_cached_at: new Date().toISOString(),
+            }).eq("shipment_id", sid);
+          }
+        } catch { /* skip */ }
+      }));
+      if (i + 10 < uncachedShipIds.length) await new Promise(r => setTimeout(r, 100));
+    }
+
+    // 6. Group orders by shipment for pack cost splitting
+    const shipGroups = new Map<string, MLOrder[]>();
+    for (const o of orders) {
+      const key = o.shipping?.id ? String(o.shipping.id) : `solo_${o.id}`;
+      const g = shipGroups.get(key) || [];
+      g.push(o);
+      shipGroups.set(key, g);
+    }
+
+    // 7. Map to cache rows
     const rows: Array<Record<string, unknown>> = [];
 
-    for (const order of orders) {
-      const shipId = order.shipping?.id;
+    for (const [, packOrders] of Array.from(shipGroups.entries())) {
+      const packItemCount = packOrders.reduce((s, o) => s + (o.order_items?.length || 1), 0);
+      const shipId = packOrders[0]?.shipping?.id;
       const lt = shipId ? logisticMap.get(shipId) || "" : "";
       const isFlex = lt === "self_service" || lt === "";
       const canal = isFlex ? "Flex" : "Full";
-      const itemCount = order.order_items?.length || 1;
-      // Flex: tarifa fija del transportista. Full: 0 (ML cobra via billing, se enriquece con "Cargar")
-      const costoEnvioPorItem = isFlex ? Math.round(tarifaFlex / itemCount) : 0;
 
-      for (const item of (order.order_items || [])) {
-        const sku = (item.item?.seller_sku || `ML-${item.item?.id}`).toUpperCase();
-        const subtotal = Math.round(item.unit_price * item.quantity);
-        const comisionUnit = Math.round(item.sale_fee || 0);
-        const comisionTotal = comisionUnit * item.quantity;
-        const totalNeto = subtotal - comisionTotal - costoEnvioPorItem;
+      // Shipping costs
+      const costs = shipId ? costsCache.get(shipId) : undefined;
+      const packCostoEnvio = isFlex ? tarifaFlex : Math.round(costs?.sender_cost || 0);
+      const packBonificacion = Math.round(costs?.bonificacion || 0);
 
-        rows.push({
-          order_id: String(order.id),
-          order_number: String(order.pack_id || order.id),
-          fecha: toChileISO(order.date_closed || order.date_created),
-          fecha_date: toChileISO(order.date_closed || order.date_created).slice(0, 10),
-          cliente: [order.buyer?.first_name, order.buyer?.last_name].filter(Boolean).join(" ") || order.buyer?.nickname || "",
-          razon_social: "",
-          sku_venta: sku,
-          nombre_producto: item.item?.title || "",
-          cantidad: item.quantity,
-          canal,
-          precio_unitario: Math.round(item.unit_price),
-          subtotal,
-          comision_unitaria: comisionUnit,
-          comision_total: comisionTotal,
-          costo_envio: costoEnvioPorItem,
-          ingreso_envio: 0,
-          ingreso_adicional_tc: 0,
-          total: subtotal,
-          total_neto: totalNeto,
-          logistic_type: lt,
-          estado: claimOrderIds.has(order.id) ? "En mediación" : "Pagada",
-          documento_tributario: "",
-          estado_documento: "",
-          updated_at: new Date().toISOString(),
-        });
+      for (const order of packOrders) {
+        for (const item of (order.order_items || [])) {
+          const sku = (item.item?.seller_sku || `ML-${item.item?.id}`).toUpperCase();
+          const subtotal = Math.round(item.unit_price * item.quantity);
+          const comisionUnit = Math.round(item.sale_fee || 0);
+          const comisionTotal = comisionUnit * item.quantity;
+          const costoEnvio = Math.round(packCostoEnvio / packItemCount);
+          const bonificacion = Math.round(packBonificacion / packItemCount);
+          const totalNeto = subtotal - comisionTotal - costoEnvio + bonificacion;
+
+          rows.push({
+            order_id: String(order.id),
+            order_number: String(order.pack_id || order.id),
+            fecha: toChileISO(order.date_closed || order.date_created),
+            fecha_date: toChileISO(order.date_closed || order.date_created).slice(0, 10),
+            cliente: [order.buyer?.first_name, order.buyer?.last_name].filter(Boolean).join(" ") || order.buyer?.nickname || "",
+            razon_social: "",
+            sku_venta: sku,
+            nombre_producto: item.item?.title || "",
+            cantidad: item.quantity,
+            canal,
+            precio_unitario: Math.round(item.unit_price),
+            subtotal,
+            comision_unitaria: comisionUnit,
+            comision_total: comisionTotal,
+            costo_envio: costoEnvio,
+            ingreso_envio: bonificacion,
+            ingreso_adicional_tc: 0,
+            total: subtotal,
+            total_neto: totalNeto,
+            logistic_type: lt,
+            estado: claimOrderIds.has(order.id) ? "En mediación" : "Pagada",
+            documento_tributario: "",
+            estado_documento: "",
+            updated_at: new Date().toISOString(),
+          });
+        }
       }
     }
 
