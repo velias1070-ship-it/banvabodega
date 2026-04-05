@@ -204,6 +204,13 @@ export async function GET(req: NextRequest) {
       }
 
       for (const order of packOrders) {
+        // Debug: log Full orders with non-zero shipping
+        if (isFull && packCostoEnvio > 0) {
+          console.log(`[Ventas Sync DEBUG] Full order ${order.id}: shipId=${shipId} lt=${lt} senderCost=${costs?.sender_cost} packCostoEnvio=${packCostoEnvio}`);
+        }
+        if (order.id === 2000015841100856) {
+          console.log(`[Ventas Sync DEBUG] TARGET ORDER: shipId=${shipId} lt=${lt} isFull=${isFull} costs=${JSON.stringify(costs)} packCostoEnvio=${packCostoEnvio} packBonificacion=${packBonificacion}`);
+        }
         for (const item of (order.order_items || [])) {
           const sku = (item.item?.seller_sku || `ML-${item.item?.id}`).toUpperCase();
           const subtotal = Math.round(item.unit_price * item.quantity);
@@ -267,12 +274,23 @@ export async function GET(req: NextRequest) {
     const flexCount = rows.filter(r => r.canal === "Flex").length;
     const fullCount = rows.filter(r => r.canal === "Full").length;
     const missingLt = shipIds.filter(id => !logisticMap.has(id)).length;
+
+    // Debug: find target order
+    const targetRow = rows.find(r => r.order_id === "2000015841100856");
+    const targetShipId = 46789050063;
+    const debugInfo = {
+      target_row: targetRow ? { canal: targetRow.canal, costo_envio: targetRow.costo_envio, ingreso_envio: targetRow.ingreso_envio, logistic_type: targetRow.logistic_type } : "not_found",
+      logistic_resolved: logisticMap.get(targetShipId) || "missing",
+      costs_resolved: costsCache.get(targetShipId) || "missing",
+      full_with_3320: rows.filter(r => r.canal === "Full" && r.costo_envio === 3320).length,
+    };
     console.log(`[Ventas Sync] Done: ${upserted} rows (flex:${flexCount} full:${fullCount} missing_lt:${missingLt})`);
     return NextResponse.json({
       status: "ok", synced: upserted, orders: orders.length, rows: rows.length,
       flex: flexCount, full: fullCount, missing_logistic: missingLt,
       claims: claimOrderIds.size, range: `${fromDate} → ${toDate}`,
       ...(upsertErrors.length > 0 ? { upsert_errors: upsertErrors } : {}),
+      debug: debugInfo,
     });
   } catch (err) {
     console.error("[Ventas Sync] Error:", err);
