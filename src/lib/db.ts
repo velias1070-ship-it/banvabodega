@@ -1595,12 +1595,13 @@ export async function fetchActiveFlexShipments(storeId?: number | null): Promise
   if (!shipments || shipments.length === 0) return [];
 
   const shipmentIds = (shipments as DBMLShipment[]).map(s => s.shipment_id);
-  // Fetch items in chunks (supabase IN limit)
+  // Fetch items in chunks (supabase IN limit). Exclude items already picked (stock_deducted=true).
   const allItems: DBMLShipmentItem[] = [];
   for (let i = 0; i < shipmentIds.length; i += 500) {
     const chunk = shipmentIds.slice(i, i + 500);
     const { data: items } = await sb.from("ml_shipment_items").select("*")
-      .in("shipment_id", chunk);
+      .in("shipment_id", chunk)
+      .eq("stock_deducted", false);
     if (items) allItems.push(...(items as DBMLShipmentItem[]));
   }
 
@@ -1611,10 +1612,10 @@ export async function fetchActiveFlexShipments(storeId?: number | null): Promise
     itemsByShipment.set(item.shipment_id, arr);
   }
 
-  return (shipments as DBMLShipment[]).map(s => ({
-    ...s,
-    items: itemsByShipment.get(s.shipment_id) || [],
-  }));
+  // Only return shipments that have pending items (otherwise they would appear empty)
+  return (shipments as DBMLShipment[])
+    .map(s => ({ ...s, items: itemsByShipment.get(s.shipment_id) || [] }))
+    .filter(s => s.items.length > 0);
 }
 
 /**
