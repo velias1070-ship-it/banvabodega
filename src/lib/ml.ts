@@ -42,19 +42,23 @@ export interface MLConfig {
 export interface MLOrder {
   id: number;
   date_created: string;
+  date_closed?: string;
   status: string;
   tags?: string[];  // includes "fraud_risk_detected" if suspicious
   order_items: Array<{
     item: { id: string; title: string; seller_sku: string | null; variation_id?: number };
     quantity: number;
     unit_price: number;
+    sale_fee?: number;
   }>;
   shipping: {
     id: number;
     logistic_type: string;
   };
   pack_id: number | null;
-  buyer: { id: number; nickname: string };
+  buyer: { id: number; nickname: string; first_name?: string; last_name?: string };
+  mediations?: Array<{ id: number }>;
+  total_amount?: number;
 }
 
 export interface MLItemMap {
