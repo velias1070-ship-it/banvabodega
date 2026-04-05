@@ -280,12 +280,15 @@ export async function GET(req: NextRequest) {
       else upserted += chunk.length;
     }
 
-    console.log(`[Ventas Sync] Done: ${upserted} rows`);
+    const flexCount = rows.filter(r => r.canal === "Flex").length;
+    const fullCount = rows.filter(r => r.canal === "Full").length;
+    const missingLt = shipIds.filter(id => !logisticMap.has(id)).length;
+    console.log(`[Ventas Sync] Done: ${upserted} rows (flex:${flexCount} full:${fullCount} missing_lt:${missingLt})`);
     return NextResponse.json({
       status: "ok", synced: upserted, orders: orders.length, rows: rows.length,
+      flex: flexCount, full: fullCount, missing_logistic: missingLt,
       claims: claimOrderIds.size, range: `${fromDate} → ${toDate}`,
       ...(upsertErrors.length > 0 ? { upsert_errors: upsertErrors } : {}),
-      ...(rows.length > 0 && upserted === 0 ? { sample_row: rows[0] } : {}),
     });
   } catch (err) {
     console.error("[Ventas Sync] Error:", err);
