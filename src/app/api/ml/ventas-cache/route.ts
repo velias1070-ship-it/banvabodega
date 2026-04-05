@@ -18,15 +18,27 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const { data, error } = await sb.from("ventas_ml_cache")
-      .select("*")
-      .gte("fecha_date", from)
-      .lte("fecha_date", to)
-      .order("fecha", { ascending: false })
-      .limit(10000);
+    // Paginate because Supabase PostgREST caps at 1000 per query
+    const allData: Record<string, unknown>[] = [];
+    const pageSize = 1000;
+    for (let page = 0; page < 50; page++) {
+      const { data, error } = await sb.from("ventas_ml_cache")
+        .select("*")
+        .gte("fecha_date", from)
+        .lte("fecha_date", to)
+        .order("fecha", { ascending: false })
+        .range(page * pageSize, (page + 1) * pageSize - 1);
+
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      if (!data || data.length === 0) break;
+      allData.push(...data);
+      if (data.length < pageSize) break;
+    }
+    const data = allData;
+    const error = null;
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ error }, { status: 500 });
     }
 
     // Get last sync time
