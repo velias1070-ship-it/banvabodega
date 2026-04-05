@@ -172,11 +172,20 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // 6. Upsert to DB
+    // 6. Deduplicate rows (same order_id + sku_venta can appear from overlapping chunks)
+    const seen = new Set<string>();
+    const uniqueRows = rows.filter(r => {
+      const key = `${r.order_id}|${r.sku_venta}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    // 7. Upsert to DB
     let upserted = 0;
     const upsertErrors: string[] = [];
-    for (let i = 0; i < rows.length; i += 500) {
-      const chunk = rows.slice(i, i + 500);
+    for (let i = 0; i < uniqueRows.length; i += 500) {
+      const chunk = uniqueRows.slice(i, i + 500);
       const { error } = await sb.from("ventas_ml_cache").upsert(chunk, { onConflict: "order_id,sku_venta" });
       if (error) upsertErrors.push(error.message);
       else upserted += chunk.length;
