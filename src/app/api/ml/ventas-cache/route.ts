@@ -22,7 +22,8 @@ export async function GET(req: NextRequest) {
       .select("*")
       .gte("fecha_date", from)
       .lte("fecha_date", to)
-      .order("fecha", { ascending: false });
+      .order("fecha", { ascending: false })
+      .limit(10000);
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
