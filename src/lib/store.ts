@@ -2015,24 +2015,42 @@ async function _syncFlexPickingSessionImpl(): Promise<{ created: boolean; update
     for (const sid of (l.shipmentIds || [])) existingShipIds.add(sid);
   }
 
-  // Add lines for shipments NOT already in the session (preserves correct shipmentIds)
+  // Active shipment IDs from ML (the ones that SHOULD be in the session)
+  const activeShipIds = new Set<number>();
+  for (const s of todayShipments) activeShipIds.add(s.shipment_id);
+
+  // 1. Remove PENDIENTE lines whose shipments are no longer active (hidden/cancelled/shipped)
+  //    Keep PICKEADO lines (already done, represent actual stock movements)
+  const keptLineas = flexSession.lineas.filter(l => {
+    if (l.estado === "PICKEADO") return true; // keep all picked lines
+    const lineShipIds = l.shipmentIds || [];
+    if (lineShipIds.length === 0) return true; // no shipment ref, can't validate
+    // Keep only if at least one shipmentId is still active
+    return lineShipIds.some(sid => activeShipIds.has(sid));
+  });
+  const removedCount = flexSession.lineas.length - keptLineas.length;
+
+  // 2. Add lines for shipments NOT already in the session (preserves correct shipmentIds)
+  const keptShipIds = new Set<number>();
+  for (const l of keptLineas) {
+    for (const sid of (l.shipmentIds || [])) keptShipIds.add(sid);
+  }
   const newLineas: typeof lineas = [];
   for (const l of lineas) {
     const lineShipIds = l.shipmentIds || [];
-    // Check if ALL shipmentIds of this line are already in the session
-    const isNew = lineShipIds.length === 0 || lineShipIds.some(sid => !existingShipIds.has(sid));
+    const isNew = lineShipIds.length === 0 || lineShipIds.some(sid => !keptShipIds.has(sid));
     if (isNew) {
       newLineas.push(l);
     }
   }
 
-  if (newLineas.length === 0) {
+  if (newLineas.length === 0 && removedCount === 0) {
     return { created: false, updated: false, total: flexSession.lineas.length };
   }
 
   // Re-number new lines to avoid ID collisions
-  const existingIds = new Set(flexSession.lineas.map(l => l.id));
-  let nextNum = flexSession.lineas.length + 1;
+  const existingIds = new Set(keptLineas.map(l => l.id));
+  let nextNum = keptLineas.length + 1;
   for (const nl of newLineas) {
     let newId = `P${String(nextNum).padStart(3, "0")}`;
     while (existingIds.has(newId)) { nextNum++; newId = `P${String(nextNum).padStart(3, "0")}`; }
@@ -2042,7 +2060,7 @@ async function _syncFlexPickingSessionImpl(): Promise<{ created: boolean; update
   }
 
   // Merge and reopen if completed
-  const merged = [...flexSession.lineas, ...newLineas];
+  const merged = [...keptLineas, ...newLineas];
   const newEstado = flexSession.estado === "COMPLETADA" ? "EN_PROCESO" : flexSession.estado;
   await db.updatePickingSession(flexSession.id!, { lineas: merged, estado: newEstado });
   // NOTE: No reservar aquí — el webhook ML ya reservó al procesar el shipment
