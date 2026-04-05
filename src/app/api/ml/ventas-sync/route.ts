@@ -77,14 +77,22 @@ export async function GET(req: NextRequest) {
       const toISO = new Date(actualEnd.toISOString().slice(0, 10) + "T23:59:59-03:00").toISOString();
 
       let offset = 0;
+      let emptyRetries = 0;
       for (let page = 0; page < 40; page++) {
         const url = `/orders/search?seller=${config.seller_id}&order.status=paid&sort=date_desc&order.date_created.from=${encodeURIComponent(fromISO)}&order.date_created.to=${encodeURIComponent(toISO)}&limit=50&offset=${offset}`;
         const result = await mlGet<{ results: MLOrder[]; paging: { total: number } }>(url);
-        if (!result?.results?.length) break;
+        if (!result?.results?.length) {
+          // Retry once in case of transient failure
+          emptyRetries++;
+          if (emptyRetries >= 2) break;
+          await new Promise(r => setTimeout(r, 500));
+          continue;
+        }
+        emptyRetries = 0;
         allOrders.push(...result.results);
         offset += 50;
         if (offset >= result.paging.total) break;
-        await new Promise(r => setTimeout(r, 50));
+        await new Promise(r => setTimeout(r, 150));
       }
       cursor.setDate(actualEnd.getDate() + 1);
     }
@@ -286,7 +294,7 @@ export async function GET(req: NextRequest) {
     };
     console.log(`[Ventas Sync] Done: ${upserted} rows (flex:${flexCount} full:${fullCount} missing_lt:${missingLt})`);
     return NextResponse.json({
-      status: "ok", synced: upserted, orders: orders.length, rows: rows.length,
+      status: "ok", synced: upserted, orders_filtered: orders.length, orders_raw: allOrders.length, rows: rows.length,
       flex: flexCount, full: fullCount, missing_logistic: missingLt,
       claims: claimOrderIds.size, range: `${fromDate} → ${toDate}`,
       ...(upsertErrors.length > 0 ? { upsert_errors: upsertErrors } : {}),
