@@ -1,4 +1,5 @@
 import { getServerSupabase } from "@/lib/supabase-server";
+import { mlGet } from "@/lib/ml";
 
 const TARIFA_FLEX = 3320;
 
@@ -27,7 +28,7 @@ function toChileISO(dateStr: string): string {
 
 /**
  * Upsert a single ML order into ventas_ml_cache.
- * Used by webhooks (real-time) and reconciliation cron.
+ * Fetches shipment costs from ML API for accurate shipping + bonificaciones.
  */
 export async function upsertOrderToVentasCache(
   order: MLOrderForCache,
@@ -36,11 +37,43 @@ export async function upsertOrderToVentasCache(
   const sb = getServerSupabase();
   if (!sb) return false;
 
-  const lt = options?.logisticType || order.shipping?.logistic_type || "";
-  const isFlex = lt === "self_service" || lt === "";
-  const canal = isFlex ? "Flex" : "Full";
+  // Resolve logistic_type
+  let lt = options?.logisticType || order.shipping?.logistic_type || "";
+  if (!lt && order.shipping?.id) {
+    try {
+      const ship = await mlGet<{ logistic_type?: string }>(`/shipments/${order.shipping.id}`);
+      if (ship?.logistic_type) lt = ship.logistic_type;
+    } catch { /* skip */ }
+  }
+  const isFull = lt === "fulfillment" || lt === "xd_drop_off" || lt === "cross_docking" || lt === "drop_off";
+  const canal = isFull ? "Full" : "Flex";
+
+  // Fetch shipment costs
+  let senderCost = 0;
+  let senderBonif = 0;
+  let receiverLoyal = 0;
+  let receiverPaid = 0;
+  if (order.shipping?.id) {
+    try {
+      const costs = await mlGet<{
+        senders: Array<{ cost: number; discounts: Array<{ type: string; promoted_amount: number }> }>;
+        receiver?: { cost: number; discounts: Array<{ type: string; promoted_amount: number }> };
+      }>(`/shipments/${order.shipping.id}/costs`);
+      if (costs) {
+        const sender = costs.senders?.[0];
+        senderCost = Math.round(sender?.cost || 0);
+        senderBonif = Math.round(sender?.discounts?.reduce((s, d) => s + (d.promoted_amount || 0), 0) || 0);
+        receiverLoyal = Math.round(costs.receiver?.discounts?.filter(d => d.type === "loyal")?.reduce((s, d) => s + (d.promoted_amount || 0), 0) || 0);
+        receiverPaid = Math.round(costs.receiver?.cost || 0);
+      }
+    } catch { /* skip */ }
+  }
+
   const itemCount = order.order_items?.length || 1;
-  const costoEnvioPorItem = Math.round(TARIFA_FLEX / itemCount);
+  const packCostoEnvio = isFull ? senderCost : TARIFA_FLEX;
+  const packBonificacion = isFull ? 0 : (senderBonif + receiverLoyal + receiverPaid);
+  const costoEnvioPorItem = Math.round(packCostoEnvio / itemCount);
+  const bonifPorItem = Math.round(packBonificacion / itemCount);
   const estado = options?.estado || (order.status === "cancelled" ? "Cancelada" : "Pagada");
 
   const rows = (order.order_items || []).map(item => {
@@ -48,7 +81,7 @@ export async function upsertOrderToVentasCache(
     const subtotal = Math.round(item.unit_price * item.quantity);
     const comisionUnit = Math.round(item.sale_fee || 0);
     const comisionTotal = comisionUnit * item.quantity;
-    const totalNeto = subtotal - comisionTotal - costoEnvioPorItem;
+    const totalNeto = subtotal - comisionTotal - costoEnvioPorItem + bonifPorItem;
 
     return {
       order_id: String(order.id),
@@ -66,7 +99,7 @@ export async function upsertOrderToVentasCache(
       comision_unitaria: comisionUnit,
       comision_total: comisionTotal,
       costo_envio: costoEnvioPorItem,
-      ingreso_envio: 0,
+      ingreso_envio: bonifPorItem,
       ingreso_adicional_tc: 0,
       total: subtotal,
       total_neto: totalNeto,
@@ -80,9 +113,11 @@ export async function upsertOrderToVentasCache(
 
   if (rows.length === 0) return false;
 
-  const { error } = await sb.from("ventas_ml_cache").upsert(rows, { onConflict: "order_id,sku_venta" });
+  // Delete existing rows for this order then insert (avoids upsert non-PK issues)
+  await sb.from("ventas_ml_cache").delete().eq("order_id", String(order.id));
+  const { error } = await sb.from("ventas_ml_cache").insert(rows);
   if (error) {
-    console.warn(`[Ventas Cache] Upsert error for order ${order.id}:`, error.message);
+    console.warn(`[Ventas Cache] Insert error for order ${order.id}:`, error.message);
     return false;
   }
   return true;
