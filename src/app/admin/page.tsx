@@ -5,7 +5,7 @@ import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, s
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia, IntegrityError } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
-import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado, transferirStock, reconciliarReservas, fetchResumenMovimientosHoy, fetchStockDisponible, fetchMovimientosHoy, fetchDesgloseReservas, enqueueAndSync, updateProductoCosto } from "@/lib/db";
+import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado, transferirStock, reconciliarReservas, fetchResumenMovimientosHoy, fetchStockDisponible, fetchMovimientosHoy, fetchDesgloseReservas, enqueueAndSync, updateProductoCosto, toggleShipmentHidden } from "@/lib/db";
 import type { DBStockProyectado, DBReconciliacion } from "@/lib/db";
 import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap, ShipmentWithItems } from "@/lib/db";
 import { getOAuthUrl } from "@/lib/ml";
@@ -7478,7 +7478,7 @@ function AdminPedidosFlex({ refresh, initialView = "pedidos" }: { refresh: () =>
     setLoading(true);
     // Load ALL active shipments (ready_to_ship + pending/buffered) for Flex dispatch view
     try {
-      const sData = await fetchActiveFlexShipments(storeFilter);
+      const sData = await fetchActiveFlexShipments(storeFilter, true); // admin: include hidden
       setShipments(sData);
     } catch { setShipments([]); }
     // Load store options for filter dropdown
@@ -7919,6 +7919,16 @@ function AdminPedidosFlex({ refresh, initialView = "pedidos" }: { refresh: () =>
                                     Verificar
                                   </button>
                                 )}
+                                <button onClick={async () => {
+                                  const nextHidden = !ship.hidden_from_picking;
+                                  const msg = nextHidden ? "Ocultar este pedido del picking/armado/etiquetas del operador?" : "Volver a mostrar este pedido al operador?";
+                                  if (!window.confirm(msg)) return;
+                                  const ok = await toggleShipmentHidden(ship.shipment_id, nextHidden);
+                                  if (ok) { loadPedidos(); }
+                                  else { alert("Error al actualizar"); }
+                                }} style={{fontSize:9,fontWeight:600,padding:"2px 8px",borderRadius:3,border:"1px solid var(--bg4)",background: ship.hidden_from_picking ? "#f59e0b22" : "var(--bg3)",color: ship.hidden_from_picking ? "#f59e0b" : "var(--txt3)",cursor:"pointer"}}>
+                                  {ship.hidden_from_picking ? "OCULTO — Mostrar" : "Ocultar"}
+                                </button>
                                 {handlingInfo && isUrgent && (
                                   <span className="mono" style={{fontSize:9,color: category === "ATRASADO" ? "#ef4444" : "var(--txt3)"}}>
                                     Despachar antes: {handlingInfo}

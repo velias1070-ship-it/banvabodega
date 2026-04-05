@@ -1512,6 +1512,7 @@ export interface DBMLShipment {
   receiver_name: string | null;
   destination_city: string | null;
   is_fraud_risk: boolean;
+  hidden_from_picking?: boolean;
   updated_at: string;
 }
 
@@ -1544,6 +1545,7 @@ export async function fetchShipmentsToArm(_fecha: string, storeId?: number | nul
     .neq("logistic_type", "fulfillment")
     .eq("status", "ready_to_ship")
     .in("substatus", ["ready_to_print", "printed"])
+    .not("hidden_from_picking", "is", true)
     .order("handling_limit", { ascending: true });
 
   if (storeId) {
@@ -1578,14 +1580,18 @@ export async function fetchShipmentsToArm(_fecha: string, storeId?: number | nul
  * and recently shipped (for reference). Excludes fulfillment.
  * Ordered by handling_limit ASC.
  */
-export async function fetchActiveFlexShipments(storeId?: number | null): Promise<ShipmentWithItems[]> {
+export async function fetchActiveFlexShipments(storeId?: number | null, includeHidden = false): Promise<ShipmentWithItems[]> {
   const sb = getSupabase(); if (!sb) return [];
 
   // Fetch ready_to_ship + pending (not cancelled/delivered)
+  // By default excludes hidden shipments (operator view); admin passes includeHidden=true
   let query = sb.from("ml_shipments").select("*")
     .neq("logistic_type", "fulfillment")
     .in("status", ["ready_to_ship", "pending"])
     .order("handling_limit", { ascending: true, nullsFirst: false });
+  if (!includeHidden) {
+    query = query.not("hidden_from_picking", "is", true);
+  }
 
   if (storeId) {
     query = query.eq("store_id", storeId);
@@ -1620,6 +1626,16 @@ export async function fetchActiveFlexShipments(storeId?: number | null): Promise
 /**
  * Fetch all shipments (no date filter, for "Ver todos" mode).
  */
+/** Toggle hidden_from_picking flag on a shipment (admin action) */
+export async function toggleShipmentHidden(shipmentId: number, hidden: boolean): Promise<boolean> {
+  const sb = getSupabase(); if (!sb) return false;
+  const { error } = await sb.from("ml_shipments")
+    .update({ hidden_from_picking: hidden, updated_at: new Date().toISOString() })
+    .eq("shipment_id", shipmentId);
+  if (error) { console.error("toggleShipmentHidden:", error.message); return false; }
+  return true;
+}
+
 export async function fetchAllShipments(limit = 100, storeId?: number | null): Promise<ShipmentWithItems[]> {
   const sb = getSupabase(); if (!sb) return [];
 
