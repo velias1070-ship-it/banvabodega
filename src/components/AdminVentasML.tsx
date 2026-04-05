@@ -52,9 +52,9 @@ function loadCache(): { from: string; to: string; tarifaFlex: number; mlOrders: 
 }
 
 function getDatePresets() {
-  const today = new Date();
+  const todayStr = new Date().toLocaleDateString("sv-SE", { timeZone: "America/Santiago" });
+  const today = new Date(todayStr + "T12:00:00");
   const fmt = (d: Date) => d.toISOString().slice(0, 10);
-  const todayStr = fmt(today);
 
   const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
 
@@ -85,7 +85,7 @@ function getDatePresets() {
 }
 
 export default function AdminVentasML() {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = new Date().toLocaleDateString("sv-SE", { timeZone: "America/Santiago" });
   const [from, setFrom] = useState(today);
   const [to, setTo] = useState(today);
   const [tarifaFlex, setTarifaFlex] = useState(3320);

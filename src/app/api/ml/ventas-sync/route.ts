@@ -39,7 +39,8 @@ export async function GET(req: NextRequest) {
   const customTo = searchParams.get("to");
   const tarifaFlex = parseInt(searchParams.get("tarifa_flex") || "3320") || 3320;
 
-  const today = new Date();
+  const todayChile = new Date().toLocaleDateString("sv-SE", { timeZone: "America/Santiago" });
+  const today = new Date(todayChile + "T12:00:00");
   let fromDate: string;
   let toDate: string;
 
@@ -49,12 +50,12 @@ export async function GET(req: NextRequest) {
   } else if (isFull) {
     const lastMonthStart = new Date(today.getFullYear(), today.getMonth() - 1, 1);
     fromDate = lastMonthStart.toISOString().slice(0, 10);
-    toDate = today.toISOString().slice(0, 10);
+    toDate = todayChile;
   } else {
     const from = new Date(today);
     from.setDate(from.getDate() - (daysParam - 1));
     fromDate = from.toISOString().slice(0, 10);
-    toDate = today.toISOString().slice(0, 10);
+    toDate = todayChile;
   }
 
   console.log(`[Ventas Sync] ${fromDate} → ${toDate}`);
