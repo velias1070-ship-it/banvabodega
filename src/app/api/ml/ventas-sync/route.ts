@@ -110,10 +110,12 @@ export async function GET(req: NextRequest) {
       if (o.mediations?.length) claimOrderIds.add(o.id);
     }
 
-    // 4. Resolve logistic types + cached costs from ml_shipments (DB, fast)
+    // 4. Resolve logistic types + costs — DB cache first, then ML API for missing
     const shipIds = Array.from(new Set(orders.map(o => o.shipping?.id).filter(Boolean))) as number[];
     const logisticMap = new Map<number, string>();
     const costsCache = new Map<number, { sender_cost: number; sender_bonif: number; receiver_loyal: number; receiver_paid: number }>();
+
+    // 4a. Read from ml_shipments DB cache (fast, no API calls)
     for (let i = 0; i < shipIds.length; i += 500) {
       const chunk = shipIds.slice(i, i + 500);
       const { data } = await sb.from("ml_shipments")
@@ -121,71 +123,51 @@ export async function GET(req: NextRequest) {
         .in("shipment_id", chunk);
       if (data) {
         for (const r of data as { shipment_id: number; logistic_type: string; sender_cost: number | null; bonificacion: number | null; costs_cached_at: string | null }[]) {
-          logisticMap.set(r.shipment_id, r.logistic_type);
-          if (r.costs_cached_at && r.sender_cost !== null) {
-            // DB cache doesn't separate components — re-fetch from API to get accurate split
-            // For now, treat cached bonificacion as sender_bonif (conservative)
-            costsCache.set(r.shipment_id, { sender_cost: r.sender_cost, sender_bonif: r.bonificacion || 0, receiver_loyal: 0, receiver_paid: 0 });
-          }
+          if (r.logistic_type) logisticMap.set(r.shipment_id, r.logistic_type);
         }
       }
     }
+    // Also use logistic_type from order if available
     for (const o of orders) {
       if (o.shipping?.id && !logisticMap.has(o.shipping.id) && o.shipping.logistic_type) {
         logisticMap.set(o.shipping.id, o.shipping.logistic_type);
       }
     }
 
-    // 4b. Fetch logistic_type from ML API for shipments still missing
-    const missingLogistic = shipIds.filter(id => !logisticMap.has(id));
-    if (missingLogistic.length > 0) {
-      console.log(`[Ventas Sync] Fetching logistic_type for ${missingLogistic.length} shipments`);
-      for (let i = 0; i < missingLogistic.length; i += 10) {
-        const batch = missingLogistic.slice(i, i + 10);
-        await Promise.all(batch.map(async (sid) => {
-          try {
-            const ship = await mlGet<{ logistic_type?: string; logistic?: { type?: string } }>(`/shipments/${sid}`, { "x-format-new": "true" });
-            const lt = ship?.logistic?.type || ship?.logistic_type;
-            if (lt) logisticMap.set(sid, lt);
-          } catch { /* skip */ }
-        }));
-        if (i + 10 < missingLogistic.length) await new Promise(r => setTimeout(r, 100));
-      }
-    }
+    // 4b. Fetch from ML API: logistic_type + costs in ONE step per shipment
+    // Any shipment missing logistic_type OR costs needs API calls
+    const needsFetch = shipIds.filter(id => !logisticMap.has(id) || !costsCache.has(id));
+    console.log(`[Ventas Sync] ${shipIds.length} shipments: ${logisticMap.size} with logistic_type, ${needsFetch.length} need API fetch`);
 
-    // 5. Fetch shipment costs from ML API for uncached ones (parallel, 10 at a time)
-    const uncachedShipIds = shipIds.filter(id => !costsCache.has(id));
-    console.log(`[Ventas Sync] Costs: ${costsCache.size} cached, ${uncachedShipIds.length} to fetch`);
-    for (let i = 0; i < uncachedShipIds.length; i += 10) {
-      const batch = uncachedShipIds.slice(i, i + 10);
+    for (let i = 0; i < needsFetch.length; i += 10) {
+      const batch = needsFetch.slice(i, i + 10);
       await Promise.all(batch.map(async (sid) => {
-        try {
-          const costs = await mlGet<{
-            senders: Array<{ cost: number; discounts: Array<{ type: string; promoted_amount: number }> }>;
-            receiver?: { cost: number; discounts: Array<{ type: string; promoted_amount: number }> };
-          }>(`/shipments/${sid}/costs`);
-          if (costs) {
-            const sender = costs.senders?.[0];
-            const senderCost = Math.round(sender?.cost || 0);
-            const senderBonif = sender?.discounts?.reduce((s, d) => s + (d.promoted_amount || 0), 0) || 0;
-            const receiverLoyalBonif = costs.receiver?.discounts?.filter(d => d.type === "loyal")?.reduce((s, d) => s + (d.promoted_amount || 0), 0) || 0;
-            const receiverPaid = Math.round(costs.receiver?.cost || 0);
-            // Store components separately — Flex vs Full use different rules
-            costsCache.set(sid, {
-              sender_cost: senderCost,
-              sender_bonif: Math.round(senderBonif),
-              receiver_loyal: Math.round(receiverLoyalBonif),
-              receiver_paid: Math.round(receiverPaid),
-            });
-            // Save to ml_shipments cache
-            void sb.from("ml_shipments").update({
-              sender_cost: senderCost, bonificacion: Math.round(senderBonif + receiverLoyalBonif + receiverPaid), costs_cached_at: new Date().toISOString(),
-            }).eq("shipment_id", sid);
-          }
-        } catch { /* skip */ }
+        // Fetch both /shipments/{id} and /shipments/{id}/costs in parallel
+        const [shipDetail, shipCosts] = await Promise.all([
+          !logisticMap.has(sid)
+            ? mlGet<{ logistic_type?: string }>(`/shipments/${sid}`).catch(() => null)
+            : Promise.resolve(null),
+          !costsCache.has(sid)
+            ? mlGet<{ senders: Array<{ cost: number; discounts: Array<{ type: string; promoted_amount: number }> }>; receiver?: { cost: number; discounts: Array<{ type: string; promoted_amount: number }> } }>(`/shipments/${sid}/costs`).catch(() => null)
+            : Promise.resolve(null),
+        ]);
+
+        if (shipDetail?.logistic_type) {
+          logisticMap.set(sid, shipDetail.logistic_type);
+        }
+        if (shipCosts) {
+          const sender = shipCosts.senders?.[0];
+          costsCache.set(sid, {
+            sender_cost: Math.round(sender?.cost || 0),
+            sender_bonif: Math.round(sender?.discounts?.reduce((s, d) => s + (d.promoted_amount || 0), 0) || 0),
+            receiver_loyal: Math.round(shipCosts.receiver?.discounts?.filter(d => d.type === "loyal")?.reduce((s, d) => s + (d.promoted_amount || 0), 0) || 0),
+            receiver_paid: Math.round(shipCosts.receiver?.cost || 0),
+          });
+        }
       }));
-      if (i + 10 < uncachedShipIds.length) await new Promise(r => setTimeout(r, 100));
+      if (i + 10 < needsFetch.length) await new Promise(r => setTimeout(r, 50));
     }
+    console.log(`[Ventas Sync] After fetch: ${logisticMap.size} with logistic_type, ${costsCache.size} with costs`);
 
     // 6. Group orders by shipment for pack cost splitting
     const shipGroups = new Map<string, MLOrder[]>();
