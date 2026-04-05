@@ -294,8 +294,9 @@ export default function AdminVentasML() {
   };
 
   // Totals for ML directo (exclude orders in mediation)
-  const validOrders = mlOrders.filter(o => o.estado !== "En mediación");
-  const mediacionCount = mlOrders.length - validOrders.length;
+  const excludedEstados = new Set(["En mediación", "Cancelada", "Reembolsada"]);
+  const validOrders = mlOrders.filter(o => !excludedEstados.has(o.estado || ""));
+  const excludedCount = mlOrders.length - validOrders.length;
   const mlTotals = validOrders.reduce((acc, o) => ({
     subtotal: acc.subtotal + o.subtotal,
     comision: acc.comision + o.comision_total,
@@ -415,7 +416,7 @@ export default function AdminVentasML() {
       {/* KPIs */}
       {mlOrders.length > 0 && (
         <div className="kpi-grid" style={{ marginBottom: 16 }}>
-          <div className="kpi"><div className="kpi-label">Órdenes ML</div><div className="kpi-value">{validOrders.length}{mediacionCount > 0 ? <span style={{ fontSize: 10, color: "var(--amber)", fontWeight: 400 }}> ({mediacionCount} en mediación)</span> : null}</div></div>
+          <div className="kpi"><div className="kpi-label">Órdenes ML</div><div className="kpi-value">{validOrders.length}{excludedCount > 0 ? <span style={{ fontSize: 10, color: "var(--amber)", fontWeight: 400 }}> ({excludedCount} excluidas)</span> : null}</div></div>
           <div className="kpi"><div className="kpi-label">Items</div><div className="kpi-value">{mlTotals.items}</div></div>
           <div className="kpi"><div className="kpi-label">Venta bruta</div><div className="kpi-value" style={{ fontSize: 16 }}>{fmt(mlTotals.subtotal)}</div></div>
           <div className="kpi"><div className="kpi-label">Comisiones</div><div className="kpi-value" style={{ color: "var(--red)", fontSize: 16 }}>{fmt(mlTotals.comision)}</div></div>
@@ -480,10 +481,10 @@ export default function AdminVentasML() {
             </thead>
             <tbody>
               {mlOrders.map((o, i) => {
-                const enMediacion = o.estado === "En mediación";
+                const enMediacion = excludedEstados.has(o.estado || "");
                 return (
                 <tr key={i} style={enMediacion ? { opacity: 0.5, textDecoration: "line-through" } : undefined}>
-                  <td className="mono" style={{ fontSize: 10 }}>{o.order_id}{enMediacion && <span style={{ display: "block", fontSize: 9, color: "var(--amber)", textDecoration: "none" }}>MEDIACIÓN</span>}</td>
+                  <td className="mono" style={{ fontSize: 10 }}>{o.order_id}{enMediacion && <span style={{ display: "block", fontSize: 9, color: o.estado === "Cancelada" ? "var(--red)" : "var(--amber)", textDecoration: "none" }}>{o.estado?.toUpperCase()}</span>}</td>
                   <td style={{ maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.sku_venta}</td>
                   <td style={{ textAlign: "center" }}>{o.cantidad}</td>
                   <td><span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: o.canal === "Full" ? "var(--blueBg)" : "var(--cyanBg)", color: o.canal === "Full" ? "var(--blue)" : "var(--cyan)" }}>{o.canal}</span></td>
