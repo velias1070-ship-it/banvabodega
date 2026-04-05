@@ -252,12 +252,14 @@ export async function GET(req: NextRequest) {
       return true;
     });
 
-    // 7. Upsert to DB
+    // 7. Delete existing rows in range, then insert fresh (upsert has issues with non-PK constraints)
+    await sb.from("ventas_ml_cache").delete().gte("fecha_date", fromDate).lte("fecha_date", toDate);
+
     let upserted = 0;
     const upsertErrors: string[] = [];
     for (let i = 0; i < uniqueRows.length; i += 500) {
       const chunk = uniqueRows.slice(i, i + 500);
-      const { error } = await sb.from("ventas_ml_cache").upsert(chunk, { onConflict: "order_id,sku_venta" });
+      const { error } = await sb.from("ventas_ml_cache").insert(chunk);
       if (error) upsertErrors.push(error.message);
       else upserted += chunk.length;
     }
