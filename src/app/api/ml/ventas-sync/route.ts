@@ -134,7 +134,8 @@ export async function GET(req: NextRequest) {
       const isFlex = lt === "self_service" || lt === "";
       const canal = isFlex ? "Flex" : "Full";
       const itemCount = order.order_items?.length || 1;
-      const costoEnvioPorItem = Math.round(tarifaFlex / itemCount);
+      // Flex: tarifa fija del transportista. Full: 0 (ML cobra via billing, se enriquece con "Cargar")
+      const costoEnvioPorItem = isFlex ? Math.round(tarifaFlex / itemCount) : 0;
 
       for (const item of (order.order_items || [])) {
         const sku = (item.item?.seller_sku || `ML-${item.item?.id}`).toUpperCase();
