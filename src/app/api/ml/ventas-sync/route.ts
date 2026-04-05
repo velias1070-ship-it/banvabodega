@@ -113,7 +113,7 @@ export async function GET(req: NextRequest) {
     // 4. Resolve logistic types + cached costs from ml_shipments (DB, fast)
     const shipIds = Array.from(new Set(orders.map(o => o.shipping?.id).filter(Boolean))) as number[];
     const logisticMap = new Map<number, string>();
-    const costsCache = new Map<number, { sender_cost: number; bonificacion: number }>();
+    const costsCache = new Map<number, { sender_cost: number; sender_bonif: number; receiver_loyal: number; receiver_paid: number }>();
     for (let i = 0; i < shipIds.length; i += 500) {
       const chunk = shipIds.slice(i, i + 500);
       const { data } = await sb.from("ml_shipments")
@@ -123,7 +123,9 @@ export async function GET(req: NextRequest) {
         for (const r of data as { shipment_id: number; logistic_type: string; sender_cost: number | null; bonificacion: number | null; costs_cached_at: string | null }[]) {
           logisticMap.set(r.shipment_id, r.logistic_type);
           if (r.costs_cached_at && r.sender_cost !== null) {
-            costsCache.set(r.shipment_id, { sender_cost: r.sender_cost, bonificacion: r.bonificacion || 0 });
+            // DB cache doesn't separate components — re-fetch from API to get accurate split
+            // For now, treat cached bonificacion as sender_bonif (conservative)
+            costsCache.set(r.shipment_id, { sender_cost: r.sender_cost, sender_bonif: r.bonificacion || 0, receiver_loyal: 0, receiver_paid: 0 });
           }
         }
       }
@@ -168,11 +170,16 @@ export async function GET(req: NextRequest) {
             const senderBonif = sender?.discounts?.reduce((s, d) => s + (d.promoted_amount || 0), 0) || 0;
             const receiverLoyalBonif = costs.receiver?.discounts?.filter(d => d.type === "loyal")?.reduce((s, d) => s + (d.promoted_amount || 0), 0) || 0;
             const receiverPaid = Math.round(costs.receiver?.cost || 0);
-            const bonificacion = Math.round(senderBonif + receiverLoyalBonif + receiverPaid);
-            costsCache.set(sid, { sender_cost: senderCost, bonificacion });
+            // Store components separately — Flex vs Full use different rules
+            costsCache.set(sid, {
+              sender_cost: senderCost,
+              sender_bonif: Math.round(senderBonif),
+              receiver_loyal: Math.round(receiverLoyalBonif),
+              receiver_paid: Math.round(receiverPaid),
+            });
             // Save to ml_shipments cache
             void sb.from("ml_shipments").update({
-              sender_cost: senderCost, bonificacion, costs_cached_at: new Date().toISOString(),
+              sender_cost: senderCost, bonificacion: Math.round(senderBonif + receiverLoyalBonif + receiverPaid), costs_cached_at: new Date().toISOString(),
             }).eq("shipment_id", sid);
           }
         } catch { /* skip */ }
@@ -200,10 +207,19 @@ export async function GET(req: NextRequest) {
       const isFlex = !isFull;
       const canal = isFull ? "Full" : "Flex";
 
-      // Shipping costs
+      // Shipping costs — different rules per channel
       const costs = shipId ? costsCache.get(shipId) : undefined;
-      const packCostoEnvio = isFlex ? tarifaFlex : Math.round(costs?.sender_cost || 0);
-      const packBonificacion = Math.round(costs?.bonificacion || 0);
+      let packCostoEnvio: number;
+      let packBonificacion: number;
+      if (isFull) {
+        // Full: ML cobra sender.cost via billing. Bonificación = solo sender.discounts
+        packCostoEnvio = Math.round(costs?.sender_cost || 0);
+        packBonificacion = Math.round(costs?.sender_bonif || 0);
+      } else {
+        // Flex: tarifa fija. Bonificación = sender.discounts + receiver.loyal + receiver.cost
+        packCostoEnvio = tarifaFlex;
+        packBonificacion = Math.round((costs?.sender_bonif || 0) + (costs?.receiver_loyal || 0) + (costs?.receiver_paid || 0));
+      }
 
       for (const order of packOrders) {
         for (const item of (order.order_items || [])) {
