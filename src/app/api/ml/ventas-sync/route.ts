@@ -212,9 +212,9 @@ export async function GET(req: NextRequest) {
       let packCostoEnvio: number;
       let packBonificacion: number;
       if (isFull) {
-        // Full: ML cobra sender.cost via billing. Bonificación = solo sender.discounts
+        // Full: sender.cost ya es neto (post-descuento). No hay bonificación para el vendedor.
         packCostoEnvio = Math.round(costs?.sender_cost || 0);
-        packBonificacion = Math.round(costs?.sender_bonif || 0);
+        packBonificacion = 0;
       } else {
         // Flex: tarifa fija. Bonificación = sender.discounts + receiver.loyal + receiver.cost
         packCostoEnvio = tarifaFlex;
