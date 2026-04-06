@@ -20,12 +20,29 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "periodo debe ser YYYYMM" }, { status: 400 });
     }
 
-    const resp = await fetch(
-      `${SII_SERVER_URL}/sync-bhe-recibidas?periodo=${periodo}&key=${SII_API_KEY}`,
-      { signal: AbortSignal.timeout(100000) }
-    );
+    let result: Record<string, unknown> | null = null;
+    let lastErr = "";
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        if (attempt > 0) await new Promise(r => setTimeout(r, 2000 * attempt));
+        const resp = await fetch(
+          `${SII_SERVER_URL}/sync-bhe-recibidas?periodo=${periodo}&key=${SII_API_KEY}`,
+          { signal: AbortSignal.timeout(100000) }
+        );
+        result = await resp.json();
+        if (result!.status !== "error") break;
+        lastErr = String(result!.error || "");
+        if (!lastErr.includes("SSL") && !lastErr.includes("Max retries")) break;
+        result = null;
+      } catch (e) {
+        lastErr = e instanceof Error ? e.message : String(e);
+        if (!lastErr.includes("SSL") && !lastErr.includes("Max retries")) break;
+      }
+    }
 
-    const result = await resp.json();
+    if (!result) {
+      return NextResponse.json({ error: lastErr || "Error tras 3 intentos" }, { status: 500 });
+    }
 
     if (result.status === "error") {
       return NextResponse.json({ error: result.error, log: result.log }, { status: 500 });

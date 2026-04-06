@@ -1712,17 +1712,23 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
     setSyncMsg(null);
     try {
       let totalReg = 0;
-      for (const p of periodosMensuales) {
-        const res = await fetch("/api/sii/bhe", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ periodo: p }),
-        });
-        const d = await res.json();
-        if (d.error) { setSyncMsg(`Error (${p}): ${d.error}`); return; }
-        totalReg += d.registros || 0;
+      const errores: string[] = [];
+      for (let i = 0; i < periodosMensuales.length; i++) {
+        const p = periodosMensuales[i];
+        if (periodosMensuales.length > 1) setSyncMsg(`Importando ${p.slice(4)}/${p.slice(0, 4)}... (${i + 1}/${periodosMensuales.length})`);
+        try {
+          const res = await fetch("/api/sii/bhe", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ periodo: p }),
+          });
+          const d = await res.json();
+          if (d.error) { errores.push(`${p}: ${d.error.slice(0, 60)}`); }
+          else totalReg += d.registros || 0;
+        } catch { errores.push(`${p}: timeout`); }
       }
-      setSyncMsg(`${totalReg} boletas importadas`);
+      const msg = `${totalReg} boletas importadas`;
+      setSyncMsg(errores.length > 0 ? `${msg} (${errores.length} meses con error)` : msg);
       if (totalReg > 0) load();
     } catch (e) {
       setSyncMsg(`Error: ${e instanceof Error ? e.message : "sin detalles"}`);
@@ -1767,13 +1773,19 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
             setSyncing(true); setSyncMsg(null);
             try {
               let totalReg = 0;
-              for (const p of periodosMensuales) {
-                const res = await fetch(`/api/sii/bhe-rec`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ periodo: p }) });
-                const d = await res.json();
-                if (d.error) { setSyncMsg(`Error (${p}): ${d.error}`); return; }
-                totalReg += d.registros || 0;
+              const errores: string[] = [];
+              for (let i = 0; i < periodosMensuales.length; i++) {
+                const p = periodosMensuales[i];
+                if (periodosMensuales.length > 1) setSyncMsg(`Importando ${p.slice(4)}/${p.slice(0, 4)}... (${i + 1}/${periodosMensuales.length})`);
+                try {
+                  const res = await fetch(`/api/sii/bhe-rec`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ periodo: p }) });
+                  const d = await res.json();
+                  if (d.error) { errores.push(`${p}: ${d.error.slice(0, 60)}`); }
+                  else totalReg += d.registros || 0;
+                } catch { errores.push(`${p}: timeout`); }
               }
-              setSyncMsg(`${totalReg} BHE recibidas importadas`);
+              const msg = `${totalReg} BHE recibidas importadas`;
+              setSyncMsg(errores.length > 0 ? `${msg} (${errores.length} meses con error)` : msg);
               if (totalReg > 0) load();
             } catch (e) { setSyncMsg(`Error: ${e instanceof Error ? e.message : "sin detalles"}`); }
             finally { setSyncing(false); }

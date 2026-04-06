@@ -22,12 +22,31 @@ export async function POST(req: NextRequest) {
 
     console.log(`[BHE] Llamando Railway /sync-bte periodo=${periodo}`);
 
-    const resp = await fetch(
-      `${SII_SERVER_URL}/sync-bte?periodo=${periodo}&key=${SII_API_KEY}`,
-      { signal: AbortSignal.timeout(100000) }
-    );
+    let result: Record<string, unknown> | null = null;
+    let lastErr = "";
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        if (attempt > 0) await new Promise(r => setTimeout(r, 2000 * attempt));
+        const resp = await fetch(
+          `${SII_SERVER_URL}/sync-bte?periodo=${periodo}&key=${SII_API_KEY}`,
+          { signal: AbortSignal.timeout(100000) }
+        );
+        result = await resp.json();
+        if (result!.status !== "error") break;
+        lastErr = String(result!.error || "");
+        if (!lastErr.includes("SSL") && !lastErr.includes("Max retries")) break;
+        console.warn(`[BHE] Intento ${attempt + 1} falló (SSL), reintentando...`);
+        result = null;
+      } catch (e) {
+        lastErr = e instanceof Error ? e.message : String(e);
+        if (!lastErr.includes("SSL") && !lastErr.includes("Max retries")) break;
+        console.warn(`[BHE] Intento ${attempt + 1} falló: ${lastErr}`);
+      }
+    }
 
-    const result = await resp.json();
+    if (!result) {
+      return NextResponse.json({ error: lastErr || "Error tras 3 intentos" }, { status: 500 });
+    }
 
     if (result.status === "error") {
       console.error(`[BHE] Railway error: ${result.error}`);
