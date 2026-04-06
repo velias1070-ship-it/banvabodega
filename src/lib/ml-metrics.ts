@@ -411,7 +411,15 @@ async function faseAds(estado: SyncEstado, config: MLConfig & { advertiser_id?: 
 
   const dateFrom = `${estado.periodo}-01`;
   const dateTo = lastDayOfMonth(estado.periodo);
+  // Impression share metrics only available at campaign level, not ad level
   const adsMetrics = [
+    "clicks", "prints", "ctr", "cost", "cpc", "acos", "roas", "cvr",
+    "direct_amount", "indirect_amount", "total_amount",
+    "direct_units_quantity", "indirect_units_quantity", "units_quantity",
+    "organic_units_quantity", "organic_units_amount",
+  ].join(",");
+
+  const campaignMetrics = [
     "clicks", "prints", "ctr", "cost", "cpc", "acos", "roas", "cvr",
     "sov", "impression_share", "top_impression_share",
     "lost_impression_share_by_budget", "lost_impression_share_by_ad_rank",
@@ -421,9 +429,10 @@ async function faseAds(estado: SyncEstado, config: MLConfig & { advertiser_id?: 
     "organic_units_quantity", "organic_units_amount",
   ].join(",");
 
-  // 1. Get campaigns (without metrics — simpler query that works reliably)
+  // 1. Get campaigns WITH metrics (impression share, etc.)
   const campaignsResp = await mlGet<{ results?: AdsCampaign[]; paging?: { total: number } }>(
-    `/marketplace/advertising/${SITE_ID}/advertisers/${advertiserId}/product_ads/campaigns/search?limit=50`,
+    `/marketplace/advertising/${SITE_ID}/advertisers/${advertiserId}/product_ads/campaigns/search` +
+    `?limit=50&date_from=${dateFrom}&date_to=${dateTo}&metrics=${campaignMetrics}`,
     { "api-version": "2" }
   );
 
@@ -435,6 +444,49 @@ async function faseAds(estado: SyncEstado, config: MLConfig & { advertiser_id?: 
   const campaigns = campaignsResp.results ?? [];
   console.log(`[ml-metrics] Found ${campaigns.length} campaigns (total: ${campaignsResp.paging?.total ?? "?"})`);
   if (campaigns.length === 0) return 0;
+
+  // 1b. Save campaign-level metrics (impression share) to ml_campaigns_mensual
+  const sb = getServerSupabase();
+  if (sb) {
+    const campRows = campaigns.map(camp => {
+      const m = camp.metrics || {};
+      return {
+        periodo: estado.periodo,
+        campaign_id: String(camp.id),
+        campaign_name: camp.name,
+        campaign_status: camp.status,
+        budget: camp.budget ?? 0,
+        strategy: camp.strategy ?? null,
+        acos_target: camp.acos_target ?? 0,
+        roas_target: camp.roas_target ?? 0,
+        clicks: m.clicks ?? 0,
+        prints: m.prints ?? 0,
+        ctr: m.ctr ?? 0,
+        cost: m.cost ?? 0,
+        cpc: m.cpc ?? 0,
+        acos: m.acos ?? 0,
+        roas: m.roas ?? 0,
+        cvr: m.cvr ?? 0,
+        sov: m.sov ?? 0,
+        impression_share: m.impression_share ?? 0,
+        top_impression_share: m.top_impression_share ?? 0,
+        lost_by_budget: m.lost_impression_share_by_budget ?? 0,
+        lost_by_rank: m.lost_impression_share_by_ad_rank ?? 0,
+        acos_benchmark: m.acos_benchmark ?? 0,
+        direct_amount: m.direct_amount ?? 0,
+        indirect_amount: m.indirect_amount ?? 0,
+        total_amount: m.total_amount ?? 0,
+        direct_units: m.direct_units_quantity ?? 0,
+        indirect_units: m.indirect_units_quantity ?? 0,
+        total_units: m.units_quantity ?? 0,
+        organic_units: m.organic_units_quantity ?? 0,
+        organic_amount: m.organic_units_amount ?? 0,
+      };
+    });
+    const { error } = await sb.from("ml_campaigns_mensual").upsert(campRows, { onConflict: "periodo,campaign_id" });
+    if (error) console.error("[ml-metrics] campaigns upsert error:", error.message);
+    else console.log(`[ml-metrics] Saved ${campRows.length} campaign metrics for ${estado.periodo}`);
+  }
 
   // 2. Get ads — ML returns same metrics for an item regardless of campaign.
   // So we deduplicate by item_id, keeping the entry from the best campaign
@@ -483,12 +535,12 @@ async function faseAds(estado: SyncEstado, config: MLConfig & { advertiser_id?: 
           ads_cvr: m.cvr ?? 0,
           ads_acos: m.acos ?? 0,
           ads_roas: m.roas ?? 0,
-          ads_sov: m.sov ?? 0,
-          ads_impression_share: m.impression_share ?? 0,
-          ads_top_impression_share: m.top_impression_share ?? 0,
-          ads_lost_by_budget: m.lost_impression_share_by_budget ?? 0,
-          ads_lost_by_rank: m.lost_impression_share_by_ad_rank ?? 0,
-          ads_acos_benchmark: m.acos_benchmark ?? 0,
+          ads_sov: 0,
+          ads_impression_share: 0,
+          ads_top_impression_share: 0,
+          ads_lost_by_budget: 0,
+          ads_lost_by_rank: 0,
+          ads_acos_benchmark: 0,
           ads_direct_amount: m.direct_amount ?? 0,
           ads_indirect_amount: m.indirect_amount ?? 0,
           ads_total_amount: m.total_amount ?? 0,
