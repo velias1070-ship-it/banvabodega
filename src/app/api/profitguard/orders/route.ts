@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-export const maxDuration = 30;
+export const maxDuration = 300;
 export const dynamic = "force-dynamic";
 
 const PG_API = "https://app.profitguard.cl/api/v1/orders";
