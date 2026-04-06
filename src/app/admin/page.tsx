@@ -6431,6 +6431,20 @@ function Productos({ refresh }: { refresh: () => void }) {
         <div style={{display:"flex",gap:8}}>
           <input className="form-input mono" value={q} onChange={e=>setQ(e.target.value)} placeholder="Buscar SKU, nombre, código ML..." style={{flex:1,fontSize:12}}/>
           <button onClick={()=>setFiltroSinCosto(!filtroSinCosto)} style={{padding:"10px 16px",borderRadius:8,background:filtroSinCosto?"var(--red)":"var(--bg3)",color:filtroSinCosto?"#fff":"var(--txt2)",fontWeight:600,fontSize:12,border:filtroSinCosto?"none":"1px solid var(--bg4)",whiteSpace:"nowrap"}}>Sin Costo</button>
+          <button onClick={()=>{
+            const sinCosto = Object.values(s.products).filter(p=>!p.cost && !(p.costAvg??0));
+            const rows = [["SKU Origen","Nombre","Categoria","Proveedor","SKUs Venta","Costo (llenar)"].join(",")];
+            for(const p of sinCosto.sort((a,b)=>a.sku.localeCompare(b.sku))){
+              const ventas = getVentasPorSkuOrigen(p.sku);
+              const skuVentas = ventas.map(v=>`${v.skuVenta}(x${v.unidades})`).join(" | ") || "-";
+              rows.push([p.sku,`"${p.name.replace(/"/g,'""')}"`,p.cat,p.prov,`"${skuVentas}"`,0].join(","));
+            }
+            const blob = new Blob([rows.join("\n")],{type:"text/csv"});
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = "productos_sin_costo.csv";
+            a.click();
+          }} style={{padding:"10px 16px",borderRadius:8,background:"var(--bg3)",color:"var(--amber)",fontWeight:600,fontSize:12,border:"1px solid var(--bg4)",whiteSpace:"nowrap"}}>Exportar Sin Costo</button>
           <button onClick={startAdd} style={{padding:"10px 20px",borderRadius:8,background:"var(--green)",color:"#fff",fontWeight:700,fontSize:13,whiteSpace:"nowrap"}}>+ Nuevo Producto</button>
         </div>
         <div style={{fontSize:11,color:"var(--txt3)",marginTop:6}}>{prods.length} productos en diccionario</div>
