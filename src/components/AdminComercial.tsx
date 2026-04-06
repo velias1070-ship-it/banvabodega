@@ -107,6 +107,32 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
   const [editTitle, setEditTitle] = useState("");
   const [editColor, setEditColor] = useState("");
   const [editSaving, setEditSaving] = useState(false);
+  const [bulkSyncing, setBulkSyncing] = useState<string | null>(null);
+  const [bulkResult, setBulkResult] = useState<string | null>(null);
+
+  const bulkSyncDesignFromColor = async (familyKey: string, groupItems: DBMLItemMap[]) => {
+    if (!confirm(`¿Copiar COLOR → DISEÑO en ${groupItems.length} items de "${familyKey}"?`)) return;
+    setBulkSyncing(familyKey);
+    setBulkResult(null);
+    try {
+      const res = await fetch("/api/ml/bulk-attr-sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ item_ids: groupItems.map(i => i.item_id), action: "design_from_color" }),
+      });
+      const data = await res.json();
+      if (data.error) {
+        setActionError(`Error: ${data.error}`);
+      } else {
+        setActionError(`Diseño = Color: ${data.ok} actualizados, ${data.failed} errores de ${data.total} items`);
+        if (data.ok > 0) await loadItems();
+      }
+    } catch (e) {
+      setActionError(`Error: ${e instanceof Error ? e.message : "desconocido"}`);
+    } finally {
+      setBulkSyncing(null);
+    }
+  };
 
   // Load available stock (on-hand minus reserved) + composicion for buffer calc
   const [composicion, setComposicion] = useState<Map<string, { sku_origen: string; unidades: number }>>(new Map());
@@ -491,8 +517,13 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                       <td></td>
                       <td style={{ textAlign: "center", fontWeight: 700, fontSize: 12, color: groupStockTotal > 0 ? "var(--green)" : "var(--txt3)" }}>{groupStockTotal}</td>
                       <td style={{ textAlign: "center", fontSize: 10 }}>{groupItems.reduce((s, i) => s + (liveData.get(i.item_id)?.sold_quantity ?? i.sold_quantity ?? 0), 0)}</td>
-                      <td></td>
-                      <td></td>
+                      <td colSpan={2} style={{ textAlign: "right", padding: "8px 10px" }}>
+                        <button onClick={e => { e.stopPropagation(); bulkSyncDesignFromColor(familyKey, groupItems); }}
+                          disabled={bulkSyncing === familyKey}
+                          style={{ padding: "3px 8px", borderRadius: 4, fontSize: 9, fontWeight: 600, background: "var(--bg3)", color: "var(--cyan)", border: "1px solid var(--bg4)", cursor: bulkSyncing === familyKey ? "wait" : "pointer", whiteSpace: "nowrap" }}>
+                          {bulkSyncing === familyKey ? "Sincronizando..." : "Diseño = Color"}
+                        </button>
+                      </td>
                     </tr>
                     {expanded && groupItems.map(item => {
                       const live = liveData.get(item.item_id);
