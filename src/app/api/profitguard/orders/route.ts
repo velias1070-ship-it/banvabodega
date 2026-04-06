@@ -31,7 +31,7 @@ interface PGResponse {
   data?: PGOrder[];
   items?: PGOrder[];
   pagination?: { page: number; page_size: number; pages: number; count: number };
-  meta?: { currentPage: number; itemsPerPage: number; totalPages: number; totalItems: number };
+  meta?: { currentPage?: number; current_page?: number; totalPages?: number; total_pages?: number; totalItems?: number; total_count?: number };
 }
 
 function mapEstado(status: string): string {
@@ -70,8 +70,8 @@ async function fetchAllPages(apiKey: string, baseUrl: string): Promise<PGOrder[]
     return [];
   }
   allOrders.push(...firstItems);
-  const totalPages = firstResponse.meta?.totalPages ?? firstResponse.pagination?.pages ?? 1;
-  const totalCount = firstResponse.meta?.totalItems ?? firstResponse.pagination?.count ?? firstItems.length;
+  const totalPages = firstResponse.meta?.totalPages ?? firstResponse.meta?.total_pages ?? firstResponse.pagination?.pages ?? 1;
+  const totalCount = firstResponse.meta?.totalItems ?? firstResponse.meta?.total_count ?? firstResponse.pagination?.count ?? firstItems.length;
 
   console.log(`[ProfitGuard] Página 1/${totalPages} — ${firstItems.length} órdenes (total: ${totalCount})`);
 
