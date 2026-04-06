@@ -150,7 +150,7 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
   // Filtrar y ordenar
   const filtered = useMemo(() => {
     let list = movBanco.filter(isMovReal);
-    if (soloPendientes) list = list.filter(m => !concMovIds.has(m.id!) && m.estado_conciliacion !== "ignorado" && m.estado_conciliacion !== "conciliado");
+    if (soloPendientes) list = list.filter(m => m.estado_conciliacion !== "ignorado" && m.estado_conciliacion !== "conciliado");
     if (tab === "abonos") list = list.filter(m => m.monto > 0);
     else if (tab === "cargos") list = list.filter(m => m.monto < 0);
     if (search) {
@@ -275,7 +275,7 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
 
   const runConciliacionRapida = () => {
     const pendList = movBanco.filter(m =>
-      isMovReal(m) && !concMovIds.has(m.id!) && m.estado_conciliacion !== "ignorado" && m.estado_conciliacion !== "conciliado"
+      isMovReal(m) && m.estado_conciliacion !== "ignorado" && m.estado_conciliacion !== "conciliado"
     );
     const cCompraIds = new Set(conciliaciones.filter(c => c.estado !== "rechazado" && c.rcv_compra_id).map(c => c.rcv_compra_id));
     const cVentaIds = new Set(conciliaciones.filter(c => c.estado !== "rechazado" && c.rcv_venta_id).map(c => c.rcv_venta_id));
@@ -331,8 +331,9 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
         rcv_venta_id: match.doc.tipo === "rcv_venta" ? match.doc.id : null,
         confianza: Math.round((1 - match.score) * 100) / 100,
         estado: "confirmado", tipo_partida: "match", metodo: "auto_rapida", notas: null, created_by: "admin",
+        monto_aplicado: Math.abs(match.mov.monto),
       });
-      await updateMovimientoBanco(match.mov.id!, { estado_conciliacion: "conciliado" } as Partial<DBMovimientoBanco>);
+      const { estado, monto_conciliado } = await syncEstadoConciliacion(match.mov.id!, match.mov.monto);
       if (match.doc.rut) {
         const pc = provCuentas.find(p => p.rut_proveedor === match.doc.rut);
         if (pc?.categoria_cuenta_id && !pc.cuenta_variable) {
@@ -340,7 +341,7 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
         }
       }
       setConcRapidaResults(prev => prev.map(r => r.mov.id === match.mov.id ? { ...r, estado: "aprobado" } : r));
-      setMovBanco(prev => prev.map(m => m.id === match.mov.id ? { ...m, estado_conciliacion: "conciliado" } : m));
+      setMovBanco(prev => prev.map(m => m.id === match.mov.id ? { ...m, estado_conciliacion: estado, monto_conciliado } : m));
     } catch (e) { console.error("Error aprobando:", e); }
   };
 
@@ -483,8 +484,10 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
                   {soloPendientes ? "Todos los movimientos están conciliados" : "Sin movimientos"}
                 </td></tr>
               ) : filtered.map(m => {
-                const isConciliado = concMovIds.has(m.id!) || m.estado_conciliacion === "conciliado";
+                const isConciliado = m.estado_conciliacion === "conciliado";
+                const isParcial = m.estado_conciliacion === "parcial";
                 const isIgnorado = m.estado_conciliacion === "ignorado";
+                const restante = Math.abs(m.monto) - (m.monto_conciliado || 0);
                 const isActionsOpen = showActions === m.id;
                 return (
                   <tr key={m.id} style={{ borderBottom: "1px solid var(--bg4)", opacity: isIgnorado ? 0.4 : 1 }}>
@@ -534,8 +537,9 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
                         <span style={{ fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 4, background: "var(--bg3)", color: "var(--txt3)" }}>Ignorado</span>
                       ) : (
                         <div style={{ display: "flex", gap: 4, justifyContent: "flex-end", alignItems: "center", position: "relative" }}>
-                          <div style={{ fontSize: 10, color: "var(--txt3)", marginRight: 4 }}>
-                            <span className="mono">{fmtMoney(Math.abs(m.monto))}</span>
+                          <div style={{ fontSize: 10, color: isParcial ? "var(--amber)" : "var(--txt3)", marginRight: 4 }}>
+                            {isParcial && <div style={{ fontSize: 9, fontWeight: 600, color: "var(--amber)", marginBottom: 2 }}>Parcial {fmtMoney(m.monto_conciliado || 0)}/{fmtMoney(Math.abs(m.monto))}</div>}
+                            <span className="mono">{fmtMoney(restante)}</span>
                             <span style={{ marginLeft: 2 }}>por conciliar</span>
                           </div>
                           <button onClick={() => setConciliarMov(m)}
@@ -635,7 +639,6 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
           onClose={() => setConciliarMov(null)}
           onSaved={() => {
             setConciliarMov(null);
-            setMovBanco(prev => prev.map(m => m.id === conciliarMov.id ? { ...m, estado_conciliacion: "conciliado" } : m));
             load();
           }}
         />

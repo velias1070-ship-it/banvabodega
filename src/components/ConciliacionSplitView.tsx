@@ -15,6 +15,7 @@ import {
   fetchProveedorCuentas,
   upsertProveedorCuenta,
   categorizarMovimiento,
+  syncEstadoConciliacion,
 } from "@/lib/db";
 import type {
   DBEmpresa, DBMovimientoBanco, DBRcvCompra, DBRcvVenta, DBConciliacion,
@@ -293,8 +294,8 @@ export default function ConciliacionSplitView({
       return true;
     });
     // Filtro estado
-    if (movFilter === "pendiente") filtered = filtered.filter(m => !concMovIds.has(m.id!) && m.estado_conciliacion !== "ignorado");
-    else if (movFilter === "conciliado") filtered = filtered.filter(m => concMovIds.has(m.id!));
+    if (movFilter === "pendiente") filtered = filtered.filter(m => m.estado_conciliacion !== "conciliado" && m.estado_conciliacion !== "ignorado");
+    else if (movFilter === "conciliado") filtered = filtered.filter(m => m.estado_conciliacion === "conciliado");
     // Filtro tipo
     if (tipoFilter === "egresos") filtered = filtered.filter(m => m.monto < 0);
     else if (tipoFilter === "ingresos") filtered = filtered.filter(m => m.monto > 0);
@@ -365,6 +366,7 @@ export default function ConciliacionSplitView({
       metodo: "manual",
       notas: matchNota.trim() || null,
       created_by: "admin",
+      monto_aplicado: Math.abs(selectedMov.monto) - (selectedMov.monto_conciliado || 0),
     };
 
     // Buscar si el proveedor ya tiene cuenta asignada
@@ -388,7 +390,7 @@ export default function ConciliacionSplitView({
   // Finalizar confirmación con cuenta opcional
   const finalizarConfirmacion = async (c: DBConciliacion, mov: DBMovimientoBanco, doc: DocUnificado, cuentaId: string | null) => {
     await upsertConciliacion(c);
-    await updateMovimientoBanco(mov.id!, { estado_conciliacion: "conciliado" } as Partial<DBMovimientoBanco>);
+    const { estado, monto_conciliado } = await syncEstadoConciliacion(mov.id!, mov.monto);
     if (cuentaId) {
       await categorizarMovimiento(mov.id!, cuentaId);
     }
@@ -404,7 +406,7 @@ export default function ConciliacionSplitView({
     const cuentaNombre = cuentaId ? cuentasHoja.find(x => x.id === cuentaId)?.nombre : null;
     showFeedback(cuentaNombre ? `Match confirmado → ${cuentaNombre}` : "Match confirmado");
 
-    setMovBanco(prev => prev.map(m => m.id === mov.id ? { ...m, estado_conciliacion: "conciliado", categoria_cuenta_id: cuentaId || undefined } : m));
+    setMovBanco(prev => prev.map(m => m.id === mov.id ? { ...m, estado_conciliacion: estado, monto_conciliado, categoria_cuenta_id: cuentaId || undefined } : m));
     setConciliaciones(prev => [...prev, c]);
     setSelectedMov(null);
     setSelectedDoc(null);
@@ -521,6 +523,7 @@ export default function ConciliacionSplitView({
   const handleClasificar = async () => {
     if (!selectedMov || !empresa.id || !clasificarCuenta) return;
 
+    const montoAplicar = Math.abs(selectedMov.monto) - (selectedMov.monto_conciliado || 0);
     const c: DBConciliacion = {
       empresa_id: empresa.id,
       movimiento_banco_id: selectedMov.id!,
@@ -532,16 +535,15 @@ export default function ConciliacionSplitView({
       metodo: "manual",
       notas: clasificarNota || null,
       created_by: "admin",
+      monto_aplicado: montoAplicar,
     };
     await upsertConciliacion(c);
-    await updateMovimientoBanco(selectedMov.id!, {
-      estado_conciliacion: "conciliado",
-      categoria_cuenta_id: clasificarCuenta,
-    } as Partial<DBMovimientoBanco>);
+    const { estado, monto_conciliado } = await syncEstadoConciliacion(selectedMov.id!, selectedMov.monto);
+    await categorizarMovimiento(selectedMov.id!, clasificarCuenta);
 
     // Actualizar estado local
     const movId = selectedMov.id;
-    setMovBanco(prev => prev.map(m => m.id === movId ? { ...m, estado_conciliacion: "conciliado", categoria_cuenta_id: clasificarCuenta } : m));
+    setMovBanco(prev => prev.map(m => m.id === movId ? { ...m, estado_conciliacion: estado, monto_conciliado, categoria_cuenta_id: clasificarCuenta } : m));
     setConciliaciones(prev => [...prev, c]);
     setSelectedMov(null);
     setShowClasificar(false);
@@ -619,8 +621,8 @@ export default function ConciliacionSplitView({
   if (loading) return <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>Cargando datos de conciliación...</div>;
 
   // Estadísticas
-  const pendientes = movBanco.filter(m => !concMovIds.has(m.id!)).length;
-  const conciliados = movBanco.filter(m => concMovIds.has(m.id!)).length;
+  const pendientes = movBanco.filter(m => m.estado_conciliacion !== "conciliado" && m.estado_conciliacion !== "ignorado").length;
+  const conciliados = movBanco.filter(m => m.estado_conciliacion === "conciliado").length;
   const docsPendientes = docsSinConciliar.length;
 
   return (
@@ -847,7 +849,7 @@ export default function ConciliacionSplitView({
               </div>
             ) : movFiltrados.map(m => {
               const isSelected = selectedMov?.id === m.id;
-              const isConciliado = concMovIds.has(m.id!);
+              const isConciliado = m.estado_conciliacion === "conciliado";
               const detail = isConciliado ? concDetailByMov.get(m.id!) : null;
               return (
                 <div key={m.id}
@@ -917,7 +919,7 @@ export default function ConciliacionSplitView({
           </div>
 
           {/* Acciones para movimiento seleccionado (no conciliado) */}
-          {selectedMov && !selectedDoc && !concMovIds.has(selectedMov.id!) && (
+          {selectedMov && !selectedDoc && selectedMov.estado_conciliacion !== "conciliado" && (
             <div style={{ marginTop: 8 }}>
               {!showClasificar ? (
                 <div style={{ display: "flex", gap: 6 }}>
@@ -1095,9 +1097,7 @@ export default function ConciliacionSplitView({
           onClose={() => setConciliarMov(null)}
           onSaved={() => {
             setConciliarMov(null);
-            // Optimistic: marcar como conciliado localmente
-            setMovBanco(prev => prev.map(m => m.id === conciliarMov.id ? { ...m, estado_conciliacion: "conciliado" } : m));
-            // Recargar conciliaciones
+            // Recargar todo (estado_conciliacion se actualiza desde DB)
             load();
           }}
         />
