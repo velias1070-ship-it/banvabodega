@@ -362,7 +362,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("");
   const [tipoFilter, setTipoFilter] = useState<string>("todos");
-  const [concFilter, setConcFilter] = useState<"todos" | "conciliada" | "sin_pago">("todos");
+  const [concFilter, setConcFilter] = useState<"todos" | "por_pagar" | "vencidas" | "pagadas">("todos");
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
   const [showBheModal, setShowBheModal] = useState(false);
@@ -508,21 +508,6 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
     setEditingProv(null);
   };
 
-  // Filtrar por texto, tipo, proveedor y estado conciliación
-  let filtered = data;
-  if (tipoFilter !== "todos") filtered = filtered.filter(c => String(c.tipo_doc) === tipoFilter);
-  if (provFilterSet) filtered = filtered.filter(c => provFilterSet.has(c.rut_proveedor || ""));
-  if (concFilter === "conciliada") filtered = filtered.filter(c => concCompraIds.has(c.id!));
-  else if (concFilter === "sin_pago") filtered = filtered.filter(c => !concCompraIds.has(c.id!));
-  if (filter) filtered = filtered.filter(c =>
-    (c.razon_social || "").toLowerCase().includes(filter.toLowerCase()) ||
-    (c.rut_proveedor || "").includes(filter) ||
-    (c.nro_doc || "").includes(filter)
-  );
-
-  const totalSinPago = data.filter(c => !concCompraIds.has(c.id!)).length;
-  const totalConciliadas = data.filter(c => concCompraIds.has(c.id!)).length;
-
   // Mapa RUT → plazo_dias
   const plazoByRut = new Map(provCuentas.filter(p => p.plazo_dias).map(p => [p.rut_proveedor, p.plazo_dias!]));
 
@@ -535,6 +520,41 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
     const dias = Math.ceil((venc.getTime() - Date.now()) / 86400000);
     return { fecha: venc.toISOString().slice(0, 10), diasRestantes: dias };
   };
+
+  const totalPagadas = data.filter(c => concCompraIds.has(c.id!)).length;
+  const porPagarList = data.filter(c => !concCompraIds.has(c.id!));
+  const vencidasList = porPagarList.filter(c => {
+    const venc = getVencimiento(c);
+    return venc && venc.diasRestantes < 0;
+  });
+
+  // Filtrar por texto, tipo, proveedor y estado conciliación
+  let filtered = data;
+  if (tipoFilter !== "todos") filtered = filtered.filter(c => String(c.tipo_doc) === tipoFilter);
+  if (provFilterSet) filtered = filtered.filter(c => provFilterSet.has(c.rut_proveedor || ""));
+  if (concFilter === "por_pagar") filtered = filtered.filter(c => !concCompraIds.has(c.id!));
+  else if (concFilter === "vencidas") filtered = filtered.filter(c => {
+    const venc = getVencimiento(c);
+    return !concCompraIds.has(c.id!) && venc && venc.diasRestantes < 0;
+  });
+  else if (concFilter === "pagadas") filtered = filtered.filter(c => concCompraIds.has(c.id!));
+  if (filter) filtered = filtered.filter(c =>
+    (c.razon_social || "").toLowerCase().includes(filter.toLowerCase()) ||
+    (c.rut_proveedor || "").includes(filter) ||
+    (c.nro_doc || "").includes(filter)
+  );
+
+  // Ordenar: por pagar y vencidas → vencimiento más urgente primero
+  if (concFilter === "por_pagar" || concFilter === "vencidas") {
+    filtered = [...filtered].sort((a, b) => {
+      const va = getVencimiento(a);
+      const vb = getVencimiento(b);
+      if (!va && !vb) return 0;
+      if (!va) return 1;
+      if (!vb) return -1;
+      return va.diasRestantes - vb.diasRestantes;
+    });
+  }
 
   const totalNeto = filtered.reduce((s, c) => s + (c.monto_neto || 0), 0);
   const totalExento = filtered.reduce((s, c) => s + (c.monto_exento || 0), 0);
@@ -550,12 +570,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   };
 
   const sinClasificar = data.filter(c => !getClasificacion(c));
-  const porPagarList = data.filter(c => !concCompraIds.has(c.id!));
-  const porRevisarList = data.filter(c => {
-    const venc = getVencimiento(c);
-    return venc && venc.diasRestantes < 0 && !concCompraIds.has(c.id!);
-  });
-  const pctConciliado = data.length > 0 ? Math.round((totalConciliadas / data.length) * 100) : 0;
+  const pctConciliado = data.length > 0 ? Math.round((totalPagadas / data.length) * 100) : 0;
 
   return (
     <div>
@@ -677,37 +692,31 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
         </div>
       )}
 
-      {/* Chipax-style filter tabs */}
+      {/* Filter tabs */}
       <div style={{ display: "flex", gap: 0, borderBottom: "2px solid var(--bg4)", marginBottom: 16, alignItems: "center", justifyContent: "space-between" }}>
         <div style={{ display: "flex", gap: 0 }}>
           {([
-            { key: "todos" as typeof concFilter, label: "Registro", count: data.length, showBadge: false },
-            { key: "sin_pago" as typeof concFilter, label: "Pendientes", count: totalSinPago, showBadge: true },
-            { key: "conciliada" as typeof concFilter, label: "Por pagar", count: porPagarList.length, showBadge: true },
+            { key: "todos" as typeof concFilter, label: "Registro", count: data.length, color: "var(--cyan)" },
+            { key: "por_pagar" as typeof concFilter, label: "Por pagar", count: porPagarList.length, color: "var(--amber)" },
+            { key: "vencidas" as typeof concFilter, label: "Vencidas", count: vencidasList.length, color: "var(--red)" },
+            { key: "pagadas" as typeof concFilter, label: "Pagadas", count: totalPagadas, color: "var(--green)" },
           ]).map(t => (
             <button key={t.key} onClick={() => setConcFilter(t.key)}
               style={{
                 padding: "10px 16px", fontSize: 13, fontWeight: concFilter === t.key ? 600 : 400, cursor: "pointer", background: "none", border: "none",
-                borderBottom: concFilter === t.key ? "2px solid var(--cyan)" : "2px solid transparent",
+                borderBottom: concFilter === t.key ? `2px solid ${t.color}` : "2px solid transparent",
                 color: concFilter === t.key ? "var(--txt)" : "var(--txt3)", marginBottom: -2, whiteSpace: "nowrap",
               }}>
               {t.label}
-              {t.showBadge && t.count > 0 && (
+              {t.count > 0 && (
                 <span style={{
                   marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10,
-                  background: concFilter === t.key ? "var(--red)" : "var(--redBg)",
-                  color: concFilter === t.key ? "#fff" : "var(--red)",
+                  background: concFilter === t.key ? t.color : `color-mix(in srgb, ${t.color} 15%, transparent)`,
+                  color: concFilter === t.key ? "#fff" : t.color,
                 }}>{t.count}</span>
               )}
             </button>
           ))}
-          {porRevisarList.length > 0 && (
-            <button onClick={() => setConcFilter("sin_pago")}
-              style={{ padding: "10px 16px", fontSize: 13, fontWeight: 400, cursor: "pointer", background: "none", border: "none", borderBottom: "2px solid transparent", color: "var(--txt3)", marginBottom: -2, whiteSpace: "nowrap" }}>
-              Por revisar
-              <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10, background: "var(--redBg)", color: "var(--red)" }}>{porRevisarList.length}</span>
-            </button>
-          )}
           {sinClasificar.length > 0 && (
             <button onClick={() => setConcFilter("todos")}
               style={{ padding: "10px 16px", fontSize: 13, fontWeight: 400, cursor: "pointer", background: "none", border: "none", borderBottom: "2px solid transparent", color: "var(--txt3)", marginBottom: -2, whiteSpace: "nowrap" }}>
@@ -717,10 +726,6 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
           )}
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", paddingBottom: 6 }}>
-          <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, cursor: "pointer", color: "var(--txt3)" }}>
-            <input type="checkbox" checked={concFilter === "sin_pago"} onChange={e => setConcFilter(e.target.checked ? "sin_pago" : "todos")} style={{ accentColor: "var(--cyan)" }} />
-            Por conciliar
-          </label>
           <input className="form-input" placeholder="Buscar..." value={filter} onChange={e => setFilter(e.target.value)}
             style={{ fontSize: 12, width: 160, padding: "6px 12px" }} />
         </div>
