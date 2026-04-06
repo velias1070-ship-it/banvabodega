@@ -18,7 +18,7 @@
     },
     {
       "path": "/api/ml/metrics-sync",
-      "schedule": "0 6 1-3 * *"
+      "schedule": "*/10 * 1-5 * *"
     },
     {
       "path": "/api/ml/ventas-reconcile",
