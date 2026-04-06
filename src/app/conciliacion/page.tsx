@@ -1698,22 +1698,32 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
 
   useEffect(() => { load(); }, [load]);
 
+  // Generar lista de periodos mensuales: si es anual "2026" → ["202601"..."202612"], si es mensual devuelve tal cual
+  const periodosMensuales = useMemo(() => {
+    if (periodo.length === 6) return [periodo];
+    const y = parseInt(periodo);
+    const now = new Date();
+    const maxMonth = y === now.getFullYear() ? now.getMonth() + 1 : 12;
+    return Array.from({ length: maxMonth }, (_, i) => `${y}${String(i + 1).padStart(2, "0")}`);
+  }, [periodo]);
+
   const handleSync = async () => {
     setSyncing(true);
     setSyncMsg(null);
     try {
-      const res = await fetch("/api/sii/bhe", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ periodo }),
-      });
-      const d = await res.json();
-      if (d.error) {
-        setSyncMsg(`Error: ${d.error}`);
-      } else {
-        setSyncMsg(`${d.registros || 0} boletas importadas`);
-        if (d.registros > 0) load();
+      let totalReg = 0;
+      for (const p of periodosMensuales) {
+        const res = await fetch("/api/sii/bhe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ periodo: p }),
+        });
+        const d = await res.json();
+        if (d.error) { setSyncMsg(`Error (${p}): ${d.error}`); return; }
+        totalReg += d.registros || 0;
       }
+      setSyncMsg(`${totalReg} boletas importadas`);
+      if (totalReg > 0) load();
     } catch (e) {
       setSyncMsg(`Error: ${e instanceof Error ? e.message : "sin detalles"}`);
     } finally {
@@ -1756,11 +1766,15 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
           <button onClick={async () => {
             setSyncing(true); setSyncMsg(null);
             try {
-              const siiUrl = process.env.NEXT_PUBLIC_SII_SERVER_URL || "https://rcv-sii-server-production.up.railway.app";
-              const res = await fetch(`/api/sii/bhe-rec`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ periodo }) });
-              const d = await res.json();
-              if (d.error) setSyncMsg(`Error: ${d.error}`);
-              else { setSyncMsg(`${d.registros || 0} BHE recibidas importadas`); if (d.registros > 0) load(); }
+              let totalReg = 0;
+              for (const p of periodosMensuales) {
+                const res = await fetch(`/api/sii/bhe-rec`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ periodo: p }) });
+                const d = await res.json();
+                if (d.error) { setSyncMsg(`Error (${p}): ${d.error}`); return; }
+                totalReg += d.registros || 0;
+              }
+              setSyncMsg(`${totalReg} BHE recibidas importadas`);
+              if (totalReg > 0) load();
             } catch (e) { setSyncMsg(`Error: ${e instanceof Error ? e.message : "sin detalles"}`); }
             finally { setSyncing(false); }
           }} disabled={syncing}

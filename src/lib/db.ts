@@ -2205,7 +2205,10 @@ export async function insertSyncLog(log: Omit<DBSyncLog, "id" | "synced_at">): P
 export async function fetchRcvCompras(empresaId: string, periodo?: string): Promise<DBRcvCompra[]> {
   const sb = getSupabase(); if (!sb) return [];
   let q = sb.from("rcv_compras").select("*").eq("empresa_id", empresaId);
-  if (periodo) q = q.eq("periodo", periodo);
+  if (periodo) {
+    if (periodo.length === 4) q = q.like("periodo", `${periodo}%`);
+    else q = q.eq("periodo", periodo);
+  }
   const { data } = await q.order("fecha_docto", { ascending: false });
   return (data || []) as DBRcvCompra[];
 }
