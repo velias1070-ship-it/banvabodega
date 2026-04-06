@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { mlGet, mlPut } from "@/lib/ml";
+import { getServerSupabase } from "@/lib/supabase-server";
 
 export const maxDuration = 120;
 
@@ -36,13 +37,24 @@ export async function POST(req: NextRequest) {
       }
 
       if (action === "from_variant_name") {
+        // Primero intentar con el título del cache (Supabase) que puede tener el nombre original
+        let cachedTitle = "";
+        const sb = getServerSupabase();
+        if (sb) {
+          const { data: cached } = await sb.from("ml_items_map").select("titulo").eq("item_id", itemId).limit(1);
+          cachedTitle = cached?.[0]?.titulo || "";
+        }
+        const titleToUse = cachedTitle || item.title;
+
         // Extraer nombre de variante del título quitando el prefijo de familia
         let variantName = "";
-        if (family_prefix && item.title.startsWith(family_prefix)) {
-          variantName = item.title.slice(family_prefix.length).trim();
+        if (family_prefix && titleToUse.startsWith(family_prefix)) {
+          variantName = titleToUse.slice(family_prefix.length).trim();
+          // Si tiene múltiples palabras (ej "Blanco Dino"), tomar la última
+          const parts = variantName.split(" ");
+          if (parts.length > 1) variantName = parts[parts.length - 1];
         } else {
-          // Fallback: última palabra del título
-          const words = item.title.split(" ");
+          const words = titleToUse.split(" ");
           variantName = words[words.length - 1];
         }
 
