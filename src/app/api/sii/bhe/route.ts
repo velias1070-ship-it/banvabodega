@@ -53,7 +53,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: result.error, log: result.log }, { status: 500 });
     }
 
-    const boletas = result.boletas || [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const boletas = (result as any).boletas || [];
     const data = boletas.map((b: { nro_boleta: string; rut_emisor: string; nombre_emisor: string; fecha: string; monto_bruto: number; retencion: number; monto_liquido: number }) => ({
       periodo,
       estado: "REGISTRO",
