@@ -2519,6 +2519,9 @@ export interface DBProveedorCuenta {
   categoria_cuenta_id: string | null;
   plazo_dias?: number | null;
   cuenta_variable?: boolean;
+  direccion?: string | null;
+  comuna?: string | null;
+  contacto?: string | null;
   updated_at?: string;
 }
 
@@ -2534,7 +2537,7 @@ export async function getProveedorCuenta(rutProveedor: string): Promise<string |
   return data?.[0]?.categoria_cuenta_id || null;
 }
 
-export async function upsertProveedorCuenta(rutProveedor: string, categoriaId: string, razonSocial?: string, plazoDias?: number | null, cuentaVariable?: boolean): Promise<void> {
+export async function upsertProveedorCuenta(rutProveedor: string, categoriaId: string, razonSocial?: string, plazoDias?: number | null, cuentaVariable?: boolean, extras?: { direccion?: string | null; comuna?: string | null; contacto?: string | null }): Promise<void> {
   const sb = getSupabase(); if (!sb) return;
   await sb.from("proveedor_cuenta").upsert({
     rut_proveedor: rutProveedor,
@@ -2542,6 +2545,9 @@ export async function upsertProveedorCuenta(rutProveedor: string, categoriaId: s
     razon_social: razonSocial || null,
     plazo_dias: plazoDias ?? null,
     cuenta_variable: cuentaVariable ?? false,
+    direccion: extras?.direccion ?? null,
+    comuna: extras?.comuna ?? null,
+    contacto: extras?.contacto ?? null,
     updated_at: new Date().toISOString(),
   }, { onConflict: "rut_proveedor" });
 }

@@ -32,6 +32,7 @@ const FlujoCaja = dynamic(() => import("@/components/FlujoCaja"), { ssr: false }
 const FlujoProyectado = dynamic(() => import("@/components/FlujoProyectado"), { ssr: false });
 const TabPresupuesto = dynamic(() => import("@/components/TabPresupuesto"), { ssr: false });
 const MpLiquidacionUpload = dynamic(() => import("@/components/MpLiquidacionUpload"), { ssr: false });
+const TabProveedores = dynamic(() => import("@/components/TabProveedores"), { ssr: false });
 
 // Filtrar movimientos internos MP (no conciliables)
 function isMovReal(m: DBMovimientoBanco): boolean {
@@ -2174,14 +2175,14 @@ export default function ConciliacionPage() {
             {empresa && tab === "proyectado" && <FlujoProyectado empresa={empresa} periodo={periodo} />}
             {empresa && tab === "presupuesto" && <TabPresupuesto empresa={empresa} periodo={periodo} />}
             {empresa && tab === "honorarios" && <TabHonorarios empresa={empresa} periodo={periodo} />}
-            {["gastos","remuneraciones","impuestos","proveedores"].includes(tab) && (
+            {empresa && tab === "proveedores" && <TabProveedores empresa={empresa} periodo={periodo} />}
+            {["gastos","remuneraciones","impuestos"].includes(tab) && (
               <div className="card" style={{ padding: 32, textAlign: "center" }}>
                 <div style={{ fontSize: 32, marginBottom: 8 }}>🚧</div>
                 <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
                   {tab === "gastos" && "Gastos — Boletas, invoice y más"}
                   {tab === "remuneraciones" && "Remuneraciones — Sueldos y Previred"}
                   {tab === "impuestos" && "Impuestos — F29, F22 y más"}
-                  {tab === "proveedores" && "Proveedores — Plazo de pago y contactos"}
                 </div>
                 <div style={{ fontSize: 12, color: "var(--txt3)" }}>Próximamente</div>
               </div>
