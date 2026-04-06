@@ -103,13 +103,20 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
   const [actionError, setActionError] = useState<string | null>(null);
   const [stockDisponible, setStockDisponible] = useState<Map<string, number>>(new Map());
 
-  // Load available stock (on-hand minus reserved)
+  // Load available stock (on-hand minus reserved) + composicion for buffer calc
+  const [composicion, setComposicion] = useState<Map<string, { sku_origen: string; unidades: number }>>(new Map());
   useEffect(() => {
     fetchStockDisponible().then(data => {
       const map = new Map<string, number>();
       for (const r of data) map.set(r.sku, r.disponible);
       setStockDisponible(map);
     });
+    const sb = getStore();
+    if (sb.composicion) {
+      const map = new Map<string, { sku_origen: string; unidades: number }>();
+      for (const c of sb.composicion) map.set(c.skuVenta, { sku_origen: c.skuOrigen, unidades: c.unidades });
+      setComposicion(map);
+    }
   }, []);
 
   const loadItems = useCallback(async () => {
@@ -169,6 +176,16 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
   };
 
   const getDisponible = (sku: string) => stockDisponible.get(sku) ?? 0;
+
+  /** Calculate what ML would publish (same formula as stock-sync) */
+  const getPublicarML = (sku: string) => {
+    const comp = composicion.get(sku);
+    const skuOrigen = comp?.sku_origen || sku;
+    const unidadesPack = comp?.unidades || 1;
+    const disponibleOrigen = stockDisponible.get(skuOrigen) ?? 0;
+    const buffer = 2; // simplified — stock-sync uses 4 for shared origins
+    return Math.max(0, Math.floor((disponibleOrigen - buffer) / unidadesPack));
+  };
 
   const activateWithStock = async (itemId: string, sku: string) => {
     const wmsStock = getDisponible(sku);
@@ -326,6 +343,7 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                 <th style={{ textAlign: "right" }}>Precio</th>
                 <th style={{ textAlign: "center" }}>Stock ML</th>
                 <th style={{ textAlign: "center" }}>Stock WMS</th>
+                <th style={{ textAlign: "center" }}>Pub ML</th>
                 <th style={{ textAlign: "center" }}>Vendidos</th>
                 <th>Estado</th>
                 <th>Acciones</th>
@@ -365,6 +383,7 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                     <td className="mono" style={{ textAlign: "right" }}>{price ? fmt(price) : "—"}</td>
                     <td style={{ textAlign: "center" }}>{qty}</td>
                     <td style={{ textAlign: "center", fontWeight: 700, color: getDisponible(item.sku) > 0 ? "var(--green)" : "var(--txt3)" }}>{getDisponible(item.sku)}</td>
+                    <td style={{ textAlign: "center", fontSize: 10, color: getPublicarML(item.sku) > 0 ? "var(--cyan)" : "var(--txt3)" }}>{getPublicarML(item.sku)}</td>
                     <td style={{ textAlign: "center" }}>{sold}</td>
                     <td>
                       <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 4, background: statusColor + "22", color: statusColor, fontWeight: 700 }}>
