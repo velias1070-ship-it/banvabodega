@@ -87,8 +87,10 @@ async function fetchAllPages(apiKey: string, baseUrl: string): Promise<PGOrder[]
 }
 
 async function fetchOrders(apiKey: string, from: string, to: string): Promise<PGOrder[]> {
-  // Intentar con filtro de fechas
-  const url = `${PG_API}?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&status=paid`;
+  // ProfitGuard requires datetime format: YYYY-MM-DDTHH:mm
+  const fromDT = from.includes("T") ? from : `${from}T00:00`;
+  const toDT = to.includes("T") ? to : `${to}T23:59`;
+  const url = `${PG_API}?from=${encodeURIComponent(fromDT)}&to=${encodeURIComponent(toDT)}&status=paid`;
   let orders = await fetchAllPages(apiKey, url);
 
   if (orders.length > 0) {
