@@ -6379,6 +6379,7 @@ function Productos({ refresh }: { refresh: () => void }) {
   const [showAdd, setShowAdd] = useState(false);
   const [editSku, setEditSku] = useState<string|null>(null);
   const [q, setQ] = useState("");
+  const [filtroSinCosto, setFiltroSinCosto] = useState(false);
   const [mlItems, setMlItems] = useState<DBMLItemMap[]>([]);
   const s = getStore();
 
@@ -6397,6 +6398,7 @@ function Productos({ refresh }: { refresh: () => void }) {
     return map;
   }, [mlItems]);
   const prods = Object.values(s.products).filter(p=>{
+    if(filtroSinCosto && (p.cost > 0 || (p.costAvg ?? 0) > 0)) return false;
     if(!q)return true;const ql=q.toLowerCase();
     return p.sku.toLowerCase().includes(ql)||p.name.toLowerCase().includes(ql)||p.mlCode.toLowerCase().includes(ql)||p.cat.toLowerCase().includes(ql)||p.prov.toLowerCase().includes(ql);
   }).sort((a,b)=>a.sku.localeCompare(b.sku));
@@ -6428,6 +6430,7 @@ function Productos({ refresh }: { refresh: () => void }) {
       <div className="card">
         <div style={{display:"flex",gap:8}}>
           <input className="form-input mono" value={q} onChange={e=>setQ(e.target.value)} placeholder="Buscar SKU, nombre, código ML..." style={{flex:1,fontSize:12}}/>
+          <button onClick={()=>setFiltroSinCosto(!filtroSinCosto)} style={{padding:"10px 16px",borderRadius:8,background:filtroSinCosto?"var(--red)":"var(--bg3)",color:filtroSinCosto?"#fff":"var(--txt2)",fontWeight:600,fontSize:12,border:filtroSinCosto?"none":"1px solid var(--bg4)",whiteSpace:"nowrap"}}>Sin Costo</button>
           <button onClick={startAdd} style={{padding:"10px 20px",borderRadius:8,background:"var(--green)",color:"#fff",fontWeight:700,fontSize:13,whiteSpace:"nowrap"}}>+ Nuevo Producto</button>
         </div>
         <div style={{fontSize:11,color:"var(--txt3)",marginTop:6}}>{prods.length} productos en diccionario</div>
