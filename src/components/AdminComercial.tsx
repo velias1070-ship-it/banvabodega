@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { fetchMLItemsMap, fetchStockDisponible } from "@/lib/db";
 import type { DBMLItemMap } from "@/lib/db";
 import { getStore, skuTotal } from "@/lib/store";
@@ -330,6 +330,45 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
     return true;
   });
 
+  // Agrupar por familia (items que comparten prefijo de título)
+  const [expandedFamilies, setExpandedFamilies] = useState<Set<string>>(new Set());
+  const familyGroups = useMemo(() => {
+    // Extraer familia: quitar últimas 1-2 palabras (color/diseño)
+    const getFamilyKey = (title: string) => {
+      const words = title.split(" ");
+      if (words.length <= 3) return title;
+      // Intentar con 1 palabra menos, luego 2
+      return words.slice(0, -1).join(" ");
+    };
+    const groups = new Map<string, DBMLItemMap[]>();
+    for (const item of filtered) {
+      const title = liveData.get(item.item_id)?.title || item.titulo || "—";
+      const key = getFamilyKey(title);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(item);
+    }
+    // Ordenar: familias con más items primero cuando hay búsqueda, sino por nombre
+    return Array.from(groups.entries()).sort((a, b) => {
+      if (search) return b[1].length - a[1].length;
+      return a[0].localeCompare(b[0]);
+    });
+  }, [filtered, liveData, search]);
+
+  const toggleFamily = (key: string) => {
+    setExpandedFamilies(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
+  // Auto-expandir cuando hay búsqueda
+  useEffect(() => {
+    if (search) {
+      setExpandedFamilies(new Set(familyGroups.map(([k]) => k)));
+    }
+  }, [search, familyGroups]);
+
   const STATUS_COLORS: Record<string, string> = {
     active: "var(--green)", paused: "var(--amber)", closed: "var(--txt3)", under_review: "var(--blue)",
   };
@@ -349,7 +388,7 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
           <div>
             <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>📋 Mis Publicaciones</h2>
-            <div style={{ fontSize: 12, color: "var(--txt3)", marginTop: 4 }}>{displayItems.length} publicaciones en ML</div>
+            <div style={{ fontSize: 12, color: "var(--txt3)", marginTop: 4 }}>{displayItems.length} publicaciones en {familyGroups.length} familias</div>
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             <input type="text" placeholder="Buscar SKU o título..." value={search} onChange={e => setSearch(e.target.value)}
@@ -398,25 +437,104 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
             <button onClick={() => setActionError(null)} style={{ background: "none", border: "none", color: "var(--red)", cursor: "pointer", fontSize: 14 }}>✕</button>
           </div>
         )}
-        <div className="card" style={{ overflowX: "auto" }}>
+        <div className="card" style={{ overflow: "hidden", padding: 0 }}>
           <table className="tbl" style={{ width: "100%", fontSize: 11 }}>
             <thead>
               <tr>
-                <th style={{ width: 50 }}></th>
-                <th>Título</th>
+                <th style={{ width: 30 }}></th>
+                <th style={{ width: 40 }}></th>
+                <th>Título / Variante</th>
                 <th>SKU</th>
-                <th>Item ID</th>
                 <th style={{ textAlign: "right" }}>Precio</th>
-                <th style={{ textAlign: "center" }}>Stock ML</th>
-                <th style={{ textAlign: "center" }}>Stock WMS</th>
-                <th style={{ textAlign: "center" }}>Pub ML</th>
-                <th style={{ textAlign: "center" }}>Vendidos</th>
+                <th style={{ textAlign: "center" }}>ML</th>
+                <th style={{ textAlign: "center" }}>WMS</th>
+                <th style={{ textAlign: "center" }}>Vend</th>
                 <th>Estado</th>
                 <th>Acciones</th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map(item => {
+              {familyGroups.map(([familyKey, groupItems]) => {
+                const isGroup = groupItems.length > 1;
+                const expanded = expandedFamilies.has(familyKey);
+                const groupActivos = groupItems.filter(i => (liveData.get(i.item_id)?.status || i.status_ml) === "active").length;
+                const groupPausados = groupItems.filter(i => (liveData.get(i.item_id)?.status || i.status_ml) === "paused").length;
+                const groupStockTotal = groupItems.reduce((s, i) => s + getDisponible(i.sku), 0);
+
+                // Fila de familia (header del grupo)
+                if (isGroup) {
+                  return (<>
+                    <tr key={familyKey} onClick={() => toggleFamily(familyKey)}
+                      style={{ cursor: "pointer", background: expanded ? "var(--bg3)" : "transparent", borderBottom: "1px solid var(--bg4)" }}>
+                      <td style={{ padding: "10px 8px", fontSize: 14, textAlign: "center", color: "var(--cyan)" }}>
+                        {expanded ? "\u25BC" : "\u25B6"}
+                      </td>
+                      <td style={{ padding: "10px 4px" }}>
+                        {(() => {
+                          const firstThumb = liveData.get(groupItems[0].item_id)?.thumbnail || groupItems[0].thumbnail || "";
+                          return firstThumb ? <img src={firstThumb} alt="" style={{ width: 32, height: 32, borderRadius: 4, objectFit: "cover" }} /> : null;
+                        })()}
+                      </td>
+                      <td colSpan={2} style={{ padding: "10px 8px" }}>
+                        <div style={{ fontWeight: 700, fontSize: 12 }}>{familyKey}</div>
+                        <div style={{ display: "flex", gap: 6, marginTop: 4, flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 4, background: "var(--cyanBg)", color: "var(--cyan)", fontWeight: 600 }}>{groupItems.length} variantes</span>
+                          {groupActivos > 0 && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 4, background: "var(--greenBg)", color: "var(--green)", fontWeight: 600 }}>{groupActivos} activos</span>}
+                          {groupPausados > 0 && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 4, background: "var(--amberBg)", color: "var(--amber)", fontWeight: 600 }}>{groupPausados} pausados</span>}
+                        </div>
+                      </td>
+                      <td></td>
+                      <td></td>
+                      <td style={{ textAlign: "center", fontWeight: 700, fontSize: 12, color: groupStockTotal > 0 ? "var(--green)" : "var(--txt3)" }}>{groupStockTotal}</td>
+                      <td style={{ textAlign: "center", fontSize: 10 }}>{groupItems.reduce((s, i) => s + (liveData.get(i.item_id)?.sold_quantity ?? i.sold_quantity ?? 0), 0)}</td>
+                      <td></td>
+                      <td></td>
+                    </tr>
+                    {expanded && groupItems.map(item => {
+                      const live = liveData.get(item.item_id);
+                      const title = live?.title || item.titulo || "—";
+                      const variantName = title.replace(familyKey, "").trim() || title;
+                      const price = live?.price || item.price || 0;
+                      const status = live?.status || item.status_ml || "unknown";
+                      const thumb = live?.thumbnail || item.thumbnail || "";
+                      const permalink = live?.permalink || item.permalink || "";
+                      const qty = live?.available_quantity ?? item.available_quantity ?? 0;
+                      const sold = live?.sold_quantity ?? item.sold_quantity ?? 0;
+                      const statusColor = STATUS_COLORS[status] || "var(--txt3)";
+                      return (
+                        <tr key={item.item_id} style={{ background: "var(--bg2)", borderBottom: "1px solid var(--bg4)" }}>
+                          <td></td>
+                          <td style={{ padding: "8px 4px" }}>
+                            {thumb ? <img src={thumb} alt="" style={{ width: 32, height: 32, borderRadius: 4, objectFit: "cover" }} /> : null}
+                          </td>
+                          <td style={{ padding: "8px 8px" }}>
+                            <div style={{ fontWeight: 600, fontSize: 11, color: "var(--cyan)" }}>{variantName}</div>
+                            {permalink && <a href={permalink} target="_blank" rel="noopener noreferrer" className="mono" style={{ fontSize: 9, color: "var(--txt3)", textDecoration: "none" }}>{item.item_id}</a>}
+                          </td>
+                          <td className="mono" style={{ fontSize: 10 }}>{item.sku}</td>
+                          <td className="mono" style={{ textAlign: "right" }}>{price ? fmt(price) : "—"}</td>
+                          <td style={{ textAlign: "center" }}>{qty}</td>
+                          <td style={{ textAlign: "center", fontWeight: 700, color: getDisponible(item.sku) > 0 ? "var(--green)" : "var(--txt3)" }}>{getDisponible(item.sku)}</td>
+                          <td style={{ textAlign: "center" }}>{sold}</td>
+                          <td><span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: statusColor + "22", color: statusColor, fontWeight: 700 }}>{status}</span></td>
+                          <td>
+                            <div style={{ display: "flex", gap: 3 }}>
+                              {status === "active" && <button onClick={() => toggleStatus(item.item_id, status)} disabled={actionLoading === item.item_id} style={{ padding: "2px 6px", borderRadius: 4, fontSize: 9, fontWeight: 600, background: "var(--bg3)", color: "var(--amber)", border: "1px solid var(--bg4)", cursor: "pointer" }}>Pausar</button>}
+                              {status === "paused" && getDisponible(item.sku) > 0 && <button onClick={() => activateWithStock(item.item_id, item.sku)} disabled={actionLoading === item.item_id} style={{ padding: "2px 6px", borderRadius: 4, fontSize: 9, fontWeight: 600, background: "var(--greenBg)", color: "var(--green)", border: "1px solid var(--greenBd)", cursor: "pointer" }}>{actionLoading === item.item_id ? "..." : "Activar"}</button>}
+                              {status === "paused" && getDisponible(item.sku) <= 0 && <button onClick={() => toggleStatus(item.item_id, status)} disabled={actionLoading === item.item_id} style={{ padding: "2px 6px", borderRadius: 4, fontSize: 9, fontWeight: 600, background: "var(--bg3)", color: "var(--green)", border: "1px solid var(--bg4)", cursor: "pointer" }}>Activar</button>}
+                              {status !== "closed" && <button onClick={() => openEditItem(item.item_id, title)} style={{ padding: "2px 6px", borderRadius: 4, fontSize: 9, fontWeight: 600, background: "var(--bg3)", color: "var(--cyan)", border: "1px solid var(--bg4)", cursor: "pointer" }}>Editar</button>}
+                              {status !== "closed" && <button onClick={() => onAddVariante(item.item_id)} style={{ padding: "2px 6px", borderRadius: 4, fontSize: 9, fontWeight: 600, background: "var(--bg3)", color: "var(--cyan)", border: "1px solid var(--bg4)", cursor: "pointer" }}>+Var</button>}
+                              {status !== "closed" && <button onClick={() => closeItem(item.item_id)} disabled={actionLoading === item.item_id} style={{ padding: "2px 6px", borderRadius: 4, fontSize: 9, fontWeight: 600, background: "var(--bg3)", color: "var(--red)", border: "1px solid var(--bg4)", cursor: "pointer" }}>Cerrar</button>}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </>);
+                }
+
+                // Item suelto (sin familia)
+                const item = groupItems[0];
                 const live = liveData.get(item.item_id);
                 const title = live?.title || item.titulo || "—";
                 const price = live?.price || item.price || 0;
@@ -426,74 +544,30 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                 const qty = live?.available_quantity ?? item.available_quantity ?? 0;
                 const sold = live?.sold_quantity ?? item.sold_quantity ?? 0;
                 const statusColor = STATUS_COLORS[status] || "var(--txt3)";
-
                 return (
-                  <tr key={item.item_id}>
-                    <td>
-                      {thumb ? (
-                        <img src={thumb} alt="" style={{ width: 40, height: 40, borderRadius: 6, objectFit: "cover", background: "var(--bg3)" }} />
-                      ) : (
-                        <div style={{ width: 40, height: 40, borderRadius: 6, background: "var(--bg3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>📦</div>
-                      )}
+                  <tr key={item.item_id} style={{ borderBottom: "1px solid var(--bg4)" }}>
+                    <td></td>
+                    <td style={{ padding: "8px 4px" }}>
+                      {thumb ? <img src={thumb} alt="" style={{ width: 32, height: 32, borderRadius: 4, objectFit: "cover" }} /> : <div style={{ width: 32, height: 32, borderRadius: 4, background: "var(--bg3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>📦</div>}
                     </td>
-                    <td style={{ maxWidth: 320, minWidth: 180 }}>
+                    <td style={{ padding: "8px 8px", maxWidth: 300 }}>
                       <div style={{ fontWeight: 600, fontSize: 11 }}>{title}</div>
-                      {(() => { const s = getStore(); const p = s.products[item.sku]; return p?.name && p.name !== title ? <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 2 }}>{p.name}</div> : null; })()}
+                      {permalink && <a href={permalink} target="_blank" rel="noopener noreferrer" className="mono" style={{ fontSize: 9, color: "var(--txt3)", textDecoration: "none" }}>{item.item_id}</a>}
                     </td>
                     <td className="mono" style={{ fontSize: 10 }}>{item.sku}</td>
-                    <td className="mono" style={{ fontSize: 10 }}>
-                      {permalink ? (
-                        <a href={permalink} target="_blank" rel="noopener noreferrer" style={{ color: "var(--cyan)", textDecoration: "none" }}>{item.item_id}</a>
-                      ) : item.item_id}
-                    </td>
                     <td className="mono" style={{ textAlign: "right" }}>{price ? fmt(price) : "—"}</td>
                     <td style={{ textAlign: "center" }}>{qty}</td>
                     <td style={{ textAlign: "center", fontWeight: 700, color: getDisponible(item.sku) > 0 ? "var(--green)" : "var(--txt3)" }}>{getDisponible(item.sku)}</td>
-                    <td style={{ textAlign: "center", fontSize: 10, color: getPublicarML(item.sku) > 0 ? "var(--cyan)" : "var(--txt3)" }}>{getPublicarML(item.sku)}</td>
                     <td style={{ textAlign: "center" }}>{sold}</td>
+                    <td><span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: statusColor + "22", color: statusColor, fontWeight: 700 }}>{status}</span></td>
                     <td>
-                      <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 4, background: statusColor + "22", color: statusColor, fontWeight: 700 }}>
-                        {status}
-                      </span>
-                    </td>
-                    <td>
-                      <div style={{ display: "flex", gap: 4 }}>
-                        {status === "active" && (
-                          <button onClick={() => toggleStatus(item.item_id, status)} disabled={actionLoading === item.item_id}
-                            style={{ padding: "3px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: "var(--bg3)", color: "var(--amber)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
-                            Pausar
-                          </button>
-                        )}
-                        {status === "paused" && getDisponible(item.sku) > 0 && (
-                          <button onClick={() => activateWithStock(item.item_id, item.sku)} disabled={actionLoading === item.item_id}
-                            style={{ padding: "3px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: "var(--greenBg)", color: "var(--green)", border: "1px solid var(--greenBd)", cursor: actionLoading === item.item_id ? "wait" : "pointer" }}>
-                            {actionLoading === item.item_id ? "Sync..." : "Activar + Stock"}
-                          </button>
-                        )}
-                        {status === "paused" && getDisponible(item.sku) <= 0 && (
-                          <button onClick={() => toggleStatus(item.item_id, status)} disabled={actionLoading === item.item_id}
-                            style={{ padding: "3px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: "var(--bg3)", color: "var(--green)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
-                            Activar
-                          </button>
-                        )}
-                        {status !== "closed" && (
-                          <button onClick={() => openEditItem(item.item_id, title)}
-                            style={{ padding: "3px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: "var(--bg3)", color: "var(--cyan)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
-                            Editar
-                          </button>
-                        )}
-                        {status !== "closed" && (
-                          <button onClick={() => onAddVariante(item.item_id)}
-                            style={{ padding: "3px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: "var(--bg3)", color: "var(--cyan)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
-                            +Var
-                          </button>
-                        )}
-                        {status !== "closed" && (
-                          <button onClick={() => closeItem(item.item_id)} disabled={actionLoading === item.item_id}
-                            style={{ padding: "3px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: "var(--bg3)", color: "var(--red)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
-                            Cerrar
-                          </button>
-                        )}
+                      <div style={{ display: "flex", gap: 3 }}>
+                        {status === "active" && <button onClick={() => toggleStatus(item.item_id, status)} disabled={actionLoading === item.item_id} style={{ padding: "2px 6px", borderRadius: 4, fontSize: 9, fontWeight: 600, background: "var(--bg3)", color: "var(--amber)", border: "1px solid var(--bg4)", cursor: "pointer" }}>Pausar</button>}
+                        {status === "paused" && getDisponible(item.sku) > 0 && <button onClick={() => activateWithStock(item.item_id, item.sku)} disabled={actionLoading === item.item_id} style={{ padding: "2px 6px", borderRadius: 4, fontSize: 9, fontWeight: 600, background: "var(--greenBg)", color: "var(--green)", border: "1px solid var(--greenBd)", cursor: "pointer" }}>{actionLoading === item.item_id ? "..." : "Activar"}</button>}
+                        {status === "paused" && getDisponible(item.sku) <= 0 && <button onClick={() => toggleStatus(item.item_id, status)} disabled={actionLoading === item.item_id} style={{ padding: "2px 6px", borderRadius: 4, fontSize: 9, fontWeight: 600, background: "var(--bg3)", color: "var(--green)", border: "1px solid var(--bg4)", cursor: "pointer" }}>Activar</button>}
+                        {status !== "closed" && <button onClick={() => openEditItem(item.item_id, title)} style={{ padding: "2px 6px", borderRadius: 4, fontSize: 9, fontWeight: 600, background: "var(--bg3)", color: "var(--cyan)", border: "1px solid var(--bg4)", cursor: "pointer" }}>Editar</button>}
+                        {status !== "closed" && <button onClick={() => onAddVariante(item.item_id)} style={{ padding: "2px 6px", borderRadius: 4, fontSize: 9, fontWeight: 600, background: "var(--bg3)", color: "var(--cyan)", border: "1px solid var(--bg4)", cursor: "pointer" }}>+Var</button>}
+                        {status !== "closed" && <button onClick={() => closeItem(item.item_id)} disabled={actionLoading === item.item_id} style={{ padding: "2px 6px", borderRadius: 4, fontSize: 9, fontWeight: 600, background: "var(--bg3)", color: "var(--red)", border: "1px solid var(--bg4)", cursor: "pointer" }}>Cerrar</button>}
                       </div>
                     </td>
                   </tr>
