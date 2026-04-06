@@ -215,11 +215,15 @@ export async function GET(req: NextRequest) {
       const text = await res.text();
       // Show pagination info from response
       let pgMeta = null;
+      let rawItem = null;
       try {
         const parsed = JSON.parse(text);
         pgMeta = { keys: Object.keys(parsed), meta: parsed.meta || null, pagination: parsed.pagination || null, items_count: Array.isArray(parsed.items) ? parsed.items.length : (Array.isArray(parsed.data) ? parsed.data.length : null) };
+        // Show first item raw for field inspection
+        const items = parsed.items || parsed.data || [];
+        if (items.length > 0) rawItem = items[0];
       } catch { /* ignore */ }
-      return NextResponse.json({ debug_url: testUrl, status: res.status, pg_meta: pgMeta });
+      return NextResponse.json({ debug_url: testUrl, status: res.status, pg_meta: pgMeta, raw_item: rawItem });
     }
 
     const rawOrders = await fetchOrders(apiKey, from, to);
