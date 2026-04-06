@@ -228,23 +228,32 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
   };
 
   const [editHasFamily, setEditHasFamily] = useState(false);
+  const [editDesign, setEditDesign] = useState("");
+  const [editLoadingAttrs, setEditLoadingAttrs] = useState(false);
   const openEditItem = async (itemId: string, currentTitle: string) => {
     setEditTitle(currentTitle);
     setEditColor("");
+    setEditDesign("");
     setEditSaving(false);
     setEditHasFamily(false);
+    setEditLoadingAttrs(true);
     setEditItem({ item_id: itemId, title: currentTitle, color: "" });
-    // Fetch current color + family_name from ML
+    // Fetch all attributes from ML
     try {
-      const res = await fetch(`/api/ml/investigate?item_id=${itemId}`);
+      const res = await fetch(`/api/ml/items-details?ids=${itemId}`);
       const data = await res.json();
-      const item = data?.item;
+      const item = data?.items?.[0]?.body;
       if (item) {
-        const colorAttr = item.attributes?.find((a: { id: string }) => a.id === "COLOR");
-        if (colorAttr) setEditColor(colorAttr.value_name || "");
+        if (item.attributes) {
+          for (const a of item.attributes) {
+            if (a.id === "COLOR") setEditColor(a.value_name || "");
+            if (a.id === "FABRIC_DESIGN") setEditDesign(a.value_name || "");
+          }
+        }
         if (item.tags?.includes("user_product_listing")) setEditHasFamily(true);
       }
     } catch { /* ignore */ }
+    setEditLoadingAttrs(false);
   };
 
   const saveEditItem = async () => {
@@ -255,9 +264,10 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
       // Items con family_name: solo se puede cambiar atributos, no título
       const updates: Record<string, unknown> = {};
       if (!editHasFamily && editTitle && editTitle !== editItem.title) updates.title = editTitle;
-      if (editColor) {
-        updates.attributes = [{ id: "COLOR", value_name: editColor }];
-      }
+      const attrs: Array<{ id: string; value_name: string }> = [];
+      if (editColor) attrs.push({ id: "COLOR", value_name: editColor });
+      if (editDesign) attrs.push({ id: "FABRIC_DESIGN", value_name: editDesign });
+      if (attrs.length > 0) updates.attributes = attrs;
       if (Object.keys(updates).length === 0) { setEditItem(null); return; }
       const res = await fetch("/api/ml/item-update", {
         method: "PUT",
@@ -514,13 +524,21 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                   style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: editHasFamily ? "var(--bg4)" : "var(--bg3)", color: editHasFamily ? "var(--txt3)" : "var(--txt)", fontSize: 13, boxSizing: "border-box" }} />
                 {editHasFamily && <div style={{ fontSize: 10, color: "var(--amber)", marginTop: 4 }}>El título se genera automáticamente desde el nombre de familia + color</div>}
               </div>
-              <div>
-                <label style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", display: "block", marginBottom: 4 }}>Color / Diseño (atributo COLOR en ML)</label>
-                <input value={editColor} onChange={e => setEditColor(e.target.value)}
-                  placeholder="Ej: Multicolor, Azul, Marker, Rainforest..."
-                  style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt)", fontSize: 13, boxSizing: "border-box" }} />
-                <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 4 }}>Este es el nombre de la variante/diseño que aparece en ML. Al cambiarlo, el título se actualiza automáticamente.</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", display: "block", marginBottom: 4 }}>Color</label>
+                  <input value={editLoadingAttrs ? "Cargando..." : editColor} onChange={e => setEditColor(e.target.value)} disabled={editLoadingAttrs}
+                    placeholder="Ej: Blanco, Azul, Multicolor..."
+                    style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt)", fontSize: 13, boxSizing: "border-box" }} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", display: "block", marginBottom: 4 }}>Diseño de tela</label>
+                  <input value={editLoadingAttrs ? "Cargando..." : editDesign} onChange={e => setEditDesign(e.target.value)} disabled={editLoadingAttrs}
+                    placeholder="Ej: Dino, Fox, Swan, Stellar..."
+                    style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt)", fontSize: 13, boxSizing: "border-box" }} />
+                </div>
               </div>
+              <div style={{ fontSize: 10, color: "var(--txt3)" }}>Al cambiar estos atributos, ML actualiza el título automáticamente.</div>
             </div>
             <div style={{ padding: "14px 24px", borderTop: "1px solid var(--bg4)", display: "flex", justifyContent: "flex-end", gap: 10 }}>
               <button onClick={() => setEditItem(null)} disabled={editSaving}

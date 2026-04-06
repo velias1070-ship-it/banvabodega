@@ -14,6 +14,8 @@ interface MLItem {
   listing_type_id: string;
   condition: string;
   category_id: string;
+  tags?: string[];
+  attributes?: Array<{ id: string; name: string; value_name: string | null }>;
   variations?: Array<{
     id: number;
     price: number;
