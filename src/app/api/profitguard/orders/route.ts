@@ -197,6 +197,19 @@ export async function GET(req: NextRequest) {
   }
 
   try {
+    // Debug: test raw API response
+    const debug = searchParams.get("debug") === "1";
+    if (debug) {
+      const fromDT = from.includes("T") ? from : `${from}T00:00`;
+      const toDT = to.includes("T") ? to : `${to}T23:59`;
+      const testUrl = `${PG_API}?from=${encodeURIComponent(fromDT)}&to=${encodeURIComponent(toDT)}&status=paid&page=1`;
+      const res = await fetch(testUrl, {
+        headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+      });
+      const text = await res.text();
+      return NextResponse.json({ debug_url: testUrl, status: res.status, body: text.slice(0, 2000), api_key_prefix: apiKey.slice(0, 8) + "..." });
+    }
+
     const rawOrders = await fetchOrders(apiKey, from, to);
     console.log(`[ProfitGuard] ${rawOrders.length} órdenes obtenidas para ${from} → ${to}`);
 
