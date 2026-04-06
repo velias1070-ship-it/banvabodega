@@ -28,8 +28,10 @@ interface PGOrder {
 }
 
 interface PGResponse {
-  data: PGOrder[];
-  pagination: { page: number; page_size: number; pages: number; count: number };
+  data?: PGOrder[];
+  items?: PGOrder[];
+  pagination?: { page: number; page_size: number; pages: number; count: number };
+  meta?: { currentPage: number; itemsPerPage: number; totalPages: number; totalItems: number };
 }
 
 function mapEstado(status: string): string {
@@ -61,25 +63,29 @@ async function fetchAllPages(apiKey: string, baseUrl: string): Promise<PGOrder[]
   const sep = baseUrl.includes("?") ? "&" : "?";
 
   const firstResponse = await fetchPage(apiKey, `${baseUrl}${sep}page=1`);
-  if (!firstResponse.data || !Array.isArray(firstResponse.data)) {
-    console.error("[ProfitGuard] Respuesta inesperada — data no es array:", JSON.stringify(firstResponse).slice(0, 500));
+  // Support both old format (data) and new format (items)
+  const firstItems = firstResponse.items || firstResponse.data;
+  if (!firstItems || !Array.isArray(firstItems)) {
+    console.error("[ProfitGuard] Respuesta inesperada — ni items ni data es array:", JSON.stringify(firstResponse).slice(0, 500));
     return [];
   }
-  allOrders.push(...firstResponse.data);
-  const totalPages = firstResponse.pagination?.pages ?? 1;
+  allOrders.push(...firstItems);
+  const totalPages = firstResponse.meta?.totalPages ?? firstResponse.pagination?.pages ?? 1;
+  const totalCount = firstResponse.meta?.totalItems ?? firstResponse.pagination?.count ?? firstItems.length;
 
-  console.log(`[ProfitGuard] Página 1/${totalPages} — ${firstResponse.data.length} órdenes (total: ${firstResponse.pagination?.count ?? "?"})`);
+  console.log(`[ProfitGuard] Página 1/${totalPages} — ${firstItems.length} órdenes (total: ${totalCount})`);
 
   let page = 2;
   while (page <= totalPages) {
     await new Promise(r => setTimeout(r, 100));
     const pageRes = await fetchPage(apiKey, `${baseUrl}${sep}page=${page}`);
-    if (!pageRes.data || !Array.isArray(pageRes.data)) {
+    const pageItems = pageRes.items || pageRes.data;
+    if (!pageItems || !Array.isArray(pageItems)) {
       console.error(`[ProfitGuard] Página ${page} respuesta inválida, abortando paginación`);
       break;
     }
-    allOrders.push(...pageRes.data);
-    console.log(`[ProfitGuard] Página ${page}/${totalPages} — ${pageRes.data.length} órdenes`);
+    allOrders.push(...pageItems);
+    console.log(`[ProfitGuard] Página ${page}/${totalPages} — ${pageItems.length} órdenes`);
     page++;
   }
 
