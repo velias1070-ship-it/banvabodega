@@ -705,11 +705,7 @@ function NuevaPublicacion() {
             {/* Link to SKU */}
             <div style={{ marginBottom: 12 }}>
               <label style={{ fontSize: 11, color: "var(--txt3)", fontWeight: 600, display: "block", marginBottom: 4 }}>Vincular a SKU del sistema (opcional)</label>
-              <select value={linkedSku} onChange={e => setLinkedSku(e.target.value)}
-                style={{ width: "100%", padding: "10px 14px", borderRadius: 8, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 13 }}>
-                <option value="">— Sin vincular —</option>
-                {productos.map(p => <option key={p.sku} value={p.sku}>{p.sku} — {p.name}</option>)}
-              </select>
+              <ProductSearchSelect productos={productos} selectedSku={linkedSku} onSelect={setLinkedSku} />
             </div>
           </div>
 
@@ -842,6 +838,78 @@ function OptionalAttrs({ attrs, values, onChange }: { attrs: MLAttribute[]; valu
               )}
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ==================== PRODUCT SEARCH SELECT ====================
+
+function ProductSearchSelect({ productos, selectedSku, onSelect }: { productos: Array<{ sku: string; name: string }>; selectedSku: string; onSelect: (sku: string) => void }) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const filtered = productos.filter(p => {
+    if (!query) return true;
+    const q = query.toLowerCase();
+    return p.sku.toLowerCase().includes(q) || p.name.toLowerCase().includes(q);
+  });
+
+  const selected = productos.find(p => p.sku === selectedSku);
+
+  return (
+    <div ref={wrapperRef} style={{ position: "relative" }}>
+      <input
+        type="text"
+        value={open ? query : (selected ? `${selected.sku} — ${selected.name}` : "")}
+        onChange={e => { setQuery(e.target.value); if (!open) setOpen(true); }}
+        onFocus={() => { setOpen(true); setQuery(""); }}
+        placeholder="Buscar por SKU o nombre..."
+        style={{ width: "100%", padding: "10px 14px", borderRadius: 8, background: "var(--bg3)", color: "var(--txt)", border: `1px solid ${open ? "var(--cyan)" : "var(--bg4)"}`, fontSize: 13 }}
+      />
+      {selected && !open && (
+        <button onClick={() => { onSelect(""); setQuery(""); }}
+          style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "var(--txt3)", cursor: "pointer", fontSize: 14 }}>
+          ✕
+        </button>
+      )}
+      {open && (
+        <div style={{
+          position: "absolute", top: "100%", left: 0, right: 0, zIndex: 50, marginTop: 4,
+          background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 8,
+          maxHeight: 280, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+        }}>
+          <button onClick={() => { onSelect(""); setOpen(false); setQuery(""); }}
+            style={{
+              display: "block", width: "100%", padding: "10px 14px", textAlign: "left", background: !selectedSku ? "var(--bg3)" : "transparent",
+              border: "none", borderBottom: "1px solid var(--bg3)", color: "var(--txt3)", cursor: "pointer", fontSize: 12, fontStyle: "italic",
+            }}>
+            — Sin vincular —
+          </button>
+          {filtered.length === 0 ? (
+            <div style={{ padding: "12px 14px", fontSize: 12, color: "var(--txt3)" }}>Sin resultados</div>
+          ) : (
+            filtered.slice(0, 50).map(p => (
+              <button key={p.sku} onClick={() => { onSelect(p.sku); setOpen(false); setQuery(""); }}
+                style={{
+                  display: "block", width: "100%", padding: "10px 14px", textAlign: "left", background: p.sku === selectedSku ? "var(--bg3)" : "transparent",
+                  border: "none", borderBottom: "1px solid var(--bg3)", color: "var(--txt)", cursor: "pointer", fontSize: 12,
+                }}>
+                <div style={{ fontWeight: 600 }}>{p.sku}</div>
+                <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 2 }}>{p.name}</div>
+              </button>
+            ))
+          )}
         </div>
       )}
     </div>
@@ -1117,11 +1185,7 @@ function AgregarVariantes({ preselectedItemId }: { preselectedItemId: string | n
           {/* Link to SKU */}
           <div style={{ marginBottom: 12 }}>
             <label style={{ fontSize: 11, color: "var(--txt3)", fontWeight: 600, display: "block", marginBottom: 4 }}>Vincular a SKU (opcional)</label>
-            <select value={varLinkedSku} onChange={e => setVarLinkedSku(e.target.value)}
-              style={{ width: "100%", padding: "8px 10px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 12 }}>
-              <option value="">— Sin vincular —</option>
-              {productos.map(p => <option key={p.sku} value={p.sku}>{p.sku} — {p.name}</option>)}
-            </select>
+            <ProductSearchSelect productos={productos} selectedSku={varLinkedSku} onSelect={setVarLinkedSku} />
           </div>
 
           {/* Result */}

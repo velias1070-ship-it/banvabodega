@@ -151,7 +151,14 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
     else if (tab === "cargos") list = list.filter(m => m.monto < 0);
     if (search) {
       const q = search.toLowerCase();
-      list = list.filter(m => (m.descripcion || "").toLowerCase().includes(q) || (m.referencia || "").toLowerCase().includes(q));
+      const qNum = q.replace(/[.,]/g, "");
+      const isNum = qNum !== "" && !isNaN(Number(qNum));
+      list = list.filter(m => {
+        if ((m.descripcion || "").toLowerCase().includes(q)) return true;
+        if ((m.referencia || "").toLowerCase().includes(q)) return true;
+        if (isNum && Math.abs(m.monto).toString().includes(qNum)) return true;
+        return false;
+      });
     }
     list.sort((a, b) => {
       let cmp = 0;
