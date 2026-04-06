@@ -135,6 +135,34 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
     }
   };
 
+  const bulkSyncFromTitle = async (familyKey: string, groupItems: DBMLItemMap[]) => {
+    const preview = groupItems.slice(0, 5).map(i => {
+      const title = liveData.get(i.item_id)?.title || i.titulo || "";
+      const variant = title.startsWith(familyKey) ? title.slice(familyKey.length).trim() : title.split(" ").pop() || "";
+      return `  ${variant}`;
+    }).join("\n");
+    if (!confirm(`¿Poner Color y Diseño = nombre de variante en ${groupItems.length} items?\n\nEjemplo:\n${preview}${groupItems.length > 5 ? "\n  ..." : ""}`)) return;
+    setBulkSyncing(familyKey);
+    try {
+      const res = await fetch("/api/ml/bulk-attr-sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ item_ids: groupItems.map(i => i.item_id), action: "from_variant_name", family_prefix: familyKey }),
+      });
+      const data = await res.json();
+      if (data.error) {
+        setActionError(`Error: ${data.error}`);
+      } else {
+        setActionError(`Nombres corregidos: ${data.ok} OK, ${data.failed} errores de ${data.total}`);
+        if (data.ok > 0) await loadItems();
+      }
+    } catch (e) {
+      setActionError(`Error: ${e instanceof Error ? e.message : "desconocido"}`);
+    } finally {
+      setBulkSyncing(null);
+    }
+  };
+
   // Load available stock (on-hand minus reserved) + composicion for buffer calc
   const [composicion, setComposicion] = useState<Map<string, { sku_origen: string; unidades: number }>>(new Map());
   useEffect(() => {
@@ -519,15 +547,10 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                       <td style={{ textAlign: "center", fontWeight: 700, fontSize: 12, color: groupStockTotal > 0 ? "var(--green)" : "var(--txt3)" }}>{groupStockTotal}</td>
                       <td style={{ textAlign: "center", fontSize: 10 }}>{groupItems.reduce((s, i) => s + (liveData.get(i.item_id)?.sold_quantity ?? i.sold_quantity ?? 0), 0)}</td>
                       <td colSpan={2} style={{ textAlign: "right", padding: "8px 10px" }}>
-                        <button onClick={e => { e.stopPropagation(); bulkSyncAttrs(familyKey, groupItems, "color_from_design"); }}
+                        <button onClick={e => { e.stopPropagation(); bulkSyncFromTitle(familyKey, groupItems); }}
                           disabled={bulkSyncing === familyKey}
-                          style={{ padding: "3px 8px", borderRadius: 4, fontSize: 9, fontWeight: 600, background: "var(--bg3)", color: "var(--cyan)", border: "1px solid var(--bg4)", cursor: bulkSyncing === familyKey ? "wait" : "pointer", whiteSpace: "nowrap" }}>
-                          {bulkSyncing === familyKey ? "..." : "Color = Diseño"}
-                        </button>
-                        <button onClick={e => { e.stopPropagation(); bulkSyncAttrs(familyKey, groupItems, "design_from_color"); }}
-                          disabled={bulkSyncing === familyKey}
-                          style={{ padding: "3px 8px", borderRadius: 4, fontSize: 9, fontWeight: 600, background: "var(--bg3)", color: "var(--txt3)", border: "1px solid var(--bg4)", cursor: bulkSyncing === familyKey ? "wait" : "pointer", whiteSpace: "nowrap" }}>
-                          {bulkSyncing === familyKey ? "..." : "Diseño = Color"}
+                          style={{ padding: "3px 8px", borderRadius: 4, fontSize: 9, fontWeight: 600, background: "var(--cyan)", color: "#fff", border: "none", cursor: bulkSyncing === familyKey ? "wait" : "pointer", whiteSpace: "nowrap" }}>
+                          {bulkSyncing === familyKey ? "Sincronizando..." : "Corregir nombres"}
                         </button>
                       </td>
                     </tr>

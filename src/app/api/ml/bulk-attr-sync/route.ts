@@ -12,53 +12,80 @@ interface MLItemAttrs {
 
 /**
  * POST /api/ml/bulk-attr-sync
- * Body: { item_ids: string[], action: "design_from_color" | "color_from_design" }
+ * Body: { item_ids: string[], action: "design_from_color" | "color_from_design" | "from_variant_name", family_prefix?: string }
  *
- * Para cada item, lee el atributo origen y lo copia al destino.
+ * Acciones:
+ * - design_from_color: copia COLOR → FABRIC_DESIGN
+ * - color_from_design: copia FABRIC_DESIGN → COLOR
+ * - from_variant_name: extrae nombre de variante del título y lo pone en COLOR y FABRIC_DESIGN
  */
 export async function POST(req: NextRequest) {
   try {
-    const { item_ids, action } = await req.json() as { item_ids: string[]; action: string };
+    const { item_ids, action, family_prefix } = await req.json() as { item_ids: string[]; action: string; family_prefix?: string };
     if (!item_ids?.length || !action) {
       return NextResponse.json({ error: "item_ids y action requeridos" }, { status: 400 });
     }
 
-    const [srcAttr, dstAttr] = action === "design_from_color"
-      ? ["COLOR", "FABRIC_DESIGN"]
-      : ["FABRIC_DESIGN", "COLOR"];
-
-    const results: Array<{ item_id: string; title: string; src: string; dst: string; ok: boolean; error?: string }> = [];
+    const results: Array<{ item_id: string; title: string; value: string; ok: boolean; error?: string }> = [];
 
     for (const itemId of item_ids.slice(0, 50)) {
-      // Fetch current attributes
       const item = await mlGet<MLItemAttrs>(`/items/${itemId}?attributes=id,title,status,attributes`);
       if (!item) {
-        results.push({ item_id: itemId, title: "?", src: "", dst: "", ok: false, error: "No encontrado" });
+        results.push({ item_id: itemId, title: "?", value: "", ok: false, error: "No encontrado" });
         continue;
       }
 
-      const srcVal = item.attributes?.find(a => a.id === srcAttr)?.value_name || "";
-      const dstVal = item.attributes?.find(a => a.id === dstAttr)?.value_name || "";
+      if (action === "from_variant_name") {
+        // Extraer nombre de variante del título quitando el prefijo de familia
+        let variantName = "";
+        if (family_prefix && item.title.startsWith(family_prefix)) {
+          variantName = item.title.slice(family_prefix.length).trim();
+        } else {
+          // Fallback: última palabra del título
+          const words = item.title.split(" ");
+          variantName = words[words.length - 1];
+        }
 
-      if (!srcVal) {
-        results.push({ item_id: itemId, title: item.title, src: srcVal, dst: dstVal, ok: false, error: `Sin ${srcAttr}` });
-        continue;
+        if (!variantName) {
+          results.push({ item_id: itemId, title: item.title, value: "", ok: false, error: "Sin variante en título" });
+          continue;
+        }
+
+        try {
+          await mlPut(`/items/${itemId}`, { attributes: [
+            { id: "COLOR", value_name: variantName },
+            { id: "FABRIC_DESIGN", value_name: variantName },
+          ]});
+          results.push({ item_id: itemId, title: item.title, value: variantName, ok: true });
+        } catch (e) {
+          results.push({ item_id: itemId, title: item.title, value: variantName, ok: false, error: e instanceof Error ? e.message : String(e) });
+        }
+      } else {
+        // copy between attributes
+        const [srcAttr, dstAttr] = action === "design_from_color"
+          ? ["COLOR", "FABRIC_DESIGN"]
+          : ["FABRIC_DESIGN", "COLOR"];
+
+        const srcVal = item.attributes?.find(a => a.id === srcAttr)?.value_name || "";
+        const dstVal = item.attributes?.find(a => a.id === dstAttr)?.value_name || "";
+
+        if (!srcVal) {
+          results.push({ item_id: itemId, title: item.title, value: "", ok: false, error: `Sin ${srcAttr}` });
+          continue;
+        }
+        if (srcVal === dstVal) {
+          results.push({ item_id: itemId, title: item.title, value: srcVal, ok: true, error: "Ya iguales" });
+          continue;
+        }
+
+        try {
+          await mlPut(`/items/${itemId}`, { attributes: [{ id: dstAttr, value_name: srcVal }] });
+          results.push({ item_id: itemId, title: item.title, value: srcVal, ok: true });
+        } catch (e) {
+          results.push({ item_id: itemId, title: item.title, value: srcVal, ok: false, error: e instanceof Error ? e.message : String(e) });
+        }
       }
 
-      if (srcVal === dstVal) {
-        results.push({ item_id: itemId, title: item.title, src: srcVal, dst: dstVal, ok: true, error: "Ya iguales" });
-        continue;
-      }
-
-      // Update
-      try {
-        await mlPut(`/items/${itemId}`, { attributes: [{ id: dstAttr, value_name: srcVal }] });
-        results.push({ item_id: itemId, title: item.title, src: srcVal, dst: srcVal, ok: true });
-      } catch (e) {
-        results.push({ item_id: itemId, title: item.title, src: srcVal, dst: dstVal, ok: false, error: e instanceof Error ? e.message : String(e) });
-      }
-
-      // Small delay to avoid rate limiting
       await new Promise(r => setTimeout(r, 300));
     }
 
