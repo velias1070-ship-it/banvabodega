@@ -10,6 +10,7 @@ import {
   fetchProveedorCuentas,
   upsertConciliacion,
   categorizarMovimiento,
+  syncEstadoConciliacion,
 } from "@/lib/db";
 import type {
   DBEmpresa, DBMovimientoBanco, DBRcvCompra, DBRcvVenta, DBConciliacion,
@@ -207,15 +208,17 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
   // Clasificar sin documento
   const handleClasificar = async () => {
     if (!clasificarMov || !clasificarCuenta || !empresa.id) return;
+    const montoAplicar = Math.abs(clasificarMov.monto) - (clasificarMov.monto_conciliado || 0);
     await upsertConciliacion({
       empresa_id: empresa.id, movimiento_banco_id: clasificarMov.id!,
       rcv_compra_id: null, rcv_venta_id: null, confianza: 1,
       estado: "confirmado", tipo_partida: "clasificacion_directa",
       metodo: "manual", notas: null, created_by: "admin",
+      monto_aplicado: montoAplicar,
     });
-    await updateMovimientoBanco(clasificarMov.id!, { estado_conciliacion: "conciliado" } as Partial<DBMovimientoBanco>);
+    const { estado, monto_conciliado } = await syncEstadoConciliacion(clasificarMov.id!, clasificarMov.monto);
     await categorizarMovimiento(clasificarMov.id!, clasificarCuenta);
-    setMovBanco(prev => prev.map(m => m.id === clasificarMov.id ? { ...m, estado_conciliacion: "conciliado" } : m));
+    setMovBanco(prev => prev.map(m => m.id === clasificarMov.id ? { ...m, estado_conciliacion: estado, monto_conciliado } : m));
     setClasificarMov(null); setClasificarCuenta("");
   };
 

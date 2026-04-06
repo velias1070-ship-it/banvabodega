@@ -851,7 +851,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                                   setPagoItem(c); setPagoLoading(true); setPagoSearch(""); setPagoSelected([]);
                                   const movs = await fetchMovimientosBanco(empresa.id!, { desde: undefined, hasta: undefined });
                                   const concMovIds = new Set(conciliaciones.filter(x => x.estado === "confirmado" && x.movimiento_banco_id).map(x => x.movimiento_banco_id));
-                                  setMovsBanco(movs.filter(m => !concMovIds.has(m.id!) && m.monto < 0 && isMovReal(m)));
+                                  setMovsBanco(movs.filter(m => m.monto < 0 && isMovReal(m) && m.estado_conciliacion !== "conciliado" && m.estado_conciliacion !== "ignorado"));
                                   setPagoLoading(false);
                                 }}
                                   style={{ fontSize: 11, fontWeight: 600, padding: "5px 12px", borderRadius: "6px 0 0 6px", background: "var(--cyan)", color: "#fff", cursor: "pointer" }}>
@@ -861,7 +861,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                                   setPagoItem(c); setPagoLoading(true); setPagoSearch(""); setPagoSelected([]);
                                   const movs = await fetchMovimientosBanco(empresa.id!, { desde: undefined, hasta: undefined });
                                   const concMovIds = new Set(conciliaciones.filter(x => x.estado === "confirmado" && x.movimiento_banco_id).map(x => x.movimiento_banco_id));
-                                  setMovsBanco(movs.filter(m => !concMovIds.has(m.id!) && m.monto < 0 && isMovReal(m)));
+                                  setMovsBanco(movs.filter(m => m.monto < 0 && isMovReal(m) && m.estado_conciliacion !== "conciliado" && m.estado_conciliacion !== "ignorado"));
                                   setPagoLoading(false);
                                 }}
                                   style={{ fontSize: 11, fontWeight: 600, padding: "5px 6px", borderRadius: "0 6px 6px 0", background: "var(--cyan)", color: "#fff", cursor: "pointer", borderLeft: "1px solid rgba(255,255,255,0.3)" }}>
@@ -994,8 +994,8 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
           if (selectedIds.has(m.id)) {
             setPagoSelected(prev => prev.filter(x => x.mov.id !== m.id));
           } else {
-            const montoAbs = Math.abs(m.monto);
-            const aplicar = saldoRestante > 0 ? Math.min(montoAbs, saldoRestante) : montoAbs;
+            const disponible = Math.abs(m.monto) - (m.monto_conciliado || 0);
+            const aplicar = saldoRestante > 0 ? Math.min(disponible, saldoRestante) : disponible;
             setPagoSelected(prev => [...prev, { mov: m, monto_aplicado: aplicar }]);
           }
         };
@@ -1008,10 +1008,10 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
           if (pagoSelected.length === 0) return;
           setPagoSaving(true);
           try {
-            const { upsertConciliacion, updateMovimientoBanco } = await import("@/lib/db");
+            const { upsertConciliacion, syncEstadoConciliacion } = await import("@/lib/db");
             for (const sel of pagoSelected) {
-              await upsertConciliacion({ empresa_id: empresa.id!, movimiento_banco_id: sel.mov.id!, rcv_compra_id: pagoItem.id!, rcv_venta_id: null, confianza: 1, estado: "confirmado", tipo_partida: pagoSelected.length === 1 ? "match" : "multi_pago", metodo: "manual", notas: null, created_by: "admin" });
-              await updateMovimientoBanco(sel.mov.id!, { estado_conciliacion: "conciliado" } as any);
+              await upsertConciliacion({ empresa_id: empresa.id!, movimiento_banco_id: sel.mov.id!, rcv_compra_id: pagoItem.id!, rcv_venta_id: null, confianza: 1, estado: "confirmado", tipo_partida: pagoSelected.length === 1 ? "match" : "multi_pago", metodo: "manual", notas: null, created_by: "admin", monto_aplicado: sel.monto_aplicado });
+              await syncEstadoConciliacion(sel.mov.id!, sel.mov.monto);
             }
             await load();
             setPagoItem(null);
@@ -1680,6 +1680,7 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
   const [concFilter, setConcFilter] = useState<"todos" | "pendiente" | "conciliada">("todos");
+  const [searchBhe, setSearchBhe] = useState("");
   const [pagoItem, setPagoItem] = useState<DBRcvCompra | null>(null);
   const [movsBanco, setMovsBanco] = useState<DBMovimientoBanco[]>([]);
   const [pagoLoading, setPagoLoading] = useState(false);
@@ -1724,9 +1725,15 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const totalConciliadas = data.filter(c => concCompraIds.has(c.id!)).length;
   const totalPendientes = data.filter(c => !concCompraIds.has(c.id!)).length;
 
-  const filtered = concFilter === "pendiente" ? data.filter(c => !concCompraIds.has(c.id!))
+  const filteredByConc = concFilter === "pendiente" ? data.filter(c => !concCompraIds.has(c.id!))
     : concFilter === "conciliada" ? data.filter(c => concCompraIds.has(c.id!))
     : data;
+  const filtered = searchBhe
+    ? filteredByConc.filter(c => {
+        const q = searchBhe.toLowerCase();
+        return (c.razon_social || "").toLowerCase().includes(q) || (c.rut_proveedor || "").toLowerCase().includes(q) || String(c.nro_doc || "").includes(q);
+      })
+    : filteredByConc;
 
   const total = filtered.reduce((s, c) => s + (c.monto_neto || 0), 0);
   const totalRet = filtered.reduce((s, c) => s + (c.monto_iva || 0), 0);
@@ -1788,6 +1795,20 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
             {f.label}
           </button>
         ))}
+      </div>
+
+      {/* Barra de búsqueda */}
+      <div style={{ position: "relative", marginBottom: 12 }}>
+        <input
+          placeholder="Buscar por nombre, RUT o N° boleta..."
+          value={searchBhe}
+          onChange={e => setSearchBhe(e.target.value)}
+          style={{ width: "100%", padding: "9px 12px 9px 32px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt)", fontSize: 12, outline: "none", boxSizing: "border-box" }}
+        />
+        <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", fontSize: 14, color: "var(--txt3)", pointerEvents: "none" }}>🔍</span>
+        {searchBhe && (
+          <button onClick={() => setSearchBhe("")} style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "var(--txt3)", fontSize: 16, cursor: "pointer", lineHeight: 1 }}>&times;</button>
+        )}
       </div>
 
       {/* KPIs */}
@@ -1853,7 +1874,7 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                             setPagoItem(c); setPagoLoading(true); setPagoSearch("");
                             const movs = await fetchMovimientosBanco(empresa.id!);
                             const concMovIds = new Set(conciliaciones.filter(x => x.estado === "confirmado" && x.movimiento_banco_id).map(x => x.movimiento_banco_id));
-                            setMovsBanco(movs.filter(m => !concMovIds.has(m.id!) && m.monto < 0 && isMovReal(m)));
+                            setMovsBanco(movs.filter(m => m.monto < 0 && isMovReal(m) && m.estado_conciliacion !== "conciliado" && m.estado_conciliacion !== "ignorado"));
                             setPagoLoading(false);
                           }}
                             style={{ fontSize: 11, fontWeight: 600, padding: "5px 12px", borderRadius: "6px 0 0 6px", background: "var(--cyan)", color: "#fff", cursor: "pointer" }}>
@@ -1863,7 +1884,7 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                             setPagoItem(c); setPagoLoading(true); setPagoSearch("");
                             const movs = await fetchMovimientosBanco(empresa.id!);
                             const concMovIds = new Set(conciliaciones.filter(x => x.estado === "confirmado" && x.movimiento_banco_id).map(x => x.movimiento_banco_id));
-                            setMovsBanco(movs.filter(m => !concMovIds.has(m.id!) && m.monto < 0 && isMovReal(m)));
+                            setMovsBanco(movs.filter(m => m.monto < 0 && isMovReal(m) && m.estado_conciliacion !== "conciliado" && m.estado_conciliacion !== "ignorado"));
                             setPagoLoading(false);
                           }}
                             style={{ fontSize: 11, fontWeight: 600, padding: "5px 6px", borderRadius: "0 6px 6px 0", background: "var(--cyan)", color: "#fff", cursor: "pointer", borderLeft: "1px solid rgba(255,255,255,0.3)" }}>
@@ -1942,9 +1963,9 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                       if (pagoSaving) return;
                       setPagoSaving(true);
                       try {
-                        const { upsertConciliacion, updateMovimientoBanco } = await import("@/lib/db");
-                        await upsertConciliacion({ empresa_id: empresa.id!, movimiento_banco_id: m.id!, rcv_compra_id: pagoItem.id!, rcv_venta_id: null, confianza: 1, estado: "confirmado", tipo_partida: "match", metodo: "manual", notas: null, created_by: "admin" });
-                        await updateMovimientoBanco(m.id!, { estado_conciliacion: "conciliado" } as Partial<DBMovimientoBanco>);
+                        const { upsertConciliacion, syncEstadoConciliacion } = await import("@/lib/db");
+                        await upsertConciliacion({ empresa_id: empresa.id!, movimiento_banco_id: m.id!, rcv_compra_id: pagoItem.id!, rcv_venta_id: null, confianza: 1, estado: "confirmado", tipo_partida: "match", metodo: "manual", notas: null, created_by: "admin", monto_aplicado: Math.abs(m.monto) });
+                        await syncEstadoConciliacion(m.id!, m.monto);
                         await load();
                         setPagoItem(null);
                       } catch (err) { console.error(err); }

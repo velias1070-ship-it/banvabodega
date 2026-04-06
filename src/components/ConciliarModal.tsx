@@ -2,7 +2,7 @@
 import { useState, useMemo } from "react";
 import {
   upsertConciliacion,
-  updateMovimientoBanco,
+  syncEstadoConciliacion,
   insertConciliacionItems,
   categorizarMovimiento,
   upsertProveedorCuenta,
@@ -55,8 +55,10 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
   const [saving, setSaving] = useState(false);
 
   const movAbs = Math.abs(mov.monto);
+  const yaConc = mov.monto_conciliado || 0;
+  const disponible = movAbs - yaConc;
   const totalAsignado = selected.reduce((s, d) => s + d.monto_aplicado, 0);
-  const saldoPorAsignar = movAbs - totalAsignado;
+  const saldoPorAsignar = disponible - totalAsignado;
 
   // IDs ya conciliados
   const concCompraIds = new Set(conciliaciones.filter(c => c.estado === "confirmado" && c.rcv_compra_id).map(c => c.rcv_compra_id));
@@ -175,6 +177,7 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
         metodo: "manual",
         notas: nota.trim() || null,
         created_by: "admin",
+        monto_aplicado: totalAsignado,
       };
       await upsertConciliacion(c);
 
@@ -198,7 +201,7 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
         await insertConciliacionItems(items);
       }
 
-      await updateMovimientoBanco(mov.id!, { estado_conciliacion: "conciliado" } as Partial<DBMovimientoBanco>);
+      await syncEstadoConciliacion(mov.id!, mov.monto);
 
       if (selected.length > 0 && selected[0].rut) {
         const pc = provCuentas.find(p => p.rut_proveedor === selected[0].rut);
@@ -240,7 +243,8 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
                 </span>
               </div>
               <div style={{ fontSize: 12, marginBottom: 6, color: "var(--txt2)" }}>{mov.descripcion || "—"}</div>
-              <div className="mono" style={{ fontSize: 24, fontWeight: 800 }}>{fmtMoney(movAbs)}</div>
+              <div className="mono" style={{ fontSize: 24, fontWeight: 800 }}>{fmtMoney(disponible)}</div>
+              {yaConc > 0 && <div style={{ fontSize: 10, color: "var(--amber)", marginTop: 2 }}>Total {fmtMoney(movAbs)} &middot; ya conciliado {fmtMoney(yaConc)}</div>}
               <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 4 }}>{mov.banco}</div>
             </div>
             <div style={{

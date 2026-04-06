@@ -2028,6 +2028,7 @@ export interface DBMovimientoBanco {
   referencia_unica?: string | null;
   metadata?: unknown;
   notas?: string | null;
+  monto_conciliado?: number;
   created_at?: string;
 }
 
@@ -2044,6 +2045,7 @@ export interface DBConciliacion {
   notas: string | null;
   created_by: string | null;
   regla_id?: string | null;
+  monto_aplicado?: number | null;
   created_at?: string;
 }
 
@@ -2466,6 +2468,21 @@ export async function insertCobranzaAccion(a: DBCobranzaAccion): Promise<void> {
 export async function updateMovimientoBanco(id: string, fields: Partial<DBMovimientoBanco>): Promise<void> {
   const sb = getSupabase(); if (!sb) return;
   await sb.from("movimientos_banco").update(fields).eq("id", id);
+}
+
+// Recalcular estado de conciliación de un movimiento basado en monto_aplicado de sus conciliaciones
+export async function syncEstadoConciliacion(movId: string, montoMov: number): Promise<{ estado: string; monto_conciliado: number }> {
+  const sb = getSupabase();
+  if (!sb) return { estado: "pendiente", monto_conciliado: 0 };
+  const { data: concs } = await sb.from("conciliaciones")
+    .select("monto_aplicado")
+    .eq("movimiento_banco_id", movId)
+    .eq("estado", "confirmado");
+  const total = (concs || []).reduce((s, c) => s + (c.monto_aplicado || 0), 0);
+  const absMonto = Math.abs(montoMov);
+  const estado = total >= absMonto ? "conciliado" : total > 0 ? "parcial" : "pendiente";
+  await sb.from("movimientos_banco").update({ estado_conciliacion: estado, monto_conciliado: total }).eq("id", movId);
+  return { estado, monto_conciliado: total };
 }
 
 // Actualizar categoría de un movimiento banco
