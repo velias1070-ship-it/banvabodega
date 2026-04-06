@@ -195,50 +195,40 @@ export async function POST(req: NextRequest) {
         const hc = { Authorization: `Bearer ${tc}`, "api-version": "2" };
         const advIdC = (cc as unknown as Record<string, unknown>).advertiser_id;
         const baseC = `${MLc}/marketplace/advertising/MLC/advertisers/${advIdC}/product_ads`;
-        const campMetrics = "clicks,prints,ctr,cost,cpc,acos,roas,cvr,sov,impression_share,top_impression_share,lost_impression_share_by_budget,lost_impression_share_by_ad_rank,acos_benchmark,direct_amount,indirect_amount,total_amount,direct_units_quantity,indirect_units_quantity,units_quantity,organic_units_quantity,organic_units_amount";
-
-        // Test 1: campaigns/search with metrics + dates
-        const r1 = await fetch(
-          `${baseC}/campaigns/search?limit=50&date_from=2026-03-01&date_to=2026-03-31&metrics=${campMetrics}`,
-          { headers: hc }
-        );
-        const d1 = await r1.text();
-
-        // Test 2: campaigns/search with metrics, no dates
-        const r2 = await fetch(
-          `${baseC}/campaigns/search?limit=50&metrics=${campMetrics}`,
-          { headers: hc }
-        );
-        const d2 = await r2.text();
-
-        // Test 3: single campaign metrics endpoint (if exists)
+        // Test which metrics work at campaign level
         const campsSimple = await fetch(`${baseC}/campaigns/search?limit=1`, { headers: hc });
         const campsD = await campsSimple.json();
         const firstCampId = campsD.results?.[0]?.id;
 
-        // Test 4: campaign/{id}/metrics or campaign/{id}?metrics=...
-        let d4 = null;
-        if (firstCampId) {
-          const r4 = await fetch(
-            `${baseC}/campaigns/${firstCampId}?date_from=2026-03-01&date_to=2026-03-31&metrics=${campMetrics}`,
-            { headers: hc }
-          );
-          d4 = { status: r4.status, body: await r4.text().then(t => t.substring(0, 500)) };
-        }
-
-        // Test 5: old API format
-        const r5 = await fetch(
-          `${MLc}/advertising/product_ads/campaigns?user_id=${cc.seller_id}&limit=5&date_from=2026-03-01&date_to=2026-03-31&metrics=${campMetrics}`,
+        // Test A: basic metrics only (no impression share)
+        const basicMetrics = "clicks,prints,ctr,cost,cpc,acos,roas,cvr,direct_amount,indirect_amount,total_amount,direct_units_quantity,indirect_units_quantity,units_quantity,organic_units_quantity,organic_units_amount";
+        const rA = await fetch(
+          `${baseC}/campaigns/search?limit=50&date_from=2026-03-01&date_to=2026-03-31&metrics=${basicMetrics}`,
           { headers: hc }
         );
-        const d5 = { status: r5.status, body: await r5.text().then(t => t.substring(0, 500)) };
+        const dA = await rA.json().catch(() => null);
+
+        // Test B: try adding one metric at a time to find which work
+        const extraMetrics = ["sov", "acos_benchmark", "impression_share", "top_impression_share", "lost_impression_share_by_budget", "lost_impression_share_by_ad_rank"];
+        const perMetric: Record<string, { status: number; works: boolean }> = {};
+        for (const em of extraMetrics) {
+          const r = await fetch(
+            `${baseC}/campaigns/search?limit=1&date_from=2026-03-01&date_to=2026-03-31&metrics=${basicMetrics},${em}`,
+            { headers: hc }
+          );
+          perMetric[em] = { status: r.status, works: r.status === 200 };
+          if (r.status !== 200) await r.text(); // consume body
+          else await r.json(); // consume body
+        }
 
         return NextResponse.json({
-          test1_search_with_dates: { status: r1.status, body: d1.substring(0, 500) },
-          test2_search_no_dates: { status: r2.status, body: d2.substring(0, 500) },
-          test4_single_campaign: d4,
-          test5_old_api: d5,
           firstCampId,
+          testA_basic: {
+            status: rA.status,
+            count: dA?.results?.length,
+            sample_metrics: dA?.results?.[0]?.metrics,
+          },
+          testB_per_metric: perMetric,
         });
       }
 
