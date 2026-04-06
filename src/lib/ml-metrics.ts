@@ -419,17 +419,16 @@ async function faseAds(estado: SyncEstado, config: MLConfig & { advertiser_id?: 
     "organic_units_quantity", "organic_units_amount",
   ].join(",");
 
+  // Campaign-level metrics: impression_share/lost_by_budget/rank/acos_benchmark
+  // are NOT available in ML API (400 error). Only sov works at campaign level.
   const campaignMetrics = [
-    "clicks", "prints", "ctr", "cost", "cpc", "acos", "roas", "cvr",
-    "sov", "impression_share", "top_impression_share",
-    "lost_impression_share_by_budget", "lost_impression_share_by_ad_rank",
-    "acos_benchmark",
+    "clicks", "prints", "ctr", "cost", "cpc", "acos", "roas", "cvr", "sov",
     "direct_amount", "indirect_amount", "total_amount",
     "direct_units_quantity", "indirect_units_quantity", "units_quantity",
     "organic_units_quantity", "organic_units_amount",
   ].join(",");
 
-  // 1. Get campaigns WITH metrics (impression share, etc.)
+  // 1. Get campaigns WITH metrics (sov, cost, acos, etc.)
   const campaignsResp = await mlGet<{ results?: AdsCampaign[]; paging?: { total: number } }>(
     `/marketplace/advertising/${SITE_ID}/advertisers/${advertiserId}/product_ads/campaigns/search` +
     `?limit=50&date_from=${dateFrom}&date_to=${dateTo}&metrics=${campaignMetrics}`,
@@ -468,11 +467,11 @@ async function faseAds(estado: SyncEstado, config: MLConfig & { advertiser_id?: 
         roas: m.roas ?? 0,
         cvr: m.cvr ?? 0,
         sov: m.sov ?? 0,
-        impression_share: m.impression_share ?? 0,
-        top_impression_share: m.top_impression_share ?? 0,
-        lost_by_budget: m.lost_impression_share_by_budget ?? 0,
-        lost_by_rank: m.lost_impression_share_by_ad_rank ?? 0,
-        acos_benchmark: m.acos_benchmark ?? 0,
+        impression_share: 0,  // not available in ML API
+        top_impression_share: 0,
+        lost_by_budget: 0,
+        lost_by_rank: 0,
+        acos_benchmark: 0,
         direct_amount: m.direct_amount ?? 0,
         indirect_amount: m.indirect_amount ?? 0,
         total_amount: m.total_amount ?? 0,

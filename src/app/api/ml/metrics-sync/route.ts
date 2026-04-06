@@ -186,52 +186,6 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      case "debug-campaigns": {
-        const { ensureValidToken: ensTc, getMLConfig: getCfgC } = await import("@/lib/ml");
-        const cc = await getCfgC();
-        const tc = await ensTc();
-        if (!cc || !tc) return NextResponse.json({ error: "no config/token" });
-        const MLc = "https://api.mercadolibre.com";
-        const hc = { Authorization: `Bearer ${tc}`, "api-version": "2" };
-        const advIdC = (cc as unknown as Record<string, unknown>).advertiser_id;
-        const baseC = `${MLc}/marketplace/advertising/MLC/advertisers/${advIdC}/product_ads`;
-        // Test which metrics work at campaign level
-        const campsSimple = await fetch(`${baseC}/campaigns/search?limit=1`, { headers: hc });
-        const campsD = await campsSimple.json();
-        const firstCampId = campsD.results?.[0]?.id;
-
-        // Test A: basic metrics only (no impression share)
-        const basicMetrics = "clicks,prints,ctr,cost,cpc,acos,roas,cvr,direct_amount,indirect_amount,total_amount,direct_units_quantity,indirect_units_quantity,units_quantity,organic_units_quantity,organic_units_amount";
-        const rA = await fetch(
-          `${baseC}/campaigns/search?limit=50&date_from=2026-03-01&date_to=2026-03-31&metrics=${basicMetrics}`,
-          { headers: hc }
-        );
-        const dA = await rA.json().catch(() => null);
-
-        // Test B: try adding one metric at a time to find which work
-        const extraMetrics = ["sov", "acos_benchmark", "impression_share", "top_impression_share", "lost_impression_share_by_budget", "lost_impression_share_by_ad_rank"];
-        const perMetric: Record<string, { status: number; works: boolean }> = {};
-        for (const em of extraMetrics) {
-          const r = await fetch(
-            `${baseC}/campaigns/search?limit=1&date_from=2026-03-01&date_to=2026-03-31&metrics=${basicMetrics},${em}`,
-            { headers: hc }
-          );
-          perMetric[em] = { status: r.status, works: r.status === 200 };
-          if (r.status !== 200) await r.text(); // consume body
-          else await r.json(); // consume body
-        }
-
-        return NextResponse.json({
-          firstCampId,
-          testA_basic: {
-            status: rA.status,
-            count: dA?.results?.length,
-            sample_metrics: dA?.results?.[0]?.metrics,
-          },
-          testB_per_metric: perMetric,
-        });
-      }
-
       case "debug-ads": {
         const { ensureValidToken: ensT3, getMLConfig: getCfg3 } = await import("@/lib/ml");
         const c3 = await getCfg3();
