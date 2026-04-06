@@ -411,10 +411,11 @@ async function faseAds(estado: SyncEstado, config: MLConfig & { advertiser_id?: 
 
   const dateFrom = `${estado.periodo}-01`;
   const dateTo = lastDayOfMonth(estado.periodo);
-  // Note: impression_share, top_impression_share, lost_by_budget/rank, sov, acos_benchmark
-  // are NOT allowed on ads_search endpoint (only on campaigns). Use reduced set for ads.
   const adsMetrics = [
     "clicks", "prints", "ctr", "cost", "cpc", "acos", "roas", "cvr",
+    "sov", "impression_share", "top_impression_share",
+    "lost_impression_share_by_budget", "lost_impression_share_by_ad_rank",
+    "acos_benchmark",
     "direct_amount", "indirect_amount", "total_amount",
     "direct_units_quantity", "indirect_units_quantity", "units_quantity",
     "organic_units_quantity", "organic_units_amount",
@@ -482,12 +483,12 @@ async function faseAds(estado: SyncEstado, config: MLConfig & { advertiser_id?: 
           ads_cvr: m.cvr ?? 0,
           ads_acos: m.acos ?? 0,
           ads_roas: m.roas ?? 0,
-          ads_sov: 0,
-          ads_impression_share: 0,
-          ads_top_impression_share: 0,
-          ads_lost_by_budget: 0,
-          ads_lost_by_rank: 0,
-          ads_acos_benchmark: 0,
+          ads_sov: m.sov ?? 0,
+          ads_impression_share: m.impression_share ?? 0,
+          ads_top_impression_share: m.top_impression_share ?? 0,
+          ads_lost_by_budget: m.lost_impression_share_by_budget ?? 0,
+          ads_lost_by_rank: m.lost_impression_share_by_ad_rank ?? 0,
+          ads_acos_benchmark: m.acos_benchmark ?? 0,
           ads_direct_amount: m.direct_amount ?? 0,
           ads_indirect_amount: m.indirect_amount ?? 0,
           ads_total_amount: m.total_amount ?? 0,
