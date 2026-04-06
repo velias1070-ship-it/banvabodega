@@ -1945,7 +1945,33 @@ export default function AdminInteligencia() {
                     border: "1px solid var(--bg4)", cursor: envioSelected.length > 0 ? "pointer" : "default",
                   }}
                 >
-                  Exportar CSV ({envioSelected.length})
+                  Exportar CSV Picking ({envioSelected.length})
+                </button>
+                <button
+                  onClick={() => {
+                    const items = envioItems.filter(i => i.selected && i.mandarEditado > 0);
+                    if (items.length === 0) return;
+                    const headers = "SKU;Nombre;Cantidad";
+                    const csvRows = items.map(i =>
+                      [i.skuVenta, (i.nombre || "").replace(/;/g, ","), i.mandarEditado].join(";")
+                    );
+                    const csv = "\uFEFF" + headers + "\n" + csvRows.join("\n");
+                    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = `envio_full_meli_${new Date().toISOString().slice(0, 10)}.csv`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  }}
+                  disabled={envioSelected.length === 0}
+                  style={{
+                    padding: "12px 16px", borderRadius: 8, fontWeight: 600, fontSize: 12,
+                    background: "var(--bg3)", color: envioSelected.length > 0 ? "var(--green)" : "var(--txt3)",
+                    border: "1px solid var(--bg4)", cursor: envioSelected.length > 0 ? "pointer" : "default",
+                  }}
+                >
+                  Exportar para ML ({envioSelected.length})
                 </button>
               </div>
             </>
