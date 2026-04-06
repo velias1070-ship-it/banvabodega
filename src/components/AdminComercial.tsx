@@ -102,7 +102,7 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const loadItems = useCallback(async (autoRefresh = false) => {
+  const loadItems = useCallback(async () => {
     setLoading(true);
     try {
       const data = await fetchMLItemsMap();
@@ -113,53 +113,20 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
     }
   }, []);
 
-  /** Fetch live data from ML in batches, updating state progressively */
-  const fetchLiveBatched = useCallback(async (itemIds: string[]) => {
+  // Load from DB on mount (instant — cron keeps ml_items_map updated every 30 min)
+  useEffect(() => { loadItems(); }, [loadItems]);
+
+  const refreshLive = useCallback(async () => {
+    if (items.length === 0) return;
     setRefreshing(true);
     try {
-      for (let i = 0; i < itemIds.length; i += 20) {
-        const batch = itemIds.slice(i, i + 20);
-        try {
-          const res = await fetch(`/api/ml/items-details?ids=${batch.join(",")}`);
-          const json = await res.json();
-          if (json.items) {
-            // Update liveData progressively per batch
-            setLiveData(prev => {
-              const next = new Map(prev);
-              for (const wrapper of json.items as MLItemDetail[]) {
-                if (wrapper.code === 200 && wrapper.body) {
-                  next.set(wrapper.body.id, wrapper.body);
-                }
-              }
-              return next;
-            });
-          }
-        } catch { /* skip failed batch, continue with next */ }
-      }
-      // Reload cached data from DB after all batches
+      // Trigger server-side sync then reload
+      await fetch("/api/ml/items-sync?run=1");
       await loadItems();
     } finally {
       setRefreshing(false);
     }
-  }, [loadItems]);
-
-  // Auto-refresh live data on mount
-  const didAutoRefresh = useRef(false);
-  useEffect(() => {
-    loadItems().then(data => {
-      if (data && data.length > 0 && !didAutoRefresh.current) {
-        didAutoRefresh.current = true;
-        const uniqueIds = Array.from(new Set(data.map(i => i.item_id)));
-        fetchLiveBatched(uniqueIds);
-      }
-    });
-  }, [loadItems, fetchLiveBatched]);
-
-  const refreshLive = useCallback(async () => {
-    if (items.length === 0) return;
-    const uniqueIds = Array.from(new Set(items.map(i => i.item_id)));
-    await fetchLiveBatched(uniqueIds);
-  }, [items, fetchLiveBatched]);
+  }, [items, loadItems]);
 
   const toggleStatus = async (itemId: string, currentStatus: string) => {
     const newStatus = currentStatus === "active" ? "paused" : "active";
