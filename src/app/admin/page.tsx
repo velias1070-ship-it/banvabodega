@@ -462,7 +462,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
     const updatedLineas = await getRecepcionLineas(selRec.id!);
     setLineas(updatedLineas);
     const [dc, dq, aj] = await Promise.all([
-      recalcularDiscrepancias(selRec.id!, updatedLineas),
+      getDiscrepancias(selRec.id!),
       getDiscrepanciasQty(selRec.id!),
       getRecepcionAjustes(selRec.id!),
     ]);
