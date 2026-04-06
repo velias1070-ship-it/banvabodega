@@ -102,6 +102,11 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [stockDisponible, setStockDisponible] = useState<Map<string, number>>(new Map());
+  // Editar item
+  const [editItem, setEditItem] = useState<{ item_id: string; title: string; color: string } | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editColor, setEditColor] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
 
   // Load available stock (on-hand minus reserved) + composicion for buffer calc
   const [composicion, setComposicion] = useState<Map<string, { sku_origen: string; unidades: number }>>(new Map());
@@ -219,6 +224,53 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
       setActionError(`Error al activar con stock ${itemId}: ${String(err)}`);
     } finally {
       setActionLoading(null);
+    }
+  };
+
+  const openEditItem = async (itemId: string, currentTitle: string) => {
+    setEditTitle(currentTitle);
+    setEditColor("");
+    setEditSaving(false);
+    // Fetch current color from ML
+    try {
+      const res = await fetch(`/api/ml/items-details?ids=${itemId}`);
+      const data = await res.json();
+      const item = data?.items?.[0]?.body;
+      if (item?.attributes) {
+        const colorAttr = item.attributes.find((a: { id: string }) => a.id === "COLOR");
+        if (colorAttr) setEditColor(colorAttr.value_name || "");
+      }
+    } catch { /* ignore */ }
+    setEditItem({ item_id: itemId, title: currentTitle, color: "" });
+  };
+
+  const saveEditItem = async () => {
+    if (!editItem) return;
+    setEditSaving(true);
+    setActionError(null);
+    try {
+      const updates: Record<string, unknown> = {};
+      if (editTitle && editTitle !== editItem.title) updates.title = editTitle;
+      if (editColor) {
+        updates.attributes = [{ id: "COLOR", value_name: editColor }];
+      }
+      if (Object.keys(updates).length === 0) { setEditItem(null); return; }
+      const res = await fetch("/api/ml/item-update", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ item_id: editItem.item_id, updates }),
+      });
+      const json = await res.json();
+      if (!res.ok || json.error) {
+        setActionError(`Error al editar: ${json.error || "desconocido"}`);
+      } else {
+        await loadItems();
+        setEditItem(null);
+      }
+    } catch (e) {
+      setActionError(`Error: ${e instanceof Error ? e.message : "desconocido"}`);
+    } finally {
+      setEditSaving(false);
     }
   };
 
@@ -411,6 +463,12 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                           </button>
                         )}
                         {status !== "closed" && (
+                          <button onClick={() => openEditItem(item.item_id, title)}
+                            style={{ padding: "3px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: "var(--bg3)", color: "var(--cyan)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
+                            Editar
+                          </button>
+                        )}
+                        {status !== "closed" && (
                           <button onClick={() => onAddVariante(item.item_id)}
                             style={{ padding: "3px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: "var(--bg3)", color: "var(--cyan)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
                             +Var
@@ -431,6 +489,46 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
           </table>
         </div>
         </>
+      )}
+
+      {/* Modal Editar Item */}
+      {editItem && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={() => !editSaving && setEditItem(null)}>
+          <div onClick={e => e.stopPropagation()} style={{ background: "var(--bg2)", borderRadius: 12, width: "100%", maxWidth: 520, overflow: "hidden", boxShadow: "0 20px 60px rgba(0,0,0,0.15)" }}>
+            <div style={{ padding: "18px 24px", background: "var(--cyan)", color: "#fff", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 16, fontWeight: 700 }}>Editar Publicación</span>
+              <button onClick={() => setEditItem(null)} disabled={editSaving} style={{ background: "none", border: "none", color: "#fff", fontSize: 20, cursor: "pointer" }}>&times;</button>
+            </div>
+            <div style={{ padding: "8px 24px 0", fontSize: 11, color: "var(--txt3)" }}>
+              <span className="mono">{editItem.item_id}</span>
+            </div>
+            <div style={{ padding: "16px 24px", display: "flex", flexDirection: "column", gap: 14 }}>
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", display: "block", marginBottom: 4 }}>Título</label>
+                <input value={editTitle} onChange={e => setEditTitle(e.target.value)}
+                  style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt)", fontSize: 13, boxSizing: "border-box" }} />
+              </div>
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", display: "block", marginBottom: 4 }}>Color / Diseño (atributo COLOR en ML)</label>
+                <input value={editColor} onChange={e => setEditColor(e.target.value)}
+                  placeholder="Ej: Multicolor, Azul, Marker, Rainforest..."
+                  style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt)", fontSize: 13, boxSizing: "border-box" }} />
+                <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 4 }}>Este es el nombre de la variante/diseño que aparece en ML</div>
+              </div>
+            </div>
+            <div style={{ padding: "14px 24px", borderTop: "1px solid var(--bg4)", display: "flex", justifyContent: "flex-end", gap: 10 }}>
+              <button onClick={() => setEditItem(null)} disabled={editSaving}
+                style={{ padding: "9px 20px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", background: "var(--bg3)", color: "var(--txt2)", border: "1px solid var(--bg4)" }}>
+                Cancelar
+              </button>
+              <button onClick={saveEditItem} disabled={editSaving}
+                style={{ padding: "9px 20px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: editSaving ? "wait" : "pointer", background: "var(--cyan)", color: "#fff", border: "none", opacity: editSaving ? 0.5 : 1 }}>
+                {editSaving ? "Guardando..." : "Guardar en ML"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

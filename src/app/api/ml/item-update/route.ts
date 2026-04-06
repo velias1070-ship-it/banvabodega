@@ -24,6 +24,7 @@ export async function PUT(req: NextRequest) {
       const localUpdates: Record<string, unknown> = { updated_at: new Date().toISOString() };
       if (updates.status) localUpdates.status_ml = updates.status;
       if (updates.price) localUpdates.price = updates.price;
+      if (updates.title) localUpdates.titulo = updates.title;
       await sb.from("ml_items_map").update(localUpdates).eq("item_id", item_id);
     }
 
