@@ -227,21 +227,24 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
     }
   };
 
+  const [editHasFamily, setEditHasFamily] = useState(false);
   const openEditItem = async (itemId: string, currentTitle: string) => {
     setEditTitle(currentTitle);
     setEditColor("");
     setEditSaving(false);
-    // Fetch current color from ML
+    setEditHasFamily(false);
+    setEditItem({ item_id: itemId, title: currentTitle, color: "" });
+    // Fetch current color + family_name from ML
     try {
-      const res = await fetch(`/api/ml/items-details?ids=${itemId}`);
+      const res = await fetch(`/api/ml/investigate?item_id=${itemId}`);
       const data = await res.json();
-      const item = data?.items?.[0]?.body;
-      if (item?.attributes) {
-        const colorAttr = item.attributes.find((a: { id: string }) => a.id === "COLOR");
+      const item = data?.item;
+      if (item) {
+        const colorAttr = item.attributes?.find((a: { id: string }) => a.id === "COLOR");
         if (colorAttr) setEditColor(colorAttr.value_name || "");
+        if (item.tags?.includes("user_product_listing")) setEditHasFamily(true);
       }
     } catch { /* ignore */ }
-    setEditItem({ item_id: itemId, title: currentTitle, color: "" });
   };
 
   const saveEditItem = async () => {
@@ -249,8 +252,9 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
     setEditSaving(true);
     setActionError(null);
     try {
+      // Items con family_name: solo se puede cambiar atributos, no título
       const updates: Record<string, unknown> = {};
-      if (editTitle && editTitle !== editItem.title) updates.title = editTitle;
+      if (!editHasFamily && editTitle && editTitle !== editItem.title) updates.title = editTitle;
       if (editColor) {
         updates.attributes = [{ id: "COLOR", value_name: editColor }];
       }
@@ -505,16 +509,17 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
             </div>
             <div style={{ padding: "16px 24px", display: "flex", flexDirection: "column", gap: 14 }}>
               <div>
-                <label style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", display: "block", marginBottom: 4 }}>Título</label>
-                <input value={editTitle} onChange={e => setEditTitle(e.target.value)}
-                  style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt)", fontSize: 13, boxSizing: "border-box" }} />
+                <label style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", display: "block", marginBottom: 4 }}>Título {editHasFamily && <span style={{ color: "var(--amber)", fontWeight: 400 }}>(auto-generado por ML)</span>}</label>
+                <input value={editTitle} onChange={e => setEditTitle(e.target.value)} disabled={editHasFamily}
+                  style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: editHasFamily ? "var(--bg4)" : "var(--bg3)", color: editHasFamily ? "var(--txt3)" : "var(--txt)", fontSize: 13, boxSizing: "border-box" }} />
+                {editHasFamily && <div style={{ fontSize: 10, color: "var(--amber)", marginTop: 4 }}>El título se genera automáticamente desde el nombre de familia + color</div>}
               </div>
               <div>
                 <label style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", display: "block", marginBottom: 4 }}>Color / Diseño (atributo COLOR en ML)</label>
                 <input value={editColor} onChange={e => setEditColor(e.target.value)}
                   placeholder="Ej: Multicolor, Azul, Marker, Rainforest..."
                   style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt)", fontSize: 13, boxSizing: "border-box" }} />
-                <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 4 }}>Este es el nombre de la variante/diseño que aparece en ML</div>
+                <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 4 }}>Este es el nombre de la variante/diseño que aparece en ML. Al cambiarlo, el título se actualiza automáticamente.</div>
               </div>
             </div>
             <div style={{ padding: "14px 24px", borderTop: "1px solid var(--bg4)", display: "flex", justifyContent: "flex-end", gap: 10 }}>
