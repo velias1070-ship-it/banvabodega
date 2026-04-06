@@ -186,6 +186,31 @@ export async function POST(req: NextRequest) {
         });
       }
 
+      case "debug-campaigns": {
+        const { ensureValidToken: ensTc, getMLConfig: getCfgC } = await import("@/lib/ml");
+        const cc = await getCfgC();
+        const tc = await ensTc();
+        if (!cc || !tc) return NextResponse.json({ error: "no config/token" });
+        const MLc = "https://api.mercadolibre.com";
+        const hc = { Authorization: `Bearer ${tc}`, "api-version": "2" };
+        const advIdC = (cc as unknown as Record<string, unknown>).advertiser_id;
+        const baseC = `${MLc}/marketplace/advertising/MLC/advertisers/${advIdC}/product_ads`;
+        const campMetrics = "clicks,prints,ctr,cost,cpc,acos,roas,cvr,sov,impression_share,top_impression_share,lost_impression_share_by_budget,lost_impression_share_by_ad_rank,acos_benchmark,direct_amount,indirect_amount,total_amount,direct_units_quantity,indirect_units_quantity,units_quantity,organic_units_quantity,organic_units_amount";
+        const resp = await fetch(
+          `${baseC}/campaigns/search?limit=50&date_from=2026-03-01&date_to=2026-03-31&metrics=${campMetrics}`,
+          { headers: hc }
+        );
+        const data = await resp.json();
+        return NextResponse.json({
+          status: resp.status,
+          total: data.paging?.total,
+          campaigns: (data.results || []).map((c: Record<string, unknown>) => ({
+            id: c.id, name: c.name, status: c.status, budget: c.budget,
+            metrics: c.metrics,
+          })),
+        });
+      }
+
       case "debug-ads": {
         const { ensureValidToken: ensT3, getMLConfig: getCfg3 } = await import("@/lib/ml");
         const c3 = await getCfg3();
