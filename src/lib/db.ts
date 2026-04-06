@@ -2027,6 +2027,7 @@ export interface DBMovimientoBanco {
   categoria_cuenta_id?: string | null;
   referencia_unica?: string | null;
   metadata?: unknown;
+  notas?: string | null;
   created_at?: string;
 }
 

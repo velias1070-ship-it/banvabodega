@@ -94,6 +94,9 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
   // Clasificar sin documento
   const [clasificarMov, setClasificarMov] = useState<DBMovimientoBanco | null>(null);
   const [clasificarCuenta, setClasificarCuenta] = useState("");
+  // Notas / comentarios por movimiento
+  const [editingNota, setEditingNota] = useState<string | null>(null);
+  const [notaText, setNotaText] = useState("");
   // Sync MP
   const [syncingMP, setSyncingMP] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
@@ -486,8 +489,34 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
                     <td style={{ padding: "10px 12px", fontSize: 11, color: "var(--txt3)" }}>
                       <div>{m.banco}</div>
                     </td>
-                    <td style={{ padding: "10px 12px", maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {m.descripcion || "—"}
+                    <td style={{ padding: "10px 12px", maxWidth: 300, position: "relative" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{m.descripcion || "—"}</span>
+                        <span onClick={() => { setEditingNota(m.id!); setNotaText(m.notas || ""); }}
+                          title={m.notas || "Agregar comentario"}
+                          style={{ width: 24, height: 24, borderRadius: 5, background: m.notas ? "var(--cyanBg)" : "var(--bg3)", border: `1px solid ${m.notas ? "var(--cyanBd)" : "var(--bg4)"}`, display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 11, color: m.notas ? "var(--cyan)" : "var(--txt3)", flexShrink: 0 }}>
+                          &#9776;
+                        </span>
+                      </div>
+                      {m.notas && <div style={{ fontSize: 10, color: "var(--cyan)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.notas}</div>}
+                      {editingNota === m.id && (
+                        <div style={{ position: "absolute", left: 12, top: "100%", marginTop: 4, zIndex: 50, background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 8, padding: 12, boxShadow: "0 8px 24px rgba(0,0,0,0.4)", width: 260 }}
+                          onClick={e => e.stopPropagation()}>
+                          <div style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", marginBottom: 6 }}>Comentario</div>
+                          <textarea value={notaText} onChange={e => setNotaText(e.target.value)} autoFocus placeholder="Agregar un comentario..."
+                            style={{ width: "100%", padding: "8px 10px", fontSize: 12, borderRadius: 6, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt)", resize: "vertical", minHeight: 60 }} />
+                          <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 8 }}>
+                            <button onClick={() => setEditingNota(null)}
+                              style={{ padding: "4px 12px", borderRadius: 6, fontSize: 11, background: "var(--bg3)", color: "var(--txt3)", border: "1px solid var(--bg4)", cursor: "pointer" }}>Cancelar</button>
+                            <button onClick={async () => {
+                              await updateMovimientoBanco(m.id!, { notas: notaText.trim() || null } as Partial<DBMovimientoBanco>);
+                              setMovBanco(prev => prev.map(x => x.id === m.id ? { ...x, notas: notaText.trim() || null } : x));
+                              setEditingNota(null);
+                            }}
+                              style={{ padding: "4px 12px", borderRadius: 6, fontSize: 11, fontWeight: 600, background: "var(--cyan)", color: "#fff", border: "none", cursor: "pointer" }}>Guardar</button>
+                          </div>
+                        </div>
+                      )}
                     </td>
                     <td className="mono" style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600, color: "var(--red)" }}>
                       {m.monto < 0 ? fmtMoney(Math.abs(m.monto)) : ""}
