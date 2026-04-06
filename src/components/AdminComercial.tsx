@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { fetchMLItemsMap } from "@/lib/db";
+import { fetchMLItemsMap, fetchStockDisponible } from "@/lib/db";
 import type { DBMLItemMap } from "@/lib/db";
 import { getStore, skuTotal } from "@/lib/store";
 
@@ -101,6 +101,16 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
   const [search, setSearch] = useState("");
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [stockDisponible, setStockDisponible] = useState<Map<string, number>>(new Map());
+
+  // Load available stock (on-hand minus reserved)
+  useEffect(() => {
+    fetchStockDisponible().then(data => {
+      const map = new Map<string, number>();
+      for (const r of data) map.set(r.sku, r.disponible);
+      setStockDisponible(map);
+    });
+  }, []);
 
   const loadItems = useCallback(async () => {
     setLoading(true);
@@ -158,8 +168,10 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
     }
   };
 
+  const getDisponible = (sku: string) => stockDisponible.get(sku) ?? 0;
+
   const activateWithStock = async (itemId: string, sku: string) => {
-    const wmsStock = skuTotal(sku);
+    const wmsStock = getDisponible(sku);
     if (wmsStock <= 0) {
       setActionError(`No hay stock en WMS para ${sku} — no se puede activar`);
       return;
@@ -220,7 +232,7 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
     const status = live?.status || item.status_ml || "unknown";
     if (filter === "paused_with_stock") {
       if (status !== "paused") return false;
-      const wmsStock = skuTotal(item.sku);
+      const wmsStock = getDisponible(item.sku);
       if (wmsStock <= 0) return false;
     } else if (filter !== "all" && status !== filter) {
       return false;
@@ -244,7 +256,7 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
   const kpiActivos = itemsWithStatus.filter(i => getItemStatus(i) === "active").length;
   const kpiPausados = itemsWithStatus.filter(i => getItemStatus(i) === "paused").length;
   const kpiCerrados = itemsWithStatus.filter(i => getItemStatus(i) === "closed").length;
-  const kpiPausadosConStock = itemsWithStatus.filter(i => getItemStatus(i) === "paused" && skuTotal(i.sku) > 0).length;
+  const kpiPausadosConStock = itemsWithStatus.filter(i => getItemStatus(i) === "paused" && getDisponible(i.sku) > 0).length;
   const kpiPendientes = displayItems.length - itemsWithStatus.length;
 
   return (
@@ -352,7 +364,7 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                     </td>
                     <td className="mono" style={{ textAlign: "right" }}>{price ? fmt(price) : "—"}</td>
                     <td style={{ textAlign: "center" }}>{qty}</td>
-                    <td style={{ textAlign: "center", fontWeight: 700, color: skuTotal(item.sku) > 0 ? "var(--green)" : "var(--txt3)" }}>{skuTotal(item.sku)}</td>
+                    <td style={{ textAlign: "center", fontWeight: 700, color: getDisponible(item.sku) > 0 ? "var(--green)" : "var(--txt3)" }}>{getDisponible(item.sku)}</td>
                     <td style={{ textAlign: "center" }}>{sold}</td>
                     <td>
                       <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 4, background: statusColor + "22", color: statusColor, fontWeight: 700 }}>
@@ -367,13 +379,13 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                             Pausar
                           </button>
                         )}
-                        {status === "paused" && skuTotal(item.sku) > 0 && (
+                        {status === "paused" && getDisponible(item.sku) > 0 && (
                           <button onClick={() => activateWithStock(item.item_id, item.sku)} disabled={actionLoading === item.item_id}
                             style={{ padding: "3px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: "var(--greenBg)", color: "var(--green)", border: "1px solid var(--greenBd)", cursor: actionLoading === item.item_id ? "wait" : "pointer" }}>
                             {actionLoading === item.item_id ? "Sync..." : "Activar + Stock"}
                           </button>
                         )}
-                        {status === "paused" && skuTotal(item.sku) <= 0 && (
+                        {status === "paused" && getDisponible(item.sku) <= 0 && (
                           <button onClick={() => toggleStatus(item.item_id, status)} disabled={actionLoading === item.item_id}
                             style={{ padding: "3px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: "var(--bg3)", color: "var(--green)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
                             Activar
