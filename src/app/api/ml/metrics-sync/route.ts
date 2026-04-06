@@ -196,18 +196,49 @@ export async function POST(req: NextRequest) {
         const advIdC = (cc as unknown as Record<string, unknown>).advertiser_id;
         const baseC = `${MLc}/marketplace/advertising/MLC/advertisers/${advIdC}/product_ads`;
         const campMetrics = "clicks,prints,ctr,cost,cpc,acos,roas,cvr,sov,impression_share,top_impression_share,lost_impression_share_by_budget,lost_impression_share_by_ad_rank,acos_benchmark,direct_amount,indirect_amount,total_amount,direct_units_quantity,indirect_units_quantity,units_quantity,organic_units_quantity,organic_units_amount";
-        const resp = await fetch(
+
+        // Test 1: campaigns/search with metrics + dates
+        const r1 = await fetch(
           `${baseC}/campaigns/search?limit=50&date_from=2026-03-01&date_to=2026-03-31&metrics=${campMetrics}`,
           { headers: hc }
         );
-        const data = await resp.json();
+        const d1 = await r1.text();
+
+        // Test 2: campaigns/search with metrics, no dates
+        const r2 = await fetch(
+          `${baseC}/campaigns/search?limit=50&metrics=${campMetrics}`,
+          { headers: hc }
+        );
+        const d2 = await r2.text();
+
+        // Test 3: single campaign metrics endpoint (if exists)
+        const campsSimple = await fetch(`${baseC}/campaigns/search?limit=1`, { headers: hc });
+        const campsD = await campsSimple.json();
+        const firstCampId = campsD.results?.[0]?.id;
+
+        // Test 4: campaign/{id}/metrics or campaign/{id}?metrics=...
+        let d4 = null;
+        if (firstCampId) {
+          const r4 = await fetch(
+            `${baseC}/campaigns/${firstCampId}?date_from=2026-03-01&date_to=2026-03-31&metrics=${campMetrics}`,
+            { headers: hc }
+          );
+          d4 = { status: r4.status, body: await r4.text().then(t => t.substring(0, 500)) };
+        }
+
+        // Test 5: old API format
+        const r5 = await fetch(
+          `${MLc}/advertising/product_ads/campaigns?user_id=${cc.seller_id}&limit=5&date_from=2026-03-01&date_to=2026-03-31&metrics=${campMetrics}`,
+          { headers: hc }
+        );
+        const d5 = { status: r5.status, body: await r5.text().then(t => t.substring(0, 500)) };
+
         return NextResponse.json({
-          status: resp.status,
-          total: data.paging?.total,
-          campaigns: (data.results || []).map((c: Record<string, unknown>) => ({
-            id: c.id, name: c.name, status: c.status, budget: c.budget,
-            metrics: c.metrics,
-          })),
+          test1_search_with_dates: { status: r1.status, body: d1.substring(0, 500) },
+          test2_search_no_dates: { status: r2.status, body: d2.substring(0, 500) },
+          test4_single_campaign: d4,
+          test5_old_api: d5,
+          firstCampId,
         });
       }
 
