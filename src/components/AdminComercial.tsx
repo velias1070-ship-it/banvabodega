@@ -229,11 +229,15 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
 
   const [editHasFamily, setEditHasFamily] = useState(false);
   const [editDesign, setEditDesign] = useState("");
+  const [editOrigColor, setEditOrigColor] = useState("");
+  const [editOrigDesign, setEditOrigDesign] = useState("");
   const [editLoadingAttrs, setEditLoadingAttrs] = useState(false);
   const openEditItem = async (itemId: string, currentTitle: string) => {
     setEditTitle(currentTitle);
     setEditColor("");
     setEditDesign("");
+    setEditOrigColor("");
+    setEditOrigDesign("");
     setEditSaving(false);
     setEditHasFamily(false);
     setEditLoadingAttrs(true);
@@ -246,8 +250,8 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
       if (item) {
         if (item.attributes) {
           for (const a of item.attributes) {
-            if (a.id === "COLOR") setEditColor(a.value_name || "");
-            if (a.id === "FABRIC_DESIGN") setEditDesign(a.value_name || "");
+            if (a.id === "COLOR") { setEditColor(a.value_name || ""); setEditOrigColor(a.value_name || ""); }
+            if (a.id === "FABRIC_DESIGN") { setEditDesign(a.value_name || ""); setEditOrigDesign(a.value_name || ""); }
           }
         }
         if (item.tags?.includes("user_product_listing")) setEditHasFamily(true);
@@ -264,9 +268,9 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
       // Items con family_name: solo se puede cambiar atributos, no título
       const updates: Record<string, unknown> = {};
       if (!editHasFamily && editTitle && editTitle !== editItem.title) updates.title = editTitle;
-      const attrs: Array<{ id: string; value_name: string }> = [];
-      if (editColor) attrs.push({ id: "COLOR", value_name: editColor });
-      if (editDesign) attrs.push({ id: "FABRIC_DESIGN", value_name: editDesign });
+      const attrs: Array<{ id: string; value_name: string | null }> = [];
+      if (editColor !== editOrigColor) attrs.push({ id: "COLOR", value_name: editColor || null });
+      if (editDesign !== editOrigDesign) attrs.push({ id: "FABRIC_DESIGN", value_name: editDesign || null });
       if (attrs.length > 0) updates.attributes = attrs;
       if (Object.keys(updates).length === 0) { setEditItem(null); return; }
       const res = await fetch("/api/ml/item-update", {
