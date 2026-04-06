@@ -77,7 +77,7 @@ async function fetchAllPages(apiKey: string, baseUrl: string): Promise<PGOrder[]
 
   let page = 2;
   while (page <= totalPages) {
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise(r => setTimeout(r, 1000));
     const pageRes = await fetchPage(apiKey, `${baseUrl}${sep}page=${page}`);
     const pageItems = pageRes.items || pageRes.data;
     if (!pageItems || !Array.isArray(pageItems)) {
