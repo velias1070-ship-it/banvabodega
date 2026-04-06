@@ -213,7 +213,13 @@ export async function GET(req: NextRequest) {
         headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
       });
       const text = await res.text();
-      return NextResponse.json({ debug_url: testUrl, status: res.status, body: text.slice(0, 2000), api_key_prefix: apiKey.slice(0, 8) + "..." });
+      // Show pagination info from response
+      let pgMeta = null;
+      try {
+        const parsed = JSON.parse(text);
+        pgMeta = { keys: Object.keys(parsed), meta: parsed.meta || null, pagination: parsed.pagination || null, items_count: Array.isArray(parsed.items) ? parsed.items.length : (Array.isArray(parsed.data) ? parsed.data.length : null) };
+      } catch { /* ignore */ }
+      return NextResponse.json({ debug_url: testUrl, status: res.status, pg_meta: pgMeta, api_key_prefix: apiKey.slice(0, 8) + "..." });
     }
 
     const rawOrders = await fetchOrders(apiKey, from, to);
