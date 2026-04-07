@@ -1626,7 +1626,17 @@ function PreciosYPromos() {
       const res = await fetch("/api/ml/promotions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const data = await res.json();
       if (data.error) setActionMsg(`Error: ${data.error}`);
-      else { setActionMsg("Postulado exitosamente"); if (tab === "sin_promo") scanSinPromos(); else if (tab === "buscar") searchPromos(search); else loadAll(); }
+      else {
+        setActionMsg("Postulado exitosamente");
+        // Refrescar solo este item sin recargar todo
+        try {
+          const r2 = await fetch(`/api/ml/promotions?item_ids=${simP.item.item_id}`);
+          const d2 = await r2.json();
+          if (d2.items?.[0]) {
+            setPromoData(prev => prev.map(p => p.item_id === simP.item.item_id ? d2.items[0] : p));
+          }
+        } catch { /* ignore */ }
+      }
     } catch (e) { setActionMsg(`Error: ${e instanceof Error ? e.message : "?"}`); }
     finally { setPromoActioning(null); setSimP(null); }
   };
@@ -1638,7 +1648,17 @@ function PreciosYPromos() {
       const res = await fetch("/api/ml/promotions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ item_id: itemId, action: "delete" }) });
       const data = await res.json();
       if (data.error) setActionMsg(`Error: ${data.error}`);
-      else { setActionMsg("Removido"); if (tab === "sin_promo") scanSinPromos(); else if (tab === "buscar") searchPromos(search); else loadAll(); }
+      else {
+        setActionMsg("Removido de la promoción");
+        // Refrescar solo este item
+        try {
+          const r2 = await fetch(`/api/ml/promotions?item_ids=${itemId}`);
+          const d2 = await r2.json();
+          if (d2.items?.[0]) {
+            setPromoData(prev => prev.map(p => p.item_id === itemId ? d2.items[0] : p));
+          }
+        } catch { /* ignore */ }
+      }
     } catch (e) { setActionMsg(`Error: ${e instanceof Error ? e.message : "?"}`); }
     finally { setPromoActioning(null); }
   };
