@@ -110,47 +110,68 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
   const [bulkSyncing, setBulkSyncing] = useState<string | null>(null);
   const [bulkResult, setBulkResult] = useState<string | null>(null);
   // Promociones
-  const [promoItems, setPromoItems] = useState<Array<{ item_id: string; sku: string; titulo: string; price_ml: number; costo_neto: number; costo_bruto: number; comision_ml: number; costo_envio: number; promotions: Array<{ id?: string; type: string; name?: string; status: string; price: number; original_price: number; meli_percentage?: number; seller_percentage?: number; start_date?: string; finish_date?: string; comision_promo?: number }> }>>([]);
+  const [promoItems, setPromoItems] = useState<Array<{ item_id: string; sku: string; titulo: string; price_ml: number; costo_neto: number; costo_bruto: number; comision_ml: number; costo_envio: number; listing_type: string; category_id: string; promotions: Array<{ id?: string; type: string; name?: string; status: string; price: number; original_price: number; meli_percentage?: number; seller_percentage?: number; start_date?: string; finish_date?: string; comision_promo?: number }> }>>([]);
   const [promoLoading, setPromoLoading] = useState(false);
   const [promoFamily, setPromoFamily] = useState<string | null>(null);
   const [promoFamilyItems, setPromoFamilyItems] = useState<DBMLItemMap[]>([]);
   const [promoActioning, setPromoActioning] = useState<string | null>(null);
+  // Modal de simulación de precio
+  const [simItem, setSimItem] = useState<{ item_id: string; sku: string; titulo: string; costo_bruto: number; comision_ml: number; costo_envio: number; price_ml: number; promo: { id?: string; type: string; price: number; original_price: number }; listing_type: string; category_id: string } | null>(null);
+  const [simPrice, setSimPrice] = useState("");
+  const [simComision, setSimComision] = useState(0);
+  const [simLoadingFee, setSimLoadingFee] = useState(false);
+  const simTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const postularPromo = async (itemId: string, promo: { id?: string; type: string; price: number; original_price: number }) => {
-    if (promo.type === "PRICE_DISCOUNT") {
-      const dealPrice = prompt(`Precio con descuento para ${itemId}:`, String(promo.price || Math.round(promo.original_price * 0.8)));
-      if (!dealPrice) return;
-      const startDate = new Date().toISOString().slice(0, 10) + "T00:00:00";
-      const finishDate = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10) + "T23:59:59";
-      setPromoActioning(itemId);
+  const openSimulator = (item: typeof promoItems[0], promo: typeof promoItems[0]["promotions"][0]) => {
+    const defaultPrice = promo.price > 0 ? promo.price : Math.round(item.price_ml * 0.8);
+    setSimItem({ item_id: item.item_id, sku: item.sku, titulo: item.titulo, costo_bruto: item.costo_bruto, comision_ml: item.comision_ml, costo_envio: item.costo_envio, price_ml: item.price_ml, promo, listing_type: item.listing_type, category_id: item.category_id });
+    setSimPrice(String(defaultPrice));
+    // Calcular comisión para el precio default
+    setSimComision(0);
+    fetchComision(defaultPrice, item.listing_type, item.category_id);
+  };
+
+  const fetchComision = (price: number, listingType: string, categoryId: string) => {
+    if (simTimeout.current) clearTimeout(simTimeout.current);
+    simTimeout.current = setTimeout(async () => {
+      if (price <= 0 || !categoryId) return;
+      setSimLoadingFee(true);
       try {
-        const res = await fetch("/api/ml/promotions", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ item_id: itemId, action: "create_discount", deal_price: parseInt(dealPrice), start_date: startDate, finish_date: finishDate }),
-        });
+        const res = await fetch(`/api/ml/promotions?fee_price=${price}&listing_type=${listingType}&category_id=${categoryId}`);
         const data = await res.json();
-        if (data.error) setActionError(`Error: ${data.error}`);
-        else { setActionError(`Descuento creado en ${itemId}`); openPromos(promoFamily!, promoFamilyItems); }
-      } catch (e) { setActionError(`Error: ${e instanceof Error ? e.message : "?"}`); }
-      finally { setPromoActioning(null); }
-      return;
-    }
-    // DEAL, SELLER_CAMPAIGN, etc — postular via API
-    const dealPrice = promo.price > 0 ? promo.price : parseInt(prompt(`Precio deal para ${itemId}:`, String(Math.round(promo.original_price * 0.7))) || "0");
+        setSimComision(data.fee || 0);
+      } catch { /* ignore */ }
+      setSimLoadingFee(false);
+    }, 400);
+  };
+
+  const handleSimPriceChange = (val: string) => {
+    setSimPrice(val);
+    const p = parseInt(val);
+    if (p > 0 && simItem) fetchComision(p, simItem.listing_type, simItem.category_id);
+  };
+
+  const confirmPostular = async () => {
+    if (!simItem) return;
+    const dealPrice = parseInt(simPrice);
     if (!dealPrice) return;
-    setPromoActioning(itemId);
+    setPromoActioning(simItem.item_id);
     try {
-      const res = await fetch("/api/ml/promotions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ item_id: itemId, action: "join", promotion_id: promo.id, promotion_type: promo.type, deal_price: dealPrice }),
-      });
+      const action = simItem.promo.type === "PRICE_DISCOUNT" ? "create_discount" : "join";
+      const body: Record<string, unknown> = { item_id: simItem.item_id, action, deal_price: dealPrice };
+      if (action === "create_discount") {
+        body.start_date = new Date().toISOString().slice(0, 10) + "T00:00:00";
+        body.finish_date = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10) + "T23:59:59";
+      } else {
+        body.promotion_id = simItem.promo.id;
+        body.promotion_type = simItem.promo.type;
+      }
+      const res = await fetch("/api/ml/promotions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const data = await res.json();
       if (data.error) setActionError(`Error: ${data.error}`);
-      else { setActionError(`Postulado a ${promo.type} en ${itemId}`); openPromos(promoFamily!, promoFamilyItems); }
+      else { setActionError(`Postulado exitosamente`); openPromos(promoFamily!, promoFamilyItems); }
     } catch (e) { setActionError(`Error: ${e instanceof Error ? e.message : "?"}`); }
-    finally { setPromoActioning(null); }
+    finally { setPromoActioning(null); setSimItem(null); }
   };
 
   const openPromos = async (familyKey: string, groupItems: DBMLItemMap[]) => {
@@ -704,6 +725,61 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
         </>
       )}
 
+      {/* Modal Simulador de Precio */}
+      {simItem && (() => {
+        const p = parseInt(simPrice) || 0;
+        const comision = simComision || (simLoadingFee ? 0 : 0);
+        const costoTotal = simItem.costo_bruto + comision + simItem.costo_envio;
+        const ganancia = p - costoTotal;
+        const margen = p > 0 ? Math.round((ganancia / p) * 100) : 0;
+        const descPct = simItem.price_ml > 0 ? Math.round(((simItem.price_ml - p) / simItem.price_ml) * 100) : 0;
+        return (
+          <div style={{ position: "fixed", inset: 0, zIndex: 10000, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center" }}
+            onClick={() => !promoActioning && setSimItem(null)}>
+            <div onClick={e => e.stopPropagation()} style={{ background: "var(--bg2)", borderRadius: 12, width: "100%", maxWidth: 420, overflow: "hidden", boxShadow: "0 20px 60px rgba(0,0,0,0.2)" }}>
+              <div style={{ padding: "16px 24px", background: "var(--amber)", color: "#fff" }}>
+                <div style={{ fontSize: 15, fontWeight: 700 }}>Simular Precio — {simItem.promo.type.replace(/_/g, " ")}</div>
+                <div style={{ fontSize: 11, opacity: 0.8, marginTop: 2 }}>{simItem.titulo}</div>
+              </div>
+              <div style={{ padding: "20px 24px" }}>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", display: "block", marginBottom: 6 }}>Precio con descuento</label>
+                <input value={simPrice} onChange={e => handleSimPriceChange(e.target.value.replace(/\D/g, ""))} inputMode="numeric" autoFocus
+                  style={{ width: "100%", padding: "12px 14px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt)", fontSize: 18, fontWeight: 700, fontFamily: "var(--font-mono, monospace)", boxSizing: "border-box", textAlign: "center" }} />
+                {descPct > 0 && <div style={{ textAlign: "center", fontSize: 11, color: "var(--amber)", marginTop: 4 }}>-{descPct}% sobre ${fmt(simItem.price_ml)}</div>}
+
+                <div style={{ marginTop: 16, background: "var(--bg3)", borderRadius: 8, padding: 14 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: "6px 12px", fontSize: 12 }}>
+                    <span style={{ color: "var(--txt3)" }}>Precio venta</span>
+                    <span className="mono" style={{ textAlign: "right", fontWeight: 600 }}>{fmt(p)}</span>
+                    <span style={{ color: "var(--txt3)" }}>Costo producto (+IVA)</span>
+                    <span className="mono" style={{ textAlign: "right", color: "var(--red)" }}>-{fmt(simItem.costo_bruto)}</span>
+                    <span style={{ color: "var(--txt3)" }}>Comisión ML {simLoadingFee && <span style={{ fontSize: 9 }}>...</span>}</span>
+                    <span className="mono" style={{ textAlign: "right", color: "var(--red)" }}>-{fmt(comision)}</span>
+                    <span style={{ color: "var(--txt3)" }}>Envío</span>
+                    <span className="mono" style={{ textAlign: "right", color: simItem.costo_envio > 0 ? "var(--red)" : "var(--txt3)" }}>{simItem.costo_envio > 0 ? `-${fmt(simItem.costo_envio)}` : "$0"}</span>
+                    <div style={{ gridColumn: "1 / -1", borderTop: "1px solid var(--bg4)", margin: "4px 0" }} />
+                    <span style={{ fontWeight: 700 }}>Ganancia</span>
+                    <span className="mono" style={{ textAlign: "right", fontWeight: 800, fontSize: 16, color: ganancia > 0 ? "var(--green)" : "var(--red)" }}>{fmt(ganancia)}</span>
+                    <span style={{ color: "var(--txt3)" }}>Margen</span>
+                    <span style={{ textAlign: "right", fontWeight: 700, color: margen > 20 ? "var(--green)" : margen > 0 ? "var(--amber)" : "var(--red)" }}>{margen}%</span>
+                  </div>
+                </div>
+              </div>
+              <div style={{ padding: "14px 24px", borderTop: "1px solid var(--bg4)", display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                <button onClick={() => setSimItem(null)} disabled={!!promoActioning}
+                  style={{ padding: "9px 20px", borderRadius: 8, fontSize: 12, fontWeight: 600, background: "var(--bg3)", color: "var(--txt2)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
+                  Cancelar
+                </button>
+                <button onClick={confirmPostular} disabled={!!promoActioning || p <= 0 || ganancia < 0}
+                  style={{ padding: "9px 20px", borderRadius: 8, fontSize: 12, fontWeight: 700, background: ganancia >= 0 ? "var(--amber)" : "var(--red)", color: "#fff", border: "none", cursor: promoActioning ? "wait" : "pointer", opacity: p <= 0 ? 0.4 : 1 }}>
+                  {promoActioning ? "Postulando..." : ganancia < 0 ? "Margen negativo" : "Confirmar Postulación"}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Modal Promociones */}
       {promoFamily && (
         <div style={{ position: "fixed", inset: 0, zIndex: 9998, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center" }}
@@ -772,7 +848,7 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                                   return (
                                     <div key={pi} style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 6px", borderRadius: 4, background: "var(--bg3)", fontSize: 10 }}>
                                       {p.status === "candidate" || p.status === "pending" ? (
-                                        <button onClick={() => postularPromo(item.item_id, p)} disabled={promoActioning === item.item_id}
+                                        <button onClick={() => openSimulator(item, p)} disabled={promoActioning === item.item_id}
                                           style={{ padding: "2px 6px", borderRadius: 3, fontSize: 9, fontWeight: 700, background: "var(--amber)", color: "#fff", border: "none", cursor: promoActioning === item.item_id ? "wait" : "pointer", minWidth: 48 }}>
                                           {promoActioning === item.item_id ? "..." : "POSTULAR"}
                                         </button>

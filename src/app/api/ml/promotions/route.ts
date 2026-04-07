@@ -44,7 +44,18 @@ export async function GET(req: NextRequest) {
   const sb = getServerSupabase();
   if (!sb) return NextResponse.json({ error: "no_db" }, { status: 500 });
 
-  const itemIds = new URL(req.url).searchParams.get("item_ids")?.split(",").slice(0, 30) || [];
+  const url = new URL(req.url);
+
+  // Quick fee lookup: /api/ml/promotions?fee_price=12000&listing_type=gold_special&category_id=MLC30059
+  const feePrice = url.searchParams.get("fee_price");
+  if (feePrice) {
+    const lt = url.searchParams.get("listing_type") || "gold_special";
+    const cat = url.searchParams.get("category_id") || "";
+    const fees = await mlGet<{ sale_fee_amount: number }>(`/sites/MLC/listing_prices?price=${feePrice}&listing_type_id=${lt}&category_id=${cat}`);
+    return NextResponse.json({ fee: fees?.sale_fee_amount || 0 });
+  }
+
+  const itemIds = url.searchParams.get("item_ids")?.split(",").slice(0, 30) || [];
   if (itemIds.length === 0) return NextResponse.json({ error: "item_ids required" }, { status: 400 });
 
   const results: ItemPromoResult[] = [];
