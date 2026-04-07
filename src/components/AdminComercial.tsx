@@ -196,6 +196,39 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
     openPromos(unique.length === 1 ? (unique[0].titulo || unique[0].sku) : `${unique.length} items`, unique);
   };
 
+  const [scanningPromos, setScanningPromos] = useState(false);
+  const scanSinPromos = async () => {
+    const activeItems = displayItems.filter(i => (liveData.get(i.item_id)?.status || i.status_ml) === "active");
+    if (activeItems.length === 0) { setActionError("No hay items activos"); return; }
+    setScanningPromos(true);
+    setActionError(`Escaneando promos de ${activeItems.length} items activos...`);
+    try {
+      const sinPromo: DBMLItemMap[] = [];
+      // Escanear en batches de 10
+      for (let i = 0; i < activeItems.length; i += 10) {
+        const batch = activeItems.slice(i, i + 10);
+        const ids = batch.map(b => b.item_id).join(",");
+        const res = await fetch(`/api/ml/promotions?item_ids=${ids}`);
+        const data = await res.json();
+        for (const item of (data.items || [])) {
+          const hasActivePromo = item.promotions.some((p: { status: string }) => p.status === "started");
+          if (!hasActivePromo) {
+            const orig = batch.find(b => b.item_id === item.item_id);
+            if (orig) sinPromo.push(orig);
+          }
+        }
+      }
+      if (sinPromo.length === 0) {
+        setActionError(`Todos los ${activeItems.length} items activos tienen al menos 1 promo activa`);
+      } else {
+        setActionError(`${sinPromo.length} items activos SIN promo de ${activeItems.length} total`);
+        const unique = Array.from(new Map(sinPromo.map(i => [i.item_id, i])).values());
+        openPromos(`${sinPromo.length} items sin promo activa`, unique);
+      }
+    } catch (e) { setActionError(`Error: ${e instanceof Error ? e.message : "?"}`); }
+    finally { setScanningPromos(false); }
+  };
+
   const bulkSyncAttrs = async (familyKey: string, groupItems: DBMLItemMap[], action: "design_from_color" | "color_from_design") => {
     const label = action === "color_from_design" ? "DISEÑO → COLOR" : "COLOR → DISEÑO";
     if (!confirm(`¿Copiar ${label} en ${groupItems.length} items de "${familyKey}"?`)) return;
@@ -553,6 +586,10 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
               <option value="paused_with_stock">Pausados con stock</option>
               <option value="closed">Cerrados</option>
             </select>
+            <button onClick={scanSinPromos} disabled={scanningPromos}
+              style={{ padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: "var(--amber)", color: "#fff", border: "none", cursor: scanningPromos ? "wait" : "pointer" }}>
+              {scanningPromos ? "Escaneando..." : "Sin promos"}
+            </button>
             <button onClick={refreshLive} disabled={refreshing}
               style={{ padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)", cursor: refreshing ? "wait" : "pointer" }}>
               {refreshing ? "Actualizando..." : "Refresh ML"}
