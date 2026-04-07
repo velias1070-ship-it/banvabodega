@@ -186,6 +186,87 @@ export async function POST(req: NextRequest) {
         });
       }
 
+      case "debug-benchmarks": {
+        const { ensureValidToken: ensTb, getMLConfig: getCfgB } = await import("@/lib/ml");
+        const cb = await getCfgB();
+        const tb = await ensTb();
+        if (!cb || !tb) return NextResponse.json({ error: "no config/token" });
+        const MLb = "https://api.mercadolibre.com";
+        const hb = { Authorization: `Bearer ${tb}` };
+
+        // 30 items: 10 commodity, 10 diferenciados, 10 unicos
+        const testItems = [
+          // COMMODITY (sabanas basicas, fundas, cubre colchon)
+          { id: "MLC3554024054", type: "commodity", label: "Cubre colchon impermeable" },
+          { id: "MLC3554257278", type: "commodity", label: "Cubre colchon impermeable 2" },
+          { id: "MLC3395914968", type: "commodity", label: "Sabanas 2P Cannon 144H" },
+          { id: "MLC3395969320", type: "commodity", label: "Sabanas 200H 2P Cannon" },
+          { id: "MLC1731158257", type: "commodity", label: "Cubre colchon impermeable PM" },
+          { id: "MLC3396367720", type: "commodity", label: "Almohada Cannon" },
+          { id: "MLC1834147735", type: "commodity", label: "Sabanas 2P Cannon AF" },
+          { id: "MLC3222192526", type: "commodity", label: "Sabanas 1P infantil blanco" },
+          { id: "MLC3243863074", type: "commodity", label: "Cubre colchon cuna" },
+          { id: "MLC3535178000", type: "commodity", label: "Almohada memory foam Cannon" },
+          // DIFERENCIADOS (sets premium, kits, packs)
+          { id: "MLC3395894776", type: "diferenciado", label: "Jgo 4 Toallas Cannon 400g" },
+          { id: "MLC3407112460", type: "diferenciado", label: "Pack 2 Almohadas Premium" },
+          { id: "MLC3176483928", type: "diferenciado", label: "Set 2 Almohadas Pluma Ganso" },
+          { id: "MLC3243229464", type: "diferenciado", label: "Pack x2 Memory Foam Cannon" },
+          { id: "MLC1724585011", type: "diferenciado", label: "Kit Manualidades Unicornio" },
+          { id: "MLC3221940036", type: "diferenciado", label: "Bolso Matero Cuero Set" },
+          { id: "MLC3198418658", type: "diferenciado", label: "Plumon Infantil Unicornio" },
+          { id: "MLC3198328152", type: "diferenciado", label: "Plumon Infantil Stars" },
+          { id: "MLC3198263546", type: "diferenciado", label: "Cortinas Visillos Lino 2P" },
+          { id: "MLC3300642436", type: "diferenciado", label: "Biblia Catolica Jovenes" },
+          // UNICOS (Atenas, Roma, BANVA branded)
+          { id: "MLC3198351164", type: "unico", label: "Quilt Atenas 2P" },
+          { id: "MLC3198338246", type: "unico", label: "Quilt Atenas 2P color2" },
+          { id: "MLC1711090217", type: "unico", label: "Quilt Roma SK" },
+          { id: "MLC3198350940", type: "unico", label: "Quilt Roma 2P" },
+          { id: "MLC1711051257", type: "unico", label: "Quilt Roma SK Gris" },
+          { id: "MLC3193672362", type: "unico", label: "Quilt Roma SK Negro" },
+          { id: "MLC1880200541", type: "unico", label: "Quilt Breda King" },
+          { id: "MLC3742327802", type: "unico", label: "Quilt Breda 2P" },
+          { id: "MLC3198327524", type: "unico", label: "Manta Flannel Roma" },
+          { id: "MLC1710960777", type: "unico", label: "Quilt Atenas SK" },
+        ];
+
+        const results: Array<Record<string, unknown>> = [];
+        for (const item of testItems) {
+          try {
+            const r = await fetch(`${MLb}/marketplace/benchmarks/items/${item.id}/details`, { headers: hb });
+            const d = r.status === 200 ? await r.json() : { _status: r.status, _body: await r.text().then(t => t.substring(0, 200)) };
+            results.push({
+              item_id: item.id,
+              type: item.type,
+              label: item.label,
+              status: r.status,
+              lowest_price: d.lowest_price ?? d.price_comparison?.lowest_price ?? null,
+              internal_price: d.internal_price ?? d.price_comparison?.internal_price ?? null,
+              suggested_price: d.suggested_price ?? d.price_comparison?.suggested_price ?? null,
+              competitors: d.competitors_count ?? d.total_sellers ?? d.sellers_count ?? null,
+              catalog_product_id: d.catalog_product_id ?? null,
+              has_data: r.status === 200 && Object.keys(d).length > 2,
+              raw_keys: r.status === 200 ? Object.keys(d) : null,
+            });
+          } catch (err) {
+            results.push({ item_id: item.id, type: item.type, label: item.label, error: String(err) });
+          }
+        }
+
+        // Summary
+        const byType: Record<string, { total: number; with_data: number; with_price: number }> = {};
+        for (const r of results) {
+          const t = r.type as string;
+          if (!byType[t]) byType[t] = { total: 0, with_data: 0, with_price: 0 };
+          byType[t].total++;
+          if (r.has_data) byType[t].with_data++;
+          if (r.lowest_price || r.suggested_price) byType[t].with_price++;
+        }
+
+        return NextResponse.json({ summary: byType, results });
+      }
+
       case "debug-ads": {
         const { ensureValidToken: ensT3, getMLConfig: getCfg3 } = await import("@/lib/ml");
         const c3 = await getCfg3();
