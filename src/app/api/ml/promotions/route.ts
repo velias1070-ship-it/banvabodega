@@ -24,6 +24,10 @@ interface ItemPromoResult {
   price_ml: number;
   costo_neto: number;
   costo_bruto: number;
+  comision_ml: number;
+  costo_envio: number;
+  listing_type: string;
+  category_id: string;
   promotions: PromoInfo[];
 }
 
@@ -45,30 +49,26 @@ export async function GET(req: NextRequest) {
 
   // Obtener datos de ml_items_map + productos para costos
   for (const itemId of itemIds) {
-    // Get SKU mapping
     const { data: maps } = await sb.from("ml_items_map")
-      .select("sku, item_id, titulo, price, sku_origen")
+      .select("sku, item_id, titulo, price, sku_origen, listing_type, category_id")
       .eq("item_id", itemId)
       .limit(1);
 
     const map = maps?.[0];
     if (!map) continue;
 
-    // Get cost from productos (usando sku_origen si existe, sino sku)
+    // Costo del producto
     const skuCosto = map.sku_origen || map.sku;
     const { data: prods } = await sb.from("productos")
       .select("costo, costo_promedio")
       .eq("sku", skuCosto)
       .limit(1);
 
-    // Check composicion for packs
     const { data: comp } = await sb.from("composicion_venta")
       .select("sku_origen, unidades")
       .eq("sku_venta", map.sku);
 
     let costoNeto = prods?.[0]?.costo_promedio || prods?.[0]?.costo || 0;
-
-    // Si es un pack/combo, sumar costos de componentes
     if (comp && comp.length > 0) {
       let totalCosto = 0;
       for (const c of comp) {
@@ -81,28 +81,53 @@ export async function GET(req: NextRequest) {
       if (totalCosto > 0) costoNeto = totalCosto;
     }
 
-    // Get promotions from ML
+    // Comisión ML via API listing_prices
+    let comisionMl = 0;
+    const price = map.price || 0;
+    const listingType = map.listing_type || "gold_special";
+    const categoryId = map.category_id || "";
+    if (price > 0 && categoryId) {
+      try {
+        const fees = await mlGet<{ sale_fee_amount: number }>(`/sites/MLC/listing_prices?price=${price}&listing_type_id=${listingType}&category_id=${categoryId}`);
+        comisionMl = fees?.sale_fee_amount || 0;
+      } catch { /* ignore */ }
+    }
+
+    // Costo envío promedio de ventas recientes del SKU
+    let costoEnvio = 0;
+    const { data: recentOrders } = await sb.from("orders_history")
+      .select("costo_envio")
+      .eq("sku_venta", map.sku)
+      .order("fecha", { ascending: false })
+      .limit(10);
+    if (recentOrders && recentOrders.length > 0) {
+      const envios = recentOrders.filter((o: { costo_envio: number }) => o.costo_envio > 0);
+      if (envios.length > 0) {
+        costoEnvio = Math.round(envios.reduce((s: number, o: { costo_envio: number }) => s + o.costo_envio, 0) / envios.length);
+      }
+    }
+
+    // Promociones de ML
     let promotions: PromoInfo[] = [];
     try {
-      const promos = await mlGet<PromoInfo[]>(
-        `/seller-promotions/items/${itemId}?app_version=v2`
-      );
-      if (promos && Array.isArray(promos)) {
-        promotions = promos;
-      }
+      const promos = await mlGet<PromoInfo[]>(`/seller-promotions/items/${itemId}?app_version=v2`);
+      if (promos && Array.isArray(promos)) promotions = promos;
     } catch { /* ignore */ }
 
     results.push({
       item_id: itemId,
       sku: map.sku,
       titulo: map.titulo || "",
-      price_ml: map.price || 0,
+      price_ml: price,
       costo_neto: costoNeto,
       costo_bruto: Math.round(costoNeto * 1.19),
+      comision_ml: comisionMl,
+      costo_envio: costoEnvio,
+      listing_type: listingType,
+      category_id: categoryId,
       promotions,
     });
 
-    // Rate limiting
     await new Promise(r => setTimeout(r, 200));
   }
 
