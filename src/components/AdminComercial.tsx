@@ -109,6 +109,23 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
   const [editSaving, setEditSaving] = useState(false);
   const [bulkSyncing, setBulkSyncing] = useState<string | null>(null);
   const [bulkResult, setBulkResult] = useState<string | null>(null);
+  // Promociones
+  const [promoItems, setPromoItems] = useState<Array<{ item_id: string; sku: string; titulo: string; price_ml: number; costo_neto: number; costo_bruto: number; promotions: Array<{ id?: string; type: string; name?: string; status: string; price: number; original_price: number; meli_percentage?: number; seller_percentage?: number; start_date?: string; finish_date?: string }> }>>([]);
+  const [promoLoading, setPromoLoading] = useState(false);
+  const [promoFamily, setPromoFamily] = useState<string | null>(null);
+
+  const openPromos = async (familyKey: string, groupItems: DBMLItemMap[]) => {
+    setPromoFamily(familyKey);
+    setPromoLoading(true);
+    setPromoItems([]);
+    try {
+      const ids = groupItems.map(i => i.item_id).join(",");
+      const res = await fetch(`/api/ml/promotions?item_ids=${ids}`);
+      const data = await res.json();
+      setPromoItems(data.items || []);
+    } catch { /* ignore */ }
+    setPromoLoading(false);
+  };
 
   const bulkSyncAttrs = async (familyKey: string, groupItems: DBMLItemMap[], action: "design_from_color" | "color_from_design") => {
     const label = action === "color_from_design" ? "DISEÑO → COLOR" : "COLOR → DISEÑO";
@@ -547,10 +564,14 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                       <td style={{ textAlign: "center", fontWeight: 700, fontSize: 12, color: groupStockTotal > 0 ? "var(--green)" : "var(--txt3)" }}>{groupStockTotal}</td>
                       <td style={{ textAlign: "center", fontSize: 10 }}>{groupItems.reduce((s, i) => s + (liveData.get(i.item_id)?.sold_quantity ?? i.sold_quantity ?? 0), 0)}</td>
                       <td colSpan={2} style={{ textAlign: "right", padding: "8px 10px" }}>
+                        <button onClick={e => { e.stopPropagation(); openPromos(familyKey, groupItems); }}
+                          style={{ padding: "3px 8px", borderRadius: 4, fontSize: 9, fontWeight: 600, background: "var(--amber)", color: "#fff", border: "none", cursor: "pointer", whiteSpace: "nowrap" }}>
+                          Promos
+                        </button>
                         <button onClick={e => { e.stopPropagation(); bulkSyncFromTitle(familyKey, groupItems); }}
                           disabled={bulkSyncing === familyKey}
-                          style={{ padding: "3px 8px", borderRadius: 4, fontSize: 9, fontWeight: 600, background: "var(--cyan)", color: "#fff", border: "none", cursor: bulkSyncing === familyKey ? "wait" : "pointer", whiteSpace: "nowrap" }}>
-                          {bulkSyncing === familyKey ? "Sincronizando..." : "Corregir nombres"}
+                          style={{ padding: "3px 8px", borderRadius: 4, fontSize: 9, fontWeight: 600, background: "var(--bg3)", color: "var(--cyan)", border: "1px solid var(--bg4)", cursor: bulkSyncing === familyKey ? "wait" : "pointer", whiteSpace: "nowrap" }}>
+                          {bulkSyncing === familyKey ? "..." : "Nombres"}
                         </button>
                       </td>
                     </tr>
@@ -641,6 +662,103 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
           </table>
         </div>
         </>
+      )}
+
+      {/* Modal Promociones */}
+      {promoFamily && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 9998, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={() => setPromoFamily(null)}>
+          <div onClick={e => e.stopPropagation()} style={{ background: "var(--bg2)", borderRadius: 12, width: "100%", maxWidth: 900, maxHeight: "90vh", display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 20px 60px rgba(0,0,0,0.15)" }}>
+            <div style={{ padding: "18px 24px", background: "var(--amber)", color: "#fff", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 16, fontWeight: 700 }}>Promociones — {promoFamily}</span>
+              <button onClick={() => setPromoFamily(null)} style={{ background: "none", border: "none", color: "#fff", fontSize: 20, cursor: "pointer" }}>&times;</button>
+            </div>
+            <div style={{ flex: 1, overflow: "auto", padding: 0 }}>
+              {promoLoading ? (
+                <div style={{ padding: 40, textAlign: "center", color: "var(--txt3)" }}>Cargando promociones y costos...</div>
+              ) : promoItems.length === 0 ? (
+                <div style={{ padding: 40, textAlign: "center", color: "var(--txt3)" }}>Sin datos</div>
+              ) : (
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                  <thead>
+                    <tr style={{ borderBottom: "2px solid var(--bg4)", position: "sticky", top: 0, background: "var(--bg2)", zIndex: 1 }}>
+                      <th style={{ padding: "10px 12px", textAlign: "left", fontSize: 10, color: "var(--cyan)" }}>Variante</th>
+                      <th style={{ padding: "10px 8px", textAlign: "right", fontSize: 10, color: "var(--txt3)" }}>Costo Neto</th>
+                      <th style={{ padding: "10px 8px", textAlign: "right", fontSize: 10, color: "var(--txt3)" }}>Costo +IVA</th>
+                      <th style={{ padding: "10px 8px", textAlign: "right", fontSize: 10, color: "var(--cyan)" }}>Precio ML</th>
+                      <th style={{ padding: "10px 8px", textAlign: "center", fontSize: 10, color: "var(--green)" }}>Margen Actual</th>
+                      <th style={{ padding: "10px 8px", textAlign: "left", fontSize: 10, color: "var(--amber)" }}>Promociones Disponibles</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {promoItems.map(item => {
+                      const margenActual = item.price_ml > 0 && item.costo_bruto > 0
+                        ? Math.round(((item.price_ml - item.costo_bruto) / item.price_ml) * 100)
+                        : null;
+                      const variantName = promoFamily && item.titulo.startsWith(promoFamily)
+                        ? item.titulo.slice(promoFamily.length).trim() || item.titulo
+                        : item.titulo;
+                      return (
+                        <tr key={item.item_id} style={{ borderBottom: "1px solid var(--bg4)" }}>
+                          <td style={{ padding: "10px 12px" }}>
+                            <div style={{ fontWeight: 600, color: "var(--cyan)" }}>{variantName}</div>
+                            <div className="mono" style={{ fontSize: 9, color: "var(--txt3)" }}>{item.sku}</div>
+                          </td>
+                          <td className="mono" style={{ padding: "10px 8px", textAlign: "right", fontSize: 10 }}>{fmt(item.costo_neto)}</td>
+                          <td className="mono" style={{ padding: "10px 8px", textAlign: "right", fontSize: 10 }}>{fmt(item.costo_bruto)}</td>
+                          <td className="mono" style={{ padding: "10px 8px", textAlign: "right", fontWeight: 700 }}>{fmt(item.price_ml)}</td>
+                          <td style={{ padding: "10px 8px", textAlign: "center" }}>
+                            {margenActual !== null ? (
+                              <span style={{ fontWeight: 700, color: margenActual > 20 ? "var(--green)" : margenActual > 0 ? "var(--amber)" : "var(--red)" }}>
+                                {margenActual}%
+                              </span>
+                            ) : <span style={{ color: "var(--txt3)" }}>—</span>}
+                          </td>
+                          <td style={{ padding: "8px 8px" }}>
+                            {item.promotions.length === 0 ? (
+                              <span style={{ fontSize: 10, color: "var(--txt3)" }}>Sin promos</span>
+                            ) : (
+                              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                {item.promotions.map((p, pi) => {
+                                  const margenPromo = p.price > 0 && item.costo_bruto > 0
+                                    ? Math.round(((p.price - item.costo_bruto) / p.price) * 100)
+                                    : null;
+                                  const descPct = p.original_price > 0
+                                    ? Math.round(((p.original_price - p.price) / p.original_price) * 100)
+                                    : 0;
+                                  const statusColor = p.status === "started" ? "var(--green)" : p.status === "candidate" ? "var(--amber)" : "var(--txt3)";
+                                  return (
+                                    <div key={pi} style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 6px", borderRadius: 4, background: "var(--bg3)", fontSize: 10 }}>
+                                      <span style={{ fontWeight: 600, color: statusColor, minWidth: 55 }}>
+                                        {p.status === "started" ? "ACTIVA" : p.status === "candidate" ? "DISPONIBLE" : p.status.toUpperCase()}
+                                      </span>
+                                      <span style={{ color: "var(--txt3)", minWidth: 80 }}>{p.type.replace("_", " ")}</span>
+                                      <span className="mono" style={{ fontWeight: 700, color: "var(--amber)" }}>{fmt(p.price)}</span>
+                                      <span style={{ fontSize: 9, color: "var(--txt3)" }}>(-{descPct}%)</span>
+                                      {margenPromo !== null && (
+                                        <span style={{ fontWeight: 600, color: margenPromo > 10 ? "var(--green)" : margenPromo > 0 ? "var(--amber)" : "var(--red)", fontSize: 10 }}>
+                                          margen {margenPromo}%
+                                        </span>
+                                      )}
+                                      {p.name && <span style={{ color: "var(--txt3)", fontSize: 9 }}>{p.name}</span>}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+            <div style={{ padding: "12px 24px", borderTop: "1px solid var(--bg4)", fontSize: 10, color: "var(--txt3)" }}>
+              Costos netos x1.19 = costo bruto (IVA incluido). Margen = (precio - costo bruto) / precio.
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Modal Editar Item */}
