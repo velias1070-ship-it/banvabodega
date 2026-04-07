@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from "react";
 import { fetchMLItemsMap, fetchStockDisponible } from "@/lib/db";
 import type { DBMLItemMap } from "@/lib/db";
 import { getStore, skuTotal } from "@/lib/store";
@@ -640,8 +640,8 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
 
                 // Fila de familia (header del grupo)
                 if (isGroup) {
-                  return (<>
-                    <tr key={familyKey} onClick={() => toggleFamily(familyKey)}
+                  return (<Fragment key={familyKey}>
+                    <tr onClick={() => toggleFamily(familyKey)}
                       style={{ cursor: "pointer", background: expanded ? "var(--bg3)" : "transparent", borderBottom: "1px solid var(--bg4)" }}>
                       <td style={{ padding: "10px 8px", fontSize: 14, textAlign: "center", color: "var(--cyan)" }}>
                         {expanded ? "\u25BC" : "\u25B6"}
@@ -716,7 +716,7 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                         </tr>
                       );
                     })}
-                  </>);
+                  </Fragment>);
                 }
 
                 // Item suelto (sin familia)
@@ -766,11 +766,11 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
       )}
 
       {/* Modal Simulador de Precio */}
-      {simItem && (() => {
+      {simItem && (() => { try {
         const p = parseInt(simPrice) || 0;
         const comision = simComision || 0;
-        const envioSeller = p >= 19990 ? simItem.costo_envio : 0; // Bajo $19.990 el comprador paga envío
-        const costoTotal = simItem.costo_bruto + comision + envioSeller;
+        const envioSeller = p >= 19990 ? (simItem.costo_envio || 0) : 0;
+        const costoTotal = (simItem.costo_bruto || 0) + comision + envioSeller;
         const ganancia = p - costoTotal;
         const margen = p > 0 ? Math.round((ganancia / p) * 100) : 0;
         const descPct = simItem.price_ml > 0 ? Math.round(((simItem.price_ml - p) / simItem.price_ml) * 100) : 0;
@@ -824,7 +824,7 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
             </div>
           </div>
         );
-      })()}
+      } catch { return null; } })()}
 
       {/* Modal Promociones */}
       {promoFamily && (
