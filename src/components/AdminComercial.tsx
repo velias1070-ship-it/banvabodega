@@ -188,6 +188,14 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
     setPromoLoading(false);
   };
 
+  const openPromosBySku = async (skuQuery: string) => {
+    const q = skuQuery.trim().toUpperCase();
+    const matched = items.filter(i => i.sku.toUpperCase().includes(q) || i.item_id.toUpperCase().includes(q));
+    if (matched.length === 0) { setActionError(`No se encontró "${skuQuery}"`); return; }
+    const unique = Array.from(new Map(matched.map(i => [i.item_id, i])).values());
+    openPromos(unique.length === 1 ? (unique[0].titulo || unique[0].sku) : `${unique.length} items`, unique);
+  };
+
   const bulkSyncAttrs = async (familyKey: string, groupItems: DBMLItemMap[], action: "design_from_color" | "color_from_design") => {
     const label = action === "color_from_design" ? "DISEÑO → COLOR" : "COLOR → DISEÑO";
     if (!confirm(`¿Copiar ${label} en ${groupItems.length} items de "${familyKey}"?`)) return;
@@ -529,7 +537,14 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             <input type="text" placeholder="Buscar SKU o título..." value={search} onChange={e => setSearch(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter" && search.trim()) openPromosBySku(search); }}
               style={{ padding: "6px 10px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 12, width: 180 }} />
+            {search.trim() && (
+              <button onClick={() => openPromosBySku(search)}
+                style={{ padding: "6px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: "var(--amber)", color: "#fff", border: "none", cursor: "pointer" }}>
+                Promos
+              </button>
+            )}
             <select value={filter} onChange={e => setFilter(e.target.value as typeof filter)}
               style={{ padding: "6px 10px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 12 }}>
               <option value="all">Todos</option>
