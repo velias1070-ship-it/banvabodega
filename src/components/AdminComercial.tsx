@@ -1573,27 +1573,62 @@ function PreciosYPromos() {
   const [changingPrice, setChangingPrice] = useState<string | null>(null);
   const [promoActioning, setPromoActioning] = useState<string | null>(null);
   const [actionMsg, setActionMsg] = useState<string | null>(null);
+  // Simulador
+  const [simP, setSimP] = useState<{ item: PromoItem; promo: PromoItem["promotions"][0] } | null>(null);
+  const [simPPrice, setSimPPrice] = useState("");
+  const [simPFee, setSimPFee] = useState(0);
+  const [simPFeeLoading, setSimPFeeLoading] = useState(false);
+  const simPTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const postularPromoP = async (itemId: string, promo: { id?: string; type: string; price: number; original_price: number }) => {
-    const dealPrice = promo.price > 0 ? promo.price : parseInt(prompt(`Precio promo para ${itemId}:`, String(Math.round((promo.original_price || 20000) * 0.8))) || "0");
+  const openSimP = (item: PromoItem, promo: PromoItem["promotions"][0]) => {
+    const defaultPrice = promo.price > 0 ? promo.price : (promo.suggested_discounted_price || Math.round(item.price_ml * 0.8));
+    setSimP({ item, promo });
+    setSimPPrice(String(defaultPrice));
+    setSimPFee(0);
+    fetchSimPFee(defaultPrice, item.listing_type, item.category_id);
+  };
+
+  const fetchSimPFee = (price: number, lt: string, cat: string) => {
+    if (simPTimeout.current) clearTimeout(simPTimeout.current);
+    simPTimeout.current = setTimeout(async () => {
+      if (price <= 0 || !cat) return;
+      setSimPFeeLoading(true);
+      try {
+        const res = await fetch(`/api/ml/promotions?fee_price=${price}&listing_type=${lt}&category_id=${cat}`);
+        const data = await res.json();
+        setSimPFee(data.fee || 0);
+      } catch { /* ignore */ }
+      setSimPFeeLoading(false);
+    }, 400);
+  };
+
+  const handleSimPChange = (val: string) => {
+    setSimPPrice(val);
+    const p = parseInt(val);
+    if (p > 0 && simP) fetchSimPFee(p, simP.item.listing_type, simP.item.category_id);
+  };
+
+  const confirmSimP = async () => {
+    if (!simP) return;
+    const dealPrice = parseInt(simPPrice);
     if (!dealPrice) return;
-    setPromoActioning(itemId);
+    setPromoActioning(simP.item.item_id);
     try {
-      const action = promo.type === "PRICE_DISCOUNT" ? "create_discount" : "join";
-      const body: Record<string, unknown> = { item_id: itemId, action, deal_price: dealPrice };
+      const action = simP.promo.type === "PRICE_DISCOUNT" ? "create_discount" : "join";
+      const body: Record<string, unknown> = { item_id: simP.item.item_id, action, deal_price: dealPrice };
       if (action === "create_discount") {
         body.start_date = new Date().toISOString().slice(0, 10) + "T00:00:00";
         body.finish_date = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10) + "T23:59:59";
       } else {
-        body.promotion_id = promo.id;
-        body.promotion_type = promo.type;
+        body.promotion_id = simP.promo.id;
+        body.promotion_type = simP.promo.type;
       }
       const res = await fetch("/api/ml/promotions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const data = await res.json();
       if (data.error) setActionMsg(`Error: ${data.error}`);
-      else { setActionMsg("Postulado"); if (tab === "sin_promo") scanSinPromos(); else if (tab === "buscar") searchPromos(search); else loadAll(); }
+      else { setActionMsg("Postulado exitosamente"); if (tab === "sin_promo") scanSinPromos(); else if (tab === "buscar") searchPromos(search); else loadAll(); }
     } catch (e) { setActionMsg(`Error: ${e instanceof Error ? e.message : "?"}`); }
-    finally { setPromoActioning(null); }
+    finally { setPromoActioning(null); setSimP(null); }
   };
 
   const salirPromoP = async (itemId: string) => {
@@ -1827,7 +1862,7 @@ function PreciosYPromos() {
                                       {promoActioning === item.item_id ? "..." : "ACTIVA \u2715"}
                                     </button>
                                   ) : (
-                                    <button onClick={() => postularPromoP(item.item_id, { ...p, price: promoPrice })} disabled={promoActioning === item.item_id}
+                                    <button onClick={() => openSimP(item, { ...p, price: promoPrice })} disabled={promoActioning === item.item_id}
                                       style={{ padding: "1px 5px", borderRadius: 3, fontSize: 8, fontWeight: 700, background: info.color, color: "#fff", border: "none", cursor: "pointer" }}>
                                       {promoActioning === item.item_id ? "..." : "POSTULAR"}
                                     </button>
@@ -1876,6 +1911,70 @@ function PreciosYPromos() {
           </table>
         </div>
       )}
+      {/* Simulador */}
+      {simP && (() => { try {
+        const p = parseInt(simPPrice) || 0;
+        const comision = simPFee || 0;
+        const envio = p >= 19990 ? (simP.item.costo_envio || 0) : 0;
+        const costoTotal = (simP.item.costo_bruto || 0) + comision + envio;
+        const ganancia = p - costoTotal;
+        const margen = p > 0 ? Math.round((ganancia / p) * 100) : 0;
+        const descPct = simP.item.price_ml > 0 ? Math.round(((simP.item.price_ml - p) / simP.item.price_ml) * 100) : 0;
+        const info = PROMO_LABELS[simP.promo.type] || { label: simP.promo.type, desc: "", color: "var(--amber)" };
+        return (
+          <div style={{ position: "fixed", inset: 0, zIndex: 10000, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center" }}
+            onClick={() => !promoActioning && setSimP(null)}>
+            <div onClick={e => e.stopPropagation()} style={{ background: "var(--bg2)", borderRadius: 12, width: "100%", maxWidth: 440, overflow: "hidden", boxShadow: "0 20px 60px rgba(0,0,0,0.2)" }}>
+              <div style={{ padding: "16px 24px", background: info.color, color: "#fff" }}>
+                <div style={{ fontSize: 15, fontWeight: 700 }}>{info.label} — Postular</div>
+                <div style={{ fontSize: 11, opacity: 0.8, marginTop: 2 }}>{simP.item.titulo}</div>
+                {simP.promo.name && <div style={{ fontSize: 10, opacity: 0.7, marginTop: 2 }}>{simP.promo.name}</div>}
+              </div>
+              <div style={{ padding: "20px 24px" }}>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", display: "block", marginBottom: 6 }}>Precio con descuento</label>
+                <input value={simPPrice} onChange={e => handleSimPChange(e.target.value.replace(/\D/g, ""))} inputMode="numeric" autoFocus
+                  style={{ width: "100%", padding: "12px 14px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt)", fontSize: 18, fontWeight: 700, fontFamily: "var(--font-mono, monospace)", boxSizing: "border-box", textAlign: "center" }} />
+                {descPct > 0 && <div style={{ textAlign: "center", fontSize: 11, color: "var(--amber)", marginTop: 4 }}>-{descPct}% sobre {fmt(simP.item.price_ml)}</div>}
+                {simP.promo.min_discounted_price && (
+                  <div style={{ textAlign: "center", fontSize: 10, color: "var(--txt3)", marginTop: 2 }}>Rango: {fmt(simP.promo.min_discounted_price)} — {fmt(simP.promo.max_discounted_price || 0)}</div>
+                )}
+                {p > 0 && p < 19990 && simP.item.price_ml >= 19990 && (
+                  <div style={{ marginTop: 8, padding: "6px 10px", borderRadius: 6, background: "var(--redBg)", border: "1px solid var(--redBd)", fontSize: 10, color: "var(--red)", textAlign: "center" }}>
+                    Bajo $19.990: +$1.000 comisión fija, pierde envío gratis
+                  </div>
+                )}
+                <div style={{ marginTop: 12, background: "var(--bg3)", borderRadius: 8, padding: 14 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: "6px 12px", fontSize: 12 }}>
+                    <span style={{ color: "var(--txt3)" }}>Precio venta</span>
+                    <span className="mono" style={{ textAlign: "right", fontWeight: 600 }}>{fmt(p)}</span>
+                    <span style={{ color: "var(--txt3)" }}>Costo producto (+IVA)</span>
+                    <span className="mono" style={{ textAlign: "right", color: "var(--red)" }}>-{fmt(simP.item.costo_bruto)}</span>
+                    <span style={{ color: "var(--txt3)" }}>Comisión ML {simPFeeLoading && "..."}{p < 19990 ? " (+fijo)" : ""}</span>
+                    <span className="mono" style={{ textAlign: "right", color: "var(--red)" }}>-{fmt(comision)}</span>
+                    <span style={{ color: "var(--txt3)" }}>Envío {p < 19990 ? "(comprador)" : "(seller)"}</span>
+                    <span className="mono" style={{ textAlign: "right", color: envio > 0 ? "var(--red)" : "var(--green)" }}>{envio > 0 ? `-${fmt(envio)}` : "$0"}</span>
+                    <div style={{ gridColumn: "1 / -1", borderTop: "1px solid var(--bg4)", margin: "4px 0" }} />
+                    <span style={{ fontWeight: 700 }}>Ganancia</span>
+                    <span className="mono" style={{ textAlign: "right", fontWeight: 800, fontSize: 16, color: ganancia > 0 ? "var(--green)" : "var(--red)" }}>{fmt(ganancia)}</span>
+                    <span style={{ color: "var(--txt3)" }}>Margen</span>
+                    <span style={{ textAlign: "right", fontWeight: 700, color: margen > 20 ? "var(--green)" : margen > 0 ? "var(--amber)" : "var(--red)" }}>{margen}%</span>
+                  </div>
+                </div>
+              </div>
+              <div style={{ padding: "14px 24px", borderTop: "1px solid var(--bg4)", display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                <button onClick={() => setSimP(null)} disabled={!!promoActioning}
+                  style={{ padding: "9px 20px", borderRadius: 8, fontSize: 12, fontWeight: 600, background: "var(--bg3)", color: "var(--txt2)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
+                  Cancelar
+                </button>
+                <button onClick={confirmSimP} disabled={!!promoActioning || p <= 0 || ganancia < 0}
+                  style={{ padding: "9px 20px", borderRadius: 8, fontSize: 12, fontWeight: 700, background: ganancia >= 0 ? info.color : "var(--red)", color: "#fff", border: "none", cursor: promoActioning ? "wait" : "pointer", opacity: p <= 0 ? 0.4 : 1 }}>
+                  {promoActioning ? "Postulando..." : ganancia < 0 ? "Margen negativo" : "Confirmar Postulación"}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      } catch { return null; } })()}
     </div>
   );
 }
