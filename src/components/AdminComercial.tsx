@@ -1561,6 +1561,42 @@ function PreciosYPromos() {
   const [promoLoading, setPromoLoading] = useState(false);
   const [scanResult, setScanResult] = useState<{ total: number; con: number; sin: number } | null>(null);
   const [changingPrice, setChangingPrice] = useState<string | null>(null);
+  const [promoActioning, setPromoActioning] = useState<string | null>(null);
+  const [actionMsg, setActionMsg] = useState<string | null>(null);
+
+  const postularPromoP = async (itemId: string, promo: { id?: string; type: string; price: number; original_price: number }) => {
+    const dealPrice = promo.price > 0 ? promo.price : parseInt(prompt(`Precio promo para ${itemId}:`, String(Math.round((promo.original_price || 20000) * 0.8))) || "0");
+    if (!dealPrice) return;
+    setPromoActioning(itemId);
+    try {
+      const action = promo.type === "PRICE_DISCOUNT" ? "create_discount" : "join";
+      const body: Record<string, unknown> = { item_id: itemId, action, deal_price: dealPrice };
+      if (action === "create_discount") {
+        body.start_date = new Date().toISOString().slice(0, 10) + "T00:00:00";
+        body.finish_date = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10) + "T23:59:59";
+      } else {
+        body.promotion_id = promo.id;
+        body.promotion_type = promo.type;
+      }
+      const res = await fetch("/api/ml/promotions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const data = await res.json();
+      if (data.error) setActionMsg(`Error: ${data.error}`);
+      else { setActionMsg("Postulado"); if (tab === "sin_promo") scanSinPromos(); else if (tab === "buscar") searchPromos(search); else loadAll(); }
+    } catch (e) { setActionMsg(`Error: ${e instanceof Error ? e.message : "?"}`); }
+    finally { setPromoActioning(null); }
+  };
+
+  const salirPromoP = async (itemId: string) => {
+    if (!confirm("¿Salir de la promoción?")) return;
+    setPromoActioning(itemId);
+    try {
+      const res = await fetch("/api/ml/promotions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ item_id: itemId, action: "delete" }) });
+      const data = await res.json();
+      if (data.error) setActionMsg(`Error: ${data.error}`);
+      else { setActionMsg("Removido"); if (tab === "sin_promo") scanSinPromos(); else if (tab === "buscar") searchPromos(search); else loadAll(); }
+    } catch (e) { setActionMsg(`Error: ${e instanceof Error ? e.message : "?"}`); }
+    finally { setPromoActioning(null); }
+  };
 
   useEffect(() => {
     fetchMLItemsMap().then(data => { setItems(data); setLoading(false); });
@@ -1706,6 +1742,16 @@ function PreciosYPromos() {
         </div>
       )}
 
+      {actionMsg && (
+        <div style={{ marginBottom: 12, padding: "8px 14px", borderRadius: 8, fontSize: 12, fontWeight: 600,
+          background: actionMsg.startsWith("Error") ? "var(--redBg)" : "var(--greenBg)",
+          color: actionMsg.startsWith("Error") ? "var(--red)" : "var(--green)",
+          display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span>{actionMsg}</span>
+          <button onClick={() => setActionMsg(null)} style={{ background: "none", border: "none", color: "inherit", cursor: "pointer", fontSize: 14 }}>{"\u2715"}</button>
+        </div>
+      )}
+
       {/* Tabla */}
       {promoLoading ? (
         <div className="card" style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>Escaneando promociones en ML...</div>
@@ -1758,9 +1804,17 @@ function PreciosYPromos() {
                             const marP = p.price > 0 ? Math.round((ganP / p.price) * 100) : 0;
                             return (
                               <div key={pi} style={{ display: "flex", alignItems: "center", gap: 4, padding: "2px 6px", borderRadius: 4, background: "var(--bg3)", fontSize: 10 }}>
-                                <span style={{ fontWeight: 600, color: p.status === "started" ? "var(--green)" : "var(--amber)", fontSize: 9, minWidth: 40 }}>
-                                  {p.status === "started" ? "ACTIVA" : "DISPO"}
-                                </span>
+                                {p.status === "started" ? (
+                                  <button onClick={() => salirPromoP(item.item_id)} disabled={promoActioning === item.item_id}
+                                    style={{ padding: "1px 5px", borderRadius: 3, fontSize: 9, fontWeight: 700, background: "var(--greenBg)", color: "var(--green)", border: "1px solid var(--greenBd)", cursor: "pointer", minWidth: 40 }}>
+                                    {promoActioning === item.item_id ? "..." : "ACTIVA \u2715"}
+                                  </button>
+                                ) : (
+                                  <button onClick={() => postularPromoP(item.item_id, p)} disabled={promoActioning === item.item_id}
+                                    style={{ padding: "1px 5px", borderRadius: 3, fontSize: 9, fontWeight: 700, background: "var(--amber)", color: "#fff", border: "none", cursor: "pointer", minWidth: 40 }}>
+                                    {promoActioning === item.item_id ? "..." : "POSTULAR"}
+                                  </button>
+                                )}
                                 <span style={{ color: "var(--txt3)", fontSize: 9, minWidth: 50 }}>{p.type.replace(/_/g, " ").slice(0, 12)}</span>
                                 <span className="mono" style={{ fontWeight: 700, color: "var(--amber)" }}>{p.price > 0 ? fmt(p.price) : "—"}</span>
                                 {p.price > 0 && <span className="mono" style={{ fontWeight: 600, color: ganP > 0 ? "var(--green)" : "var(--red)", fontSize: 9 }}>{fmt(ganP)} {marP}%</span>}
