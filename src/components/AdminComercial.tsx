@@ -1550,7 +1550,17 @@ function ItemSearchSelect({ items, selectedId, onSelect }: { items: DBMLItemMap[
 
 // ==================== PRECIOS Y PROMOS ====================
 
-type PromoItem = { item_id: string; sku: string; titulo: string; price_ml: number; costo_neto: number; costo_bruto: number; comision_ml: number; costo_envio: number; listing_type: string; category_id: string; promotions: Array<{ id?: string; type: string; name?: string; status: string; price: number; original_price: number; comision_promo?: number }> };
+type PromoItem = { item_id: string; sku: string; titulo: string; price_ml: number; costo_neto: number; costo_bruto: number; comision_ml: number; costo_envio: number; listing_type: string; category_id: string; promotions: Array<{ id?: string; type: string; sub_type?: string; name?: string; status: string; price: number; original_price: number; meli_percentage?: number; seller_percentage?: number; start_date?: string; finish_date?: string; suggested_discounted_price?: number; min_discounted_price?: number; max_discounted_price?: number; comision_promo?: number }> };
+
+const PROMO_LABELS: Record<string, { label: string; desc: string; color: string }> = {
+  PRICE_DISCOUNT: { label: "Descuento", desc: "Precio tachado que tú defines", color: "var(--cyan)" },
+  SELLER_CAMPAIGN: { label: "Campaña", desc: "Oferta creada por ti con fechas", color: "var(--blue)" },
+  DEAL: { label: "Deal ML", desc: "Campaña de ML (ej: Día de la mamá)", color: "var(--amber)" },
+  DOD: { label: "Oferta Día", desc: "Deal of the Day — promoción destacada 24h", color: "var(--red)" },
+  LIGHTNING: { label: "Relámpago", desc: "Oferta relámpago — tiempo y stock limitado", color: "var(--red)" },
+  SMART: { label: "Smart", desc: "ML sugiere precio óptimo para más ventas", color: "var(--green)" },
+  MARKETPLACE_CAMPAIGN: { label: "Co-funded", desc: "Campaña co-financiada por ML", color: "var(--amber)" },
+};
 
 function PreciosYPromos() {
   const [items, setItems] = useState<DBMLItemMap[]>([]);
@@ -1797,28 +1807,53 @@ function PreciosYPromos() {
                       {item.promotions.length === 0 ? (
                         <span style={{ fontSize: 10, color: "var(--txt3)" }}>Sin promos</span>
                       ) : (
-                        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                           {item.promotions.map((p, pi) => {
+                            const promoPrice = p.price > 0 ? p.price : (p.suggested_discounted_price || 0);
                             const comP = p.comision_promo || 0;
-                            const ganP = p.price - (item.costo_bruto + comP + (p.price >= 19990 ? item.costo_envio : 0));
-                            const marP = p.price > 0 ? Math.round((ganP / p.price) * 100) : 0;
+                            const envP = promoPrice >= 19990 ? item.costo_envio : 0;
+                            const ganP = promoPrice > 0 ? promoPrice - (item.costo_bruto + comP + envP) : 0;
+                            const marP = promoPrice > 0 ? Math.round((ganP / promoPrice) * 100) : 0;
+                            const info = PROMO_LABELS[p.type] || { label: p.type, desc: "", color: "var(--txt3)" };
+                            const fechas = p.start_date && p.finish_date
+                              ? `${p.start_date.slice(5, 10).replace("-", "/")} al ${p.finish_date.slice(5, 10).replace("-", "/")}`
+                              : "";
                             return (
-                              <div key={pi} style={{ display: "flex", alignItems: "center", gap: 4, padding: "2px 6px", borderRadius: 4, background: "var(--bg3)", fontSize: 10 }}>
-                                {p.status === "started" ? (
-                                  <button onClick={() => salirPromoP(item.item_id)} disabled={promoActioning === item.item_id}
-                                    style={{ padding: "1px 5px", borderRadius: 3, fontSize: 9, fontWeight: 700, background: "var(--greenBg)", color: "var(--green)", border: "1px solid var(--greenBd)", cursor: "pointer", minWidth: 40 }}>
-                                    {promoActioning === item.item_id ? "..." : "ACTIVA \u2715"}
-                                  </button>
-                                ) : (
-                                  <button onClick={() => postularPromoP(item.item_id, p)} disabled={promoActioning === item.item_id}
-                                    style={{ padding: "1px 5px", borderRadius: 3, fontSize: 9, fontWeight: 700, background: "var(--amber)", color: "#fff", border: "none", cursor: "pointer", minWidth: 40 }}>
-                                    {promoActioning === item.item_id ? "..." : "POSTULAR"}
-                                  </button>
+                              <div key={pi} style={{ padding: "4px 8px", borderRadius: 5, background: "var(--bg3)", fontSize: 10, borderLeft: `3px solid ${info.color}` }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 2 }}>
+                                  {p.status === "started" ? (
+                                    <button onClick={() => salirPromoP(item.item_id)} disabled={promoActioning === item.item_id}
+                                      style={{ padding: "1px 5px", borderRadius: 3, fontSize: 8, fontWeight: 700, background: "var(--greenBg)", color: "var(--green)", border: "1px solid var(--greenBd)", cursor: "pointer" }}>
+                                      {promoActioning === item.item_id ? "..." : "ACTIVA \u2715"}
+                                    </button>
+                                  ) : (
+                                    <button onClick={() => postularPromoP(item.item_id, { ...p, price: promoPrice })} disabled={promoActioning === item.item_id}
+                                      style={{ padding: "1px 5px", borderRadius: 3, fontSize: 8, fontWeight: 700, background: info.color, color: "#fff", border: "none", cursor: "pointer" }}>
+                                      {promoActioning === item.item_id ? "..." : "POSTULAR"}
+                                    </button>
+                                  )}
+                                  <span style={{ fontWeight: 700, color: info.color }}>{info.label}</span>
+                                  {p.name && <span style={{ color: "var(--txt2)", fontSize: 9 }}>{p.name}</span>}
+                                </div>
+                                <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 10 }}>
+                                  {promoPrice > 0 ? (
+                                    <>
+                                      <span className="mono" style={{ fontWeight: 700 }}>{fmt(promoPrice)}</span>
+                                      <span style={{ fontSize: 9, color: "var(--txt3)" }}>-{Math.round(((item.price_ml - promoPrice) / item.price_ml) * 100)}%</span>
+                                      <span className="mono" style={{ fontWeight: 700, color: ganP > 0 ? "var(--green)" : "var(--red)" }}>ganancia {fmt(ganP)} ({marP}%)</span>
+                                    </>
+                                  ) : (
+                                    <span style={{ color: "var(--txt3)", fontStyle: "italic" }}>Define tu precio al postular</span>
+                                  )}
+                                </div>
+                                {(fechas || p.meli_percentage || p.seller_percentage) && (
+                                  <div style={{ fontSize: 9, color: "var(--txt3)", marginTop: 2 }}>
+                                    {fechas && <span>{fechas}</span>}
+                                    {p.meli_percentage ? <span> · ML pone {p.meli_percentage}%</span> : null}
+                                    {p.seller_percentage ? <span> · Tú pones {p.seller_percentage}%</span> : null}
+                                    {p.min_discounted_price ? <span> · Rango: {fmt(p.min_discounted_price)}-{fmt(p.max_discounted_price || 0)}</span> : null}
+                                  </div>
                                 )}
-                                <span style={{ color: "var(--txt3)", fontSize: 9, minWidth: 50 }}>{p.type.replace(/_/g, " ").slice(0, 12)}</span>
-                                <span className="mono" style={{ fontWeight: 700, color: "var(--amber)" }}>{p.price > 0 ? fmt(p.price) : "—"}</span>
-                                {p.price > 0 && <span className="mono" style={{ fontWeight: 600, color: ganP > 0 ? "var(--green)" : "var(--red)", fontSize: 9 }}>{fmt(ganP)} {marP}%</span>}
-                                {p.name && <span style={{ color: "var(--txt3)", fontSize: 8, maxWidth: 60, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>}
                               </div>
                             );
                           })}

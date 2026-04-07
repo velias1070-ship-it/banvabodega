@@ -7,6 +7,7 @@ export const maxDuration = 120;
 interface PromoInfo {
   id?: string;
   type: string;
+  sub_type?: string;
   name?: string;
   status: string;
   price: number;
@@ -15,6 +16,9 @@ interface PromoInfo {
   seller_percentage?: number;
   start_date?: string;
   finish_date?: string;
+  suggested_discounted_price?: number;
+  min_discounted_price?: number;
+  max_discounted_price?: number;
   comision_promo?: number;
 }
 
