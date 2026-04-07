@@ -6,7 +6,7 @@ import { getStore, skuTotal } from "@/lib/store";
 
 // ==================== TYPES ====================
 
-type ComercialView = "listado" | "nueva" | "variantes";
+type ComercialView = "listado" | "nueva" | "variantes" | "precios";
 
 interface MLItemDetail {
   code: number;
@@ -68,7 +68,7 @@ export default function AdminComercial() {
     <div>
       {/* Sub-tabs */}
       <div style={{ display: "flex", gap: 0, marginBottom: 16 }}>
-        {([["listado", "Mis Publicaciones", "📋"], ["nueva", "Nueva Publicación", "➕"], ["variantes", "Agregar Variantes", "🔀"]] as const).map(([key, label, icon], i, arr) => (
+        {([["listado", "Mis Publicaciones", "📋"], ["precios", "Precios y Promos", "💰"], ["nueva", "Nueva Publicación", "➕"], ["variantes", "Agregar Variantes", "🔀"]] as const).map(([key, label, icon], i, arr) => (
           <button key={key} onClick={() => { setView(key); if (key !== "variantes") setTargetItemId(null); }}
             style={{
               flex: 1, padding: "10px 8px", fontSize: 12, fontWeight: view === key ? 700 : 500,
@@ -84,6 +84,7 @@ export default function AdminComercial() {
       </div>
 
       {view === "listado" && <MisPublicaciones onAddVariante={goToVariantes} />}
+      {view === "precios" && <PreciosYPromos />}
       {view === "nueva" && <NuevaPublicacion />}
       {view === "variantes" && <AgregarVariantes preselectedItemId={targetItemId} />}
     </div>
@@ -1546,6 +1547,251 @@ function ItemSearchSelect({ items, selectedId, onSelect }: { items: DBMLItemMap[
 // ==================== AGREGAR VARIANTES (User Products model) ====================
 // En el modelo multi-warehouse/User Products, las variantes son items separados
 // que comparten el mismo family_name. No se usa POST /items/{id}/variations.
+
+// ==================== PRECIOS Y PROMOS ====================
+
+type PromoItem = { item_id: string; sku: string; titulo: string; price_ml: number; costo_neto: number; costo_bruto: number; comision_ml: number; costo_envio: number; listing_type: string; category_id: string; promotions: Array<{ id?: string; type: string; name?: string; status: string; price: number; original_price: number; comision_promo?: number }> };
+
+function PreciosYPromos() {
+  const [items, setItems] = useState<DBMLItemMap[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [tab, setTab] = useState<"sin_promo" | "todas" | "buscar">("sin_promo");
+  const [promoData, setPromoData] = useState<PromoItem[]>([]);
+  const [promoLoading, setPromoLoading] = useState(false);
+  const [scanResult, setScanResult] = useState<{ total: number; con: number; sin: number } | null>(null);
+  const [changingPrice, setChangingPrice] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchMLItemsMap().then(data => { setItems(data); setLoading(false); });
+  }, []);
+
+  const activeItems = useMemo(() => {
+    const unique = new Map<string, DBMLItemMap>();
+    for (const i of items) if (!unique.has(i.item_id) && i.status_ml === "active") unique.set(i.item_id, i);
+    return Array.from(unique.values());
+  }, [items]);
+
+  // Escanear sin promos
+  const scanSinPromos = async () => {
+    setPromoLoading(true);
+    setPromoData([]);
+    setScanResult(null);
+    try {
+      const res = await fetch("/api/ml/scan-promos?run=true");
+      const scan = await res.json();
+      const sinPromo: string[] = (scan.sin_promo || []).map((s: { item_id: string }) => s.item_id);
+      setScanResult({ total: scan.total || 0, con: scan.con_promo || 0, sin: sinPromo.length });
+      if (sinPromo.length > 0) {
+        // Cargar promos+costos de los sin promo (max 30)
+        const ids = sinPromo.slice(0, 30).join(",");
+        const res2 = await fetch(`/api/ml/promotions?item_ids=${ids}`);
+        const data = await res2.json();
+        setPromoData(data.items || []);
+      }
+    } catch { /* ignore */ }
+    setPromoLoading(false);
+  };
+
+  // Cargar promos por búsqueda
+  const searchPromos = async (q: string) => {
+    const matched = activeItems.filter(i =>
+      i.sku.toUpperCase().includes(q.toUpperCase()) ||
+      (i.titulo || "").toUpperCase().includes(q.toUpperCase()) ||
+      i.item_id.toUpperCase().includes(q.toUpperCase())
+    );
+    if (matched.length === 0) return;
+    setPromoLoading(true);
+    setPromoData([]);
+    try {
+      const ids = matched.slice(0, 20).map(i => i.item_id).join(",");
+      const res = await fetch(`/api/ml/promotions?item_ids=${ids}`);
+      const data = await res.json();
+      setPromoData(data.items || []);
+    } catch { /* ignore */ }
+    setPromoLoading(false);
+  };
+
+  // Cargar todas
+  const loadAll = async () => {
+    setPromoLoading(true);
+    setPromoData([]);
+    try {
+      const ids = activeItems.slice(0, 30).map(i => i.item_id).join(",");
+      const res = await fetch(`/api/ml/promotions?item_ids=${ids}`);
+      const data = await res.json();
+      setPromoData(data.items || []);
+    } catch { /* ignore */ }
+    setPromoLoading(false);
+  };
+
+  useEffect(() => {
+    if (!loading && tab === "sin_promo") scanSinPromos();
+    else if (!loading && tab === "todas") loadAll();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, loading]);
+
+  // Cambiar precio
+  const changePrice = async (itemId: string, newPrice: number) => {
+    setChangingPrice(itemId);
+    try {
+      const res = await fetch("/api/ml/item-update", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ item_id: itemId, updates: { price: newPrice } }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) alert(`Error: ${data.error || "?"}`);
+      else {
+        setPromoData(prev => prev.map(p => p.item_id === itemId ? { ...p, price_ml: newPrice } : p));
+      }
+    } catch { /* ignore */ }
+    setChangingPrice(null);
+  };
+
+  if (loading) return <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>Cargando...</div>;
+
+  return (
+    <div>
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+          <div>
+            <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>💰 Precios y Promociones</h2>
+            <div style={{ fontSize: 12, color: "var(--txt3)", marginTop: 4 }}>{activeItems.length} publicaciones activas</div>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input type="text" placeholder="Buscar SKU..." value={search}
+              onChange={e => setSearch(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter" && search.trim()) { setTab("buscar"); searchPromos(search); } }}
+              style={{ padding: "6px 10px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 12, width: 180 }} />
+            {search.trim() && (
+              <button onClick={() => { setTab("buscar"); searchPromos(search); }}
+                style={{ padding: "6px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: "var(--cyan)", color: "#fff", border: "none", cursor: "pointer" }}>
+                Buscar
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div style={{ display: "flex", gap: 0, borderBottom: "2px solid var(--bg4)", marginBottom: 16 }}>
+        {([
+          { key: "sin_promo" as const, label: "Sin promoción", color: "var(--red)" },
+          { key: "todas" as const, label: "Todas las activas", color: "var(--cyan)" },
+        ]).map(t => (
+          <button key={t.key} onClick={() => setTab(t.key)}
+            style={{ padding: "10px 16px", fontSize: 13, fontWeight: tab === t.key ? 600 : 400, cursor: "pointer", background: "none", border: "none",
+              borderBottom: tab === t.key ? `2px solid ${t.color}` : "2px solid transparent",
+              color: tab === t.key ? "var(--txt)" : "var(--txt3)", marginBottom: -2 }}>
+            {t.label}
+            {t.key === "sin_promo" && scanResult && (
+              <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10, background: "var(--redBg)", color: "var(--red)" }}>{scanResult.sin}</span>
+            )}
+          </button>
+        ))}
+        {tab === "buscar" && (
+          <span style={{ padding: "10px 16px", fontSize: 13, fontWeight: 600, borderBottom: "2px solid var(--amber)", color: "var(--txt)", marginBottom: -2 }}>
+            Búsqueda: {search}
+          </span>
+        )}
+      </div>
+
+      {/* Resumen */}
+      {scanResult && tab === "sin_promo" && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 16 }}>
+          <div className="kpi"><div className="kpi-label">Total activas</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4 }}>{scanResult.total}</div></div>
+          <div className="kpi"><div className="kpi-label">Con promo</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: "var(--green)" }}>{scanResult.con}</div></div>
+          <div className="kpi"><div className="kpi-label">Sin promo</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: "var(--red)" }}>{scanResult.sin}</div></div>
+        </div>
+      )}
+
+      {/* Tabla */}
+      {promoLoading ? (
+        <div className="card" style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>Escaneando promociones en ML...</div>
+      ) : promoData.length === 0 ? (
+        <div className="card" style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>
+          {tab === "sin_promo" ? "Todas las publicaciones tienen promo activa" : "Sin resultados"}
+        </div>
+      ) : (
+        <div className="card" style={{ overflow: "hidden", padding: 0 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+            <thead>
+              <tr style={{ borderBottom: "2px solid var(--bg4)" }}>
+                <th style={{ padding: "10px 10px", textAlign: "left", fontSize: 10, color: "var(--cyan)" }}>Producto</th>
+                <th style={{ padding: "10px 6px", textAlign: "right", fontSize: 10, color: "var(--txt3)" }}>Costo+IVA</th>
+                <th style={{ padding: "10px 6px", textAlign: "right", fontSize: 10, color: "var(--txt3)" }}>Comisión</th>
+                <th style={{ padding: "10px 6px", textAlign: "right", fontSize: 10, color: "var(--txt3)" }}>Envío</th>
+                <th style={{ padding: "10px 6px", textAlign: "right", fontSize: 10, color: "var(--cyan)" }}>Precio</th>
+                <th style={{ padding: "10px 6px", textAlign: "center", fontSize: 10, color: "var(--green)" }}>Ganancia</th>
+                <th style={{ padding: "10px 6px", textAlign: "left", fontSize: 10, color: "var(--amber)" }}>Promos disponibles</th>
+                <th style={{ padding: "10px 6px", textAlign: "center", fontSize: 10 }}>Cambiar precio</th>
+              </tr>
+            </thead>
+            <tbody>
+              {promoData.map(item => {
+                const costoTotal = item.costo_bruto + item.comision_ml + item.costo_envio;
+                const ganancia = item.price_ml - costoTotal;
+                const margen = item.price_ml > 0 ? Math.round((ganancia / item.price_ml) * 100) : 0;
+                return (
+                  <tr key={item.item_id} style={{ borderBottom: "1px solid var(--bg4)" }}>
+                    <td style={{ padding: "10px 10px", maxWidth: 250 }}>
+                      <div style={{ fontWeight: 600, fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.titulo}</div>
+                      <div className="mono" style={{ fontSize: 9, color: "var(--txt3)" }}>{item.sku} · {item.item_id}</div>
+                    </td>
+                    <td className="mono" style={{ padding: "10px 6px", textAlign: "right", fontSize: 10 }}>{fmt(item.costo_bruto)}</td>
+                    <td className="mono" style={{ padding: "10px 6px", textAlign: "right", fontSize: 10, color: "var(--red)" }}>{fmt(item.comision_ml)}</td>
+                    <td className="mono" style={{ padding: "10px 6px", textAlign: "right", fontSize: 10, color: item.costo_envio > 0 ? "var(--red)" : "var(--txt3)" }}>{item.costo_envio > 0 ? fmt(item.costo_envio) : "—"}</td>
+                    <td className="mono" style={{ padding: "10px 6px", textAlign: "right", fontWeight: 700 }}>{fmt(item.price_ml)}</td>
+                    <td style={{ padding: "10px 6px", textAlign: "center" }}>
+                      <div className="mono" style={{ fontWeight: 700, color: ganancia > 0 ? "var(--green)" : "var(--red)", fontSize: 11 }}>{fmt(ganancia)}</div>
+                      <div style={{ fontSize: 9, color: margen > 20 ? "var(--green)" : margen > 0 ? "var(--amber)" : "var(--red)" }}>{margen}%</div>
+                    </td>
+                    <td style={{ padding: "8px 6px" }}>
+                      {item.promotions.length === 0 ? (
+                        <span style={{ fontSize: 10, color: "var(--txt3)" }}>Sin promos</span>
+                      ) : (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                          {item.promotions.map((p, pi) => {
+                            const comP = p.comision_promo || 0;
+                            const ganP = p.price - (item.costo_bruto + comP + (p.price >= 19990 ? item.costo_envio : 0));
+                            const marP = p.price > 0 ? Math.round((ganP / p.price) * 100) : 0;
+                            return (
+                              <div key={pi} style={{ display: "flex", alignItems: "center", gap: 4, padding: "2px 6px", borderRadius: 4, background: "var(--bg3)", fontSize: 10 }}>
+                                <span style={{ fontWeight: 600, color: p.status === "started" ? "var(--green)" : "var(--amber)", fontSize: 9, minWidth: 40 }}>
+                                  {p.status === "started" ? "ACTIVA" : "DISPO"}
+                                </span>
+                                <span style={{ color: "var(--txt3)", fontSize: 9, minWidth: 50 }}>{p.type.replace(/_/g, " ").slice(0, 12)}</span>
+                                <span className="mono" style={{ fontWeight: 700, color: "var(--amber)" }}>{p.price > 0 ? fmt(p.price) : "—"}</span>
+                                {p.price > 0 && <span className="mono" style={{ fontWeight: 600, color: ganP > 0 ? "var(--green)" : "var(--red)", fontSize: 9 }}>{fmt(ganP)} {marP}%</span>}
+                                {p.name && <span style={{ color: "var(--txt3)", fontSize: 8, maxWidth: 60, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ padding: "8px 6px", textAlign: "center" }}>
+                      <button onClick={() => {
+                        const newPrice = prompt("Nuevo precio:", String(item.price_ml));
+                        if (newPrice && parseInt(newPrice) !== item.price_ml) changePrice(item.item_id, parseInt(newPrice));
+                      }} disabled={changingPrice === item.item_id}
+                        style={{ padding: "3px 8px", borderRadius: 4, fontSize: 9, fontWeight: 600, background: "var(--bg3)", color: "var(--cyan)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
+                        {changingPrice === item.item_id ? "..." : "Precio"}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ==================== AGREGAR VARIANTES ====================
 
 function AgregarVariantes({ preselectedItemId }: { preselectedItemId: string | null }) {
   const [items, setItems] = useState<DBMLItemMap[]>([]);
