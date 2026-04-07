@@ -198,32 +198,20 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
 
   const [scanningPromos, setScanningPromos] = useState(false);
   const scanSinPromos = async () => {
-    const activeItems = displayItems.filter(i => (liveData.get(i.item_id)?.status || i.status_ml) === "active");
-    if (activeItems.length === 0) { setActionError("No hay items activos"); return; }
     setScanningPromos(true);
-    setActionError(`Escaneando promos de ${activeItems.length} items activos...`);
+    setActionError("Escaneando promociones de todos los items activos...");
     try {
-      const sinPromo: DBMLItemMap[] = [];
-      // Escanear en batches de 10
-      for (let i = 0; i < activeItems.length; i += 10) {
-        const batch = activeItems.slice(i, i + 10);
-        const ids = batch.map(b => b.item_id).join(",");
-        const res = await fetch(`/api/ml/promotions?item_ids=${ids}`);
-        const data = await res.json();
-        for (const item of (data.items || [])) {
-          const hasActivePromo = item.promotions.some((p: { status: string }) => p.status === "started");
-          if (!hasActivePromo) {
-            const orig = batch.find(b => b.item_id === item.item_id);
-            if (orig) sinPromo.push(orig);
-          }
-        }
-      }
+      const res = await fetch("/api/ml/scan-promos?run=true");
+      const data = await res.json();
+      if (data.error) { setActionError(`Error: ${data.error}`); return; }
+      const sinPromo = data.sin_promo || [];
       if (sinPromo.length === 0) {
-        setActionError(`Todos los ${activeItems.length} items activos tienen al menos 1 promo activa`);
+        setActionError(`Todos los ${data.total} items activos tienen promo activa`);
       } else {
-        setActionError(`${sinPromo.length} items activos SIN promo de ${activeItems.length} total`);
-        const unique = Array.from(new Map(sinPromo.map(i => [i.item_id, i])).values());
-        openPromos(`${sinPromo.length} items sin promo activa`, unique);
+        setActionError(`${sinPromo.length} sin promo de ${data.total} activos (${data.con_promo} con promo)`);
+        // Mapear a DBMLItemMap para abrir el modal
+        const matched = sinPromo.map((sp: { item_id: string }) => items.find(i => i.item_id === sp.item_id)).filter(Boolean) as DBMLItemMap[];
+        if (matched.length > 0) openPromos(`${matched.length} items sin promo activa`, matched);
       }
     } catch (e) { setActionError(`Error: ${e instanceof Error ? e.message : "?"}`); }
     finally { setScanningPromos(false); }
