@@ -1958,6 +1958,11 @@ function PreciosYPromos() {
                 {simP.promo.min_discounted_price && (
                   <div style={{ textAlign: "center", fontSize: 10, color: "var(--txt3)", marginTop: 2 }}>Rango: {fmt(simP.promo.min_discounted_price)} — {fmt(simP.promo.max_discounted_price || 0)}</div>
                 )}
+                {descPct < 5 && p > 0 && (
+                  <div style={{ marginTop: 6, padding: "6px 10px", borderRadius: 6, background: "var(--redBg)", border: "1px solid var(--redBd)", fontSize: 10, color: "var(--red)", textAlign: "center" }}>
+                    ML requiere mínimo 5% de descuento. Máximo: {fmt(Math.floor(simP.item.price_ml * 0.95))}
+                  </div>
+                )}
                 {p > 0 && p < 19990 && simP.item.price_ml >= 19990 && (
                   <div style={{ marginTop: 8, padding: "6px 10px", borderRadius: 6, background: "var(--redBg)", border: "1px solid var(--redBd)", fontSize: 10, color: "var(--red)", textAlign: "center" }}>
                     Bajo $19.990: +$1.000 comisión fija, pierde envío gratis
@@ -1986,9 +1991,9 @@ function PreciosYPromos() {
                   style={{ padding: "9px 20px", borderRadius: 8, fontSize: 12, fontWeight: 600, background: "var(--bg3)", color: "var(--txt2)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
                   Cancelar
                 </button>
-                <button onClick={confirmSimP} disabled={!!promoActioning || p <= 0 || ganancia < 0}
-                  style={{ padding: "9px 20px", borderRadius: 8, fontSize: 12, fontWeight: 700, background: ganancia >= 0 ? info.color : "var(--red)", color: "#fff", border: "none", cursor: promoActioning ? "wait" : "pointer", opacity: p <= 0 ? 0.4 : 1 }}>
-                  {promoActioning ? "Postulando..." : ganancia < 0 ? "Margen negativo" : "Confirmar Postulación"}
+                <button onClick={confirmSimP} disabled={!!promoActioning || p <= 0 || ganancia < 0 || descPct < 5}
+                  style={{ padding: "9px 20px", borderRadius: 8, fontSize: 12, fontWeight: 700, background: ganancia >= 0 && descPct >= 5 ? info.color : "var(--red)", color: "#fff", border: "none", cursor: promoActioning ? "wait" : "pointer", opacity: p <= 0 || descPct < 5 ? 0.4 : 1 }}>
+                  {promoActioning ? "Postulando..." : descPct < 5 ? "Mínimo 5% descuento" : ganancia < 0 ? "Margen negativo" : "Confirmar Postulación"}
                 </button>
               </div>
             </div>
