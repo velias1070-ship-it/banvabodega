@@ -893,8 +893,8 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                                       <span className="mono" style={{ fontWeight: 700, color: "var(--amber)", minWidth: 50 }}>{fmt(p.price)}</span>
                                       <span style={{ fontSize: 8, color: "var(--txt3)" }}>-{descPct}%</span>
                                       {margenPromo !== null && (
-                                        <span className="mono" style={{ fontWeight: 700, color: gananciaPromo > 0 ? "var(--green)" : "var(--red)", fontSize: 10, minWidth: 55 }}>
-                                          {fmt(gananciaPromo)}
+                                        <span className="mono" style={{ fontWeight: 700, color: gananciaPromo > 0 ? "var(--green)" : "var(--red)", fontSize: 10, minWidth: 80 }}>
+                                          {fmt(gananciaPromo)} <span style={{ fontSize: 9, opacity: 0.8 }}>{margenPromo}%</span>
                                         </span>
                                       )}
                                       {p.name && <span style={{ color: "var(--txt3)", fontSize: 8, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 80 }}>{p.name}</span>}
