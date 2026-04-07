@@ -853,7 +853,20 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                                           {promoActioning === item.item_id ? "..." : "POSTULAR"}
                                         </button>
                                       ) : (
-                                        <span style={{ fontWeight: 600, color: statusColor, minWidth: 48, fontSize: 9 }}>ACTIVA</span>
+                                        <button onClick={async () => {
+                                          if (!confirm(`¿Salir de ${p.type.replace(/_/g, " ")} en este item?`)) return;
+                                          setPromoActioning(item.item_id);
+                                          try {
+                                            const res = await fetch("/api/ml/promotions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ item_id: item.item_id, action: "delete" }) });
+                                            const data = await res.json();
+                                            if (data.error) setActionError(`Error: ${data.error}`);
+                                            else { setActionError("Removido de la promoción"); openPromos(promoFamily!, promoFamilyItems); }
+                                          } catch (e) { setActionError(`Error: ${e instanceof Error ? e.message : "?"}`); }
+                                          finally { setPromoActioning(null); }
+                                        }} disabled={promoActioning === item.item_id}
+                                          style={{ padding: "2px 6px", borderRadius: 3, fontSize: 9, fontWeight: 700, background: "var(--greenBg)", color: "var(--green)", border: "1px solid var(--greenBd)", cursor: promoActioning === item.item_id ? "wait" : "pointer", minWidth: 48 }}>
+                                          {promoActioning === item.item_id ? "..." : "ACTIVA ✕"}
+                                        </button>
                                       )}
                                       <span style={{ color: "var(--txt3)", minWidth: 60, fontSize: 9 }}>{p.type.replace(/_/g, " ")}</span>
                                       <span className="mono" style={{ fontWeight: 700, color: "var(--amber)", minWidth: 50 }}>{fmt(p.price)}</span>
