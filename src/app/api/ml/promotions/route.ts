@@ -152,31 +152,37 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
-    const { item_id, action, deal_price, start_date, finish_date } = await req.json();
+    const body = await req.json();
+    const { item_id, action, deal_price, start_date, finish_date, promotion_id, promotion_type } = body;
     if (!item_id || !action) {
       return NextResponse.json({ error: "item_id y action requeridos" }, { status: 400 });
     }
+
+    const token = await getToken();
 
     if (action === "create_discount") {
       if (!deal_price || !start_date || !finish_date) {
         return NextResponse.json({ error: "deal_price, start_date, finish_date requeridos" }, { status: 400 });
       }
-      const result = await mlGet<unknown>(
-        `/seller-promotions/items/${item_id}?app_version=v2`
-      );
-      // POST to create discount
       const resp = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${item_id}?app_version=v2`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${await getToken()}`,
-        },
-        body: JSON.stringify({
-          promotion_type: "PRICE_DISCOUNT",
-          deal_price: deal_price,
-          start_date,
-          finish_date,
-        }),
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ promotion_type: "PRICE_DISCOUNT", deal_price, start_date, finish_date }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) return NextResponse.json({ error: data.message || "Error ML", detail: data }, { status: resp.status });
+      return NextResponse.json({ ok: true, result: data });
+    }
+
+    if (action === "join") {
+      const joinBody: Record<string, unknown> = { promotion_type };
+      if (promotion_id) joinBody.promotion_id = promotion_id;
+      if (deal_price) joinBody.deal_price = deal_price;
+
+      const resp = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${item_id}?app_version=v2`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(joinBody),
       });
       const data = await resp.json();
       if (!resp.ok) return NextResponse.json({ error: data.message || "Error ML", detail: data }, { status: resp.status });
@@ -186,7 +192,7 @@ export async function POST(req: NextRequest) {
     if (action === "delete") {
       const resp = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${item_id}?app_version=v2`, {
         method: "DELETE",
-        headers: { Authorization: `Bearer ${await getToken()}` },
+        headers: { Authorization: `Bearer ${token}` },
       });
       const data = await resp.json();
       return NextResponse.json({ ok: resp.ok, result: data });

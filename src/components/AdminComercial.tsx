@@ -113,9 +113,49 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
   const [promoItems, setPromoItems] = useState<Array<{ item_id: string; sku: string; titulo: string; price_ml: number; costo_neto: number; costo_bruto: number; comision_ml: number; costo_envio: number; promotions: Array<{ id?: string; type: string; name?: string; status: string; price: number; original_price: number; meli_percentage?: number; seller_percentage?: number; start_date?: string; finish_date?: string; comision_promo?: number }> }>>([]);
   const [promoLoading, setPromoLoading] = useState(false);
   const [promoFamily, setPromoFamily] = useState<string | null>(null);
+  const [promoFamilyItems, setPromoFamilyItems] = useState<DBMLItemMap[]>([]);
+  const [promoActioning, setPromoActioning] = useState<string | null>(null);
+
+  const postularPromo = async (itemId: string, promo: { id?: string; type: string; price: number; original_price: number }) => {
+    if (promo.type === "PRICE_DISCOUNT") {
+      const dealPrice = prompt(`Precio con descuento para ${itemId}:`, String(promo.price || Math.round(promo.original_price * 0.8)));
+      if (!dealPrice) return;
+      const startDate = new Date().toISOString().slice(0, 10) + "T00:00:00";
+      const finishDate = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10) + "T23:59:59";
+      setPromoActioning(itemId);
+      try {
+        const res = await fetch("/api/ml/promotions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ item_id: itemId, action: "create_discount", deal_price: parseInt(dealPrice), start_date: startDate, finish_date: finishDate }),
+        });
+        const data = await res.json();
+        if (data.error) setActionError(`Error: ${data.error}`);
+        else { setActionError(`Descuento creado en ${itemId}`); openPromos(promoFamily!, promoFamilyItems); }
+      } catch (e) { setActionError(`Error: ${e instanceof Error ? e.message : "?"}`); }
+      finally { setPromoActioning(null); }
+      return;
+    }
+    // DEAL, SELLER_CAMPAIGN, etc — postular via API
+    const dealPrice = promo.price > 0 ? promo.price : parseInt(prompt(`Precio deal para ${itemId}:`, String(Math.round(promo.original_price * 0.7))) || "0");
+    if (!dealPrice) return;
+    setPromoActioning(itemId);
+    try {
+      const res = await fetch("/api/ml/promotions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ item_id: itemId, action: "join", promotion_id: promo.id, promotion_type: promo.type, deal_price: dealPrice }),
+      });
+      const data = await res.json();
+      if (data.error) setActionError(`Error: ${data.error}`);
+      else { setActionError(`Postulado a ${promo.type} en ${itemId}`); openPromos(promoFamily!, promoFamilyItems); }
+    } catch (e) { setActionError(`Error: ${e instanceof Error ? e.message : "?"}`); }
+    finally { setPromoActioning(null); }
+  };
 
   const openPromos = async (familyKey: string, groupItems: DBMLItemMap[]) => {
     setPromoFamily(familyKey);
+    setPromoFamilyItems(groupItems);
     setPromoLoading(true);
     setPromoItems([]);
     try {
@@ -731,9 +771,14 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                                   const statusColor = p.status === "started" ? "var(--green)" : p.status === "candidate" ? "var(--amber)" : "var(--txt3)";
                                   return (
                                     <div key={pi} style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 6px", borderRadius: 4, background: "var(--bg3)", fontSize: 10 }}>
-                                      <span style={{ fontWeight: 600, color: statusColor, minWidth: 48, fontSize: 9 }}>
-                                        {p.status === "started" ? "ACTIVA" : p.status === "candidate" ? "POSTULAR" : p.status === "pending" ? "PENDIENTE" : p.status.toUpperCase()}
-                                      </span>
+                                      {p.status === "candidate" || p.status === "pending" ? (
+                                        <button onClick={() => postularPromo(item.item_id, p)} disabled={promoActioning === item.item_id}
+                                          style={{ padding: "2px 6px", borderRadius: 3, fontSize: 9, fontWeight: 700, background: "var(--amber)", color: "#fff", border: "none", cursor: promoActioning === item.item_id ? "wait" : "pointer", minWidth: 48 }}>
+                                          {promoActioning === item.item_id ? "..." : "POSTULAR"}
+                                        </button>
+                                      ) : (
+                                        <span style={{ fontWeight: 600, color: statusColor, minWidth: 48, fontSize: 9 }}>ACTIVA</span>
+                                      )}
                                       <span style={{ color: "var(--txt3)", minWidth: 60, fontSize: 9 }}>{p.type.replace(/_/g, " ")}</span>
                                       <span className="mono" style={{ fontWeight: 700, color: "var(--amber)", minWidth: 50 }}>{fmt(p.price)}</span>
                                       <span style={{ fontSize: 8, color: "var(--txt3)" }}>-{descPct}%</span>
