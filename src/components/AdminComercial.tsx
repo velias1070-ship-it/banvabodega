@@ -743,8 +743,9 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
       {/* Modal Simulador de Precio */}
       {simItem && (() => {
         const p = parseInt(simPrice) || 0;
-        const comision = simComision || (simLoadingFee ? 0 : 0);
-        const costoTotal = simItem.costo_bruto + comision + simItem.costo_envio;
+        const comision = simComision || 0;
+        const envioSeller = p >= 19990 ? simItem.costo_envio : 0; // Bajo $19.990 el comprador paga envío
+        const costoTotal = simItem.costo_bruto + comision + envioSeller;
         const ganancia = p - costoTotal;
         const margen = p > 0 ? Math.round((ganancia / p) * 100) : 0;
         const descPct = simItem.price_ml > 0 ? Math.round(((simItem.price_ml - p) / simItem.price_ml) * 100) : 0;
@@ -760,18 +761,23 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                 <label style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", display: "block", marginBottom: 6 }}>Precio con descuento</label>
                 <input value={simPrice} onChange={e => handleSimPriceChange(e.target.value.replace(/\D/g, ""))} inputMode="numeric" autoFocus
                   style={{ width: "100%", padding: "12px 14px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt)", fontSize: 18, fontWeight: 700, fontFamily: "var(--font-mono, monospace)", boxSizing: "border-box", textAlign: "center" }} />
-                {descPct > 0 && <div style={{ textAlign: "center", fontSize: 11, color: "var(--amber)", marginTop: 4 }}>-{descPct}% sobre ${fmt(simItem.price_ml)}</div>}
+                {descPct > 0 && <div style={{ textAlign: "center", fontSize: 11, color: "var(--amber)", marginTop: 4 }}>-{descPct}% sobre {fmt(simItem.price_ml)}</div>}
+                {p > 0 && p < 19990 && simItem.price_ml >= 19990 && (
+                  <div style={{ marginTop: 8, padding: "8px 12px", borderRadius: 6, background: "var(--redBg)", border: "1px solid var(--redBd)", fontSize: 11, color: "var(--red)", textAlign: "center" }}>
+                    Bajo $19.990: ML cobra $1.000 extra de comisión fija y pierde envío gratis obligatorio
+                  </div>
+                )}
 
-                <div style={{ marginTop: 16, background: "var(--bg3)", borderRadius: 8, padding: 14 }}>
+                <div style={{ marginTop: 12, background: "var(--bg3)", borderRadius: 8, padding: 14 }}>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: "6px 12px", fontSize: 12 }}>
                     <span style={{ color: "var(--txt3)" }}>Precio venta</span>
                     <span className="mono" style={{ textAlign: "right", fontWeight: 600 }}>{fmt(p)}</span>
                     <span style={{ color: "var(--txt3)" }}>Costo producto (+IVA)</span>
                     <span className="mono" style={{ textAlign: "right", color: "var(--red)" }}>-{fmt(simItem.costo_bruto)}</span>
-                    <span style={{ color: "var(--txt3)" }}>Comisión ML {simLoadingFee && <span style={{ fontSize: 9 }}>...</span>}</span>
+                    <span style={{ color: "var(--txt3)" }}>Comisión ML {simLoadingFee && <span style={{ fontSize: 9 }}>...</span>}{p < 19990 ? " (con fijo $1.000)" : ""}</span>
                     <span className="mono" style={{ textAlign: "right", color: "var(--red)" }}>-{fmt(comision)}</span>
-                    <span style={{ color: "var(--txt3)" }}>Envío</span>
-                    <span className="mono" style={{ textAlign: "right", color: simItem.costo_envio > 0 ? "var(--red)" : "var(--txt3)" }}>{simItem.costo_envio > 0 ? `-${fmt(simItem.costo_envio)}` : "$0"}</span>
+                    <span style={{ color: "var(--txt3)" }}>Envío {p < 19990 ? "(comprador paga)" : "(seller paga)"}</span>
+                    <span className="mono" style={{ textAlign: "right", color: p >= 19990 && simItem.costo_envio > 0 ? "var(--red)" : "var(--green)" }}>{p >= 19990 ? (simItem.costo_envio > 0 ? `-${fmt(simItem.costo_envio)}` : "$0") : "$0"}</span>
                     <div style={{ gridColumn: "1 / -1", borderTop: "1px solid var(--bg4)", margin: "4px 0" }} />
                     <span style={{ fontWeight: 700 }}>Ganancia</span>
                     <span className="mono" style={{ textAlign: "right", fontWeight: 800, fontSize: 16, color: ganancia > 0 ? "var(--green)" : "var(--red)" }}>{fmt(ganancia)}</span>
