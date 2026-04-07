@@ -27,6 +27,7 @@ interface ItemPromoResult {
   costo_bruto: number;
   comision_ml: number;
   costo_envio: number;
+  peso_facturable: number;
   listing_type: string;
   category_id: string;
   promotions: PromoInfo[];
@@ -94,19 +95,21 @@ export async function GET(req: NextRequest) {
       } catch { /* ignore */ }
     }
 
-    // Costo envío promedio de ventas recientes del SKU
+    // Costo envío desde API de ML (tarifa real por peso/dimensiones del item)
     let costoEnvio = 0;
-    const { data: recentOrders } = await sb.from("orders_history")
-      .select("costo_envio")
-      .eq("sku_venta", map.sku)
-      .order("fecha", { ascending: false })
-      .limit(10);
-    if (recentOrders && recentOrders.length > 0) {
-      const envios = recentOrders.filter((o: { costo_envio: number }) => o.costo_envio > 0);
-      if (envios.length > 0) {
-        costoEnvio = Math.round(envios.reduce((s: number, o: { costo_envio: number }) => s + o.costo_envio, 0) / envios.length);
+    let pesoFacturable = 0;
+    try {
+      const sellerId = (await sb.from("ml_config").select("seller_id").eq("id", "main").limit(1)).data?.[0]?.seller_id;
+      if (sellerId) {
+        const shipFree = await mlGet<{ coverage: { all_country: { list_cost: number; billable_weight: number } } }>(
+          `/users/${sellerId}/shipping_options/free?item_id=${itemId}`
+        );
+        if (shipFree?.coverage?.all_country) {
+          costoEnvio = shipFree.coverage.all_country.list_cost;
+          pesoFacturable = shipFree.coverage.all_country.billable_weight;
+        }
       }
-    }
+    } catch { /* ignore */ }
 
     // Promociones de ML + calcular comisión con precio promo
     let promotions: PromoInfo[] = [];
@@ -135,6 +138,7 @@ export async function GET(req: NextRequest) {
       costo_bruto: Math.round(costoNeto * 1.19),
       comision_ml: comisionMl,
       costo_envio: costoEnvio,
+      peso_facturable: pesoFacturable,
       listing_type: listingType,
       category_id: categoryId,
       promotions,

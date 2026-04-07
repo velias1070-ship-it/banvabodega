@@ -757,7 +757,7 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
               )}
             </div>
             <div style={{ padding: "12px 24px", borderTop: "1px solid var(--bg4)", fontSize: 10, color: "var(--txt3)" }}>
-              Ganancia = Precio - Costo(+IVA) - Comisión ML - Envío. Comisión de ML API. Envío = promedio de ventas recientes.
+              Ganancia = Precio - Costo(+IVA) - Comisión - Envío. Comisión y envío calculados desde la API de ML (tarifa real por peso facturable).
             </div>
           </div>
         </div>
