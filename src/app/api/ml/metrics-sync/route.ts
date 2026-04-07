@@ -254,6 +254,31 @@ export async function POST(req: NextRequest) {
           }
         }
 
+        // Also try alternative endpoints for price/competition data
+        const sampleId = testItems[0].id;
+        const altEndpoints: Record<string, { status: number; keys: string[] | null; sample: unknown }> = {};
+
+        const tryEndpoint = async (name: string, url: string) => {
+          const r = await fetch(url, { headers: hb });
+          const text = await r.text();
+          let json = null;
+          try { json = JSON.parse(text); } catch { /* not json */ }
+          altEndpoints[name] = {
+            status: r.status,
+            keys: json && typeof json === "object" && !Array.isArray(json) ? Object.keys(json) : null,
+            sample: json ? (typeof json === "object" ? JSON.stringify(json).substring(0, 300) : json) : text.substring(0, 300),
+          };
+        };
+
+        await tryEndpoint("benchmarks_details", `${MLb}/marketplace/benchmarks/items/${sampleId}/details`);
+        await tryEndpoint("benchmarks_price", `${MLb}/marketplace/benchmarks/items/${sampleId}/price`);
+        await tryEndpoint("item_health", `${MLb}/items/${sampleId}/health`);
+        await tryEndpoint("item_price_info", `${MLb}/items/${sampleId}?attributes=price,original_price,sale_price,catalog_product_id,buy_box_winner,winner_item_id`);
+        await tryEndpoint("catalog_search", `${MLb}/products/search?status=active&site_id=MLC&q=sabanas+cannon&limit=3`);
+        await tryEndpoint("item_catalog", `${MLb}/items/${sampleId}/catalog_listing_eligibility`);
+        await tryEndpoint("price_comparison", `${MLb}/items/${sampleId}/prices`);
+        await tryEndpoint("seller_items_search", `${MLb}/users/${cb.seller_id}/items/search?limit=1`);
+
         // Summary
         const byType: Record<string, { total: number; with_data: number; with_price: number }> = {};
         for (const r of results) {
@@ -264,7 +289,7 @@ export async function POST(req: NextRequest) {
           if (r.lowest_price || r.suggested_price) byType[t].with_price++;
         }
 
-        return NextResponse.json({ summary: byType, results });
+        return NextResponse.json({ summary: byType, alt_endpoints: altEndpoints });
       }
 
       case "debug-ads": {
