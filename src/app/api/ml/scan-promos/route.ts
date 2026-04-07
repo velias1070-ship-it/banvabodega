@@ -45,15 +45,23 @@ export async function GET(req: NextRequest) {
     const batch = unique.slice(i, i + CONCURRENCY);
     const results = await Promise.all(
       batch.map(async (item) => {
-        try {
-          const promos = await mlGet<PromoInfo[]>(`/seller-promotions/items/${item.item_id}?app_version=v2`);
-          if (!promos || !Array.isArray(promos)) return { item, hasActive: false, disponibles: 0 };
-          const hasActive = promos.some(p => p.status === "started");
-          const disponibles = promos.filter(p => p.status === "candidate" || p.status === "pending").length;
-          return { item, hasActive, disponibles };
-        } catch {
-          return { item, hasActive: false, disponibles: 0 };
+        // Retry hasta 2 veces si falla
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            const promos = await mlGet<PromoInfo[]>(`/seller-promotions/items/${item.item_id}?app_version=v2`);
+            if (!promos || !Array.isArray(promos)) {
+              if (attempt === 0) { await new Promise(r => setTimeout(r, 500)); continue; }
+              return { item, hasActive: false, disponibles: 0, error: true };
+            }
+            const hasActive = promos.some(p => p.status === "started");
+            const disponibles = promos.filter(p => p.status === "candidate" || p.status === "pending").length;
+            return { item, hasActive, disponibles, error: false };
+          } catch {
+            if (attempt === 0) { await new Promise(r => setTimeout(r, 500)); continue; }
+            return { item, hasActive: false, disponibles: 0, error: true };
+          }
         }
+        return { item, hasActive: false, disponibles: 0, error: true };
       })
     );
 

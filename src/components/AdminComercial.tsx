@@ -1685,11 +1685,15 @@ function PreciosYPromos() {
       const sinPromo: string[] = (scan.sin_promo || []).map((s: { item_id: string }) => s.item_id);
       setScanResult({ total: scan.total || 0, con: scan.con_promo || 0, sin: sinPromo.length });
       if (sinPromo.length > 0) {
-        // Cargar promos+costos de los sin promo (max 30)
+        // Cargar promos+costos y filtrar los que realmente no tienen promo activa
         const ids = sinPromo.slice(0, 30).join(",");
         const res2 = await fetch(`/api/ml/promotions?item_ids=${ids}`);
         const data = await res2.json();
-        setPromoData(data.items || []);
+        const realSinPromo = (data.items || []).filter((it: PromoItem) =>
+          !it.promotions.some(p => p.status === "started")
+        );
+        setPromoData(realSinPromo);
+        setScanResult(prev => prev ? { ...prev, sin: realSinPromo.length, con: prev.total - realSinPromo.length } : prev);
       }
     } catch { /* ignore */ }
     setPromoLoading(false);
