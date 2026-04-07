@@ -856,7 +856,8 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                   </thead>
                   <tbody>
                     {promoItems.map(item => {
-                      const costoTotal = item.costo_bruto + item.comision_ml + item.costo_envio;
+                      const envioSeller = item.price_ml >= 19990 ? item.costo_envio : 0;
+                const costoTotal = item.costo_bruto + item.comision_ml + envioSeller;
                       const gananciaActual = item.price_ml - costoTotal;
                       const margenActual = item.price_ml > 0 ? Math.round((gananciaActual / item.price_ml) * 100) : null;
                       const variantName = promoFamily && item.titulo.startsWith(promoFamily)
@@ -870,7 +871,7 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                           </td>
                           <td className="mono" style={{ padding: "10px 6px", textAlign: "right", fontSize: 10 }}>{fmt(item.costo_bruto)}</td>
                           <td className="mono" style={{ padding: "10px 6px", textAlign: "right", fontSize: 10, color: "var(--red)" }}>{fmt(item.comision_ml)}</td>
-                          <td className="mono" style={{ padding: "10px 6px", textAlign: "right", fontSize: 10, color: item.costo_envio > 0 ? "var(--red)" : "var(--txt3)" }}>{item.costo_envio > 0 ? fmt(item.costo_envio) : "—"}</td>
+                          <td className="mono" style={{ padding: "10px 6px", textAlign: "right", fontSize: 10, color: envioSeller > 0 ? "var(--red)" : "var(--txt3)" }}>{envioSeller > 0 ? fmt(envioSeller) : <span title={item.costo_envio > 0 ? `Comprador paga ${fmt(item.costo_envio)}` : ""}>$0</span>}</td>
                           <td className="mono" style={{ padding: "10px 6px", textAlign: "right", fontWeight: 700 }}>{fmt(item.price_ml)}</td>
                           <td style={{ padding: "10px 6px", textAlign: "center" }}>
                             {margenActual !== null ? (
@@ -1841,7 +1842,8 @@ function PreciosYPromos() {
             </thead>
             <tbody>
               {promoData.map(item => {
-                const costoTotal = item.costo_bruto + item.comision_ml + item.costo_envio;
+                const envioSeller = item.price_ml >= 19990 ? item.costo_envio : 0;
+                const costoTotal = item.costo_bruto + item.comision_ml + envioSeller;
                 const ganancia = item.price_ml - costoTotal;
                 const margen = item.price_ml > 0 ? Math.round((ganancia / item.price_ml) * 100) : 0;
                 return (
@@ -1852,7 +1854,7 @@ function PreciosYPromos() {
                     </td>
                     <td className="mono" style={{ padding: "10px 6px", textAlign: "right", fontSize: 10 }}>{fmt(item.costo_bruto)}</td>
                     <td className="mono" style={{ padding: "10px 6px", textAlign: "right", fontSize: 10, color: "var(--red)" }}>{fmt(item.comision_ml)}</td>
-                    <td className="mono" style={{ padding: "10px 6px", textAlign: "right", fontSize: 10, color: item.costo_envio > 0 ? "var(--red)" : "var(--txt3)" }}>{item.costo_envio > 0 ? fmt(item.costo_envio) : "—"}</td>
+                    <td className="mono" style={{ padding: "10px 6px", textAlign: "right", fontSize: 10, color: envioSeller > 0 ? "var(--red)" : "var(--txt3)" }}>{envioSeller > 0 ? fmt(envioSeller) : <span title={item.costo_envio > 0 ? `Comprador paga ${fmt(item.costo_envio)}` : ""}>$0</span>}</td>
                     <td className="mono" style={{ padding: "10px 6px", textAlign: "right", fontWeight: 700 }}>{fmt(item.price_ml)}</td>
                     <td style={{ padding: "10px 6px", textAlign: "center" }}>
                       <div className="mono" style={{ fontWeight: 700, color: ganancia > 0 ? "var(--green)" : "var(--red)", fontSize: 11 }}>{fmt(ganancia)}</div>
