@@ -15,6 +15,7 @@ interface PromoInfo {
   seller_percentage?: number;
   start_date?: string;
   finish_date?: string;
+  comision_promo?: number;
 }
 
 interface ItemPromoResult {
@@ -107,11 +108,22 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Promociones de ML
+    // Promociones de ML + calcular comisión con precio promo
     let promotions: PromoInfo[] = [];
     try {
       const promos = await mlGet<PromoInfo[]>(`/seller-promotions/items/${itemId}?app_version=v2`);
-      if (promos && Array.isArray(promos)) promotions = promos;
+      if (promos && Array.isArray(promos)) {
+        for (const p of promos) {
+          let comisionPromo = 0;
+          if (p.price > 0 && categoryId) {
+            try {
+              const feesPromo = await mlGet<{ sale_fee_amount: number }>(`/sites/MLC/listing_prices?price=${p.price}&listing_type_id=${listingType}&category_id=${categoryId}`);
+              comisionPromo = feesPromo?.sale_fee_amount || 0;
+            } catch { /* ignore */ }
+          }
+          promotions.push({ ...p, comision_promo: comisionPromo });
+        }
+      }
     } catch { /* ignore */ }
 
     results.push({

@@ -110,7 +110,7 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
   const [bulkSyncing, setBulkSyncing] = useState<string | null>(null);
   const [bulkResult, setBulkResult] = useState<string | null>(null);
   // Promociones
-  const [promoItems, setPromoItems] = useState<Array<{ item_id: string; sku: string; titulo: string; price_ml: number; costo_neto: number; costo_bruto: number; comision_ml: number; costo_envio: number; promotions: Array<{ id?: string; type: string; name?: string; status: string; price: number; original_price: number; meli_percentage?: number; seller_percentage?: number; start_date?: string; finish_date?: string }> }>>([]);
+  const [promoItems, setPromoItems] = useState<Array<{ item_id: string; sku: string; titulo: string; price_ml: number; costo_neto: number; costo_bruto: number; comision_ml: number; costo_envio: number; promotions: Array<{ id?: string; type: string; name?: string; status: string; price: number; original_price: number; meli_percentage?: number; seller_percentage?: number; start_date?: string; finish_date?: string; comision_promo?: number }> }>>([]);
   const [promoLoading, setPromoLoading] = useState(false);
   const [promoFamily, setPromoFamily] = useState<string | null>(null);
 
@@ -723,8 +723,7 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                             ) : (
                               <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                                 {item.promotions.map((p, pi) => {
-                                  // Calcular comisión con precio promo (proporcionalmente)
-                                  const comisionPromo = item.price_ml > 0 ? Math.round(item.comision_ml * (p.price / item.price_ml)) : 0;
+                                  const comisionPromo = p.comision_promo || 0;
                                   const costoPromo = item.costo_bruto + comisionPromo + item.costo_envio;
                                   const gananciaPromo = p.price - costoPromo;
                                   const margenPromo = p.price > 0 ? Math.round((gananciaPromo / p.price) * 100) : null;
