@@ -463,8 +463,8 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
       )}
 
       {/* Tabla */}
-      <div className="card" style={{ overflow: "hidden" }}>
-        <div style={{ overflowX: "auto" }}>
+      <div className="card" style={{ overflow: "visible" }}>
+        <div style={{ overflowX: "auto", overflow: "visible" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
             <thead>
               <tr style={{ borderBottom: "2px solid var(--bg4)" }}>
