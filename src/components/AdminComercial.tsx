@@ -1574,6 +1574,96 @@ function PreciosYPromos() {
   const [changingPrice, setChangingPrice] = useState<string | null>(null);
   const [promoActioning, setPromoActioning] = useState<string | null>(null);
   const [actionMsg, setActionMsg] = useState<string | null>(null);
+  // Postulación masiva
+  const [bulkMode, setBulkMode] = useState(false);
+  const [bulkPromoType, setBulkPromoType] = useState<string>("");
+  const [bulkDiscount, setBulkDiscount] = useState("20");
+  const [bulkPrices, setBulkPrices] = useState<Map<string, number>>(new Map());
+  const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set());
+  const [bulkSubmitting, setBulkSubmitting] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState("");
+
+  const openBulkMode = () => {
+    setBulkMode(true);
+    setBulkPromoType("PRICE_DISCOUNT");
+    applyBulkDiscount(20);
+  };
+
+  const applyBulkDiscount = (pct: number) => {
+    setBulkDiscount(String(pct));
+    const prices = new Map<string, number>();
+    const selected = new Set<string>();
+    for (const item of promoData) {
+      const promo = item.promotions.find(p => p.type === bulkPromoType || bulkPromoType === "PRICE_DISCOUNT");
+      const maxPrice = promo?.max_discounted_price || Math.floor(item.price_ml * 0.95);
+      const minPrice = promo?.min_discounted_price || Math.floor(item.price_ml * 0.5);
+      const suggested = promo?.suggested_discounted_price || 0;
+      let dealPrice = Math.round(item.price_ml * (1 - pct / 100));
+      // Ajustar al rango permitido
+      if (dealPrice > maxPrice) dealPrice = maxPrice;
+      if (dealPrice < minPrice) dealPrice = minPrice;
+      if (suggested > 0 && dealPrice > maxPrice) dealPrice = suggested;
+      prices.set(item.item_id, dealPrice);
+      // Auto-seleccionar si el margen es positivo
+      const comEst = dealPrice >= 19990 ? Math.round(dealPrice * 0.14) : Math.round(dealPrice * 0.14) + 1000;
+      const envEst = dealPrice >= 19990 ? item.costo_envio : 0;
+      const gan = dealPrice - item.costo_bruto - comEst - envEst;
+      if (gan > 0) selected.add(item.item_id);
+    }
+    setBulkPrices(prices);
+    setBulkSelected(selected);
+  };
+
+  const applyMLSuggested = () => {
+    const prices = new Map<string, number>();
+    const selected = new Set<string>();
+    for (const item of promoData) {
+      const promo = item.promotions.find(p => p.suggested_discounted_price && p.suggested_discounted_price > 0);
+      const dealPrice = promo?.suggested_discounted_price || Math.round(item.price_ml * 0.8);
+      prices.set(item.item_id, dealPrice);
+      const comEst = dealPrice >= 19990 ? Math.round(dealPrice * 0.14) : Math.round(dealPrice * 0.14) + 1000;
+      const envEst = dealPrice >= 19990 ? item.costo_envio : 0;
+      const gan = dealPrice - item.costo_bruto - comEst - envEst;
+      if (gan > 0) selected.add(item.item_id);
+    }
+    setBulkPrices(prices);
+    setBulkSelected(selected);
+    setBulkDiscount("ML");
+  };
+
+  const submitBulk = async () => {
+    const toSubmit = promoData.filter(i => bulkSelected.has(i.item_id));
+    if (toSubmit.length === 0) return;
+    if (!confirm(`¿Postular ${toSubmit.length} items a ${bulkPromoType.replace(/_/g, " ")}?`)) return;
+    setBulkSubmitting(true);
+    let ok = 0, fail = 0;
+    for (const item of toSubmit) {
+      const dealPrice = bulkPrices.get(item.item_id) || 0;
+      if (!dealPrice) { fail++; continue; }
+      setBulkProgress(`${ok + fail + 1}/${toSubmit.length} — ${item.titulo?.slice(0, 30)}...`);
+      try {
+        const promo = item.promotions.find(p => p.type === bulkPromoType);
+        const action = bulkPromoType === "PRICE_DISCOUNT" ? "create_discount" : "join";
+        const body: Record<string, unknown> = { item_id: item.item_id, action, deal_price: dealPrice };
+        if (action === "create_discount") {
+          body.start_date = new Date().toISOString().slice(0, 10) + "T00:00:00";
+          body.finish_date = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10) + "T23:59:59";
+        } else {
+          body.promotion_id = promo?.id;
+          body.promotion_type = bulkPromoType;
+        }
+        const res = await fetch("/api/ml/promotions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        const data = await res.json();
+        if (data.error) fail++; else ok++;
+      } catch { fail++; }
+    }
+    setBulkProgress("");
+    setActionMsg(`Masivo: ${ok} postulados, ${fail} errores de ${toSubmit.length}`);
+    setBulkSubmitting(false);
+    setBulkMode(false);
+    // Recargar
+    if (tab === "sin_promo") scanSinPromos(); else if (tab === "buscar") searchPromos(search); else loadAll();
+  };
   // Simulador
   const [simP, setSimP] = useState<{ item: PromoItem; promo: PromoItem["promotions"][0] } | null>(null);
   const [simPPrice, setSimPPrice] = useState("");
@@ -1781,6 +1871,12 @@ function PreciosYPromos() {
                 Buscar
               </button>
             )}
+            {promoData.length > 0 && !bulkMode && (
+              <button onClick={openBulkMode}
+                style={{ padding: "6px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: "var(--amber)", color: "#fff", border: "none", cursor: "pointer" }}>
+                Masivo
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -1814,6 +1910,100 @@ function PreciosYPromos() {
           <div className="kpi"><div className="kpi-label">Total activas</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4 }}>{scanResult.total}</div></div>
           <div className="kpi"><div className="kpi-label">Con promo</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: "var(--green)" }}>{scanResult.con}</div></div>
           <div className="kpi"><div className="kpi-label">Sin promo</div><div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: "var(--red)" }}>{scanResult.sin}</div></div>
+        </div>
+      )}
+
+      {/* Panel Postulación Masiva */}
+      {bulkMode && promoData.length > 0 && (
+        <div className="card" style={{ marginBottom: 16, padding: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <h3 style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>Postulación Masiva</h3>
+            <button onClick={() => setBulkMode(false)} style={{ background: "none", border: "none", color: "var(--txt3)", fontSize: 16, cursor: "pointer" }}>{"\u2715"}</button>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
+            <select value={bulkPromoType} onChange={e => { setBulkPromoType(e.target.value); applyBulkDiscount(parseInt(bulkDiscount) || 20); }}
+              style={{ padding: "6px 10px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 12 }}>
+              <option value="PRICE_DISCOUNT">Descuento de precio</option>
+              <option value="DEAL">Deal ML (Día de la mamá)</option>
+              <option value="SELLER_CAMPAIGN">Campaña (Oferta Banva)</option>
+            </select>
+            <span style={{ fontSize: 11, color: "var(--txt3)" }}>Descuento:</span>
+            {[10, 15, 20, 25, 30].map(pct => (
+              <button key={pct} onClick={() => applyBulkDiscount(pct)}
+                style={{ padding: "4px 10px", borderRadius: 4, fontSize: 11, fontWeight: bulkDiscount === String(pct) ? 700 : 500, background: bulkDiscount === String(pct) ? "var(--amber)" : "var(--bg3)", color: bulkDiscount === String(pct) ? "#fff" : "var(--txt3)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
+                -{pct}%
+              </button>
+            ))}
+            <button onClick={applyMLSuggested}
+              style={{ padding: "4px 10px", borderRadius: 4, fontSize: 11, fontWeight: bulkDiscount === "ML" ? 700 : 500, background: bulkDiscount === "ML" ? "var(--cyan)" : "var(--bg3)", color: bulkDiscount === "ML" ? "#fff" : "var(--txt3)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
+              Sugerido ML
+            </button>
+          </div>
+          <div style={{ maxHeight: 400, overflow: "auto", marginBottom: 12 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+              <thead>
+                <tr style={{ borderBottom: "1px solid var(--bg4)", position: "sticky", top: 0, background: "var(--bg2)" }}>
+                  <th style={{ padding: "6px 8px", width: 30 }}>
+                    <input type="checkbox" checked={bulkSelected.size === promoData.length} onChange={e => {
+                      if (e.target.checked) setBulkSelected(new Set(promoData.map(i => i.item_id)));
+                      else setBulkSelected(new Set());
+                    }} style={{ accentColor: "var(--cyan)" }} />
+                  </th>
+                  <th style={{ padding: "6px 8px", textAlign: "left", fontSize: 10 }}>Producto</th>
+                  <th style={{ padding: "6px 6px", textAlign: "right", fontSize: 10 }}>Precio actual</th>
+                  <th style={{ padding: "6px 6px", textAlign: "right", fontSize: 10 }}>Precio promo</th>
+                  <th style={{ padding: "6px 6px", textAlign: "center", fontSize: 10 }}>Desc%</th>
+                  <th style={{ padding: "6px 6px", textAlign: "right", fontSize: 10 }}>Ganancia</th>
+                  <th style={{ padding: "6px 6px", textAlign: "center", fontSize: 10 }}>Margen</th>
+                </tr>
+              </thead>
+              <tbody>
+                {promoData.map(item => {
+                  const dealPrice = bulkPrices.get(item.item_id) || 0;
+                  const comEst = dealPrice >= 19990 ? Math.round(dealPrice * 0.14) : Math.round(dealPrice * 0.14) + 1000;
+                  const envEst = dealPrice >= 19990 ? item.costo_envio : 0;
+                  const gan = dealPrice - item.costo_bruto - comEst - envEst;
+                  const mar = dealPrice > 0 ? Math.round((gan / dealPrice) * 100) : 0;
+                  const desc = item.price_ml > 0 ? Math.round(((item.price_ml - dealPrice) / item.price_ml) * 100) : 0;
+                  const selected = bulkSelected.has(item.item_id);
+                  return (
+                    <tr key={item.item_id} style={{ borderBottom: "1px solid var(--bg4)", opacity: selected ? 1 : 0.5 }}>
+                      <td style={{ padding: "6px 8px" }}>
+                        <input type="checkbox" checked={selected} onChange={e => {
+                          const next = new Set(bulkSelected);
+                          if (e.target.checked) next.add(item.item_id); else next.delete(item.item_id);
+                          setBulkSelected(next);
+                        }} style={{ accentColor: "var(--cyan)" }} />
+                      </td>
+                      <td style={{ padding: "6px 8px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        <span style={{ fontSize: 11 }}>{item.titulo}</span>
+                      </td>
+                      <td className="mono" style={{ padding: "6px 6px", textAlign: "right" }}>{fmt(item.price_ml)}</td>
+                      <td style={{ padding: "6px 6px", textAlign: "right" }}>
+                        <input value={dealPrice} onChange={e => {
+                          const v = parseInt(e.target.value) || 0;
+                          setBulkPrices(prev => new Map(prev).set(item.item_id, v));
+                        }} className="mono" style={{ width: 70, padding: "2px 4px", borderRadius: 4, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt)", fontSize: 11, textAlign: "right" }} />
+                      </td>
+                      <td style={{ padding: "6px 6px", textAlign: "center", color: "var(--amber)", fontSize: 10 }}>-{desc}%</td>
+                      <td className="mono" style={{ padding: "6px 6px", textAlign: "right", fontWeight: 700, color: gan > 0 ? "var(--green)" : "var(--red)" }}>{fmt(gan)}</td>
+                      <td style={{ padding: "6px 6px", textAlign: "center", fontWeight: 700, color: mar > 20 ? "var(--green)" : mar > 0 ? "var(--amber)" : "var(--red)", fontSize: 10 }}>{mar}%</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontSize: 11, color: "var(--txt3)" }}>
+              {bulkSelected.size} de {promoData.length} seleccionados
+              {bulkProgress && <span style={{ marginLeft: 8, color: "var(--amber)" }}>{bulkProgress}</span>}
+            </span>
+            <button onClick={submitBulk} disabled={bulkSubmitting || bulkSelected.size === 0}
+              style={{ padding: "8px 20px", borderRadius: 8, fontSize: 12, fontWeight: 700, background: bulkSelected.size > 0 ? "var(--amber)" : "var(--bg4)", color: "#fff", border: "none", cursor: bulkSubmitting ? "wait" : "pointer" }}>
+              {bulkSubmitting ? "Postulando..." : `Postular ${bulkSelected.size} items`}
+            </button>
+          </div>
         </div>
       )}
 
