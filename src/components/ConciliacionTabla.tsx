@@ -103,6 +103,7 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
   const [conciliarMov, setConciliarMov] = useState<DBMovimientoBanco | null>(null);
   // Dropdown acciones
   const [showActions, setShowActions] = useState<string | null>(null);
+  const [actionsPos, setActionsPos] = useState({ top: 0, right: 0 });
   // Agregar Egreso
   const [clasificarMov, setClasificarMov] = useState<DBMovimientoBanco | null>(null);
   const [clasificarCuenta, setClasificarCuenta] = useState("");
@@ -642,39 +643,10 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
                             style={{ padding: "4px 12px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer", background: "var(--green)", color: "#fff", border: "none" }}>
                             Conciliar
                           </button>
-                          <button data-actions-id={m.id} onClick={() => setShowActions(isActionsOpen ? null : m.id!)}
+                          <button onClick={(e) => { setShowActions(isActionsOpen ? null : m.id!); setActionsPos({ top: e.currentTarget.getBoundingClientRect().bottom + 4, right: window.innerWidth - e.currentTarget.getBoundingClientRect().right }); }}
                             style={{ padding: "4px 6px", borderRadius: 6, fontSize: 11, cursor: "pointer", background: "var(--green)", color: "#fff", border: "none" }}>
                             ▾
                           </button>
-                          {/* Dropdown acciones — portal-style fixed para evitar overflow clip */}
-                          {isActionsOpen && (() => {
-                            const btnEl = document.querySelector(`[data-actions-id="${m.id}"]`);
-                            const rect = btnEl?.getBoundingClientRect();
-                            return (
-                              <>
-                                <div onClick={() => setShowActions(null)} style={{ position: "fixed", inset: 0, zIndex: 9990 }} />
-                                <div style={{
-                                  position: "fixed", zIndex: 9991,
-                                  top: rect ? rect.bottom + 4 : 0, right: rect ? window.innerWidth - rect.right : 0,
-                                  background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 8,
-                                  boxShadow: "0 8px 24px rgba(0,0,0,0.4)", minWidth: 200, overflow: "hidden",
-                                }}>
-                                  <button onClick={() => { setConciliarMov(m); setShowActions(null); }}
-                                    style={{ width: "100%", padding: "10px 14px", textAlign: "left", background: "none", border: "none", borderBottom: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 12, cursor: "pointer" }}>
-                                    Conciliar con factura
-                                  </button>
-                                  <button onClick={() => { setClasificarMov(m); setClasificarCuenta(""); setEgresoTipo(""); setEgresoProveedor(""); setEgresoDescripcion(""); setEgresoNumDoc(""); setEgresoArchivo(null); setShowActions(null); }}
-                                    style={{ width: "100%", padding: "10px 14px", textAlign: "left", background: "none", border: "none", borderBottom: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 12, cursor: "pointer" }}>
-                                    Agregar Egreso
-                                  </button>
-                                  <button onClick={() => handleIgnorar(m)}
-                                    style={{ width: "100%", padding: "10px 14px", textAlign: "left", background: "none", border: "none", color: "var(--txt3)", fontSize: 12, cursor: "pointer" }}>
-                                    Ignorar
-                                  </button>
-                                </div>
-                              </>
-                            );
-                          })()}
                         </div>
                       )}
                     </td>
@@ -701,6 +673,35 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
           </table>
         </div>
       </div>
+
+      {/* Dropdown acciones flotante */}
+      {showActions && (() => {
+        const m = movBanco.find(x => x.id === showActions);
+        if (!m) return null;
+        return (
+          <>
+            <div onClick={() => setShowActions(null)} style={{ position: "fixed", inset: 0, zIndex: 9990 }} />
+            <div style={{
+              position: "fixed", zIndex: 9991, top: actionsPos.top, right: actionsPos.right,
+              background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 8,
+              boxShadow: "0 8px 24px rgba(0,0,0,0.4)", minWidth: 200, overflow: "hidden",
+            }}>
+              <button onClick={() => { setConciliarMov(m); setShowActions(null); }}
+                style={{ width: "100%", padding: "10px 14px", textAlign: "left", background: "none", border: "none", borderBottom: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 12, cursor: "pointer" }}>
+                Conciliar con factura
+              </button>
+              <button onClick={() => { setClasificarMov(m); setClasificarCuenta(""); setEgresoTipo(""); setEgresoProveedor(""); setEgresoDescripcion(""); setEgresoNumDoc(""); setEgresoArchivo(null); setShowActions(null); }}
+                style={{ width: "100%", padding: "10px 14px", textAlign: "left", background: "none", border: "none", borderBottom: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 12, cursor: "pointer" }}>
+                Agregar Egreso
+              </button>
+              <button onClick={() => { handleIgnorar(m); setShowActions(null); }}
+                style={{ width: "100%", padding: "10px 14px", textAlign: "left", background: "none", border: "none", color: "var(--txt3)", fontSize: 12, cursor: "pointer" }}>
+                Ignorar
+              </button>
+            </div>
+          </>
+        );
+      })()}
 
       {/* Modal Agregar Egreso */}
       {clasificarMov && (
