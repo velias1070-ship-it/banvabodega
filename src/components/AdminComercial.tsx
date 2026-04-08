@@ -1613,33 +1613,37 @@ function PreciosYPromos() {
     if (!simP) return;
     const dealPrice = parseInt(simPPrice);
     if (!dealPrice) return;
-    setPromoActioning(simP.item.item_id);
+    // Guardar refs antes de que simP se limpie
+    const itemId = simP.item.item_id;
+    const promoType = simP.promo.type;
+    const promoId = simP.promo.id;
+    setPromoActioning(itemId);
+    setSimP(null); // Cerrar modal de inmediato
     try {
-      const action = simP.promo.type === "PRICE_DISCOUNT" ? "create_discount" : "join";
-      const body: Record<string, unknown> = { item_id: simP.item.item_id, action, deal_price: dealPrice };
+      const action = promoType === "PRICE_DISCOUNT" ? "create_discount" : "join";
+      const body: Record<string, unknown> = { item_id: itemId, action, deal_price: dealPrice };
       if (action === "create_discount") {
         body.start_date = new Date().toISOString().slice(0, 10) + "T00:00:00";
         body.finish_date = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10) + "T23:59:59";
       } else {
-        body.promotion_id = simP.promo.id;
-        body.promotion_type = simP.promo.type;
+        body.promotion_id = promoId;
+        body.promotion_type = promoType;
       }
       const res = await fetch("/api/ml/promotions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const data = await res.json();
       if (data.error) setActionMsg(`Error: ${data.error}`);
       else {
-        setActionMsg("Postulado exitosamente");
-        // Actualizar localmente de inmediato: cambiar status a "started"
+        setActionMsg(`Postulado a ${promoType.replace(/_/g, " ")} a ${fmt(dealPrice)}`);
         setPromoData(prev => prev.map(item => {
-          if (item.item_id !== simP.item.item_id) return item;
+          if (item.item_id !== itemId) return item;
           return { ...item, promotions: item.promotions.map(p => {
-            if (p.type === simP.promo.type) return { ...p, status: "started", price: dealPrice };
+            if (p.type === promoType) return { ...p, status: "started", price: dealPrice };
             return p;
           })};
         }));
       }
     } catch (e) { setActionMsg(`Error: ${e instanceof Error ? e.message : "?"}`); }
-    finally { setPromoActioning(null); setSimP(null); }
+    finally { setPromoActioning(null); }
   };
 
   const salirPromoP = async (itemId: string, promoType?: string, promoId?: string) => {
