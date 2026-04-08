@@ -51,145 +51,54 @@ interface MPReport {
   format?: string;
 }
 
-async function mpPost(path: string, body: unknown): Promise<unknown> {
-  const url = `${MP_BASE_URL}${path}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}`, "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(30000),
-  });
-  if (!res.ok) {
-    const errBody = await res.text().catch(() => "");
-    console.error(`[MP Sync] POST ${path} => ${res.status}: ${errBody}`);
-    throw new Error(`MP API POST ${res.status}: ${errBody.slice(0, 200)}`);
-  }
-  return res.json();
-}
-
-function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 
 /**
- * Busca un release report que cubra el período solicitado.
- * Usa margen de 2 días para compensar diferencias de zona horaria.
- * Para meses pasados, acepta cualquier reporte existente que cubra el rango.
- * Para el mes actual, necesita un reporte reciente (< 2h) o genera uno nuevo.
- * Si no hay reporte, genera uno y espera hasta 4.5 min.
+ * Busca un release report existente que cubra el período solicitado.
+ * No genera reportes automáticamente (tardan demasiado).
+ * Si no hay reporte, informa al usuario que lo genere desde el panel de MP.
  */
-async function findReport(fechaDesde: string, fechaHasta: string, log: string[], lastMovFecha?: string | null): Promise<{ fileName: string; type: "release" | "settlement" } | null> {
+async function findReport(fechaDesde: string, fechaHasta: string, log: string[]): Promise<{ fileName: string; type: "release" | "settlement" } | null> {
   const desdeDate = new Date(fechaDesde).getTime();
   const hastaDate = new Date(fechaHasta).getTime();
-  const now = Date.now();
   const DAY = 86400_000;
   const desdeMargin = desdeDate + 2 * DAY;
-  const isPastMonth = hastaDate < now - DAY;
 
   try {
-    // Usar search endpoint que incluye reportes pending
-    const searchResult = await mpGet("/v1/account/bank_report/search?limit=50&offset=0") as { results?: MPReport[] } | MPReport[];
-    const allReports = Array.isArray(searchResult) ? searchResult : (searchResult.results || []);
-
-    const csvReports = allReports
+    // Buscar release reports existentes (endpoint correcto)
+    const allReports = await mpGet("/v1/account/release_report/list") as MPReport[];
+    const csvReports = (allReports || [])
       .filter(r => (r.status === "enabled" || r.status === "processed") && r.file_name && r.file_name.endsWith(".csv"));
-    const pendingReports = allReports.filter(r => r.status === "pending");
-    log.push(`Reportes en MP: ${csvReports.length} listos, ${pendingReports.length} pendientes`);
+    log.push(`Release reports en MP: ${csvReports.length} disponibles`);
 
-    // Si hay un reporte pending que cubre el periodo, avisar
-    const pendingForPeriod = pendingReports.filter(r => {
-      const begin = new Date(r.begin_date).getTime();
-      return begin <= desdeMargin;
-    });
-    if (pendingForPeriod.length > 0) {
-      log.push(`Reporte en generacion: begin=${pendingForPeriod[0].begin_date}, end=${pendingForPeriod[0].end_date} (reintenta en unos minutos)`);
-    }
-
-    // Buscar el reporte mas reciente que cubra desde el inicio del periodo
+    // Buscar reportes que cubran desde el inicio del periodo
     const matching = csvReports
       .filter(r => new Date(r.begin_date).getTime() <= desdeMargin)
       .sort((a, b) => new Date(b.end_date).getTime() - new Date(a.end_date).getTime());
 
-    if (isPastMonth) {
-      // Mes pasado: buscar reporte que cubra el rango completo
-      const minEnd = hastaDate - DAY;
-      const full = matching.filter(r => new Date(r.end_date).getTime() >= minEnd);
-      if (full.length > 0) {
-        log.push(`Mes pasado: usando ${full[0].file_name}`);
-        return { fileName: full[0].file_name, type: "release" };
-      }
-      log.push("Mes pasado: sin reporte completo, generando...");
-    } else {
-      // Mes actual: usar el reporte mas reciente que exista y en paralelo solicitar uno nuevo
-      // Primero: si hay un reporte que cubre hasta ayer, usarlo (datos hasta ayer)
-      // y solicitar un reporte fresco en background para la proxima vez
-      if (matching.length > 0) {
-        const best = matching[0];
-        const bestEnd = new Date(best.end_date).getTime();
-        const hoursOld = (now - bestEnd) / 3600_000;
-        log.push(`Mejor reporte: ${best.file_name} (datos hasta ${best.end_date}, ${Math.round(hoursOld)}h atras)`);
-
-        // Solicitar reporte fresco desde ultimo movimiento (rango corto = mas rapido)
-        if (pendingForPeriod.length === 0) {
-          const endDate = new Date().toISOString().replace(/\.\d{3}/, "");
-          // begin = ultimo movimiento que tenemos (o inicio del mes si no hay)
-          let freshBegin = fechaDesde;
-          if (lastMovFecha) {
-            // Convertir fecha local a UTC (Chile = UTC-3/-4)
-            const d = new Date(lastMovFecha + "T00:00:00-04:00");
-            freshBegin = d.toISOString().replace(/\.\d{3}Z/, "Z");
-          }
-          try {
-            log.push(`Solicitando reporte fresco: ${freshBegin} a ${endDate}`);
-            await mpPost("/v1/account/release_report", { begin_date: freshBegin, end_date: endDate });
-            log.push("Reporte solicitado a MP (reintenta en 5-10 min)");
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : "";
-            if (msg.includes("409") || msg.includes("already") || msg.includes("400")) {
-              log.push("Ya hay un reporte en generacion en MP, reintenta en unos minutos");
-            } else {
-              log.push(`No se pudo solicitar reporte fresco: ${msg}`);
-            }
-          }
-        }
-
-        return { fileName: best.file_name, type: "release" };
-      }
-      log.push("Mes actual: sin reportes, generando...");
+    if (matching.length > 0) {
+      const best = matching[0];
+      log.push(`Usando reporte: ${best.file_name} (${best.begin_date} a ${best.end_date})`);
+      return { fileName: best.file_name, type: "release" };
     }
 
-    // No hay reporte — generar y hacer polling corto (30s)
-    const existingNames = new Set(csvReports.map(r => r.file_name));
-    const endDate = isPastMonth ? fechaHasta : new Date().toISOString().replace(/\.\d{3}/, "");
-    let genBegin = fechaDesde;
-    if (!isPastMonth && lastMovFecha) {
-      const d = new Date(lastMovFecha + "T00:00:00-04:00");
-      genBegin = d.toISOString().replace(/\.\d{3}Z/, "Z");
-    }
+    log.push("Sin release reports para este periodo");
 
+    // Fallback: buscar settlement reports
     try {
-      log.push(`Solicitando reporte: ${genBegin} a ${endDate}`);
-      await mpPost("/v1/account/release_report", { begin_date: genBegin, end_date: endDate });
-
-      // Polling corto (30s) — si no esta listo, el usuario reintenta despues
-      const startPoll = Date.now();
-      while (Date.now() - startPoll < 30_000) {
-        await sleep(8_000);
-        const elapsed = Math.round((Date.now() - startPoll) / 1000);
-        const updated = await mpGet("/v1/account/release_report/list") as MPReport[];
-        const fresh = (updated || [])
-          .filter(r => (r.status === "enabled" || r.status === "processed") && r.file_name && r.file_name.endsWith(".csv"))
-          .filter(r => !existingNames.has(r.file_name));
-        if (fresh.length > 0) {
-          log.push(`Reporte listo en ${elapsed}s: ${fresh[0].file_name}`);
-          return { fileName: fresh[0].file_name, type: "release" };
-        }
-        log.push(`Esperando reporte... ${elapsed}s`);
+      const settlements = await mpGet("/v1/account/settlement_report/list") as MPReport[];
+      const csvSettlements = (settlements || [])
+        .filter(r => (r.status === "enabled" || r.status === "processed") && r.file_name && r.file_name.endsWith(".csv"))
+        .filter(r => new Date(r.begin_date).getTime() <= desdeMargin)
+        .sort((a, b) => new Date(b.end_date).getTime() - new Date(a.end_date).getTime());
+      if (csvSettlements.length > 0) {
+        log.push(`Fallback settlement: ${csvSettlements[0].file_name}`);
+        return { fileName: csvSettlements[0].file_name, type: "settlement" };
       }
-      log.push("Reporte solicitado pero aun no esta listo. Reintenta en 2-3 minutos.");
-    } catch (err) {
-      log.push(`Error: ${err instanceof Error ? err.message : String(err)}`);
-    }
+    } catch { /* no settlement reports */ }
+
+    log.push("Genera un reporte desde el panel de MercadoPago (Reportes → Liquidaciones) y vuelve a sincronizar.");
   } catch (err) {
-    log.push(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    log.push(`Error buscando reportes: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   return null;
@@ -380,7 +289,7 @@ export async function POST(req: NextRequest) {
     let reportType: string | null = null;
 
     try {
-      const report = await findReport(fechaDesde, fechaHasta, log, lastMovFecha);
+      const report = await findReport(fechaDesde, fechaHasta, log);
 
       if (report) {
         reportUsado = report.fileName;
@@ -415,7 +324,7 @@ export async function POST(req: NextRequest) {
           : parseRetirosSettlement(csv, empresaId, cuentaBancariaId);
         log.push(`Retiros parseados: ${retiroRows.length} (payouts + compras con debito)`);
       } else {
-        log.push("No se encontro reporte. Se solicito generar uno nuevo a MP (puede tardar 2-3 min).");
+        log.push("No se encontro reporte. Genera uno desde el panel de MercadoPago (Reportes → Liquidaciones).");
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -428,7 +337,7 @@ export async function POST(req: NextRequest) {
     if (retiroRows.length === 0) {
       return NextResponse.json({
         periodo, retiros_nuevos: 0, reporte: reportUsado, reporte_tipo: reportType,
-        mensaje: reportUsado ? "Sin retiros nuevos en el periodo" : "El reporte se esta generando. Espera 2-3 min e intenta de nuevo.",
+        mensaje: reportUsado ? "Sin retiros nuevos en el periodo" : "Sin reporte disponible. Genera uno desde el panel de MercadoPago.",
         log,
       });
     }
