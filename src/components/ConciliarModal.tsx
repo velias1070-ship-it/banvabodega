@@ -69,6 +69,8 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
   const docsDisponibles = useMemo(() => {
     const docs: { id: string; tipo: "rcv_compra" | "rcv_venta"; tipo_doc: string; tipo_doc_num: number | string; nro: string; rut: string; razon_social: string; fecha: string; monto_total: number }[] = [];
 
+    const aisic = compras.filter(c => (c.razon_social || "").includes("AISIC"));
+    console.log(`[ConcModal] compras: ${compras.length}, AISIC: ${aisic.length}, concCompraIds: ${concCompraIds.size}, AISIC filtradas: ${aisic.filter(c => concCompraIds.has(c.id!)).length}`, aisic.map(c => ({ id: c.id, nro: c.nro_doc, monto: c.monto_total, periodo: c.periodo, conciliado: concCompraIds.has(c.id!) })));
     if (tipoFiltro !== "ventas") {
       for (const c of compras) {
         if (concCompraIds.has(c.id!) || selectedIds.has(c.id!)) continue;
