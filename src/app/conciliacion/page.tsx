@@ -1750,12 +1750,27 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
     }
   };
 
-  const concCompraIds = new Set(conciliaciones.filter(c => c.estado === "confirmado" && c.rcv_compra_id).map(c => c.rcv_compra_id));
-  const totalConciliadas = data.filter(c => concCompraIds.has(c.id!)).length;
-  const totalPendientes = data.filter(c => !concCompraIds.has(c.id!)).length;
+  // Monto conciliado acumulado por compra
+  const concPorCompra = new Map<string, number>();
+  for (const c of conciliaciones) {
+    if (c.estado === "confirmado" && c.rcv_compra_id) {
+      concPorCompra.set(c.rcv_compra_id, (concPorCompra.get(c.rcv_compra_id) || 0) + (c.monto_aplicado || 0));
+    }
+  }
+  const isConciliada = (c: DBRcvCompra) => {
+    const yaConc = concPorCompra.get(c.id!) || 0;
+    return yaConc >= (c.monto_total || 0);
+  };
+  const isParcial = (c: DBRcvCompra) => {
+    const yaConc = concPorCompra.get(c.id!) || 0;
+    return yaConc > 0 && yaConc < (c.monto_total || 0);
+  };
+  const concCompraIds = new Set(concPorCompra.keys());
+  const totalConciliadas = data.filter(c => isConciliada(c)).length;
+  const totalPendientes = data.filter(c => !isConciliada(c)).length;
 
-  const filteredByConc = concFilter === "pendiente" ? data.filter(c => !concCompraIds.has(c.id!))
-    : concFilter === "conciliada" ? data.filter(c => concCompraIds.has(c.id!))
+  const filteredByConc = concFilter === "pendiente" ? data.filter(c => !isConciliada(c))
+    : concFilter === "conciliada" ? data.filter(c => isConciliada(c))
     : data;
   const filtered = searchBhe
     ? filteredByConc.filter(c => {
@@ -1901,9 +1916,9 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                   <td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
                     <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
                       <span style={{ fontSize: 10, color: "var(--txt3)" }}>
-                        {fmtMoney(c.monto_total || 0)} {concCompraIds.has(c.id!) ? "" : "por pagar"}
+                        {isConciliada(c) ? fmtMoney(c.monto_total || 0) : isParcial(c) ? `${fmtMoney((c.monto_total || 0) - (concPorCompra.get(c.id!) || 0))} por pagar` : `${fmtMoney(c.monto_total || 0)} por pagar`}
                       </span>
-                      {concCompraIds.has(c.id!) ? (
+                      {isConciliada(c) ? (
                         <div style={{ display: "inline-block", position: "relative" }}>
                           <span onClick={async () => {
                             if (detalleConc === c.id) { setDetalleConc(null); return; }
@@ -1966,6 +1981,8 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                           })()}
                         </div>
                       ) : (
+                        <div>
+                        {isParcial(c) && <div style={{ fontSize: 9, fontWeight: 600, color: "var(--amber)", marginBottom: 2 }}>Parcial {fmtMoney(concPorCompra.get(c.id!) || 0)}/{fmtMoney(c.monto_total || 0)}</div>}
                         <span style={{ display: "inline-flex", alignItems: "center", gap: 0 }}>
                           <span onClick={async () => {
                             setPagoItem(c); setPagoLoading(true); setPagoSearch("");
@@ -1988,6 +2005,7 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                             &#9662;
                           </span>
                         </span>
+                        </div>
                       )}
                     </div>
                   </td>
