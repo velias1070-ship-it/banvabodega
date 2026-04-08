@@ -463,8 +463,8 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
       )}
 
       {/* Tabla */}
-      <div className="card" style={{ overflow: "visible" }}>
-        <div style={{ overflowX: "auto", overflow: "visible" }}>
+      <div className="card" style={{ overflow: "hidden" }}>
+        <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
             <thead>
               <tr style={{ borderBottom: "2px solid var(--bg4)" }}>
@@ -642,31 +642,39 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
                             style={{ padding: "4px 12px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer", background: "var(--green)", color: "#fff", border: "none" }}>
                             Conciliar
                           </button>
-                          <button onClick={() => setShowActions(isActionsOpen ? null : m.id!)}
+                          <button data-actions-id={m.id} onClick={() => setShowActions(isActionsOpen ? null : m.id!)}
                             style={{ padding: "4px 6px", borderRadius: 6, fontSize: 11, cursor: "pointer", background: "var(--green)", color: "#fff", border: "none" }}>
                             ▾
                           </button>
-                          {/* Dropdown acciones */}
-                          {isActionsOpen && (
-                            <div style={{
-                              position: "absolute", top: "100%", right: 0, zIndex: 50, marginTop: 4,
-                              background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 8,
-                              boxShadow: "0 8px 24px rgba(0,0,0,0.4)", minWidth: 200, overflow: "hidden",
-                            }}>
-                              <button onClick={() => { setConciliarMov(m); setShowActions(null); }}
-                                style={{ width: "100%", padding: "10px 14px", textAlign: "left", background: "none", border: "none", borderBottom: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 12, cursor: "pointer" }}>
-                                Conciliar con factura
-                              </button>
-                              <button onClick={() => { setClasificarMov(m); setClasificarCuenta(""); setEgresoTipo(""); setEgresoProveedor(""); setEgresoDescripcion(""); setEgresoNumDoc(""); setEgresoArchivo(null); setShowActions(null); }}
-                                style={{ width: "100%", padding: "10px 14px", textAlign: "left", background: "none", border: "none", borderBottom: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 12, cursor: "pointer" }}>
-                                Agregar Egreso
-                              </button>
-                              <button onClick={() => handleIgnorar(m)}
-                                style={{ width: "100%", padding: "10px 14px", textAlign: "left", background: "none", border: "none", color: "var(--txt3)", fontSize: 12, cursor: "pointer" }}>
-                                Ignorar
-                              </button>
-                            </div>
-                          )}
+                          {/* Dropdown acciones — portal-style fixed para evitar overflow clip */}
+                          {isActionsOpen && (() => {
+                            const btnEl = document.querySelector(`[data-actions-id="${m.id}"]`);
+                            const rect = btnEl?.getBoundingClientRect();
+                            return (
+                              <>
+                                <div onClick={() => setShowActions(null)} style={{ position: "fixed", inset: 0, zIndex: 9990 }} />
+                                <div style={{
+                                  position: "fixed", zIndex: 9991,
+                                  top: rect ? rect.bottom + 4 : 0, right: rect ? window.innerWidth - rect.right : 0,
+                                  background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 8,
+                                  boxShadow: "0 8px 24px rgba(0,0,0,0.4)", minWidth: 200, overflow: "hidden",
+                                }}>
+                                  <button onClick={() => { setConciliarMov(m); setShowActions(null); }}
+                                    style={{ width: "100%", padding: "10px 14px", textAlign: "left", background: "none", border: "none", borderBottom: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 12, cursor: "pointer" }}>
+                                    Conciliar con factura
+                                  </button>
+                                  <button onClick={() => { setClasificarMov(m); setClasificarCuenta(""); setEgresoTipo(""); setEgresoProveedor(""); setEgresoDescripcion(""); setEgresoNumDoc(""); setEgresoArchivo(null); setShowActions(null); }}
+                                    style={{ width: "100%", padding: "10px 14px", textAlign: "left", background: "none", border: "none", borderBottom: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 12, cursor: "pointer" }}>
+                                    Agregar Egreso
+                                  </button>
+                                  <button onClick={() => handleIgnorar(m)}
+                                    style={{ width: "100%", padding: "10px 14px", textAlign: "left", background: "none", border: "none", color: "var(--txt3)", fontSize: 12, cursor: "pointer" }}>
+                                    Ignorar
+                                  </button>
+                                </div>
+                              </>
+                            );
+                          })()}
                         </div>
                       )}
                     </td>
