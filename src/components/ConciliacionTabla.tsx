@@ -53,12 +53,13 @@ function scoreDoc(
   if (doc.fecha) {
     const docFechaMs = new Date(doc.fecha + "T12:00:00").getTime();
     diasDiff = Math.round((movFechaMs - docFechaMs) / 86400000);
-    if (isMP) {
-      fechaScore = diasDiff < 0 ? 3 : Math.min(diasDiff / 60, 3);
-    } else {
-      const plazo = plazoByRut.get(doc.rut) || 30;
+    const plazo = plazoByRut.get(doc.rut);
+    if (diasDiff < 0) {
+      fechaScore = 3;
+    } else if (!isMP && plazo) {
       fechaScore = Math.abs(diasDiff - plazo) / plazo;
-      if (diasDiff < 0) fechaScore = 3;
+    } else {
+      fechaScore = Math.min(diasDiff / 60, 3);
     }
   }
   // MP → fecha 55% + monto 45%. Normal → fecha 40% + monto 35% + proveedor 25%

@@ -119,19 +119,19 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
         provMatch = palabras.some(p => movDesc.includes(p)) ? 0 : 1;
       }
 
-      // 3. Fecha -- MP: más cercano en fecha = mejor. Normal: plazo de pago esperado.
+      // 3. Fecha -- con plazo: desviación del plazo. Sin plazo o MP: proximidad directa.
       let fechaScore = 1;
       let diasDiff = 0;
       if (d.fecha) {
         const docFecha = new Date(d.fecha + "T12:00:00").getTime();
         diasDiff = Math.round((movFecha - docFecha) / 86400000);
-        if (isMP) {
-          // MP: simplemente preferir facturas cercanas en fecha (normalizar a 60 días)
-          fechaScore = diasDiff < 0 ? 3 : Math.min(diasDiff / 60, 3);
-        } else {
-          const plazo = plazoByRut.get(d.rut) || 30;
+        const plazo = plazoByRut.get(d.rut);
+        if (diasDiff < 0) {
+          fechaScore = 3;
+        } else if (!isMP && plazo) {
           fechaScore = Math.abs(diasDiff - plazo) / plazo;
-          if (diasDiff < 0) fechaScore = 3;
+        } else {
+          fechaScore = Math.min(diasDiff / 60, 3);
         }
       }
 
