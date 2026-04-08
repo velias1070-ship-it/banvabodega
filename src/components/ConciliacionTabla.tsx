@@ -103,9 +103,15 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
   const [conciliarMov, setConciliarMov] = useState<DBMovimientoBanco | null>(null);
   // Dropdown acciones
   const [showActions, setShowActions] = useState<string | null>(null);
-  // Clasificar sin documento
+  // Agregar Egreso
   const [clasificarMov, setClasificarMov] = useState<DBMovimientoBanco | null>(null);
   const [clasificarCuenta, setClasificarCuenta] = useState("");
+  const [egresoTipo, setEgresoTipo] = useState("");
+  const [egresoProveedor, setEgresoProveedor] = useState("");
+  const [egresoDescripcion, setEgresoDescripcion] = useState("");
+  const [egresoNumDoc, setEgresoNumDoc] = useState("");
+  const [egresoArchivo, setEgresoArchivo] = useState<File | null>(null);
+  const [egresoSaving, setEgresoSaving] = useState(false);
   // Detalle conciliación
   const [detalleConcMov, setDetalleConcMov] = useState<string | null>(null);
   const [detalleConcData, setDetalleConcData] = useState<{ conc: DBConciliacion; doc: DBRcvCompra | DBRcvVenta | null; tipo: string } | null>(null);
@@ -200,21 +206,41 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
   const sortIcon = (key: SortKey) => sortKey === key ? (sortDir === "desc" ? " ↓" : " ↑") : "";
 
 
-  // Clasificar sin documento
-  const handleClasificar = async () => {
-    if (!clasificarMov || !clasificarCuenta || !empresa.id) return;
-    const montoAplicar = Math.abs(clasificarMov.monto) - (clasificarMov.monto_conciliado || 0);
-    await upsertConciliacion({
-      empresa_id: empresa.id, movimiento_banco_id: clasificarMov.id!,
-      rcv_compra_id: null, rcv_venta_id: null, confianza: 1,
-      estado: "confirmado", tipo_partida: "clasificacion_directa",
-      metodo: "manual", notas: null, created_by: "admin",
-      monto_aplicado: montoAplicar,
-    });
-    const { estado, monto_conciliado } = await syncEstadoConciliacion(clasificarMov.id!, clasificarMov.monto);
-    await categorizarMovimiento(clasificarMov.id!, clasificarCuenta);
-    setMovBanco(prev => prev.map(m => m.id === clasificarMov.id ? { ...m, estado_conciliacion: estado, monto_conciliado } : m));
-    setClasificarMov(null); setClasificarCuenta("");
+  // Agregar Egreso
+  const handleAgregarEgreso = async () => {
+    if (!clasificarMov || !clasificarCuenta || !egresoTipo || !empresa.id) return;
+    setEgresoSaving(true);
+    try {
+      let archivoUrl: string | null = null;
+      if (egresoArchivo) {
+        const { getSupabase } = await import("@/lib/supabase");
+        const sb = getSupabase();
+        if (sb) {
+          const ext = egresoArchivo.name.split(".").pop() || "pdf";
+          const path = `conciliacion/${clasificarMov.id}_${Date.now()}.${ext}`;
+          const { error } = await sb.storage.from("banva").upload(path, egresoArchivo, { upsert: true });
+          if (!error) {
+            const { data } = sb.storage.from("banva").getPublicUrl(path);
+            archivoUrl = data?.publicUrl || null;
+          }
+        }
+      }
+      const montoAplicar = Math.abs(clasificarMov.monto) - (clasificarMov.monto_conciliado || 0);
+      await upsertConciliacion({
+        empresa_id: empresa.id, movimiento_banco_id: clasificarMov.id!,
+        rcv_compra_id: null, rcv_venta_id: null, confianza: 1,
+        estado: "confirmado", tipo_partida: "egreso",
+        metodo: "manual", notas: null, created_by: "admin",
+        monto_aplicado: montoAplicar,
+        metadata: { tipo: egresoTipo, proveedor: egresoProveedor, descripcion: egresoDescripcion, num_documento: egresoNumDoc },
+        archivo_url: archivoUrl,
+      });
+      const { estado, monto_conciliado } = await syncEstadoConciliacion(clasificarMov.id!, clasificarMov.monto);
+      await categorizarMovimiento(clasificarMov.id!, clasificarCuenta);
+      setMovBanco(prev => prev.map(m => m.id === clasificarMov.id ? { ...m, estado_conciliacion: estado, monto_conciliado } : m));
+      setClasificarMov(null); setClasificarCuenta(""); setEgresoTipo(""); setEgresoProveedor(""); setEgresoDescripcion(""); setEgresoNumDoc(""); setEgresoArchivo(null);
+    } catch (err) { console.error("Error agregando egreso:", err); }
+    setEgresoSaving(false);
   };
 
   // Ignorar
@@ -543,7 +569,7 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
                               ) : detalleConcData ? (
                                 <div>
                                   <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 8, textTransform: "uppercase", fontWeight: 600 }}>
-                                    {detalleConcData.tipo === "clasificacion_directa" ? "Clasificación directa" : detalleConcData.tipo === "multi_doc" ? "Multi-documento" : "Match"}
+                                    {detalleConcData.tipo === "egreso" ? "Egreso" : detalleConcData.tipo === "clasificacion_directa" ? "Clasificación directa" : detalleConcData.tipo === "multi_doc" ? "Multi-documento" : "Match"}
                                     {detalleConcData.conc.metodo && <span> · {detalleConcData.conc.metodo}</span>}
                                   </div>
                                   {detalleConcData.doc && (
@@ -558,6 +584,25 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
                                         <span className="mono" style={{ fontWeight: 700 }}>{fmtMoney(detalleConcData.doc.monto_total || 0)}</span>
                                       </div>
                                     </div>
+                                  )}
+                                  {detalleConcData.tipo === "egreso" && detalleConcData.conc.metadata && (() => {
+                                    const md = detalleConcData.conc.metadata as Record<string, string>;
+                                    return (
+                                      <div style={{ padding: 10, background: "var(--bg3)", borderRadius: 6, marginBottom: 8, fontSize: 11 }}>
+                                        <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4 }}>
+                                          <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 3, background: "var(--amberBg)", color: "var(--amber)", fontWeight: 600 }}>{md.tipo}</span>
+                                          {md.num_documento && <span className="mono" style={{ color: "var(--txt3)" }}>#{md.num_documento}</span>}
+                                        </div>
+                                        {md.proveedor && <div style={{ fontWeight: 600 }}>{md.proveedor}</div>}
+                                        {md.descripcion && <div style={{ color: "var(--txt2)", marginTop: 2 }}>{md.descripcion}</div>}
+                                      </div>
+                                    );
+                                  })()}
+                                  {detalleConcData.conc.archivo_url && (
+                                    <a href={detalleConcData.conc.archivo_url} target="_blank" rel="noopener noreferrer"
+                                      style={{ display: "block", padding: "6px 10px", background: "var(--bg3)", borderRadius: 6, marginBottom: 8, fontSize: 11, color: "var(--cyan)", textDecoration: "none", fontWeight: 600 }}>
+                                      Ver documento adjunto
+                                    </a>
                                   )}
                                   {!detalleConcData.doc && detalleConcData.tipo === "clasificacion_directa" && (
                                     <div style={{ padding: 10, background: "var(--bg3)", borderRadius: 6, marginBottom: 8, fontSize: 11, color: "var(--txt3)" }}>
@@ -612,9 +657,9 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
                                 style={{ width: "100%", padding: "10px 14px", textAlign: "left", background: "none", border: "none", borderBottom: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 12, cursor: "pointer" }}>
                                 Conciliar con factura
                               </button>
-                              <button onClick={() => { setClasificarMov(m); setClasificarCuenta(""); setShowActions(null); }}
+                              <button onClick={() => { setClasificarMov(m); setClasificarCuenta(""); setEgresoTipo(""); setEgresoProveedor(""); setEgresoDescripcion(""); setEgresoNumDoc(""); setEgresoArchivo(null); setShowActions(null); }}
                                 style={{ width: "100%", padding: "10px 14px", textAlign: "left", background: "none", border: "none", borderBottom: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 12, cursor: "pointer" }}>
-                                Clasificar sin documento
+                                Agregar Egreso
                               </button>
                               <button onClick={() => handleIgnorar(m)}
                                 style={{ width: "100%", padding: "10px 14px", textAlign: "left", background: "none", border: "none", color: "var(--txt3)", fontSize: 12, cursor: "pointer" }}>
@@ -649,28 +694,102 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
         </div>
       </div>
 
-      {/* Modal clasificar sin documento */}
+      {/* Modal Agregar Egreso */}
       {clasificarMov && (
         <div style={{ position: "fixed", inset: 0, zIndex: 9998, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center" }}
-          onClick={() => setClasificarMov(null)}>
-          <div className="card" style={{ padding: 24, maxWidth: 420, width: "90%" }} onClick={e => e.stopPropagation()}>
-            <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>Clasificar sin documento</h3>
-            <div style={{ fontSize: 12, color: "var(--txt3)", marginBottom: 12 }}>
-              {clasificarMov.descripcion} · {fmtMoney(Math.abs(clasificarMov.monto))}
+          onClick={() => !egresoSaving && setClasificarMov(null)}>
+          <div className="card" style={{ padding: 0, maxWidth: 520, width: "90%", maxHeight: "85vh", display: "flex", flexDirection: "column", overflow: "hidden" }} onClick={e => e.stopPropagation()}>
+            <div style={{ padding: "16px 24px", borderBottom: "1px solid var(--bg4)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <h3 style={{ fontSize: 16, fontWeight: 700, margin: 0 }}>Agregar Egreso</h3>
+              <button onClick={() => setClasificarMov(null)} disabled={egresoSaving} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", color: "var(--txt3)" }}>&times;</button>
             </div>
-            <select value={clasificarCuenta} onChange={e => setClasificarCuenta(e.target.value)}
-              style={{ width: "100%", padding: "8px 10px", fontSize: 12, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 6, marginBottom: 12 }}>
-              <option value="">— Seleccionar cuenta —</option>
-              {cuentasHoja.map(c => <option key={c.id} value={c.id!}>{c.codigo} — {c.nombre}</option>)}
-            </select>
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button onClick={() => setClasificarMov(null)}
+            <div style={{ padding: "16px 24px", borderBottom: "1px solid var(--bg4)", fontSize: 12, color: "var(--txt3)" }}>
+              <span style={{ fontWeight: 600, color: "var(--txt)" }}>{clasificarMov.descripcion}</span> · {fmtMoney(Math.abs(clasificarMov.monto))} · {clasificarMov.fecha}
+            </div>
+            <div style={{ flex: 1, overflow: "auto", padding: "16px 24px" }}>
+              {/* Datos básicos */}
+              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", marginBottom: 8, textTransform: "uppercase" }}>Datos básicos</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 }}>
+                <div>
+                  <label style={{ fontSize: 10, color: "var(--txt3)", display: "block", marginBottom: 3 }}>Tipo *</label>
+                  <select value={egresoTipo} onChange={e => setEgresoTipo(e.target.value)}
+                    style={{ width: "100%", padding: "7px 8px", fontSize: 11, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 6 }}>
+                    <option value="">Selecciona un tipo</option>
+                    <optgroup label="Documentos">
+                      <option value="boleta">Boleta</option>
+                      <option value="invoice">Invoice</option>
+                      <option value="gasto">Gasto general</option>
+                      <option value="remuneracion">Remuneración</option>
+                    </optgroup>
+                    <optgroup label="Impuestos">
+                      <option value="F20">F20 - Declaración mensual</option>
+                      <option value="F21">F21 - Declaración anual</option>
+                      <option value="F22">F22 - Impuesto renta</option>
+                      <option value="F29">F29 - IVA mensual</option>
+                      <option value="F30">F30 - Cambio de sujeto</option>
+                      <option value="F45">F45 - Retención 2da categoría</option>
+                      <option value="F50">F50 - Declaración anual AT</option>
+                      <option value="IVA">IVA</option>
+                      <option value="contribuciones">Contribuciones</option>
+                      <option value="postergacion_iva">Postergación IVA</option>
+                      <option value="timbre">Timbre y Estampilla</option>
+                    </optgroup>
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: 10, color: "var(--txt3)", display: "block", marginBottom: 3 }}>Num Documento</label>
+                  <input value={egresoNumDoc} onChange={e => setEgresoNumDoc(e.target.value)} placeholder="Opcional"
+                    style={{ width: "100%", padding: "7px 8px", fontSize: 11, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 6 }} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 10, color: "var(--txt3)", display: "block", marginBottom: 3 }}>Proveedor</label>
+                  <input value={egresoProveedor} onChange={e => setEgresoProveedor(e.target.value)} placeholder="Nombre proveedor"
+                    style={{ width: "100%", padding: "7px 8px", fontSize: 11, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 6 }} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 10, color: "var(--txt3)", display: "block", marginBottom: 3 }}>Descripción</label>
+                  <input value={egresoDescripcion} onChange={e => setEgresoDescripcion(e.target.value)} placeholder="Detalle del egreso"
+                    style={{ width: "100%", padding: "7px 8px", fontSize: 11, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 6 }} />
+                </div>
+              </div>
+
+              {/* Archivo */}
+              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", marginBottom: 8, textTransform: "uppercase" }}>Archivo de respaldo</div>
+              <div style={{ marginBottom: 16 }}>
+                {egresoArchivo ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: "var(--bg3)", borderRadius: 6, fontSize: 11 }}>
+                    <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{egresoArchivo.name}</span>
+                    <span style={{ color: "var(--txt3)", fontSize: 10 }}>{(egresoArchivo.size / 1024 / 1024).toFixed(1)} MB</span>
+                    <button onClick={() => setEgresoArchivo(null)} style={{ background: "none", border: "none", color: "var(--red)", cursor: "pointer", fontSize: 12 }}>&times;</button>
+                  </div>
+                ) : (
+                  <label style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "12px", border: "1px dashed var(--bg4)", borderRadius: 6, cursor: "pointer", fontSize: 11, color: "var(--txt3)" }}>
+                    Adjuntar PDF o imagen (max 16 MB)
+                    <input type="file" accept=".pdf,.jpg,.jpeg,.png,.webp" hidden onChange={e => {
+                      const f = e.target.files?.[0];
+                      if (f && f.size <= 16 * 1024 * 1024) setEgresoArchivo(f);
+                      else if (f) alert("Archivo muy grande (max 16 MB)");
+                    }} />
+                  </label>
+                )}
+              </div>
+
+              {/* Clasificación */}
+              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", marginBottom: 8, textTransform: "uppercase" }}>Clasificación</div>
+              <select value={clasificarCuenta} onChange={e => setClasificarCuenta(e.target.value)}
+                style={{ width: "100%", padding: "7px 8px", fontSize: 11, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 6 }}>
+                <option value="">— Seleccionar cuenta —</option>
+                {cuentasHoja.map(c => <option key={c.id} value={c.id!}>{c.codigo} — {c.nombre}</option>)}
+              </select>
+            </div>
+            <div style={{ padding: "12px 24px", borderTop: "1px solid var(--bg4)", display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={() => setClasificarMov(null)} disabled={egresoSaving}
                 style={{ padding: "8px 16px", borderRadius: 8, background: "var(--bg3)", color: "var(--txt)", fontSize: 12, border: "1px solid var(--bg4)", cursor: "pointer" }}>
                 Cancelar
               </button>
-              <button onClick={handleClasificar} disabled={!clasificarCuenta}
-                className="scan-btn green" style={{ padding: "8px 20px", fontSize: 12 }}>
-                Clasificar
+              <button onClick={handleAgregarEgreso} disabled={!clasificarCuenta || !egresoTipo || egresoSaving}
+                className="scan-btn green" style={{ padding: "8px 20px", fontSize: 12, opacity: (!clasificarCuenta || !egresoTipo || egresoSaving) ? 0.5 : 1 }}>
+                {egresoSaving ? "Guardando..." : "Guardar Egreso"}
               </button>
             </div>
           </div>

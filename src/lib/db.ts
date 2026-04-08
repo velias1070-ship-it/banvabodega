@@ -2046,6 +2046,8 @@ export interface DBConciliacion {
   created_by: string | null;
   regla_id?: string | null;
   monto_aplicado?: number | null;
+  metadata?: Record<string, unknown> | null;
+  archivo_url?: string | null;
   created_at?: string;
 }
 
