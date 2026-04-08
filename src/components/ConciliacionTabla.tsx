@@ -36,16 +36,16 @@ function isMovReal(m: DBMovimientoBanco): boolean {
   return true;
 }
 
-// Scoring para conciliación rápida
+// Scoring inteligente: monto exacto domina, fecha por proximidad o plazo
 function scoreDoc(
   doc: { monto_total: number; razon_social: string; rut: string; fecha: string },
   target: number, movFechaMs: number, movDescLower: string, plazoByRut: Map<string, number>, isMP: boolean
 ): { score: number; diasDiff: number } {
-  const montoScore = target > 0 ? Math.abs(doc.monto_total - target) / target : 1;
-  let provMatch = 1;
+  const montoPct = target > 0 ? Math.abs(doc.monto_total - target) / target : 1;
+  const montoScore = montoPct < 0.01 ? 0 : montoPct < 0.05 ? 0.1 + montoPct : 0.3 + montoPct;
+  let provMatch = 0;
   if (!isMP) {
-    const nombreProv = (doc.razon_social || "").toLowerCase();
-    const palabras = nombreProv.split(/\s+/).filter(p => p.length > 3);
+    const palabras = (doc.razon_social || "").toLowerCase().split(/\s+/).filter(p => p.length > 3);
     provMatch = palabras.some(p => movDescLower.includes(p)) ? 0 : 1;
   }
   let fechaScore = 1;
@@ -62,10 +62,9 @@ function scoreDoc(
       fechaScore = Math.min(diasDiff / 60, 3);
     }
   }
-  // MP → fecha 55% + monto 45%. Normal → fecha 40% + monto 35% + proveedor 25%
   const score = isMP
-    ? Math.min(fechaScore, 3) * 0.55 + montoScore * 0.45
-    : Math.min(fechaScore, 3) * 0.4 + montoScore * 0.35 + provMatch * 0.25;
+    ? montoScore * 0.55 + Math.min(fechaScore, 3) * 0.45
+    : montoScore * 0.50 + Math.min(fechaScore, 3) * 0.30 + provMatch * 0.20;
   return { score, diasDiff };
 }
 

@@ -1081,15 +1081,19 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                 const provName = (pagoItem.razon_social || "").toLowerCase();
                 const provWords = provName.split(/\s+/).filter(w => w.length > 3);
                 const scoreMov = (m: DBMovimientoBanco) => {
-                  const montoScore = target > 0 ? Math.abs(Math.abs(m.monto) - target) / target : 1;
+                  const montoPct = target > 0 ? Math.abs(Math.abs(m.monto) - target) / target : 1;
+                  const montoScore = montoPct < 0.01 ? 0 : montoPct < 0.05 ? 0.1 + montoPct : 0.3 + montoPct;
                   const desc = (m.descripcion || "").toLowerCase();
-                  const provMatch = provWords.some(w => desc.includes(w)) ? 0 : 1;
+                  const isMP = m.banco === "MercadoPago" || desc.startsWith("retiro mp");
+                  const provMatch = isMP ? 0 : (provWords.some(w => desc.includes(w)) ? 0 : 1);
                   let fechaScore = 1;
                   if (facFecha && m.fecha) {
                     const dias = (new Date(m.fecha + "T12:00:00").getTime() - facFecha) / 86400000;
-                    fechaScore = dias < 0 ? 3 : Math.min(dias / 30, 3);
+                    fechaScore = dias < 0 ? 3 : Math.min(dias / 60, 3);
                   }
-                  return fechaScore * 0.4 + montoScore * 0.35 + provMatch * 0.25;
+                  return isMP
+                    ? montoScore * 0.55 + Math.min(fechaScore, 3) * 0.45
+                    : montoScore * 0.50 + Math.min(fechaScore, 3) * 0.30 + provMatch * 0.20;
                 };
                 const sorted = filtrados.sort((a, b) => scoreMov(a) - scoreMov(b));
                 if (sorted.length === 0) return <div style={{ padding: 40, textAlign: "center", color: "var(--txt3)" }}>No hay movimientos bancarios pendientes</div>;
@@ -1973,15 +1977,19 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                 const provWordsH = provNameH.split(/\s+/).filter(w => w.length > 3);
                 const filtrados = movsBanco.filter(m => !pagoSearch || (m.descripcion || "").toLowerCase().includes(q) || (m.banco || "").toLowerCase().includes(q) || String(Math.abs(m.monto)).includes(q));
                 const scoreMovH = (m: DBMovimientoBanco) => {
-                  const montoScore = targetH > 0 ? Math.abs(Math.abs(m.monto) - targetH) / targetH : 1;
+                  const montoPct = targetH > 0 ? Math.abs(Math.abs(m.monto) - targetH) / targetH : 1;
+                  const montoScore = montoPct < 0.01 ? 0 : montoPct < 0.05 ? 0.1 + montoPct : 0.3 + montoPct;
                   const desc = (m.descripcion || "").toLowerCase();
-                  const provMatch = provWordsH.some(w => desc.includes(w)) ? 0 : 1;
+                  const isMP = m.banco === "MercadoPago" || desc.startsWith("retiro mp");
+                  const provMatch = isMP ? 0 : (provWordsH.some(w => desc.includes(w)) ? 0 : 1);
                   let fechaScore = 1;
                   if (facFechaH && m.fecha) {
                     const dias = (new Date(m.fecha + "T12:00:00").getTime() - facFechaH) / 86400000;
-                    fechaScore = dias < 0 ? 3 : Math.min(dias / 30, 3);
+                    fechaScore = dias < 0 ? 3 : Math.min(dias / 60, 3);
                   }
-                  return fechaScore * 0.4 + montoScore * 0.35 + provMatch * 0.25;
+                  return isMP
+                    ? montoScore * 0.55 + Math.min(fechaScore, 3) * 0.45
+                    : montoScore * 0.50 + Math.min(fechaScore, 3) * 0.30 + provMatch * 0.20;
                 };
                 const sorted = filtrados.sort((a, b) => scoreMovH(a) - scoreMovH(b));
                 if (sorted.length === 0) return <div style={{ padding: 40, textAlign: "center", color: "var(--txt3)" }}>No hay movimientos bancarios pendientes</div>;

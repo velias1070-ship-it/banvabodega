@@ -107,19 +107,20 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
     // Score inteligente: menor = mejor match
     const isMP = mov.banco === "MercadoPago" || movDesc.startsWith("retiro mp");
     const scoreDoc = (d: typeof docs[0]): { score: number; diasDiff: number; montoDiff: number } => {
-      // 1. Monto -- diferencia porcentual al target (0 = match perfecto)
-      const montoScore = target > 0 ? Math.abs(d.monto_total - target) / target : 1;
       const montoDiff = Math.abs(d.monto_total - target);
+      const montoPct = target > 0 ? montoDiff / target : 1;
 
-      // 2. Proveedor -- si la descripcion del movimiento menciona al proveedor
-      let provMatch = 1;
+      // Monto: no-lineal — match exacto (<1%) domina todo
+      const montoScore = montoPct < 0.01 ? 0 : montoPct < 0.05 ? 0.1 + montoPct : 0.3 + montoPct;
+
+      // Proveedor: solo si la descripción tiene info útil (no MP)
+      let provMatch = 0;
       if (!isMP) {
-        const nombreProv = d.razon_social.toLowerCase();
-        const palabras = nombreProv.split(/\s+/).filter(p => p.length > 3);
+        const palabras = (d.razon_social || "").toLowerCase().split(/\s+/).filter(p => p.length > 3);
         provMatch = palabras.some(p => movDesc.includes(p)) ? 0 : 1;
       }
 
-      // 3. Fecha -- con plazo: desviación del plazo. Sin plazo o MP: proximidad directa.
+      // Fecha: proveedor con plazo → desviación. Sin plazo o MP → proximidad directa.
       let fechaScore = 1;
       let diasDiff = 0;
       if (d.fecha) {
@@ -135,10 +136,10 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
         }
       }
 
-      // Pesos: MP → fecha 55% + monto 45% (proveedor no aporta). Normal → fecha 40% + monto 35% + proveedor 25%
+      // Pesos: monto domina. MP sin proveedor.
       const score = isMP
-        ? Math.min(fechaScore, 3) * 0.55 + montoScore * 0.45
-        : Math.min(fechaScore, 3) * 0.4 + montoScore * 0.35 + provMatch * 0.25;
+        ? montoScore * 0.55 + Math.min(fechaScore, 3) * 0.45
+        : montoScore * 0.50 + Math.min(fechaScore, 3) * 0.30 + provMatch * 0.20;
       return { score, diasDiff, montoDiff };
     };
 
