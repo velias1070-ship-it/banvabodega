@@ -204,22 +204,39 @@ function SiiImportModal({ tipo, empresa, periodoActual, onClose, onImported }: S
     setResultado(null);
 
     try {
+      // Expandir año a meses si es YYYY
+      const periodos: string[] = [];
+      if (periodo.length === 4) {
+        for (let m = 1; m <= 12; m++) periodos.push(`${periodo}${String(m).padStart(2, "0")}`);
+      } else {
+        periodos.push(periodo);
+      }
+
       const endpoint = tipo === "BHE" ? "/api/sii/bhe" : "/api/sii/rcv";
-      const resp = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(tipo === "BHE" ? { periodo, rut, clave } : { rut, clave, periodo, tipo }),
-      });
+      let allData: Record<string, unknown>[] = [];
+      const errores: string[] = [];
 
-      const json = await resp.json();
+      for (const p of periodos) {
+        if (periodos.length > 1) setError("");
+        const resp = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(tipo === "BHE" ? { periodo: p, rut, clave } : { rut, clave, periodo: p, tipo }),
+        });
+        const json = await resp.json();
+        if (!resp.ok) { errores.push(`${p}: ${json.error || resp.status}`); continue; }
+        if (json.data && json.data.length > 0) allData.push(...json.data);
+      }
 
-      if (!resp.ok) {
-        setError(json.error || `Error HTTP ${resp.status}`);
+      if (errores.length > 0 && allData.length === 0) {
+        setError(errores[0]);
         setLoading(false);
         return;
       }
 
-      if (!json.data || json.data.length === 0) {
+      const json = { data: allData };
+
+      if (json.data.length === 0) {
         setResultado({ registros: 0 });
         setLoading(false);
         return;
@@ -227,16 +244,16 @@ function SiiImportModal({ tipo, empresa, periodoActual, onClose, onImported }: S
 
       // Guardar en Supabase
       if (tipo === "COMPRA" || tipo === "BHE") {
-        const items = json.data.map((d: Record<string, unknown>) => ({
+        const items = allData.map((d) => ({
           ...d,
           empresa_id: empresa.id,
-        }));
+        })) as DBRcvCompra[];
         await upsertRcvCompras(items);
       } else {
-        const items = json.data.map((d: Record<string, unknown>) => ({
+        const items = allData.map((d) => ({
           ...d,
           empresa_id: empresa.id,
-        }));
+        })) as DBRcvVenta[];
         await upsertRcvVentas(items);
       }
 
@@ -246,7 +263,7 @@ function SiiImportModal({ tipo, empresa, periodoActual, onClose, onImported }: S
           empresa_id: empresa.id,
           periodo,
           tipo: tipo === "COMPRA" || tipo === "BHE" ? "compras" : "ventas",
-          registros: json.data.length,
+          registros: allData.length,
         });
       }
 
@@ -257,7 +274,7 @@ function SiiImportModal({ tipo, empresa, periodoActual, onClose, onImported }: S
         sii.clear();
       }
 
-      setResultado({ registros: json.data.length });
+      setResultado({ registros: allData.length });
       onImported();
     } catch (err) {
       setError(`Error de conexión: ${err instanceof Error ? err.message : "desconocido"}`);
