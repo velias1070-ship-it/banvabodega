@@ -1780,15 +1780,19 @@ function PreciosYPromos() {
       const sinPromo: string[] = (scan.sin_promo || []).map((s: { item_id: string }) => s.item_id);
       setScanResult({ total: scan.total || 0, con: scan.con_promo || 0, sin: sinPromo.length });
       if (sinPromo.length > 0) {
-        // Cargar promos+costos y filtrar los que realmente no tienen promo activa
-        const ids = sinPromo.slice(0, 30).join(",");
-        const res2 = await fetch(`/api/ml/promotions?item_ids=${ids}`);
-        const data = await res2.json();
-        const realSinPromo = (data.items || []).filter((it: PromoItem) =>
-          !it.promotions.some(p => p.status === "started" || p.status === "pending")
-        );
-        setPromoData(realSinPromo);
-        setScanResult(prev => prev ? { ...prev, sin: realSinPromo.length, con: prev.total - realSinPromo.length } : prev);
+        // Cargar promos+costos — TODOS los sin promo, no solo 30
+        const allItems: PromoItem[] = [];
+        for (let i = 0; i < sinPromo.length; i += 15) {
+          const batch = sinPromo.slice(i, i + 15);
+          const ids = batch.join(",");
+          const res2 = await fetch(`/api/ml/promotions?item_ids=${ids}`);
+          const data = await res2.json();
+          allItems.push(...(data.items || []));
+          // Mostrar progreso parcial
+          const filtered = allItems.filter((it: PromoItem) => !it.promotions.some(p => p.status === "started" || p.status === "pending"));
+          setPromoData(filtered);
+          setScanResult(prev => prev ? { ...prev, sin: filtered.length } : prev);
+        }
       }
     } catch { /* ignore */ }
     setPromoLoading(false);
@@ -1813,15 +1817,21 @@ function PreciosYPromos() {
     setPromoLoading(false);
   };
 
-  // Cargar todas
+  // Cargar todas en batches con progreso
   const loadAll = async () => {
     setPromoLoading(true);
     setPromoData([]);
     try {
-      const ids = activeItems.slice(0, 30).map(i => i.item_id).join(",");
-      const res = await fetch(`/api/ml/promotions?item_ids=${ids}`);
-      const data = await res.json();
-      setPromoData(data.items || []);
+      const allItems: PromoItem[] = [];
+      const uniqueIds = Array.from(new Set(activeItems.map(i => i.item_id)));
+      for (let i = 0; i < uniqueIds.length; i += 15) {
+        const batch = uniqueIds.slice(i, i + 15);
+        const ids = batch.join(",");
+        const res = await fetch(`/api/ml/promotions?item_ids=${ids}`);
+        const data = await res.json();
+        allItems.push(...(data.items || []));
+        setPromoData([...allItems]);
+      }
     } catch { /* ignore */ }
     setPromoLoading(false);
   };
