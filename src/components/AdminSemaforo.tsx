@@ -136,7 +136,7 @@ export default function AdminSemaforo() {
   const loadCurrent = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/semaforo/current");
+      const res = await fetch("/api/semaforo/current", { cache: "no-store" });
       if (res.ok) setCurrent(await res.json());
     } catch { /* ignore */ }
     setLoading(false);
@@ -145,7 +145,7 @@ export default function AdminSemaforo() {
   const loadCubeta = useCallback(async (nombre: string) => {
     setLoadingItems(true);
     try {
-      const res = await fetch(`/api/semaforo/cubeta/${nombre}?incluir_revisados=${showRevisados}`);
+      const res = await fetch(`/api/semaforo/cubeta/${nombre}?incluir_revisados=${showRevisados}&t=${Date.now()}`, { cache: "no-store" });
       if (res.ok) {
         const data = await res.json();
         setItems(data.items || []);
@@ -156,7 +156,7 @@ export default function AdminSemaforo() {
 
   const loadHistorial = useCallback(async (sku: string) => {
     try {
-      const res = await fetch(`/api/semaforo/historial/${encodeURIComponent(sku)}`);
+      const res = await fetch(`/api/semaforo/historial/${encodeURIComponent(sku)}`, { cache: "no-store" });
       if (res.ok) {
         const data = await res.json();
         setHistorial(data.revisiones || []);
@@ -170,7 +170,7 @@ export default function AdminSemaforo() {
   const handleRefresh = async () => {
     setRefreshing(true);
     try {
-      await fetch("/api/semaforo/refresh", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ manual: true }) });
+      await fetch("/api/semaforo/refresh", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ manual: true }), cache: "no-store" });
       await loadCurrent();
       if (selectedCubeta) await loadCubeta(selectedCubeta);
     } catch { /* ignore */ }
