@@ -1582,7 +1582,7 @@ function PreciosYPromos() {
   const simPTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const openSimP = (item: PromoItem, promo: PromoItem["promotions"][0]) => {
-    const defaultPrice = promo.price > 0 ? promo.price : (promo.suggested_discounted_price || Math.round(item.price_ml * 0.8));
+    const defaultPrice = promo.suggested_discounted_price || (promo.price > 0 ? promo.price : Math.round(item.price_ml * 0.8));
     setSimP({ item, promo });
     setSimPPrice(String(defaultPrice));
     setSimPFee(0);
@@ -1975,9 +1975,19 @@ function PreciosYPromos() {
                   style={{ width: "100%", padding: "12px 14px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt)", fontSize: 18, fontWeight: 700, fontFamily: "var(--font-mono, monospace)", boxSizing: "border-box", textAlign: "center" }} />
                 {descPct > 0 && <div style={{ textAlign: "center", fontSize: 11, color: "var(--amber)", marginTop: 4 }}>-{descPct}% sobre {fmt(simP.item.price_ml)}</div>}
                 {simP.promo.min_discounted_price && (
-                  <div style={{ textAlign: "center", fontSize: 10, color: "var(--txt3)", marginTop: 2 }}>Rango: {fmt(simP.promo.min_discounted_price)} — {fmt(simP.promo.max_discounted_price || 0)}</div>
+                  <div style={{ textAlign: "center", fontSize: 10, color: "var(--txt3)", marginTop: 2 }}>Rango permitido: {fmt(simP.promo.min_discounted_price)} — {fmt(simP.promo.max_discounted_price || 0)}</div>
                 )}
-                {descPct < 5 && p > 0 && (
+                {p > 0 && simP.promo.max_discounted_price && p > simP.promo.max_discounted_price && (
+                  <div style={{ marginTop: 6, padding: "6px 10px", borderRadius: 6, background: "var(--redBg)", border: "1px solid var(--redBd)", fontSize: 10, color: "var(--red)", textAlign: "center" }}>
+                    Precio máximo permitido: {fmt(simP.promo.max_discounted_price)}. Baja el precio.
+                  </div>
+                )}
+                {p > 0 && simP.promo.min_discounted_price && p < simP.promo.min_discounted_price && (
+                  <div style={{ marginTop: 6, padding: "6px 10px", borderRadius: 6, background: "var(--redBg)", border: "1px solid var(--redBd)", fontSize: 10, color: "var(--red)", textAlign: "center" }}>
+                    Precio mínimo permitido: {fmt(simP.promo.min_discounted_price)}. Sube el precio.
+                  </div>
+                )}
+                {descPct < 5 && p > 0 && !simP.promo.max_discounted_price && (
                   <div style={{ marginTop: 6, padding: "6px 10px", borderRadius: 6, background: "var(--redBg)", border: "1px solid var(--redBd)", fontSize: 10, color: "var(--red)", textAlign: "center" }}>
                     ML requiere mínimo 5% de descuento. Máximo: {fmt(Math.floor(simP.item.price_ml * 0.95))}
                   </div>
@@ -2010,10 +2020,15 @@ function PreciosYPromos() {
                   style={{ padding: "9px 20px", borderRadius: 8, fontSize: 12, fontWeight: 600, background: "var(--bg3)", color: "var(--txt2)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
                   Cancelar
                 </button>
-                <button onClick={confirmSimP} disabled={!!promoActioning || p <= 0 || ganancia < 0 || descPct < 5}
-                  style={{ padding: "9px 20px", borderRadius: 8, fontSize: 12, fontWeight: 700, background: ganancia >= 0 && descPct >= 5 ? info.color : "var(--red)", color: "#fff", border: "none", cursor: promoActioning ? "wait" : "pointer", opacity: p <= 0 || descPct < 5 ? 0.4 : 1 }}>
-                  {promoActioning ? "Postulando..." : descPct < 5 ? "Mínimo 5% descuento" : ganancia < 0 ? "Margen negativo" : "Confirmar Postulación"}
-                </button>
+                {(() => {
+                  const outOfRange = !!(simP.promo.max_discounted_price && p > simP.promo.max_discounted_price) || !!(simP.promo.min_discounted_price && p < simP.promo.min_discounted_price);
+                  const tooSmallDisc = descPct < 5 && !simP.promo.max_discounted_price;
+                  const blocked = !!promoActioning || p <= 0 || ganancia < 0 || outOfRange || tooSmallDisc;
+                  const reason = outOfRange ? "Fuera de rango" : tooSmallDisc ? "Mínimo 5%" : ganancia < 0 ? "Margen negativo" : "";
+                  return <button onClick={confirmSimP} disabled={blocked}
+                  style={{ padding: "9px 20px", borderRadius: 8, fontSize: 12, fontWeight: 700, background: !blocked ? info.color : "var(--red)", color: "#fff", border: "none", cursor: promoActioning ? "wait" : "pointer", opacity: blocked ? 0.5 : 1 }}>
+                  {promoActioning ? "Postulando..." : reason || "Confirmar Postulación"}
+                </button>; })()}
               </div>
             </div>
           </div>
