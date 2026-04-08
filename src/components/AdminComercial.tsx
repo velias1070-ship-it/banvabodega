@@ -905,7 +905,7 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                                           if (!confirm(`¿Salir de ${p.type.replace(/_/g, " ")} en este item?`)) return;
                                           setPromoActioning(item.item_id);
                                           try {
-                                            const res = await fetch("/api/ml/promotions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ item_id: item.item_id, action: "delete" }) });
+                                            const res = await fetch("/api/ml/promotions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ item_id: item.item_id, action: "delete", promotion_type: p.type, promotion_id: p.id }) });
                                             const data = await res.json();
                                             if (data.error) setActionError(`Error: ${data.error}`);
                                             else { setActionError("Removido de la promoción"); openPromos(promoFamily!, promoFamilyItems); }
@@ -1642,11 +1642,11 @@ function PreciosYPromos() {
     finally { setPromoActioning(null); setSimP(null); }
   };
 
-  const salirPromoP = async (itemId: string) => {
+  const salirPromoP = async (itemId: string, promoType?: string, promoId?: string) => {
     if (!confirm("¿Salir de la promoción?")) return;
     setPromoActioning(itemId);
     try {
-      const res = await fetch("/api/ml/promotions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ item_id: itemId, action: "delete" }) });
+      const res = await fetch("/api/ml/promotions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ item_id: itemId, action: "delete", promotion_type: promoType, promotion_id: promoId }) });
       const data = await res.json();
       if (data.error) setActionMsg(`Error: ${data.error}`);
       else {
@@ -1884,7 +1884,7 @@ function PreciosYPromos() {
                               <div key={pi} style={{ padding: "4px 8px", borderRadius: 5, background: "var(--bg3)", fontSize: 10, borderLeft: `3px solid ${info.color}` }}>
                                 <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 2 }}>
                                   {p.status === "started" ? (
-                                    <button onClick={() => salirPromoP(item.item_id)} disabled={promoActioning === item.item_id}
+                                    <button onClick={() => salirPromoP(item.item_id, p.type, p.id)} disabled={promoActioning === item.item_id}
                                       style={{ padding: "1px 5px", borderRadius: 3, fontSize: 8, fontWeight: 700, background: "var(--greenBg)", color: "var(--green)", border: "1px solid var(--greenBd)", cursor: "pointer" }}>
                                       {promoActioning === item.item_id ? "..." : "ACTIVA \u2715"}
                                     </button>

@@ -206,12 +206,17 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === "delete") {
-      const resp = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${item_id}?app_version=v2`, {
+      const { promotion_type: delType, promotion_id: delId } = body;
+      let url = `https://api.mercadolibre.com/seller-promotions/items/${item_id}?app_version=v2`;
+      if (delType) url += `&promotion_type=${delType}`;
+      if (delId) url += `&promotion_id=${delId}`;
+      const resp = await fetch(url, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await resp.json();
-      return NextResponse.json({ ok: resp.ok, result: data });
+      if (!resp.ok) return NextResponse.json({ error: data.message || "Error ML", detail: data }, { status: resp.status });
+      return NextResponse.json({ ok: true, result: data });
     }
 
     return NextResponse.json({ error: "action inválida" }, { status: 400 });
