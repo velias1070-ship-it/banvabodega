@@ -20,10 +20,10 @@ export async function GET() {
 
   const semana = latest[0].semana_calculo;
 
-  // Get all rows for current week
-  const { data: rows } = await sb
+  // Get all rows for current week — use count to verify
+  const { data: rows, count } = await sb
     .from("semaforo_semanal")
-    .select("*")
+    .select("sku_origen, cubeta, impacto_clp", { count: "exact" })
     .eq("semana_calculo", semana);
 
   // Get snapshot (current + previous)
@@ -75,6 +75,8 @@ export async function GET() {
       count_muerto: prevSnap.count_muerto,
     } : null,
     _ts: Date.now(),
+    _db_count: count,
+    _rows_length: (rows || []).length,
   }, {
     headers: {
       "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
