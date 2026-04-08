@@ -146,6 +146,7 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
       fetchPlanCuentasHojas(),
       fetchProveedorCuentas(),
     ]);
+    console.log(`[ConcTabla] compras: ${c.length}, abril: ${c.filter(x => (x.periodo || "").startsWith("2026") && (x.periodo || "").endsWith("04")).length}, AISIC: ${c.filter(x => (x.razon_social || "").includes("AISIC")).length}`);
     setMovBanco(m); setCompras(c); setVentas(v); setConciliaciones(conc); setCuentasHoja(ctas); setProvCuentas(pc);
     setLoading(false);
   }, [empresa.id, periodo, periodos]);
