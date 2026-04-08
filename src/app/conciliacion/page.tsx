@@ -189,6 +189,7 @@ function SiiImportModal({ tipo, empresa, periodoActual, onClose, onImported }: S
   const [periodo, setPeriodo] = useState(periodoActual);
   const [guardarCreds, setGuardarCreds] = useState(!!sii.creds.clave);
   const [loading, setLoading] = useState(false);
+  const [progreso, setProgreso] = useState("");
   const [error, setError] = useState("");
   const [resultado, setResultado] = useState<{ registros: number } | null>(null);
 
@@ -216,8 +217,9 @@ function SiiImportModal({ tipo, empresa, periodoActual, onClose, onImported }: S
       let allData: Record<string, unknown>[] = [];
       const errores: string[] = [];
 
-      for (const p of periodos) {
-        if (periodos.length > 1) setError("");
+      for (let i = 0; i < periodos.length; i++) {
+        const p = periodos[i];
+        if (periodos.length > 1) setProgreso(`${p.slice(4)}/${p.slice(0,4)} (${i+1}/${periodos.length})`);
         const resp = await fetch(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -357,7 +359,7 @@ function SiiImportModal({ tipo, empresa, periodoActual, onClose, onImported }: S
           {!resultado && (
             <button onClick={handleImport} disabled={loading || !rut || !clave}
               style={{ flex: 1, padding: 12, borderRadius: 10, background: loading ? "var(--bg4)" : "var(--cyan)", color: loading ? "var(--txt3)" : "#000", fontWeight: 700, fontSize: 13, border: "none", cursor: loading ? "not-allowed" : "pointer" }}>
-              {loading ? "Consultando SII..." : `Importar ${label}`}
+              {loading ? (progreso ? `Importando ${progreso}` : "Consultando SII...") : `Importar ${label}`}
             </button>
           )}
         </div>
