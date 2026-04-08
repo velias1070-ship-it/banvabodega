@@ -69,8 +69,6 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
   const docsDisponibles = useMemo(() => {
     const docs: { id: string; tipo: "rcv_compra" | "rcv_venta"; tipo_doc: string; tipo_doc_num: number | string; nro: string; rut: string; razon_social: string; fecha: string; monto_total: number }[] = [];
 
-    const aisic = compras.filter(c => (c.razon_social || "").includes("AISIC"));
-    console.log(`[ConcModal] compras: ${compras.length}, AISIC: ${aisic.length}, concCompraIds: ${concCompraIds.size}, AISIC filtradas: ${aisic.filter(c => concCompraIds.has(c.id!)).length}`, aisic.map(c => ({ id: c.id, nro: c.nro_doc, monto: c.monto_total, periodo: c.periodo, conciliado: concCompraIds.has(c.id!) })));
     if (tipoFiltro !== "ventas") {
       for (const c of compras) {
         if (concCompraIds.has(c.id!) || selectedIds.has(c.id!)) continue;
@@ -121,15 +119,20 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
         provMatch = palabras.some(p => movDesc.includes(p)) ? 0 : 1;
       }
 
-      // 3. Plazo de pago -- la fecha del movimiento deberia ser ~plazo dias despues de la factura
+      // 3. Fecha -- MP: más cercano en fecha = mejor. Normal: plazo de pago esperado.
       let fechaScore = 1;
       let diasDiff = 0;
       if (d.fecha) {
         const docFecha = new Date(d.fecha + "T12:00:00").getTime();
         diasDiff = Math.round((movFecha - docFecha) / 86400000);
-        const plazo = plazoByRut.get(d.rut) || 30;
-        fechaScore = Math.abs(diasDiff - plazo) / plazo;
-        if (diasDiff < 0) fechaScore = 3;
+        if (isMP) {
+          // MP: simplemente preferir facturas cercanas en fecha (normalizar a 60 días)
+          fechaScore = diasDiff < 0 ? 3 : Math.min(diasDiff / 60, 3);
+        } else {
+          const plazo = plazoByRut.get(d.rut) || 30;
+          fechaScore = Math.abs(diasDiff - plazo) / plazo;
+          if (diasDiff < 0) fechaScore = 3;
+        }
       }
 
       // Pesos: MP → fecha 55% + monto 45% (proveedor no aporta). Normal → fecha 40% + monto 35% + proveedor 25%

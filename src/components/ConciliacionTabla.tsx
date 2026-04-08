@@ -53,9 +53,13 @@ function scoreDoc(
   if (doc.fecha) {
     const docFechaMs = new Date(doc.fecha + "T12:00:00").getTime();
     diasDiff = Math.round((movFechaMs - docFechaMs) / 86400000);
-    const plazo = plazoByRut.get(doc.rut) || 30;
-    fechaScore = Math.abs(diasDiff - plazo) / plazo;
-    if (diasDiff < 0) fechaScore = 3;
+    if (isMP) {
+      fechaScore = diasDiff < 0 ? 3 : Math.min(diasDiff / 60, 3);
+    } else {
+      const plazo = plazoByRut.get(doc.rut) || 30;
+      fechaScore = Math.abs(diasDiff - plazo) / plazo;
+      if (diasDiff < 0) fechaScore = 3;
+    }
   }
   // MP → fecha 55% + monto 45%. Normal → fecha 40% + monto 35% + proveedor 25%
   const score = isMP
@@ -146,7 +150,6 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
       fetchPlanCuentasHojas(),
       fetchProveedorCuentas(),
     ]);
-    console.log(`[ConcTabla] compras: ${c.length}, abril: ${c.filter(x => (x.periodo || "").startsWith("2026") && (x.periodo || "").endsWith("04")).length}, AISIC: ${c.filter(x => (x.razon_social || "").includes("AISIC")).length}`);
     setMovBanco(m); setCompras(c); setVentas(v); setConciliaciones(conc); setCuentasHoja(ctas); setProvCuentas(pc);
     setLoading(false);
   }, [empresa.id, periodo, periodos]);
