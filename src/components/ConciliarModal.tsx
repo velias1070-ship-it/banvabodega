@@ -49,6 +49,7 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
   const [selected, setSelected] = useState<DocSeleccionado[]>([]);
   const [search, setSearch] = useState("");
   const [tipoFiltro, setTipoFiltro] = useState<"compras" | "ventas" | "todos">(mov.monto < 0 ? "compras" : "ventas");
+  const [tipoDocFiltro, setTipoDocFiltro] = useState<string>("todos");
   const [sortBy, setSortBy] = useState<"cercania" | "monto" | "fecha" | "descripcion">("cercania");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [nota, setNota] = useState("");
@@ -99,9 +100,12 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
     const plazoByRut = new Map(provCuentas.filter(p => p.plazo_dias).map(p => [p.rut_proveedor, p.plazo_dias!]));
 
     let filteredDocs = docs;
+    if (tipoDocFiltro !== "todos") {
+      filteredDocs = filteredDocs.filter(d => d.tipo_doc === tipoDocFiltro);
+    }
     if (search) {
       const q = search.toLowerCase();
-      filteredDocs = docs.filter(d => d.razon_social.toLowerCase().includes(q) || d.rut.includes(q) || d.nro.includes(q));
+      filteredDocs = filteredDocs.filter(d => d.razon_social.toLowerCase().includes(q) || d.rut.includes(q) || d.nro.includes(q));
     }
 
     // Score inteligente: menor = mejor match
@@ -154,7 +158,7 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
       return sortDir === "desc" ? -cmp : cmp;
     });
     return scored;
-  }, [compras, ventas, tipoFiltro, search, concCompraIds, concVentaIds, selectedIds, sortBy, sortDir, saldoPorAsignar, movAbs, mov.fecha, mov.descripcion, provCuentas]);
+  }, [compras, ventas, tipoFiltro, tipoDocFiltro, search, concCompraIds, concVentaIds, selectedIds, sortBy, sortDir, saldoPorAsignar, movAbs, mov.fecha, mov.descripcion, provCuentas]);
 
   const toggleSort = (key: typeof sortBy) => {
     if (sortBy === key) setSortDir(d => d === "asc" ? "desc" : "asc");
@@ -348,11 +352,23 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
             <div style={{ padding: "8px 12px", display: "flex", gap: 6, alignItems: "center" }}>
               <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar RUT, nombre, N°..."
                 style={{ flex: 1, padding: "5px 8px", fontSize: 10, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 4 }} />
-              <select value={tipoFiltro} onChange={e => setTipoFiltro(e.target.value as typeof tipoFiltro)}
+              <select value={tipoFiltro} onChange={e => { setTipoFiltro(e.target.value as typeof tipoFiltro); setTipoDocFiltro("todos"); }}
                 style={{ padding: "5px 6px", fontSize: 10, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 4 }}>
                 <option value="compras">Compras</option>
                 <option value="ventas">Ventas</option>
                 <option value="todos">Todos</option>
+              </select>
+              <select value={tipoDocFiltro} onChange={e => setTipoDocFiltro(e.target.value)}
+                style={{ padding: "5px 6px", fontSize: 10, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 4 }}>
+                <option value="todos">Tipo doc</option>
+                <option value="FAC-EL">FAC-EL</option>
+                <option value="FAC-EX">FAC-EX</option>
+                <option value="BHE">BHE</option>
+                <option value="NC">NC</option>
+                <option value="ND">ND</option>
+                <option value="FC">FC</option>
+                <option value="BOL">BOL</option>
+                <option value="GUIA">GUIA</option>
               </select>
             </div>
 
