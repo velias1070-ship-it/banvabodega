@@ -74,5 +74,12 @@ export async function GET() {
       count_estancado: prevSnap.count_estancado,
       count_muerto: prevSnap.count_muerto,
     } : null,
+    _ts: Date.now(),
+  }, {
+    headers: {
+      "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+      "CDN-Cache-Control": "no-store",
+      "Vercel-CDN-Cache-Control": "no-store",
+    },
   });
 }

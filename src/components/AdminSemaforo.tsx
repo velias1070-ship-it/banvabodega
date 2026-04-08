@@ -136,7 +136,7 @@ export default function AdminSemaforo() {
   const loadCurrent = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/semaforo/current", { cache: "no-store" });
+      const res = await fetch(`/api/semaforo/current?t=${Date.now()}`, { cache: "no-store" });
       if (res.ok) setCurrent(await res.json());
     } catch { /* ignore */ }
     setLoading(false);
