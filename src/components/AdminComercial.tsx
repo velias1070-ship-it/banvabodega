@@ -1629,14 +1629,14 @@ function PreciosYPromos() {
       if (data.error) setActionMsg(`Error: ${data.error}`);
       else {
         setActionMsg("Postulado exitosamente");
-        // Refrescar solo este item sin recargar todo
-        try {
-          const r2 = await fetch(`/api/ml/promotions?item_ids=${simP.item.item_id}`);
-          const d2 = await r2.json();
-          if (d2.items?.[0]) {
-            setPromoData(prev => prev.map(p => p.item_id === simP.item.item_id ? d2.items[0] : p));
-          }
-        } catch { /* ignore */ }
+        // Actualizar localmente de inmediato: cambiar status a "started"
+        setPromoData(prev => prev.map(item => {
+          if (item.item_id !== simP.item.item_id) return item;
+          return { ...item, promotions: item.promotions.map(p => {
+            if (p.type === simP.promo.type) return { ...p, status: "started", price: dealPrice };
+            return p;
+          })};
+        }));
       }
     } catch (e) { setActionMsg(`Error: ${e instanceof Error ? e.message : "?"}`); }
     finally { setPromoActioning(null); setSimP(null); }
@@ -1651,14 +1651,15 @@ function PreciosYPromos() {
       if (data.error) setActionMsg(`Error: ${data.error}`);
       else {
         setActionMsg("Removido de la promoción");
-        // Refrescar solo este item
-        try {
-          const r2 = await fetch(`/api/ml/promotions?item_ids=${itemId}`);
-          const d2 = await r2.json();
-          if (d2.items?.[0]) {
-            setPromoData(prev => prev.map(p => p.item_id === itemId ? d2.items[0] : p));
-          }
-        } catch { /* ignore */ }
+        // Actualizar localmente de inmediato: cambiar status de "started" a "candidate"
+        setPromoData(prev => prev.map(item => {
+          if (item.item_id !== itemId) return item;
+          return { ...item, promotions: item.promotions.map(p => {
+            if (promoType && p.type === promoType) return { ...p, status: "candidate" };
+            if (!promoType) return { ...p, status: "candidate" };
+            return p;
+          })};
+        }));
       }
     } catch (e) { setActionMsg(`Error: ${e instanceof Error ? e.message : "?"}`); }
     finally { setPromoActioning(null); }
