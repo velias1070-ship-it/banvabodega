@@ -1699,6 +1699,20 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const [detalleConc, setDetalleConc] = useState<string | null>(null);
   const [detalleMov, setDetalleMov] = useState<DBMovimientoBanco | null>(null);
   const [detalleLoading, setDetalleLoading] = useState(false);
+  const [detallePos, setDetallePos] = useState({ top: 0, left: 0 });
+
+  const openDetalle = async (compraId: string, e: React.MouseEvent) => {
+    if (detalleConc === compraId) { setDetalleConc(null); return; }
+    const rect = (e.target as HTMLElement).getBoundingClientRect();
+    setDetallePos({ top: rect.bottom + 4, left: Math.min(rect.left, window.innerWidth - 360) });
+    setDetalleConc(compraId); setDetalleMov(null); setDetalleLoading(true);
+    const conc = conciliaciones.find(x => x.estado === "confirmado" && x.rcv_compra_id === compraId);
+    if (conc?.movimiento_banco_id) {
+      const movs = await fetchMovimientosBanco(empresa.id!);
+      setDetalleMov(movs.find(m => m.id === conc.movimiento_banco_id) || null);
+    }
+    setDetalleLoading(false);
+  };
 
   const load = useCallback(async () => {
     if (!empresa.id) return;
@@ -1919,127 +1933,19 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                         {isConciliada(c) ? fmtMoney(c.monto_total || 0) : isParcial(c) ? `${fmtMoney((c.monto_total || 0) - (concPorCompra.get(c.id!) || 0))} por pagar` : `${fmtMoney(c.monto_total || 0)} por pagar`}
                       </span>
                       {isConciliada(c) ? (
-                        <div style={{ display: "inline-block", position: "relative" }}>
-                          <span onClick={async () => {
-                            if (detalleConc === c.id) { setDetalleConc(null); return; }
-                            setDetalleConc(c.id!); setDetalleMov(null); setDetalleLoading(true);
-                            const conc = conciliaciones.find(x => x.estado === "confirmado" && x.rcv_compra_id === c.id);
-                            if (conc?.movimiento_banco_id) {
-                              const movs = await fetchMovimientosBanco(empresa.id!);
-                              setDetalleMov(movs.find(m => m.id === conc.movimiento_banco_id) || null);
-                            }
-                            setDetalleLoading(false);
-                          }}
-                            data-bhe-detail={c.id}
-                            style={{ fontSize: 11, fontWeight: 600, padding: "4px 12px", borderRadius: 6, background: "var(--greenBg)", color: "var(--green)", cursor: "pointer" }}
-                            title="Ver detalle">
-                            Pagado
-                          </span>
-                          {detalleConc === c.id && (() => {
-                            const el = document.querySelector(`[data-bhe-detail="${c.id}"]`);
-                            const rect = el?.getBoundingClientRect();
-                            const openUp = rect ? rect.bottom > window.innerHeight * 0.6 : false;
-                            return (
-                            <div style={{ position: "absolute", right: 0, ...(openUp ? { bottom: "100%", marginBottom: 4 } : { top: "100%", marginTop: 4 }), zIndex: 50, background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 10, padding: 16, boxShadow: "0 8px 24px rgba(0,0,0,0.4)", width: 340, textAlign: "left" }}>
-                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                                <span style={{ fontSize: 13, fontWeight: 600 }}>Detalle conciliación</span>
-                                <button onClick={() => setDetalleConc(null)} style={{ background: "none", border: "none", fontSize: 16, cursor: "pointer", color: "var(--txt3)" }}>&times;</button>
-                              </div>
-                              {detalleLoading ? (
-                                <div style={{ padding: 16, textAlign: "center", color: "var(--txt3)", fontSize: 12 }}>Cargando...</div>
-                              ) : detalleMov ? (
-                                <div>
-                                  <div style={{ padding: 10, background: "var(--bg3)", borderRadius: 6, marginBottom: 8, fontSize: 11 }}>
-                                    <div style={{ fontWeight: 600, color: "var(--cyan)" }}>{detalleMov.descripcion}</div>
-                                    <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
-                                      <span className="mono" style={{ color: "var(--txt3)" }}>{fmtDate(detalleMov.fecha)} · {detalleMov.banco}</span>
-                                      <span className="mono" style={{ fontWeight: 700 }}>{fmtMoney(Math.abs(detalleMov.monto))}</span>
-                                    </div>
-                                  </div>
-                                  <button onClick={async () => {
-                                    if (!confirm("¿Deshacer esta conciliación? La BHE volverá a estado pendiente.")) return;
-                                    const conc = conciliaciones.find(x => x.estado === "confirmado" && x.rcv_compra_id === c.id);
-                                    if (conc?.id) {
-                                      const { updateConciliacion, syncEstadoConciliacion } = await import("@/lib/db");
-                                      await updateConciliacion(conc.id, { estado: "rechazado" });
-                                      if (conc.movimiento_banco_id) {
-                                        await syncEstadoConciliacion(conc.movimiento_banco_id, detalleMov.monto);
-                                      }
-                                      setDetalleConc(null);
-                                      await load();
-                                    }
-                                  }}
-                                    style={{ width: "100%", padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 600, background: "var(--redBg)", color: "var(--red)", border: "1px solid var(--redBd)", cursor: "pointer" }}>
-                                    Deshacer conciliación
-                                  </button>
-                                </div>
-                              ) : (
-                                <div style={{ padding: 12, fontSize: 12, color: "var(--txt3)" }}>Sin movimiento bancario vinculado</div>
-                              )}
-                            </div>
-                            );
-                          })()}
-                        </div>
+                        <span onClick={(e) => openDetalle(c.id!, e)}
+                          style={{ fontSize: 11, fontWeight: 600, padding: "4px 12px", borderRadius: 6, background: "var(--greenBg)", color: "var(--green)", cursor: "pointer" }}>
+                          Pagado
+                        </span>
                       ) : (
                         <div>
                         {isParcial(c) && (
-                          <div style={{ display: "inline-flex", alignItems: "center", gap: 4, marginBottom: 4, position: "relative" }}>
+                          <div style={{ display: "inline-flex", alignItems: "center", gap: 4, marginBottom: 4 }}>
                             <span style={{ fontSize: 9, fontWeight: 600, color: "var(--amber)" }}>Parcial {fmtMoney(concPorCompra.get(c.id!) || 0)}/{fmtMoney(c.monto_total || 0)}</span>
-                            <span onClick={async () => {
-                              if (detalleConc === c.id) { setDetalleConc(null); return; }
-                              setDetalleConc(c.id!); setDetalleMov(null); setDetalleLoading(true);
-                              const conc = conciliaciones.find(x => x.estado === "confirmado" && x.rcv_compra_id === c.id);
-                              if (conc?.movimiento_banco_id) {
-                                const movs = await fetchMovimientosBanco(empresa.id!);
-                                setDetalleMov(movs.find(m => m.id === conc.movimiento_banco_id) || null);
-                              }
-                              setDetalleLoading(false);
-                            }}
+                            <span onClick={(e) => openDetalle(c.id!, e)}
                               style={{ fontSize: 10, color: "var(--amber)", cursor: "pointer", textDecoration: "underline" }}>
                               ver
                             </span>
-                            {detalleConc === c.id && (() => {
-                              const el = document.querySelector(`[data-bhe-detail="${c.id}"]`);
-                              const rect = el?.getBoundingClientRect();
-                              const openUp = rect ? rect.bottom > window.innerHeight * 0.6 : false;
-                              return (
-                              <div style={{ position: "absolute", right: 0, ...(openUp ? { bottom: "100%", marginBottom: 4 } : { top: "100%", marginTop: 4 }), zIndex: 50, background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 10, padding: 16, boxShadow: "0 8px 24px rgba(0,0,0,0.4)", width: 340, textAlign: "left" }}>
-                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                                  <span style={{ fontSize: 13, fontWeight: 600 }}>Detalle conciliación</span>
-                                  <button onClick={() => setDetalleConc(null)} style={{ background: "none", border: "none", fontSize: 16, cursor: "pointer", color: "var(--txt3)" }}>&times;</button>
-                                </div>
-                                {detalleLoading ? (
-                                  <div style={{ padding: 16, textAlign: "center", color: "var(--txt3)", fontSize: 12 }}>Cargando...</div>
-                                ) : detalleMov ? (
-                                  <div>
-                                    <div style={{ padding: 10, background: "var(--bg3)", borderRadius: 6, marginBottom: 8, fontSize: 11 }}>
-                                      <div style={{ fontWeight: 600, color: "var(--cyan)" }}>{detalleMov.descripcion}</div>
-                                      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
-                                        <span className="mono" style={{ color: "var(--txt3)" }}>{fmtDate(detalleMov.fecha)} · {detalleMov.banco}</span>
-                                        <span className="mono" style={{ fontWeight: 700 }}>{fmtMoney(Math.abs(detalleMov.monto))}</span>
-                                      </div>
-                                    </div>
-                                    <button onClick={async () => {
-                                      if (!confirm("¿Deshacer esta conciliación parcial?")) return;
-                                      const conc = conciliaciones.find(x => x.estado === "confirmado" && x.rcv_compra_id === c.id);
-                                      if (conc?.id) {
-                                        const { updateConciliacion, syncEstadoConciliacion } = await import("@/lib/db");
-                                        await updateConciliacion(conc.id, { estado: "rechazado" });
-                                        if (conc.movimiento_banco_id) await syncEstadoConciliacion(conc.movimiento_banco_id, detalleMov.monto);
-                                        setDetalleConc(null);
-                                        await load();
-                                      }
-                                    }}
-                                      style={{ width: "100%", padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 600, background: "var(--redBg)", color: "var(--red)", border: "1px solid var(--redBd)", cursor: "pointer" }}>
-                                      Deshacer conciliación
-                                    </button>
-                                  </div>
-                                ) : (
-                                  <div style={{ padding: 12, fontSize: 12, color: "var(--txt3)" }}>Sin movimiento vinculado</div>
-                                )}
-                              </div>
-                              );
-                            })()}
                           </div>
                         )}
                         <span style={{ display: "inline-flex", alignItems: "center", gap: 0 }}>
@@ -2081,6 +1987,48 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
             </tfoot>
           </table>
         </div>
+      )}
+
+      {/* Popover detalle conciliación (flotante) */}
+      {detalleConc && (
+        <>
+          <div onClick={() => setDetalleConc(null)} style={{ position: "fixed", inset: 0, zIndex: 9990 }} />
+          <div style={{ position: "fixed", zIndex: 9991, top: detallePos.top, left: detallePos.left, background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 10, padding: 16, boxShadow: "0 8px 24px rgba(0,0,0,0.4)", width: 340 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <span style={{ fontSize: 13, fontWeight: 600 }}>Detalle conciliación</span>
+              <button onClick={() => setDetalleConc(null)} style={{ background: "none", border: "none", fontSize: 16, cursor: "pointer", color: "var(--txt3)" }}>&times;</button>
+            </div>
+            {detalleLoading ? (
+              <div style={{ padding: 16, textAlign: "center", color: "var(--txt3)", fontSize: 12 }}>Cargando...</div>
+            ) : detalleMov ? (
+              <div>
+                <div style={{ padding: 10, background: "var(--bg3)", borderRadius: 6, marginBottom: 8, fontSize: 11 }}>
+                  <div style={{ fontWeight: 600, color: "var(--cyan)" }}>{detalleMov.descripcion}</div>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+                    <span className="mono" style={{ color: "var(--txt3)" }}>{fmtDate(detalleMov.fecha)} · {detalleMov.banco}</span>
+                    <span className="mono" style={{ fontWeight: 700 }}>{fmtMoney(Math.abs(detalleMov.monto))}</span>
+                  </div>
+                </div>
+                <button onClick={async () => {
+                  if (!confirm("¿Deshacer esta conciliación?")) return;
+                  const conc = conciliaciones.find(x => x.estado === "confirmado" && x.rcv_compra_id === detalleConc);
+                  if (conc?.id) {
+                    const { updateConciliacion, syncEstadoConciliacion } = await import("@/lib/db");
+                    await updateConciliacion(conc.id, { estado: "rechazado" });
+                    if (conc.movimiento_banco_id) await syncEstadoConciliacion(conc.movimiento_banco_id, detalleMov.monto);
+                    setDetalleConc(null);
+                    await load();
+                  }
+                }}
+                  style={{ width: "100%", padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 600, background: "var(--redBg)", color: "var(--red)", border: "1px solid var(--redBd)", cursor: "pointer" }}>
+                  Deshacer conciliación
+                </button>
+              </div>
+            ) : (
+              <div style={{ padding: 12, fontSize: 12, color: "var(--txt3)" }}>Sin movimiento bancario vinculado</div>
+            )}
+          </div>
+        </>
       )}
 
       {/* Modal Asignar Pago */}
