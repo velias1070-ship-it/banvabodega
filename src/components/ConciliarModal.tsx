@@ -61,34 +61,45 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
   const totalAsignado = selected.reduce((s, d) => s + d.monto_aplicado, 0);
   const saldoPorAsignar = disponible - totalAsignado;
 
-  // IDs ya conciliados
-  const concCompraIds = new Set(conciliaciones.filter(c => c.estado === "confirmado" && c.rcv_compra_id).map(c => c.rcv_compra_id));
-  const concVentaIds = new Set(conciliaciones.filter(c => c.estado === "confirmado" && c.rcv_venta_id).map(c => c.rcv_venta_id));
+  // Monto ya conciliado por documento (suma de monto_aplicado de conciliaciones confirmadas)
+  const concPorCompra = new Map<string, number>();
+  const concPorVenta = new Map<string, number>();
+  for (const c of conciliaciones) {
+    if (c.estado !== "confirmado") continue;
+    if (c.rcv_compra_id) concPorCompra.set(c.rcv_compra_id, (concPorCompra.get(c.rcv_compra_id) || 0) + (c.monto_aplicado || 0));
+    if (c.rcv_venta_id) concPorVenta.set(c.rcv_venta_id, (concPorVenta.get(c.rcv_venta_id) || 0) + (c.monto_aplicado || 0));
+  }
   const selectedIds = new Set(selected.map(d => d.id));
 
-  // Documentos disponibles
+  // Documentos disponibles (incluye parcialmente pagados con saldo pendiente)
   const docsDisponibles = useMemo(() => {
-    const docs: { id: string; tipo: "rcv_compra" | "rcv_venta"; tipo_doc: string; tipo_doc_num: number | string; nro: string; rut: string; razon_social: string; fecha: string; monto_total: number }[] = [];
+    const docs: { id: string; tipo: "rcv_compra" | "rcv_venta"; tipo_doc: string; tipo_doc_num: number | string; nro: string; rut: string; razon_social: string; fecha: string; monto_total: number; saldo_pendiente: number }[] = [];
 
     if (tipoFiltro !== "ventas") {
       for (const c of compras) {
-        if (concCompraIds.has(c.id!) || selectedIds.has(c.id!)) continue;
+        if (selectedIds.has(c.id!)) continue;
+        const yaConc = concPorCompra.get(c.id!) || 0;
+        const saldo = (c.monto_total || 0) - yaConc;
+        if (saldo <= 0) continue;
         docs.push({
           id: c.id!, tipo: "rcv_compra", tipo_doc: TIPO_DOC[c.tipo_doc] || String(c.tipo_doc),
           tipo_doc_num: c.tipo_doc,
           nro: c.nro_doc || "", rut: c.rut_proveedor || "", razon_social: c.razon_social || "",
-          fecha: c.fecha_docto || "", monto_total: c.monto_total || 0,
+          fecha: c.fecha_docto || "", monto_total: c.monto_total || 0, saldo_pendiente: saldo,
         });
       }
     }
     if (tipoFiltro !== "compras") {
       for (const v of ventas) {
-        if (concVentaIds.has(v.id!) || selectedIds.has(v.id!)) continue;
+        if (selectedIds.has(v.id!)) continue;
+        const yaConc = concPorVenta.get(v.id!) || 0;
+        const saldo = (v.monto_total || 0) - yaConc;
+        if (saldo <= 0) continue;
         docs.push({
           id: v.id!, tipo: "rcv_venta", tipo_doc: TIPO_DOC[v.tipo_doc] || String(v.tipo_doc),
           tipo_doc_num: v.tipo_doc,
           nro: v.folio || v.nro || "", rut: v.rut_emisor || "", razon_social: "",
-          fecha: v.fecha_docto || "", monto_total: v.monto_total || 0,
+          fecha: v.fecha_docto || "", monto_total: v.monto_total || 0, saldo_pendiente: saldo,
         });
       }
     }
@@ -111,7 +122,7 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
     // Score inteligente: menor = mejor match
     const isMP = mov.banco === "MercadoPago" || movDesc.startsWith("retiro mp");
     const scoreDoc = (d: typeof docs[0]): { score: number; diasDiff: number; montoDiff: number } => {
-      const montoDiff = Math.abs(d.monto_total - target);
+      const montoDiff = Math.abs(d.saldo_pendiente - target);
       const montoPct = target > 0 ? montoDiff / target : 1;
 
       // Monto: no-lineal — match exacto (<1%) domina todo
@@ -158,7 +169,7 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
       return sortDir === "desc" ? -cmp : cmp;
     });
     return scored;
-  }, [compras, ventas, tipoFiltro, tipoDocFiltro, search, concCompraIds, concVentaIds, selectedIds, sortBy, sortDir, saldoPorAsignar, movAbs, mov.fecha, mov.descripcion, provCuentas]);
+  }, [compras, ventas, tipoFiltro, tipoDocFiltro, search, concPorCompra, concPorVenta, selectedIds, sortBy, sortDir, saldoPorAsignar, movAbs, mov.fecha, mov.descripcion, provCuentas]);
 
   const toggleSort = (key: typeof sortBy) => {
     if (sortBy === key) setSortDir(d => d === "asc" ? "desc" : "asc");
@@ -167,7 +178,7 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
   const sortIcon = (key: typeof sortBy) => sortBy === key ? (sortDir === "desc" ? " \u2193" : " \u2191") : "";
 
   const handleSelect = (doc: typeof docsDisponibles[0]) => {
-    const montoAplicar = saldoPorAsignar > 0 ? Math.min(doc.monto_total, saldoPorAsignar) : doc.monto_total;
+    const montoAplicar = saldoPorAsignar > 0 ? Math.min(doc.saldo_pendiente, saldoPorAsignar) : doc.saldo_pendiente;
     setSelected(prev => [...prev, { ...doc, monto_aplicado: montoAplicar }]);
   };
 
@@ -391,7 +402,12 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
                     return (
                       <tr key={d.id} style={{ borderBottom: "1px solid var(--bg4)", background: isAlta ? "var(--greenBg)" : "transparent" }}>
                         <td className="mono" style={{ padding: "6px 0", fontWeight: 700 }}>
-                          {fmtMoney(d.monto_total)}
+                          {d.saldo_pendiente < d.monto_total ? (
+                            <>
+                              <div>{fmtMoney(d.saldo_pendiente)}</div>
+                              <div style={{ fontSize: 8, color: "var(--txt3)", fontWeight: 400 }}>de {fmtMoney(d.monto_total)}</div>
+                            </>
+                          ) : fmtMoney(d.monto_total)}
                           {d.montoDiff > 0 && <div style={{ fontSize: 8, color: "var(--amber)" }}>diff {fmtMoney(d.montoDiff)}</div>}
                         </td>
                         <td className="mono" style={{ padding: "6px 0" }}>
