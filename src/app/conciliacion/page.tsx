@@ -1697,7 +1697,7 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const [pagoSaving, setPagoSaving] = useState(false);
   const [pagoSearch, setPagoSearch] = useState("");
   const [detalleConc, setDetalleConc] = useState<string | null>(null);
-  const [detalleMov, setDetalleMov] = useState<DBMovimientoBanco | null>(null);
+  const [detalleMovs, setDetalleMovs] = useState<{ conc: DBConciliacion; mov: DBMovimientoBanco | null }[]>([]);
   const [detalleLoading, setDetalleLoading] = useState(false);
   const [detallePos, setDetallePos] = useState({ top: 0, left: 0 });
 
@@ -1705,12 +1705,15 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
     if (detalleConc === compraId) { setDetalleConc(null); return; }
     const rect = (e.target as HTMLElement).getBoundingClientRect();
     setDetallePos({ top: rect.bottom + 4, left: Math.min(rect.left, window.innerWidth - 360) });
-    setDetalleConc(compraId); setDetalleMov(null); setDetalleLoading(true);
-    const conc = conciliaciones.find(x => x.estado === "confirmado" && x.rcv_compra_id === compraId);
-    if (conc?.movimiento_banco_id) {
+    setDetalleConc(compraId); setDetalleMovs([]); setDetalleLoading(true);
+    const concs = conciliaciones.filter(x => x.estado === "confirmado" && x.rcv_compra_id === compraId);
+    const movIds = concs.map(c => c.movimiento_banco_id).filter(Boolean) as string[];
+    let movMap = new Map<string, DBMovimientoBanco>();
+    if (movIds.length > 0) {
       const movs = await fetchMovimientosBanco(empresa.id!);
-      setDetalleMov(movs.find(m => m.id === conc.movimiento_banco_id) || null);
+      for (const m of movs) { if (movIds.includes(m.id!)) movMap.set(m.id!, m); }
     }
+    setDetalleMovs(concs.map(c => ({ conc: c, mov: c.movimiento_banco_id ? movMap.get(c.movimiento_banco_id) || null : null })));
     setDetalleLoading(false);
   };
 
@@ -1993,39 +1996,48 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
       {detalleConc && (
         <>
           <div onClick={() => setDetalleConc(null)} style={{ position: "fixed", inset: 0, zIndex: 9990 }} />
-          <div style={{ position: "fixed", zIndex: 9991, top: detallePos.top, left: detallePos.left, background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 10, padding: 16, boxShadow: "0 8px 24px rgba(0,0,0,0.4)", width: 340 }}>
+          <div style={{ position: "fixed", zIndex: 9991, top: detallePos.top, left: detallePos.left, background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 10, padding: 16, boxShadow: "0 8px 24px rgba(0,0,0,0.4)", width: 380, maxHeight: "60vh", overflowY: "auto" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-              <span style={{ fontSize: 13, fontWeight: 600 }}>Detalle conciliación</span>
+              <span style={{ fontSize: 13, fontWeight: 600 }}>Detalle conciliación ({detalleMovs.length} pago{detalleMovs.length !== 1 ? "s" : ""})</span>
               <button onClick={() => setDetalleConc(null)} style={{ background: "none", border: "none", fontSize: 16, cursor: "pointer", color: "var(--txt3)" }}>&times;</button>
             </div>
             {detalleLoading ? (
               <div style={{ padding: 16, textAlign: "center", color: "var(--txt3)", fontSize: 12 }}>Cargando...</div>
-            ) : detalleMov ? (
-              <div>
-                <div style={{ padding: 10, background: "var(--bg3)", borderRadius: 6, marginBottom: 8, fontSize: 11 }}>
-                  <div style={{ fontWeight: 600, color: "var(--cyan)" }}>{detalleMov.descripcion}</div>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
-                    <span className="mono" style={{ color: "var(--txt3)" }}>{fmtDate(detalleMov.fecha)} · {detalleMov.banco}</span>
-                    <span className="mono" style={{ fontWeight: 700 }}>{fmtMoney(Math.abs(detalleMov.monto))}</span>
+            ) : detalleMovs.length > 0 ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {detalleMovs.map((dm, i) => (
+                  <div key={dm.conc.id || i} style={{ padding: 10, background: "var(--bg3)", borderRadius: 6, fontSize: 11 }}>
+                    {dm.mov ? (
+                      <>
+                        <div style={{ fontWeight: 600, color: "var(--cyan)" }}>{dm.mov.descripcion}</div>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+                          <span className="mono" style={{ color: "var(--txt3)" }}>{fmtDate(dm.mov.fecha)} · {dm.mov.banco}</span>
+                          <span className="mono" style={{ fontWeight: 700 }}>{fmtMoney(dm.conc.monto_aplicado || Math.abs(dm.mov.monto))}</span>
+                        </div>
+                      </>
+                    ) : (
+                      <div style={{ color: "var(--txt3)" }}>Movimiento no encontrado</div>
+                    )}
+                    <button onClick={async () => {
+                      if (!confirm("¿Deshacer este pago?")) return;
+                      const { updateConciliacion, syncEstadoConciliacion } = await import("@/lib/db");
+                      await updateConciliacion(dm.conc.id!, { estado: "rechazado" });
+                      if (dm.conc.movimiento_banco_id && dm.mov) await syncEstadoConciliacion(dm.conc.movimiento_banco_id, dm.mov.monto);
+                      setDetalleConc(null);
+                      await load();
+                    }}
+                      style={{ marginTop: 6, width: "100%", padding: "4px 10px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: "var(--redBg)", color: "var(--red)", border: "1px solid var(--redBd)", cursor: "pointer" }}>
+                      Deshacer
+                    </button>
                   </div>
+                ))}
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: 11, fontWeight: 700, borderTop: "1px solid var(--bg4)", marginTop: 4 }}>
+                  <span>Total conciliado</span>
+                  <span className="mono">{fmtMoney(detalleMovs.reduce((s, dm) => s + (dm.conc.monto_aplicado || (dm.mov ? Math.abs(dm.mov.monto) : 0)), 0))}</span>
                 </div>
-                <button onClick={async () => {
-                  if (!confirm("¿Deshacer esta conciliación?")) return;
-                  const conc = conciliaciones.find(x => x.estado === "confirmado" && x.rcv_compra_id === detalleConc);
-                  if (conc?.id) {
-                    const { updateConciliacion, syncEstadoConciliacion } = await import("@/lib/db");
-                    await updateConciliacion(conc.id, { estado: "rechazado" });
-                    if (conc.movimiento_banco_id) await syncEstadoConciliacion(conc.movimiento_banco_id, detalleMov.monto);
-                    setDetalleConc(null);
-                    await load();
-                  }
-                }}
-                  style={{ width: "100%", padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 600, background: "var(--redBg)", color: "var(--red)", border: "1px solid var(--redBd)", cursor: "pointer" }}>
-                  Deshacer conciliación
-                </button>
               </div>
             ) : (
-              <div style={{ padding: 12, fontSize: 12, color: "var(--txt3)" }}>Sin movimiento bancario vinculado</div>
+              <div style={{ padding: 12, fontSize: 12, color: "var(--txt3)" }}>Sin movimientos vinculados</div>
             )}
           </div>
         </>
