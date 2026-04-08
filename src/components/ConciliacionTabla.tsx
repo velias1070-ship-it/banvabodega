@@ -96,8 +96,7 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
   const [sortKey, setSortKey] = useState<SortKey>("fecha");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
-  // Períodos seleccionados
-  const [periodos, setPeriodos] = useState<string[]>([periodo]);
+  // Período viene del selector principal de la página
 
   // Modal
   const [conciliarMov, setConciliarMov] = useState<DBMovimientoBanco | null>(null);
@@ -117,41 +116,19 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
   const [concRapidaResults, setConcRapidaResults] = useState<ConcRapidaMatch[]>([]);
   const [concRapidaSaving, setConcRapidaSaving] = useState(false);
 
-  const periodoOpts = useMemo(() => {
-    const opts: { value: string; label: string }[] = [];
-    const now = new Date();
-    // Año completo
-    opts.push({ value: String(now.getFullYear()), label: String(now.getFullYear()) });
-    // Últimos 6 meses
-    for (let i = 0; i < 6; i++) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      const val = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}`;
-      const label = d.toLocaleDateString("es-CL", { month: "short", year: "numeric" }).replace(/^./, c => c.toUpperCase());
-      opts.push({ value: val, label });
-    }
-    return opts;
-  }, []);
 
   const load = useCallback(async () => {
     if (!empresa.id) return;
     setLoading(true);
-    const allPeriods = periodos.length > 0 ? periodos : [periodo];
-    let minDesde = "9999-12-31", maxHasta = "0000-01-01";
-    for (const p of allPeriods) {
-      const y = parseInt(p.slice(0, 4));
-      if (p.length === 4) {
-        // Año completo: enero a diciembre
-        const desde = `${y}-01-01`;
-        const hasta = `${y}-12-31`;
-        if (desde < minDesde) minDesde = desde;
-        if (hasta > maxHasta) maxHasta = hasta;
-      } else {
-        const m = parseInt(p.slice(4, 6));
-        const desde = `${y}-${String(m).padStart(2, "0")}-01`;
-        const hasta = `${y}-${String(m).padStart(2, "0")}-${new Date(y, m, 0).getDate()}`;
-        if (desde < minDesde) minDesde = desde;
-        if (hasta > maxHasta) maxHasta = hasta;
-      }
+    const y = parseInt(periodo.slice(0, 4));
+    let minDesde: string, maxHasta: string;
+    if (periodo.length === 4) {
+      minDesde = `${y}-01-01`;
+      maxHasta = `${y}-12-31`;
+    } else {
+      const m = parseInt(periodo.slice(4, 6));
+      minDesde = `${y}-${String(m).padStart(2, "0")}-01`;
+      maxHasta = `${y}-${String(m).padStart(2, "0")}-${new Date(y, m, 0).getDate()}`;
     }
     const [m, c, v, conc, ctas, pc] = await Promise.all([
       fetchMovimientosBanco(empresa.id, { desde: minDesde, hasta: maxHasta }),
@@ -163,7 +140,7 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
     ]);
     setMovBanco(m); setCompras(c); setVentas(v); setConciliaciones(conc); setCuentasHoja(ctas); setProvCuentas(pc);
     setLoading(false);
-  }, [empresa.id, periodo, periodos]);
+  }, [empresa.id, periodo]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -217,15 +194,6 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
 
   const sortIcon = (key: SortKey) => sortKey === key ? (sortDir === "desc" ? " ↓" : " ↑") : "";
 
-  const togglePeriodo = (p: string) => {
-    setPeriodos(prev => {
-      if (prev.includes(p)) {
-        const next = prev.filter(x => x !== p);
-        return next.length === 0 ? [periodo] : next;
-      }
-      return [...prev, p];
-    });
-  };
 
   // Clasificar sin documento
   const handleClasificar = async () => {
@@ -258,14 +226,12 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
     try {
       let totalRetiros = 0;
       const allLogs: string[] = [];
-      // Expandir periodos anuales (YYYY) a meses (YYYYMM)
+      // Expandir periodo anual (YYYY) a meses (YYYYMM)
       const periodosExp: string[] = [];
-      for (const p of periodos) {
-        if (p.length === 4) {
-          for (let m = 1; m <= 12; m++) periodosExp.push(`${p}${String(m).padStart(2, "0")}`);
-        } else {
-          periodosExp.push(p);
-        }
+      if (periodo.length === 4) {
+        for (let m = 1; m <= 12; m++) periodosExp.push(`${periodo}${String(m).padStart(2, "0")}`);
+      } else {
+        periodosExp.push(periodo);
       }
       for (const p of periodosExp) {
         setSyncMsg(`Sincronizando ${p.slice(0,4)}-${p.slice(4)}... (generando reporte en MP, puede tardar hasta 90s)`);
@@ -416,22 +382,6 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
           <div className="mono" style={{ fontSize: 24, fontWeight: 800 }}>{fmtMoney(porCobrar - porPagar)}</div>
           <div style={{ fontSize: 12, color: "var(--txt3)", marginTop: 2 }}>Saldo Neto</div>
         </div>
-      </div>
-
-      {/* Períodos */}
-      <div style={{ display: "flex", gap: 4, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
-        <span style={{ fontSize: 10, fontWeight: 600, color: "var(--txt3)", marginRight: 4 }}>Períodos:</span>
-        {periodoOpts.map(o => (
-          <button key={o.value} onClick={() => togglePeriodo(o.value)}
-            style={{
-              padding: "3px 10px", borderRadius: 4, fontSize: 10, fontWeight: 600, cursor: "pointer",
-              background: periodos.includes(o.value) ? "var(--cyanBg)" : "var(--bg3)",
-              color: periodos.includes(o.value) ? "var(--cyan)" : "var(--txt3)",
-              border: periodos.includes(o.value) ? "1px solid var(--cyanBd)" : "1px solid var(--bg4)",
-            }}>
-            {o.label}
-          </button>
-        ))}
       </div>
 
       {/* Tabs + filtros */}
