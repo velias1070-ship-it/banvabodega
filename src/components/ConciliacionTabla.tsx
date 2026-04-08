@@ -9,6 +9,7 @@ import {
   fetchPlanCuentasHojas,
   fetchProveedorCuentas,
   upsertConciliacion,
+  updateConciliacion,
   categorizarMovimiento,
   syncEstadoConciliacion,
 } from "@/lib/db";
@@ -105,6 +106,10 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
   // Clasificar sin documento
   const [clasificarMov, setClasificarMov] = useState<DBMovimientoBanco | null>(null);
   const [clasificarCuenta, setClasificarCuenta] = useState("");
+  // Detalle conciliación
+  const [detalleConcMov, setDetalleConcMov] = useState<string | null>(null);
+  const [detalleConcData, setDetalleConcData] = useState<{ conc: DBConciliacion; doc: DBRcvCompra | DBRcvVenta | null; tipo: string } | null>(null);
+  const [detalleConcLoading, setDetalleConcLoading] = useState(false);
   // Notas / comentarios por movimiento
   const [editingNota, setEditingNota] = useState<string | null>(null);
   const [notaText, setNotaText] = useState("");
@@ -503,9 +508,82 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
                     <td className="mono" style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600, color: "var(--green)" }}>
                       {m.monto > 0 ? fmtMoney(m.monto) : ""}
                     </td>
-                    <td style={{ padding: "10px 12px", textAlign: "right", whiteSpace: "nowrap" }}>
+                    <td style={{ padding: "10px 12px", textAlign: "right", whiteSpace: "nowrap", position: "relative" }}>
                       {isConciliado ? (
-                        <span style={{ fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 4, background: "var(--greenBg)", color: "var(--green)" }}>Conciliado</span>
+                        <div style={{ display: "inline-block", position: "relative" }}>
+                          <span onClick={async () => {
+                            if (detalleConcMov === m.id) { setDetalleConcMov(null); return; }
+                            setDetalleConcMov(m.id!); setDetalleConcLoading(true); setDetalleConcData(null);
+                            const conc = conciliaciones.find(x => x.estado === "confirmado" && x.movimiento_banco_id === m.id);
+                            if (conc) {
+                              let doc: DBRcvCompra | DBRcvVenta | null = null;
+                              let tipo = conc.tipo_partida || "";
+                              if (conc.rcv_compra_id) {
+                                doc = compras.find(c => c.id === conc.rcv_compra_id) || null;
+                              } else if (conc.rcv_venta_id) {
+                                doc = ventas.find(v => v.id === conc.rcv_venta_id) || null;
+                              }
+                              setDetalleConcData({ conc, doc, tipo });
+                            }
+                            setDetalleConcLoading(false);
+                          }}
+                            style={{ fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 4, background: "var(--greenBg)", color: "var(--green)", cursor: "pointer" }}
+                            title="Ver detalle">
+                            Conciliado
+                          </span>
+                          {detalleConcMov === m.id && (
+                            <div style={{ position: "absolute", right: 0, top: "100%", marginTop: 4, zIndex: 50, background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 10, padding: 16, boxShadow: "0 8px 24px rgba(0,0,0,0.4)", width: 340, textAlign: "left" }}
+                              onClick={e => e.stopPropagation()}>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                                <span style={{ fontSize: 13, fontWeight: 600 }}>Detalle conciliación</span>
+                                <button onClick={() => setDetalleConcMov(null)} style={{ background: "none", border: "none", fontSize: 16, cursor: "pointer", color: "var(--txt3)" }}>&times;</button>
+                              </div>
+                              {detalleConcLoading ? (
+                                <div style={{ padding: 16, textAlign: "center", color: "var(--txt3)", fontSize: 12 }}>Cargando...</div>
+                              ) : detalleConcData ? (
+                                <div>
+                                  <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 8, textTransform: "uppercase", fontWeight: 600 }}>
+                                    {detalleConcData.tipo === "clasificacion_directa" ? "Clasificación directa" : detalleConcData.tipo === "multi_doc" ? "Multi-documento" : "Match"}
+                                    {detalleConcData.conc.metodo && <span> · {detalleConcData.conc.metodo}</span>}
+                                  </div>
+                                  {detalleConcData.doc && (
+                                    <div style={{ padding: 10, background: "var(--bg3)", borderRadius: 6, marginBottom: 8, fontSize: 11 }}>
+                                      <div style={{ fontWeight: 600 }}>
+                                        {"tipo_doc" in detalleConcData.doc && <span className="mono" style={{ fontSize: 10, padding: "1px 4px", borderRadius: 3, background: "var(--cyanBg)", color: "var(--cyan)", marginRight: 4 }}>{typeof detalleConcData.doc.tipo_doc === "number" ? (({33:"FAC-EL",34:"FAC-EX",46:"FC",52:"GUIA",56:"ND",61:"NC",71:"BHE"} as Record<number,string>)[detalleConcData.doc.tipo_doc] || detalleConcData.doc.tipo_doc) : detalleConcData.doc.tipo_doc}</span>}
+                                        {"nro_doc" in detalleConcData.doc ? detalleConcData.doc.nro_doc : ("nro" in detalleConcData.doc ? detalleConcData.doc.nro : "")}
+                                      </div>
+                                      <div style={{ color: "var(--txt2)", marginTop: 2 }}>{"razon_social" in detalleConcData.doc ? detalleConcData.doc.razon_social : ""}</div>
+                                      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+                                        <span className="mono" style={{ color: "var(--txt3)" }}>{fmtDate("fecha_docto" in detalleConcData.doc ? detalleConcData.doc.fecha_docto : null)}</span>
+                                        <span className="mono" style={{ fontWeight: 700 }}>{fmtMoney(detalleConcData.doc.monto_total || 0)}</span>
+                                      </div>
+                                    </div>
+                                  )}
+                                  {!detalleConcData.doc && detalleConcData.tipo === "clasificacion_directa" && (
+                                    <div style={{ padding: 10, background: "var(--bg3)", borderRadius: 6, marginBottom: 8, fontSize: 11, color: "var(--txt3)" }}>
+                                      Sin documento — clasificación por cuenta contable
+                                    </div>
+                                  )}
+                                  {detalleConcData.conc.notas && (
+                                    <div style={{ fontSize: 11, color: "var(--cyan)", marginBottom: 8 }}>{detalleConcData.conc.notas}</div>
+                                  )}
+                                  <button onClick={async () => {
+                                    if (!confirm("¿Deshacer esta conciliación? El movimiento volverá a estado pendiente.")) return;
+                                    await updateConciliacion(detalleConcData.conc.id!, { estado: "rechazado" });
+                                    await syncEstadoConciliacion(m.id!, m.monto);
+                                    setDetalleConcMov(null);
+                                    load();
+                                  }}
+                                    style={{ width: "100%", padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 600, background: "var(--redBg)", color: "var(--red)", border: "1px solid var(--redBd)", cursor: "pointer" }}>
+                                    Deshacer conciliación
+                                  </button>
+                                </div>
+                              ) : (
+                                <div style={{ padding: 12, textAlign: "center", color: "var(--txt3)", fontSize: 12 }}>Sin datos</div>
+                              )}
+                            </div>
+                          )}
+                        </div>
                       ) : isIgnorado ? (
                         <span style={{ fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 4, background: "var(--bg3)", color: "var(--txt3)" }}>Ignorado</span>
                       ) : (
