@@ -1223,12 +1223,14 @@ function PickFlowFull({session,linea,operario,onDone,editBultos}:{
   session:DBPickingSession;linea:PickingLinea;operario:string;onDone:()=>void;editBultos?:boolean;
 }) {
   const comp = linea.componentes[0];
-  const [phase,setPhase]=useState<"locate"|"scan"|"bulto"|"bulto_compartido"|"bulto_custom"|"done">(editBultos?"bulto":"locate");
+  const [phase,setPhase]=useState<"locate"|"scan"|"stock_check"|"bulto"|"bulto_compartido"|"bulto_custom"|"done">(editBultos?"bulto":"locate");
   const [scanResult,setScanResult]=useState<"ok"|"error"|null>(null);
   const [scanCode,setScanCode]=useState("");
   const [saving,setSaving]=useState(false);
   const [customBultos,setCustomBultos]=useState("");
   const confirmingRef = useRef(false);
+  const [cantidadReal,setCantidadReal]=useState(comp?.unidades||0);
+  const [stockEnPosicion,setStockEnPosicion]=useState(comp?.unidades||0);
 
   const cfg=getMapConfig();
   const positions=activePositions().filter(p=>p.active&&p.mx!==undefined);
@@ -1260,12 +1262,30 @@ function PickFlowFull({session,linea,operario,onDone,editBultos}:{
     return skus;
   }, [session.lineas, linea.id]);
 
-  const goToBultoPhase = useCallback(async () => {
+  const checkStockAndPick = useCallback(async () => {
+    if (confirmingRef.current) return;
+    // Check actual stock in position
+    const posStock = comp?.posicion ? posContents(comp.posicion) : [];
+    const stockReal = posStock.find(p => p.sku.toUpperCase() === comp?.skuOrigen?.toUpperCase())?.qty || 0;
+    setStockEnPosicion(stockReal);
+
+    if (stockReal < comp.unidades) {
+      // Not enough stock — show stock_check screen
+      setCantidadReal(Math.min(stockReal, comp.unidades));
+      setPhase("stock_check");
+      return;
+    }
+    // Enough stock — proceed normally
+    setCantidadReal(comp.unidades);
+    await confirmPick(comp.unidades);
+  }, [comp]);
+
+  const confirmPick = useCallback(async (qty: number) => {
     if (confirmingRef.current) return;
     confirmingRef.current = true;
     setSaving(true);
     try {
-      await pickearLineaFull(session.id!,linea.id,operario,session,linea.skuVenta);
+      await pickearLineaFull(session.id!,linea.id,operario,session,linea.skuVenta,qty < comp.unidades ? qty : undefined);
       if(navigator.vibrate)navigator.vibrate([100,50,100]);
       setPhase("bulto");
     } catch (e) {
@@ -1274,7 +1294,7 @@ function PickFlowFull({session,linea,operario,onDone,editBultos}:{
       setSaving(false);
       confirmingRef.current = false;
     }
-  }, [session,linea,operario]);
+  }, [session,linea,operario,comp]);
 
   // Guardar bultos y avanzar
   const saveBultos = useCallback(async (numBultos: number, compartido: string | null) => {
@@ -1298,13 +1318,49 @@ function PickFlowFull({session,linea,operario,onDone,editBultos}:{
     if (confirmingRef.current) return;
     setScanCode(code);
     if (comp && verificarScanPicking(code, comp, linea.skuVenta)) {
-      setScanResult("ok"); goToBultoPhase();
+      setScanResult("ok"); checkStockAndPick();
     } else {
       setScanResult("error"); if(navigator.vibrate)navigator.vibrate([200,100,200]);
     }
-  },[comp,linea.skuVenta,goToBultoPhase]);
+  },[comp,linea.skuVenta,checkStockAndPick]);
 
   if (!comp) return null;
+
+  // STOCK CHECK — not enough stock in position
+  if(phase==="stock_check")return(
+    <div>
+      <div style={{padding:16,background:"#ef444422",border:"2px solid #ef444444",borderRadius:14,marginBottom:16,textAlign:"center"}}>
+        <div style={{fontSize:15,fontWeight:700,color:"#ef4444",marginBottom:4}}>⚠️ Stock insuficiente</div>
+        <div style={{fontSize:13,color:"#94a3b8"}}>
+          Se pedían <strong style={{color:"#fff"}}>{comp.unidades}</strong> uds pero solo hay <strong style={{color:"#f59e0b"}}>{stockEnPosicion}</strong> en {comp.posicion}
+        </div>
+      </div>
+
+      <div style={{fontSize:14,fontWeight:700,color:"#e2e8f0",marginBottom:12,textAlign:"center"}}>¿Cuántas unidades pickeas?</div>
+
+      <div style={{display:"flex",gap:8,alignItems:"center",justifyContent:"center",marginBottom:16}}>
+        <button onClick={()=>setCantidadReal(Math.max(0,cantidadReal-1))} style={{width:48,height:48,borderRadius:24,fontSize:20,fontWeight:800,background:"var(--bg3)",color:"var(--txt)",border:"1px solid var(--bg4)",cursor:"pointer"}}>−</button>
+        <div style={{fontSize:36,fontWeight:800,color:"#f59e0b",minWidth:60,textAlign:"center"}}>{cantidadReal}</div>
+        <button onClick={()=>setCantidadReal(Math.min(stockEnPosicion,cantidadReal+1))} style={{width:48,height:48,borderRadius:24,fontSize:20,fontWeight:800,background:"var(--bg3)",color:"var(--txt)",border:"1px solid var(--bg4)",cursor:"pointer"}}>+</button>
+      </div>
+
+      <div style={{fontSize:11,color:"#64748b",textAlign:"center",marginBottom:16}}>
+        Pedido original: {comp.unidades} · Disponible: {stockEnPosicion} · Faltante: {comp.unidades - cantidadReal}
+      </div>
+
+      <button onClick={()=>confirmPick(cantidadReal)} disabled={saving||cantidadReal<=0}
+        style={{width:"100%",padding:16,borderRadius:12,fontWeight:700,fontSize:16,color:"#fff",
+          background:cantidadReal>0?"linear-gradient(135deg,#059669,#10b981)":"var(--bg3)",
+          border:"none",cursor:cantidadReal>0?"pointer":"default",opacity:cantidadReal>0?1:0.4}}>
+        {saving?"Guardando...":cantidadReal===0?"Saltar (0 uds)":`Pickear ${cantidadReal} de ${comp.unidades}`}
+      </button>
+
+      <button onClick={()=>setPhase("locate")}
+        style={{width:"100%",marginTop:8,padding:10,borderRadius:8,background:"var(--bg3)",color:"#94a3b8",fontSize:12,fontWeight:600,border:"1px solid var(--bg4)",cursor:"pointer"}}>
+        ← Volver
+      </button>
+    </div>
+  );
 
   if(phase==="done")return(
     <div style={{textAlign:"center",padding:40}}>
@@ -1540,7 +1596,7 @@ function PickFlowFull({session,linea,operario,onDone,editBultos}:{
           </div>
         )}
 
-        <button onClick={goToBultoPhase} disabled={saving}
+        <button onClick={checkStockAndPick} disabled={saving}
           style={{width:"100%",marginTop:16,padding:10,borderRadius:8,background:"transparent",color:"#64748b",fontSize:11,border:"1px dashed #64748b44"}}>
           Confirmar sin escanear
         </button>

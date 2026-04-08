@@ -2534,11 +2534,11 @@ export async function despickearComponente(
 // Uses same structure as Flex: each line has componentes[0]
 export async function pickearLineaFull(
   sessionId: string, lineaId: string, operario: string,
-  _session: db.DBPickingSession, skuVenta?: string
+  _session: db.DBPickingSession, skuVenta?: string, cantidadReal?: number
 ): Promise<boolean> {
   await db.auditLog("pickearLineaFull", {
     entidad: "picking_session", entidad_id: sessionId, operario,
-    params: { lineaId, skuVenta },
+    params: { lineaId, skuVenta, cantidadReal },
   });
 
   // Read fresh session from DB to avoid stale state overwrites
@@ -2579,6 +2579,13 @@ export async function pickearLineaFull(
   if (!linea) return false;
   const comp = linea.componentes[0];
   if (!comp || comp.estado === "PICKEADO") return false;
+
+  // If cantidadReal provided and different from requested, update the line
+  if (cantidadReal !== undefined && cantidadReal < comp.unidades) {
+    comp.unidades = cantidadReal;
+    linea.qtyFisica = cantidadReal;
+    linea.qtyPedida = cantidadReal;
+  }
 
   // Mark as picked FIRST, then save to DB, then decrement stock
   // This ensures the session update happens before stock movement
