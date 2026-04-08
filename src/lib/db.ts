@@ -2204,13 +2204,22 @@ export async function insertSyncLog(log: Omit<DBSyncLog, "id" | "synced_at">): P
 
 export async function fetchRcvCompras(empresaId: string, periodo?: string): Promise<DBRcvCompra[]> {
   const sb = getSupabase(); if (!sb) return [];
-  let q = sb.from("rcv_compras").select("*").eq("empresa_id", empresaId);
-  if (periodo) {
-    if (periodo.length === 4) q = q.like("periodo", `${periodo}%`);
-    else q = q.eq("periodo", periodo);
+  const all: DBRcvCompra[] = [];
+  const PAGE = 1000;
+  let from = 0;
+  while (true) {
+    let q = sb.from("rcv_compras").select("*").eq("empresa_id", empresaId);
+    if (periodo) {
+      if (periodo.length === 4) q = q.like("periodo", `${periodo}%`);
+      else q = q.eq("periodo", periodo);
+    }
+    const { data } = await q.order("fecha_docto", { ascending: false }).range(from, from + PAGE - 1);
+    if (!data || data.length === 0) break;
+    all.push(...(data as DBRcvCompra[]));
+    if (data.length < PAGE) break;
+    from += PAGE;
   }
-  const { data } = await q.order("fecha_docto", { ascending: false });
-  return (data || []) as DBRcvCompra[];
+  return all;
 }
 
 export async function upsertRcvCompras(items: DBRcvCompra[]): Promise<void> {
@@ -2224,10 +2233,19 @@ export async function upsertRcvCompras(items: DBRcvCompra[]): Promise<void> {
 
 export async function fetchRcvVentas(empresaId: string, periodo?: string): Promise<DBRcvVenta[]> {
   const sb = getSupabase(); if (!sb) return [];
-  let q = sb.from("rcv_ventas").select("*").eq("empresa_id", empresaId);
-  if (periodo) q = q.eq("periodo", periodo);
-  const { data } = await q.order("fecha_docto", { ascending: false });
-  return (data || []) as DBRcvVenta[];
+  const all: DBRcvVenta[] = [];
+  const PAGE = 1000;
+  let from = 0;
+  while (true) {
+    let q = sb.from("rcv_ventas").select("*").eq("empresa_id", empresaId);
+    if (periodo) q = q.eq("periodo", periodo);
+    const { data } = await q.order("fecha_docto", { ascending: false }).range(from, from + PAGE - 1);
+    if (!data || data.length === 0) break;
+    all.push(...(data as DBRcvVenta[]));
+    if (data.length < PAGE) break;
+    from += PAGE;
+  }
+  return all;
 }
 
 export async function upsertRcvVentas(items: DBRcvVenta[]): Promise<void> {
