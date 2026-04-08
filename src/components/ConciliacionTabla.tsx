@@ -120,6 +120,9 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
   const periodoOpts = useMemo(() => {
     const opts: { value: string; label: string }[] = [];
     const now = new Date();
+    // Año completo
+    opts.push({ value: String(now.getFullYear()), label: String(now.getFullYear()) });
+    // Últimos 6 meses
     for (let i = 0; i < 6; i++) {
       const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
       const val = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -136,11 +139,19 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
     let minDesde = "9999-12-31", maxHasta = "0000-01-01";
     for (const p of allPeriods) {
       const y = parseInt(p.slice(0, 4));
-      const m = parseInt(p.slice(4, 6));
-      const desde = `${y}-${String(m).padStart(2, "0")}-01`;
-      const hasta = `${y}-${String(m).padStart(2, "0")}-${new Date(y, m, 0).getDate()}`;
-      if (desde < minDesde) minDesde = desde;
-      if (hasta > maxHasta) maxHasta = hasta;
+      if (p.length === 4) {
+        // Año completo: enero a diciembre
+        const desde = `${y}-01-01`;
+        const hasta = `${y}-12-31`;
+        if (desde < minDesde) minDesde = desde;
+        if (hasta > maxHasta) maxHasta = hasta;
+      } else {
+        const m = parseInt(p.slice(4, 6));
+        const desde = `${y}-${String(m).padStart(2, "0")}-01`;
+        const hasta = `${y}-${String(m).padStart(2, "0")}-${new Date(y, m, 0).getDate()}`;
+        if (desde < minDesde) minDesde = desde;
+        if (hasta > maxHasta) maxHasta = hasta;
+      }
     }
     const [m, c, v, conc, ctas, pc] = await Promise.all([
       fetchMovimientosBanco(empresa.id, { desde: minDesde, hasta: maxHasta }),
