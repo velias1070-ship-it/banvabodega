@@ -94,19 +94,18 @@ export async function GET(req: NextRequest) {
   if (!isAuthorized(req)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
-  return runRefresh();
+  return runRefresh(false);
 }
 
 export async function POST(req: NextRequest) {
+  const body = await req.json().catch(() => ({}));
   if (!isAuthorized(req)) {
-    // Allow manual trigger without cron secret
-    const body = await req.json().catch(() => ({}));
     if (!body.manual) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
-  return runRefresh();
+  return runRefresh(body.force === true);
 }
 
-async function runRefresh() {
+async function runRefresh(force = false) {
   const start = Date.now();
   const sb = getServerSupabase();
   if (!sb) return NextResponse.json({ error: "no supabase" }, { status: 500 });
@@ -122,12 +121,12 @@ async function runRefresh() {
     if (staleCheck?.[0]) {
       const lastUpdate = new Date(staleCheck[0].updated_at);
       const hoursAgo = (Date.now() - lastUpdate.getTime()) / 3600000;
-      if (hoursAgo > 24) {
+      if (hoursAgo > 24 && !force) {
         // TODO: send Telegram alert
         console.error(`[semaforo] Intelligence stale: ${hoursAgo.toFixed(1)}h ago`);
         return NextResponse.json({
           error: "intelligence_stale",
-          message: `sku_intelligence no se actualiza hace ${hoursAgo.toFixed(0)} horas. Semaforo no actualizado.`,
+          message: `sku_intelligence no se actualiza hace ${hoursAgo.toFixed(0)} horas. Semaforo no actualizado. Usa force:true para forzar.`,
           last_update: staleCheck[0].updated_at,
         }, { status: 503 });
       }
