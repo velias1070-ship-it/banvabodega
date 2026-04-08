@@ -57,42 +57,38 @@ interface MPReport {
  * No genera reportes automáticamente (tardan demasiado).
  * Si no hay reporte, informa al usuario que lo genere desde el panel de MP.
  */
-async function findReport(fechaDesde: string, fechaHasta: string, log: string[]): Promise<{ fileName: string; type: "release" | "settlement" } | null> {
+async function findReports(fechaDesde: string, fechaHasta: string, log: string[]): Promise<{ fileName: string; type: "release" | "settlement" }[]> {
   const desdeDate = new Date(fechaDesde).getTime();
   const hastaDate = new Date(fechaHasta).getTime();
-  const DAY = 86400_000;
-  const desdeMargin = desdeDate + 2 * DAY;
 
   try {
-    // Buscar release reports existentes (endpoint correcto)
+    // Buscar release reports existentes
     const allReports = await mpGet("/v1/account/release_report/list") as MPReport[];
     const csvReports = (allReports || [])
       .filter(r => (r.status === "enabled" || r.status === "processed") && r.file_name && r.file_name.endsWith(".csv"));
     log.push(`Release reports en MP: ${csvReports.length} disponibles`);
 
-    // Buscar reportes que cubran desde el inicio del periodo
-    const matching = csvReports
-      .filter(r => new Date(r.begin_date).getTime() <= desdeMargin)
+    // Reportes con overlap: end_date >= inicio periodo AND begin_date <= fin periodo
+    const overlapping = csvReports
+      .filter(r => new Date(r.end_date).getTime() >= desdeDate && new Date(r.begin_date).getTime() <= hastaDate)
       .sort((a, b) => new Date(b.end_date).getTime() - new Date(a.end_date).getTime());
 
-    if (matching.length > 0) {
-      const best = matching[0];
-      log.push(`Usando reporte: ${best.file_name} (${best.begin_date} a ${best.end_date})`);
-      return { fileName: best.file_name, type: "release" };
+    if (overlapping.length > 0) {
+      log.push(`${overlapping.length} reportes cubren el periodo`);
+      return overlapping.map(r => ({ fileName: r.file_name, type: "release" as const }));
     }
 
     log.push("Sin release reports para este periodo");
 
-    // Fallback: buscar settlement reports
+    // Fallback: settlement reports
     try {
       const settlements = await mpGet("/v1/account/settlement_report/list") as MPReport[];
       const csvSettlements = (settlements || [])
         .filter(r => (r.status === "enabled" || r.status === "processed") && r.file_name && r.file_name.endsWith(".csv"))
-        .filter(r => new Date(r.begin_date).getTime() <= desdeMargin)
+        .filter(r => new Date(r.end_date).getTime() >= desdeDate && new Date(r.begin_date).getTime() <= hastaDate)
         .sort((a, b) => new Date(b.end_date).getTime() - new Date(a.end_date).getTime());
       if (csvSettlements.length > 0) {
-        log.push(`Fallback settlement: ${csvSettlements[0].file_name}`);
-        return { fileName: csvSettlements[0].file_name, type: "settlement" };
+        return csvSettlements.map(r => ({ fileName: r.file_name, type: "settlement" as const }));
       }
     } catch { /* no settlement reports */ }
 
@@ -101,7 +97,7 @@ async function findReport(fechaDesde: string, fechaHasta: string, log: string[])
     log.push(`Error buscando reportes: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  return null;
+  return [];
 }
 
 /**
@@ -285,59 +281,54 @@ export async function POST(req: NextRequest) {
     // RETIROS (PAYOUTS) desde release o settlement report
     // ══════════════════════════════════════
     let retiroRows: ReturnType<typeof parseRetirosRelease> = [];
-    let reportUsado: string | null = null;
-    let reportType: string | null = null;
+    const reportesUsados: string[] = [];
 
     try {
-      const report = await findReport(fechaDesde, fechaHasta, log);
+      const reports = await findReports(fechaDesde, fechaHasta, log);
 
-      if (report) {
-        reportUsado = report.fileName;
-        reportType = report.type;
-        log.push(`Reporte encontrado: ${report.fileName} (${report.type})`);
-        const downloadPath = report.type === "release"
-          ? `/v1/account/release_report/${report.fileName}`
-          : `/v1/account/settlement_report/${report.fileName}`;
-        const csv = await mpGetText(downloadPath);
+      for (const report of reports) {
+        try {
+          const downloadPath = report.type === "release"
+            ? `/v1/account/release_report/${report.fileName}`
+            : `/v1/account/settlement_report/${report.fileName}`;
+          const csv = await mpGetText(downloadPath);
+          const csvLines = csv.split("\n");
+          log.push(`${report.fileName}: ${csvLines.length - 1} lineas`);
 
-        const csvLines = csv.split("\n");
-        const csvDataLines = csvLines.length - 1;
-        log.push(`CSV descargado: ${csvDataLines} lineas de datos`);
-
-        // Count DESCRIPTION types
-        if (report.type === "release" && csvDataLines > 0) {
-          const headerCols = csvLines[0].split(";");
-          const descIdx = headerCols.findIndex(h => h.trim() === "DESCRIPTION");
-          if (descIdx >= 0) {
-            const counts: Record<string, number> = {};
-            for (const line of csvLines.slice(1)) {
-              const d = line.split(";")[descIdx]?.trim() || "(vacio)";
-              counts[d] = (counts[d] || 0) + 1;
-            }
-            const summary = Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}:${v}`).join(", ");
-            log.push(`Tipos en CSV: ${summary}`);
+          const rows = report.type === "release"
+            ? parseRetirosRelease(csv, empresaId, cuentaBancariaId)
+            : parseRetirosSettlement(csv, empresaId, cuentaBancariaId);
+          if (rows.length > 0) {
+            retiroRows.push(...rows);
+            reportesUsados.push(report.fileName);
+            log.push(`  → ${rows.length} retiros encontrados`);
           }
+        } catch (err) {
+          log.push(`Error descargando ${report.fileName}: ${err instanceof Error ? err.message : String(err)}`);
         }
+      }
 
-        retiroRows = report.type === "release"
-          ? parseRetirosRelease(csv, empresaId, cuentaBancariaId)
-          : parseRetirosSettlement(csv, empresaId, cuentaBancariaId);
-        log.push(`Retiros parseados: ${retiroRows.length} (payouts + compras con debito)`);
+      if (reports.length === 0) {
+        log.push("Sin reportes. Genera uno desde el panel de MercadoPago (Reportes → Liquidaciones).");
       } else {
-        log.push("No se encontro reporte. Genera uno desde el panel de MercadoPago (Reportes → Liquidaciones).");
+        log.push(`Total retiros de ${reportesUsados.length} reportes: ${retiroRows.length}`);
       }
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      log.push(`ERROR obteniendo retiros: ${errMsg}`);
+      log.push(`ERROR: ${err instanceof Error ? err.message : String(err)}`);
     }
+
+    // Dedup por referencia_unica dentro de los mismos reportes (un retiro puede aparecer en varios)
+    const seen = new Map<string, typeof retiroRows[0]>();
+    for (const r of retiroRows) { if (!seen.has(r.referencia_unica)) seen.set(r.referencia_unica, r); }
+    retiroRows = Array.from(seen.values());
 
     // ══════════════════════════════════════
     // DEDUP E INSERT
     // ══════════════════════════════════════
     if (retiroRows.length === 0) {
       return NextResponse.json({
-        periodo, retiros_nuevos: 0, reporte: reportUsado, reporte_tipo: reportType,
-        mensaje: reportUsado ? "Sin retiros nuevos en el periodo" : "Sin reporte disponible. Genera uno desde el panel de MercadoPago.",
+        periodo, retiros_nuevos: 0, reporte: reportesUsados.join(", ") || null,
+        mensaje: reportesUsados.length > 0 ? "Sin retiros nuevos en el periodo" : "Sin reporte disponible. Genera uno desde el panel de MercadoPago.",
         log,
       });
     }
@@ -368,7 +359,7 @@ export async function POST(req: NextRequest) {
     await sb.from("sync_log").insert({ empresa_id: empresaId, periodo, tipo: "mercadopago", registros: inserted });
 
     return NextResponse.json({
-      periodo, reporte: reportUsado, reporte_tipo: reportType,
+      periodo, reportes: reportesUsados,
       retiros_encontrados: retiroRows.length, ya_existentes: existingRefs.size, retiros_nuevos: inserted,
       log,
     });
