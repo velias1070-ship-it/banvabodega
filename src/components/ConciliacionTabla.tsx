@@ -63,8 +63,8 @@ function scoreDoc(
     }
   }
   const score = isMP
-    ? montoScore * 0.55 + Math.min(fechaScore, 3) * 0.45
-    : montoScore * 0.50 + Math.min(fechaScore, 3) * 0.30 + provMatch * 0.20;
+    ? montoScore * 0.75 + Math.min(fechaScore, 3) * 0.25
+    : montoScore * 0.70 + Math.min(fechaScore, 3) * 0.20 + provMatch * 0.10;
   return { score, diasDiff };
 }
 

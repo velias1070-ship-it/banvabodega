@@ -1092,8 +1092,8 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                     fechaScore = dias < 0 ? 3 : Math.min(dias / 60, 3);
                   }
                   return isMP
-                    ? montoScore * 0.55 + Math.min(fechaScore, 3) * 0.45
-                    : montoScore * 0.50 + Math.min(fechaScore, 3) * 0.30 + provMatch * 0.20;
+                    ? montoScore * 0.75 + Math.min(fechaScore, 3) * 0.25
+                    : montoScore * 0.70 + Math.min(fechaScore, 3) * 0.20 + provMatch * 0.10;
                 };
                 const sorted = filtrados.sort((a, b) => scoreMov(a) - scoreMov(b));
                 if (sorted.length === 0) return <div style={{ padding: 40, textAlign: "center", color: "var(--txt3)" }}>No hay movimientos bancarios pendientes</div>;
@@ -1988,8 +1988,8 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                     fechaScore = dias < 0 ? 3 : Math.min(dias / 60, 3);
                   }
                   return isMP
-                    ? montoScore * 0.55 + Math.min(fechaScore, 3) * 0.45
-                    : montoScore * 0.50 + Math.min(fechaScore, 3) * 0.30 + provMatch * 0.20;
+                    ? montoScore * 0.75 + Math.min(fechaScore, 3) * 0.25
+                    : montoScore * 0.70 + Math.min(fechaScore, 3) * 0.20 + provMatch * 0.10;
                 };
                 const sorted = filtrados.sort((a, b) => scoreMovH(a) - scoreMovH(b));
                 if (sorted.length === 0) return <div style={{ padding: 40, textAlign: "center", color: "var(--txt3)" }}>No hay movimientos bancarios pendientes</div>;
