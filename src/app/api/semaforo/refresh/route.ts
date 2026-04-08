@@ -142,7 +142,7 @@ async function runRefresh(force = false) {
     // 3. Load sku_intelligence (active SKUs)
     const { data: intelRows, error: intelErr } = await sb
       .from("sku_intelligence")
-      .select("sku_origen, nombre, vel_7d, vel_30d, vel_60d, vel_ponderada, stock_total, stock_full, stock_bodega, cob_total, cob_full, margen_full_30d, margen_flex_30d, cuadrante, es_holdout")
+      .select("sku_origen, nombre, vel_7d, vel_30d, vel_60d, vel_ponderada, stock_total, stock_full, stock_bodega, cob_total, cob_full, pct_full, margen_full_30d, margen_flex_30d, cuadrante, es_holdout")
       .or("vel_ponderada.gt.0,stock_total.gt.0");
 
     if (intelErr) throw new Error(`Intel query error: ${intelErr.message}`);
@@ -173,6 +173,25 @@ async function runRefresh(force = false) {
       }
     }
 
+    // 4b. Load LIVE stock from source tables (not intelligence snapshot)
+    // Bodega stock
+    const { data: stockRows } = await sb.from("stock").select("sku, cantidad");
+    const stockBodegaMap = new Map<string, number>();
+    for (const r of stockRows || []) {
+      stockBodegaMap.set(r.sku, (stockBodegaMap.get(r.sku) || 0) + (r.cantidad || 0));
+    }
+    // Full stock from stock_full_cache (synced from ML API)
+    const { data: fullRows } = await sb.from("stock_full_cache").select("sku_venta, cantidad");
+    // Map sku_venta -> sku_origen for Full stock
+    const { data: compForStock } = await sb.from("composicion_venta").select("sku_venta, sku_origen");
+    const svToSoStock = new Map<string, string>();
+    for (const c of compForStock || []) svToSoStock.set(c.sku_venta, c.sku_origen);
+    const stockFullMap = new Map<string, number>();
+    for (const r of fullRows || []) {
+      const so = svToSoStock.get(r.sku_venta) || r.sku_venta;
+      stockFullMap.set(so, (stockFullMap.get(so) || 0) + (r.cantidad || 0));
+    }
+
     // 5. Load costo_promedio from productos
     const { data: prodRows } = await sb.from("productos").select("sku, costo_promedio");
     const costoMap = new Map<string, number>();
@@ -200,7 +219,7 @@ async function runRefresh(force = false) {
     const now = new Date();
     const semana = getMonday(now);
 
-    // 7. Build semaforo rows
+    // 7. Build semaforo rows (stock from LIVE sources, velocity from intelligence)
     const rows: Array<Record<string, unknown>> = [];
     for (const si of intelRows) {
       const ml = mlMap.get(si.sku_origen);
@@ -210,11 +229,22 @@ async function runRefresh(force = false) {
         ? Math.floor((now.getTime() - new Date(lastSale).getTime()) / 86400000)
         : 999;
 
+      // LIVE stock (not intelligence snapshot)
+      const liveBodega = stockBodegaMap.get(si.sku_origen) || 0;
+      const liveFull = stockFullMap.get(si.sku_origen) || 0;
+      const liveTotal = liveBodega + liveFull;
+      // Recalculate cobertura with live stock
+      const velSemanal = si.vel_ponderada || 0;
+      const liveCobTotal = velSemanal > 0 ? Math.round((liveTotal / (velSemanal / 7)) * 100) / 100 : 999;
+      const liveCobFull = (si.vel_ponderada || 0) > 0 && (si.pct_full || 0) > 0
+        ? Math.round((liveFull / ((si.vel_ponderada * (si.pct_full || 1)) / 7)) * 100) / 100
+        : 999;
+
       const cubeta = calcularCubeta({
         vel_7d: si.vel_7d || 0,
         vel_30d: si.vel_30d || 0,
-        stock_total: si.stock_total || 0,
-        cob_total: si.cob_total || 0,
+        stock_total: liveTotal,
+        cob_total: liveCobTotal,
         dias_sin_venta: diasSinVenta,
         es_holdout: si.es_holdout || false,
       }, cfg);
@@ -223,7 +253,7 @@ async function runRefresh(force = false) {
         vel_7d: si.vel_7d || 0,
         vel_30d: si.vel_30d || 0,
         margen_full_30d: si.margen_full_30d || 0,
-        stock_total: si.stock_total || 0,
+        stock_total: liveTotal,
         costo_promedio: costo,
       });
 
@@ -237,11 +267,11 @@ async function runRefresh(force = false) {
         vel_30d: si.vel_30d || 0,
         vel_60d: si.vel_60d || 0,
         vel_ponderada: si.vel_ponderada || 0,
-        stock_total: si.stock_total || 0,
-        stock_full: si.stock_full || 0,
-        stock_bodega: si.stock_bodega || 0,
-        cob_total: si.cob_total || 0,
-        cob_full: si.cob_full || 0,
+        stock_total: liveTotal,
+        stock_full: liveFull,
+        stock_bodega: liveBodega,
+        cob_total: liveCobTotal,
+        cob_full: liveCobFull,
         dias_sin_venta: diasSinVenta,
         margen_full_30d: si.margen_full_30d || 0,
         margen_flex_30d: si.margen_flex_30d || 0,
