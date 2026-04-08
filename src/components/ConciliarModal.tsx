@@ -105,15 +105,19 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
     }
 
     // Score inteligente: menor = mejor match
+    const isMP = mov.banco === "MercadoPago" || movDesc.startsWith("retiro mp");
     const scoreDoc = (d: typeof docs[0]): { score: number; diasDiff: number; montoDiff: number } => {
       // 1. Monto -- diferencia porcentual al target (0 = match perfecto)
       const montoScore = target > 0 ? Math.abs(d.monto_total - target) / target : 1;
       const montoDiff = Math.abs(d.monto_total - target);
 
       // 2. Proveedor -- si la descripcion del movimiento menciona al proveedor
-      const nombreProv = d.razon_social.toLowerCase();
-      const palabras = nombreProv.split(/\s+/).filter(p => p.length > 3);
-      const provMatch = palabras.some(p => movDesc.includes(p)) ? 0 : 1;
+      let provMatch = 1;
+      if (!isMP) {
+        const nombreProv = d.razon_social.toLowerCase();
+        const palabras = nombreProv.split(/\s+/).filter(p => p.length > 3);
+        provMatch = palabras.some(p => movDesc.includes(p)) ? 0 : 1;
+      }
 
       // 3. Plazo de pago -- la fecha del movimiento deberia ser ~plazo dias despues de la factura
       let fechaScore = 1;
@@ -126,8 +130,11 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
         if (diasDiff < 0) fechaScore = 3;
       }
 
-      // Pesos: fecha 40%, monto 35%, proveedor 25%
-      return { score: Math.min(fechaScore, 3) * 0.4 + montoScore * 0.35 + provMatch * 0.25, diasDiff, montoDiff };
+      // Pesos: MP → fecha 55% + monto 45% (proveedor no aporta). Normal → fecha 40% + monto 35% + proveedor 25%
+      const score = isMP
+        ? Math.min(fechaScore, 3) * 0.55 + montoScore * 0.45
+        : Math.min(fechaScore, 3) * 0.4 + montoScore * 0.35 + provMatch * 0.25;
+      return { score, diasDiff, montoDiff };
     };
 
     // Pre-compute scores for sorting and display
