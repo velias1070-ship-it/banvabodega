@@ -208,7 +208,7 @@ function SiiImportModal({ tipo, empresa, periodoActual, onClose, onImported }: S
       const resp = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(tipo === "BHE" ? { periodo } : { rut, clave, periodo, tipo }),
+        body: JSON.stringify(tipo === "BHE" ? { periodo, rut, clave } : { rut, clave, periodo, tipo }),
       });
 
       const json = await resp.json();
@@ -1684,6 +1684,7 @@ type TabKey = "dash" | "compras" | "ventas" | "banco" | "conciliacion" | "cuenta
 
 // ==================== BOLETAS DE HONORARIOS ====================
 function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: string }) {
+  const siiCreds = useSiiCreds();
   const [data, setData] = useState<DBRcvCompra[]>([]);
   const [conciliaciones, setConciliaciones] = useState<DBConciliacion[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1750,7 +1751,7 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
           const res = await fetch("/api/sii/bhe", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ periodo: p }),
+            body: JSON.stringify({ periodo: p, rut: siiCreds.creds.rut || undefined, clave: siiCreds.creds.clave || undefined }),
           });
           const d = await res.json();
           if (d.error) { errores.push(`${p}: ${d.error.slice(0, 60)}`); }

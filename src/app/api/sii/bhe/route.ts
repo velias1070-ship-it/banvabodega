@@ -14,23 +14,27 @@ const SII_API_KEY = process.env.SII_API_KEY || "banva-rcv-2026";
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { periodo } = body as { periodo: string };
+    const { periodo, rut, clave } = body as { periodo: string; rut?: string; clave?: string };
 
     if (!periodo || !/^\d{6}$/.test(periodo)) {
       return NextResponse.json({ error: "periodo debe ser YYYYMM" }, { status: 400 });
     }
 
-    console.log(`[BHE] Llamando Railway /sync-bte periodo=${periodo}`);
+    // Si hay RUT+clave, usar /scrape-bhe (scraping con credenciales personales)
+    // Si no, usar /sync-bte (BTE empresa, sin credenciales)
+    const useScrape = !!(rut && clave);
+    const endpoint = useScrape
+      ? `${SII_SERVER_URL}/scrape-bhe?periodo=${periodo}&rut_persona=${encodeURIComponent(rut!)}&clave=${encodeURIComponent(clave!)}&key=${SII_API_KEY}`
+      : `${SII_SERVER_URL}/sync-bte?periodo=${periodo}&key=${SII_API_KEY}`;
+
+    console.log(`[BHE] Llamando Railway ${useScrape ? "/scrape-bhe" : "/sync-bte"} periodo=${periodo}`);
 
     let result: Record<string, unknown> | null = null;
     let lastErr = "";
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         if (attempt > 0) await new Promise(r => setTimeout(r, 2000 * attempt));
-        const resp = await fetch(
-          `${SII_SERVER_URL}/sync-bte?periodo=${periodo}&key=${SII_API_KEY}`,
-          { signal: AbortSignal.timeout(100000) }
-        );
+        const resp = await fetch(endpoint, { signal: AbortSignal.timeout(100000) });
         result = await resp.json();
         if (result!.status !== "error") break;
         lastErr = String(result!.error || "");
@@ -68,10 +72,10 @@ export async function POST(req: NextRequest) {
       monto_iva: b.retencion,
       monto_total: b.monto_liquido,
       fecha_recepcion: b.fecha,
-      evento_receptor: "BTE",
+      evento_receptor: useScrape ? "BHE" : "BTE",
     }));
 
-    console.log(`[BHE] ${data.length} BTE importadas`);
+    console.log(`[BHE] ${data.length} ${useScrape ? "BHE" : "BTE"} importadas`);
 
     return NextResponse.json({ ok: true, periodo, registros: data.length, data });
   } catch (err) {
