@@ -133,9 +133,10 @@ export async function GET(req: NextRequest) {
       if (promos && Array.isArray(promos)) {
         for (const p of promos) {
           let comisionPromo = 0;
-          if (p.price > 0 && categoryId) {
+          const promoPrice = p.price > 0 ? p.price : (p.suggested_discounted_price || 0);
+          if (promoPrice > 0 && categoryId) {
             try {
-              const feesPromo = await mlGet<{ sale_fee_amount: number }>(`/sites/MLC/listing_prices?price=${p.price}&listing_type_id=${listingType}&category_id=${categoryId}`);
+              const feesPromo = await mlGet<{ sale_fee_amount: number }>(`/sites/MLC/listing_prices?price=${promoPrice}&listing_type_id=${listingType}&category_id=${categoryId}`);
               comisionPromo = feesPromo?.sale_fee_amount || 0;
             } catch { /* ignore */ }
           }

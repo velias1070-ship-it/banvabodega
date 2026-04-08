@@ -1871,7 +1871,8 @@ function PreciosYPromos() {
                         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                           {item.promotions.map((p, pi) => {
                             const promoPrice = p.price > 0 ? p.price : (p.suggested_discounted_price || 0);
-                            const comP = p.comision_promo || 0;
+                            // Comisión: usar la del backend, sino estimar 14% del precio promo
+                            const comP = p.comision_promo || (promoPrice >= 19990 ? Math.round(promoPrice * 0.14) : Math.round(promoPrice * 0.14) + 1000);
                             const envP = promoPrice >= 19990 ? item.costo_envio : 0;
                             const ganP = promoPrice > 0 ? promoPrice - (item.costo_bruto + comP + envP) : 0;
                             const marP = promoPrice > 0 ? Math.round((ganP / promoPrice) * 100) : 0;
