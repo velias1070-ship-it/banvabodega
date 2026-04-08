@@ -1915,12 +1915,17 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                             }
                             setDetalleLoading(false);
                           }}
+                            data-bhe-detail={c.id}
                             style={{ fontSize: 11, fontWeight: 600, padding: "4px 12px", borderRadius: 6, background: "var(--greenBg)", color: "var(--green)", cursor: "pointer" }}
                             title="Ver detalle">
                             Pagado
                           </span>
-                          {detalleConc === c.id && (
-                            <div style={{ position: "absolute", right: 0, bottom: "100%", marginBottom: 4, zIndex: 50, background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 10, padding: 16, boxShadow: "0 8px 24px rgba(0,0,0,0.4)", width: 340, textAlign: "left" }}>
+                          {detalleConc === c.id && (() => {
+                            const el = document.querySelector(`[data-bhe-detail="${c.id}"]`);
+                            const rect = el?.getBoundingClientRect();
+                            const openUp = rect ? rect.bottom > window.innerHeight * 0.6 : false;
+                            return (
+                            <div style={{ position: "absolute", right: 0, ...(openUp ? { bottom: "100%", marginBottom: 4 } : { top: "100%", marginTop: 4 }), zIndex: 50, background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 10, padding: 16, boxShadow: "0 8px 24px rgba(0,0,0,0.4)", width: 340, textAlign: "left" }}>
                               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                                 <span style={{ fontSize: 13, fontWeight: 600 }}>Detalle conciliación</span>
                                 <button onClick={() => setDetalleConc(null)} style={{ background: "none", border: "none", fontSize: 16, cursor: "pointer", color: "var(--txt3)" }}>&times;</button>
@@ -1957,7 +1962,8 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                                 <div style={{ padding: 12, fontSize: 12, color: "var(--txt3)" }}>Sin movimiento bancario vinculado</div>
                               )}
                             </div>
-                          )}
+                            );
+                          })()}
                         </div>
                       ) : (
                         <span style={{ display: "inline-flex", alignItems: "center", gap: 0 }}>
