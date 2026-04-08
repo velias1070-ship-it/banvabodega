@@ -53,7 +53,7 @@ export async function GET(req: NextRequest) {
               if (attempt === 0) { await new Promise(r => setTimeout(r, 500)); continue; }
               return { item, hasActive: false, disponibles: 0, error: true };
             }
-            const hasActive = promos.some(p => p.status === "started");
+            const hasActive = promos.some(p => p.status === "started" || p.status === "pending");
             const disponibles = promos.filter(p => p.status === "candidate" || p.status === "pending").length;
             return { item, hasActive, disponibles, error: false };
           } catch {

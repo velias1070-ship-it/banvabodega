@@ -1695,7 +1695,7 @@ function PreciosYPromos() {
         const res2 = await fetch(`/api/ml/promotions?item_ids=${ids}`);
         const data = await res2.json();
         const realSinPromo = (data.items || []).filter((it: PromoItem) =>
-          !it.promotions.some(p => p.status === "started")
+          !it.promotions.some(p => p.status === "started" || p.status === "pending")
         );
         setPromoData(realSinPromo);
         setScanResult(prev => prev ? { ...prev, sin: realSinPromo.length, con: prev.total - realSinPromo.length } : prev);
@@ -1874,9 +1874,11 @@ function PreciosYPromos() {
                         <span style={{ fontSize: 10, color: "var(--txt3)" }}>Sin promos</span>
                       ) : (
                         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                          {item.promotions.map((p, pi) => {
+                          {(() => {
+                            // Verificar si ya tiene un PRICE_DISCOUNT activo/pending
+                            const hasActivePD = item.promotions.some(pr => pr.type === "PRICE_DISCOUNT" && (pr.status === "started" || pr.status === "pending"));
+                            return item.promotions.map((p, pi) => {
                             const promoPrice = p.price > 0 ? p.price : (p.suggested_discounted_price || 0);
-                            // Comisión: usar la del backend, sino estimar 14% del precio promo
                             const comP = p.comision_promo || (promoPrice >= 19990 ? Math.round(promoPrice * 0.14) : Math.round(promoPrice * 0.14) + 1000);
                             const envP = promoPrice >= 19990 ? item.costo_envio : 0;
                             const ganP = promoPrice > 0 ? promoPrice - (item.costo_bruto + comP + envP) : 0;
@@ -1885,19 +1887,24 @@ function PreciosYPromos() {
                             const fechas = p.start_date && p.finish_date
                               ? `${p.start_date.slice(5, 10).replace("-", "/")} al ${p.finish_date.slice(5, 10).replace("-", "/")}`
                               : "";
+                            const isActive = p.status === "started" || p.status === "pending";
+                            // No mostrar POSTULAR en PRICE_DISCOUNT si ya hay uno activo
+                            const canPostulate = !isActive && !(p.type === "PRICE_DISCOUNT" && hasActivePD);
                             return (
                               <div key={pi} style={{ padding: "4px 8px", borderRadius: 5, background: "var(--bg3)", fontSize: 10, borderLeft: `3px solid ${info.color}` }}>
                                 <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 2 }}>
-                                  {p.status === "started" ? (
+                                  {isActive ? (
                                     <button onClick={() => salirPromoP(item.item_id, p.type, p.id)} disabled={promoActioning === item.item_id}
                                       style={{ padding: "1px 5px", borderRadius: 3, fontSize: 8, fontWeight: 700, background: "var(--greenBg)", color: "var(--green)", border: "1px solid var(--greenBd)", cursor: "pointer" }}>
                                       {promoActioning === item.item_id ? "..." : "ACTIVA \u2715"}
                                     </button>
-                                  ) : (
+                                  ) : canPostulate ? (
                                     <button onClick={() => openSimP(item, { ...p, price: promoPrice })} disabled={promoActioning === item.item_id}
                                       style={{ padding: "1px 5px", borderRadius: 3, fontSize: 8, fontWeight: 700, background: info.color, color: "#fff", border: "none", cursor: "pointer" }}>
                                       {promoActioning === item.item_id ? "..." : "POSTULAR"}
                                     </button>
+                                  ) : (
+                                    <span style={{ fontSize: 8, color: "var(--txt3)", fontWeight: 600 }}>YA ACTIVO</span>
                                   )}
                                   <span style={{ fontWeight: 700, color: info.color }}>{info.label}</span>
                                   {p.name && <span style={{ color: "var(--txt2)", fontSize: 9 }}>{p.name}</span>}
@@ -1923,7 +1930,7 @@ function PreciosYPromos() {
                                 )}
                               </div>
                             );
-                          })}
+                          }); })()}
                         </div>
                       )}
                     </td>
