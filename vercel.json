@@ -31,6 +31,10 @@
     {
       "path": "/api/ml/attr-watch",
       "schedule": "0 */6 * * *"
+    },
+    {
+      "path": "/api/semaforo/refresh",
+      "schedule": "0 9 * * 1"
     }
   ]
 }

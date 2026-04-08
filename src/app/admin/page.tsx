@@ -14,6 +14,7 @@ import SheetSync from "@/components/SheetSync";
 import AdminReposicion from "@/components/AdminReposicion";
 import AdminAgentes from "@/components/AdminAgentes";
 import AdminInteligencia from "@/components/AdminInteligencia";
+import AdminSemaforo from "@/components/AdminSemaforo";
 import AdminCompras from "@/components/AdminCompras";
 import AdminEventos from "@/components/AdminEventos";
 import AdminVentasML from "@/components/AdminVentasML";
@@ -64,7 +65,7 @@ function LoginGate({ onLogin }: { onLogin: (pin: string) => boolean }) {
   );
 }
 
-type AdminTab = "dash"|"rec"|"flex"|"enviosfull"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"intel"|"compras"|"eventos"|"ventasml"|"comercial"|"agentes"|"stockml"|"timeline"|"config";
+type AdminTab = "dash"|"rec"|"flex"|"enviosfull"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"intel"|"semaforo"|"compras"|"eventos"|"ventasml"|"comercial"|"agentes"|"stockml"|"timeline"|"config";
 
 const MOBILE_MENU_SECTIONS = [
   { section: "Principal", items: [
@@ -155,7 +156,7 @@ export default function AdminPage() {
   const SIDEBAR_GROUPS = [
     {section:"OPERACIONES",icon:"⚡",items:[["rec","Recepciones","📦"],["flex","Ultima Milla","🚚"],["enviosfull","Envios Full","📦"],["ops","Operaciones","⚡"],["reposicion","Reposición","🔄"]] as const},
     {section:"INVENTARIO",icon:"📦",items:[["inv","Inventario","📦"],["mov","Movimientos","📋"],["timeline","Timeline","📊"],["prod","Productos","🏷️"],["stockml","Stock ML","📡"]] as const},
-    {section:"INTELIGENCIA",icon:"🧠",items:[["intel","Inteligencia","🧠"],["compras","Compras","🛒"],["eventos","Eventos","📅"],["ventasml","Ventas ML","💰"]] as const},
+    {section:"INTELIGENCIA",icon:"🧠",items:[["intel","Inteligencia","🧠"],["semaforo","Semaforo","🚦"],["compras","Compras","🛒"],["eventos","Eventos","📅"],["ventasml","Ventas ML","💰"]] as const},
     {section:"COMERCIAL",icon:"🏪",items:[["comercial","Publicaciones","📢"]] as const},
     {section:"SISTEMA",icon:"⚙️",items:[["agentes","Agentes IA","🤖"],["config","Configuración","⚙️"]] as const},
   ] as const;
@@ -268,6 +269,7 @@ export default function AdminPage() {
             {tab==="prod"&&<Productos refresh={r}/>}
             {tab==="reposicion"&&<AdminReposicion/>}
             {tab==="intel"&&<AdminInteligencia/>}
+            {tab==="semaforo"&&<AdminSemaforo/>}
             {tab==="compras"&&<AdminCompras/>}
             {tab==="eventos"&&<AdminEventos/>}
             {tab==="ventasml"&&<AdminVentasML/>}
