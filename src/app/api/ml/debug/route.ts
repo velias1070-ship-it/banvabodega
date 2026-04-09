@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ensureValidToken, getMLConfig } from "@/lib/ml";
+import { ensureValidToken, getMLConfig, saveMLConfig } from "@/lib/ml";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -55,10 +55,23 @@ export async function GET(req: NextRequest) {
     const text = await resp.text();
     let body: unknown = null;
     try { body = JSON.parse(text); } catch { /* */ }
+    let saved = false;
+    if (resp.ok && body && typeof body === "object") {
+      const data = body as { access_token?: string; refresh_token?: string; expires_in?: number };
+      if (data.access_token && data.expires_in) {
+        await saveMLConfig({
+          access_token: data.access_token,
+          refresh_token: data.refresh_token || cfg.refresh_token,
+          token_expires_at: new Date(Date.now() + data.expires_in * 1000).toISOString(),
+        });
+        saved = true;
+      }
+    }
     return NextResponse.json({
       manual_refresh: true,
       status: resp.status,
       ok: resp.ok,
+      saved_to_db: saved,
       client_id: cfg.client_id,
       refresh_token_prefix: cfg.refresh_token.slice(0, 12),
       refresh_token_len: cfg.refresh_token.length,
