@@ -265,11 +265,33 @@ export async function ensureValidToken(): Promise<string | null> {
             const data = await resp.json();
             const newExpiry = new Date(Date.now() + data.expires_in * 1000).toISOString();
 
-            await saveMLConfig({
-              access_token: data.access_token,
-              refresh_token: data.refresh_token || cfg.refresh_token,
-              token_expires_at: newExpiry,
-            });
+            // CAS atómico: solo guardar si el refresh_token en DB sigue siendo el que usamos.
+            // Esto evita que un refresh viejo (de un container que llegó tarde) sobreescriba
+            // un refresh nuevo (de otro container que ya guardó). Sin esto, en alta concurrencia
+            // (varios crons disparándose juntos) el LAST WRITE WINS dejaba tokens inválidos en DB.
+            const sb = getServerSupabase();
+            if (sb) {
+              const { data: updRows, error: updErr } = await sb
+                .from("ml_config")
+                .update({
+                  access_token: data.access_token,
+                  refresh_token: data.refresh_token || cfg.refresh_token,
+                  token_expires_at: newExpiry,
+                  updated_at: new Date().toISOString(),
+                })
+                .eq("id", "main")
+                .eq("refresh_token", cfg.refresh_token)
+                .select("access_token");
+
+              if (updErr) {
+                console.error("[ML] CAS update error:", updErr.message);
+              } else if (!updRows || updRows.length === 0) {
+                // Otro container ya rotó el refresh_token. Usar lo que ese container guardó.
+                console.log("[ML] CAS perdido — otro container refrescó primero, leyendo token ganador");
+                const winner = await getMLConfig();
+                if (winner?.access_token) return winner.access_token;
+              }
+            }
 
             console.log("[ML] Token refreshed successfully, expires:", newExpiry);
             return data.access_token;
