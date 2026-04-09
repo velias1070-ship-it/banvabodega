@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { syncStockFull } from "@/lib/ml";
+import { getBaseUrl } from "@/lib/base-url";
 
 export const maxDuration = 300;
 
@@ -14,9 +15,7 @@ export async function GET() {
 
     if (result.stock_actualizado > 0) {
       try {
-        const baseUrl = process.env.VERCEL_URL
-          ? `https://${process.env.VERCEL_URL}`
-          : "http://localhost:3000";
+        const baseUrl = getBaseUrl();
         await fetch(`${baseUrl}/api/intelligence/recalcular`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -55,9 +54,7 @@ export async function POST(req: NextRequest) {
     // Disparar recálculo de inteligencia cuando hay cambios de stock
     if (shouldRecalc && result.stock_actualizado > 0) {
       try {
-        const baseUrl = process.env.VERCEL_URL
-          ? `https://${process.env.VERCEL_URL}`
-          : "http://localhost:3000";
+        const baseUrl = getBaseUrl();
 
         await fetch(`${baseUrl}/api/intelligence/recalcular`, {
           method: "POST",

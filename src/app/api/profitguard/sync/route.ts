@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getBaseUrl } from "@/lib/base-url";
 
 export const maxDuration = 300;
 export const dynamic = "force-dynamic";
@@ -9,9 +10,7 @@ export const dynamic = "force-dynamic";
  * Divide en chunks de 14 días para no sobrecargar la API.
  */
 export async function GET() {
-  const baseUrl = process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : "http://localhost:3000";
+  const baseUrl = getBaseUrl();
 
   const end = new Date();
   const start = new Date();

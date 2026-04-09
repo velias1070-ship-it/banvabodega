@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
+import { getBaseUrl } from "@/lib/base-url";
 
 interface OrderRow {
   order_id: string;
@@ -138,9 +139,7 @@ export async function POST(req: NextRequest) {
     // Disparar recálculo de inteligencia con los SKUs afectados (fire and forget)
     if (nuevas > 0 || actualizadas > 0) {
       const skusAfectados = Array.from(new Set(toUpsert.map(o => o.sku_venta)));
-      const baseUrl = process.env.VERCEL_URL
-        ? `https://${process.env.VERCEL_URL}`
-        : "http://localhost:3000";
+      const baseUrl = getBaseUrl();
       fetch(`${baseUrl}/api/intelligence/recalcular`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

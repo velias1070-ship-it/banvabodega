@@ -5,6 +5,7 @@
  * Site: MLC (Chile)
  */
 import { getServerSupabase } from "./supabase-server";
+import { getBaseUrl } from "./base-url";
 
 const ML_API = "https://api.mercadolibre.com";
 const ML_AUTH = "https://auth.mercadolibre.cl"; // Chile
@@ -844,9 +845,7 @@ export async function processShipment(shipmentId: number, orderIds: number[]): P
   if (affectedSkus.length > 0) {
     const rows = affectedSkus.map(sku => ({ sku, created_at: new Date().toISOString() }));
     void sb.from("stock_sync_queue").upsert(rows, { onConflict: "sku" });
-    const baseUrl = process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
-      : "http://localhost:3000";
+    const baseUrl = getBaseUrl();
     fetch(`${baseUrl}/api/ml/stock-sync`, {
       method: "POST",
       headers: { "x-internal": "1" },

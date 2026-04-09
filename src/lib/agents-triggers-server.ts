@@ -1,4 +1,5 @@
 import { getServerSupabase } from "./supabase-server";
+import { getBaseUrl } from "./base-url";
 
 /**
  * Server-side version of dispararTrigger.
@@ -24,9 +25,7 @@ export async function dispararTriggerServer(evento: string, datos?: Record<strin
     if (matching.length === 0) return;
 
     // Determine base URL for internal API calls
-    const baseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-      ? (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000")
-      : "http://localhost:3000";
+    const baseUrl = getBaseUrl();
 
     for (const trigger of matching) {
       // Fire and forget

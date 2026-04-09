@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { processShipment, mlGet, MLOrder, syncSingleFulfillmentStock } from "@/lib/ml";
 import { upsertOrderToVentasCache, updateVentaEstado } from "@/lib/ventas-cache";
+import { getBaseUrl } from "@/lib/base-url";
 
 /**
  * MercadoLibre webhook endpoint.
@@ -129,9 +130,7 @@ export async function POST(req: NextRequest) {
 
         if (skuVenta) {
           try {
-            const baseUrl = process.env.VERCEL_URL
-              ? `https://${process.env.VERCEL_URL}`
-              : "http://localhost:3000";
+            const baseUrl = getBaseUrl();
             fetch(`${baseUrl}/api/intelligence/recalcular`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },

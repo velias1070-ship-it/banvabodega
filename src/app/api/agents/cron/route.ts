@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fetchAgentTriggersServer, updateAgentTriggerServer, DBAgentTrigger } from "@/lib/agents-db";
+import { getBaseUrl } from "@/lib/base-url";
 
 const CRON_SECRET = process.env.AGENTS_CRON_SECRET || "";
 
@@ -130,9 +131,7 @@ export async function GET(req: NextRequest) {
     const ejecutados: { agente: string; trigger_nombre: string }[] = [];
 
     // Determine base URL for internal API calls
-    const baseUrl = process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
-      : "http://localhost:3000";
+    const baseUrl = getBaseUrl();
 
     for (const trigger of triggers) {
       if (!shouldExecuteTrigger(trigger, now)) continue;
