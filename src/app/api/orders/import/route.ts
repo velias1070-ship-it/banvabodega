@@ -26,15 +26,40 @@ interface OrderRow {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const ordenes: OrderRow[] = (body.ordenes || []).map((o: OrderRow) => ({
+    const ordenesRaw: OrderRow[] = (body.ordenes || []).map((o: OrderRow) => ({
       ...o,
       sku_venta: (o.sku_venta || "").toUpperCase().trim(),
     }));
     const fuente: string = body.fuente || "manual";
 
-    if (!Array.isArray(ordenes) || ordenes.length === 0) {
+    if (!Array.isArray(ordenesRaw) || ordenesRaw.length === 0) {
       return NextResponse.json({ error: "No se recibieron órdenes" }, { status: 400 });
     }
+
+    // Deduplicar (order_id, sku_venta): ProfitGuard devuelve cada orderItem como
+    // fila separada. Cuando una orden tiene 2 unidades del mismo SKU, llegan como
+    // 2 filas idénticas con cant=1 cada una. Postgres ON CONFLICT no permite
+    // afectar la misma fila dos veces en un upsert → si no agregamos, revienta
+    // todo el chunk con "ON CONFLICT DO UPDATE command cannot affect row a second
+    // time" y NADA se guarda. Agregamos sumando los campos cuantitativos.
+    const dedupMap = new Map<string, OrderRow>();
+    for (const o of ordenesRaw) {
+      const key = `${o.order_id}|${o.sku_venta}`;
+      const prev = dedupMap.get(key);
+      if (!prev) {
+        dedupMap.set(key, { ...o });
+      } else {
+        prev.cantidad = (prev.cantidad || 0) + (o.cantidad || 0);
+        prev.subtotal = (prev.subtotal || 0) + (o.subtotal || 0);
+        prev.comision_total = (prev.comision_total || 0) + (o.comision_total || 0);
+        prev.costo_envio = (prev.costo_envio || 0) + (o.costo_envio || 0);
+        prev.ingreso_envio = (prev.ingreso_envio || 0) + (o.ingreso_envio || 0);
+        prev.ingreso_adicional_tc = (prev.ingreso_adicional_tc || 0) + (o.ingreso_adicional_tc || 0);
+        prev.total = (prev.total || 0) + (o.total || 0);
+        // precio_unitario y comision_unitaria se mantienen del primer item (son por unidad)
+      }
+    }
+    const ordenes: OrderRow[] = Array.from(dedupMap.values());
 
     const sb = getServerSupabase();
     if (!sb) {
