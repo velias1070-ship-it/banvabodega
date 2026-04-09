@@ -1,12 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ensureValidToken, getMLConfig } from "@/lib/ml";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 /**
  * Debug endpoint — hace GET crudo a ML API y devuelve el response tal cual.
  * Uso: /api/ml/debug?path=/user-products/MLCU3754508253/stock
  *      /api/ml/debug?refresh=1   (forzar refresh manual y mostrar resultado)
  */
 export async function GET(req: NextRequest) {
+  const showConfig = req.nextUrl.searchParams.get("config");
+  if (showConfig) {
+    const cfg = await getMLConfig();
+    if (!cfg) return NextResponse.json({ error: "no config" });
+    return NextResponse.json({
+      seller_id: cfg.seller_id,
+      access_token_prefix: cfg.access_token.slice(0, 35),
+      access_token_suffix: cfg.access_token.slice(-15),
+      access_token_len: cfg.access_token.length,
+      refresh_token_prefix: cfg.refresh_token.slice(0, 25),
+      token_expires_at: cfg.token_expires_at,
+      updated_at: cfg.updated_at,
+      now: new Date().toISOString(),
+    });
+  }
+
   const refresh = req.nextUrl.searchParams.get("refresh");
   if (refresh) {
     const cfg = await getMLConfig();
