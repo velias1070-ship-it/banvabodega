@@ -51,6 +51,8 @@ interface IntelRow {
   ingreso_30d: number;
   dias_sin_stock_full: number;
   venta_perdida_pesos: number;
+  /** v43: true cuando venta_perdida_pesos se calculó con fallback precio*0.25 */
+  oportunidad_perdida_es_estimacion: boolean;
   alertas: string[];
   alertas_count: number;
   evento_activo: string | null;
@@ -68,7 +70,8 @@ interface IntelRow {
   vel_objetivo: number;
   gap_vel_pct: number | null;
   inner_pack: number;
-  stock_proveedor: number;
+  /** v42: null = desconocido; 0 = agotado explícito por proveedor; >0 = disponible */
+  stock_proveedor: number | null;
   tiene_stock_prov: boolean;
   updated_at: string;
 }
@@ -101,6 +104,8 @@ interface VentaRow {
   abc_pre_quiebre: string | null;
   es_catch_up: boolean;
   venta_perdida_pesos: number;
+  /** v43: true cuando venta_perdida_pesos se calculó con fallback precio*0.25 */
+  oportunidad_perdida_es_estimacion: boolean;
   liquidacion_accion: string | null;
   updated_at: string;
   stock_full: number;
@@ -378,6 +383,8 @@ export default function AdminInteligencia() {
   const [syncMLResult, setSyncMLResult] = useState<string | null>(null);
   const [vistaOrigen, setVistaOrigen] = useState(false);
   const [vistaEnvio, setVistaEnvio] = useState(false);
+  const [vistaProveedorAgotado, setVistaProveedorAgotado] = useState(false);
+  const [provAgotadoSort, setProvAgotadoSort] = useState<{ col: string; asc: boolean }>({ col: "dias_hasta_quiebre", asc: true });
   const [envioSort, setEnvioSort] = useState<{ col: string; asc: boolean }>({ col: "accion", asc: true });
   const [envioFilter, setEnvioFilter] = useState<"todos"|"sin_ip"|"abc_a"|"abc_b"|"abc_c"|"urgente"|"stock_insuf">("todos");
   const [envioIpEdits, setEnvioIpEdits] = useState<Map<string, number>>(new Map());
@@ -838,6 +845,48 @@ export default function AdminInteligencia() {
     if (!vistaEnvio) setEnvioSelAllInit(false);
   }, [vistaEnvio]);
 
+  // ── Ventana de Acción — Proveedor Agotado: items con la alerta nueva ──
+  // Captura SKUs donde stock_proveedor=0 explícito pero todavía hay cola en Full.
+  // Es la señal temprana: tengo runway vendible pero no puedo reponer cuando se acabe.
+  const proveedorAgotadoItems = useMemo(() => {
+    if (!vistaProveedorAgotado || rows.length === 0) return [];
+    const items = rows
+      .filter(r => (r.alertas || []).includes("proveedor_agotado_con_cola_full"))
+      .map(r => {
+        // dias_hasta_quiebre = cuánto runway me queda con la velocidad actual.
+        // vel_ponderada está en uds/semana → /7 = uds/día.
+        const velDiaria = r.vel_ponderada > 0 ? r.vel_ponderada / 7 : 0;
+        const diasHastaQuiebre = velDiaria > 0 ? Math.floor(r.stock_full / velDiaria) : 999;
+        return {
+          sku_origen: r.sku_origen,
+          nombre: r.nombre || "",
+          abc: r.abc,
+          vel_ponderada: r.vel_ponderada,
+          stock_full: r.stock_full,
+          stock_bodega: r.stock_bodega,
+          ingreso_30d: r.ingreso_30d,
+          dias_hasta_quiebre: diasHastaQuiebre,
+          cob_full: r.cob_full,
+          evento_activo: r.evento_activo,
+          severidad: (diasHastaQuiebre <= 14 ? "alta" : "media") as "alta" | "media",
+        };
+      });
+    items.sort((a, b) => {
+      const { col, asc } = provAgotadoSort;
+      let va: number | string = 0, vb: number | string = 0;
+      if (col === "sku") { va = a.sku_origen; vb = b.sku_origen; }
+      else if (col === "nombre") { va = a.nombre; vb = b.nombre; }
+      else if (col === "abc") { va = a.abc; vb = b.abc; }
+      else if (col === "vel") { va = a.vel_ponderada; vb = b.vel_ponderada; }
+      else if (col === "stock_full") { va = a.stock_full; vb = b.stock_full; }
+      else if (col === "ingreso") { va = a.ingreso_30d; vb = b.ingreso_30d; }
+      else { va = a.dias_hasta_quiebre; vb = b.dias_hasta_quiebre; }
+      const cmp = typeof va === "string" ? va.localeCompare(vb as string) : (va as number) - (vb as number);
+      return asc ? cmp : -cmp;
+    });
+    return items;
+  }, [vistaProveedorAgotado, rows, provAgotadoSort]);
+
   // ── Pedido a Proveedor: compute items from rows ──
   const pedidoItems = useMemo((): PedidoProveedorItem[] => {
     if (!vistaPedido || rows.length === 0) return [];
@@ -1204,6 +1253,8 @@ export default function AdminInteligencia() {
   const agotadosFull = rows.filter((r: IntelRow) => r.stock_full <= 0 && r.vel_full > 0).length;
   const urgentes = rows.filter((r: IntelRow) => r.accion === "URGENTE" || r.accion === "PEDIR").length;
   const ventaPerdida = rows.reduce((a: number, r: IntelRow) => a + (r.venta_perdida_pesos || 0), 0);
+  const ventaPerdidaEstimada = rows.reduce((a: number, r: IntelRow) => a + (r.oportunidad_perdida_es_estimacion ? (r.venta_perdida_pesos || 0) : 0), 0);
+  const ventaPerdidaPctEstimada = ventaPerdida > 0 ? Math.round((ventaPerdidaEstimada / ventaPerdida) * 100) : 0;
   const gmroiProm = rows.length > 0 ? rows.reduce((a: number, r: IntelRow) => a + (r.gmroi || 0), 0) / rows.length : 0;
 
   // KPIs nuevos: % A en meta, % A con stock
@@ -1237,17 +1288,20 @@ export default function AdminInteligencia() {
         </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
           <div style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--bg4)" }}>
-            <button onClick={() => { setVistaOrigen(false); setVistaEnvio(false); setVistaPedido(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: !vistaOrigen && !vistaEnvio && !vistaPedido ? "var(--cyan)" : "var(--bg3)", color: !vistaOrigen && !vistaEnvio && !vistaPedido ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+            <button onClick={() => { setVistaOrigen(false); setVistaEnvio(false); setVistaPedido(false); setVistaProveedorAgotado(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: !vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado ? "var(--cyan)" : "var(--bg3)", color: !vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
               SKU Venta
             </button>
-            <button onClick={() => { setVistaOrigen(true); setVistaEnvio(false); setVistaPedido(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaOrigen && !vistaEnvio && !vistaPedido ? "var(--cyan)" : "var(--bg3)", color: vistaOrigen && !vistaEnvio && !vistaPedido ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+            <button onClick={() => { setVistaOrigen(true); setVistaEnvio(false); setVistaPedido(false); setVistaProveedorAgotado(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado ? "var(--cyan)" : "var(--bg3)", color: vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
               SKU Origen
             </button>
-            <button onClick={() => { setVistaEnvio(true); setVistaOrigen(false); setVistaPedido(false); setPickingCreado(null); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaEnvio ? "var(--blue)" : "var(--bg3)", color: vistaEnvio ? "#fff" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+            <button onClick={() => { setVistaEnvio(true); setVistaOrigen(false); setVistaPedido(false); setVistaProveedorAgotado(false); setPickingCreado(null); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaEnvio ? "var(--blue)" : "var(--bg3)", color: vistaEnvio ? "#fff" : "var(--txt3)", border: "none", cursor: "pointer" }}>
               Envio a Full
             </button>
-            <button onClick={() => { setVistaPedido(true); setVistaEnvio(false); setVistaOrigen(false); setOcCreada(null); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaPedido ? "var(--amber)" : "var(--bg3)", color: vistaPedido ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+            <button onClick={() => { setVistaPedido(true); setVistaEnvio(false); setVistaOrigen(false); setVistaProveedorAgotado(false); setOcCreada(null); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaPedido ? "var(--amber)" : "var(--bg3)", color: vistaPedido ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
               Pedido a Proveedor
+            </button>
+            <button onClick={() => { setVistaProveedorAgotado(true); setVistaEnvio(false); setVistaOrigen(false); setVistaPedido(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaProveedorAgotado ? "var(--red)" : "var(--bg3)", color: vistaProveedorAgotado ? "#fff" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+              Ventana Proveedor
             </button>
           </div>
           <button onClick={() => setModalMasivo(true)} style={{ padding: "6px 12px", borderRadius: 6, background: "var(--amberBg)", color: "var(--amber)", fontWeight: 600, fontSize: 11, border: "1px solid var(--amberBd)", cursor: "pointer" }}>
@@ -1279,7 +1333,12 @@ export default function AdminInteligencia() {
         <KpiBadge label="SKUs" value={String(vistaOrigen ? totalSkus : totalVentas)} color="var(--cyan)" />
         <KpiBadge label="Agotados" value={String(agotadosFull)} color="var(--red)" />
         <KpiBadge label="Urgentes" value={String(urgentes)} color="var(--amber)" />
-        <KpiBadge label="V.Perdida" value={fmtK(ventaPerdida)} color="var(--red)" />
+        <KpiBadge
+          label="V.Perdida"
+          value={fmtK(ventaPerdida) + (ventaPerdidaPctEstimada > 0 ? ` (${ventaPerdidaPctEstimada}%est)` : "")}
+          color="var(--red)"
+          title={ventaPerdidaPctEstimada > 0 ? `${fmtK(ventaPerdidaEstimada)} viene de estimación con margen 25% (textiles BANVA típicamente menor). Filtrar oportunidad_perdida_es_estimacion=false para descartar.` : "Todos los valores derivados de margen real"}
+        />
         <KpiBadge label="GMROI" value={fmtN(gmroiProm, 1)} color="var(--txt)" />
         <KpiBadge
           label="A en meta"
@@ -1368,7 +1427,9 @@ export default function AdminInteligencia() {
                 <span style={{ color: "var(--txt2)", flex: 1, minWidth: 80 }}>{r.nombre || ""}</span>
                 <span style={{ color: "var(--cyan)" }}>Vel pre: {fmtN(r.vel_pre_quiebre)}/sem</span>
                 <span style={{ color: "var(--red)" }}>{r.dias_en_quiebre}d</span>
-                <span style={{ color: "var(--red)" }}>{fmtMoney(r.venta_perdida_pesos)}</span>
+                <span style={{ color: "var(--red)" }} title={r.oportunidad_perdida_es_estimacion ? "Estimación: margen 25% asumido (sin datos reales en últimos 60 días)" : "Derivado de margen real"}>
+                  {fmtMoney(r.venta_perdida_pesos)}{r.oportunidad_perdida_es_estimacion && <span style={{ color: "var(--amber)", marginLeft: 2, fontSize: 9 }}>*est</span>}
+                </span>
               </div>
             ))}
           </div>
@@ -1386,7 +1447,7 @@ export default function AdminInteligencia() {
       )}
 
       {/* ═══ 4. FILTROS ═══ */}
-      {!vistaEnvio && !vistaPedido && <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+      {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
         <input
           type="text"
           placeholder="Buscar SKU, nombre o ML..."
@@ -1441,12 +1502,12 @@ export default function AdminInteligencia() {
         </select>
       </div>}
 
-      {!vistaEnvio && !vistaPedido && <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 6 }}>
+      {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 6 }}>
         {filtered.length} de {vistaOrigen ? totalSkus : totalVentas} {vistaOrigen ? "SKUs Origen" : "SKUs Venta"}
       </div>}
 
       {/* ═══ 5. TABLA SKU VENTA ═══ */}
-      {!vistaOrigen && !vistaEnvio && !vistaPedido && (
+      {!vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && (
         <div style={{ overflowX: "auto" }}>
           <table className="tbl" style={{ minWidth: 1500 }}>
             <thead>
@@ -1545,7 +1606,7 @@ export default function AdminInteligencia() {
       )}
 
       {/* ═══ 5b. TABLA SKU ORIGEN ═══ */}
-      {vistaOrigen && !vistaEnvio && !vistaPedido && (
+      {vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && (
         <div style={{ overflowX: "auto" }}>
           <table className="tbl" style={{ minWidth: 1500 }}>
             <thead>
@@ -1794,7 +1855,10 @@ export default function AdminInteligencia() {
                                 if (v !== undefined && v > 0) {
                                   const sb = getSupabase();
                                   if (sb) {
-                                    await sb.from("proveedor_catalogo").update({ inner_pack: v, updated_at: new Date().toISOString() }).eq("sku_origen", skuOrig);
+                                    // NO tocar updated_at — se reserva para handleProveedor()
+                                    // del flujo de import Excel. Editar inner_pack localmente
+                                    // no debería contaminar el indicador de frescura de Idetex.
+                                    await sb.from("proveedor_catalogo").update({ inner_pack: v }).eq("sku_origen", skuOrig);
                                     await sb.from("productos").update({ inner_pack: v }).eq("sku", skuOrig);
                                   }
                                 }
@@ -2302,7 +2366,84 @@ export default function AdminInteligencia() {
         </div>
       )}
 
-      {!vistaEnvio && !vistaPedido && filtered.length === 0 && <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>No hay datos. Ejecuta &quot;Recalcular&quot; para generar.</div>}
+      {/* ═══ 6c. VENTANA DE ACCION — PROVEEDOR AGOTADO ═══ */}
+      {vistaProveedorAgotado && (
+        <div>
+          <div style={{ marginBottom: 10, padding: "10px 14px", borderRadius: 8, background: "var(--redBg)", border: "1px solid var(--redBd)", fontSize: 11, color: "var(--txt2)" }}>
+            <div style={{ fontWeight: 700, color: "var(--red)", marginBottom: 4, fontSize: 12 }}>
+              Ventana de Accion — Proveedor Agotado ({proveedorAgotadoItems.length})
+            </div>
+            <div>
+              SKUs donde el proveedor reporta stock = 0 pero todavia hay cola en Full. Es la alerta temprana: tenes runway vendible pero no vas a poder reponer cuando se acabe. Ordenado por dias hasta quiebre asc.
+            </div>
+          </div>
+
+          {proveedorAgotadoItems.length === 0 ? (
+            <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)", fontSize: 12 }}>
+              Sin SKUs en ventana de accion. Idetex no reporta agotados cruzados con cola en Full — o hace falta re-importar el catalogo.
+            </div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table className="tbl" style={{ minWidth: 1000 }}>
+                <thead>
+                  <tr>
+                    {(() => {
+                      const toggle = (col: string) => setProvAgotadoSort(prev => ({ col, asc: prev.col === col ? !prev.asc : true }));
+                      const SH = ({ col, label, align = "left" }: { col: string; label: string; align?: "left" | "right" }) => (
+                        <th onClick={() => toggle(col)} style={{ cursor: "pointer", userSelect: "none", textAlign: align }}>
+                          {label} {provAgotadoSort.col === col ? (provAgotadoSort.asc ? "▲" : "▼") : ""}
+                        </th>
+                      );
+                      return (
+                        <>
+                          <SH col="sku" label="SKU Origen" />
+                          <SH col="nombre" label="Nombre" />
+                          <SH col="abc" label="ABC" />
+                          <SH col="dias_hasta_quiebre" label="Dias hasta quiebre" align="right" />
+                          <SH col="vel" label="Vel/sem" align="right" />
+                          <SH col="stock_full" label="Stock Full" align="right" />
+                          <th style={{ textAlign: "right" }}>Stock Bod</th>
+                          <SH col="ingreso" label="Ingreso 30d" align="right" />
+                          <th>Evento</th>
+                        </>
+                      );
+                    })()}
+                  </tr>
+                </thead>
+                <tbody>
+                  {proveedorAgotadoItems.map(item => {
+                    const diasColor = item.dias_hasta_quiebre <= 7 ? "var(--red)"
+                      : item.dias_hasta_quiebre <= 14 ? "var(--amber)"
+                        : "var(--txt)";
+                    return (
+                      <tr key={item.sku_origen}>
+                        <td className="mono" style={{ fontSize: 11, whiteSpace: "nowrap" }}>{item.sku_origen}</td>
+                        <td style={{ fontSize: 11, maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={item.nombre}>{item.nombre}</td>
+                        <td style={{ textAlign: "center" }}>
+                          <span style={{ color: abcColor(item.abc), fontWeight: 700, fontSize: 11 }}>{item.abc}</span>
+                        </td>
+                        <td className="mono" style={{ textAlign: "right", fontSize: 11, fontWeight: 700, color: diasColor }}>
+                          {item.dias_hasta_quiebre >= 999 ? "—" : `${item.dias_hasta_quiebre}d`}
+                          {item.severidad === "alta" && <span style={{ fontSize: 9, marginLeft: 4, color: "var(--red)" }}>⚠</span>}
+                        </td>
+                        <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtN(item.vel_ponderada)}</td>
+                        <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtInt(item.stock_full)}</td>
+                        <td className="mono" style={{ textAlign: "right", fontSize: 11, color: "var(--txt3)" }}>{fmtInt(item.stock_bodega)}</td>
+                        <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtK(item.ingreso_30d)}</td>
+                        <td style={{ fontSize: 10, color: "var(--txt3)" }}>
+                          {item.evento_activo ? <span style={{ color: "var(--amber)", fontWeight: 600 }}>{item.evento_activo}</span> : "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && filtered.length === 0 && <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>No hay datos. Ejecuta &quot;Recalcular&quot; para generar.</div>}
 
       {/* ═══ 7. ML SIN VINCULAR (colapsado al pie) ═══ */}
       {mlSinVincularOpen && <AdminMLSinVincular />}

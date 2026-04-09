@@ -394,6 +394,7 @@ function rowToUpsert(r: SkuIntelRow): SkuIntelligenceUpsert {
     semanas_con_quiebre: r.semanas_con_quiebre,
     venta_perdida_uds: r.venta_perdida_uds,
     venta_perdida_pesos: r.venta_perdida_pesos,
+    oportunidad_perdida_es_estimacion: r.oportunidad_perdida_es_estimacion,
     ingreso_perdido: r.ingreso_perdido,
     accion: r.accion,
     prioridad: r.prioridad,

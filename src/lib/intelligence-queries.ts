@@ -417,7 +417,8 @@ export interface ProveedorCatalogoRow {
   proveedor: string;
   inner_pack: number;
   precio_neto: number;
-  stock_disponible: number;
+  /** null = desconocido (nunca importado); 0 = explícitamente agotado; >0 = disponible */
+  stock_disponible: number | null;
   updated_at: string;
 }
 
@@ -434,12 +435,17 @@ export async function queryProveedorCatalogo(): Promise<Map<string, ProveedorCat
     // Si hay duplicados (múltiples proveedores), quedarse con el más reciente
     const existing = map.get(sku);
     if (!existing || (row.updated_at as string) > existing.updated_at) {
+      const rawStock = row.stock_disponible;
+      // Compat: migración v42 convierte -1 → NULL; aceptar ambos
+      // mientras los imports legacy se propagan.
+      const stockDisponible: number | null =
+        rawStock == null || rawStock === -1 ? null : (rawStock as number);
       map.set(sku, {
         sku_origen: sku,
         proveedor: (row.proveedor as string) || "",
         inner_pack: (row.inner_pack as number) || 1,
         precio_neto: (row.precio_neto as number) || 0,
-        stock_disponible: (row.stock_disponible as number) ?? -1,
+        stock_disponible: stockDisponible,
         updated_at: (row.updated_at as string) || "",
       });
     }

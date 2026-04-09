@@ -2712,7 +2712,8 @@ export interface DBProveedorCatalogo {
   nombre?: string | null;
   inner_pack: number;
   precio_neto: number;
-  stock_disponible: number;
+  /** v42: null = desconocido, 0 = agotado explícito, >0 = disponible */
+  stock_disponible: number | null;
   updated_at?: string;
 }
 
@@ -2745,7 +2746,10 @@ export async function upsertProveedorCatalogo(items: Omit<DBProveedorCatalogo, "
     sku_origen: (it.sku_origen || "").toUpperCase().trim(),
     precio_neto: Number(it.precio_neto) || 0,
     inner_pack: Number(it.inner_pack) || 1,
-    stock_disponible: Number(it.stock_disponible) ?? -1,
+    // v42: preservar null ("desconocido") en lugar del sentinel -1
+    stock_disponible: it.stock_disponible == null || !Number.isFinite(Number(it.stock_disponible))
+      ? null
+      : Number(it.stock_disponible),
     updated_at: now,
   })).filter(r => r.sku_origen.length > 0);
   // Deduplicar por (proveedor, sku_origen) — quedarse con la última ocurrencia

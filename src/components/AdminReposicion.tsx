@@ -1215,7 +1215,10 @@ export default function AdminReposicion() {
           nombre: (p.nombre || "").substring(0, 500) || null,
           inner_pack: Number(p.innerPack) || 1,
           precio_neto: Number(p.precioNeto) || 0,
-          stock_disponible: Number(p.stock) ?? -1,
+          // v42: sentinel -1 ya no existe. Si el Excel trae un número, ese
+          // es el stock explícito (0 = agotado). Si no hay row en el Excel,
+          // simplemente no se upserta → queda NULL en DB = "desconocido".
+          stock_disponible: Number.isFinite(Number(p.stock)) ? Number(p.stock) : null,
         }));
       console.log(`[importProveedor] ${catalogoRows.length} filas a upsert (de ${provData.length} parseadas)`);
       await upsertProveedorCatalogo(catalogoRows);

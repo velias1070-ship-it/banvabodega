@@ -39,6 +39,7 @@ export type AlertaIntel =
   | "pico_demanda"
   | "caida_demanda"
   | "sin_stock_proveedor"
+  | "proveedor_agotado_con_cola_full"
   | "exceso"
   | "dead_stock"
   | "margen_full_bajando"
@@ -86,7 +87,8 @@ export interface SkuIntelRow {
   stock_bodega: number;
   stock_total: number;
   stock_sin_etiquetar: number;
-  stock_proveedor: number;
+  /** Stock reportado por el proveedor. null = desconocido (nunca importado) */
+  stock_proveedor: number | null;
   tiene_stock_prov: boolean;
   inner_pack: number;
   stock_en_transito: number;
@@ -132,6 +134,10 @@ export interface SkuIntelRow {
   semanas_con_quiebre: number;
   venta_perdida_uds: number;
   venta_perdida_pesos: number;
+  /** true cuando venta_perdida_pesos se calculó con el fallback
+   *  precio_promedio × 0.25 (margen estimado) en lugar de margen real.
+   *  Permite filtrar en la UI y no tomar decisiones grandes basadas en estimación. */
+  oportunidad_perdida_es_estimacion: boolean;
   ingreso_perdido: number;
 
   accion: AccionIntel;
@@ -271,7 +277,8 @@ export interface ProveedorCatalogoInput {
   proveedor: string;
   inner_pack: number;
   precio_neto: number;
-  stock_disponible: number;
+  /** null = desconocido; 0 = explícitamente agotado; >0 = disponible */
+  stock_disponible: number | null;
   updated_at: string;
 }
 
@@ -553,8 +560,11 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     const costoBruto = costoNeto > 0 ? Math.round(costoNeto * 1.19) : 0;
     const leadTimeDias = prod?.lead_time_dias || 7;
     const innerPack = provCat?.inner_pack || prod?.inner_pack || 1;
-    const stockProveedor = provCat?.stock_disponible ?? -1;
-    const tieneStockProv = stockProveedor === -1 ? true : stockProveedor > 0;
+    // null = desconocido (nunca importado) → optimista por default.
+    // 0 = explícitamente agotado por el proveedor (dispara alertas).
+    // >0 = disponible.
+    const stockProveedor: number | null = provCat?.stock_disponible ?? null;
+    const tieneStockProv = stockProveedor === null ? true : stockProveedor > 0;
 
     // ── PASO 2: Demanda (velocidades en unidades físicas) ──
     // Recolectar órdenes de todos los SKU Venta asociados, convertidas a unidades físicas
@@ -841,20 +851,21 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     const gmroi = costoInventarioTotal > 0 ? margenBrutoAnual / costoInventarioTotal : 0;
     const dio = velPonderada > 0 ? (stTotal / velPonderada) * 7 : 999;
 
-    // ── PASO 14: Oportunidad perdida ──
+    // ── PASO 14: Oportunidad perdida (dias + semanas) ──
+    // El cálculo en pesos se hace más abajo, después de paso 14b,
+    // porque depende de vel_pre_quiebre para SKUs en quiebre prolongado.
     const diasQuiebre = quiebresDelSku.filter(q => q.en_quiebre_full).length;
     const semanasQuiebre = semanasEnQuiebre.size;
-    // Velocidad sin quiebres para estimar venta perdida
-    const velFullSinQuiebre = velFull; // ya excluye quiebres
-    const ventaPerdidaUds = diasQuiebre * (velFullSinQuiebre / 7);
-    const ventaPerdidaPesos = ventaPerdidaUds * margenFull30d;
-    const ingresoPerdido = ventaPerdidaUds * precioPromedio;
 
     // ── PASO 14b: Quiebre prolongado ──
     const prev = prevIntelligence.get(skuOrigen);
     let velPreQuiebre = prev?.vel_pre_quiebre || 0;
     let diasEnQuiebre = prev?.dias_en_quiebre || 0;
-    let esQuiebreProveedor = prev?.es_quiebre_proveedor || false;
+    // Flag re-evaluado SIEMPRE contra el catálogo actual — no se arrastra del
+    // estado previo. La semántica ahora es "el proveedor está agotado HOY",
+    // no "estaba agotado cuando el SKU entró en quiebre".
+    let esQuiebreProveedor = !tieneStockProv
+      || (!prod || prod.estado_sku === "sin_stock_proveedor");
     let abcPreQuiebre: string | null = prev?.abc_pre_quiebre || null;
     let esCatchUp = false;
     let gmroiPotencial = 0;
@@ -863,17 +874,15 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
 
     if (enQuiebreAhora) {
       if (prev && prev.dias_en_quiebre > 0) {
-        // Continúa en quiebre — incrementar días
+        // Continúa en quiebre — incrementar días (flag ya re-evaluado arriba)
         diasEnQuiebre = prev.dias_en_quiebre + 1;
         velPreQuiebre = prev.vel_pre_quiebre;
         abcPreQuiebre = prev.abc_pre_quiebre;
-        esQuiebreProveedor = prev.es_quiebre_proveedor;
       } else {
         // Acaba de entrar en quiebre — congelar velocidad actual
         diasEnQuiebre = diasQuiebre > 0 ? diasQuiebre : 1;
         velPreQuiebre = velPonderada;
         abcPreQuiebre = null; // Se asigna después del paso ABC global
-        esQuiebreProveedor = !tieneStockProv || (!prod || prod.estado_sku === "sin_stock_proveedor");
       }
     } else if (prev && prev.dias_en_quiebre > 0 && stFull > 0) {
       // SKU se repuso — verificar catch-up
@@ -881,10 +890,9 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
         esCatchUp = true;
       }
       if (vel30d > 0 && !esCatchUp) {
-        // 3+ semanas vendiendo → reset completo
+        // 3+ semanas vendiendo → reset completo de quiebre prolongado
         velPreQuiebre = 0;
         diasEnQuiebre = 0;
-        esQuiebreProveedor = false;
         abcPreQuiebre = null;
       } else {
         // Primeras semanas post-reposición
@@ -895,6 +903,34 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     }
 
     const enQuiebreProlongado = enQuiebreAhora && diasEnQuiebre >= 14 && velPreQuiebre > 2;
+
+    // ── PASO 14c: Oportunidad perdida en pesos (depende de 14b) ──
+    // Días efectivos: diasQuiebre cuenta registros explícitos en stock_snapshots
+    // pero SKUs agotados hace mucho (antes de que existiera el tracking) pueden
+    // tener diasQuiebre=0 con diasEnQuiebre=78. Usar el max para no subestimar.
+    const diasEfectivos = Math.max(diasQuiebre, diasEnQuiebre);
+    // Cuando el SKU lleva tiempo en quiebre, velFull está artificialmente
+    // baja (no hay órdenes recientes) y margenFull30d puede ser 0. Caer a:
+    //  1) vel_pre_quiebre × pctFull si estamos en quiebre prolongado
+    //  2) margen_60d, luego precio_promedio × 0.25 como fallbacks de margen
+    const velParaPerdida = enQuiebreProlongado && velPreQuiebre > 0
+      ? velPreQuiebre * pctFull
+      : velFull;
+    const ventaPerdidaUds = diasEfectivos * (velParaPerdida / 7);
+    // Cascada de fallbacks de margen. usaFallbackEstimacion=true significa
+    // que ni 30d ni 60d tenían margen real → se usó precio × 0.25 (asumido).
+    const usaFallbackEstimacion = margenFull30d <= 0 && margenFull60d <= 0 && precioPromedio > 0;
+    const margenParaPerdida = margenFull30d > 0
+      ? margenFull30d
+      : margenFull60d > 0
+        ? margenFull60d
+        : precioPromedio > 0
+          ? precioPromedio * 0.25
+          : 0;
+    const ventaPerdidaPesos = ventaPerdidaUds * margenParaPerdida;
+    // El flag solo importa cuando el output > 0 (si es 0, no hay decisión que tomar)
+    const oportunidadPerdidaEsEstimacion = ventaPerdidaPesos > 0 && usaFallbackEstimacion;
+    const ingresoPerdido = ventaPerdidaUds * precioPromedio;
 
     // GMROI potencial: cuánto DEBERÍA rendir si tuviera stock
     if (enQuiebreProlongado && velPreQuiebre > 0 && costoBruto > 0) {
@@ -1046,6 +1082,7 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       semanas_con_quiebre: semanasQuiebre,
       venta_perdida_uds: round2(ventaPerdidaUds),
       venta_perdida_pesos: round2(ventaPerdidaPesos),
+      oportunidad_perdida_es_estimacion: oportunidadPerdidaEsEstimacion,
       ingreso_perdido: round2(ingresoPerdido),
 
       accion,
@@ -1259,6 +1296,12 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     if (r.es_pico) alertas.push("pico_demanda");
     if (r.tendencia_vel === "bajando" && Math.abs(r.tendencia_vel_pct) > 30) alertas.push("caida_demanda");
     if (!r.tiene_stock_prov) alertas.push("sin_stock_proveedor");
+    // Ventana de acción: el proveedor reporta 0 explícito pero aún hay
+    // cola en Full. Es la alerta temprana — tenemos runway vendible pero
+    // no podemos reponer cuando se acabe.
+    if (r.stock_proveedor === 0 && r.stock_full > 0 && r.vel_ponderada > 0) {
+      alertas.push("proveedor_agotado_con_cola_full");
+    }
     if (r.cob_total > 60) alertas.push("exceso");
     if (r.vel_ponderada === 0 && r.stock_total > 0) alertas.push("dead_stock");
     if (r.margen_tendencia_full === "bajando") alertas.push("margen_full_bajando");
