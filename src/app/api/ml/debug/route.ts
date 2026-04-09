@@ -10,6 +10,17 @@ export const revalidate = 0;
  *      /api/ml/debug?refresh=1   (forzar refresh manual y mostrar resultado)
  */
 export async function GET(req: NextRequest) {
+  const showEnv = req.nextUrl.searchParams.get("env");
+  if (showEnv) {
+    return NextResponse.json({
+      test_mode: process.env.NEXT_PUBLIC_TEST_MODE,
+      supabase_url: (process.env.NEXT_PUBLIC_SUPABASE_URL || "").slice(0, 50),
+      supabase_test_url: (process.env.NEXT_PUBLIC_SUPABASE_TEST_URL || "").slice(0, 50),
+      vercel_env: process.env.VERCEL_ENV,
+      vercel_url: process.env.VERCEL_URL,
+    });
+  }
+
   const showConfig = req.nextUrl.searchParams.get("config");
   if (showConfig) {
     const cfg = await getMLConfig();
