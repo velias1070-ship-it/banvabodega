@@ -14,6 +14,7 @@ export async function GET(req: NextRequest) {
   const filter = req.nextUrl.searchParams.get("filter");
   const limit = parseInt(req.nextUrl.searchParams.get("limit") || "50");
   const select = req.nextUrl.searchParams.get("select") || "*";
+  const order = req.nextUrl.searchParams.get("order"); // "field.desc" o "field.asc"
 
   if (!table) return NextResponse.json({ error: "table required" }, { status: 400 });
 
@@ -30,6 +31,12 @@ export async function GET(req: NextRequest) {
       else if (op === "like") q = q.like(field, `%${value}%`);
       else if (op === "ilike") q = q.ilike(field, `%${value}%`);
     }
+  }
+
+  // Parse order: field.desc o field.asc
+  if (order) {
+    const [field, dir] = order.split(".");
+    if (field) q = q.order(field, { ascending: dir !== "desc" });
   }
 
   const { data, error } = await q;
