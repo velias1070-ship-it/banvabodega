@@ -20,6 +20,7 @@ import {
   queryVelObjetivos,
   queryIntelConfig,
   queryProveedorCatalogo,
+  queryEnviosFullPendientes,
   type SkuIntelligenceUpsert,
 } from "@/lib/intelligence-queries";
 import {
@@ -114,9 +115,18 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Envíos a Full ya NO cuentan como en tránsito:
-    // El stock se descontó de bodega al pickear, y no sabemos cuándo ML lo recibe.
-    // Inflar en_transito con envíos Full genera stock proyectado ficticio.
+    // ── Envíos a Full PENDIENTES (ABIERTA / EN_PROCESO) cuentan como en tránsito ──
+    // Estas unidades están reservadas en bodega y van a entrar a Full pronto.
+    // Si NO se cuentan, "Pedido a Proveedor" sobreestima cuánto pedir, porque no
+    // ve que ya hay N uds en camino a Full. Sólo se cuentan componentes
+    // PENDIENTES (los PICKEADOS ya liberaron su reserva al confirmar).
+    // Las sesiones COMPLETADAS NO se incluyen porque su stock ya bajó de bodega
+    // y entran en limbo entre bodega y ML — contarlas inflaría el proyectado
+    // hasta que ML reciba (puede tardar días).
+    const enviosFullPendientes = await queryEnviosFullPendientes();
+    enviosFullPendientes.forEach((uds, sku) => {
+      stockEnTransito.set(sku, (stockEnTransito.get(sku) || 0) + uds);
+    });
 
     // ── Inferir quiebres de Full desde orders_history ──
     // Si un SKU con vel_30d > 1 tiene 3+ días consecutivos con 0 ventas Full

@@ -288,6 +288,40 @@ export async function queryOrdenesCompraActivas(): Promise<OrdenCompraLineaRow[]
   }));
 }
 
+/**
+ * Suma uds por sku_origen de envíos a Full PENDIENTES (estado ABIERTA o EN_PROCESO).
+ * Estas unidades están reservadas en bodega y a punto de irse a Full.
+ * Se usan para reducir el `pedirFull` del proveedor: si ya van 8 en camino,
+ * no necesitas pedir esas 8 al proveedor de nuevo. SOLO componentes ya pickeados
+ * se excluyen porque su reserva ya se liberó al confirmar.
+ */
+export async function queryEnviosFullPendientes(): Promise<Map<string, number>> {
+  const sb = getServerSupabase();
+  if (!sb) return new Map();
+  const { data } = await sb.from("picking_sessions")
+    .select("id, lineas")
+    .eq("tipo", "envio_full")
+    .in("estado", ["ABIERTA", "EN_PROCESO"]);
+
+  const map = new Map<string, number>();
+  for (const sesion of (data || []) as { id: string; lineas: unknown[] | null }[]) {
+    const lineas = (sesion.lineas || []) as Array<{
+      componentes?: Array<{ skuOrigen?: string; unidades?: number; estado?: string }>;
+    }>;
+    for (const linea of lineas) {
+      for (const comp of (linea.componentes || [])) {
+        // Saltar componentes ya pickeados — su reserva en stock ya fue liberada
+        if (comp.estado === "PICKEADO" || comp.estado === "OMITIDO") continue;
+        const sku = comp.skuOrigen;
+        const uds = comp.unidades || 0;
+        if (!sku || uds <= 0) continue;
+        map.set(sku, (map.get(sku) || 0) + uds);
+      }
+    }
+  }
+  return map;
+}
+
 /** Datos previos de sku_intelligence para continuidad de quiebre prolongado */
 export async function queryPrevIntelligence(): Promise<Map<string, {
   sku_origen: string;
