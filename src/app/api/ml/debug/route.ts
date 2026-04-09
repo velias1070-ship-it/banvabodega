@@ -18,6 +18,8 @@ export async function GET(req: NextRequest) {
       supabase_test_url: (process.env.NEXT_PUBLIC_SUPABASE_TEST_URL || "").slice(0, 50),
       vercel_env: process.env.VERCEL_ENV,
       vercel_url: process.env.VERCEL_URL,
+      vercel_project_production_url: process.env.VERCEL_PROJECT_PRODUCTION_URL,
+      vercel_branch_url: process.env.VERCEL_BRANCH_URL,
     });
   }
 
