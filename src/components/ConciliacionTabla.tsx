@@ -111,6 +111,7 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
   const [egresoProveedor, setEgresoProveedor] = useState("");
   const [egresoDescripcion, setEgresoDescripcion] = useState("");
   const [egresoNumDoc, setEgresoNumDoc] = useState("");
+  const [egresoPeriodo, setEgresoPeriodo] = useState("");
   const [egresoArchivo, setEgresoArchivo] = useState<File | null>(null);
   const [egresoSaving, setEgresoSaving] = useState(false);
   // Detalle conciliación
@@ -233,13 +234,13 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
         estado: "confirmado", tipo_partida: "egreso",
         metodo: "manual", notas: null, created_by: "admin",
         monto_aplicado: montoAplicar,
-        metadata: { tipo: egresoTipo, proveedor: egresoProveedor, descripcion: egresoDescripcion, num_documento: egresoNumDoc },
+        metadata: { tipo: egresoTipo, proveedor: egresoProveedor, descripcion: egresoDescripcion, num_documento: egresoNumDoc, periodo: egresoPeriodo },
         archivo_url: archivoUrl,
       });
       const { estado, monto_conciliado } = await syncEstadoConciliacion(clasificarMov.id!, clasificarMov.monto);
       await categorizarMovimiento(clasificarMov.id!, clasificarCuenta);
       setMovBanco(prev => prev.map(m => m.id === clasificarMov.id ? { ...m, estado_conciliacion: estado, monto_conciliado } : m));
-      setClasificarMov(null); setClasificarCuenta(""); setEgresoTipo(""); setEgresoProveedor(""); setEgresoDescripcion(""); setEgresoNumDoc(""); setEgresoArchivo(null);
+      setClasificarMov(null); setClasificarCuenta(""); setEgresoTipo(""); setEgresoProveedor(""); setEgresoDescripcion(""); setEgresoNumDoc(""); setEgresoPeriodo(""); setEgresoArchivo(null);
     } catch (err) { console.error("Error agregando egreso:", err); }
     setEgresoSaving(false);
   };
@@ -590,8 +591,9 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
                                     const md = detalleConcData.conc.metadata as Record<string, string>;
                                     return (
                                       <div style={{ padding: 10, background: "var(--bg3)", borderRadius: 6, marginBottom: 8, fontSize: 11 }}>
-                                        <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4 }}>
+                                        <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4, flexWrap: "wrap" }}>
                                           <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 3, background: "var(--amberBg)", color: "var(--amber)", fontWeight: 600 }}>{md.tipo}</span>
+                                          {md.periodo && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 3, background: "var(--cyanBg)", color: "var(--cyan)", fontWeight: 600 }}>{md.periodo}</span>}
                                           {md.num_documento && <span className="mono" style={{ color: "var(--txt3)" }}>#{md.num_documento}</span>}
                                         </div>
                                         {md.proveedor && <div style={{ fontWeight: 600 }}>{md.proveedor}</div>}
@@ -690,7 +692,7 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
                 style={{ width: "100%", padding: "10px 14px", textAlign: "left", background: "none", border: "none", borderBottom: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 12, cursor: "pointer" }}>
                 Conciliar con factura
               </button>
-              <button onClick={() => { setClasificarMov(m); setClasificarCuenta(""); setEgresoTipo(""); setEgresoProveedor(""); setEgresoDescripcion(""); setEgresoNumDoc(""); setEgresoArchivo(null); setShowActions(null); }}
+              <button onClick={() => { setClasificarMov(m); setClasificarCuenta(""); setEgresoTipo(""); setEgresoProveedor(""); setEgresoDescripcion(""); setEgresoNumDoc(""); setEgresoPeriodo(""); setEgresoArchivo(null); setShowActions(null); }}
                 style={{ width: "100%", padding: "10px 14px", textAlign: "left", background: "none", border: "none", borderBottom: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 12, cursor: "pointer" }}>
                 Agregar Egreso
               </button>
@@ -759,6 +761,24 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
                   <label style={{ fontSize: 10, color: "var(--txt3)", display: "block", marginBottom: 3 }}>Descripción</label>
                   <input value={egresoDescripcion} onChange={e => setEgresoDescripcion(e.target.value)} placeholder="Detalle del egreso"
                     style={{ width: "100%", padding: "7px 8px", fontSize: 11, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 6 }} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 10, color: "var(--txt3)", display: "block", marginBottom: 3 }}>Período</label>
+                  <select value={egresoPeriodo} onChange={e => setEgresoPeriodo(e.target.value)}
+                    style={{ width: "100%", padding: "7px 8px", fontSize: 11, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 6 }}>
+                    <option value="">— Sin período —</option>
+                    {(() => {
+                      const opts: { value: string; label: string }[] = [];
+                      const now = new Date();
+                      for (let i = 0; i < 24; i++) {
+                        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+                        const val = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+                        const label = d.toLocaleDateString("es-CL", { month: "long", year: "numeric" });
+                        opts.push({ value: val, label: label.charAt(0).toUpperCase() + label.slice(1) });
+                      }
+                      return opts.map(o => <option key={o.value} value={o.value}>{o.label}</option>);
+                    })()}
+                  </select>
                 </div>
               </div>
 
