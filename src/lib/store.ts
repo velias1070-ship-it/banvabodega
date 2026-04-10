@@ -2351,11 +2351,12 @@ export function buildPickingLineasFull(
 // Mark component as picked + decrement stock
 export async function pickearComponente(
   sessionId: string, lineaId: string, compIdx: number, operario: string,
-  _session: db.DBPickingSession, skuVenta?: string
+  _session: db.DBPickingSession, skuVenta?: string,
+  scanned?: { mode: "scanned" | "manual"; codigo?: string }
 ): Promise<boolean> {
   await db.auditLog("pickearComponente", {
     entidad: "picking_session", entidad_id: sessionId, operario,
-    params: { lineaId, compIdx, skuVenta, tipo: _session.tipo },
+    params: { lineaId, compIdx, skuVenta, tipo: _session.tipo, scanMode: scanned?.mode || "manual", scanCodigo: scanned?.codigo || null },
   });
 
   // Read fresh session from DB to avoid stale state overwrites
@@ -2387,6 +2388,9 @@ export async function pickearComponente(
   comp.estado = "PICKEADO";
   comp.pickedAt = new Date().toISOString();
   comp.operario = operario;
+  // Tracking de scan: "scanned" si verificó código de barras, "manual" si confirmó sin escanear
+  (comp as unknown as Record<string, unknown>).scanMode = scanned?.mode || "manual";
+  if (scanned?.codigo) (comp as unknown as Record<string, unknown>).scanCodigo = scanned.codigo;
 
   if (linea.componentes.every(c => c.estado === "PICKEADO")) {
     linea.estado = "PICKEADO";
@@ -2446,7 +2450,7 @@ export async function pickearComponente(
 
   await db.auditLog("pickearComponente:ok", {
     entidad: "picking_session", entidad_id: sessionId, operario,
-    resultado: { lineaId, compIdx, sku: comp.skuOrigen, qty: comp.unidades, posicion: comp.posicion, skuVenta: linea.skuVenta, allDone, shipmentIds: linea.shipmentIds },
+    resultado: { lineaId, compIdx, sku: comp.skuOrigen, qty: comp.unidades, posicion: comp.posicion, skuVenta: linea.skuVenta, allDone, shipmentIds: linea.shipmentIds, scanMode: scanned?.mode || "manual", scanCodigo: scanned?.codigo || null },
   });
 
   if (allDone && sessionId) {
@@ -2534,11 +2538,12 @@ export async function despickearComponente(
 // Uses same structure as Flex: each line has componentes[0]
 export async function pickearLineaFull(
   sessionId: string, lineaId: string, operario: string,
-  _session: db.DBPickingSession, skuVenta?: string, cantidadReal?: number
+  _session: db.DBPickingSession, skuVenta?: string, cantidadReal?: number,
+  scanned?: { mode: "scanned" | "manual"; codigo?: string }
 ): Promise<boolean> {
   await db.auditLog("pickearLineaFull", {
     entidad: "picking_session", entidad_id: sessionId, operario,
-    params: { lineaId, skuVenta, cantidadReal },
+    params: { lineaId, skuVenta, cantidadReal, scanMode: scanned?.mode || "manual", scanCodigo: scanned?.codigo || null },
   });
 
   // Read fresh session from DB to avoid stale state overwrites
@@ -2592,6 +2597,8 @@ export async function pickearLineaFull(
   comp.estado = "PICKEADO";
   comp.pickedAt = new Date().toISOString();
   comp.operario = operario;
+  (comp as unknown as Record<string, unknown>).scanMode = scanned?.mode || "manual";
+  if (scanned?.codigo) (comp as unknown as Record<string, unknown>).scanCodigo = scanned.codigo;
   linea.estado = "PICKEADO";
 
   // Check if all lines are picked and armado done

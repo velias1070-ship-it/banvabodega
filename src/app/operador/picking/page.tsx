@@ -1044,11 +1044,13 @@ function PickFlow({session,linea,compIdx,operario,onDone}:{
   const posItems=targetPos?posContents(targetPos):[];
 
   const confirmingRef=useRef(false);
+  const lastScanRef=useRef<string|null>(null);
   const doConfirm=useCallback(async()=>{
     if(confirmingRef.current)return;
     confirmingRef.current=true;
     setSaving(true);
-    await pickearComponente(session.id!,linea.id,compIdx,operario,session,linea.skuVenta);
+    const scanInfo = lastScanRef.current ? { mode: "scanned" as const, codigo: lastScanRef.current } : undefined;
+    await pickearComponente(session.id!,linea.id,compIdx,operario,session,linea.skuVenta,scanInfo);
     setSaving(false);setPhase("done");
     if(navigator.vibrate)navigator.vibrate([100,50,100]);
     setTimeout(onDone,1200);
@@ -1058,6 +1060,7 @@ function PickFlow({session,linea,compIdx,operario,onDone}:{
     if(confirmingRef.current)return;
     setScanCode(code);
     if(verificarScanPicking(code,comp,linea.skuVenta)){
+      lastScanRef.current = code;
       setScanResult("ok");
     } else {
       setScanResult("error");
@@ -1205,7 +1208,7 @@ function PickFlow({session,linea,compIdx,operario,onDone}:{
           </div>
         )}
 
-        <button onClick={async()=>{setSaving(true);await pickearComponente(session.id!,linea.id,compIdx,operario,session,linea.skuVenta);setSaving(false);setPhase("done");setTimeout(onDone,800);}} disabled={saving}
+        <button onClick={async()=>{setSaving(true);await pickearComponente(session.id!,linea.id,compIdx,operario,session,linea.skuVenta,{mode:"manual"});setSaving(false);setPhase("done");setTimeout(onDone,800);}} disabled={saving}
           style={{width:"100%",marginTop:16,padding:10,borderRadius:8,background:"transparent",color:"#64748b",fontSize:11,border:"1px dashed #64748b44"}}>
           Confirmar sin escanear (solo si no hay etiqueta)
         </button>
@@ -1285,7 +1288,8 @@ function PickFlowFull({session,linea,operario,onDone,editBultos}:{
     confirmingRef.current = true;
     setSaving(true);
     try {
-      await pickearLineaFull(session.id!,linea.id,operario,session,linea.skuVenta,qty < comp.unidades ? qty : undefined);
+      const scanInfo = lastScanRef2.current ? { mode: "scanned" as const, codigo: lastScanRef2.current } : { mode: "manual" as const };
+      await pickearLineaFull(session.id!,linea.id,operario,session,linea.skuVenta,qty < comp.unidades ? qty : undefined,scanInfo);
       if(navigator.vibrate)navigator.vibrate([100,50,100]);
       setPhase("bulto");
     } catch (e) {
@@ -1314,10 +1318,12 @@ function PickFlowFull({session,linea,operario,onDone,editBultos}:{
   }, [session, linea, onDone]);
 
   // Verify scan: use the standard verificarScanPicking function
+  const lastScanRef2 = useRef<string|null>(null);
   const handleScan=useCallback((code:string)=>{
     if (confirmingRef.current) return;
     setScanCode(code);
     if (comp && verificarScanPicking(code, comp, linea.skuVenta)) {
+      lastScanRef2.current = code;
       setScanResult("ok"); checkStockAndPick();
     } else {
       setScanResult("error"); if(navigator.vibrate)navigator.vibrate([200,100,200]);
