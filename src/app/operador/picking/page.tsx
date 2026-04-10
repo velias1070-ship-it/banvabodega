@@ -1029,6 +1029,35 @@ function PickFlow({session,linea,compIdx,operario,onDone}:{
   const [scanCode,setScanCode]=useState("");
   const [saving,setSaving]=useState(false);
 
+  // Tracking: log al entrar a esta línea
+  useEffect(() => {
+    (async () => {
+      try {
+        const { auditLog } = await import("@/lib/db");
+        await auditLog("picking_linea_open", {
+          entidad: "picking_session", entidad_id: session.id!, operario,
+          params: { lineaId: linea.id, skuVenta: linea.skuVenta, skuOrigen: comp?.skuOrigen, codigoMl: comp?.codigoMl, posicion: comp?.posicion, qtyPedida: comp?.unidades, shipmentIds: linea.shipmentIds },
+        });
+      } catch { /* no bloquear */ }
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Tracking: log al cambiar de fase
+  useEffect(() => {
+    if (phase === "done") return;
+    (async () => {
+      try {
+        const { auditLog } = await import("@/lib/db");
+        await auditLog("picking_phase_change", {
+          entidad: "picking_session", entidad_id: session.id!, operario,
+          params: { lineaId: linea.id, skuVenta: linea.skuVenta, fase: phase },
+        });
+      } catch { /* no bloquear */ }
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
+
   const cfg=getMapConfig();
   const positions=activePositions().filter(p=>p.active&&p.mx!==undefined);
   const containerRef=useRef<HTMLDivElement>(null);
@@ -1217,7 +1246,18 @@ function PickFlow({session,linea,compIdx,operario,onDone}:{
           </div>
         )}
 
-        <button onClick={async()=>{setSaving(true);await pickearComponente(session.id!,linea.id,compIdx,operario,session,linea.skuVenta,{mode:"manual"});setSaving(false);setPhase("done");setTimeout(onDone,800);}} disabled={saving}
+        <button onClick={async()=>{
+          setSaving(true);
+          try {
+            const { auditLog } = await import("@/lib/db");
+            await auditLog("picking_confirm_sin_escanear", {
+              entidad: "picking_session", entidad_id: session.id!, operario,
+              params: { lineaId: linea.id, skuVenta: linea.skuVenta, codigoEsperado: comp.codigoMl || comp.skuOrigen, motivo: "operario_skip_scan" },
+            });
+          } catch { /* no bloquear */ }
+          await pickearComponente(session.id!,linea.id,compIdx,operario,session,linea.skuVenta,{mode:"manual"});
+          setSaving(false);setPhase("done");setTimeout(onDone,800);
+        }} disabled={saving}
           style={{width:"100%",marginTop:16,padding:10,borderRadius:8,background:"transparent",color:"#64748b",fontSize:11,border:"1px dashed #64748b44"}}>
           Confirmar sin escanear (solo si no hay etiqueta)
         </button>
