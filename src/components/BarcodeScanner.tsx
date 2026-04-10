@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 
 // ==================== TYPES ====================
-type ScanMode = "barcode" | "qr" | "auto";
+type ScanMode = "barcode" | "qr" | "auto" | "ml_label";
 
 interface Props {
   onScan: (code: string) => void;
@@ -173,6 +173,12 @@ export default function BarcodeScanner({
         config.scannerConfiguration.barcodeFormats = ["QR_CODE"];
         config.userGuidance.title.text = "Apuntá al código QR";
         config.viewFinder.aspectRatio = { width: 1, height: 1 };
+      } else if (mode === "ml_label") {
+        // Solo Code 128 — etiquetas ML usan exclusivamente este formato
+        // Evita leer EAN/UPC del empaque del producto por error
+        config.scannerConfiguration.barcodeFormats = ["CODE_128"];
+        config.userGuidance.title.text = "Escaneá la etiqueta ML (Code 128)";
+        config.viewFinder.aspectRatio = { width: 5, height: 2 };
       } else if (mode === "barcode") {
         config.scannerConfiguration.barcodeFormats = [
           "CODE_128", "CODE_39", "CODE_93",

@@ -1056,7 +1056,7 @@ function PickFlow({session,linea,compIdx,operario,onDone}:{
     setTimeout(onDone,1200);
   },[session,linea,compIdx,operario,onDone]);
 
-  const handleScan=useCallback((code:string)=>{
+  const handleScan=useCallback(async (code:string)=>{
     if(confirmingRef.current)return;
     setScanCode(code);
     if(verificarScanPicking(code,comp,linea.skuVenta)){
@@ -1065,8 +1065,17 @@ function PickFlow({session,linea,compIdx,operario,onDone}:{
     } else {
       setScanResult("error");
       if(navigator.vibrate)navigator.vibrate([200,100,200]);
+      // Loguear scan fallido para diagnóstico
+      try {
+        const { auditLog } = await import("@/lib/db");
+        await auditLog("picking_scan_error", {
+          entidad: "picking_session", entidad_id: session.id!, operario,
+          params: { lineaId: linea.id, skuVenta: linea.skuVenta, skuOrigen: comp.skuOrigen, codigoMl: comp.codigoMl, codigoEscaneado: code, esperaba: comp.codigoMl || comp.skuOrigen },
+          error: "Codigo escaneado no coincide",
+        });
+      } catch { /* no bloquear UI */ }
     }
-  },[comp,linea.skuVenta]);
+  },[comp,linea.skuVenta,session.id,operario,linea.id]);
 
   useEffect(()=>{
     if(scanResult==="ok"&&!confirmingRef.current) doConfirm();
@@ -1181,7 +1190,7 @@ function PickFlow({session,linea,compIdx,operario,onDone}:{
           <div style={{fontSize:12,color:"#94a3b8"}}>Escanea el código de barras Code 128 de la etiqueta MercadoLibre con el lector.</div>
         </div>
 
-        <BarcodeScanner active={true} onScan={handleScan} label="Escanea etiqueta ML" mode="barcode" placeholder="Código ML o SKU..."/>
+        <BarcodeScanner active={true} onScan={handleScan} label="Escanea etiqueta ML" mode="ml_label" placeholder="Código ML o SKU..."/>
 
         {scanResult==="error"&&(
           <div style={{padding:16,background:"#ef444422",border:"2px solid #ef4444",borderRadius:12,marginBottom:12,textAlign:"center"}}>
@@ -1319,7 +1328,7 @@ function PickFlowFull({session,linea,operario,onDone,editBultos}:{
 
   // Verify scan: use the standard verificarScanPicking function
   const lastScanRef2 = useRef<string|null>(null);
-  const handleScan=useCallback((code:string)=>{
+  const handleScan=useCallback(async (code:string)=>{
     if (confirmingRef.current) return;
     setScanCode(code);
     if (comp && verificarScanPicking(code, comp, linea.skuVenta)) {
@@ -1327,8 +1336,16 @@ function PickFlowFull({session,linea,operario,onDone,editBultos}:{
       setScanResult("ok"); checkStockAndPick();
     } else {
       setScanResult("error"); if(navigator.vibrate)navigator.vibrate([200,100,200]);
+      try {
+        const { auditLog } = await import("@/lib/db");
+        await auditLog("picking_scan_error", {
+          entidad: "picking_session", entidad_id: session.id!, operario,
+          params: { lineaId: linea.id, skuVenta: linea.skuVenta, skuOrigen: comp?.skuOrigen, codigoMl: comp?.codigoMl, codigoEscaneado: code, esperaba: comp?.codigoMl || comp?.skuOrigen },
+          error: "Codigo escaneado no coincide",
+        });
+      } catch { /* no bloquear UI */ }
     }
-  },[comp,linea.skuVenta,checkStockAndPick]);
+  },[comp,linea.skuVenta,checkStockAndPick,session.id,operario,linea.id]);
 
   if (!comp) return null;
 
@@ -1580,7 +1597,7 @@ function PickFlowFull({session,linea,operario,onDone,editBultos}:{
           <div style={{fontSize:12,color:"#94a3b8"}}>Escanea el código de barras del producto.</div>
         </div>
 
-        <BarcodeScanner active={true} onScan={handleScan} label="Escanea producto" mode="barcode" placeholder="Código ML o SKU..."/>
+        <BarcodeScanner active={true} onScan={handleScan} label="Escanea producto" mode="ml_label" placeholder="Código ML o SKU..."/>
 
         {scanResult==="error"&&(
           <div style={{padding:16,background:"#ef444422",border:"2px solid #ef4444",borderRadius:12,marginBottom:12,textAlign:"center"}}>
