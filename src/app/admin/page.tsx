@@ -65,7 +65,7 @@ function LoginGate({ onLogin }: { onLogin: (pin: string) => boolean }) {
   );
 }
 
-type AdminTab = "dash"|"rec"|"flex"|"enviosfull"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"intel"|"semaforo"|"compras"|"eventos"|"ventasml"|"comercial"|"agentes"|"stockml"|"timeline"|"config";
+type AdminTab = "dash"|"rec"|"flex"|"enviosfull"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"intel"|"semaforo"|"compras"|"eventos"|"ventasml"|"comercial"|"agentes"|"stockml"|"timeline"|"scanerrors"|"config";
 
 const MOBILE_MENU_SECTIONS = [
   { section: "Principal", items: [
@@ -81,6 +81,7 @@ const MOBILE_MENU_SECTIONS = [
     ["timeline","Timeline","📈"],
     ["prod","Productos","🏷️"],
     ["stockml","Stock ML","🔗"],
+    ["scanerrors","Errores Scanner","🔴"],
   ] as const },
   { section: "Comercial", items: [
     ["reposicion","Reposición","🔄"],
@@ -277,6 +278,7 @@ export default function AdminPage() {
             {tab==="agentes"&&<AdminAgentes/>}
             {tab==="stockml"&&<AdminStockML/>}
             {tab==="timeline"&&<AdminTimeline/>}
+            {tab==="scanerrors"&&<AdminScanErrors/>}
             {tab==="config"&&<Configuracion refresh={r} initialSubTab={mlAuthReturn ? "ml" : undefined}/>}
           </div>
         </main>
@@ -9669,6 +9671,154 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
 }
 
 // ==================== TIMELINE ====================
+// ==================== ADMIN SCAN ERRORS ====================
+interface ScanErrorRow {
+  id: string;
+  operario: string;
+  created_at: string;
+  params: { lineaId?: string; skuVenta?: string; skuOrigen?: string; codigoMl?: string; codigoEscaneado?: string; esperaba?: string };
+  entidad_id: string;
+}
+interface ScanErrorStats {
+  by_operario: { operario: string; count: number }[];
+  by_sku: { sku: string; count: number; codigos_erroneos: string[] }[];
+}
+
+function AdminScanErrors() {
+  const [days, setDays] = useState(7);
+  const [operario, setOperario] = useState("");
+  const [data, setData] = useState<{ total: number; errors: ScanErrorRow[]; stats: ScanErrorStats } | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ days: String(days) });
+      if (operario) params.set("operario", operario);
+      const res = await fetch(`/api/picking/scan-errors?${params}`);
+      const j = await res.json();
+      setData(j);
+    } catch { /* ignore */ }
+    setLoading(false);
+  }, [days, operario]);
+
+  useEffect(() => { load(); }, [load]);
+
+  return (
+    <div>
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+          <div>
+            <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>🔴 Errores de Scanner</h2>
+            <div style={{ fontSize: 12, color: "var(--txt3)", marginTop: 4 }}>Códigos escaneados que no coincidieron con el producto esperado</div>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <select value={days} onChange={e => setDays(parseInt(e.target.value))}
+              style={{ padding: "6px 10px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 12 }}>
+              <option value="1">Hoy</option>
+              <option value="7">Últimos 7 días</option>
+              <option value="30">Últimos 30 días</option>
+              <option value="90">Últimos 90 días</option>
+            </select>
+            <input placeholder="Filtrar operario..." value={operario} onChange={e => setOperario(e.target.value)}
+              style={{ padding: "6px 10px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 12, width: 160 }} />
+            <button onClick={load} disabled={loading}
+              style={{ padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)", cursor: "pointer" }}>
+              {loading ? "..." : "Refrescar"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="card" style={{ padding: 40, textAlign: "center", color: "var(--txt3)" }}>Cargando...</div>
+      ) : !data || data.total === 0 ? (
+        <div className="card" style={{ padding: 40, textAlign: "center", color: "var(--txt3)" }}>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>✅</div>
+          <div>Sin errores de escaneo en este período</div>
+        </div>
+      ) : (
+        <>
+          {/* KPIs */}
+          <div className="kpi-grid" style={{ marginBottom: 16 }}>
+            <div className="kpi"><div className="kpi-label">Total errores</div><div style={{ fontSize: 24, fontWeight: 800, marginTop: 4, color: "var(--red)" }}>{data.total}</div></div>
+            <div className="kpi"><div className="kpi-label">Operarios afectados</div><div style={{ fontSize: 24, fontWeight: 800, marginTop: 4 }}>{data.stats.by_operario.length}</div></div>
+            <div className="kpi"><div className="kpi-label">SKUs con errores</div><div style={{ fontSize: 24, fontWeight: 800, marginTop: 4 }}>{data.stats.by_sku.length}</div></div>
+          </div>
+
+          {/* Por operario */}
+          <div className="card" style={{ marginBottom: 16, padding: 16 }}>
+            <h3 style={{ fontSize: 14, fontWeight: 700, margin: "0 0 12px" }}>Por operario</h3>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead><tr style={{ borderBottom: "1px solid var(--bg4)" }}>
+                <th style={{ padding: "8px 12px", textAlign: "left", color: "var(--txt3)" }}>Operario</th>
+                <th style={{ padding: "8px 12px", textAlign: "right", color: "var(--txt3)" }}>Errores</th>
+              </tr></thead>
+              <tbody>
+                {data.stats.by_operario.map(o => (
+                  <tr key={o.operario} style={{ borderBottom: "1px solid var(--bg4)" }}>
+                    <td style={{ padding: "8px 12px" }}>{o.operario}</td>
+                    <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 700, color: o.count > 5 ? "var(--red)" : o.count > 2 ? "var(--amber)" : "var(--txt)" }}>{o.count}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Por SKU */}
+          <div className="card" style={{ marginBottom: 16, padding: 16 }}>
+            <h3 style={{ fontSize: 14, fontWeight: 700, margin: "0 0 12px" }}>SKUs con más errores (Top 30)</h3>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead><tr style={{ borderBottom: "1px solid var(--bg4)" }}>
+                <th style={{ padding: "8px 12px", textAlign: "left", color: "var(--txt3)" }}>SKU</th>
+                <th style={{ padding: "8px 12px", textAlign: "center", color: "var(--txt3)" }}>Errores</th>
+                <th style={{ padding: "8px 12px", textAlign: "left", color: "var(--txt3)" }}>Códigos erróneos escaneados</th>
+              </tr></thead>
+              <tbody>
+                {data.stats.by_sku.map(s => (
+                  <tr key={s.sku} style={{ borderBottom: "1px solid var(--bg4)" }}>
+                    <td className="mono" style={{ padding: "8px 12px" }}>{s.sku}</td>
+                    <td style={{ padding: "8px 12px", textAlign: "center", fontWeight: 700, color: "var(--red)" }}>{s.count}</td>
+                    <td className="mono" style={{ padding: "8px 12px", fontSize: 11, color: "var(--amber)" }}>{s.codigos_erroneos.join(", ")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Detalle */}
+          <div className="card" style={{ overflow: "hidden", padding: 0 }}>
+            <h3 style={{ fontSize: 14, fontWeight: 700, margin: 0, padding: "16px 16px 8px" }}>Detalle de errores</h3>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+              <thead><tr style={{ borderBottom: "1px solid var(--bg4)" }}>
+                <th style={{ padding: "8px 12px", textAlign: "left", color: "var(--txt3)" }}>Fecha</th>
+                <th style={{ padding: "8px 12px", textAlign: "left", color: "var(--txt3)" }}>Operario</th>
+                <th style={{ padding: "8px 12px", textAlign: "left", color: "var(--txt3)" }}>Producto esperado</th>
+                <th style={{ padding: "8px 12px", textAlign: "left", color: "var(--txt3)" }}>Esperaba</th>
+                <th style={{ padding: "8px 12px", textAlign: "left", color: "var(--txt3)" }}>Escaneó</th>
+              </tr></thead>
+              <tbody>
+                {data.errors.map(e => {
+                  const fecha = new Date(e.created_at).toLocaleString("es-CL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+                  return (
+                    <tr key={e.id} style={{ borderBottom: "1px solid var(--bg4)" }}>
+                      <td className="mono" style={{ padding: "8px 12px", color: "var(--txt3)" }}>{fecha}</td>
+                      <td style={{ padding: "8px 12px" }}>{e.operario}</td>
+                      <td className="mono" style={{ padding: "8px 12px", fontSize: 10 }}>{e.params.skuVenta || e.params.skuOrigen || "?"}</td>
+                      <td className="mono" style={{ padding: "8px 12px", fontSize: 10, color: "var(--green)" }}>{e.params.esperaba || e.params.codigoMl || "?"}</td>
+                      <td className="mono" style={{ padding: "8px 12px", fontSize: 10, color: "var(--red)" }}>{e.params.codigoEscaneado || "?"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function AdminTimeline() {
   const [q, setQ] = useState("");
   const [selectedSku, setSelectedSku] = useState<string|null>(null);
