@@ -26,12 +26,14 @@ export async function POST(req: NextRequest) {
 
     const anio = parseInt(periodo.slice(0, 4));
     const mes = parseInt(periodo.slice(4, 6));
-    // Inicio del mes en UTC (Chile = -04/-03, por eso T03:00:00Z)
     const mesStr = String(mes).padStart(2, "0");
     const fechaDesde = `${anio}-${mesStr}-01T03:00:00Z`;
     const nextMonth = mes === 12 ? 1 : mes + 1;
     const nextYear = mes === 12 ? anio + 1 : anio;
-    const fechaHasta = `${nextYear}-${String(nextMonth).padStart(2, "0")}-01T02:59:59Z`;
+    const fechaHastaMes = new Date(`${nextYear}-${String(nextMonth).padStart(2, "0")}-01T02:59:59Z`).getTime();
+    // MP no permite end_date en el futuro: capar a ahora
+    const ahora = Date.now();
+    const fechaHasta = (fechaHastaMes > ahora ? new Date(ahora) : new Date(fechaHastaMes)).toISOString().replace(/\.\d{3}/, "");
 
     const res = await fetch(`${MP_BASE_URL}/v1/account/release_report`, {
       method: "POST",
