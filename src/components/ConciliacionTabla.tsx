@@ -448,6 +448,22 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
             {syncingMP ? "Sync MP..." : "Sync MP"}
           </button>
           <button onClick={async () => {
+            setSyncMsg("Consultando API directa de MP (últimos 7 días)...");
+            try {
+              const res = await fetch("/api/mp/sync-live", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dias: 7 }) });
+              const d = await res.json();
+              if (d.error) setSyncMsg(`Error: ${d.error}`);
+              else setSyncMsg(`${d.retiros_nuevos || 0} nuevos retiros (de ${d.total_encontrados || 0} encontrados)\n${(d.log || []).join("\n")}`);
+              if (d.retiros_nuevos > 0) load();
+            } catch (e) {
+              setSyncMsg(`Error: ${e instanceof Error ? e.message : "?"}`);
+            }
+          }} disabled={syncingMP}
+            style={{ padding: "5px 12px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: "pointer", background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)" }}
+            title="Trae movimientos recientes (última semana) directo de la API de MP, sin reportes">
+            Sync MP en vivo
+          </button>
+          <button onClick={async () => {
             const periodosReq: string[] = [];
             if (periodo.length === 4) {
               for (let m = 1; m <= 12; m++) periodosReq.push(`${periodo}${String(m).padStart(2, "0")}`);
