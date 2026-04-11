@@ -484,7 +484,41 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
                 mensajes.push(`${p}: ${e instanceof Error ? e.message : "error"}`);
               }
             }
-            setSyncMsg(mensajes.join("\n") + "\n\nEspera 2-5 min y presiona Sync MP.");
+            // Polling automático cada 30s hasta 6 min
+            const pollPeriodos = periodosReq.filter((_, i) => !mensajes[i]?.includes("error"));
+            if (pollPeriodos.length === 0) {
+              setSyncMsg(mensajes.join("\n"));
+              return;
+            }
+            const startTime = Date.now();
+            const maxWait = 6 * 60_000;
+            const checkAll = async (): Promise<boolean> => {
+              const results: string[] = [];
+              let allReady = true;
+              for (const p of pollPeriodos) {
+                try {
+                  const res = await fetch("/api/mp/check-report", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ periodo: p }) });
+                  const d = await res.json();
+                  if (d.listos > 0) results.push(`${p}: ✓ ${d.listos} reporte(s) listo(s)`);
+                  else { results.push(`${p}: ⏳ ${d.pendientes} pendientes...`); allReady = false; }
+                } catch { allReady = false; }
+              }
+              const elapsed = Math.round((Date.now() - startTime) / 1000);
+              setSyncMsg(`Esperando reportes (${elapsed}s)...\n${results.join("\n")}`);
+              return allReady;
+            };
+            // Check inmediato + cada 30s
+            await new Promise(r => setTimeout(r, 30000));
+            while (Date.now() - startTime < maxWait) {
+              const ready = await checkAll();
+              if (ready) {
+                setSyncMsg(`Reportes listos. Sincronizando...`);
+                await handleSyncMP();
+                return;
+              }
+              await new Promise(r => setTimeout(r, 30000));
+            }
+            setSyncMsg(`Timeout (6 min). Presiona Sync MP cuando los reportes estén listos.`);
           }} disabled={syncingMP}
             style={{ padding: "5px 12px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: "pointer", background: "var(--amberBg)", color: "var(--amber)", border: "1px solid var(--amberBd)" }}
             title="Solicita a MP que genere un release report para este período">
