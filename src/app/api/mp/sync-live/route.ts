@@ -52,55 +52,47 @@ export async function POST(req: NextRequest) {
     const fechaDesde = new Date(Date.now() - dias * 86400_000).toISOString();
     log.push(`Buscando movimientos desde ${fechaDesde.slice(0, 10)} (últimos ${dias} días)`);
 
-    // Intentar varios endpoints de MP para encontrar movimientos
+    // Endpoint primario: /v1/account/withdrawals/search (retorna payouts reales)
     let movimientos: MPMovement[] = [];
+    let fuente = "";
 
-    // 1. Intento: account movements search
     try {
-      const url = `${MP_BASE_URL}/v1/account/movements/search?range=date_created&begin_date=${fechaDesde}&end_date=${new Date().toISOString()}&limit=100`;
+      const url = `${MP_BASE_URL}/v1/account/withdrawals/search?begin_date=${fechaDesde}&end_date=${new Date().toISOString()}&limit=100`;
       const res = await fetch(url, {
         headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
         signal: AbortSignal.timeout(30000),
       });
       if (res.ok) {
         const data = await res.json();
-        const results = data.results || data.movements || [];
-        log.push(`account/movements: ${results.length} resultados`);
+        const results = data.results || data.withdrawals || [];
+        log.push(`account/withdrawals: ${results.length} resultados`);
+        if (results.length > 0) {
+          // Log shape del primer resultado para debug
+          log.push(`primer registro keys: ${Object.keys(results[0]).join(",")}`);
+        }
         movimientos = results;
+        fuente = "withdrawals";
       } else {
-        log.push(`account/movements: ${res.status}`);
+        log.push(`account/withdrawals: ${res.status}`);
       }
     } catch (e) {
-      log.push(`account/movements error: ${e instanceof Error ? e.message : "?"}`);
+      log.push(`account/withdrawals error: ${e instanceof Error ? e.message : "?"}`);
     }
 
-    // 2. Fallback: account/withdrawals search (payouts reales)
-    if (movimientos.length === 0) {
-      try {
-        const url = `${MP_BASE_URL}/v1/account/withdrawals/search?begin_date=${fechaDesde}&end_date=${new Date().toISOString()}&limit=100`;
-        const res = await fetch(url, {
-          headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-          signal: AbortSignal.timeout(30000),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          const results = data.results || data.withdrawals || [];
-          log.push(`account/withdrawals: ${results.length} resultados`);
-          movimientos = results;
-        } else {
-          log.push(`account/withdrawals: ${res.status}`);
-        }
-      } catch (e) {
-        log.push(`account/withdrawals error: ${e instanceof Error ? e.message : "?"}`);
-      }
+    // Solo aplicar filtro restrictivo si NO viene de withdrawals (porque ya son payouts por definición)
+    if (fuente !== "withdrawals") {
+      movimientos = movimientos.filter((m: MPMovement & { operation_type?: string; transaction_amount?: number }) => {
+        const op = m.operation_type || m.type || "";
+        const amount = m.amount || m.transaction_amount || 0;
+        return (op === "payout" || op === "withdrawal" || op === "money_transfer" || op === "bank_transfer") && amount > 0;
+      });
+    } else {
+      // Solo filtrar los que tengan algún monto
+      movimientos = movimientos.filter((m: MPMovement & { transaction_amount?: number; net_amount?: number; gross_amount?: number }) => {
+        const amount = m.amount || m.transaction_amount || (m as { net_amount?: number }).net_amount || (m as { gross_amount?: number }).gross_amount || 0;
+        return amount > 0;
+      });
     }
-
-    // Filtrar SOLO payouts/retiros reales, sin loose fallbacks
-    movimientos = movimientos.filter((m: MPMovement & { operation_type?: string; transaction_amount?: number }) => {
-      const op = m.operation_type || m.type || "";
-      const amount = m.amount || m.transaction_amount || 0;
-      return (op === "payout" || op === "withdrawal" || op === "money_transfer" || op === "bank_transfer") && amount > 0;
-    });
 
     if (movimientos.length === 0) {
       return NextResponse.json({
@@ -111,10 +103,10 @@ export async function POST(req: NextRequest) {
     }
 
     // Convertir a formato movimientos_banco
-    const rows = movimientos.map((m: MPMovement & { transaction_amount?: number }) => {
+    const rows = movimientos.map((m: MPMovement & { transaction_amount?: number; net_amount?: number; gross_amount?: number; date_released?: string }) => {
       const sourceId = String(m.id);
-      const fecha = m.date_created ? m.date_created.slice(0, 10) : new Date().toISOString().slice(0, 10);
-      const amountRaw = m.amount || m.transaction_amount || 0;
+      const fecha = (m.date_released || m.date_created || new Date().toISOString()).slice(0, 10);
+      const amountRaw = m.amount || m.transaction_amount || m.net_amount || m.gross_amount || 0;
       const monto = -Math.abs(amountRaw); // Egreso
       return {
         empresa_id: empresaId,
