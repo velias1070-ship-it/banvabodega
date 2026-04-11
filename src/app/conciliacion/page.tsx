@@ -750,6 +750,17 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
           )}
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", paddingBottom: 6 }}>
+          <select value={tipoFilter} onChange={e => setTipoFilter(e.target.value)}
+            style={{ fontSize: 11, padding: "6px 10px", borderRadius: 6, background: tipoFilter === "todos" ? "var(--bg3)" : "var(--cyanBg)", color: tipoFilter === "todos" ? "var(--txt3)" : "var(--cyan)", border: `1px solid ${tipoFilter === "todos" ? "var(--bg4)" : "var(--cyanBd)"}`, cursor: "pointer", fontWeight: 600 }}>
+            <option value="todos">Todos los tipos</option>
+            <option value="33">FAC-EL Factura</option>
+            <option value="34">FAC-EX Factura Exenta</option>
+            <option value="46">FC Factura Compra</option>
+            <option value="52">GUIA Guía Despacho</option>
+            <option value="56">ND Nota Débito</option>
+            <option value="61">NC Nota Crédito</option>
+            <option value="71">BHE</option>
+          </select>
           <button onClick={() => setShowProveedores(true)}
             style={{ fontSize: 11, padding: "6px 12px", borderRadius: 6, background: provFilterSet ? (provFilterMode === "excluir" ? "var(--redBg)" : "var(--cyanBg)") : "var(--bg3)", color: provFilterSet ? (provFilterMode === "excluir" ? "var(--red)" : "var(--cyan)") : "var(--txt3)", border: `1px solid ${provFilterSet ? (provFilterMode === "excluir" ? "var(--redBd)" : "var(--cyanBd)") : "var(--bg4)"}`, cursor: "pointer", fontWeight: 600, whiteSpace: "nowrap" }}>
             {provFilterSet ? `${provFilterMode === "excluir" ? "Excluye" : "Solo"} ${provFilterSet.size} prov.` : "Filtrar proveedores"}
