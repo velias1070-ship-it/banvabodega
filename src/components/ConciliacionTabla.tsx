@@ -116,7 +116,7 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
   const [egresoSaving, setEgresoSaving] = useState(false);
   // Detalle conciliación
   const [detalleConcMov, setDetalleConcMov] = useState<string | null>(null);
-  const [detalleConcData, setDetalleConcData] = useState<{ conc: DBConciliacion; doc: DBRcvCompra | DBRcvVenta | null; tipo: string } | null>(null);
+  const [detalleConcData, setDetalleConcData] = useState<{ conc: DBConciliacion; docs: { doc: DBRcvCompra | DBRcvVenta; monto_aplicado: number }[]; tipo: string } | null>(null);
   const [detalleConcLoading, setDetalleConcLoading] = useState(false);
   // Notas / comentarios por movimiento
   const [editingNota, setEditingNota] = useState<string | null>(null);
@@ -569,14 +569,33 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
                             setDetalleConcMov(m.id!); setDetalleConcLoading(true); setDetalleConcData(null);
                             const conc = conciliaciones.find(x => x.estado === "confirmado" && x.movimiento_banco_id === m.id);
                             if (conc) {
-                              let doc: DBRcvCompra | DBRcvVenta | null = null;
-                              let tipo = conc.tipo_partida || "";
-                              if (conc.rcv_compra_id) {
-                                doc = compras.find(c => c.id === conc.rcv_compra_id) || null;
-                              } else if (conc.rcv_venta_id) {
-                                doc = ventas.find(v => v.id === conc.rcv_venta_id) || null;
+                              const tipo = conc.tipo_partida || "";
+                              const docs: { doc: DBRcvCompra | DBRcvVenta; monto_aplicado: number }[] = [];
+                              // Intentar cargar conciliacion_items (multi_doc)
+                              const { getSupabase } = await import("@/lib/supabase");
+                              const sb = getSupabase();
+                              if (sb && conc.id) {
+                                const { data: items } = await sb.from("conciliacion_items").select("*").eq("conciliacion_id", conc.id);
+                                if (items && items.length > 0) {
+                                  for (const it of items) {
+                                    let doc: DBRcvCompra | DBRcvVenta | undefined;
+                                    if (it.documento_tipo === "rcv_compra") doc = compras.find(c => c.id === it.documento_id);
+                                    else if (it.documento_tipo === "rcv_venta") doc = ventas.find(v => v.id === it.documento_id);
+                                    if (doc) docs.push({ doc, monto_aplicado: it.monto_aplicado || 0 });
+                                  }
+                                }
                               }
-                              setDetalleConcData({ conc, doc, tipo });
+                              // Si no hay items, usar rcv_compra_id/rcv_venta_id directo (match simple)
+                              if (docs.length === 0) {
+                                if (conc.rcv_compra_id) {
+                                  const doc = compras.find(c => c.id === conc.rcv_compra_id);
+                                  if (doc) docs.push({ doc, monto_aplicado: conc.monto_aplicado || doc.monto_total || 0 });
+                                } else if (conc.rcv_venta_id) {
+                                  const doc = ventas.find(v => v.id === conc.rcv_venta_id);
+                                  if (doc) docs.push({ doc, monto_aplicado: conc.monto_aplicado || doc.monto_total || 0 });
+                                }
+                              }
+                              setDetalleConcData({ conc, docs, tipo });
                             }
                             setDetalleConcLoading(false);
                           }}
@@ -599,17 +618,21 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
                                     {detalleConcData.tipo === "egreso" ? "Egreso" : detalleConcData.tipo === "clasificacion_directa" ? "Clasificación directa" : detalleConcData.tipo === "multi_doc" ? "Multi-documento" : "Match"}
                                     {detalleConcData.conc.metodo && <span> · {detalleConcData.conc.metodo}</span>}
                                   </div>
-                                  {detalleConcData.doc && (
-                                    <div style={{ padding: 10, background: "var(--bg3)", borderRadius: 6, marginBottom: 8, fontSize: 11 }}>
-                                      <div style={{ fontWeight: 600 }}>
-                                        {"tipo_doc" in detalleConcData.doc && <span className="mono" style={{ fontSize: 10, padding: "1px 4px", borderRadius: 3, background: "var(--cyanBg)", color: "var(--cyan)", marginRight: 4 }}>{typeof detalleConcData.doc.tipo_doc === "number" ? (({33:"FAC-EL",34:"FAC-EX",46:"FC",52:"GUIA",56:"ND",61:"NC",71:"BHE"} as Record<number,string>)[detalleConcData.doc.tipo_doc] || detalleConcData.doc.tipo_doc) : detalleConcData.doc.tipo_doc}</span>}
-                                        {"nro_doc" in detalleConcData.doc ? detalleConcData.doc.nro_doc : ("nro" in detalleConcData.doc ? detalleConcData.doc.nro : "")}
-                                      </div>
-                                      <div style={{ color: "var(--txt2)", marginTop: 2 }}>{"razon_social" in detalleConcData.doc ? detalleConcData.doc.razon_social : ""}</div>
-                                      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
-                                        <span className="mono" style={{ color: "var(--txt3)" }}>{fmtDate("fecha_docto" in detalleConcData.doc ? detalleConcData.doc.fecha_docto : null)}</span>
-                                        <span className="mono" style={{ fontWeight: 700 }}>{fmtMoney(detalleConcData.doc.monto_total || 0)}</span>
-                                      </div>
+                                  {detalleConcData.docs.length > 0 && (
+                                    <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 8, maxHeight: 280, overflowY: "auto" }}>
+                                      {detalleConcData.docs.map((d, idx) => (
+                                        <div key={idx} style={{ padding: 10, background: "var(--bg3)", borderRadius: 6, fontSize: 11 }}>
+                                          <div style={{ fontWeight: 600 }}>
+                                            {"tipo_doc" in d.doc && <span className="mono" style={{ fontSize: 10, padding: "1px 4px", borderRadius: 3, background: "var(--cyanBg)", color: "var(--cyan)", marginRight: 4 }}>{typeof d.doc.tipo_doc === "number" ? (({33:"FAC-EL",34:"FAC-EX",46:"FC",52:"GUIA",56:"ND",61:"NC",71:"BHE"} as Record<number,string>)[d.doc.tipo_doc] || d.doc.tipo_doc) : d.doc.tipo_doc}</span>}
+                                            {"nro_doc" in d.doc ? d.doc.nro_doc : ("nro" in d.doc ? d.doc.nro : "")}
+                                          </div>
+                                          <div style={{ color: "var(--txt2)", marginTop: 2 }}>{"razon_social" in d.doc ? d.doc.razon_social : ""}</div>
+                                          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+                                            <span className="mono" style={{ color: "var(--txt3)" }}>{fmtDate("fecha_docto" in d.doc ? d.doc.fecha_docto : null)}</span>
+                                            <span className="mono" style={{ fontWeight: 700 }}>{fmtMoney(d.monto_aplicado)}{d.monto_aplicado !== d.doc.monto_total && <span style={{ fontSize: 9, color: "var(--txt3)", fontWeight: 400 }}> de {fmtMoney(d.doc.monto_total || 0)}</span>}</span>
+                                          </div>
+                                        </div>
+                                      ))}
                                     </div>
                                   )}
                                   {detalleConcData.tipo === "egreso" && detalleConcData.conc.metadata && (() => {
@@ -632,7 +655,7 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
                                       Ver documento adjunto
                                     </a>
                                   )}
-                                  {!detalleConcData.doc && detalleConcData.tipo === "clasificacion_directa" && (
+                                  {detalleConcData.docs.length === 0 && detalleConcData.tipo === "clasificacion_directa" && (
                                     <div style={{ padding: 10, background: "var(--bg3)", borderRadius: 6, marginBottom: 8, fontSize: 11, color: "var(--txt3)" }}>
                                       Sin documento — clasificación por cuenta contable
                                     </div>
