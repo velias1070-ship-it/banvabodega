@@ -74,29 +74,33 @@ export async function POST(req: NextRequest) {
       log.push(`account/movements error: ${e instanceof Error ? e.message : "?"}`);
     }
 
-    // 2. Fallback: payments search filtrado por type=payout
+    // 2. Fallback: account/withdrawals search (payouts reales)
     if (movimientos.length === 0) {
       try {
-        const url = `${MP_BASE_URL}/v1/payments/search?sort=date_created&criteria=desc&range=date_created&begin_date=${fechaDesde}&end_date=${new Date().toISOString()}&limit=100`;
+        const url = `${MP_BASE_URL}/v1/account/withdrawals/search?begin_date=${fechaDesde}&end_date=${new Date().toISOString()}&limit=100`;
         const res = await fetch(url, {
           headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
           signal: AbortSignal.timeout(30000),
         });
         if (res.ok) {
           const data = await res.json();
-          const results = data.results || [];
-          log.push(`payments/search: ${results.length} resultados`);
-          // Filtrar solo retiros (payouts)
-          movimientos = results.filter((p: { operation_type?: string; payment_type_id?: string }) =>
-            p.operation_type === "payout" || p.operation_type === "money_transfer" || p.payment_type_id === "account_money"
-          );
+          const results = data.results || data.withdrawals || [];
+          log.push(`account/withdrawals: ${results.length} resultados`);
+          movimientos = results;
         } else {
-          log.push(`payments/search: ${res.status}`);
+          log.push(`account/withdrawals: ${res.status}`);
         }
       } catch (e) {
-        log.push(`payments/search error: ${e instanceof Error ? e.message : "?"}`);
+        log.push(`account/withdrawals error: ${e instanceof Error ? e.message : "?"}`);
       }
     }
+
+    // Filtrar SOLO payouts/retiros reales, sin loose fallbacks
+    movimientos = movimientos.filter((m: MPMovement & { operation_type?: string; transaction_amount?: number }) => {
+      const op = m.operation_type || m.type || "";
+      const amount = m.amount || m.transaction_amount || 0;
+      return (op === "payout" || op === "withdrawal" || op === "money_transfer" || op === "bank_transfer") && amount > 0;
+    });
 
     if (movimientos.length === 0) {
       return NextResponse.json({
@@ -107,23 +111,24 @@ export async function POST(req: NextRequest) {
     }
 
     // Convertir a formato movimientos_banco
-    const rows = movimientos.map((m: MPMovement) => {
+    const rows = movimientos.map((m: MPMovement & { transaction_amount?: number }) => {
       const sourceId = String(m.id);
       const fecha = m.date_created ? m.date_created.slice(0, 10) : new Date().toISOString().slice(0, 10);
-      const monto = -Math.abs(m.amount || 0); // Egreso
+      const amountRaw = m.amount || m.transaction_amount || 0;
+      const monto = -Math.abs(amountRaw); // Egreso
       return {
         empresa_id: empresaId,
         banco: "MercadoPago",
         cuenta: null,
         fecha,
-        descripcion: `RETIRO MP | $${Math.abs(m.amount || 0).toLocaleString("es-CL")}${m.description ? ` | ${m.description}` : ""}`,
+        descripcion: `RETIRO MP | $${Math.abs(amountRaw).toLocaleString("es-CL")}${m.description ? ` | ${m.description}` : ""}`,
         monto,
         saldo: null,
         referencia: `MP-RETIRO-${sourceId}`,
         origen: "api" as const,
         cuenta_bancaria_id: cuentaBancariaId,
         referencia_unica: refHash("mp_retiro", sourceId),
-        metadata: JSON.stringify({ tipo: "retiro_live", source_id: sourceId, monto: Math.abs(m.amount || 0) }),
+        metadata: JSON.stringify({ tipo: "retiro_live", source_id: sourceId, monto: Math.abs(amountRaw) }),
       };
     });
 

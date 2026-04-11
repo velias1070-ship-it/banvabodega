@@ -448,19 +448,22 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
             {syncingMP ? "Sync MP..." : "Sync MP"}
           </button>
           <button onClick={async () => {
-            setSyncMsg("Consultando API directa de MP (últimos 7 días)...");
+            setSyncMsg("Limpiando movimientos con monto 0...");
             try {
+              const cleanup = await fetch("/api/mp/cleanup-live", { method: "POST" });
+              const cd = await cleanup.json();
+              setSyncMsg(`Limpieza: ${cd.eliminados || 0} eliminados\nConsultando API directa de MP...`);
               const res = await fetch("/api/mp/sync-live", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dias: 7 }) });
               const d = await res.json();
               if (d.error) setSyncMsg(`Error: ${d.error}`);
-              else setSyncMsg(`${d.retiros_nuevos || 0} nuevos retiros (de ${d.total_encontrados || 0} encontrados)\n${(d.log || []).join("\n")}`);
-              if (d.retiros_nuevos > 0) load();
+              else setSyncMsg(`${cd.eliminados || 0} eliminados\n${d.retiros_nuevos || 0} nuevos retiros (de ${d.total_encontrados || 0} encontrados)\n${(d.log || []).join("\n")}`);
+              load();
             } catch (e) {
               setSyncMsg(`Error: ${e instanceof Error ? e.message : "?"}`);
             }
           }} disabled={syncingMP}
             style={{ padding: "5px 12px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: "pointer", background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)" }}
-            title="Trae movimientos recientes (última semana) directo de la API de MP, sin reportes">
+            title="Limpia movimientos con monto 0 y trae retiros reales de la API de MP">
             Sync MP en vivo
           </button>
           <button onClick={async () => {
