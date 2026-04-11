@@ -172,6 +172,7 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
       list = list.filter(m => {
         if ((m.descripcion || "").toLowerCase().includes(q)) return true;
         if ((m.referencia || "").toLowerCase().includes(q)) return true;
+        if ((m.notas || "").toLowerCase().includes(q)) return true;
         if (isNum && Math.abs(m.monto).toString().includes(qNum)) return true;
         return false;
       });
