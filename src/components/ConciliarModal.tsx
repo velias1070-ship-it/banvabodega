@@ -58,7 +58,9 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
   const movAbs = Math.abs(mov.monto);
   const yaConc = mov.monto_conciliado || 0;
   const disponible = movAbs - yaConc;
-  const totalAsignado = selected.reduce((s, d) => s + d.monto_aplicado, 0);
+  // NC (tipo 61) resta en vez de sumar
+  const isNC = (tipoDocNum: number | string) => Number(tipoDocNum) === 61;
+  const totalAsignado = selected.reduce((s, d) => s + (isNC(d.tipo_doc_num) ? -d.monto_aplicado : d.monto_aplicado), 0);
   const saldoPorAsignar = disponible - totalAsignado;
 
   // Monto ya conciliado por documento (suma de monto_aplicado de conciliaciones confirmadas)
@@ -159,7 +161,29 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
     };
 
     // Pre-compute scores for sorting and display
-    const scored = filteredDocs.map(d => ({ ...d, ...scoreDoc(d) }));
+    let scored = filteredDocs.map(d => ({ ...d, ...scoreDoc(d) }));
+
+    // Detectar pares Factura - NC del mismo proveedor que sumen exactamente al target
+    // Si encuentra un par, baja el score de ambos para que aparezcan al tope
+    if (target > 0 && !search) {
+      const facturas = scored.filter(d => Number(d.tipo_doc_num) !== 61 && d.rut);
+      const ncs = scored.filter(d => Number(d.tipo_doc_num) === 61 && d.rut);
+      const boostedIds = new Set<string>();
+      for (const f of facturas) {
+        for (const n of ncs) {
+          if (f.rut !== n.rut) continue;
+          const neto = f.saldo_pendiente - n.saldo_pendiente;
+          if (Math.abs(neto - target) < 1) {
+            boostedIds.add(f.id);
+            boostedIds.add(n.id);
+          }
+        }
+      }
+      if (boostedIds.size > 0) {
+        scored = scored.map(d => boostedIds.has(d.id) ? { ...d, score: -1 } : d);
+      }
+    }
+
     scored.sort((a, b) => {
       let cmp = 0;
       if (sortBy === "cercania") cmp = a.score - b.score;
@@ -178,7 +202,11 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
   const sortIcon = (key: typeof sortBy) => sortBy === key ? (sortDir === "desc" ? " \u2193" : " \u2191") : "";
 
   const handleSelect = (doc: typeof docsDisponibles[0]) => {
-    const montoAplicar = saldoPorAsignar > 0 ? Math.min(doc.saldo_pendiente, saldoPorAsignar) : doc.saldo_pendiente;
+    // NC siempre se aplica completa (no se "limita" al saldo restante)
+    const esNC = isNC(doc.tipo_doc_num);
+    const montoAplicar = esNC
+      ? doc.saldo_pendiente
+      : (saldoPorAsignar > 0 ? Math.min(doc.saldo_pendiente, saldoPorAsignar) : doc.saldo_pendiente);
     setSelected(prev => [...prev, { ...doc, monto_aplicado: montoAplicar }]);
   };
 
@@ -302,24 +330,27 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
                 <div style={{ fontSize: 28, marginBottom: 8, opacity: 0.3 }}>→</div>
                 Selecciona facturas de la derecha
               </div>
-            ) : selected.map(d => (
+            ) : selected.map(d => {
+              const esNC = isNC(d.tipo_doc_num);
+              return (
               <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%" }}>
                 <div style={{ textAlign: "center", flex: 1 }}>
-                  <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 4 }}>Monto a asignar</div>
+                  <div style={{ fontSize: 10, color: esNC ? "var(--red)" : "var(--txt3)", marginBottom: 4 }}>{esNC ? "Resta (NC)" : "Monto a asignar"}</div>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
-                    <span style={{ fontSize: 12, color: "var(--txt3)" }}>$</span>
+                    <span style={{ fontSize: 12, color: esNC ? "var(--red)" : "var(--txt3)" }}>{esNC ? "−$" : "$"}</span>
                     <input type="text" value={d.monto_aplicado.toLocaleString("es-CL")}
                       onChange={e => {
                         const val = parseInt(e.target.value.replace(/\D/g, "")) || 0;
                         handleEditMonto(d.id, val);
                       }}
                       className="mono"
-                      style={{ width: 110, padding: "6px 8px", fontSize: 14, fontWeight: 700, textAlign: "right", background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 6 }} />
+                      style={{ width: 110, padding: "6px 8px", fontSize: 14, fontWeight: 700, textAlign: "right", background: "var(--bg3)", color: esNC ? "var(--red)" : "var(--txt)", border: `1px solid ${esNC ? "var(--redBd)" : "var(--bg4)"}`, borderRadius: 6 }} />
                   </div>
                 </div>
                 <span style={{ fontSize: 16, color: "var(--txt3)" }}>→</span>
               </div>
-            ))}
+              );
+            })}
           </div>
 
           {/* DERECHA: Documentos de respaldo (seleccionados + lista) */}
