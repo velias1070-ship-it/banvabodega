@@ -447,6 +447,30 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
             style={{ padding: "5px 12px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: syncingMP ? "wait" : "pointer", background: "var(--blueBg)", color: "var(--blue)", border: "1px solid var(--blueBd)", opacity: syncingMP ? 0.6 : 1 }}>
             {syncingMP ? "Sync MP..." : "Sync MP"}
           </button>
+          <button onClick={async () => {
+            const periodosReq: string[] = [];
+            if (periodo.length === 4) {
+              for (let m = 1; m <= 12; m++) periodosReq.push(`${periodo}${String(m).padStart(2, "0")}`);
+            } else {
+              periodosReq.push(periodo);
+            }
+            setSyncMsg("Solicitando reportes a MP...");
+            const mensajes: string[] = [];
+            for (const p of periodosReq) {
+              try {
+                const res = await fetch("/api/mp/request-report", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ periodo: p }) });
+                const d = await res.json();
+                mensajes.push(`${p}: ${d.error || d.mensaje || "solicitado"}`);
+              } catch (e) {
+                mensajes.push(`${p}: ${e instanceof Error ? e.message : "error"}`);
+              }
+            }
+            setSyncMsg(mensajes.join("\n") + "\n\nEspera 2-5 min y presiona Sync MP.");
+          }} disabled={syncingMP}
+            style={{ padding: "5px 12px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: "pointer", background: "var(--amberBg)", color: "var(--amber)", border: "1px solid var(--amberBd)" }}
+            title="Solicita a MP que genere un release report para este período">
+            Pedir reporte MP
+          </button>
           <button onClick={runConciliacionRapida} disabled={pendientes.length === 0}
             style={{ padding: "5px 12px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: pendientes.length === 0 ? "not-allowed" : "pointer", background: "var(--greenBg)", color: "var(--green)", border: "1px solid var(--greenBd)", opacity: pendientes.length === 0 ? 0.5 : 1 }}>
             Conciliacion Rapida
