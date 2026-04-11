@@ -7,6 +7,7 @@ import {
   upsertRcvCompras, upsertRcvVentas,
   fetchMovimientosBanco, insertMovimientosBanco, deleteMovimientosBancoByIds,
   fetchConciliaciones,
+  fetchAllConciliacionItems,
   fetchAlertas, fetchSyncLog, insertSyncLog,
   fetchProveedorCuentas,
   upsertProveedorCuenta,
@@ -15,7 +16,7 @@ import {
 } from "@/lib/db";
 import type {
   DBEmpresa, DBRcvCompra, DBRcvVenta, DBMovimientoBanco,
-  DBConciliacion, DBAlerta, DBSyncLog, DBProveedorCuenta,
+  DBConciliacion, DBConciliacionItem, DBAlerta, DBSyncLog, DBProveedorCuenta,
 } from "@/lib/db";
 import CsvUploader from "@/components/CsvUploader";
 import type { CsvRow } from "@/components/CsvUploader";
@@ -378,6 +379,7 @@ function SiiImportModal({ tipo, empresa, periodoActual, onClose, onImported }: S
 function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: string }) {
   const [data, setData] = useState<DBRcvCompra[]>([]);
   const [conciliaciones, setConciliaciones] = useState<DBConciliacion[]>([]);
+  const [conciliacionItems, setConciliacionItems] = useState<DBConciliacionItem[]>([]);
   const [provCuentas, setProvCuentas] = useState<DBProveedorCuenta[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("");
@@ -415,8 +417,9 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const load = useCallback(async () => {
     if (!empresa.id) return;
     setLoading(true);
-    const [conc, pc, ctas] = await Promise.all([fetchConciliaciones(empresa.id), fetchProveedorCuentas(), fetchPlanCuentasHojas()]);
+    const [conc, items, pc, ctas] = await Promise.all([fetchConciliaciones(empresa.id), fetchAllConciliacionItems(), fetchProveedorCuentas(), fetchPlanCuentasHojas()]);
     setConciliaciones(conc);
+    setConciliacionItems(items);
     setProvCuentas(pc);
     setCuentasHoja(ctas.map(c => ({ id: c.id!, codigo: c.codigo, nombre: c.nombre })));
     if (isAnual) {
@@ -500,13 +503,21 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   // Mapa de monto pagado por compra (sumando todas las conciliaciones)
   const pagadoPorCompra = useMemo(() => {
     const map = new Map<string, number>();
+    // Match simple: rcv_compra_id directo en la conciliacion
     for (const c of conciliaciones) {
       if (c.estado === "confirmado" && c.rcv_compra_id) {
         map.set(c.rcv_compra_id, (map.get(c.rcv_compra_id) || 0) + 1);
       }
     }
+    // Multi-doc: items en conciliacion_items
+    const concIdsConfirmadas = new Set(conciliaciones.filter(c => c.estado === "confirmado").map(c => c.id));
+    for (const item of conciliacionItems) {
+      if (item.documento_tipo === "rcv_compra" && concIdsConfirmadas.has(item.conciliacion_id)) {
+        map.set(item.documento_id, (map.get(item.documento_id) || 0) + 1);
+      }
+    }
     return map;
-  }, [conciliaciones]);
+  }, [conciliaciones, conciliacionItems]);
   // IDs de compras conciliadas (al menos 1 pago)
   const concCompraIds = new Set(pagadoPorCompra.keys());
 

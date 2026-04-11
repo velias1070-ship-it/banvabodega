@@ -2421,6 +2421,21 @@ export async function fetchConciliacionItems(conciliacionId: string): Promise<DB
   return (data || []) as DBConciliacionItem[];
 }
 
+export async function fetchAllConciliacionItems(): Promise<DBConciliacionItem[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const all: DBConciliacionItem[] = [];
+  const PAGE = 1000;
+  let from = 0;
+  while (true) {
+    const { data } = await sb.from("conciliacion_items").select("*").range(from, from + PAGE - 1);
+    if (!data || data.length === 0) break;
+    all.push(...(data as DBConciliacionItem[]));
+    if (data.length < PAGE) break;
+    from += PAGE;
+  }
+  return all;
+}
+
 export async function insertConciliacionItems(items: DBConciliacionItem[]): Promise<void> {
   const sb = getSupabase(); if (!sb) return;
   await sb.from("conciliacion_items").insert(items);
