@@ -562,11 +562,19 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
     return !concCompraIds.has(c.id!) && venc && venc.diasRestantes < 0;
   });
   else if (concFilter === "pagadas") filtered = filtered.filter(c => concCompraIds.has(c.id!));
-  if (filter) filtered = filtered.filter(c =>
-    (c.razon_social || "").toLowerCase().includes(filter.toLowerCase()) ||
-    (c.rut_proveedor || "").includes(filter) ||
-    (c.nro_doc || "").includes(filter)
-  );
+  if (filter) {
+    const q = filter.toLowerCase();
+    const qNum = q.replace(/[.,]/g, "");
+    const isNum = qNum !== "" && !isNaN(Number(qNum));
+    filtered = filtered.filter(c => {
+      if ((c.razon_social || "").toLowerCase().includes(q)) return true;
+      if ((c.rut_proveedor || "").includes(filter)) return true;
+      if ((c.nro_doc || "").includes(filter)) return true;
+      if ((c.notas || "").toLowerCase().includes(q)) return true;
+      if (isNum && (c.monto_total || 0).toString().includes(qNum)) return true;
+      return false;
+    });
+  }
 
   // Ordenar: por pagar y vencidas → vencimiento más urgente primero
   if (concFilter === "por_pagar" || concFilter === "vencidas") {
