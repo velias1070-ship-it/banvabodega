@@ -396,6 +396,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const [pagoSearch, setPagoSearch] = useState("");
   const [pagoSelected, setPagoSelected] = useState<{ mov: DBMovimientoBanco; monto_aplicado: number }[]>([]);
   const [provFilterSet, setProvFilterSet] = useState<Set<string> | null>(null); // null = todos
+  const [provFilterMode, setProvFilterMode] = useState<"incluir" | "excluir">("incluir");
   const [showProvFilter, setShowProvFilter] = useState(false);
   const [showProveedores, setShowProveedores] = useState(false);
   const [editingNota, setEditingNota] = useState<string | null>(null);
@@ -551,7 +552,10 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   // Filtrar por texto, tipo, proveedor y estado conciliación
   let filtered = data;
   if (tipoFilter !== "todos") filtered = filtered.filter(c => String(c.tipo_doc) === tipoFilter);
-  if (provFilterSet) filtered = filtered.filter(c => provFilterSet.has(c.rut_proveedor || ""));
+  if (provFilterSet) filtered = filtered.filter(c => {
+    const match = provFilterSet.has(c.rut_proveedor || "");
+    return provFilterMode === "incluir" ? match : !match;
+  });
   if (concFilter === "por_pagar") filtered = filtered.filter(c => !concCompraIds.has(c.id!));
   else if (concFilter === "vencidas") filtered = filtered.filter(c => {
     const venc = getVencimiento(c);
@@ -746,6 +750,15 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
           )}
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", paddingBottom: 6 }}>
+          <button onClick={() => setShowProveedores(true)}
+            style={{ fontSize: 11, padding: "6px 12px", borderRadius: 6, background: provFilterSet ? (provFilterMode === "excluir" ? "var(--redBg)" : "var(--cyanBg)") : "var(--bg3)", color: provFilterSet ? (provFilterMode === "excluir" ? "var(--red)" : "var(--cyan)") : "var(--txt3)", border: `1px solid ${provFilterSet ? (provFilterMode === "excluir" ? "var(--redBd)" : "var(--cyanBd)") : "var(--bg4)"}`, cursor: "pointer", fontWeight: 600, whiteSpace: "nowrap" }}>
+            {provFilterSet ? `${provFilterMode === "excluir" ? "Excluye" : "Solo"} ${provFilterSet.size} prov.` : "Filtrar proveedores"}
+          </button>
+          {provFilterSet && (
+            <button onClick={() => { setProvFilterSet(null); setProvFilterMode("incluir"); }}
+              style={{ fontSize: 11, padding: "6px 8px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt3)", border: "1px solid var(--bg4)", cursor: "pointer" }}
+              title="Limpiar filtro">×</button>
+          )}
           <input className="form-input" placeholder="Buscar..." value={filter} onChange={e => setFilter(e.target.value)}
             style={{ fontSize: 12, width: 160, padding: "6px 12px" }} />
         </div>
@@ -1158,6 +1171,65 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
             </div>
           </div>
         </div>
+        );
+      })()}
+
+      {/* Modal filtro proveedores */}
+      {showProveedores && (() => {
+        const selected = provFilterSet || new Set<string>();
+        return (
+          <div style={{ position: "fixed", inset: 0, zIndex: 9998, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center" }}
+            onClick={() => setShowProveedores(false)}>
+            <div className="card" style={{ padding: 0, maxWidth: 560, width: "92%", maxHeight: "85vh", display: "flex", flexDirection: "column", overflow: "hidden" }} onClick={e => e.stopPropagation()}>
+              <div style={{ padding: "16px 24px", borderBottom: "1px solid var(--bg4)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <h3 style={{ fontSize: 16, fontWeight: 700, margin: 0 }}>Filtrar proveedores</h3>
+                <button onClick={() => setShowProveedores(false)} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", color: "var(--txt3)" }}>&times;</button>
+              </div>
+              <div style={{ padding: "12px 24px", borderBottom: "1px solid var(--bg4)", display: "flex", gap: 8 }}>
+                <button onClick={() => setProvFilterMode("incluir")}
+                  style={{ flex: 1, padding: "8px 12px", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", background: provFilterMode === "incluir" ? "var(--cyanBg)" : "var(--bg3)", color: provFilterMode === "incluir" ? "var(--cyan)" : "var(--txt3)", border: `1px solid ${provFilterMode === "incluir" ? "var(--cyanBd)" : "var(--bg4)"}` }}>
+                  Mostrar solo estos
+                </button>
+                <button onClick={() => setProvFilterMode("excluir")}
+                  style={{ flex: 1, padding: "8px 12px", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", background: provFilterMode === "excluir" ? "var(--redBg)" : "var(--bg3)", color: provFilterMode === "excluir" ? "var(--red)" : "var(--txt3)", border: `1px solid ${provFilterMode === "excluir" ? "var(--redBd)" : "var(--bg4)"}` }}>
+                  Excluir estos
+                </button>
+              </div>
+              <div style={{ padding: "8px 24px", borderBottom: "1px solid var(--bg4)", display: "flex", gap: 8, alignItems: "center" }}>
+                <button onClick={() => setProvFilterSet(new Set(proveedoresUnicos.map(p => p.rut)))}
+                  style={{ fontSize: 10, padding: "4px 10px", borderRadius: 4, background: "var(--bg3)", color: "var(--txt2)", border: "1px solid var(--bg4)", cursor: "pointer" }}>Seleccionar todos</button>
+                <button onClick={() => setProvFilterSet(new Set())}
+                  style={{ fontSize: 10, padding: "4px 10px", borderRadius: 4, background: "var(--bg3)", color: "var(--txt2)", border: "1px solid var(--bg4)", cursor: "pointer" }}>Limpiar</button>
+                <span style={{ fontSize: 11, color: "var(--txt3)", marginLeft: "auto" }}>{selected.size} de {proveedoresUnicos.length}</span>
+              </div>
+              <div style={{ flex: 1, overflowY: "auto", padding: "8px 0" }}>
+                {proveedoresUnicos.map(p => (
+                  <label key={p.rut} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 24px", cursor: "pointer", borderBottom: "1px solid var(--bg4)" }}>
+                    <input type="checkbox" checked={selected.has(p.rut)} onChange={e => {
+                      const next = new Set(selected);
+                      if (e.target.checked) next.add(p.rut); else next.delete(p.rut);
+                      setProvFilterSet(next);
+                    }} style={{ accentColor: "var(--cyan)" }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.razon_social || p.rut}</div>
+                      <div className="mono" style={{ fontSize: 10, color: "var(--txt3)" }}>{p.rut} · {p.facturas} {p.facturas === 1 ? "factura" : "facturas"}</div>
+                    </div>
+                    <div className="mono" style={{ fontSize: 11, color: "var(--txt3)" }}>{fmtMoney(p.total)}</div>
+                  </label>
+                ))}
+              </div>
+              <div style={{ padding: "12px 24px", borderTop: "1px solid var(--bg4)", display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                <button onClick={() => { setProvFilterSet(null); setProvFilterMode("incluir"); setShowProveedores(false); }}
+                  style={{ padding: "8px 16px", borderRadius: 8, background: "var(--bg3)", color: "var(--txt)", fontSize: 12, border: "1px solid var(--bg4)", cursor: "pointer" }}>
+                  Limpiar filtro
+                </button>
+                <button onClick={() => setShowProveedores(false)}
+                  className="scan-btn green" style={{ padding: "8px 20px", fontSize: 12 }}>
+                  Aplicar
+                </button>
+              </div>
+            </div>
+          </div>
         );
       })()}
     </div>
