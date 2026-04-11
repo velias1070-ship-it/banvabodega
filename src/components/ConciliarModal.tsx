@@ -58,9 +58,10 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
   const movAbs = Math.abs(mov.monto);
   const yaConc = mov.monto_conciliado || 0;
   const disponible = movAbs - yaConc;
-  // NC (tipo 61) resta en vez de sumar
   const isNC = (tipoDocNum: number | string) => Number(tipoDocNum) === 61;
-  const totalAsignado = selected.reduce((s, d) => s + (isNC(d.tipo_doc_num) ? -d.monto_aplicado : d.monto_aplicado), 0);
+  // Solo facturas (no NCs) cuentan para cubrir el movimiento.
+  // NCs son créditos consumidos que reducen el saldo de la factura, pero no aportan cash al movimiento.
+  const totalAsignado = selected.reduce((s, d) => s + (isNC(d.tipo_doc_num) ? 0 : d.monto_aplicado), 0);
   const saldoPorAsignar = disponible - totalAsignado;
 
   // Monto ya conciliado por documento (suma de monto_aplicado de conciliaciones confirmadas)
@@ -335,16 +336,16 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
               return (
               <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%" }}>
                 <div style={{ textAlign: "center", flex: 1 }}>
-                  <div style={{ fontSize: 10, color: esNC ? "var(--red)" : "var(--txt3)", marginBottom: 4 }}>{esNC ? "Resta (NC)" : "Monto a asignar"}</div>
+                  <div style={{ fontSize: 10, color: esNC ? "var(--amber)" : "var(--txt3)", marginBottom: 4 }}>{esNC ? "Crédito NC aplicado" : "Monto a asignar"}</div>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
-                    <span style={{ fontSize: 12, color: esNC ? "var(--red)" : "var(--txt3)" }}>{esNC ? "−$" : "$"}</span>
+                    <span style={{ fontSize: 12, color: esNC ? "var(--amber)" : "var(--txt3)" }}>$</span>
                     <input type="text" value={d.monto_aplicado.toLocaleString("es-CL")}
                       onChange={e => {
                         const val = parseInt(e.target.value.replace(/\D/g, "")) || 0;
                         handleEditMonto(d.id, val);
                       }}
                       className="mono"
-                      style={{ width: 110, padding: "6px 8px", fontSize: 14, fontWeight: 700, textAlign: "right", background: "var(--bg3)", color: esNC ? "var(--red)" : "var(--txt)", border: `1px solid ${esNC ? "var(--redBd)" : "var(--bg4)"}`, borderRadius: 6 }} />
+                      style={{ width: 110, padding: "6px 8px", fontSize: 14, fontWeight: 700, textAlign: "right", background: "var(--bg3)", color: esNC ? "var(--amber)" : "var(--txt)", border: `1px solid ${esNC ? "var(--amberBd)" : "var(--bg4)"}`, borderRadius: 6 }} />
                   </div>
                 </div>
                 <span style={{ fontSize: 16, color: "var(--txt3)" }}>→</span>
@@ -361,7 +362,11 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
             {selected.length > 0 && (
               <div style={{ padding: "0 12px 8px", borderBottom: "1px solid var(--bg4)" }}>
                 {selected.map(d => {
-                  const saldoPorPagar = d.monto_total - d.monto_aplicado;
+                  // Para facturas, restar también NCs del mismo proveedor que están seleccionadas
+                  const ncsDelProveedor = !isNC(d.tipo_doc_num)
+                    ? selected.filter(x => isNC(x.tipo_doc_num) && x.rut === d.rut).reduce((s, x) => s + x.monto_aplicado, 0)
+                    : 0;
+                  const saldoPorPagar = d.monto_total - d.monto_aplicado - ncsDelProveedor;
                   return (
                     <div key={d.id} style={{ padding: "8px 0", borderBottom: "1px solid var(--bg4)" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
