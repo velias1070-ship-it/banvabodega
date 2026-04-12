@@ -22,6 +22,12 @@ interface OrderRow {
   ingreso_adicional_tc: number;
   total: number;
   total_neto?: number;
+  costo_producto?: number | null;
+  costo_fuente?: "promedio" | "catalogo" | "sin_costo" | "backfill_estimado" | null;
+  costo_snapshot_at?: string | null;
+  margen?: number | null;
+  margen_pct?: number | null;
+  anulada?: boolean;
   logistic_type: string;
   fuente: string;
   documento_tributario?: string;
@@ -280,7 +286,7 @@ export default function AdminVentasML() {
 
   // Totals for ML directo (exclude orders in mediation)
   const excludedEstados = new Set(["En mediación", "Cancelada", "Reembolsada"]);
-  const validOrders = mlOrders.filter(o => !excludedEstados.has(o.estado || ""));
+  const validOrders = mlOrders.filter(o => !excludedEstados.has(o.estado || "") && o.anulada !== true);
   const excludedCount = mlOrders.length - validOrders.length;
   const mlTotals = validOrders.reduce((acc, o) => ({
     subtotal: acc.subtotal + o.subtotal,
@@ -290,6 +296,17 @@ export default function AdminVentasML() {
     neto: acc.neto + (o.total_neto ?? (o.subtotal - o.comision_total - o.costo_envio + (o.ingreso_envio || 0))),
     items: acc.items + o.cantidad,
   }), { subtotal: 0, comision: 0, envio: 0, bonif: 0, neto: 0, items: 0 });
+
+  // Totales de margen: solo suma las filas con costo confiable (excluye sin_costo).
+  // backfill_estimado y catalogo entran pero separadas visualmente.
+  const ordersConCosto = validOrders.filter(o => o.costo_fuente && o.costo_fuente !== "sin_costo" && o.costo_producto != null);
+  const ordersSinCosto = validOrders.filter(o => !o.costo_fuente || o.costo_fuente === "sin_costo" || o.costo_producto == null);
+  const margenTotals = ordersConCosto.reduce((acc, o) => ({
+    costo: acc.costo + (o.costo_producto || 0),
+    margen: acc.margen + (o.margen || 0),
+    neto: acc.neto + (o.total_neto ?? 0),
+  }), { costo: 0, margen: 0, neto: 0 });
+  const margenPctTotal = margenTotals.neto > 0 ? (margenTotals.margen / margenTotals.neto) * 100 : 0;
 
   // Daily chart data
   const dailyChart = (() => {
@@ -408,6 +425,13 @@ export default function AdminVentasML() {
           <div className="kpi"><div className="kpi-label">Envío</div><div className="kpi-value" style={{ color: "var(--amber)", fontSize: 16 }}>{fmt(mlTotals.envio)}</div></div>
           {mlTotals.bonif > 0 && <div className="kpi"><div className="kpi-label">Bonificación</div><div className="kpi-value" style={{ color: "var(--green)", fontSize: 16 }}>+{fmt(mlTotals.bonif)}</div></div>}
           <div className="kpi"><div className="kpi-label">Ingreso neto</div><div className="kpi-value" style={{ color: "var(--green)", fontSize: 16 }}>{fmt(mlTotals.neto)}</div></div>
+          <div className="kpi"><div className="kpi-label">Costo prod.</div><div className="kpi-value" style={{ color: "var(--red)", fontSize: 16 }}>{fmt(margenTotals.costo)}</div></div>
+          <div className="kpi">
+            <div className="kpi-label">Margen{ordersSinCosto.length > 0 && <span style={{ color: "var(--amber)", fontWeight: 400 }}> ({ordersSinCosto.length} sin costo)</span>}</div>
+            <div className="kpi-value" style={{ color: margenTotals.margen >= 0 ? "var(--green)" : "var(--red)", fontSize: 16 }}>
+              {fmt(margenTotals.margen)} <span style={{ fontSize: 11, opacity: 0.7 }}>({margenPctTotal.toFixed(1)}%)</span>
+            </div>
+          </div>
         </div>
       )}
 
@@ -462,11 +486,30 @@ export default function AdminVentasML() {
                 <th style={{ textAlign: "right" }}>Envío</th>
                 <th style={{ textAlign: "right" }}>Bonif.</th>
                 <th style={{ textAlign: "right" }}>Neto</th>
+                <th style={{ textAlign: "right" }}>Costo Prod.</th>
+                <th style={{ textAlign: "right" }}>Margen</th>
               </tr>
             </thead>
             <tbody>
               {mlOrders.map((o, i) => {
                 const enMediacion = excludedEstados.has(o.estado || "");
+                const fuente = o.costo_fuente || null;
+                const sinCosto = fuente === "sin_costo" || o.costo_producto == null;
+                const margenColor = sinCosto
+                  ? "var(--txt3)"
+                  : fuente === "promedio"
+                    ? "var(--green)"
+                    : fuente === "catalogo"
+                      ? "var(--amber)"
+                      : fuente === "backfill_estimado"
+                        ? "var(--cyan)"
+                        : "var(--txt)";
+                const fuenteLabel: Record<string, string> = {
+                  promedio: "ponderado real",
+                  catalogo: "catálogo",
+                  backfill_estimado: "backfill estimado",
+                  sin_costo: "SIN COSTO",
+                };
                 return (
                 <tr key={i} style={enMediacion ? { opacity: 0.5, textDecoration: "line-through" } : undefined}>
                   <td className="mono" style={{ fontSize: 10 }}>{o.order_id}{enMediacion && <span style={{ display: "block", fontSize: 9, color: o.estado === "Cancelada" ? "var(--red)" : "var(--amber)", textDecoration: "none" }}>{o.estado?.toUpperCase()}</span>}</td>
@@ -479,6 +522,12 @@ export default function AdminVentasML() {
                   <td className="mono" style={{ textAlign: "right", color: o.costo_envio > 0 ? "var(--amber)" : "var(--txt3)" }}>{fmt(o.costo_envio)}</td>
                   <td className="mono" style={{ textAlign: "right", color: o.ingreso_envio > 0 ? "var(--green)" : "var(--txt3)" }}>{o.ingreso_envio > 0 ? `+${fmt(o.ingreso_envio)}` : "-"}</td>
                   <td className="mono" style={{ textAlign: "right", fontWeight: 700, color: enMediacion ? "var(--txt3)" : "var(--green)" }}>{fmt(o.total_neto ?? (o.subtotal - o.comision_total - o.costo_envio + (o.ingreso_envio || 0)))}</td>
+                  <td className="mono" style={{ textAlign: "right", color: sinCosto ? "var(--red)" : "var(--txt3)" }} title={fuente ? fuenteLabel[fuente] || fuente : ""}>
+                    {sinCosto ? "—" : fmt(o.costo_producto || 0)}
+                  </td>
+                  <td className="mono" style={{ textAlign: "right", fontWeight: 700, color: margenColor }} title={fuente ? `Fuente: ${fuenteLabel[fuente] || fuente}` : ""}>
+                    {sinCosto ? "—" : `${fmt(o.margen || 0)} (${(o.margen_pct || 0).toFixed(1)}%)`}
+                  </td>
                 </tr>
                 );
               })}

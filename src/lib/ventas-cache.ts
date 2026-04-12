@@ -1,5 +1,6 @@
 import { getServerSupabase } from "@/lib/supabase-server";
 import { mlGet } from "@/lib/ml";
+import { preloadCostos, resolverCostoVenta, calcularMargenVenta } from "@/lib/costos";
 
 const TARIFA_FLEX = 3320;
 
@@ -74,7 +75,29 @@ export async function upsertOrderToVentasCache(
   const packBonificacion = isFull ? 0 : (senderBonif + receiverLoyal + receiverPaid);
   const costoEnvioPorItem = Math.round(packCostoEnvio / itemCount);
   const bonifPorItem = Math.round(packBonificacion / itemCount);
-  const estado = options?.estado || (order.status === "cancelled" ? "Cancelada" : "Pagada");
+  const esCancelada = order.status === "cancelled";
+  const estado = options?.estado || (esCancelada ? "Cancelada" : "Pagada");
+
+  // Inmutabilidad contable: si ya existen filas para esta orden, preservar
+  // el costo/margen original que ya se había snapshotado.
+  const { data: existingRows } = await sb.from("ventas_ml_cache")
+    .select("sku_venta, costo_producto, costo_fuente, margen, margen_pct, costo_snapshot_at, anulada, anulada_at")
+    .eq("order_id", String(order.id));
+  const existingBySku = new Map<string, {
+    costo_producto: number | null;
+    costo_fuente: string | null;
+    margen: number | null;
+    margen_pct: number | null;
+    costo_snapshot_at: string | null;
+    anulada: boolean;
+    anulada_at: string | null;
+  }>();
+  for (const r of (existingRows || [])) {
+    existingBySku.set((r.sku_venta || "").toUpperCase(), r);
+  }
+
+  const preload = existingBySku.size === 0 ? await preloadCostos(sb) : null;
+  const snapshotAt = new Date().toISOString();
 
   const rows = (order.order_items || []).map(item => {
     const sku = (item.item?.seller_sku || `ML-${item.item?.id}`).toUpperCase();
@@ -82,6 +105,34 @@ export async function upsertOrderToVentasCache(
     const comisionUnit = Math.round(item.sale_fee || 0);
     const comisionTotal = comisionUnit * item.quantity;
     const totalNeto = subtotal - comisionTotal - costoEnvioPorItem + bonifPorItem;
+
+    // Si la fila ya existía, preservar el snapshot contable original (inmutable).
+    // Si es nueva, resolver costo ahora.
+    const existing = existingBySku.get(sku);
+    let costo_producto: number;
+    let costo_fuente: string;
+    let costo_snapshot_at: string;
+    let margen: number;
+    let margen_pct: number;
+    if (existing && existing.costo_producto != null) {
+      costo_producto = existing.costo_producto;
+      costo_fuente = existing.costo_fuente || "promedio";
+      costo_snapshot_at = existing.costo_snapshot_at || snapshotAt;
+      margen = existing.margen ?? (totalNeto - costo_producto);
+      margen_pct = existing.margen_pct ?? (totalNeto > 0 ? Math.round(((totalNeto - costo_producto) / totalNeto) * 10000) / 100 : 0);
+    } else {
+      const resolved = resolverCostoVenta(sku, item.quantity, preload!);
+      costo_producto = resolved.costo_producto;
+      costo_fuente = resolved.costo_fuente;
+      costo_snapshot_at = snapshotAt;
+      const m = calcularMargenVenta(totalNeto, costo_producto);
+      margen = m.margen;
+      margen_pct = m.margen_pct;
+    }
+
+    // Anulada: si ya estaba marcada preservar la fecha original; si recién se anula ahora, timestamp.
+    const anulada = esCancelada || (existing?.anulada === true);
+    const anulada_at = existing?.anulada_at || (esCancelada ? snapshotAt : null);
 
     return {
       order_id: String(order.id),
@@ -103,11 +154,18 @@ export async function upsertOrderToVentasCache(
       ingreso_adicional_tc: 0,
       total: subtotal,
       total_neto: totalNeto,
+      costo_producto,
+      costo_fuente,
+      costo_snapshot_at,
+      margen,
+      margen_pct,
+      anulada,
+      anulada_at,
       logistic_type: lt,
       estado,
       documento_tributario: "",
       estado_documento: "",
-      updated_at: new Date().toISOString(),
+      updated_at: snapshotAt,
     };
   });
 

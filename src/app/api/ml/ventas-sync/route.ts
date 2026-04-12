@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
 import { mlGet, getMLConfig } from "@/lib/ml";
+import { preloadCostos, resolverCostoVenta, calcularMargenVenta } from "@/lib/costos";
 
 export const maxDuration = 300;
 export const dynamic = "force-dynamic";
@@ -186,6 +187,26 @@ export async function GET(req: NextRequest) {
       shipGroups.set(key, g);
     }
 
+    // 6b. Inmutabilidad contable: leer snapshots existentes en el rango ANTES de borrar.
+    // Si una venta ya tenía costo_producto capturado, lo preservamos.
+    const { data: existingSnapshots } = await sb.from("ventas_ml_cache")
+      .select("order_id, sku_venta, costo_producto, costo_fuente, margen, margen_pct, costo_snapshot_at, anulada, anulada_at")
+      .gte("fecha_date", fromDate).lte("fecha_date", toDate);
+    const snapshotByKey = new Map<string, {
+      costo_producto: number | null;
+      costo_fuente: string | null;
+      margen: number | null;
+      margen_pct: number | null;
+      costo_snapshot_at: string | null;
+      anulada: boolean;
+      anulada_at: string | null;
+    }>();
+    for (const r of (existingSnapshots || [])) {
+      snapshotByKey.set(`${r.order_id}|${(r.sku_venta || "").toUpperCase()}`, r);
+    }
+    const preload = await preloadCostos(sb);
+    const snapshotAt = new Date().toISOString();
+
     // 7. Map to cache rows
     const rows: Array<Record<string, unknown>> = [];
 
@@ -228,6 +249,32 @@ export async function GET(req: NextRequest) {
           const bonificacion = Math.round(packBonificacion / packItemCount);
           const totalNeto = subtotal - comisionTotal - costoEnvio + bonificacion;
 
+          // Inmutabilidad: preservar snapshot si ya existía, sino resolver ahora.
+          const snapshotKey = `${order.id}|${sku}`;
+          const prev = snapshotByKey.get(snapshotKey);
+          let costoProducto: number;
+          let costoFuente: string;
+          let costoSnapshotAt: string;
+          let margenFinal: number;
+          let margenPct: number;
+          if (prev && prev.costo_producto != null) {
+            costoProducto = prev.costo_producto;
+            costoFuente = prev.costo_fuente || "promedio";
+            costoSnapshotAt = prev.costo_snapshot_at || snapshotAt;
+            margenFinal = prev.margen ?? (totalNeto - costoProducto);
+            margenPct = prev.margen_pct ?? (totalNeto > 0 ? Math.round(((totalNeto - costoProducto) / totalNeto) * 10000) / 100 : 0);
+          } else {
+            const resolved = resolverCostoVenta(sku, item.quantity, preload);
+            costoProducto = resolved.costo_producto;
+            costoFuente = resolved.costo_fuente;
+            costoSnapshotAt = snapshotAt;
+            const m = calcularMargenVenta(totalNeto, costoProducto);
+            margenFinal = m.margen;
+            margenPct = m.margen_pct;
+          }
+          const anuladaVenta = prev?.anulada === true;
+          const anuladaAt = prev?.anulada_at || null;
+
           rows.push({
             order_id: String(order.id),
             order_number: String(order.pack_id || order.id),
@@ -248,11 +295,18 @@ export async function GET(req: NextRequest) {
             ingreso_adicional_tc: 0,
             total: subtotal,
             total_neto: totalNeto,
+            costo_producto: costoProducto,
+            costo_fuente: costoFuente,
+            costo_snapshot_at: costoSnapshotAt,
+            margen: margenFinal,
+            margen_pct: margenPct,
+            anulada: anuladaVenta,
+            anulada_at: anuladaAt,
             logistic_type: lt,
             estado: claimOrderIds.has(order.id) ? "En mediación" : "Pagada",
             documento_tributario: "",
             estado_documento: "",
-            updated_at: new Date().toISOString(),
+            updated_at: snapshotAt,
           });
         }
       }
