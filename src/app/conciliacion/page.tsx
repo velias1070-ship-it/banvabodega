@@ -397,6 +397,9 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const [pagoSaving, setPagoSaving] = useState(false);
   const [pagoSearch, setPagoSearch] = useState("");
   const [pagoSelected, setPagoSelected] = useState<{ mov: DBMovimientoBanco; monto_aplicado: number }[]>([]);
+  const [anularItem, setAnularItem] = useState<DBRcvCompra | null>(null);
+  const [anularSelected, setAnularSelected] = useState<Set<string>>(new Set());
+  const [anularSaving, setAnularSaving] = useState(false);
   const [provFilterSet, setProvFilterSet] = useState<Set<string> | null>(null); // null = todos
   const [provFilterMode, setProvFilterMode] = useState<"incluir" | "excluir">("incluir");
   const [showProvFilter, setShowProvFilter] = useState(false);
@@ -520,6 +523,40 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   }, [conciliaciones, conciliacionItems]);
   // IDs de compras conciliadas (al menos 1 pago)
   const concCompraIds = new Set(pagadoPorCompra.keys());
+
+  // Mapa de anulaciones: compraId -> { concId, ncIds[] }
+  // Una anulación es una conciliación con tipo_partida='anulacion' y sus items
+  const anulacionByCompra = useMemo(() => {
+    const map = new Map<string, { concId: string; ncIds: string[] }>();
+    const anulConcs = conciliaciones.filter(c => c.estado === "confirmado" && c.tipo_partida === "anulacion");
+    for (const conc of anulConcs) {
+      const items = conciliacionItems.filter(i => i.conciliacion_id === conc.id && i.documento_tipo === "rcv_compra");
+      if (items.length < 2) continue;
+      // La factura "anulada" es la de tipo_doc != 61; las demás son NCs
+      const itemDocs = items.map(i => data.find(c => c.id === i.documento_id)).filter(Boolean) as DBRcvCompra[];
+      const factura = itemDocs.find(d => d.tipo_doc !== 61);
+      const ncs = itemDocs.filter(d => d.tipo_doc === 61);
+      if (factura) {
+        map.set(factura.id!, { concId: conc.id!, ncIds: ncs.map(n => n.id!) });
+        // Marcar NCs como "consumidas" por esta anulación
+        for (const nc of ncs) map.set(nc.id!, { concId: conc.id!, ncIds: [factura.id!] });
+      }
+    }
+    return map;
+  }, [conciliaciones, conciliacionItems, data]);
+
+  // Set de IDs de documentos "consumidos" por cualquier conciliación confirmada (pagadas o anuladas)
+  const usedDocIds = useMemo(() => {
+    const s = new Set<string>();
+    const concIdsConfirmadas = new Set(conciliaciones.filter(c => c.estado === "confirmado").map(c => c.id));
+    for (const item of conciliacionItems) {
+      if (item.documento_tipo === "rcv_compra" && concIdsConfirmadas.has(item.conciliacion_id)) s.add(item.documento_id);
+    }
+    for (const c of conciliaciones) {
+      if (c.estado === "confirmado" && c.rcv_compra_id) s.add(c.rcv_compra_id);
+    }
+    return s;
+  }, [conciliaciones, conciliacionItems]);
 
   if (loading) return <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>Cargando...</div>;
 
@@ -769,6 +806,22 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
           )}
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", paddingBottom: 6 }}>
+          <button onClick={async () => {
+            if (!confirm("Esto buscará facturas duplicadas (mismo folio + RUT + tipo) y eliminará las que NO tengan conciliaciones. ¿Continuar?")) return;
+            const dry = await fetch("/api/admin/dedup-rcv-compras", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dryRun: true }) });
+            const dryData = await dry.json();
+            if (dryData.error) { alert(`Error: ${dryData.error}`); return; }
+            if (!dryData.a_eliminar || dryData.a_eliminar === 0) { alert("Sin duplicados"); return; }
+            if (!confirm(`Se encontraron ${dryData.grupos_con_duplicados} grupos de duplicados. Se eliminarán ${dryData.a_eliminar} registros (preservando los conciliados). ¿Confirmar?`)) return;
+            const res = await fetch("/api/admin/dedup-rcv-compras", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dryRun: false }) });
+            const d = await res.json();
+            if (d.error) alert(`Error: ${d.error}`);
+            else { alert(`${d.eliminados} duplicados eliminados`); load(); }
+          }}
+            style={{ fontSize: 11, padding: "6px 10px", borderRadius: 6, background: "var(--redBg)", color: "var(--red)", border: "1px solid var(--redBd)", cursor: "pointer", fontWeight: 600 }}
+            title="Eliminar facturas duplicadas (preserva las conciliadas)">
+            Limpiar duplicados
+          </button>
           <select value={tipoFilter} onChange={e => setTipoFilter(e.target.value)}
             style={{ fontSize: 11, padding: "6px 10px", borderRadius: 6, background: tipoFilter === "todos" ? "var(--bg3)" : "var(--cyanBg)", color: tipoFilter === "todos" ? "var(--txt3)" : "var(--cyan)", border: `1px solid ${tipoFilter === "todos" ? "var(--bg4)" : "var(--cyanBd)"}`, cursor: "pointer", fontWeight: 600 }}>
             <option value="todos">Todos los tipos</option>
@@ -914,43 +967,56 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                           <span style={{ fontSize: 10, color: "var(--txt3)" }}>
                             {fmtMoney(c.monto_total || 0)} {isConciliada ? "" : "por pagar"}
                           </span>
-                          {isConciliada ? (
-                            <span onClick={async () => {
-                              if (detalleConc === c.id) { setDetalleConc(null); return; }
-                              setDetalleConc(c.id!); setDetalleMov(null); setDetalleLoading(true);
-                              const conc = conciliaciones.find(x => x.estado === "confirmado" && x.rcv_compra_id === c.id);
-                              if (conc?.movimiento_banco_id) {
-                                const movs = await fetchMovimientosBanco(empresa.id!, { desde: undefined, hasta: undefined });
-                                setDetalleMov(movs.find(m => m.id === conc.movimiento_banco_id) || null);
-                              }
-                              setDetalleLoading(false);
-                            }}
-                              style={{ fontSize: 11, fontWeight: 600, padding: "4px 12px", borderRadius: 6, background: "var(--greenBg)", color: "var(--green)", cursor: "pointer" }}
-                              title="Ver detalle">
-                              Pagado
-                            </span>
-                          ) : (
-                            <span style={{ display: "inline-flex", alignItems: "center", gap: 0 }}>
-                              <span onClick={async () => {
-                                setPagoItem(c); setPagoLoading(true); setPagoSearch(""); setPagoSelected([]);
-                                const movs = await fetchMovimientosBanco(empresa.id!, { desde: undefined, hasta: undefined });
-                                setMovsBanco(movs.filter(m => m.monto < 0 && isMovReal(m) && m.estado_conciliacion !== "conciliado" && m.estado_conciliacion !== "ignorado"));
-                                setPagoLoading(false);
-                              }}
-                                style={{ fontSize: 11, fontWeight: 600, padding: "5px 12px", borderRadius: "6px 0 0 6px", background: "var(--cyan)", color: "#fff", cursor: "pointer" }}>
-                                Asignar Pago
-                              </span>
-                              <span onClick={async () => {
-                                setPagoItem(c); setPagoLoading(true); setPagoSearch(""); setPagoSelected([]);
-                                const movs = await fetchMovimientosBanco(empresa.id!, { desde: undefined, hasta: undefined });
-                                setMovsBanco(movs.filter(m => m.monto < 0 && isMovReal(m) && m.estado_conciliacion !== "conciliado" && m.estado_conciliacion !== "ignorado"));
-                                setPagoLoading(false);
-                              }}
-                                style={{ fontSize: 11, fontWeight: 600, padding: "5px 6px", borderRadius: "0 6px 6px 0", background: "var(--cyan)", color: "#fff", cursor: "pointer", borderLeft: "1px solid rgba(255,255,255,0.3)" }}>
-                                &#9662;
-                              </span>
-                            </span>
-                          )}
+                          {(() => {
+                            const anul = anulacionByCompra.get(c.id!);
+                            if (anul) {
+                              const label = c.tipo_doc === 61 ? "NC aplicada" : "Anulada";
+                              return (
+                                <span title={label}
+                                  style={{ fontSize: 11, fontWeight: 600, padding: "4px 12px", borderRadius: 6, background: "var(--amberBg)", color: "var(--amber)", cursor: "default" }}>
+                                  {label}
+                                </span>
+                              );
+                            }
+                            if (isConciliada) {
+                              return (
+                                <span onClick={async () => {
+                                  if (detalleConc === c.id) { setDetalleConc(null); return; }
+                                  setDetalleConc(c.id!); setDetalleMov(null); setDetalleLoading(true);
+                                  const conc = conciliaciones.find(x => x.estado === "confirmado" && x.rcv_compra_id === c.id);
+                                  if (conc?.movimiento_banco_id) {
+                                    const movs = await fetchMovimientosBanco(empresa.id!, { desde: undefined, hasta: undefined });
+                                    setDetalleMov(movs.find(m => m.id === conc.movimiento_banco_id) || null);
+                                  }
+                                  setDetalleLoading(false);
+                                }}
+                                  style={{ fontSize: 11, fontWeight: 600, padding: "4px 12px", borderRadius: 6, background: "var(--greenBg)", color: "var(--green)", cursor: "pointer" }}
+                                  title="Ver detalle">
+                                  Pagado
+                                </span>
+                              );
+                            }
+                            return (
+                              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3 }}>
+                                <span onClick={async () => {
+                                  setPagoItem(c); setPagoLoading(true); setPagoSearch(""); setPagoSelected([]);
+                                  const movs = await fetchMovimientosBanco(empresa.id!, { desde: undefined, hasta: undefined });
+                                  setMovsBanco(movs.filter(m => m.monto < 0 && isMovReal(m) && m.estado_conciliacion !== "conciliado" && m.estado_conciliacion !== "ignorado"));
+                                  setPagoLoading(false);
+                                }}
+                                  style={{ fontSize: 11, fontWeight: 600, padding: "5px 12px", borderRadius: 6, background: "var(--cyan)", color: "#fff", cursor: "pointer" }}>
+                                  Asignar Pago
+                                </span>
+                                {c.tipo_doc !== 61 && (
+                                  <span onClick={() => { setAnularItem(c); setAnularSelected(new Set()); }}
+                                    style={{ fontSize: 10, fontWeight: 600, padding: "3px 10px", borderRadius: 6, background: "var(--amberBg)", color: "var(--amber)", cursor: "pointer", border: "1px solid var(--amberBd)" }}
+                                    title="Anular esta factura con una o más Notas de Crédito del mismo proveedor">
+                                    Anular con NC
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </div>
                         {/* Popover detalle conciliacion */}
                         {detalleConc === c.id && (
@@ -1195,6 +1261,134 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
             </div>
           </div>
         </div>
+        );
+      })()}
+
+      {/* Modal Anular con NC */}
+      {anularItem && (() => {
+        const facTotal = anularItem.monto_total || 0;
+        const ncsDisponibles = data.filter(c =>
+          c.tipo_doc === 61 &&
+          c.rut_proveedor === anularItem.rut_proveedor &&
+          !usedDocIds.has(c.id!)
+        );
+        const ncsSelected = ncsDisponibles.filter(n => anularSelected.has(n.id!));
+        const totalNC = ncsSelected.reduce((s, n) => s + (n.monto_total || 0), 0);
+        const saldoRestante = facTotal - totalNC;
+        const cubierto = saldoRestante <= 0 && totalNC > 0;
+
+        const handleToggleNC = (id: string) => {
+          setAnularSelected(prev => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id); else next.add(id);
+            return next;
+          });
+        };
+
+        const handleGuardarAnular = async () => {
+          if (ncsSelected.length === 0) return;
+          setAnularSaving(true);
+          try {
+            const { upsertConciliacion, insertConciliacionItems } = await import("@/lib/db");
+            const concId = crypto.randomUUID();
+            const folios = ncsSelected.map(n => n.nro_doc).join(", ");
+            await upsertConciliacion({
+              id: concId,
+              empresa_id: empresa.id!,
+              movimiento_banco_id: null,
+              rcv_compra_id: null,
+              rcv_venta_id: null,
+              confianza: 1,
+              estado: "confirmado",
+              tipo_partida: "anulacion",
+              metodo: "manual",
+              notas: `Anulada con NC ${folios}`,
+              created_by: "admin",
+              monto_aplicado: Math.min(facTotal, totalNC),
+            });
+            await insertConciliacionItems([
+              { conciliacion_id: concId, documento_tipo: "rcv_compra", documento_id: anularItem.id!, monto_aplicado: facTotal },
+              ...ncsSelected.map(n => ({ conciliacion_id: concId, documento_tipo: "rcv_compra" as const, documento_id: n.id!, monto_aplicado: n.monto_total || 0 })),
+            ]);
+            await load();
+            setAnularItem(null);
+            setAnularSelected(new Set());
+          } catch (err) { console.error(err); alert("Error al anular: " + (err instanceof Error ? err.message : "sin detalles")); }
+          setAnularSaving(false);
+        };
+
+        return (
+          <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center" }}
+            onClick={() => !anularSaving && setAnularItem(null)}>
+            <div onClick={e => e.stopPropagation()} style={{ background: "var(--bg2)", borderRadius: 12, width: "100%", maxWidth: 700, maxHeight: "90vh", display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 20px 60px rgba(0,0,0,0.15)" }}>
+              <div style={{ padding: "20px 28px", background: "var(--amber)", color: "#fff", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontSize: 18, fontWeight: 700 }}>Anular con Nota de Cr&eacute;dito</span>
+                <button onClick={() => setAnularItem(null)} disabled={anularSaving} style={{ background: "none", border: "none", color: "#fff", fontSize: 22, cursor: "pointer", lineHeight: 1 }}>&times;</button>
+              </div>
+              {/* Info factura */}
+              <div style={{ padding: "16px 28px", borderBottom: "1px solid var(--bg4)" }}>
+                <div style={{ fontSize: 13, marginBottom: 4 }}>
+                  <strong>{TIPO_DOC_NAMES[anularItem.tipo_doc] || anularItem.tipo_doc}</strong> N&deg; {anularItem.nro_doc} &mdash; {anularItem.razon_social} &mdash; {fmtDate(anularItem.fecha_docto)}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8 }}>
+                  <div className="mono" style={{ fontSize: 18, fontWeight: 800, color: "var(--red)" }}>{fmtMoney(facTotal)}</div>
+                  <div style={{ flex: 1, height: 6, background: "var(--bg4)", borderRadius: 3, overflow: "hidden" }}>
+                    <div style={{ height: "100%", width: `${Math.min(100, facTotal > 0 ? (totalNC / facTotal) * 100 : 0)}%`, background: cubierto ? "var(--green)" : "var(--amber)", borderRadius: 3, transition: "width 0.2s" }} />
+                  </div>
+                  <div className="mono" style={{ fontSize: 12, fontWeight: 700, color: cubierto ? "var(--green)" : "var(--amber)", whiteSpace: "nowrap" }}>
+                    {cubierto ? "Cubierto" : totalNC > 0 ? `Faltan ${fmtMoney(saldoRestante)}` : "Selecciona NCs"}
+                  </div>
+                </div>
+              </div>
+              {/* Lista de NCs disponibles */}
+              <div style={{ flex: 1, overflow: "auto", maxHeight: 400 }}>
+                {ncsDisponibles.length === 0 ? (
+                  <div style={{ padding: 40, textAlign: "center", color: "var(--txt3)", fontSize: 13 }}>
+                    No hay Notas de Cr&eacute;dito disponibles para este proveedor.
+                    <div style={{ fontSize: 11, marginTop: 8 }}>El proveedor debe tener NCs (tipo 61) sin usar en el RCV.</div>
+                  </div>
+                ) : ncsDisponibles.map(nc => {
+                  const selected = anularSelected.has(nc.id!);
+                  const montoNC = nc.monto_total || 0;
+                  const coincide = montoNC === facTotal;
+                  return (
+                    <div key={nc.id} onClick={() => handleToggleNC(nc.id!)}
+                      style={{ padding: "14px 28px", borderBottom: "1px solid var(--bg4)", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", background: selected ? "var(--amberBg)" : coincide ? "var(--greenBg)" : "transparent" }}
+                      onMouseOver={e => { if (!selected && !coincide) e.currentTarget.style.background = "var(--bg3)"; }}
+                      onMouseOut={e => { if (!selected && !coincide) e.currentTarget.style.background = "transparent"; }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <input type="checkbox" checked={selected} readOnly style={{ accentColor: "var(--amber)" }} />
+                        <div>
+                          <div style={{ fontSize: 12, fontWeight: 600 }}>
+                            <span className="mono" style={{ fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 4, background: "var(--amberBg)", color: "var(--amber)", marginRight: 6 }}>NC</span>
+                            N&deg; {nc.nro_doc}
+                          </div>
+                          <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 2 }}>{fmtDate(nc.fecha_docto)}</div>
+                        </div>
+                      </div>
+                      <div style={{ textAlign: "right" }}>
+                        <div className="mono" style={{ fontSize: 14, fontWeight: 700, color: "var(--amber)" }}>{fmtMoney(montoNC)}</div>
+                        {coincide && <div style={{ fontSize: 10, color: "var(--green)", fontWeight: 600 }}>Coincide exacto</div>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ padding: "12px 28px", borderTop: "1px solid var(--bg4)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div className="mono" style={{ fontSize: 12, color: "var(--txt3)" }}>
+                  {ncsSelected.length > 0 && `${ncsSelected.length} NC = ${fmtMoney(totalNC)}`}
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button onClick={() => setAnularItem(null)} disabled={anularSaving}
+                    style={{ padding: "10px 24px", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer", background: "var(--bg2)", color: "var(--txt2)", border: "1px solid var(--bg4)" }}>Cerrar</button>
+                  <button onClick={handleGuardarAnular} disabled={ncsSelected.length === 0 || anularSaving}
+                    style={{ padding: "10px 24px", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: "pointer", background: "var(--amber)", color: "#fff", border: "none", opacity: ncsSelected.length === 0 ? 0.5 : 1 }}>
+                    {anularSaving ? "Guardando..." : "Anular"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
         );
       })()}
 
