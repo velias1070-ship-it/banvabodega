@@ -115,6 +115,7 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
   const [egresoArchivo, setEgresoArchivo] = useState<File | null>(null);
   const [egresoSaving, setEgresoSaving] = useState(false);
   // Detalle conciliación
+  const [editingConcId, setEditingConcId] = useState<string | null>(null);
   const [detalleConcMov, setDetalleConcMov] = useState<string | null>(null);
   const [detalleConcData, setDetalleConcData] = useState<{ conc: DBConciliacion; docs: { doc: DBRcvCompra | DBRcvVenta; monto_aplicado: number }[]; tipo: string } | null>(null);
   const [detalleConcLoading, setDetalleConcLoading] = useState(false);
@@ -716,16 +717,26 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
                                   {detalleConcData.conc.notas && (
                                     <div style={{ fontSize: 11, color: "var(--cyan)", marginBottom: 8 }}>{detalleConcData.conc.notas}</div>
                                   )}
-                                  <button onClick={async () => {
-                                    if (!confirm("¿Deshacer esta conciliación? El movimiento volverá a estado pendiente.")) return;
-                                    await updateConciliacion(detalleConcData.conc.id!, { estado: "rechazado" });
-                                    await syncEstadoConciliacion(m.id!, m.monto);
-                                    setDetalleConcMov(null);
-                                    load();
-                                  }}
-                                    style={{ width: "100%", padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 600, background: "var(--redBg)", color: "var(--red)", border: "1px solid var(--redBd)", cursor: "pointer" }}>
-                                    Deshacer conciliación
-                                  </button>
+                                  <div style={{ display: "flex", gap: 6 }}>
+                                    <button onClick={() => {
+                                      setDetalleConcMov(null);
+                                      setEditingConcId(detalleConcData.conc.id!);
+                                      setConciliarMov(m);
+                                    }}
+                                      style={{ flex: 1, padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 600, background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)", cursor: "pointer" }}>
+                                      Editar
+                                    </button>
+                                    <button onClick={async () => {
+                                      if (!confirm("¿Deshacer esta conciliación? El movimiento volverá a estado pendiente.")) return;
+                                      await updateConciliacion(detalleConcData.conc.id!, { estado: "rechazado" });
+                                      await syncEstadoConciliacion(m.id!, m.monto);
+                                      setDetalleConcMov(null);
+                                      load();
+                                    }}
+                                      style={{ flex: 1, padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 600, background: "var(--redBg)", color: "var(--red)", border: "1px solid var(--redBd)", cursor: "pointer" }}>
+                                      Deshacer
+                                    </button>
+                                  </div>
                                 </div>
                               ) : (
                                 <div style={{ padding: 12, textAlign: "center", color: "var(--txt3)", fontSize: 12 }}>Sin datos</div>
@@ -936,9 +947,11 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
           cuentasHoja={cuentasHoja}
           provCuentas={provCuentas}
           empresaId={empresa.id!}
-          onClose={() => setConciliarMov(null)}
+          editingConcId={editingConcId}
+          onClose={() => { setConciliarMov(null); setEditingConcId(null); }}
           onSaved={() => {
             setConciliarMov(null);
+            setEditingConcId(null);
             load();
           }}
         />

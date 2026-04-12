@@ -1,5 +1,5 @@
 "use client";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import {
   upsertConciliacion,
   syncEstadoConciliacion,
@@ -41,11 +41,12 @@ interface Props {
   cuentasHoja: DBPlanCuentas[];
   provCuentas: DBProveedorCuenta[];
   empresaId: string;
+  editingConcId?: string | null;
   onClose: () => void;
   onSaved: () => void;
 }
 
-export default function ConciliarModal({ mov, compras, ventas, conciliaciones, cuentasHoja, provCuentas, empresaId, onClose, onSaved }: Props) {
+export default function ConciliarModal({ mov, compras, ventas, conciliaciones, cuentasHoja, provCuentas, empresaId, editingConcId, onClose, onSaved }: Props) {
   const [selected, setSelected] = useState<DocSeleccionado[]>([]);
   const [search, setSearch] = useState("");
   const [tipoFiltro, setTipoFiltro] = useState<"compras" | "ventas" | "todos">(mov.monto < 0 ? "compras" : "ventas");
@@ -54,6 +55,52 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [nota, setNota] = useState("");
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!editingConcId) return;
+    const conc = conciliaciones.find(c => c.id === editingConcId);
+    if (!conc) return;
+    if (conc.notas) setNota(conc.notas);
+    (async () => {
+      const { getSupabase } = await import("@/lib/supabase");
+      const sb = getSupabase();
+      if (!sb) return;
+      const { data: items } = await sb.from("conciliacion_items").select("*").eq("conciliacion_id", editingConcId);
+      if (!items || items.length === 0) {
+        if (conc.rcv_compra_id) {
+          const doc = compras.find(c => c.id === conc.rcv_compra_id);
+          if (doc) setSelected([{
+            id: doc.id!, tipo: "rcv_compra", tipo_doc: TIPO_DOC[doc.tipo_doc] || String(doc.tipo_doc),
+            tipo_doc_num: doc.tipo_doc, nro: doc.nro_doc || "", rut: doc.rut_proveedor || "",
+            razon_social: doc.razon_social || "", fecha: doc.fecha_docto || "",
+            monto_total: doc.monto_total || 0, monto_aplicado: conc.monto_aplicado || doc.monto_total || 0,
+          }]);
+        }
+        return;
+      }
+      const docs: DocSeleccionado[] = [];
+      for (const it of items) {
+        if (it.documento_tipo === "rcv_compra") {
+          const doc = compras.find(c => c.id === it.documento_id);
+          if (doc) docs.push({
+            id: doc.id!, tipo: "rcv_compra", tipo_doc: TIPO_DOC[doc.tipo_doc] || String(doc.tipo_doc),
+            tipo_doc_num: doc.tipo_doc, nro: doc.nro_doc || "", rut: doc.rut_proveedor || "",
+            razon_social: doc.razon_social || "", fecha: doc.fecha_docto || "",
+            monto_total: doc.monto_total || 0, monto_aplicado: it.monto_aplicado || 0,
+          });
+        } else if (it.documento_tipo === "rcv_venta") {
+          const doc = ventas.find(v => v.id === it.documento_id);
+          if (doc) docs.push({
+            id: doc.id!, tipo: "rcv_venta", tipo_doc: TIPO_DOC[doc.tipo_doc] || String(doc.tipo_doc),
+            tipo_doc_num: doc.tipo_doc, nro: doc.folio || doc.nro || "", rut: doc.rut_emisor || "",
+            razon_social: "", fecha: doc.fecha_docto || "",
+            monto_total: doc.monto_total || 0, monto_aplicado: it.monto_aplicado || 0,
+          });
+        }
+      }
+      if (docs.length > 0) setSelected(docs);
+    })();
+  }, [editingConcId]);
 
   const movAbs = Math.abs(mov.monto);
   const yaConc = mov.monto_conciliado || 0;
@@ -223,39 +270,59 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
     if (selected.length === 0) return;
     setSaving(true);
     try {
-      const c: DBConciliacion = {
-        empresa_id: empresaId,
-        movimiento_banco_id: mov.id!,
-        rcv_compra_id: selected.length === 1 && selected[0].tipo === "rcv_compra" ? selected[0].id : null,
-        rcv_venta_id: selected.length === 1 && selected[0].tipo === "rcv_venta" ? selected[0].id : null,
-        confianza: 1,
-        estado: "confirmado",
-        tipo_partida: selected.length === 1 ? "match" : "multi_doc",
-        metodo: "manual",
-        notas: nota.trim() || null,
-        created_by: "admin",
-        monto_aplicado: totalAsignado,
-      };
-      await upsertConciliacion(c);
-
       const { getSupabase } = await import("@/lib/supabase");
       const sb = getSupabase();
-      let concId = "";
-      if (sb) {
-        const { data } = await sb.from("conciliaciones").select("id")
-          .eq("movimiento_banco_id", mov.id!).eq("estado", "confirmado")
-          .order("created_at", { ascending: false }).limit(1);
-        concId = data?.[0]?.id || "";
-      }
 
-      if (concId && selected.length > 0) {
-        const items: DBConciliacionItem[] = selected.map(d => ({
-          conciliacion_id: concId,
-          documento_tipo: d.tipo,
-          documento_id: d.id,
-          monto_aplicado: d.monto_aplicado,
-        }));
-        await insertConciliacionItems(items);
+      if (editingConcId && sb) {
+        await sb.from("conciliacion_items").delete().eq("conciliacion_id", editingConcId);
+        await sb.from("conciliaciones").update({
+          rcv_compra_id: selected.length === 1 && selected[0].tipo === "rcv_compra" ? selected[0].id : null,
+          rcv_venta_id: selected.length === 1 && selected[0].tipo === "rcv_venta" ? selected[0].id : null,
+          tipo_partida: selected.length === 1 ? "match" : "multi_doc",
+          notas: nota.trim() || null,
+          monto_aplicado: totalAsignado,
+        }).eq("id", editingConcId);
+        if (selected.length > 0) {
+          await insertConciliacionItems(selected.map(d => ({
+            conciliacion_id: editingConcId,
+            documento_tipo: d.tipo,
+            documento_id: d.id,
+            monto_aplicado: d.monto_aplicado,
+          })));
+        }
+      } else {
+        const c: DBConciliacion = {
+          empresa_id: empresaId,
+          movimiento_banco_id: mov.id!,
+          rcv_compra_id: selected.length === 1 && selected[0].tipo === "rcv_compra" ? selected[0].id : null,
+          rcv_venta_id: selected.length === 1 && selected[0].tipo === "rcv_venta" ? selected[0].id : null,
+          confianza: 1,
+          estado: "confirmado",
+          tipo_partida: selected.length === 1 ? "match" : "multi_doc",
+          metodo: "manual",
+          notas: nota.trim() || null,
+          created_by: "admin",
+          monto_aplicado: totalAsignado,
+        };
+        await upsertConciliacion(c);
+
+        let concId = "";
+        if (sb) {
+          const { data } = await sb.from("conciliaciones").select("id")
+            .eq("movimiento_banco_id", mov.id!).eq("estado", "confirmado")
+            .order("created_at", { ascending: false }).limit(1);
+          concId = data?.[0]?.id || "";
+        }
+
+        if (concId && selected.length > 0) {
+          const items: DBConciliacionItem[] = selected.map(d => ({
+            conciliacion_id: concId,
+            documento_tipo: d.tipo,
+            documento_id: d.id,
+            monto_aplicado: d.monto_aplicado,
+          }));
+          await insertConciliacionItems(items);
+        }
       }
 
       await syncEstadoConciliacion(mov.id!, mov.monto);
@@ -282,7 +349,7 @@ export default function ConciliarModal({ mov, compras, ventas, conciliaciones, c
 
         {/* Header */}
         <div style={{ padding: "14px 20px", background: "var(--bg3)", borderBottom: "1px solid var(--bg4)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>Conciliar</h3>
+          <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>{editingConcId ? "Editar conciliación" : "Conciliar"}</h3>
           <button onClick={onClose} disabled={saving} style={{ background: "none", border: "none", color: "var(--txt3)", fontSize: 20, cursor: "pointer" }}>✕</button>
         </div>
 
