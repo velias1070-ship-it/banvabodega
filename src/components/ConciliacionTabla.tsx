@@ -210,7 +210,7 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
   const sortIcon = (key: SortKey) => sortKey === key ? (sortDir === "desc" ? " ↓" : " ↑") : "";
 
 
-  // Agregar Egreso
+  // Agregar / Editar Egreso
   const handleAgregarEgreso = async () => {
     if (!clasificarMov || !clasificarCuenta || !egresoTipo || !empresa.id) return;
     setEgresoSaving(true);
@@ -229,21 +229,30 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
           }
         }
       }
-      const montoAplicar = Math.abs(clasificarMov.monto) - (clasificarMov.monto_conciliado || 0);
-      await upsertConciliacion({
-        empresa_id: empresa.id, movimiento_banco_id: clasificarMov.id!,
-        rcv_compra_id: null, rcv_venta_id: null, confianza: 1,
-        estado: "confirmado", tipo_partida: "egreso",
-        metodo: "manual", notas: null, created_by: "admin",
-        monto_aplicado: montoAplicar,
-        metadata: { tipo: egresoTipo, proveedor: egresoProveedor, descripcion: egresoDescripcion, num_documento: egresoNumDoc, periodo: egresoPeriodo },
-        archivo_url: archivoUrl,
-      });
-      const { estado, monto_conciliado } = await syncEstadoConciliacion(clasificarMov.id!, clasificarMov.monto);
-      await categorizarMovimiento(clasificarMov.id!, clasificarCuenta);
-      setMovBanco(prev => prev.map(m => m.id === clasificarMov.id ? { ...m, estado_conciliacion: estado, monto_conciliado } : m));
-      setClasificarMov(null); setClasificarCuenta(""); setEgresoTipo(""); setEgresoProveedor(""); setEgresoDescripcion(""); setEgresoNumDoc(""); setEgresoPeriodo(""); setEgresoArchivo(null);
-    } catch (err) { console.error("Error agregando egreso:", err); }
+      const metadata = { tipo: egresoTipo, proveedor: egresoProveedor, descripcion: egresoDescripcion, num_documento: egresoNumDoc, periodo: egresoPeriodo };
+      if (editingConcId) {
+        const updates: Partial<DBConciliacion> = { metadata, notas: null };
+        if (archivoUrl) updates.archivo_url = archivoUrl;
+        await updateConciliacion(editingConcId, updates);
+        await categorizarMovimiento(clasificarMov.id!, clasificarCuenta);
+      } else {
+        const montoAplicar = Math.abs(clasificarMov.monto) - (clasificarMov.monto_conciliado || 0);
+        await upsertConciliacion({
+          empresa_id: empresa.id, movimiento_banco_id: clasificarMov.id!,
+          rcv_compra_id: null, rcv_venta_id: null, confianza: 1,
+          estado: "confirmado", tipo_partida: "egreso",
+          metodo: "manual", notas: null, created_by: "admin",
+          monto_aplicado: montoAplicar,
+          metadata,
+          archivo_url: archivoUrl,
+        });
+        const { estado, monto_conciliado } = await syncEstadoConciliacion(clasificarMov.id!, clasificarMov.monto);
+        await categorizarMovimiento(clasificarMov.id!, clasificarCuenta);
+        setMovBanco(prev => prev.map(m => m.id === clasificarMov.id ? { ...m, estado_conciliacion: estado, monto_conciliado } : m));
+      }
+      setClasificarMov(null); setEditingConcId(null); setClasificarCuenta(""); setEgresoTipo(""); setEgresoProveedor(""); setEgresoDescripcion(""); setEgresoNumDoc(""); setEgresoPeriodo(""); setEgresoArchivo(null);
+      load();
+    } catch (err) { console.error("Error guardando egreso:", err); }
     setEgresoSaving(false);
   };
 
@@ -720,8 +729,22 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
                                   <div style={{ display: "flex", gap: 6 }}>
                                     <button onClick={() => {
                                       setDetalleConcMov(null);
-                                      setEditingConcId(detalleConcData.conc.id!);
-                                      setConciliarMov(m);
+                                      const conc = detalleConcData.conc;
+                                      if (conc.tipo_partida === "egreso") {
+                                        const md = (conc.metadata || {}) as Record<string, string>;
+                                        setEditingConcId(conc.id!);
+                                        setEgresoTipo(md.tipo || "");
+                                        setEgresoProveedor(md.proveedor || "");
+                                        setEgresoDescripcion(md.descripcion || "");
+                                        setEgresoNumDoc(md.num_documento || "");
+                                        setEgresoPeriodo(md.periodo || "");
+                                        setClasificarCuenta(m.categoria_cuenta_id || "");
+                                        setEgresoArchivo(null);
+                                        setClasificarMov(m);
+                                      } else {
+                                        setEditingConcId(conc.id!);
+                                        setConciliarMov(m);
+                                      }
                                     }}
                                       style={{ flex: 1, padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 600, background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)", cursor: "pointer" }}>
                                       Editar
@@ -820,11 +843,11 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
       {/* Modal Agregar Egreso */}
       {clasificarMov && (
         <div style={{ position: "fixed", inset: 0, zIndex: 9998, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center" }}
-          onClick={() => !egresoSaving && setClasificarMov(null)}>
+          onClick={() => { if (!egresoSaving) { setClasificarMov(null); setEditingConcId(null); } }}>
           <div className="card" style={{ padding: 0, maxWidth: 520, width: "90%", maxHeight: "85vh", display: "flex", flexDirection: "column", overflow: "hidden" }} onClick={e => e.stopPropagation()}>
             <div style={{ padding: "16px 24px", borderBottom: "1px solid var(--bg4)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <h3 style={{ fontSize: 16, fontWeight: 700, margin: 0 }}>Agregar Egreso</h3>
-              <button onClick={() => setClasificarMov(null)} disabled={egresoSaving} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", color: "var(--txt3)" }}>&times;</button>
+              <h3 style={{ fontSize: 16, fontWeight: 700, margin: 0 }}>{editingConcId ? "Editar Egreso" : "Agregar Egreso"}</h3>
+              <button onClick={() => { setClasificarMov(null); setEditingConcId(null); }} disabled={egresoSaving} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", color: "var(--txt3)" }}>&times;</button>
             </div>
             <div style={{ padding: "16px 24px", borderBottom: "1px solid var(--bg4)", fontSize: 12, color: "var(--txt3)" }}>
               <span style={{ fontWeight: 600, color: "var(--txt)" }}>{clasificarMov.descripcion}</span> · {fmtMoney(Math.abs(clasificarMov.monto))} · {clasificarMov.fecha}
@@ -924,13 +947,13 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
               </select>
             </div>
             <div style={{ padding: "12px 24px", borderTop: "1px solid var(--bg4)", display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button onClick={() => setClasificarMov(null)} disabled={egresoSaving}
+              <button onClick={() => { setClasificarMov(null); setEditingConcId(null); }} disabled={egresoSaving}
                 style={{ padding: "8px 16px", borderRadius: 8, background: "var(--bg3)", color: "var(--txt)", fontSize: 12, border: "1px solid var(--bg4)", cursor: "pointer" }}>
                 Cancelar
               </button>
               <button onClick={handleAgregarEgreso} disabled={!clasificarCuenta || !egresoTipo || egresoSaving}
                 className="scan-btn green" style={{ padding: "8px 20px", fontSize: 12, opacity: (!clasificarCuenta || !egresoTipo || egresoSaving) ? 0.5 : 1 }}>
-                {egresoSaving ? "Guardando..." : "Guardar Egreso"}
+                {egresoSaving ? "Guardando..." : editingConcId ? "Guardar cambios" : "Guardar Egreso"}
               </button>
             </div>
           </div>
