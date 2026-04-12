@@ -119,13 +119,13 @@ export async function upsertOrderToVentasCache(
       costo_fuente = existing.costo_fuente || "promedio";
       costo_snapshot_at = existing.costo_snapshot_at || snapshotAt;
       margen = existing.margen ?? (totalNeto - costo_producto);
-      margen_pct = existing.margen_pct ?? (totalNeto > 0 ? Math.round(((totalNeto - costo_producto) / totalNeto) * 10000) / 100 : 0);
+      margen_pct = existing.margen_pct ?? (subtotal > 0 ? Math.round(((totalNeto - costo_producto) / subtotal) * 10000) / 100 : 0);
     } else {
       const resolved = resolverCostoVenta(sku, item.quantity, preload!);
       costo_producto = resolved.costo_producto;
       costo_fuente = resolved.costo_fuente;
       costo_snapshot_at = snapshotAt;
-      const m = calcularMargenVenta(totalNeto, costo_producto);
+      const m = calcularMargenVenta(totalNeto, costo_producto, subtotal);
       margen = m.margen;
       margen_pct = m.margen_pct;
     }

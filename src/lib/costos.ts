@@ -109,12 +109,15 @@ export function resolverCostoVenta(
 }
 
 /**
- * Calcula margen a partir del total_neto de la venta y el costo resuelto.
- * total_neto ya descontó comisión ML y costo de envío, así que el margen
- * solo resta el costo del producto.
+ * Calcula margen a partir del total_neto y el costo del producto.
+ *
+ * - margen $: total_neto − costo_producto
+ *   (total_neto ya descontó comisión ML + costo envío + bonificaciones)
+ * - margen %: sobre el subtotal (precio bruto = precio_unitario × cantidad),
+ *   para que se lea como "de cada $100 que cobré al cliente, X fueron margen".
  */
-export function calcularMargenVenta(totalNeto: number, costoProducto: number) {
+export function calcularMargenVenta(totalNeto: number, costoProducto: number, subtotal: number) {
   const margen = totalNeto - costoProducto;
-  const margenPct = totalNeto > 0 ? Math.round((margen / totalNeto) * 10000) / 100 : 0;
+  const margenPct = subtotal > 0 ? Math.round((margen / subtotal) * 10000) / 100 : 0;
   return { margen, margen_pct: margenPct };
 }

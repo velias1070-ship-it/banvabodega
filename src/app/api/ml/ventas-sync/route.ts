@@ -262,13 +262,13 @@ export async function GET(req: NextRequest) {
             costoFuente = prev.costo_fuente || "promedio";
             costoSnapshotAt = prev.costo_snapshot_at || snapshotAt;
             margenFinal = prev.margen ?? (totalNeto - costoProducto);
-            margenPct = prev.margen_pct ?? (totalNeto > 0 ? Math.round(((totalNeto - costoProducto) / totalNeto) * 10000) / 100 : 0);
+            margenPct = prev.margen_pct ?? (subtotal > 0 ? Math.round(((totalNeto - costoProducto) / subtotal) * 10000) / 100 : 0);
           } else {
             const resolved = resolverCostoVenta(sku, item.quantity, preload);
             costoProducto = resolved.costo_producto;
             costoFuente = resolved.costo_fuente;
             costoSnapshotAt = snapshotAt;
-            const m = calcularMargenVenta(totalNeto, costoProducto);
+            const m = calcularMargenVenta(totalNeto, costoProducto, subtotal);
             margenFinal = m.margen;
             margenPct = m.margen_pct;
           }

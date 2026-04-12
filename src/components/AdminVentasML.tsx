@@ -299,14 +299,15 @@ export default function AdminVentasML() {
 
   // Totales de margen: solo suma las filas con costo confiable (excluye sin_costo).
   // backfill_estimado y catalogo entran pero separadas visualmente.
+  // margen % se calcula sobre subtotal (precio_unitario × cantidad, venta bruta).
   const ordersConCosto = validOrders.filter(o => o.costo_fuente && o.costo_fuente !== "sin_costo" && o.costo_producto != null);
   const ordersSinCosto = validOrders.filter(o => !o.costo_fuente || o.costo_fuente === "sin_costo" || o.costo_producto == null);
   const margenTotals = ordersConCosto.reduce((acc, o) => ({
     costo: acc.costo + (o.costo_producto || 0),
     margen: acc.margen + (o.margen || 0),
-    neto: acc.neto + (o.total_neto ?? 0),
-  }), { costo: 0, margen: 0, neto: 0 });
-  const margenPctTotal = margenTotals.neto > 0 ? (margenTotals.margen / margenTotals.neto) * 100 : 0;
+    subtotal: acc.subtotal + o.subtotal,
+  }), { costo: 0, margen: 0, subtotal: 0 });
+  const margenPctTotal = margenTotals.subtotal > 0 ? (margenTotals.margen / margenTotals.subtotal) * 100 : 0;
 
   // Daily chart data
   const dailyChart = (() => {
@@ -526,7 +527,7 @@ export default function AdminVentasML() {
                     {sinCosto ? "—" : fmt(o.costo_producto || 0)}
                   </td>
                   <td className="mono" style={{ textAlign: "right", fontWeight: 700, color: margenColor }} title={fuente ? `Fuente: ${fuenteLabel[fuente] || fuente}` : ""}>
-                    {sinCosto ? "—" : `${fmt(o.margen || 0)} (${(o.margen_pct || 0).toFixed(1)}%)`}
+                    {sinCosto ? "—" : `${fmt(o.margen || 0)} (${(o.subtotal > 0 ? ((o.margen || 0) / o.subtotal) * 100 : 0).toFixed(1)}%)`}
                   </td>
                 </tr>
                 );
