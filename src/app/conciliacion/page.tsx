@@ -1149,11 +1149,12 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
           setPagoSaving(true);
           try {
             const { upsertConciliacion, syncEstadoConciliacion, insertConciliacionItems } = await import("@/lib/db");
+            const { getSupabase } = await import("@/lib/supabase");
             if (ncsSelected.length > 0) {
-              const ncConcId = crypto.randomUUID();
+              const sb = getSupabase();
+              if (!sb) throw new Error("Sin conexión a Supabase");
               const folios = ncsSelected.map(n => n.nro_doc).join(", ");
-              await upsertConciliacion({
-                id: ncConcId,
+              const { data: newConc, error: concErr } = await sb.from("conciliaciones").insert({
                 empresa_id: empresa.id!,
                 movimiento_banco_id: null,
                 rcv_compra_id: null,
@@ -1165,7 +1166,9 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                 notas: `NC aplicada: ${folios}`,
                 created_by: "admin",
                 monto_aplicado: totalNC,
-              });
+              }).select("id").single();
+              if (concErr || !newConc) throw new Error(concErr?.message || "Error creando conciliación");
+              const ncConcId = newConc.id;
               await insertConciliacionItems([
                 { conciliacion_id: ncConcId, documento_tipo: "rcv_compra", documento_id: pagoItem.id!, monto_aplicado: totalNC },
                 ...ncsSelected.map(n => ({ conciliacion_id: ncConcId, documento_tipo: "rcv_compra" as const, documento_id: n.id!, monto_aplicado: n.monto_total || 0 })),
