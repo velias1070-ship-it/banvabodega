@@ -119,6 +119,11 @@ const TIPO_DOC_NAMES: Record<number | string, string> = {
   71: "BHE",
 };
 
+const TIPO_DOC_ABREV: Record<number | string, string> = {
+  33: "FAC", 34: "EXE", 39: "BOL", 41: "BEX", 46: "FCC",
+  52: "GDE", 56: "NDB", 61: "NOT", 71: "BHE",
+};
+
 // Periodo actual (YYYYMM)
 function currentPeriodo(): string {
   const d = new Date();
@@ -878,7 +883,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                   const venc = getVencimiento(c);
                   const isConciliada = concCompraIds.has(c.id!);
                   const clasificacion = getClasificacion(c);
-                  const tipoAbrev = TIPO_DOC_NAMES[c.tipo_doc]?.slice(0, 3).toUpperCase() || "DOC";
+                  const tipoAbrev = TIPO_DOC_ABREV[c.tipo_doc] || TIPO_DOC_NAMES[c.tipo_doc]?.slice(0, 3).toUpperCase() || "DOC";
                   const periodoDoc = c.fecha_docto ? c.fecha_docto.slice(0, 7) : "";
 
                   return (
@@ -1028,7 +1033,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                                 </thead>
                                 <tbody>
                                   <tr style={{ borderBottom: "1px solid var(--bg4)" }}>
-                                    <td style={{ padding: "8px" }}><span className="mono" style={{ fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 4, background: "var(--cyan)", color: "#fff" }}>{TIPO_DOC_NAMES[c.tipo_doc]?.slice(0, 3).toUpperCase() || "DOC"}-EL</span> <span className="mono" style={{ fontWeight: 600 }}>{c.nro_doc}</span></td>
+                                    <td style={{ padding: "8px" }}><span className="mono" style={{ fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 4, background: "var(--cyan)", color: "#fff" }}>{TIPO_DOC_ABREV[c.tipo_doc] || TIPO_DOC_NAMES[c.tipo_doc]?.slice(0, 3).toUpperCase() || "DOC"}-EL</span> <span className="mono" style={{ fontWeight: 600 }}>{c.nro_doc}</span></td>
                                     <td className="mono" style={{ padding: "8px", fontSize: 11 }}>{fmtDate(c.fecha_docto)}</td>
                                     <td style={{ padding: "8px", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.razon_social}</td>
                                     <td className="mono" style={{ padding: "8px", textAlign: "right", fontWeight: 700 }}>{fmtMoney(c.monto_total || 0)}</td>
