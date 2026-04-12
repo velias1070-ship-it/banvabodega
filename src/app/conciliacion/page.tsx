@@ -397,9 +397,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const [pagoSaving, setPagoSaving] = useState(false);
   const [pagoSearch, setPagoSearch] = useState("");
   const [pagoSelected, setPagoSelected] = useState<{ mov: DBMovimientoBanco; monto_aplicado: number }[]>([]);
-  const [anularItem, setAnularItem] = useState<DBRcvCompra | null>(null);
-  const [anularSelected, setAnularSelected] = useState<Set<string>>(new Set());
-  const [anularSaving, setAnularSaving] = useState(false);
+  const [pagoNCs, setPagoNCs] = useState<Set<string>>(new Set());
   const [provFilterSet, setProvFilterSet] = useState<Set<string> | null>(null); // null = todos
   const [provFilterMode, setProvFilterMode] = useState<"incluir" | "excluir">("incluir");
   const [showProvFilter, setShowProvFilter] = useState(false);
@@ -997,24 +995,15 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                               );
                             }
                             return (
-                              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3 }}>
-                                <span onClick={async () => {
-                                  setPagoItem(c); setPagoLoading(true); setPagoSearch(""); setPagoSelected([]);
-                                  const movs = await fetchMovimientosBanco(empresa.id!, { desde: undefined, hasta: undefined });
-                                  setMovsBanco(movs.filter(m => m.monto < 0 && isMovReal(m) && m.estado_conciliacion !== "conciliado" && m.estado_conciliacion !== "ignorado"));
-                                  setPagoLoading(false);
-                                }}
-                                  style={{ fontSize: 11, fontWeight: 600, padding: "5px 12px", borderRadius: 6, background: "var(--cyan)", color: "#fff", cursor: "pointer" }}>
-                                  Asignar Pago
-                                </span>
-                                {c.tipo_doc !== 61 && (
-                                  <span onClick={() => { setAnularItem(c); setAnularSelected(new Set()); }}
-                                    style={{ fontSize: 10, fontWeight: 600, padding: "3px 10px", borderRadius: 6, background: "var(--amberBg)", color: "var(--amber)", cursor: "pointer", border: "1px solid var(--amberBd)" }}
-                                    title="Anular esta factura con una o más Notas de Crédito del mismo proveedor">
-                                    Anular con NC
-                                  </span>
-                                )}
-                              </div>
+                              <span onClick={async () => {
+                                setPagoItem(c); setPagoLoading(true); setPagoSearch(""); setPagoSelected([]); setPagoNCs(new Set());
+                                const movs = await fetchMovimientosBanco(empresa.id!, { desde: undefined, hasta: undefined });
+                                setMovsBanco(movs.filter(m => m.monto < 0 && isMovReal(m) && m.estado_conciliacion !== "conciliado" && m.estado_conciliacion !== "ignorado"));
+                                setPagoLoading(false);
+                              }}
+                                style={{ fontSize: 11, fontWeight: 600, padding: "5px 12px", borderRadius: 6, background: "var(--cyan)", color: "#fff", cursor: "pointer" }}>
+                                Asignar Pago
+                              </span>
                             );
                           })()}
                         </div>
@@ -1112,18 +1101,36 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
 
       {/* Modal Asignar Pago -- multi-movimiento */}
       {pagoItem && (() => {
-        const totalFac = pagoItem.monto_total || 0;
+        const totalFacBruto = pagoItem.monto_total || 0;
+        const ncsDisponibles = data.filter(c =>
+          c.tipo_doc === 61 &&
+          c.rut_proveedor === pagoItem.rut_proveedor &&
+          !usedDocIds.has(c.id!)
+        );
+        const ncsSelected = ncsDisponibles.filter(n => pagoNCs.has(n.id!));
+        const totalNC = ncsSelected.reduce((s, n) => s + (n.monto_total || 0), 0);
+        const totalFac = totalFacBruto - totalNC;
         const totalSeleccionado = pagoSelected.reduce((s, x) => s + x.monto_aplicado, 0);
         const saldoRestante = totalFac - totalSeleccionado;
+        const totalCubierto = totalNC + totalSeleccionado;
         const selectedIds = new Set(pagoSelected.map(x => x.mov.id));
         const facFecha = pagoItem.fecha_docto ? new Date(pagoItem.fecha_docto + "T12:00:00").getTime() : 0;
+
+        const handleToggleNC = (id: string) => {
+          setPagoNCs(prev => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id); else next.add(id);
+            return next;
+          });
+        };
 
         const handleToggleMov = (m: DBMovimientoBanco) => {
           if (selectedIds.has(m.id)) {
             setPagoSelected(prev => prev.filter(x => x.mov.id !== m.id));
           } else {
             const disponible = Math.abs(m.monto) - (m.monto_conciliado || 0);
-            const aplicar = saldoRestante > 0 ? Math.min(disponible, saldoRestante) : disponible;
+            const netTarget = totalFac - totalSeleccionado;
+            const aplicar = netTarget > 0 ? Math.min(disponible, netTarget) : disponible;
             setPagoSelected(prev => [...prev, { mov: m, monto_aplicado: aplicar }]);
           }
         };
@@ -1133,12 +1140,34 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
         };
 
         const handleGuardarPago = async () => {
-          if (pagoSelected.length === 0) return;
+          if (pagoSelected.length === 0 && ncsSelected.length === 0) return;
           setPagoSaving(true);
           try {
-            const { upsertConciliacion, syncEstadoConciliacion } = await import("@/lib/db");
+            const { upsertConciliacion, syncEstadoConciliacion, insertConciliacionItems } = await import("@/lib/db");
+            if (ncsSelected.length > 0) {
+              const ncConcId = crypto.randomUUID();
+              const folios = ncsSelected.map(n => n.nro_doc).join(", ");
+              await upsertConciliacion({
+                id: ncConcId,
+                empresa_id: empresa.id!,
+                movimiento_banco_id: null,
+                rcv_compra_id: null,
+                rcv_venta_id: null,
+                confianza: 1,
+                estado: "confirmado",
+                tipo_partida: "anulacion",
+                metodo: "manual",
+                notas: `NC aplicada: ${folios}`,
+                created_by: "admin",
+                monto_aplicado: totalNC,
+              });
+              await insertConciliacionItems([
+                { conciliacion_id: ncConcId, documento_tipo: "rcv_compra", documento_id: pagoItem.id!, monto_aplicado: totalNC },
+                ...ncsSelected.map(n => ({ conciliacion_id: ncConcId, documento_tipo: "rcv_compra" as const, documento_id: n.id!, monto_aplicado: n.monto_total || 0 })),
+              ]);
+            }
             for (const sel of pagoSelected) {
-              await upsertConciliacion({ empresa_id: empresa.id!, movimiento_banco_id: sel.mov.id!, rcv_compra_id: pagoItem.id!, rcv_venta_id: null, confianza: 1, estado: "confirmado", tipo_partida: pagoSelected.length === 1 ? "match" : "multi_pago", metodo: "manual", notas: null, created_by: "admin", monto_aplicado: sel.monto_aplicado });
+              await upsertConciliacion({ empresa_id: empresa.id!, movimiento_banco_id: sel.mov.id!, rcv_compra_id: pagoItem.id!, rcv_venta_id: null, confianza: 1, estado: "confirmado", tipo_partida: pagoSelected.length === 1 && ncsSelected.length === 0 ? "match" : "multi_pago", metodo: "manual", notas: null, created_by: "admin", monto_aplicado: sel.monto_aplicado });
               await syncEstadoConciliacion(sel.mov.id!, sel.mov.monto);
             }
             await load();
@@ -1161,15 +1190,41 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                 <strong>{TIPO_DOC_NAMES[pagoItem.tipo_doc] || pagoItem.tipo_doc}</strong> N&deg; {pagoItem.nro_doc} &mdash; {pagoItem.razon_social} &mdash; {fmtDate(pagoItem.fecha_docto)}
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8 }}>
-                <div className="mono" style={{ fontSize: 18, fontWeight: 800, color: "var(--red)" }}>{fmtMoney(totalFac)}</div>
+                <div className="mono" style={{ fontSize: 18, fontWeight: 800, color: "var(--red)" }}>{fmtMoney(totalFacBruto)}</div>
+                {totalNC > 0 && (
+                  <>
+                    <span className="mono" style={{ fontSize: 14, color: "var(--amber)", fontWeight: 700 }}>- {fmtMoney(totalNC)} NC</span>
+                    <span className="mono" style={{ fontSize: 14, color: "var(--txt3)" }}>=</span>
+                    <span className="mono" style={{ fontSize: 16, fontWeight: 800, color: "var(--cyan)" }}>{fmtMoney(totalFac)}</span>
+                  </>
+                )}
                 <div style={{ flex: 1, height: 6, background: "var(--bg4)", borderRadius: 3, overflow: "hidden" }}>
-                  <div style={{ height: "100%", width: `${Math.min(100, totalFac > 0 ? (totalSeleccionado / totalFac) * 100 : 0)}%`, background: saldoRestante <= 0 ? "var(--green)" : "var(--amber)", borderRadius: 3, transition: "width 0.2s" }} />
+                  <div style={{ height: "100%", width: `${Math.min(100, totalFacBruto > 0 ? (totalCubierto / totalFacBruto) * 100 : 0)}%`, background: saldoRestante <= 0 ? "var(--green)" : "var(--amber)", borderRadius: 3, transition: "width 0.2s" }} />
                 </div>
                 <div className="mono" style={{ fontSize: 12, fontWeight: 700, color: saldoRestante <= 0 ? "var(--green)" : "var(--amber)", whiteSpace: "nowrap" }}>
                   {saldoRestante <= 0 ? "Cubierto" : `Faltan ${fmtMoney(saldoRestante)}`}
                 </div>
               </div>
             </div>
+            {/* Notas de Crédito del proveedor */}
+            {ncsDisponibles.length > 0 && (
+              <div style={{ padding: "8px 28px", borderBottom: "1px solid var(--bg4)", background: ncsSelected.length > 0 ? "var(--amberBg)" : "var(--bg3)" }}>
+                <div style={{ fontSize: 10, fontWeight: 600, color: "var(--amber)", marginBottom: 4 }}>Notas de Cr&eacute;dito disponibles ({ncsDisponibles.length})</div>
+                {ncsDisponibles.map(nc => {
+                  const sel = pagoNCs.has(nc.id!);
+                  return (
+                    <label key={nc.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", cursor: "pointer", borderBottom: "1px solid var(--bg4)" }}>
+                      <input type="checkbox" checked={sel} onChange={() => handleToggleNC(nc.id!)} style={{ accentColor: "var(--amber)" }} />
+                      <span style={{ flex: 1, fontSize: 11 }}>
+                        <span className="mono" style={{ fontWeight: 700, fontSize: 10, padding: "1px 5px", borderRadius: 3, background: "var(--amberBg)", color: "var(--amber)", marginRight: 4 }}>NC</span>
+                        N&deg; {nc.nro_doc} &mdash; {fmtDate(nc.fecha_docto)}
+                      </span>
+                      <span className="mono" style={{ fontSize: 12, fontWeight: 700, color: "var(--amber)" }}>-{fmtMoney(nc.monto_total || 0)}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
             {/* Movimientos seleccionados */}
             {pagoSelected.length > 0 && (
               <div style={{ padding: "8px 28px", borderBottom: "1px solid var(--bg4)", background: "var(--bg3)" }}>
@@ -1248,147 +1303,25 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
             </div>
             <div style={{ padding: "12px 28px", borderTop: "1px solid var(--bg4)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div className="mono" style={{ fontSize: 12, color: "var(--txt3)" }}>
-                {pagoSelected.length > 0 && `${pagoSelected.length} mov. = ${fmtMoney(totalSeleccionado)}`}
+                {(pagoSelected.length > 0 || ncsSelected.length > 0) && (
+                  <>
+                    {ncsSelected.length > 0 && <span style={{ color: "var(--amber)" }}>{ncsSelected.length} NC = -{fmtMoney(totalNC)}</span>}
+                    {ncsSelected.length > 0 && pagoSelected.length > 0 && " + "}
+                    {pagoSelected.length > 0 && <span>{pagoSelected.length} mov. = {fmtMoney(totalSeleccionado)}</span>}
+                  </>
+                )}
               </div>
               <div style={{ display: "flex", gap: 8 }}>
                 <button onClick={() => setPagoItem(null)} disabled={pagoSaving}
                   style={{ padding: "10px 24px", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer", background: "var(--bg2)", color: "var(--txt2)", border: "1px solid var(--bg4)" }}>Cerrar</button>
-                <button onClick={handleGuardarPago} disabled={pagoSelected.length === 0 || pagoSaving}
-                  className="scan-btn green" style={{ padding: "10px 24px", fontSize: 13, opacity: pagoSelected.length === 0 ? 0.5 : 1 }}>
+                <button onClick={handleGuardarPago} disabled={(pagoSelected.length === 0 && ncsSelected.length === 0) || pagoSaving}
+                  className="scan-btn green" style={{ padding: "10px 24px", fontSize: 13, opacity: (pagoSelected.length === 0 && ncsSelected.length === 0) ? 0.5 : 1 }}>
                   {pagoSaving ? "Guardando..." : "Guardar"}
                 </button>
               </div>
             </div>
           </div>
         </div>
-        );
-      })()}
-
-      {/* Modal Anular con NC */}
-      {anularItem && (() => {
-        const facTotal = anularItem.monto_total || 0;
-        const ncsDisponibles = data.filter(c =>
-          c.tipo_doc === 61 &&
-          c.rut_proveedor === anularItem.rut_proveedor &&
-          !usedDocIds.has(c.id!)
-        );
-        const ncsSelected = ncsDisponibles.filter(n => anularSelected.has(n.id!));
-        const totalNC = ncsSelected.reduce((s, n) => s + (n.monto_total || 0), 0);
-        const saldoRestante = facTotal - totalNC;
-        const cubierto = saldoRestante <= 0 && totalNC > 0;
-
-        const handleToggleNC = (id: string) => {
-          setAnularSelected(prev => {
-            const next = new Set(prev);
-            if (next.has(id)) next.delete(id); else next.add(id);
-            return next;
-          });
-        };
-
-        const handleGuardarAnular = async () => {
-          if (ncsSelected.length === 0) return;
-          setAnularSaving(true);
-          try {
-            const { upsertConciliacion, insertConciliacionItems } = await import("@/lib/db");
-            const concId = crypto.randomUUID();
-            const folios = ncsSelected.map(n => n.nro_doc).join(", ");
-            await upsertConciliacion({
-              id: concId,
-              empresa_id: empresa.id!,
-              movimiento_banco_id: null,
-              rcv_compra_id: null,
-              rcv_venta_id: null,
-              confianza: 1,
-              estado: "confirmado",
-              tipo_partida: "anulacion",
-              metodo: "manual",
-              notas: `Anulada con NC ${folios}`,
-              created_by: "admin",
-              monto_aplicado: Math.min(facTotal, totalNC),
-            });
-            await insertConciliacionItems([
-              { conciliacion_id: concId, documento_tipo: "rcv_compra", documento_id: anularItem.id!, monto_aplicado: facTotal },
-              ...ncsSelected.map(n => ({ conciliacion_id: concId, documento_tipo: "rcv_compra" as const, documento_id: n.id!, monto_aplicado: n.monto_total || 0 })),
-            ]);
-            await load();
-            setAnularItem(null);
-            setAnularSelected(new Set());
-          } catch (err) { console.error(err); alert("Error al anular: " + (err instanceof Error ? err.message : "sin detalles")); }
-          setAnularSaving(false);
-        };
-
-        return (
-          <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center" }}
-            onClick={() => !anularSaving && setAnularItem(null)}>
-            <div onClick={e => e.stopPropagation()} style={{ background: "var(--bg2)", borderRadius: 12, width: "100%", maxWidth: 700, maxHeight: "90vh", display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 20px 60px rgba(0,0,0,0.15)" }}>
-              <div style={{ padding: "20px 28px", background: "var(--amber)", color: "#fff", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontSize: 18, fontWeight: 700 }}>Anular con Nota de Cr&eacute;dito</span>
-                <button onClick={() => setAnularItem(null)} disabled={anularSaving} style={{ background: "none", border: "none", color: "#fff", fontSize: 22, cursor: "pointer", lineHeight: 1 }}>&times;</button>
-              </div>
-              {/* Info factura */}
-              <div style={{ padding: "16px 28px", borderBottom: "1px solid var(--bg4)" }}>
-                <div style={{ fontSize: 13, marginBottom: 4 }}>
-                  <strong>{TIPO_DOC_NAMES[anularItem.tipo_doc] || anularItem.tipo_doc}</strong> N&deg; {anularItem.nro_doc} &mdash; {anularItem.razon_social} &mdash; {fmtDate(anularItem.fecha_docto)}
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8 }}>
-                  <div className="mono" style={{ fontSize: 18, fontWeight: 800, color: "var(--red)" }}>{fmtMoney(facTotal)}</div>
-                  <div style={{ flex: 1, height: 6, background: "var(--bg4)", borderRadius: 3, overflow: "hidden" }}>
-                    <div style={{ height: "100%", width: `${Math.min(100, facTotal > 0 ? (totalNC / facTotal) * 100 : 0)}%`, background: cubierto ? "var(--green)" : "var(--amber)", borderRadius: 3, transition: "width 0.2s" }} />
-                  </div>
-                  <div className="mono" style={{ fontSize: 12, fontWeight: 700, color: cubierto ? "var(--green)" : "var(--amber)", whiteSpace: "nowrap" }}>
-                    {cubierto ? "Cubierto" : totalNC > 0 ? `Faltan ${fmtMoney(saldoRestante)}` : "Selecciona NCs"}
-                  </div>
-                </div>
-              </div>
-              {/* Lista de NCs disponibles */}
-              <div style={{ flex: 1, overflow: "auto", maxHeight: 400 }}>
-                {ncsDisponibles.length === 0 ? (
-                  <div style={{ padding: 40, textAlign: "center", color: "var(--txt3)", fontSize: 13 }}>
-                    No hay Notas de Cr&eacute;dito disponibles para este proveedor.
-                    <div style={{ fontSize: 11, marginTop: 8 }}>El proveedor debe tener NCs (tipo 61) sin usar en el RCV.</div>
-                  </div>
-                ) : ncsDisponibles.map(nc => {
-                  const selected = anularSelected.has(nc.id!);
-                  const montoNC = nc.monto_total || 0;
-                  const coincide = montoNC === facTotal;
-                  return (
-                    <div key={nc.id} onClick={() => handleToggleNC(nc.id!)}
-                      style={{ padding: "14px 28px", borderBottom: "1px solid var(--bg4)", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", background: selected ? "var(--amberBg)" : coincide ? "var(--greenBg)" : "transparent" }}
-                      onMouseOver={e => { if (!selected && !coincide) e.currentTarget.style.background = "var(--bg3)"; }}
-                      onMouseOut={e => { if (!selected && !coincide) e.currentTarget.style.background = "transparent"; }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                        <input type="checkbox" checked={selected} readOnly style={{ accentColor: "var(--amber)" }} />
-                        <div>
-                          <div style={{ fontSize: 12, fontWeight: 600 }}>
-                            <span className="mono" style={{ fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 4, background: "var(--amberBg)", color: "var(--amber)", marginRight: 6 }}>NC</span>
-                            N&deg; {nc.nro_doc}
-                          </div>
-                          <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 2 }}>{fmtDate(nc.fecha_docto)}</div>
-                        </div>
-                      </div>
-                      <div style={{ textAlign: "right" }}>
-                        <div className="mono" style={{ fontSize: 14, fontWeight: 700, color: "var(--amber)" }}>{fmtMoney(montoNC)}</div>
-                        {coincide && <div style={{ fontSize: 10, color: "var(--green)", fontWeight: 600 }}>Coincide exacto</div>}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-              <div style={{ padding: "12px 28px", borderTop: "1px solid var(--bg4)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div className="mono" style={{ fontSize: 12, color: "var(--txt3)" }}>
-                  {ncsSelected.length > 0 && `${ncsSelected.length} NC = ${fmtMoney(totalNC)}`}
-                </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={() => setAnularItem(null)} disabled={anularSaving}
-                    style={{ padding: "10px 24px", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer", background: "var(--bg2)", color: "var(--txt2)", border: "1px solid var(--bg4)" }}>Cerrar</button>
-                  <button onClick={handleGuardarAnular} disabled={ncsSelected.length === 0 || anularSaving}
-                    style={{ padding: "10px 24px", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: "pointer", background: "var(--amber)", color: "#fff", border: "none", opacity: ncsSelected.length === 0 ? 0.5 : 1 }}>
-                    {anularSaving ? "Guardando..." : "Anular"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
         );
       })()}
 
