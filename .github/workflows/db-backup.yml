@@ -30,7 +30,7 @@ jobs:
           DATE=$(date -u +%F)
           FILE="banva-prod-${DATE}.dump"
           echo "FILE=${FILE}" >> "$GITHUB_ENV"
-          pg_dump -F c -d "$SUPABASE_DB_URL" -f "$FILE"
+          /usr/lib/postgresql/17/bin/pg_dump -F c -d "$SUPABASE_DB_URL" -f "$FILE"
           ls -lh "$FILE"
 
       - name: Upload to Supabase Storage
