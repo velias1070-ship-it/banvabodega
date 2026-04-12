@@ -389,7 +389,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("");
   const [tipoFilter, setTipoFilter] = useState<string>("todos");
-  const [concFilter, setConcFilter] = useState<"todos" | "por_pagar" | "vencidas" | "pagadas">("todos");
+  const [concFilter, setConcFilter] = useState<"todos" | "por_pagar" | "vencidas" | "pagadas" | "por_clasificar">("todos");
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
   const [showBheModal, setShowBheModal] = useState(false);
@@ -613,6 +613,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
     return !concCompraIds.has(c.id!) && venc && venc.diasRestantes < 0;
   });
   else if (concFilter === "pagadas") filtered = filtered.filter(c => concCompraIds.has(c.id!));
+  else if (concFilter === "por_clasificar") filtered = filtered.filter(c => !getClasificacion(c));
   if (filter) {
     const q = filter.toLowerCase();
     const qNum = q.replace(/[.,]/g, "");
@@ -801,10 +802,14 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
             </button>
           ))}
           {sinClasificar.length > 0 && (
-            <button onClick={() => setConcFilter("todos")}
-              style={{ padding: "10px 16px", fontSize: 13, fontWeight: 400, cursor: "pointer", background: "none", border: "none", borderBottom: "2px solid transparent", color: "var(--txt3)", marginBottom: -2, whiteSpace: "nowrap" }}>
+            <button onClick={() => setConcFilter(concFilter === "por_clasificar" ? "todos" : "por_clasificar")}
+              style={{ padding: "10px 16px", fontSize: 13, fontWeight: concFilter === "por_clasificar" ? 600 : 400, cursor: "pointer", background: "none", border: "none",
+                borderBottom: concFilter === "por_clasificar" ? "2px solid var(--red)" : "2px solid transparent",
+                color: concFilter === "por_clasificar" ? "var(--txt)" : "var(--txt3)", marginBottom: -2, whiteSpace: "nowrap" }}>
               Por clasificar
-              <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10, background: "var(--redBg)", color: "var(--red)" }}>{sinClasificar.length}</span>
+              <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10,
+                background: concFilter === "por_clasificar" ? "var(--red)" : "var(--redBg)",
+                color: concFilter === "por_clasificar" ? "#fff" : "var(--red)" }}>{sinClasificar.length}</span>
             </button>
           )}
         </div>
