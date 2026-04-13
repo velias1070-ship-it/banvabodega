@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
 import { mlGet, getMLConfig } from "@/lib/ml";
 import { preloadCostos, resolverCostoVenta, calcularMargenVenta } from "@/lib/costos";
+import { preloadAdsForSales, resolverAdsVenta, calcularMargenNeto } from "@/lib/ads";
 
 export const maxDuration = 300;
 export const dynamic = "force-dynamic";
@@ -188,9 +189,9 @@ export async function GET(req: NextRequest) {
     }
 
     // 6b. Inmutabilidad contable: leer snapshots existentes en el rango ANTES de borrar.
-    // Si una venta ya tenía costo_producto capturado, lo preservamos.
+    // Si una venta ya tenía costo_producto o ads_cost_asignado capturados, los preservamos.
     const { data: existingSnapshots } = await sb.from("ventas_ml_cache")
-      .select("order_id, sku_venta, costo_producto, costo_fuente, margen, margen_pct, costo_snapshot_at, anulada, anulada_at")
+      .select("order_id, sku_venta, costo_producto, costo_fuente, margen, margen_pct, costo_snapshot_at, anulada, anulada_at, ads_cost_asignado, ads_atribucion, margen_neto, margen_neto_pct")
       .gte("fecha_date", fromDate).lte("fecha_date", toDate);
     const snapshotByKey = new Map<string, {
       costo_producto: number | null;
@@ -200,12 +201,38 @@ export async function GET(req: NextRequest) {
       costo_snapshot_at: string | null;
       anulada: boolean;
       anulada_at: string | null;
+      ads_cost_asignado: number | null;
+      ads_atribucion: string | null;
+      margen_neto: number | null;
+      margen_neto_pct: number | null;
     }>();
     for (const r of (existingSnapshots || [])) {
       snapshotByKey.set(`${r.order_id}|${(r.sku_venta || "").toUpperCase()}`, r);
     }
     const preload = await preloadCostos(sb);
     const snapshotAt = new Date().toISOString();
+
+    // 6c. Preload de ads cache para todas las (sku, fecha) del rango
+    const skuSet = new Set<string>();
+    for (const o of orders) for (const it of (o.order_items || [])) {
+      const sku = (it.item?.seller_sku || "").toUpperCase();
+      if (sku) skuSet.add(sku);
+    }
+    const skuToItemId = new Map<string, string>();
+    if (skuSet.size > 0) {
+      const { data: imap } = await sb.from("ml_items_map").select("sku, item_id").in("sku", Array.from(skuSet));
+      for (const m of (imap || []) as { sku: string; item_id: string }[]) skuToItemId.set(m.sku, m.item_id);
+    }
+    const adsPairs: Array<{ item_id: string; fecha_date: string }> = [];
+    for (const o of orders) {
+      const fd = toChileISO(o.date_closed || o.date_created).slice(0, 10);
+      for (const it of (o.order_items || [])) {
+        const sku = (it.item?.seller_sku || "").toUpperCase();
+        const iid = skuToItemId.get(sku);
+        if (iid) adsPairs.push({ item_id: iid, fecha_date: fd });
+      }
+    }
+    const adsPreload = await preloadAdsForSales(sb, adsPairs);
 
     // 7. Map to cache rows
     const rows: Array<Record<string, unknown>> = [];
@@ -272,6 +299,28 @@ export async function GET(req: NextRequest) {
             margenFinal = m.margen;
             margenPct = m.margen_pct;
           }
+
+          // Ads: preservar o resolver
+          let adsCostAsignado: number;
+          let adsAtribucion: string;
+          let margenNeto: number;
+          let margenNetoPct: number;
+          if (prev && prev.ads_cost_asignado != null) {
+            adsCostAsignado = prev.ads_cost_asignado;
+            adsAtribucion = prev.ads_atribucion || "sin_datos";
+            margenNeto = prev.margen_neto ?? (margenFinal - adsCostAsignado);
+            margenNetoPct = prev.margen_neto_pct ?? (subtotal > 0 ? Math.round(((margenFinal - adsCostAsignado) / subtotal) * 10000) / 100 : 0);
+          } else {
+            const fdate = toChileISO(order.date_closed || order.date_created).slice(0, 10);
+            const itemId = skuToItemId.get(sku) || null;
+            const ads = resolverAdsVenta(itemId, fdate, subtotal, adsPreload);
+            adsCostAsignado = ads.ads_cost_asignado;
+            adsAtribucion = ads.ads_atribucion;
+            const mn = calcularMargenNeto(margenFinal, adsCostAsignado, subtotal);
+            margenNeto = mn.margen_neto;
+            margenNetoPct = mn.margen_neto_pct;
+          }
+
           const anuladaVenta = prev?.anulada === true;
           const anuladaAt = prev?.anulada_at || null;
 
@@ -300,6 +349,10 @@ export async function GET(req: NextRequest) {
             costo_snapshot_at: costoSnapshotAt,
             margen: margenFinal,
             margen_pct: margenPct,
+            ads_cost_asignado: adsCostAsignado,
+            ads_atribucion: adsAtribucion,
+            margen_neto: margenNeto,
+            margen_neto_pct: margenNetoPct,
             anulada: anuladaVenta,
             anulada_at: anuladaAt,
             logistic_type: lt,

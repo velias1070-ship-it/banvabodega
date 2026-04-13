@@ -1,0 +1,50 @@
+{
+  "synced_at": "2026-04-13T00:31:01.366Z",
+  "total": 8,
+  "ok": 1,
+  "errors": 7,
+  "results": {
+    "es_ar__pads-read": {
+      "status": "ok",
+      "slug": "es_ar__pads-read",
+      "file": "/Users/vicenteelias/banvabodega/docs/meli/es_ar__pads-read.md",
+      "title": "Developers",
+      "chars": 44250
+    },
+    "es_ar__product-ads": {
+      "status": "error",
+      "slug": "es_ar__product-ads",
+      "error": "HTTP 404"
+    },
+    "es_ar__orders-management": {
+      "status": "error",
+      "slug": "es_ar__orders-management",
+      "error": "HTTP 404"
+    },
+    "es_ar__orders-and-feedback": {
+      "status": "error",
+      "slug": "es_ar__orders-and-feedback",
+      "error": "HTTP 404"
+    },
+    "es_ar__items-and-searches": {
+      "status": "error",
+      "slug": "es_ar__items-and-searches",
+      "error": "HTTP 404"
+    },
+    "es_ar__items": {
+      "status": "error",
+      "slug": "es_ar__items",
+      "error": "HTTP 404"
+    },
+    "es_ar__shipments-management": {
+      "status": "error",
+      "slug": "es_ar__shipments-management",
+      "error": "HTTP 404"
+    },
+    "es_ar__product-ads-management": {
+      "status": "error",
+      "slug": "es_ar__product-ads-management",
+      "error": "HTTP 404"
+    }
+  }
+}

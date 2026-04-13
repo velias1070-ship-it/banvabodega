@@ -27,6 +27,10 @@ interface OrderRow {
   costo_snapshot_at?: string | null;
   margen?: number | null;
   margen_pct?: number | null;
+  ads_cost_asignado?: number | null;
+  ads_atribucion?: "direct" | "organic" | "sin_datos" | null;
+  margen_neto?: number | null;
+  margen_neto_pct?: number | null;
   anulada?: boolean;
   logistic_type: string;
   fuente: string;
@@ -305,9 +309,12 @@ export default function AdminVentasML() {
   const margenTotals = ordersConCosto.reduce((acc, o) => ({
     costo: acc.costo + (o.costo_producto || 0),
     margen: acc.margen + (o.margen || 0),
+    ads: acc.ads + (o.ads_cost_asignado || 0),
+    margen_neto: acc.margen_neto + (o.margen_neto ?? ((o.margen || 0) - (o.ads_cost_asignado || 0))),
     subtotal: acc.subtotal + o.subtotal,
-  }), { costo: 0, margen: 0, subtotal: 0 });
+  }), { costo: 0, margen: 0, ads: 0, margen_neto: 0, subtotal: 0 });
   const margenPctTotal = margenTotals.subtotal > 0 ? (margenTotals.margen / margenTotals.subtotal) * 100 : 0;
+  const margenNetoPctTotal = margenTotals.subtotal > 0 ? (margenTotals.margen_neto / margenTotals.subtotal) * 100 : 0;
 
   // Daily chart data
   const dailyChart = (() => {
@@ -433,6 +440,13 @@ export default function AdminVentasML() {
               {fmt(margenTotals.margen)} <span style={{ fontSize: 11, opacity: 0.7 }}>({margenPctTotal.toFixed(1)}%)</span>
             </div>
           </div>
+          <div className="kpi"><div className="kpi-label">Ads</div><div className="kpi-value" style={{ color: "var(--red)", fontSize: 16 }}>{fmt(margenTotals.ads)}</div></div>
+          <div className="kpi">
+            <div className="kpi-label">Margen neto</div>
+            <div className="kpi-value" style={{ color: margenTotals.margen_neto >= 0 ? "var(--green)" : "var(--red)", fontSize: 16 }}>
+              {fmt(margenTotals.margen_neto)} <span style={{ fontSize: 11, opacity: 0.7 }}>({margenNetoPctTotal.toFixed(1)}%)</span>
+            </div>
+          </div>
         </div>
       )}
 
@@ -489,6 +503,8 @@ export default function AdminVentasML() {
                 <th style={{ textAlign: "right" }}>Neto</th>
                 <th style={{ textAlign: "right" }}>Costo Prod.</th>
                 <th style={{ textAlign: "right" }}>Margen</th>
+                <th style={{ textAlign: "right" }}>Ads</th>
+                <th style={{ textAlign: "right" }}>Margen Neto</th>
               </tr>
             </thead>
             <tbody>
@@ -529,6 +545,25 @@ export default function AdminVentasML() {
                   <td className="mono" style={{ textAlign: "right", fontWeight: 700, color: margenColor }} title={fuente ? `Fuente: ${fuenteLabel[fuente] || fuente}` : ""}>
                     {sinCosto ? "—" : `${fmt(o.margen || 0)} (${(o.subtotal > 0 ? ((o.margen || 0) / o.subtotal) * 100 : 0).toFixed(1)}%)`}
                   </td>
+                  {(() => {
+                    const adsCost = o.ads_cost_asignado || 0;
+                    const adsAtr = o.ads_atribucion || "sin_datos";
+                    const adsLabel: Record<string, string> = { direct: "atribuida al ad", organic: "orgánica", sin_datos: "sin data" };
+                    const adsColor = adsAtr === "direct" ? "var(--amber)" : "var(--txt3)";
+                    const margenNeto = o.margen_neto ?? ((o.margen || 0) - adsCost);
+                    const margenNetoPctCell = o.subtotal > 0 ? (margenNeto / o.subtotal) * 100 : 0;
+                    const mnColor = sinCosto ? "var(--txt3)" : margenNeto >= 0 ? "var(--green)" : "var(--red)";
+                    return (
+                      <>
+                        <td className="mono" style={{ textAlign: "right", color: adsColor }} title={`Atribución: ${adsLabel[adsAtr] || adsAtr}`}>
+                          {adsCost > 0 ? fmt(adsCost) : (adsAtr === "direct" ? "$0" : "—")}
+                        </td>
+                        <td className="mono" style={{ textAlign: "right", fontWeight: 700, color: mnColor }}>
+                          {sinCosto ? "—" : `${fmt(margenNeto)} (${margenNetoPctCell.toFixed(1)}%)`}
+                        </td>
+                      </>
+                    );
+                  })()}
                 </tr>
                 );
               })}

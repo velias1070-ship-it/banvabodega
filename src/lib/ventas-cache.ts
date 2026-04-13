@@ -1,6 +1,7 @@
 import { getServerSupabase } from "@/lib/supabase-server";
 import { mlGet } from "@/lib/ml";
 import { preloadCostos, resolverCostoVenta, calcularMargenVenta } from "@/lib/costos";
+import { preloadAdsForSales, resolverAdsVenta, calcularMargenNeto } from "@/lib/ads";
 
 const TARIFA_FLEX = 3320;
 
@@ -81,7 +82,7 @@ export async function upsertOrderToVentasCache(
   // Inmutabilidad contable: si ya existen filas para esta orden, preservar
   // el costo/margen original que ya se había snapshotado.
   const { data: existingRows } = await sb.from("ventas_ml_cache")
-    .select("sku_venta, costo_producto, costo_fuente, margen, margen_pct, costo_snapshot_at, anulada, anulada_at")
+    .select("sku_venta, costo_producto, costo_fuente, margen, margen_pct, costo_snapshot_at, anulada, anulada_at, ads_cost_asignado, ads_atribucion, margen_neto, margen_neto_pct")
     .eq("order_id", String(order.id));
   const existingBySku = new Map<string, {
     costo_producto: number | null;
@@ -91,6 +92,10 @@ export async function upsertOrderToVentasCache(
     costo_snapshot_at: string | null;
     anulada: boolean;
     anulada_at: string | null;
+    ads_cost_asignado: number | null;
+    ads_atribucion: string | null;
+    margen_neto: number | null;
+    margen_neto_pct: number | null;
   }>();
   for (const r of (existingRows || [])) {
     existingBySku.set((r.sku_venta || "").toUpperCase(), r);
@@ -98,6 +103,21 @@ export async function upsertOrderToVentasCache(
 
   const preload = existingBySku.size === 0 ? await preloadCostos(sb) : null;
   const snapshotAt = new Date().toISOString();
+
+  // Resolver item_ids y preload ads cache para esta orden
+  const skuToItemId = new Map<string, string>();
+  {
+    const skus = (order.order_items || []).map(it => (it.item?.seller_sku || "").toUpperCase()).filter(Boolean);
+    if (skus.length > 0) {
+      const { data: imap } = await sb.from("ml_items_map").select("sku, item_id").in("sku", skus);
+      for (const m of (imap || []) as { sku: string; item_id: string }[]) {
+        skuToItemId.set(m.sku, m.item_id);
+      }
+    }
+  }
+  const fechaDate = toChileISO(order.date_closed || order.date_created).slice(0, 10);
+  const adsPairs = Array.from(skuToItemId.values()).map(item_id => ({ item_id, fecha_date: fechaDate }));
+  const adsPreload = await preloadAdsForSales(sb, adsPairs);
 
   const rows = (order.order_items || []).map(item => {
     const sku = (item.item?.seller_sku || `ML-${item.item?.id}`).toUpperCase();
@@ -130,6 +150,26 @@ export async function upsertOrderToVentasCache(
       margen_pct = m.margen_pct;
     }
 
+    // Ads: igual que costo, preservar snapshot si ya existía, sino resolver.
+    let ads_cost_asignado: number;
+    let ads_atribucion: string;
+    let margen_neto: number;
+    let margen_neto_pct: number;
+    if (existing && existing.ads_cost_asignado != null) {
+      ads_cost_asignado = existing.ads_cost_asignado;
+      ads_atribucion = existing.ads_atribucion || "sin_datos";
+      margen_neto = existing.margen_neto ?? (margen - ads_cost_asignado);
+      margen_neto_pct = existing.margen_neto_pct ?? (subtotal > 0 ? Math.round(((margen - ads_cost_asignado) / subtotal) * 10000) / 100 : 0);
+    } else {
+      const itemId = skuToItemId.get(sku) || null;
+      const ads = resolverAdsVenta(itemId, fechaDate, subtotal, adsPreload);
+      ads_cost_asignado = ads.ads_cost_asignado;
+      ads_atribucion = ads.ads_atribucion;
+      const mn = calcularMargenNeto(margen, ads_cost_asignado, subtotal);
+      margen_neto = mn.margen_neto;
+      margen_neto_pct = mn.margen_neto_pct;
+    }
+
     // Anulada: si ya estaba marcada preservar la fecha original; si recién se anula ahora, timestamp.
     const anulada = esCancelada || (existing?.anulada === true);
     const anulada_at = existing?.anulada_at || (esCancelada ? snapshotAt : null);
@@ -159,6 +199,10 @@ export async function upsertOrderToVentasCache(
       costo_snapshot_at,
       margen,
       margen_pct,
+      ads_cost_asignado,
+      ads_atribucion,
+      margen_neto,
+      margen_neto_pct,
       anulada,
       anulada_at,
       logistic_type: lt,
