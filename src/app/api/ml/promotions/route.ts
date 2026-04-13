@@ -30,6 +30,7 @@ interface ItemPromoResult {
   costo_neto: number;
   costo_bruto: number;
   comision_ml: number;
+  comision_pct: number;
   costo_envio: number;
   peso_facturable: number;
   listing_type: string;
@@ -100,13 +101,15 @@ export async function GET(req: NextRequest) {
 
     // Comisión ML via API listing_prices
     let comisionMl = 0;
+    let comisionPct = 0;
     const price = map.price || 0;
     const listingType = map.listing_type || "gold_special";
     const categoryId = map.category_id || "";
     if (price > 0 && categoryId) {
       try {
-        const fees = await mlGet<{ sale_fee_amount: number }>(`/sites/MLC/listing_prices?price=${price}&listing_type_id=${listingType}&category_id=${categoryId}`);
+        const fees = await mlGet<{ sale_fee_amount: number; sale_fee_details?: { percentage_fee: number } }>(`/sites/MLC/listing_prices?price=${price}&listing_type_id=${listingType}&category_id=${categoryId}`);
         comisionMl = fees?.sale_fee_amount || 0;
+        comisionPct = fees?.sale_fee_details?.percentage_fee || 0;
       } catch { /* ignore */ }
     }
 
@@ -153,6 +156,7 @@ export async function GET(req: NextRequest) {
       costo_neto: costoNeto,
       costo_bruto: Math.round(costoNeto * 1.19),
       comision_ml: comisionMl,
+      comision_pct: comisionPct,
       costo_envio: costoEnvio,
       peso_facturable: pesoFacturable,
       listing_type: listingType,
