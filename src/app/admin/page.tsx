@@ -19,6 +19,7 @@ import AdminCompras from "@/components/AdminCompras";
 import AdminEventos from "@/components/AdminEventos";
 import AdminVentasML from "@/components/AdminVentasML";
 import AdminComercial from "@/components/AdminComercial";
+import AdminMargenes from "@/components/AdminMargenes";
 
 const ADMIN_PIN = "1234"; // Change this
 const AUTH_KEY = "banva_admin_auth";
@@ -65,7 +66,7 @@ function LoginGate({ onLogin }: { onLogin: (pin: string) => boolean }) {
   );
 }
 
-type AdminTab = "dash"|"rec"|"flex"|"enviosfull"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"intel"|"semaforo"|"compras"|"eventos"|"ventasml"|"comercial"|"agentes"|"stockml"|"timeline"|"config";
+type AdminTab = "dash"|"rec"|"flex"|"enviosfull"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"intel"|"semaforo"|"compras"|"eventos"|"ventasml"|"comercial"|"margenes"|"agentes"|"stockml"|"timeline"|"config";
 
 const MOBILE_MENU_SECTIONS = [
   { section: "Principal", items: [
@@ -89,6 +90,7 @@ const MOBILE_MENU_SECTIONS = [
     ["eventos","Eventos","📅"],
     ["ventasml","Ventas ML","💰"],
     ["comercial","Publicaciones","📣"],
+    ["margenes","Márgenes","💹"],
   ] as const },
   { section: "Sistema", items: [
     ["agentes","Agentes IA","🤖"],
@@ -157,7 +159,7 @@ export default function AdminPage() {
     {section:"OPERACIONES",icon:"⚡",items:[["rec","Recepciones","📦"],["flex","Ultima Milla","🚚"],["enviosfull","Envios Full","📦"],["ops","Operaciones","⚡"],["reposicion","Reposición","🔄"]] as const},
     {section:"INVENTARIO",icon:"📦",items:[["inv","Inventario","📦"],["mov","Movimientos","📋"],["timeline","Timeline","📊"],["prod","Productos","🏷️"],["stockml","Stock ML","📡"]] as const},
     {section:"INTELIGENCIA",icon:"🧠",items:[["intel","Inteligencia","🧠"],["semaforo","Semaforo","🚦"],["compras","Compras","🛒"],["eventos","Eventos","📅"],["ventasml","Ventas ML","💰"]] as const},
-    {section:"COMERCIAL",icon:"🏪",items:[["comercial","Publicaciones","📢"]] as const},
+    {section:"COMERCIAL",icon:"🏪",items:[["comercial","Publicaciones","📢"],["margenes","Márgenes","💹"]] as const},
     {section:"SISTEMA",icon:"⚙️",items:[["agentes","Agentes IA","🤖"],["config","Configuración","⚙️"]] as const},
   ] as const;
   const [openSections, setOpenSections] = useState<Record<string,boolean>>(()=>{
@@ -274,6 +276,7 @@ export default function AdminPage() {
             {tab==="eventos"&&<AdminEventos/>}
             {tab==="ventasml"&&<AdminVentasML/>}
             {tab==="comercial"&&<AdminComercial/>}
+            {tab==="margenes"&&<AdminMargenes/>}
             {tab==="agentes"&&<AdminAgentes/>}
             {tab==="stockml"&&<AdminStockML/>}
             {tab==="timeline"&&<AdminTimeline/>}
