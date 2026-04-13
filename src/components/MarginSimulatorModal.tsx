@@ -84,7 +84,8 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
   const loadPromos = useCallback(async () => {
     setPromosLoading(true);
     try {
-      const res = await fetch(`/api/ml/item-promotions?item_id=${item.item_id}`);
+      // cache-busting para garantizar data fresca post-acción
+      const res = await fetch(`/api/ml/item-promotions?item_id=${item.item_id}&_=${Date.now()}`, { cache: "no-store" });
       const data = await res.json();
       if (res.ok && Array.isArray(data.promotions)) {
         setPromos(data.promotions);
@@ -92,6 +93,12 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
     } catch { /* silent */ }
     setPromosLoading(false);
   }, [item.item_id]);
+
+  // Re-fetch con pequeño delay para dar tiempo a ML de propagar el cambio
+  const loadPromosConDelay = useCallback(async () => {
+    await new Promise(r => setTimeout(r, 700));
+    await loadPromos();
+  }, [loadPromos]);
 
   useEffect(() => { loadPromos(); }, [loadPromos]);
 
@@ -156,7 +163,7 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
       if (!res.ok) throw new Error(data.error || "Error");
       setMsg({ type: "ok", text: `Descuento creado/actualizado a ${fmtCLP(target)} por 30 días` });
       if (onApplied) onApplied();
-      await loadPromos();
+      await loadPromosConDelay();
     } catch (e) {
       setMsg({ type: "err", text: e instanceof Error ? e.message : "Error" });
     } finally {
@@ -201,7 +208,7 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
       const verb = accion === "join" ? "Postulado" : "Actualizado";
       setMsg({ type: "ok", text: `${verb} a "${promo.name}" con precio ${fmtCLP(target)}` });
       if (onApplied) onApplied();
-      await loadPromos();
+      await loadPromosConDelay();
     } catch (e) {
       setMsg({ type: "err", text: e instanceof Error ? e.message : "Error" });
     } finally {
@@ -228,7 +235,7 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
       if (!res.ok) throw new Error(data.error || "Error");
       setMsg({ type: "ok", text: `Saliste de "${promo.name}"` });
       if (onApplied) onApplied();
-      await loadPromos();
+      await loadPromosConDelay();
     } catch (e) {
       setMsg({ type: "err", text: e instanceof Error ? e.message : "Error" });
     } finally {
@@ -397,8 +404,11 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
           )}
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {promos.map(p => {
+              const pending = p.status === "pending";
+              const candidate = p.status === "candidate";
               const badge = p.activa ? { bg: "var(--greenBg)", color: "var(--green)", text: "ACTIVA" }
-                         : p.postulable ? { bg: "var(--amberBg)", color: "var(--amber)", text: "DISPONIBLE" }
+                         : pending ? { bg: "var(--cyanBg)", color: "var(--cyan)", text: "POSTULADO" }
+                         : candidate ? { bg: "var(--amberBg)", color: "var(--amber)", text: "DISPONIBLE" }
                          : { bg: "var(--bg4)", color: "var(--txt3)", text: p.status.toUpperCase() };
               const label = PROMO_LABELS[p.type] || p.type;
               const acting = promoAction === (p.id || p.type);
@@ -433,18 +443,20 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
                       </div>
                     </div>
                     <div style={{ display: "flex", gap: 4 }}>
-                      {p.activa && (
+                      {(p.activa || pending) && (
                         <>
-                          <button
-                            onClick={() => postularPromo(p, "update")}
-                            disabled={acting || target <= 0 || targetFueraRango}
-                            style={{
-                              padding: "5px 10px", borderRadius: 4, fontSize: 10, fontWeight: 700,
-                              background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)",
-                              cursor: acting ? "wait" : "pointer",
-                              opacity: (acting || target <= 0 || targetFueraRango) ? 0.5 : 1,
-                            }}
-                          >Actualizar</button>
+                          {p.permite_custom_price && (
+                            <button
+                              onClick={() => postularPromo(p, "update")}
+                              disabled={acting || target <= 0 || targetFueraRango}
+                              style={{
+                                padding: "5px 10px", borderRadius: 4, fontSize: 10, fontWeight: 700,
+                                background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)",
+                                cursor: acting ? "wait" : "pointer",
+                                opacity: (acting || target <= 0 || targetFueraRango) ? 0.5 : 1,
+                              }}
+                            >Actualizar</button>
+                          )}
                           <button
                             onClick={() => salirPromo(p)}
                             disabled={acting}
@@ -457,7 +469,7 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
                           >Salir</button>
                         </>
                       )}
-                      {p.postulable && p.permite_custom_price && (
+                      {candidate && p.permite_custom_price && (
                         <button
                           onClick={() => postularPromo(p, "join")}
                           disabled={acting || target <= 0 || targetFueraRango}
