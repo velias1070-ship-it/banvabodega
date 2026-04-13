@@ -87,6 +87,26 @@ export async function POST(req: NextRequest) {
     compBySku[c.sku_venta].push({ sku_origen: c.sku_origen, unidades: c.unidades });
   }
 
+  // Stock por SKU origen (suma de todas las posiciones) — necesario para WAC
+  // cuando hay múltiples alternativas en composicion_venta.
+  const allOrigenes = new Set<string>();
+  for (const sku of skuList) {
+    const cs = compBySku[sku];
+    if (cs) for (const c of cs) allOrigenes.add(c.sku_origen);
+    else allOrigenes.add(sku);
+  }
+  const stockBySku: Record<string, number> = {};
+  if (allOrigenes.size > 0) {
+    const origList = Array.from(allOrigenes);
+    for (let i = 0; i < origList.length; i += 200) {
+      const chunk = origList.slice(i, i + 200);
+      const { data: sts } = await sb.from("stock").select("sku, cantidad").in("sku", chunk);
+      for (const s of (sts || []) as Array<{ sku: string; cantidad: number }>) {
+        stockBySku[s.sku] = (stockBySku[s.sku] || 0) + (s.cantidad || 0);
+      }
+    }
+  }
+
   // Cache de comisión por (category_id, listing_type) para evitar llamadas repetidas
   const feePctCache = new Map<string, number>();
   async function getFeePct(categoryId: string, listingType: string, refPrice: number): Promise<number> {
@@ -112,14 +132,54 @@ export async function POST(req: NextRequest) {
     const listingType = row.listing_type || "gold_special";
     const categoryId = row.category_id || "";
 
-    // Costo (incluye composición)
+    // Costo — dos casos:
+    //
+    // A) Composición "real" (1 fila con unidades>1 o varias con sku_origen distinto):
+    //    - Si hay UNA sola fila: costo = costo_origen × unidades (pack sumativo)
+    //    - Si hay VARIAS filas con el MISMO sku_origen: costo = costo × sum(unidades)
+    //    - Si hay VARIAS filas con DISTINTOS sku_origen (alternativas OR):
+    //        weighted average cost = Σ(costo_i × stock_i) / Σ(stock_i)
+    //        fallback (sin stock en ninguna): promedio simple ponderado por unidades
+    //
+    // B) Sin composición: usa el costo del SKU directo.
     let costoNeto = costoBySku[row.sku] || 0;
-    if (compBySku[row.sku]) {
-      let total = 0;
-      for (const c of compBySku[row.sku]) {
-        total += (costoBySku[c.sku_origen] || 0) * c.unidades;
+    const comps = compBySku[row.sku];
+    if (comps && comps.length > 0) {
+      const origenesUnicos = new Set(comps.map(c => c.sku_origen));
+      if (origenesUnicos.size === 1) {
+        // Todas las filas refieren al mismo sku_origen: sumar unidades.
+        const uniOrig = comps[0].sku_origen;
+        const totalUnidades = comps.reduce((s, c) => s + c.unidades, 0);
+        costoNeto = (costoBySku[uniOrig] || 0) * totalUnidades;
+      } else {
+        // Alternativas: weighted average cost ponderado por stock disponible.
+        // Si una alternativa tiene unidades>1, su peso efectivo es stock_i × unidades_i.
+        let numerador = 0;
+        let denominador = 0;
+        for (const c of comps) {
+          const costoUnit = costoBySku[c.sku_origen] || 0;
+          const stock = stockBySku[c.sku_origen] || 0;
+          const peso = stock * c.unidades;
+          numerador += costoUnit * peso;
+          denominador += peso;
+        }
+        if (denominador > 0) {
+          // Costo por "unidad efectiva" vendida. Si una alternativa se declara con
+          // unidades>1, divimos el numerador por la unidades_efectivas equivalentes.
+          // Para el caso estándar donde todas las alternativas tienen unidades=1,
+          // esto se reduce al WAC clásico.
+          costoNeto = Math.round(numerador / denominador);
+        } else {
+          // Fallback sin stock: promedio simple ponderado por unidades.
+          let sumCostoU = 0;
+          let sumU = 0;
+          for (const c of comps) {
+            sumCostoU += (costoBySku[c.sku_origen] || 0) * c.unidades;
+            sumU += c.unidades;
+          }
+          costoNeto = sumU > 0 ? Math.round(sumCostoU / sumU) : 0;
+        }
       }
-      if (total > 0) costoNeto = total;
     }
     const costoBruto = Math.round(costoNeto * 1.19);
 
