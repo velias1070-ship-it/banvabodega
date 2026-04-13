@@ -38,26 +38,34 @@ export async function POST(req: NextRequest) {
   const offset = parseInt(url.searchParams.get("offset") || "0", 10);
   const limit = Math.min(parseInt(url.searchParams.get("limit") || "15", 10), 30);
 
-  // Total (para el progreso)
-  const { count: total } = await sb
-    .from("ml_items_map")
-    .select("*", { count: "exact", head: true })
-    .eq("activo", true);
-
-  // Chunk de items a procesar
-  const { data: items, error: eItems } = await sb
+  // Traer todos los items activos y deduplicar por item_id (ml_items_map puede
+  // tener varias filas con el mismo item_id por variantes de color/talla).
+  const { data: allItems, error: eAll } = await sb
     .from("ml_items_map")
     .select("sku,item_id,titulo,price,listing_type,category_id,status_ml")
-    .eq("activo", true)
-    .order("item_id")
-    .range(offset, offset + limit - 1);
+    .eq("activo", true);
+  if (eAll) return NextResponse.json({ error: eAll.message }, { status: 500 });
 
-  if (eItems) return NextResponse.json({ error: eItems.message }, { status: 500 });
-  if (!items || items.length === 0) {
-    return NextResponse.json({ processed: offset, total: total || 0, done: true });
+  const byId = new Map<string, MapRow>();
+  for (const r of (allItems as MapRow[] | null) || []) {
+    if (!r.item_id) continue;
+    const existing = byId.get(r.item_id);
+    if (!existing) {
+      byId.set(r.item_id, r);
+      continue;
+    }
+    // Preferir SKU real sobre fallback donde sku === item_id
+    const existingFb = existing.sku === existing.item_id;
+    const rowFb = r.sku === r.item_id;
+    if (existingFb && !rowFb) byId.set(r.item_id, r);
   }
+  const unique = Array.from(byId.values()).sort((a, b) => a.item_id.localeCompare(b.item_id));
+  const total = unique.length;
+  const rows = unique.slice(offset, offset + limit);
 
-  const rows = items as MapRow[];
+  if (rows.length === 0) {
+    return NextResponse.json({ processed: offset, total, done: true });
+  }
 
   // Pre-calcular costos por SKU (incluyendo composicion_venta)
   const skuList = Array.from(new Set(rows.map(r => r.sku)));
