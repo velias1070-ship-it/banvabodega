@@ -506,26 +506,36 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
     return Array.from(map.values()).sort((a, b) => b.total - a.total);
   }, [data]);
 
-  // Mapa de monto pagado por compra (sumando todas las conciliaciones)
-  const pagadoPorCompra = useMemo(() => {
+  // Mapa de monto aplicado por compra (sumando todas las conciliaciones por MONTO, no ocurrencias)
+  const montoAplicadoPorCompra = useMemo(() => {
     const map = new Map<string, number>();
-    // Match simple: rcv_compra_id directo en la conciliacion
+    const concById = new Map(conciliaciones.map(c => [c.id, c]));
+    // Match simple: rcv_compra_id directo → suma monto_aplicado de la conciliacion
     for (const c of conciliaciones) {
       if (c.estado === "confirmado" && c.rcv_compra_id) {
-        map.set(c.rcv_compra_id, (map.get(c.rcv_compra_id) || 0) + 1);
+        map.set(c.rcv_compra_id, (map.get(c.rcv_compra_id) || 0) + (c.monto_aplicado || 0));
       }
     }
-    // Multi-doc: items en conciliacion_items
-    const concIdsConfirmadas = new Set(conciliaciones.filter(c => c.estado === "confirmado").map(c => c.id));
+    // Multi-doc / anulaciones: items en conciliacion_items
     for (const item of conciliacionItems) {
-      if (item.documento_tipo === "rcv_compra" && concIdsConfirmadas.has(item.conciliacion_id)) {
-        map.set(item.documento_id, (map.get(item.documento_id) || 0) + 1);
-      }
+      if (item.documento_tipo !== "rcv_compra") continue;
+      const conc = concById.get(item.conciliacion_id);
+      if (!conc || conc.estado !== "confirmado") continue;
+      // Evitar doble conteo: si la conciliacion tiene rcv_compra_id igual al item, ya se sumó arriba
+      if (conc.rcv_compra_id === item.documento_id) continue;
+      map.set(item.documento_id, (map.get(item.documento_id) || 0) + (item.monto_aplicado || 0));
     }
     return map;
   }, [conciliaciones, conciliacionItems]);
-  // IDs de compras conciliadas (al menos 1 pago)
-  const concCompraIds = new Set(pagadoPorCompra.keys());
+  // Factura "pagada" cuando el monto acumulado cubre el total (tolerancia 1 peso)
+  const concCompraIds = useMemo(() => {
+    const s = new Set<string>();
+    for (const c of data) {
+      const aplicado = montoAplicadoPorCompra.get(c.id!) || 0;
+      if (aplicado + 1 >= (c.monto_total || 0) && aplicado > 0) s.add(c.id!);
+    }
+    return s;
+  }, [montoAplicadoPorCompra, data]);
 
   // Mapa de anulaciones: compraId -> { concId, ncIds[] }
   // Una anulación es una conciliación con tipo_partida='anulacion' y sus items
@@ -971,10 +981,20 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                       </td>
                       {/* Estado / Accion */}
                       <td style={{ padding: "14px 14px", textAlign: "right", whiteSpace: "nowrap", position: "relative" }}>
+                        {(() => {
+                        const montoAplicado = montoAplicadoPorCompra.get(c.id!) || 0;
+                        const saldoRestante = (c.monto_total || 0) - montoAplicado;
+                        const isParcial = montoAplicado > 0 && !isConciliada;
+                        return (
                         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
-                          <span style={{ fontSize: 10, color: "var(--txt3)" }}>
-                            {fmtMoney(c.monto_total || 0)} {isConciliada ? "" : "por pagar"}
+                          <span style={{ fontSize: 10, color: isParcial ? "var(--amber)" : "var(--txt3)" }}>
+                            {isConciliada ? fmtMoney(c.monto_total || 0) : isParcial ? `${fmtMoney(saldoRestante)} por pagar` : `${fmtMoney(c.monto_total || 0)} por pagar`}
                           </span>
+                          {isParcial && (
+                            <span style={{ fontSize: 9, fontWeight: 600, color: "var(--amber)" }}>
+                              Parcial {fmtMoney(montoAplicado)}/{fmtMoney(c.monto_total || 0)}
+                            </span>
+                          )}
                           {(() => {
                             const anul = anulacionByCompra.get(c.id!);
                             if (anul) {
@@ -1011,12 +1031,14 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                                 setMovsBanco(movs.filter(m => m.monto < 0 && isMovReal(m) && m.estado_conciliacion !== "conciliado" && m.estado_conciliacion !== "ignorado"));
                                 setPagoLoading(false);
                               }}
-                                style={{ fontSize: 11, fontWeight: 600, padding: "5px 12px", borderRadius: 6, background: "var(--cyan)", color: "#fff", cursor: "pointer" }}>
-                                Asignar Pago
+                                style={{ fontSize: 11, fontWeight: 600, padding: "5px 12px", borderRadius: 6, background: isParcial ? "var(--amber)" : "var(--cyan)", color: "#fff", cursor: "pointer" }}>
+                                {isParcial ? "Pagar saldo" : "Asignar Pago"}
                               </span>
                             );
                           })()}
                         </div>
+                        );
+                        })()}
                         {/* Popover detalle conciliacion */}
                         {detalleConc === c.id && (
                           <div style={{ position: "absolute", right: 0, top: "100%", marginTop: 4, zIndex: 50, background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 10, padding: 16, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", width: 380 }}>
@@ -1111,7 +1133,8 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
 
       {/* Modal Asignar Pago -- multi-movimiento */}
       {pagoItem && (() => {
-        const totalFacBruto = pagoItem.monto_total || 0;
+        const montoYaAplicado = montoAplicadoPorCompra.get(pagoItem.id!) || 0;
+        const totalFacBruto = (pagoItem.monto_total || 0) - montoYaAplicado;
         const ncsDisponibles = data.filter(c =>
           c.tipo_doc === 61 &&
           c.rut_proveedor === pagoItem.rut_proveedor &&
