@@ -196,9 +196,23 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  if (cacheRows.length > 0) {
-    const { error: upErr } = await sb.from("ml_margin_cache").upsert(cacheRows, { onConflict: "item_id" });
-    if (upErr) return NextResponse.json({ error: upErr.message, processed: offset }, { status: 500 });
+  // Dedupe defensivo final: garantizar item_id único en el batch
+  const uniqueCacheRows = Array.from(
+    new Map(cacheRows.map(r => [r.item_id as string, r])).values()
+  );
+
+  if (uniqueCacheRows.length > 0) {
+    // Upsert 1 por 1 para evitar cualquier interacción extraña con la PK
+    for (const cr of uniqueCacheRows) {
+      const { error: upErr } = await sb.from("ml_margin_cache").upsert(cr, { onConflict: "item_id" });
+      if (upErr) {
+        return NextResponse.json({
+          error: upErr.message,
+          failed_item: cr.item_id,
+          processed: offset,
+        }, { status: 500 });
+      }
+    }
   }
 
   const processed = offset + rows.length;
