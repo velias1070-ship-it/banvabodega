@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { fmtCLP } from "@/lib/ml-shipping";
+import MarginSimulatorModal, { type SimulatorItem } from "@/components/MarginSimulatorModal";
 
 type MarginRow = {
   item_id: string;
@@ -61,6 +62,9 @@ export default function AdminMargenes() {
   // Sort
   const [sortKey, setSortKey] = useState<SortKey>("margen_pct");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+
+  // Simulador
+  const [simItem, setSimItem] = useState<SimulatorItem | null>(null);
 
   const loadCache = useCallback(async () => {
     setLoading(true);
@@ -257,6 +261,7 @@ export default function AdminMargenes() {
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
             <thead>
               <tr style={{ borderBottom: "2px solid var(--bg4)" }}>
+                <th style={{ padding: "10px 4px", fontSize: 10, color: "var(--txt3)", width: 30 }}></th>
                 <SortHeader k="sku" label="SKU" align="left" />
                 <SortHeader k="titulo" label="Título" align="left" />
                 <SortHeader k="peso_facturable" label="Peso" />
@@ -274,6 +279,25 @@ export default function AdminMargenes() {
                 const negColor = r.margen_clp < 0 ? "var(--red)" : r.margen_pct < 15 ? "var(--amber)" : "var(--green)";
                 return (
                   <tr key={r.item_id} style={{ borderBottom: "1px solid var(--bg4)" }}>
+                    <td style={{ padding: "9px 4px", textAlign: "center" }}>
+                      <button
+                        onClick={() => setSimItem({
+                          item_id: r.item_id,
+                          sku: r.sku,
+                          titulo: r.titulo,
+                          price_ml: r.price_ml,
+                          precio_venta: r.precio_venta,
+                          costo_bruto: r.costo_bruto,
+                          peso_facturable: r.peso_facturable,
+                          comision_pct: Number(r.comision_pct),
+                          tiene_promo: r.tiene_promo,
+                          promo_pct: r.promo_pct,
+                          promo_type: r.promo_type,
+                        })}
+                        title="Simulador de margen"
+                        style={{ padding: "2px 6px", borderRadius: 4, fontSize: 11, background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)", cursor: "pointer" }}
+                      >📊</button>
+                    </td>
                     <td className="mono" style={{ padding: "9px 8px", fontSize: 10, color: "var(--txt2)" }}>
                       <div>{r.sku}</div>
                       <div style={{ fontSize: 9, color: "var(--txt3)" }}>{r.item_id}</div>
@@ -304,6 +328,8 @@ export default function AdminMargenes() {
           </table>
         </div>
       )}
+
+      {simItem && <MarginSimulatorModal item={simItem} onClose={() => setSimItem(null)} />}
     </div>
   );
 }
