@@ -66,6 +66,22 @@ export default function AdminMargenes() {
   // Simulador
   const [simItem, setSimItem] = useState<SimulatorItem | null>(null);
 
+  // Selección múltiple + bulk apply
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkPrice, setBulkPrice] = useState<string>("");
+  const [bulkApplying, setBulkApplying] = useState<"none" | "lista" | "promo">("none");
+  const [bulkProgress, setBulkProgress] = useState({ done: 0, total: 0, ok: 0, err: 0 });
+  const [bulkErrors, setBulkErrors] = useState<Array<{ sku: string; error: string }>>([]);
+
+  const toggleSelect = (itemId: string) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(itemId)) next.delete(itemId); else next.add(itemId);
+      return next;
+    });
+  };
+  const clearSelection = () => setSelected(new Set());
+
   const loadCache = useCallback(async () => {
     setLoading(true);
     try {
@@ -144,6 +160,75 @@ export default function AdminMargenes() {
   const toggleSort = (k: SortKey) => {
     if (k === sortKey) setSortDir(d => (d === "asc" ? "desc" : "asc"));
     else { setSortKey(k); setSortDir("asc"); }
+  };
+
+  const allVisibleSelected = filtered.length > 0 && filtered.every(r => selected.has(r.item_id));
+  const toggleSelectAllVisible = () => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (allVisibleSelected) {
+        for (const r of filtered) next.delete(r.item_id);
+      } else {
+        for (const r of filtered) next.add(r.item_id);
+      }
+      return next;
+    });
+  };
+
+  const runBulk = async (mode: "lista" | "promo") => {
+    const target = parseInt(bulkPrice) || 0;
+    if (target <= 0) { alert("Ingresa un precio válido"); return; }
+    const items = rows.filter(r => selected.has(r.item_id));
+    if (items.length === 0) return;
+    if (mode === "promo") {
+      const bloquean = items.filter(r => target >= r.price_ml);
+      if (bloquean.length > 0) {
+        if (!confirm(`${bloquean.length} ítems tienen precio lista <= ${target}. Esas fallarán. ¿Continuar con los que sí aplican?`)) return;
+      }
+    }
+    setBulkApplying(mode);
+    setBulkProgress({ done: 0, total: items.length, ok: 0, err: 0 });
+    setBulkErrors([]);
+    const errors: Array<{ sku: string; error: string }> = [];
+    let ok = 0;
+
+    const start = new Date().toISOString().slice(0, 10) + "T00:00:00.000Z";
+    const end = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10) + "T23:59:59.000Z";
+
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      try {
+        let res: Response;
+        if (mode === "lista") {
+          res = await fetch("/api/ml/item-update", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ item_id: it.item_id, updates: { price: target } }),
+          });
+        } else {
+          if (target >= it.price_ml) throw new Error("target >= price_ml");
+          res = await fetch("/api/ml/promotions", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              item_id: it.item_id,
+              action: "create_discount",
+              deal_price: target,
+              start_date: start,
+              finish_date: end,
+            }),
+          });
+        }
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        ok++;
+      } catch (e) {
+        errors.push({ sku: it.sku, error: e instanceof Error ? e.message : "Error" });
+      }
+      setBulkProgress({ done: i + 1, total: items.length, ok, err: errors.length });
+    }
+    setBulkErrors(errors);
+    setBulkApplying("none");
   };
 
   // KPIs
@@ -261,6 +346,14 @@ export default function AdminMargenes() {
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
             <thead>
               <tr style={{ borderBottom: "2px solid var(--bg4)" }}>
+                <th style={{ padding: "10px 6px", width: 26, textAlign: "center" }}>
+                  <input
+                    type="checkbox"
+                    checked={allVisibleSelected}
+                    onChange={toggleSelectAllVisible}
+                    title={allVisibleSelected ? "Deseleccionar todos" : "Seleccionar todos los visibles"}
+                  />
+                </th>
                 <th style={{ padding: "10px 4px", fontSize: 10, color: "var(--txt3)", width: 30 }}></th>
                 <SortHeader k="sku" label="SKU" align="left" />
                 <SortHeader k="titulo" label="Título" align="left" />
@@ -277,8 +370,12 @@ export default function AdminMargenes() {
             <tbody>
               {filtered.map(r => {
                 const negColor = r.margen_clp < 0 ? "var(--red)" : r.margen_pct < 15 ? "var(--amber)" : "var(--green)";
+                const isSelected = selected.has(r.item_id);
                 return (
-                  <tr key={r.item_id} style={{ borderBottom: "1px solid var(--bg4)" }}>
+                  <tr key={r.item_id} style={{ borderBottom: "1px solid var(--bg4)", background: isSelected ? "var(--cyanBg)" : "transparent" }}>
+                    <td style={{ padding: "9px 6px", textAlign: "center" }}>
+                      <input type="checkbox" checked={isSelected} onChange={() => toggleSelect(r.item_id)} />
+                    </td>
                     <td style={{ padding: "9px 4px", textAlign: "center" }}>
                       <button
                         onClick={() => setSimItem({
@@ -335,6 +432,86 @@ export default function AdminMargenes() {
           onClose={() => setSimItem(null)}
           onApplied={() => { /* el cache se refresca manualmente con el botón Refrescar */ }}
         />
+      )}
+
+      {/* Barra flotante de acción masiva */}
+      {selected.size > 0 && (
+        <div style={{
+          position: "fixed",
+          left: 0, right: 0, bottom: 0,
+          padding: "12px 20px",
+          background: "var(--bg2)",
+          borderTop: "2px solid var(--cyan)",
+          boxShadow: "0 -6px 20px rgba(0,0,0,0.4)",
+          zIndex: 999,
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          flexWrap: "wrap",
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--cyan)", minWidth: 110 }}>
+            {selected.size} seleccionado{selected.size !== 1 ? "s" : ""}
+          </div>
+          <div>
+            <div style={{ fontSize: 9, color: "var(--txt3)", marginBottom: 2 }}>Precio objetivo</div>
+            <input
+              type="number"
+              value={bulkPrice}
+              onChange={e => setBulkPrice(e.target.value.replace(/\D/g, ""))}
+              placeholder="ej. 19980"
+              className="form-input"
+              style={{ width: 130, padding: "6px 10px", fontSize: 13, fontWeight: 700, fontFamily: "var(--font-mono, monospace)", textAlign: "right" }}
+              inputMode="numeric"
+              disabled={bulkApplying !== "none"}
+            />
+          </div>
+          <button
+            onClick={() => runBulk("lista")}
+            disabled={bulkApplying !== "none" || !bulkPrice}
+            style={{
+              padding: "8px 14px", borderRadius: 6, fontSize: 12, fontWeight: 700,
+              background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)",
+              cursor: bulkApplying !== "none" ? "wait" : "pointer",
+              opacity: (bulkApplying !== "none" || !bulkPrice) ? 0.5 : 1,
+              whiteSpace: "nowrap",
+            }}
+          >Aplicar como precio lista</button>
+          <button
+            onClick={() => runBulk("promo")}
+            disabled={bulkApplying !== "none" || !bulkPrice}
+            style={{
+              padding: "8px 14px", borderRadius: 6, fontSize: 12, fontWeight: 700,
+              background: "var(--amberBg)", color: "var(--amber)", border: "1px solid var(--amberBd)",
+              cursor: bulkApplying !== "none" ? "wait" : "pointer",
+              opacity: (bulkApplying !== "none" || !bulkPrice) ? 0.5 : 1,
+              whiteSpace: "nowrap",
+            }}
+          >Aplicar como descuento 30d</button>
+          {bulkApplying !== "none" && bulkProgress.total > 0 && (
+            <div style={{ fontSize: 11, color: "var(--txt2)", display: "flex", gap: 8 }}>
+              <span>{bulkProgress.done}/{bulkProgress.total}</span>
+              <span style={{ color: "var(--green)" }}>✓ {bulkProgress.ok}</span>
+              {bulkProgress.err > 0 && <span style={{ color: "var(--red)" }}>✗ {bulkProgress.err}</span>}
+            </div>
+          )}
+          {bulkApplying === "none" && bulkProgress.total > 0 && (
+            <div style={{ fontSize: 11, color: "var(--txt2)", display: "flex", gap: 8 }}>
+              <span style={{ color: "var(--green)" }}>✓ {bulkProgress.ok}</span>
+              {bulkProgress.err > 0 && (
+                <button
+                  onClick={() => alert(bulkErrors.map(e => `${e.sku}: ${e.error}`).join("\n"))}
+                  style={{ color: "var(--red)", background: "transparent", border: "none", cursor: "pointer", fontSize: 11, textDecoration: "underline" }}
+                >✗ {bulkProgress.err} — ver detalle</button>
+              )}
+            </div>
+          )}
+          <div style={{ flex: 1 }} />
+          <button
+            onClick={clearSelection}
+            disabled={bulkApplying !== "none"}
+            style={{ padding: "6px 10px", borderRadius: 4, fontSize: 11, background: "var(--bg3)", color: "var(--txt3)", border: "1px solid var(--bg4)", cursor: "pointer" }}
+          >Cancelar</button>
+        </div>
       )}
     </div>
   );
