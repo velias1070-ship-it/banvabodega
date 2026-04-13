@@ -177,10 +177,7 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
   function traducirErrorML(msg: string, promoType?: string): string {
     const m = msg.toLowerCase();
     if (m.includes("no offers found")) {
-      if (promoType === "SELLER_CAMPAIGN") {
-        return "No puedes salir de una 'Campaña vendedor' desde acá. Es tuya, debes terminarla o quitar el ítem desde la gestión de campañas en ML.";
-      }
-      return "ML no encuentra la promo para este ítem. Probablemente ya fue eliminada o cambió de estado — refresca.";
+      return "ML no encuentra esa promo activa para el ítem. Puede estar ya removida, en otro estado, o que el promotion_id cambió. Refresca con 🔄 y vuelve a intentar.";
     }
     if (m.includes("invalid_deal_price_range") || m.includes("price out of range")) {
       return "Precio fuera del rango permitido. Usa el rango que muestra el card.";
@@ -251,11 +248,10 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
   }
 
   async function salirPromo(promo: NormalizedPromo) {
-    if (promo.type === "SELLER_CAMPAIGN") {
-      setMsg({ type: "err", text: "No puedes salir de tu propia 'Campaña vendedor' desde acá. Debes ir a Gestión de campañas en ML y quitar el ítem o terminar la campaña." });
-      return;
-    }
-    if (!confirm(`¿Salir de "${promo.name}"?`)) return;
+    const confirmMsg = promo.type === "SELLER_CAMPAIGN"
+      ? `¿Retirar este ítem de tu campaña "${promo.name}"? La campaña seguirá activa para los demás ítems.`
+      : `¿Salir de "${promo.name}"?`;
+    if (!confirm(confirmMsg)) return;
     setPromoAction(promo.id || promo.type);
     setMsg(null);
     try {
