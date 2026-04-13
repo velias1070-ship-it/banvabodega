@@ -442,6 +442,11 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
               >🔄</button>
             </div>
           </div>
+          <div style={{ fontSize: 10, color: "var(--txt2)", marginBottom: 10, padding: "6px 10px", background: "var(--bg4)", borderRadius: 4, borderLeft: "3px solid var(--cyan)" }}>
+            💡 Los botones <strong>Postular</strong> / <strong>Actualizar</strong> usan el <strong>precio objetivo</strong> del input de arriba
+            {target > 0 && <> — actualmente <span className="mono" style={{ color: "var(--cyan)", fontWeight: 700 }}>{fmtCLP(target)}</span></>}
+            . Click en el <strong>sugerido ML</strong> de cualquier card para cargarlo en el input.
+          </div>
           {!promosLoading && promos.length === 0 && (
             <div style={{ fontSize: 10, color: "var(--txt3)", fontStyle: "italic" }}>ML no ofrece promociones para este ítem.</div>
           )}
@@ -485,20 +490,25 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
                         {p.name}
                       </div>
                     </div>
-                    <div style={{ display: "flex", gap: 4 }}>
+                    <div style={{ display: "flex", gap: 4, alignItems: "flex-start" }}>
                       {(p.activa || pending) && (
                         <>
                           {p.permite_custom_price && (
                             <button
                               onClick={() => postularPromo(p, "update")}
                               disabled={acting || target <= 0 || targetFueraRango}
+                              title={`Actualizar precio de la promo a ${target > 0 ? fmtCLP(target) : "..."}`}
                               style={{
                                 padding: "5px 10px", borderRadius: 4, fontSize: 10, fontWeight: 700,
                                 background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)",
                                 cursor: acting ? "wait" : "pointer",
                                 opacity: (acting || target <= 0 || targetFueraRango) ? 0.5 : 1,
+                                whiteSpace: "nowrap",
                               }}
-                            >Actualizar</button>
+                            >
+                              Actualizar
+                              {target > 0 && <div className="mono" style={{ fontSize: 9, fontWeight: 600, opacity: 0.8 }}>a {fmtCLP(target)}</div>}
+                            </button>
                           )}
                           <button
                             onClick={() => salirPromo(p)}
@@ -508,6 +518,7 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
                               background: "var(--redBg)", color: "var(--red)", border: "1px solid var(--redBd)",
                               cursor: acting ? "wait" : "pointer",
                               opacity: acting ? 0.5 : 1,
+                              whiteSpace: "nowrap",
                             }}
                           >Salir</button>
                         </>
@@ -516,13 +527,18 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
                         <button
                           onClick={() => postularPromo(p, "join")}
                           disabled={acting || target <= 0 || targetFueraRango}
+                          title={`Postular a esta promo con precio ${target > 0 ? fmtCLP(target) : "..."}`}
                           style={{
-                            padding: "5px 10px", borderRadius: 4, fontSize: 10, fontWeight: 700,
+                            padding: "6px 12px", borderRadius: 4, fontSize: 11, fontWeight: 700,
                             background: "var(--amberBg)", color: "var(--amber)", border: "1px solid var(--amberBd)",
                             cursor: acting ? "wait" : "pointer",
                             opacity: (acting || target <= 0 || targetFueraRango) ? 0.5 : 1,
+                            whiteSpace: "nowrap",
                           }}
-                        >Postular</button>
+                        >
+                          Postular
+                          {target > 0 && <div className="mono" style={{ fontSize: 9, fontWeight: 600, opacity: 0.85 }}>a {fmtCLP(target)}</div>}
+                        </button>
                       )}
                     </div>
                   </div>
