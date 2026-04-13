@@ -549,7 +549,15 @@ export default function AdminMargenes() {
                       {r.peso_facturable ? `${(r.peso_facturable / 1000).toFixed(1)} kg` : "—"}
                       {r.tramo_label && <div style={{ fontSize: 8 }}>{r.tramo_label}</div>}
                     </td>
-                    <td className="mono" style={{ padding: "9px 8px", textAlign: "right", fontWeight: 700 }}>{fmtCLP(r.precio_venta)}</td>
+                    <td className="mono" style={{ padding: "9px 8px", textAlign: "right", fontWeight: 700 }}>
+                      <div>{fmtCLP(r.precio_venta)}</div>
+                      {r.tiene_promo && r.price_ml !== r.precio_venta && (
+                        <div style={{ fontSize: 9, color: "var(--txt3)", fontWeight: 400 }}>
+                          lista <span style={{ textDecoration: "line-through" }}>{fmtCLP(r.price_ml)}</span>
+                          {r.promo_pct && <span style={{ color: "var(--amber)", marginLeft: 3 }}>−{r.promo_pct}%</span>}
+                        </div>
+                      )}
+                    </td>
                     <td className="mono" style={{ padding: "9px 8px", textAlign: "right", color: "var(--txt2)", fontSize: 10 }}>{fmtCLP(r.costo_bruto)}</td>
                     <td className="mono" style={{ padding: "9px 8px", textAlign: "right", color: "var(--txt2)", fontSize: 10 }}>{fmtCLP(r.comision_clp)}</td>
                     <td className="mono" style={{ padding: "9px 8px", textAlign: "right", color: "var(--txt2)", fontSize: 10 }}>{fmtCLP(r.envio_clp)}</td>
