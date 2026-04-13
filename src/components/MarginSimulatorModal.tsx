@@ -282,6 +282,34 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
     if (precio > 0) setTargetPrice(String(precio));
   }
 
+  function formatFechas(start: string | null, finish: string | null) {
+    if (!start && !finish) return null;
+    const now = Date.now();
+    const sd = start ? new Date(start) : null;
+    const fd = finish ? new Date(finish) : null;
+    const fmt = (d: Date) => d.toLocaleDateString("es-CL", { day: "2-digit", month: "short" });
+    const diasRestantes = fd ? Math.ceil((fd.getTime() - now) / 86400000) : null;
+    const diasParaEmpezar = sd ? Math.ceil((sd.getTime() - now) / 86400000) : null;
+
+    let label = "";
+    let warn = false;
+    let urgent = false;
+
+    if (sd && sd.getTime() > now) {
+      // Empieza en el futuro
+      label = `Empieza ${fmt(sd)}`;
+      if (diasParaEmpezar !== null && diasParaEmpezar <= 2) urgent = true;
+    } else if (fd) {
+      // Ya empezó (o no tiene start); mostrar fin
+      label = `Hasta ${fmt(fd)}`;
+      if (diasRestantes !== null) {
+        label += ` · ${diasRestantes}d`;
+        if (diasRestantes <= 3) { warn = true; urgent = diasRestantes <= 1; }
+      }
+    }
+    return { label, warn, urgent, diasRestantes, diasParaEmpezar };
+  }
+
   return (
     <div
       style={{
@@ -467,6 +495,7 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
               const margenSim = precioSim > 0
                 ? calcularMargen({ precio: precioSim, costoBruto: item.costo_bruto, pesoGr, comisionPct })
                 : null;
+              const fechas = formatFechas(p.start_date, p.finish_date);
 
               return (
                 <div key={(p.id || "") + p.type} style={{
@@ -480,6 +509,19 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
                       <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                         <span style={{ fontSize: 12, fontWeight: 700, color: "var(--txt)" }}>{label}</span>
                         <span style={{ padding: "1px 6px", borderRadius: 3, fontSize: 8, fontWeight: 700, background: badge.bg, color: badge.color, border: `1px solid ${badge.color}` }}>{badge.text}</span>
+                        {fechas && (
+                          <span
+                            title={`Desde ${p.start_date?.slice(0,10) || "—"} hasta ${p.finish_date?.slice(0,10) || "—"}`}
+                            style={{
+                              padding: "1px 6px", borderRadius: 3, fontSize: 9, fontWeight: 600,
+                              background: fechas.urgent ? "var(--redBg)" : fechas.warn ? "var(--amberBg)" : "var(--bg4)",
+                              color: fechas.urgent ? "var(--red)" : fechas.warn ? "var(--amber)" : "var(--txt2)",
+                              border: `1px solid ${fechas.urgent ? "var(--red)" : fechas.warn ? "var(--amber)" : "var(--bg4)"}`,
+                            }}
+                          >
+                            {fechas.urgent && "⏰ "}{fechas.label}
+                          </span>
+                        )}
                         {p.meli_pct > 0 && (
                           <span title="Porcentaje del descuento que paga ML" style={{ fontSize: 9, color: "var(--cyan)", fontWeight: 600 }}>
                             ML {p.meli_pct}% / Tú {p.seller_pct}%
