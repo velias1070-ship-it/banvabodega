@@ -26,16 +26,19 @@ const DOCS_DIR = join(REPO_ROOT, "docs", "meli");
 const URLS: string[] = [
   // Product Ads
   "https://developers.mercadolibre.cl/es_ar/pads-read",
-  "https://developers.mercadolibre.cl/es_ar/product-ads",
-  // Orders
-  "https://developers.mercadolibre.cl/es_ar/orders-management",
-  "https://developers.mercadolibre.cl/es_ar/orders-and-feedback",
-  // Items
-  "https://developers.mercadolibre.cl/es_ar/items-and-searches",
-  "https://developers.mercadolibre.cl/es_ar/items",
-  // Shipments
-  "https://developers.mercadolibre.cl/es_ar/shipments-management",
-  "https://developers.mercadolibre.cl/es_ar/product-ads-management",
+  // Billing / facturación / reportes
+  "https://developers.mercadolibre.cl/es_ar/billing-reports",
+  "https://developers.mercadolibre.com.ar/en_us/billing-reports",
+  "https://developers.mercadolibre.com.ar/es_ar/billing-reports",
+  "https://global-selling.mercadolibre.com/devsite/gs-billing-data",
+  // Fulfillment (Full MercadoLibre)
+  "https://developers.mercadolibre.cl/es_ar/fulfillment-shipments",
+  "https://developers.mercadolibre.cl/es_ar/fulfillment-inventory",
+  // Reconciliation / reports / details
+  "https://developers.mercadolibre.com.ar/en_us/reconciliation-reports",
+  "https://developers.mercadolibre.com.ar/en_us/ml-billing-details",
+  "https://developers.mercadolibre.com.ar/en_us/details-sales-charges",
+  "https://developers.mercadolibre.com.ar/en_us/billing-perceptions",
 ];
 
 // Selectores candidatos para el contenido principal, en orden de preferencia.

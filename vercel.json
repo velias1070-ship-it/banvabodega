@@ -35,6 +35,14 @@
     {
       "path": "/api/semaforo/refresh",
       "schedule": "0 9 * * 1"
+    },
+    {
+      "path": "/api/ml/ads-daily-sync",
+      "schedule": "0 */6 * * *"
+    },
+    {
+      "path": "/api/ml/ads-rebalance",
+      "schedule": "30 */6 * * *"
     }
   ]
 }
