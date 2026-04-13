@@ -105,7 +105,8 @@ export default function AdminVentasML() {
   const [pgOrders, setPgOrders] = useState<OrderRow[]>([]);
   const [mlOrders, setMlOrders] = useState<OrderRow[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [view, setView] = useState<"comparativa" | "ml_directo">("comparativa");
+  const [view, setView] = useState<"comparativa" | "ml_directo" | "productos">("comparativa");
+  const [productoSearch, setProductoSearch] = useState("");
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const [source, setSource] = useState<"cache" | "live" | "session">("cache");
 
@@ -316,6 +317,51 @@ export default function AdminVentasML() {
   const margenPctTotal = margenTotals.subtotal > 0 ? (margenTotals.margen / margenTotals.subtotal) * 100 : 0;
   const margenNetoPctTotal = margenTotals.subtotal > 0 ? (margenTotals.margen_neto / margenTotals.subtotal) * 100 : 0;
 
+  // Agrupación por SKU para vista "Productos"
+  interface ProductoRow {
+    sku_venta: string;
+    nombre: string;
+    canal: string; // Full/Flex/Mix
+    unidades: number;
+    ingresos: number; // subtotal sum
+    costo_producto: number;
+    comision: number;
+    envio: number;
+    ads: number;
+    margen: number;
+    margen_neto: number;
+    orders: number;
+  }
+  const productosMap = new Map<string, ProductoRow>();
+  for (const o of validOrders) {
+    const key = o.sku_venta || "(sin sku)";
+    const p = productosMap.get(key) || {
+      sku_venta: key,
+      nombre: o.nombre_producto || "",
+      canal: o.canal,
+      unidades: 0, ingresos: 0, costo_producto: 0, comision: 0,
+      envio: 0, ads: 0, margen: 0, margen_neto: 0, orders: 0,
+    };
+    if (p.canal !== o.canal && p.canal !== "Mix") p.canal = "Mix";
+    p.unidades += o.cantidad || 0;
+    p.ingresos += o.subtotal || 0;
+    p.costo_producto += o.costo_producto || 0;
+    p.comision += o.comision_total || 0;
+    p.envio += (o.costo_envio || 0) - (o.ingreso_envio || 0); // neto: envío - bonif
+    p.ads += o.ads_cost_asignado || 0;
+    p.margen += o.margen || 0;
+    p.margen_neto += o.margen_neto ?? ((o.margen || 0) - (o.ads_cost_asignado || 0));
+    p.orders += 1;
+    productosMap.set(key, p);
+  }
+  const productos = Array.from(productosMap.values())
+    .filter(p => {
+      if (!productoSearch) return true;
+      const q = productoSearch.toLowerCase();
+      return p.sku_venta.toLowerCase().includes(q) || p.nombre.toLowerCase().includes(q);
+    })
+    .sort((a, b) => b.ingresos - a.ingresos);
+
   // Daily chart data
   const dailyChart = (() => {
     if (validOrders.length === 0) return null;
@@ -459,6 +505,9 @@ export default function AdminVentasML() {
           <button className={`tab ${view === "ml_directo" ? "active-cyan" : ""}`} onClick={() => setView("ml_directo")} style={{ fontSize: 12, padding: "6px 12px" }}>
             ML Directo ({mlOrders.length})
           </button>
+          <button className={`tab ${view === "productos" ? "active-cyan" : ""}`} onClick={() => setView("productos")} style={{ fontSize: 12, padding: "6px 12px" }}>
+            Productos ({productosMap.size})
+          </button>
           {pgOrders.length > 0 && (
             <button className={`tab ${view === "comparativa" ? "active-cyan" : ""}`} onClick={() => setView("comparativa")} style={{ fontSize: 12, padding: "6px 12px" }}>
               Comparativa ({commonCount} en común)
@@ -569,6 +618,74 @@ export default function AdminVentasML() {
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Productos view (agrupado por SKU) */}
+      {view === "productos" && mlOrders.length > 0 && (
+        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+          <div style={{ padding: 12, borderBottom: "1px solid var(--bg3)", display: "flex", gap: 8, alignItems: "center" }}>
+            <input
+              className="form-input"
+              placeholder="Buscar por SKU o nombre..."
+              value={productoSearch}
+              onChange={e => setProductoSearch(e.target.value)}
+              style={{ flex: 1, fontSize: 12 }}
+            />
+            <div style={{ fontSize: 11, color: "var(--txt3)" }}>{productos.length} SKUs</div>
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table className="tbl" style={{ width: "100%", fontSize: 11 }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: "left" }}>Producto</th>
+                  <th style={{ textAlign: "right" }}>Ingresos</th>
+                  <th style={{ textAlign: "left", minWidth: 200 }}>Costos</th>
+                  <th style={{ textAlign: "right" }}>Margen bruto</th>
+                  <th style={{ textAlign: "right" }}>Margen neto (post-ads)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {productos.map(p => {
+                  const pct = (n: number) => p.ingresos > 0 ? ((n / p.ingresos) * 100).toFixed(1) : "0.0";
+                  const margenPct = p.ingresos > 0 ? (p.margen / p.ingresos) * 100 : 0;
+                  const margenNetoPctCell = p.ingresos > 0 ? (p.margen_neto / p.ingresos) * 100 : 0;
+                  const mColor = p.margen >= 0 ? "var(--green)" : "var(--red)";
+                  const mnColor = p.margen_neto >= 0 ? "var(--green)" : "var(--red)";
+                  return (
+                    <tr key={p.sku_venta} style={{ borderBottom: "1px solid var(--bg3)" }}>
+                      <td style={{ padding: "10px 8px" }}>
+                        <div className="mono" style={{ fontSize: 11, fontWeight: 700, color: "var(--cyan)" }}>{p.sku_venta}</div>
+                        <div style={{ fontSize: 10, color: "var(--txt3)", maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.nombre}</div>
+                        <div style={{ fontSize: 9, color: "var(--txt3)", marginTop: 2 }}>
+                          <span style={{ padding: "1px 5px", borderRadius: 3, background: p.canal === "Full" ? "var(--blueBg)" : p.canal === "Flex" ? "var(--cyanBg)" : "var(--bg3)", color: p.canal === "Full" ? "var(--blue)" : p.canal === "Flex" ? "var(--cyan)" : "var(--txt3)" }}>{p.canal}</span>
+                          {" · "}{p.orders} órdenes · {p.unidades} u
+                        </div>
+                      </td>
+                      <td className="mono" style={{ textAlign: "right", padding: "10px 8px" }}>
+                        <div style={{ fontSize: 13, fontWeight: 700 }}>{fmt(p.ingresos)}</div>
+                        <div style={{ fontSize: 10, color: "var(--txt3)" }}>{p.unidades} u · {p.orders} órdenes</div>
+                      </td>
+                      <td style={{ padding: "10px 8px", fontSize: 10, color: "var(--txt3)" }}>
+                        <div>Costo prod: <span style={{ color: "var(--txt)" }}>{pct(p.costo_producto)}%</span> <span className="mono">{fmt(p.costo_producto)}</span></div>
+                        <div>Comisión: <span style={{ color: "var(--txt)" }}>{pct(p.comision)}%</span> <span className="mono">{fmt(p.comision)}</span></div>
+                        <div>Envío: <span style={{ color: "var(--txt)" }}>{pct(p.envio)}%</span> <span className="mono">{fmt(p.envio)}</span></div>
+                        {p.ads > 0 && <div>Ads: <span style={{ color: "var(--amber)" }}>{pct(p.ads)}%</span> <span className="mono">{fmt(p.ads)}</span></div>}
+                      </td>
+                      <td className="mono" style={{ textAlign: "right", padding: "10px 8px", fontWeight: 700, color: mColor }}>
+                        <div>{fmt(p.margen)}</div>
+                        <div style={{ fontSize: 10, opacity: 0.7 }}>{margenPct.toFixed(1)}%</div>
+                      </td>
+                      <td className="mono" style={{ textAlign: "right", padding: "10px 8px", fontWeight: 700, color: mnColor }}>
+                        <div>{fmt(p.margen_neto)}</div>
+                        <div style={{ fontSize: 10, opacity: 0.7 }}>{margenNetoPctCell.toFixed(1)}%</div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
