@@ -180,6 +180,16 @@ export async function POST(req: NextRequest) {
 
     const token = await getToken();
 
+    // Helper: parsea respuesta de ML defensivamente (puede venir vacía)
+    const parseMlResponse = async (resp: Response) => {
+      const raw = await resp.text();
+      let data: unknown = {};
+      if (raw) {
+        try { data = JSON.parse(raw); } catch { data = { raw }; }
+      }
+      return data;
+    };
+
     if (action === "create_discount") {
       if (!deal_price || !start_date || !finish_date) {
         return NextResponse.json({ error: "deal_price, start_date, finish_date requeridos" }, { status: 400 });
@@ -189,8 +199,11 @@ export async function POST(req: NextRequest) {
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ promotion_type: "PRICE_DISCOUNT", deal_price, start_date, finish_date }),
       });
-      const data = await resp.json();
-      if (!resp.ok) return NextResponse.json({ error: data.message || "Error ML", detail: data }, { status: resp.status });
+      const data = await parseMlResponse(resp);
+      if (!resp.ok) {
+        const errMsg = (data as { message?: string }).message || `HTTP ${resp.status}`;
+        return NextResponse.json({ error: errMsg, detail: data }, { status: resp.status });
+      }
       return NextResponse.json({ ok: true, result: data });
     }
 
@@ -206,8 +219,11 @@ export async function POST(req: NextRequest) {
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify(joinBody),
       });
-      const data = await resp.json();
-      if (!resp.ok) return NextResponse.json({ error: data.message || "Error ML", detail: data }, { status: resp.status });
+      const data = await parseMlResponse(resp);
+      if (!resp.ok) {
+        const errMsg = (data as { message?: string }).message || `HTTP ${resp.status}`;
+        return NextResponse.json({ error: errMsg, detail: data }, { status: resp.status });
+      }
       return NextResponse.json({ ok: true, result: data });
     }
 
@@ -220,8 +236,11 @@ export async function POST(req: NextRequest) {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
       });
-      const data = await resp.json();
-      if (!resp.ok) return NextResponse.json({ error: data.message || "Error ML", detail: data }, { status: resp.status });
+      const data = await parseMlResponse(resp);
+      if (!resp.ok) {
+        const errMsg = (data as { message?: string }).message || `HTTP ${resp.status}`;
+        return NextResponse.json({ error: errMsg, detail: data }, { status: resp.status });
+      }
       return NextResponse.json({ ok: true, result: data });
     }
 
