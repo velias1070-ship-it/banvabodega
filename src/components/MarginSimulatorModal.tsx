@@ -131,9 +131,11 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
       setMsg({ type: "ok", text: `Precio lista actualizado a ${fmtCLP(target)}` });
       if (onApplied) onApplied();
     } catch (e) {
-      setMsg({ type: "err", text: e instanceof Error ? e.message : "Error" });
+      const raw = e instanceof Error ? e.message : "Error";
+      setMsg({ type: "err", text: traducirErrorML(raw) });
     } finally {
       setApplying("none");
+      await loadPromosConDelay();
     }
   }
 
@@ -163,12 +165,42 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
       if (!res.ok) throw new Error(data.error || "Error");
       setMsg({ type: "ok", text: `Descuento creado/actualizado a ${fmtCLP(target)} por 30 días` });
       if (onApplied) onApplied();
-      await loadPromosConDelay();
     } catch (e) {
-      setMsg({ type: "err", text: e instanceof Error ? e.message : "Error" });
+      const raw = e instanceof Error ? e.message : "Error";
+      setMsg({ type: "err", text: traducirErrorML(raw, "PRICE_DISCOUNT") });
     } finally {
       setApplying("none");
+      await loadPromosConDelay();
     }
+  }
+
+  function traducirErrorML(msg: string, promoType?: string): string {
+    const m = msg.toLowerCase();
+    if (m.includes("no offers found")) {
+      if (promoType === "SELLER_CAMPAIGN") {
+        return "No puedes salir de una 'Campaña vendedor' desde acá. Es tuya, debes terminarla o quitar el ítem desde la gestión de campañas en ML.";
+      }
+      return "ML no encuentra la promo para este ítem. Probablemente ya fue eliminada o cambió de estado — refresca.";
+    }
+    if (m.includes("invalid_deal_price_range") || m.includes("price out of range")) {
+      return "Precio fuera del rango permitido. Usa el rango que muestra el card.";
+    }
+    if (m.includes("promotion_already_exists")) {
+      return "Ya tienes una promo del mismo tipo activa. Sal de ella primero.";
+    }
+    if (m.includes("item_on_another_campaign")) {
+      return "El ítem ya está en otra campaña que choca con esta.";
+    }
+    if (m.includes("minimum_discount")) {
+      return "El descuento es menor al mínimo exigido por ML (≥5%).";
+    }
+    if (m.includes("free_shipping_required")) {
+      return "Esta promo requiere envío gratis. Actívalo primero.";
+    }
+    if (m.includes("user_not_allowed") || m.includes("forbidden")) {
+      return "No tienes permisos para esta promo (reputación o categoría).";
+    }
+    return msg;
   }
 
   async function postularPromo(promo: NormalizedPromo, accion: "join" | "update") {
@@ -208,15 +240,21 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
       const verb = accion === "join" ? "Postulado" : "Actualizado";
       setMsg({ type: "ok", text: `${verb} a "${promo.name}" con precio ${fmtCLP(target)}` });
       if (onApplied) onApplied();
-      await loadPromosConDelay();
     } catch (e) {
-      setMsg({ type: "err", text: e instanceof Error ? e.message : "Error" });
+      const raw = e instanceof Error ? e.message : "Error";
+      setMsg({ type: "err", text: traducirErrorML(raw, promo.type) });
     } finally {
       setPromoAction(null);
+      // Siempre re-fetchear: a veces el error es un falso positivo y queremos ver el estado real
+      await loadPromosConDelay();
     }
   }
 
   async function salirPromo(promo: NormalizedPromo) {
+    if (promo.type === "SELLER_CAMPAIGN") {
+      setMsg({ type: "err", text: "No puedes salir de tu propia 'Campaña vendedor' desde acá. Debes ir a Gestión de campañas en ML y quitar el ítem o terminar la campaña." });
+      return;
+    }
     if (!confirm(`¿Salir de "${promo.name}"?`)) return;
     setPromoAction(promo.id || promo.type);
     setMsg(null);
@@ -235,11 +273,12 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
       if (!res.ok) throw new Error(data.error || "Error");
       setMsg({ type: "ok", text: `Saliste de "${promo.name}"` });
       if (onApplied) onApplied();
-      await loadPromosConDelay();
     } catch (e) {
-      setMsg({ type: "err", text: e instanceof Error ? e.message : "Error" });
+      const raw = e instanceof Error ? e.message : "Error";
+      setMsg({ type: "err", text: traducirErrorML(raw, promo.type) });
     } finally {
       setPromoAction(null);
+      await loadPromosConDelay();
     }
   }
 
@@ -397,7 +436,15 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
         <div style={{ padding: "14px 20px", borderBottom: "1px solid var(--bg4)" }}>
           <div style={{ fontSize: 10, color: "var(--txt3)", textTransform: "uppercase", marginBottom: 8, fontWeight: 600, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span>Promociones disponibles</span>
-            {promosLoading && <span style={{ fontSize: 9, color: "var(--cyan)" }}>Cargando...</span>}
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              {promosLoading && <span style={{ fontSize: 9, color: "var(--cyan)" }}>Cargando...</span>}
+              <button
+                onClick={loadPromos}
+                disabled={promosLoading}
+                title="Refrescar lista de promociones"
+                style={{ padding: "3px 8px", borderRadius: 4, fontSize: 11, background: "var(--bg4)", color: "var(--txt2)", border: "1px solid var(--bg4)", cursor: promosLoading ? "wait" : "pointer" }}
+              >🔄</button>
+            </div>
           </div>
           {!promosLoading && promos.length === 0 && (
             <div style={{ fontSize: 10, color: "var(--txt3)", fontStyle: "italic" }}>ML no ofrece promociones para este ítem.</div>
