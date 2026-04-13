@@ -329,7 +329,13 @@ export default function AdminMargenes() {
         </div>
       )}
 
-      {simItem && <MarginSimulatorModal item={simItem} onClose={() => setSimItem(null)} />}
+      {simItem && (
+        <MarginSimulatorModal
+          item={simItem}
+          onClose={() => setSimItem(null)}
+          onApplied={() => { /* el cache se refresca manualmente con el botón Refrescar */ }}
+        />
+      )}
     </div>
   );
 }

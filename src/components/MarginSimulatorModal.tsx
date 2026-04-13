@@ -1,5 +1,6 @@
 "use client";
-import { generarCurvaMargen, tramoPorPeso, fmtCLP, type CurvaRow } from "@/lib/ml-shipping";
+import { useMemo, useState } from "react";
+import { calcularMargen, generarCurvaMargen, tramoPorPeso, fmtCLP, type CurvaRow } from "@/lib/ml-shipping";
 
 export type SimulatorItem = {
   item_id: string;
@@ -18,9 +19,10 @@ export type SimulatorItem = {
 type Props = {
   item: SimulatorItem;
   onClose: () => void;
+  onApplied?: () => void;  // callback para refrescar el parent tras aplicar precio
 };
 
-export default function MarginSimulatorModal({ item, onClose }: Props) {
+export default function MarginSimulatorModal({ item, onClose, onApplied }: Props) {
   const pesoGr = item.peso_facturable || 0;
   const tramo = tramoPorPeso(pesoGr);
   const comisionPct = item.comision_pct || 14;
@@ -30,14 +32,79 @@ export default function MarginSimulatorModal({ item, onClose }: Props) {
     ? (item.promo_pct ?? Math.round(((item.price_ml - precioVenta) / item.price_ml) * 100))
     : 0;
 
-  const curva: CurvaRow[] = generarCurvaMargen({
-    precioActual: precioVenta,
+  // Target price (editable). Por defecto, el precio efectivo actual.
+  const [targetPrice, setTargetPrice] = useState<string>(String(precioVenta));
+  const target = parseInt(targetPrice) || 0;
+  const [applying, setApplying] = useState<"none" | "lista" | "promo">("none");
+  const [msg, setMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
+
+  const targetMargin = useMemo(() => {
+    if (target <= 0) return null;
+    return calcularMargen({ precio: target, costoBruto: item.costo_bruto, pesoGr, comisionPct });
+  }, [target, item.costo_bruto, pesoGr, comisionPct]);
+
+  const curva: CurvaRow[] = useMemo(() => generarCurvaMargen({
+    precioActual: target > 0 ? target : precioVenta,
     costoBruto: item.costo_bruto,
     pesoGr,
     comisionPct,
-    extraPoints: tienePromo ? [item.price_ml] : [],
-  });
+    extraPoints: [precioVenta, item.price_ml].filter(p => p > 0 && p !== target),
+  }), [target, precioVenta, item.price_ml, item.costo_bruto, pesoGr, comisionPct]);
   const pesoKg = pesoGr ? (pesoGr / 1000).toFixed(2) + " kg" : "—";
+
+  async function aplicarPrecioLista() {
+    if (target <= 0) return;
+    setApplying("lista");
+    setMsg(null);
+    try {
+      const res = await fetch("/api/ml/item-update", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ item_id: item.item_id, updates: { price: target } }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Error");
+      setMsg({ type: "ok", text: `Precio lista actualizado a ${fmtCLP(target)}` });
+      if (onApplied) onApplied();
+    } catch (e) {
+      setMsg({ type: "err", text: e instanceof Error ? e.message : "Error" });
+    } finally {
+      setApplying("none");
+    }
+  }
+
+  async function aplicarComoDescuento() {
+    if (target <= 0) return;
+    if (target >= item.price_ml) {
+      setMsg({ type: "err", text: "El precio con descuento debe ser menor que el precio lista" });
+      return;
+    }
+    setApplying("promo");
+    setMsg(null);
+    try {
+      const start = new Date().toISOString().slice(0, 10) + "T00:00:00.000Z";
+      const end = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10) + "T23:59:59.000Z";
+      const res = await fetch("/api/ml/promotions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          item_id: item.item_id,
+          action: "create_discount",
+          deal_price: target,
+          start_date: start,
+          finish_date: end,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Error");
+      setMsg({ type: "ok", text: `Descuento creado/actualizado a ${fmtCLP(target)} por 30 días` });
+      if (onApplied) onApplied();
+    } catch (e) {
+      setMsg({ type: "err", text: e instanceof Error ? e.message : "Error" });
+    } finally {
+      setApplying("none");
+    }
+  }
 
   return (
     <div
@@ -97,6 +164,89 @@ export default function MarginSimulatorModal({ item, onClose }: Props) {
             {tienePromo && (
               <div style={{ fontSize: 9, color: "var(--amber)", marginTop: 2 }}>
                 Lista: <span className="mono" style={{ textDecoration: "line-through" }}>{fmtCLP(item.price_ml)}</span> −{descPromoPct}%
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Panel de ajuste de precio */}
+        <div style={{ padding: "14px 20px", borderBottom: "1px solid var(--bg4)", background: "var(--bg3)" }}>
+          <div style={{ fontSize: 10, color: "var(--txt3)", textTransform: "uppercase", marginBottom: 8, fontWeight: 600 }}>
+            Simular y aplicar precio
+          </div>
+          <div style={{ display: "flex", alignItems: "flex-end", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ flex: "0 0 150px" }}>
+              <div style={{ fontSize: 9, color: "var(--txt3)", marginBottom: 3 }}>Precio objetivo</div>
+              <input
+                type="number"
+                value={targetPrice}
+                onChange={e => setTargetPrice(e.target.value.replace(/\D/g, ""))}
+                className="form-input"
+                style={{ width: "100%", padding: "8px 10px", fontSize: 14, fontWeight: 700, fontFamily: "var(--font-mono, monospace)", textAlign: "right" }}
+                inputMode="numeric"
+              />
+            </div>
+            {targetMargin && (
+              <div style={{ flex: "1 1 auto", display: "flex", gap: 14, fontSize: 11 }}>
+                <div>
+                  <div style={{ fontSize: 9, color: "var(--txt3)" }}>Comisión</div>
+                  <div className="mono" style={{ color: "var(--txt2)", fontWeight: 600 }}>{fmtCLP(targetMargin.comision)}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 9, color: "var(--txt3)" }}>Envío</div>
+                  <div className="mono" style={{ color: "var(--txt2)", fontWeight: 600 }}>{fmtCLP(targetMargin.envio)}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 9, color: "var(--txt3)" }}>Margen</div>
+                  <div className="mono" style={{ color: targetMargin.margen > 0 ? "var(--green)" : "var(--red)", fontWeight: 700, fontSize: 13 }}>
+                    {fmtCLP(targetMargin.margen)}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 9, color: "var(--txt3)" }}>%</div>
+                  <div className="mono" style={{ color: targetMargin.margen > 0 ? "var(--green)" : "var(--red)", fontWeight: 700, fontSize: 13 }}>
+                    {targetMargin.margenPct.toFixed(1)}%
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+            <button
+              onClick={aplicarPrecioLista}
+              disabled={applying !== "none" || target <= 0 || target === item.price_ml}
+              style={{
+                padding: "8px 14px", borderRadius: 6, fontSize: 11, fontWeight: 700,
+                background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)",
+                cursor: applying === "none" ? "pointer" : "wait",
+                opacity: (applying !== "none" || target <= 0 || target === item.price_ml) ? 0.5 : 1,
+              }}
+              title="Actualiza el precio lista en MercadoLibre vía PUT /items/{id}"
+            >
+              {applying === "lista" ? "Aplicando..." : "Aplicar como precio lista"}
+            </button>
+            <button
+              onClick={aplicarComoDescuento}
+              disabled={applying !== "none" || target <= 0 || target >= item.price_ml}
+              style={{
+                padding: "8px 14px", borderRadius: 6, fontSize: 11, fontWeight: 700,
+                background: "var(--amberBg)", color: "var(--amber)", border: "1px solid var(--amberBd)",
+                cursor: applying === "none" ? "pointer" : "wait",
+                opacity: (applying !== "none" || target <= 0 || target >= item.price_ml) ? 0.5 : 1,
+              }}
+              title="Crea o actualiza un descuento (PRICE_DISCOUNT) en ML por 30 días con ese precio"
+            >
+              {applying === "promo" ? "Aplicando..." : "Aplicar como descuento (30d)"}
+            </button>
+            {msg && (
+              <div style={{
+                padding: "6px 12px", borderRadius: 6, fontSize: 11,
+                background: msg.type === "ok" ? "var(--greenBg)" : "var(--redBg)",
+                color: msg.type === "ok" ? "var(--green)" : "var(--red)",
+                border: `1px solid ${msg.type === "ok" ? "var(--green)" : "var(--red)"}`,
+                flex: "1 1 100%",
+              }}>
+                {msg.text}
               </div>
             )}
           </div>
