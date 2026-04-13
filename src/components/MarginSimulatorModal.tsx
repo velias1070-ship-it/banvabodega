@@ -64,22 +64,58 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
   const pesoGr = item.peso_facturable || 0;
   const tramo = tramoPorPeso(pesoGr);
   const comisionPct = item.comision_pct || 14;
-  const precioVenta = item.precio_venta && item.precio_venta > 0 ? item.precio_venta : item.price_ml;
-  const tienePromo = !!item.tiene_promo && precioVenta !== item.price_ml;
-  const descPromoPct = tienePromo && item.price_ml > 0
-    ? (item.promo_pct ?? Math.round(((item.price_ml - precioVenta) / item.price_ml) * 100))
-    : 0;
 
-  // Target price (editable). Por defecto, el precio efectivo actual.
-  const [targetPrice, setTargetPrice] = useState<string>(String(precioVenta));
+  // Target price (editable). Por defecto, el precio efectivo actual del cache
+  // (luego `precioVenta` del useMemo puede actualizarse con data live).
+  const initialPrecio = item.precio_venta && item.precio_venta > 0 ? item.precio_venta : item.price_ml;
+  const [targetPrice, setTargetPrice] = useState<string>(String(initialPrecio));
   const target = parseInt(targetPrice) || 0;
   const [applying, setApplying] = useState<"none" | "lista" | "promo">("none");
   const [msg, setMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
 
   // Promociones disponibles del ítem
   const [promos, setPromos] = useState<NormalizedPromo[]>([]);
+  const [promosLoaded, setPromosLoaded] = useState(false);
   const [promosLoading, setPromosLoading] = useState(false);
   const [promoAction, setPromoAction] = useState<string | null>(null); // id de la promo en acción
+
+  // Precio venta efectivo: si ya se cargaron las promos live, usa la promo activa
+  // del feed. Si aún no, usa el snapshot del cache (item.precio_venta) como fallback.
+  const { precioVenta, tienePromo, descPromoPct, cacheStale } = useMemo(() => {
+    const cacheVenta = item.precio_venta && item.precio_venta > 0 ? item.precio_venta : item.price_ml;
+    const cacheTienePromo = !!item.tiene_promo && cacheVenta !== item.price_ml;
+
+    if (!promosLoaded) {
+      return {
+        precioVenta: cacheVenta,
+        tienePromo: cacheTienePromo,
+        descPromoPct: cacheTienePromo && item.price_ml > 0
+          ? (item.promo_pct ?? Math.round(((item.price_ml - cacheVenta) / item.price_ml) * 100))
+          : 0,
+        cacheStale: false,
+      };
+    }
+
+    // Usar promos live: si hay alguna "started" con precio, esa es la vigente
+    const activa = promos.find(p => p.activa && p.price_actual > 0);
+    if (activa) {
+      const pct = item.price_ml > 0 ? Math.round(((item.price_ml - activa.price_actual) / item.price_ml) * 100) : 0;
+      return {
+        precioVenta: activa.price_actual,
+        tienePromo: true,
+        descPromoPct: pct,
+        cacheStale: cacheTienePromo && cacheVenta !== activa.price_actual,
+      };
+    }
+
+    // Live dice que no hay promo activa
+    return {
+      precioVenta: item.price_ml,
+      tienePromo: false,
+      descPromoPct: 0,
+      cacheStale: cacheTienePromo, // cache decía que había promo pero live dice que no
+    };
+  }, [promos, promosLoaded, item.precio_venta, item.price_ml, item.tiene_promo, item.promo_pct]);
 
   const loadPromos = useCallback(async () => {
     setPromosLoading(true);
@@ -89,6 +125,7 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
       const data = await res.json();
       if (res.ok && Array.isArray(data.promotions)) {
         setPromos(data.promotions);
+        setPromosLoaded(true);
       }
     } catch { /* silent */ }
     setPromosLoading(false);
@@ -372,6 +409,11 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
             )}
           </div>
         </div>
+        {cacheStale && (
+          <div style={{ padding: "8px 20px", fontSize: 10, color: "var(--amber)", background: "var(--amberBg)", borderBottom: "1px solid var(--amberBd)", borderTop: "1px solid var(--amberBd)" }}>
+            ⚠ El cache de Márgenes está desactualizado para este ítem (dice que tiene promo, pero ML dice que no). Refresca la vista Márgenes cuando puedas.
+          </div>
+        )}
 
         {/* Panel de ajuste de precio */}
         <div style={{ padding: "14px 20px", borderBottom: "1px solid var(--bg4)", background: "var(--bg3)" }}>
