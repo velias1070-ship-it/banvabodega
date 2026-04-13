@@ -1,6 +1,44 @@
 "use client";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { calcularMargen, generarCurvaMargen, tramoPorPeso, fmtCLP, type CurvaRow } from "@/lib/ml-shipping";
+
+type NormalizedPromo = {
+  id: string | null;
+  type: string;
+  sub_type: string | null;
+  name: string;
+  status: string;
+  offer_type: string | null;
+  start_date: string | null;
+  finish_date: string | null;
+  price_actual: number;
+  original_price: number;
+  suggested_price: number;
+  min_price: number;
+  max_price: number;
+  top_deal_price: number;
+  meli_pct: number;
+  seller_pct: number;
+  deal_id: string | null;
+  activa: boolean;
+  postulable: boolean;
+  permite_custom_price: boolean;
+};
+
+const PROMO_LABELS: Record<string, string> = {
+  PRICE_DISCOUNT: "Descuento propio",
+  DEAL: "Oferta ML",
+  MARKETPLACE_CAMPAIGN: "Campaña ML",
+  SELLER_CAMPAIGN: "Campaña vendedor",
+  SMART: "Smart (precio óptimo)",
+  LIGHTNING: "Oferta relámpago",
+  LIGHTNING_DEAL: "Oferta relámpago",
+  DOD: "Oferta del día",
+  MELI_CHOICE: "Meli Choice",
+  PRICE_MATCHING_MELI_ALL: "Price matching",
+  UNHEALTHY_STOCK: "Stock estancado",
+  VOLUME: "Descuento por volumen",
+};
 
 export type SimulatorItem = {
   item_id: string;
@@ -37,6 +75,25 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
   const target = parseInt(targetPrice) || 0;
   const [applying, setApplying] = useState<"none" | "lista" | "promo">("none");
   const [msg, setMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
+
+  // Promociones disponibles del ítem
+  const [promos, setPromos] = useState<NormalizedPromo[]>([]);
+  const [promosLoading, setPromosLoading] = useState(false);
+  const [promoAction, setPromoAction] = useState<string | null>(null); // id de la promo en acción
+
+  const loadPromos = useCallback(async () => {
+    setPromosLoading(true);
+    try {
+      const res = await fetch(`/api/ml/item-promotions?item_id=${item.item_id}`);
+      const data = await res.json();
+      if (res.ok && Array.isArray(data.promotions)) {
+        setPromos(data.promotions);
+      }
+    } catch { /* silent */ }
+    setPromosLoading(false);
+  }, [item.item_id]);
+
+  useEffect(() => { loadPromos(); }, [loadPromos]);
 
   const targetMargin = useMemo(() => {
     if (target <= 0) return null;
@@ -99,11 +156,88 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
       if (!res.ok) throw new Error(data.error || "Error");
       setMsg({ type: "ok", text: `Descuento creado/actualizado a ${fmtCLP(target)} por 30 días` });
       if (onApplied) onApplied();
+      await loadPromos();
     } catch (e) {
       setMsg({ type: "err", text: e instanceof Error ? e.message : "Error" });
     } finally {
       setApplying("none");
     }
+  }
+
+  async function postularPromo(promo: NormalizedPromo, accion: "join" | "update") {
+    if (!promo.permite_custom_price) {
+      setMsg({ type: "err", text: "Esta promo no acepta precio custom, contáctate con ML" });
+      return;
+    }
+    if (target <= 0) {
+      setMsg({ type: "err", text: "Ingresa un precio objetivo primero" });
+      return;
+    }
+    if (promo.min_price > 0 && target < promo.min_price) {
+      setMsg({ type: "err", text: `Precio bajo mínimo (${fmtCLP(promo.min_price)})` });
+      return;
+    }
+    if (promo.max_price > 0 && target > promo.max_price) {
+      setMsg({ type: "err", text: `Precio sobre máximo (${fmtCLP(promo.max_price)})` });
+      return;
+    }
+    setPromoAction(promo.id || promo.type);
+    setMsg(null);
+    try {
+      const res = await fetch("/api/ml/promotions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          item_id: item.item_id,
+          action: "join",
+          promotion_id: promo.id,
+          promotion_type: promo.type,
+          deal_price: target,
+          offer_type: promo.offer_type,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Error");
+      const verb = accion === "join" ? "Postulado" : "Actualizado";
+      setMsg({ type: "ok", text: `${verb} a "${promo.name}" con precio ${fmtCLP(target)}` });
+      if (onApplied) onApplied();
+      await loadPromos();
+    } catch (e) {
+      setMsg({ type: "err", text: e instanceof Error ? e.message : "Error" });
+    } finally {
+      setPromoAction(null);
+    }
+  }
+
+  async function salirPromo(promo: NormalizedPromo) {
+    if (!confirm(`¿Salir de "${promo.name}"?`)) return;
+    setPromoAction(promo.id || promo.type);
+    setMsg(null);
+    try {
+      const res = await fetch("/api/ml/promotions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          item_id: item.item_id,
+          action: "delete",
+          promotion_id: promo.id,
+          promotion_type: promo.type,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Error");
+      setMsg({ type: "ok", text: `Saliste de "${promo.name}"` });
+      if (onApplied) onApplied();
+      await loadPromos();
+    } catch (e) {
+      setMsg({ type: "err", text: e instanceof Error ? e.message : "Error" });
+    } finally {
+      setPromoAction(null);
+    }
+  }
+
+  function usarPrecioSugerido(precio: number) {
+    if (precio > 0) setTargetPrice(String(precio));
   }
 
   return (
@@ -249,6 +383,142 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
                 {msg.text}
               </div>
             )}
+          </div>
+        </div>
+
+        {/* Promociones disponibles */}
+        <div style={{ padding: "14px 20px", borderBottom: "1px solid var(--bg4)" }}>
+          <div style={{ fontSize: 10, color: "var(--txt3)", textTransform: "uppercase", marginBottom: 8, fontWeight: 600, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span>Promociones disponibles</span>
+            {promosLoading && <span style={{ fontSize: 9, color: "var(--cyan)" }}>Cargando...</span>}
+          </div>
+          {!promosLoading && promos.length === 0 && (
+            <div style={{ fontSize: 10, color: "var(--txt3)", fontStyle: "italic" }}>ML no ofrece promociones para este ítem.</div>
+          )}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {promos.map(p => {
+              const badge = p.activa ? { bg: "var(--greenBg)", color: "var(--green)", text: "ACTIVA" }
+                         : p.postulable ? { bg: "var(--amberBg)", color: "var(--amber)", text: "DISPONIBLE" }
+                         : { bg: "var(--bg4)", color: "var(--txt3)", text: p.status.toUpperCase() };
+              const label = PROMO_LABELS[p.type] || p.type;
+              const acting = promoAction === (p.id || p.type);
+              const targetFueraRango = p.min_price > 0 && p.max_price > 0 && (target < p.min_price || target > p.max_price);
+
+              // Calcular margen al precio objetivo (o al precio actual de la promo si estás adentro)
+              const precioSim = p.activa && p.price_actual > 0 ? p.price_actual : target;
+              const margenSim = precioSim > 0
+                ? calcularMargen({ precio: precioSim, costoBruto: item.costo_bruto, pesoGr, comisionPct })
+                : null;
+
+              return (
+                <div key={(p.id || "") + p.type} style={{
+                  border: "1px solid var(--bg4)",
+                  borderRadius: 8,
+                  padding: "10px 12px",
+                  background: p.activa ? "var(--greenBg)" : "var(--bg3)",
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 6 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: "var(--txt)" }}>{label}</span>
+                        <span style={{ padding: "1px 6px", borderRadius: 3, fontSize: 8, fontWeight: 700, background: badge.bg, color: badge.color, border: `1px solid ${badge.color}` }}>{badge.text}</span>
+                        {p.meli_pct > 0 && (
+                          <span title="Porcentaje del descuento que paga ML" style={{ fontSize: 9, color: "var(--cyan)", fontWeight: 600 }}>
+                            ML {p.meli_pct}% / Tú {p.seller_pct}%
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {p.name}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      {p.activa && (
+                        <>
+                          <button
+                            onClick={() => postularPromo(p, "update")}
+                            disabled={acting || target <= 0 || targetFueraRango}
+                            style={{
+                              padding: "5px 10px", borderRadius: 4, fontSize: 10, fontWeight: 700,
+                              background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)",
+                              cursor: acting ? "wait" : "pointer",
+                              opacity: (acting || target <= 0 || targetFueraRango) ? 0.5 : 1,
+                            }}
+                          >Actualizar</button>
+                          <button
+                            onClick={() => salirPromo(p)}
+                            disabled={acting}
+                            style={{
+                              padding: "5px 10px", borderRadius: 4, fontSize: 10, fontWeight: 700,
+                              background: "var(--redBg)", color: "var(--red)", border: "1px solid var(--redBd)",
+                              cursor: acting ? "wait" : "pointer",
+                              opacity: acting ? 0.5 : 1,
+                            }}
+                          >Salir</button>
+                        </>
+                      )}
+                      {p.postulable && p.permite_custom_price && (
+                        <button
+                          onClick={() => postularPromo(p, "join")}
+                          disabled={acting || target <= 0 || targetFueraRango}
+                          style={{
+                            padding: "5px 10px", borderRadius: 4, fontSize: 10, fontWeight: 700,
+                            background: "var(--amberBg)", color: "var(--amber)", border: "1px solid var(--amberBd)",
+                            cursor: acting ? "wait" : "pointer",
+                            opacity: (acting || target <= 0 || targetFueraRango) ? 0.5 : 1,
+                          }}
+                        >Postular</button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, fontSize: 10 }}>
+                    {p.min_price > 0 && (
+                      <div>
+                        <div style={{ fontSize: 8, color: "var(--txt3)", textTransform: "uppercase" }}>Rango</div>
+                        <div className="mono" style={{ fontWeight: 600, color: "var(--txt2)" }}>
+                          {fmtCLP(p.min_price)} – {fmtCLP(p.max_price)}
+                        </div>
+                      </div>
+                    )}
+                    {p.suggested_price > 0 && (
+                      <div>
+                        <div style={{ fontSize: 8, color: "var(--txt3)", textTransform: "uppercase" }}>Sugerido ML</div>
+                        <button
+                          onClick={() => usarPrecioSugerido(p.suggested_price)}
+                          title="Usar este precio en el input"
+                          className="mono"
+                          style={{ fontWeight: 700, color: "var(--cyan)", background: "transparent", border: "none", cursor: "pointer", padding: 0, textAlign: "left" }}
+                        >
+                          {fmtCLP(p.suggested_price)} ↵
+                        </button>
+                      </div>
+                    )}
+                    {p.activa && p.price_actual > 0 && (
+                      <div>
+                        <div style={{ fontSize: 8, color: "var(--txt3)", textTransform: "uppercase" }}>Precio actual</div>
+                        <div className="mono" style={{ fontWeight: 700, color: "var(--green)" }}>{fmtCLP(p.price_actual)}</div>
+                      </div>
+                    )}
+                    {margenSim && (
+                      <div>
+                        <div style={{ fontSize: 8, color: "var(--txt3)", textTransform: "uppercase" }}>
+                          Margen @ {fmtCLP(precioSim)}
+                        </div>
+                        <div className="mono" style={{ fontWeight: 700, color: margenSim.margen > 0 ? "var(--green)" : "var(--red)" }}>
+                          {fmtCLP(margenSim.margen)} ({margenSim.margenPct.toFixed(1)}%)
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  {targetFueraRango && (p.postulable || p.activa) && (
+                    <div style={{ marginTop: 6, fontSize: 9, color: "var(--red)", fontWeight: 600 }}>
+                      ⚠ Precio objetivo fuera del rango permitido
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
 

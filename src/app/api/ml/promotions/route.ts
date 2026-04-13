@@ -195,9 +195,11 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === "join") {
+      const { offer_type } = body;
       const joinBody: Record<string, unknown> = { promotion_type };
       if (promotion_id) joinBody.promotion_id = promotion_id;
       if (deal_price) joinBody.deal_price = deal_price;
+      if (offer_type) joinBody.offer_type = offer_type;
 
       const resp = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${item_id}?app_version=v2`, {
         method: "POST",
