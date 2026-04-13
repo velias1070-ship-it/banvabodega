@@ -277,49 +277,44 @@ export async function GET(req: NextRequest) {
           const totalNeto = subtotal - comisionTotal - costoEnvio + bonificacion;
 
           // Inmutabilidad: preservar snapshot si ya existía, sino resolver ahora.
+          // Inmutabilidad: solo preservamos lo que viene de fuentes externas
+          // (costo_producto, ads_cost_asignado). margen y margen_neto se
+          // recalculan siempre porque dependen de total_neto (que puede
+          // cambiar por re-balance de envío en packs compartidos).
           const snapshotKey = `${order.id}|${sku}`;
           const prev = snapshotByKey.get(snapshotKey);
           let costoProducto: number;
           let costoFuente: string;
           let costoSnapshotAt: string;
-          let margenFinal: number;
-          let margenPct: number;
           if (prev && prev.costo_producto != null) {
             costoProducto = prev.costo_producto;
             costoFuente = prev.costo_fuente || "promedio";
             costoSnapshotAt = prev.costo_snapshot_at || snapshotAt;
-            margenFinal = prev.margen ?? (totalNeto - costoProducto);
-            margenPct = prev.margen_pct ?? (subtotal > 0 ? Math.round(((totalNeto - costoProducto) / subtotal) * 10000) / 100 : 0);
           } else {
             const resolved = resolverCostoVenta(sku, item.quantity, preload);
             costoProducto = resolved.costo_producto;
             costoFuente = resolved.costo_fuente;
             costoSnapshotAt = snapshotAt;
-            const m = calcularMargenVenta(totalNeto, costoProducto, subtotal);
-            margenFinal = m.margen;
-            margenPct = m.margen_pct;
           }
+          const mBruto = calcularMargenVenta(totalNeto, costoProducto, subtotal);
+          const margenFinal = mBruto.margen;
+          const margenPct = mBruto.margen_pct;
 
-          // Ads: preservar o resolver
           let adsCostAsignado: number;
           let adsAtribucion: string;
-          let margenNeto: number;
-          let margenNetoPct: number;
           if (prev && prev.ads_cost_asignado != null) {
             adsCostAsignado = prev.ads_cost_asignado;
             adsAtribucion = prev.ads_atribucion || "sin_datos";
-            margenNeto = prev.margen_neto ?? (margenFinal - adsCostAsignado);
-            margenNetoPct = prev.margen_neto_pct ?? (subtotal > 0 ? Math.round(((margenFinal - adsCostAsignado) / subtotal) * 10000) / 100 : 0);
           } else {
             const fdate = toChileISO(order.date_closed || order.date_created).slice(0, 10);
             const itemId = skuToItemId.get(sku) || null;
             const ads = resolverAdsVenta(itemId, fdate, subtotal, adsPreload);
             adsCostAsignado = ads.ads_cost_asignado;
             adsAtribucion = ads.ads_atribucion;
-            const mn = calcularMargenNeto(margenFinal, adsCostAsignado, subtotal);
-            margenNeto = mn.margen_neto;
-            margenNetoPct = mn.margen_neto_pct;
           }
+          const mnFinal = calcularMargenNeto(margenFinal, adsCostAsignado, subtotal);
+          const margenNeto = mnFinal.margen_neto;
+          const margenNetoPct = mnFinal.margen_neto_pct;
 
           const anuladaVenta = prev?.anulada === true;
           const anuladaAt = prev?.anulada_at || null;

@@ -71,11 +71,27 @@ export async function upsertOrderToVentasCache(
     } catch { /* skip */ }
   }
 
-  const itemCount = order.order_items?.length || 1;
+  // Item count del pack completo: si la orden es parte de un shipment compartido
+  // con otras órdenes (pack_id != null), el costo del envío debe dividirse entre
+  // TODOS los items del pack, no solo los de esta orden. Buscamos hermanas en DB.
+  let packItemCount = order.order_items?.length || 1;
+  let siblingOrderIds: string[] = [];
+  if (order.pack_id && order.pack_id !== order.id) {
+    const { data: siblings } = await sb.from("ventas_ml_cache")
+      .select("order_id, cantidad")
+      .eq("order_number", String(order.pack_id))
+      .neq("order_id", String(order.id));
+    if (siblings && siblings.length > 0) {
+      siblingOrderIds = Array.from(new Set(siblings.map(s => s.order_id)));
+      // Sumar cantidad de hermanas ya guardadas (cada row ya es 1 item del sku_venta)
+      packItemCount += siblings.length;
+    }
+  }
+
   const packCostoEnvio = isFull ? senderCost : TARIFA_FLEX;
   const packBonificacion = isFull ? 0 : (senderBonif + receiverLoyal + receiverPaid);
-  const costoEnvioPorItem = Math.round(packCostoEnvio / itemCount);
-  const bonifPorItem = Math.round(packBonificacion / itemCount);
+  const costoEnvioPorItem = Math.round(packCostoEnvio / packItemCount);
+  const bonifPorItem = Math.round(packBonificacion / packItemCount);
   const esCancelada = order.status === "cancelled";
   const estado = options?.estado || (esCancelada ? "Cancelada" : "Pagada");
 
@@ -126,49 +142,43 @@ export async function upsertOrderToVentasCache(
     const comisionTotal = comisionUnit * item.quantity;
     const totalNeto = subtotal - comisionTotal - costoEnvioPorItem + bonifPorItem;
 
-    // Si la fila ya existía, preservar el snapshot contable original (inmutable).
-    // Si es nueva, resolver costo ahora.
+    // Inmutabilidad: solo preservar campos que vienen de fuentes externas
+    // (costo_producto, ads_cost_asignado). margen y margen_neto se recalculan
+    // SIEMPRE porque dependen de total_neto (que puede cambiar por re-balance
+    // de envío en packs compartidos).
     const existing = existingBySku.get(sku);
     let costo_producto: number;
     let costo_fuente: string;
     let costo_snapshot_at: string;
-    let margen: number;
-    let margen_pct: number;
     if (existing && existing.costo_producto != null) {
       costo_producto = existing.costo_producto;
       costo_fuente = existing.costo_fuente || "promedio";
       costo_snapshot_at = existing.costo_snapshot_at || snapshotAt;
-      margen = existing.margen ?? (totalNeto - costo_producto);
-      margen_pct = existing.margen_pct ?? (subtotal > 0 ? Math.round(((totalNeto - costo_producto) / subtotal) * 10000) / 100 : 0);
     } else {
       const resolved = resolverCostoVenta(sku, item.quantity, preload!);
       costo_producto = resolved.costo_producto;
       costo_fuente = resolved.costo_fuente;
       costo_snapshot_at = snapshotAt;
-      const m = calcularMargenVenta(totalNeto, costo_producto, subtotal);
-      margen = m.margen;
-      margen_pct = m.margen_pct;
     }
+    const mBruto = calcularMargenVenta(totalNeto, costo_producto, subtotal);
+    const margen = mBruto.margen;
+    const margen_pct = mBruto.margen_pct;
 
-    // Ads: igual que costo, preservar snapshot si ya existía, sino resolver.
+    // Ads: preservar atribución si ya existía (es snapshot del día)
     let ads_cost_asignado: number;
     let ads_atribucion: string;
-    let margen_neto: number;
-    let margen_neto_pct: number;
     if (existing && existing.ads_cost_asignado != null) {
       ads_cost_asignado = existing.ads_cost_asignado;
       ads_atribucion = existing.ads_atribucion || "sin_datos";
-      margen_neto = existing.margen_neto ?? (margen - ads_cost_asignado);
-      margen_neto_pct = existing.margen_neto_pct ?? (subtotal > 0 ? Math.round(((margen - ads_cost_asignado) / subtotal) * 10000) / 100 : 0);
     } else {
       const itemId = skuToItemId.get(sku) || null;
       const ads = resolverAdsVenta(itemId, fechaDate, subtotal, adsPreload);
       ads_cost_asignado = ads.ads_cost_asignado;
       ads_atribucion = ads.ads_atribucion;
-      const mn = calcularMargenNeto(margen, ads_cost_asignado, subtotal);
-      margen_neto = mn.margen_neto;
-      margen_neto_pct = mn.margen_neto_pct;
     }
+    const mn = calcularMargenNeto(margen, ads_cost_asignado, subtotal);
+    const margen_neto = mn.margen_neto;
+    const margen_neto_pct = mn.margen_neto_pct;
 
     // Anulada: si ya estaba marcada preservar la fecha original; si recién se anula ahora, timestamp.
     const anulada = esCancelada || (existing?.anulada === true);
@@ -222,6 +232,36 @@ export async function upsertOrderToVentasCache(
     console.warn(`[Ventas Cache] Insert error for order ${order.id}:`, error.message);
     return false;
   }
+
+  // Re-balancear costo_envio de las hermanas del pack con el nuevo packItemCount.
+  // Solo tocamos costos de envío y totales derivados. No ads_cost, no costo_producto.
+  if (siblingOrderIds.length > 0) {
+    const { data: siblings } = await sb.from("ventas_ml_cache")
+      .select("id, subtotal, comision_total, costo_producto, ads_cost_asignado")
+      .in("order_id", siblingOrderIds);
+    for (const s of siblings || []) {
+      const sub = s.subtotal || 0;
+      const com = s.comision_total || 0;
+      const cp = s.costo_producto || 0;
+      const ads = s.ads_cost_asignado || 0;
+      const newTotalNeto = sub - com - costoEnvioPorItem + bonifPorItem;
+      const newMargen = newTotalNeto - cp;
+      const newMargenPct = sub > 0 ? Math.round((newMargen / sub) * 10000) / 100 : 0;
+      const newMargenNeto = newMargen - ads;
+      const newMargenNetoPct = sub > 0 ? Math.round((newMargenNeto / sub) * 10000) / 100 : 0;
+      await sb.from("ventas_ml_cache").update({
+        costo_envio: costoEnvioPorItem,
+        ingreso_envio: bonifPorItem,
+        total_neto: newTotalNeto,
+        margen: newMargen,
+        margen_pct: newMargenPct,
+        margen_neto: newMargenNeto,
+        margen_neto_pct: newMargenNetoPct,
+        updated_at: snapshotAt,
+      }).eq("id", s.id);
+    }
+  }
+
   return true;
 }
 
