@@ -28,8 +28,11 @@ type ShipFree = { coverage?: { all_country?: { list_cost: number; billable_weigh
 type FeeInfo = { sale_fee_amount: number; sale_fee_details?: { percentage_fee: number } };
 
 // POST /api/ml/margin-cache/refresh?offset=0&limit=20
+// POST /api/ml/margin-cache/refresh?item_ids=MLC123,MLC456  ← refresh focalizado
+//
 // Procesa un chunk de items y actualiza ml_margin_cache. Para refresh completo,
 // el cliente llama repetidamente avanzando el offset hasta processed >= total.
+// Con item_ids procesa exactamente esos y devuelve done=true al final.
 export async function POST(req: NextRequest) {
   const sb = getServerSupabase();
   if (!sb) return NextResponse.json({ error: "no_db" }, { status: 500 });
@@ -37,13 +40,19 @@ export async function POST(req: NextRequest) {
   const url = new URL(req.url);
   const offset = parseInt(url.searchParams.get("offset") || "0", 10);
   const limit = Math.min(parseInt(url.searchParams.get("limit") || "15", 10), 30);
+  const itemIdsFilter = url.searchParams.get("item_ids")?.split(",").map(s => s.trim()).filter(Boolean);
 
-  // Traer todos los items activos y deduplicar por item_id (ml_items_map puede
-  // tener varias filas con el mismo item_id por variantes de color/talla).
-  const { data: allItems, error: eAll } = await sb
+  // Traer items activos y deduplicar por item_id (ml_items_map puede tener
+  // varias filas con el mismo item_id por variantes de color/talla). Si viene
+  // el filtro item_ids, solo buscamos esos.
+  let query = sb
     .from("ml_items_map")
     .select("sku,item_id,titulo,price,listing_type,category_id,status_ml")
     .eq("activo", true);
+  if (itemIdsFilter && itemIdsFilter.length > 0) {
+    query = query.in("item_id", itemIdsFilter);
+  }
+  const { data: allItems, error: eAll } = await query;
   if (eAll) return NextResponse.json({ error: eAll.message }, { status: 500 });
 
   const byId = new Map<string, MapRow>();
@@ -54,14 +63,16 @@ export async function POST(req: NextRequest) {
       byId.set(r.item_id, r);
       continue;
     }
-    // Preferir SKU real sobre fallback donde sku === item_id
     const existingFb = existing.sku === existing.item_id;
     const rowFb = r.sku === r.item_id;
     if (existingFb && !rowFb) byId.set(r.item_id, r);
   }
   const unique = Array.from(byId.values()).sort((a, b) => a.item_id.localeCompare(b.item_id));
   const total = unique.length;
-  const rows = unique.slice(offset, offset + limit);
+  // Cuando es refresh focalizado, ignoramos offset/limit y procesamos todo
+  const rows = itemIdsFilter && itemIdsFilter.length > 0
+    ? unique
+    : unique.slice(offset, offset + limit);
 
   if (rows.length === 0) {
     return NextResponse.json({ processed: offset, total, done: true });
@@ -275,11 +286,12 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const processed = offset + rows.length;
+  const isFocused = !!(itemIdsFilter && itemIdsFilter.length > 0);
+  const processed = isFocused ? rows.length : offset + rows.length;
   return NextResponse.json({
     processed,
     total: total || 0,
     chunk: rows.length,
-    done: processed >= (total || 0),
+    done: isFocused ? true : processed >= (total || 0),
   });
 }

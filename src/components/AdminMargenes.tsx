@@ -92,6 +92,7 @@ export default function AdminMargenes() {
   };
   const [commonPromos, setCommonPromos] = useState<CommonPromo[]>([]);
   const [selectedPromoKey, setSelectedPromoKey] = useState<string | null>(null);
+  const [showErrorsModal, setShowErrorsModal] = useState(false);
 
   const toggleSelect = (itemId: string) => {
     setSelected(prev => {
@@ -266,6 +267,16 @@ export default function AdminMargenes() {
     setCampaignLoading(false);
   };
 
+  // Refresca el cache de margen solo para los items afectados (más rápido que refresh completo)
+  const refrescarItemsAfectados = async (itemIds: string[]) => {
+    if (itemIds.length === 0) return;
+    try {
+      const q = itemIds.join(",");
+      await fetch(`/api/ml/margin-cache/refresh?item_ids=${encodeURIComponent(q)}`, { method: "POST" });
+      await loadCache();
+    } catch { /* silent */ }
+  };
+
   const runBulkCampaign = async () => {
     const target = parseInt(bulkPrice) || 0;
     if (target <= 0) { alert("Ingresa un precio válido"); return; }
@@ -311,6 +322,8 @@ export default function AdminMargenes() {
     }
     setBulkErrors(errors);
     setBulkApplying("none");
+    // Refresh focalizado de la cache para ver los nuevos valores reales
+    await refrescarItemsAfectados(todosAplicables);
   };
 
   const runBulk = async (mode: "lista" | "promo") => {
@@ -367,6 +380,8 @@ export default function AdminMargenes() {
     }
     setBulkErrors(errors);
     setBulkApplying("none");
+    // Refresh focalizado de la cache
+    await refrescarItemsAfectados(items.map(x => x.item_id));
   };
 
   // KPIs
@@ -652,14 +667,15 @@ export default function AdminMargenes() {
             </div>
           )}
           {bulkApplying === "none" && bulkProgress.total > 0 && (
-            <div style={{ fontSize: 11, color: "var(--txt2)", display: "flex", gap: 8 }}>
-              <span style={{ color: "var(--green)" }}>✓ {bulkProgress.ok}</span>
+            <div style={{ fontSize: 11, color: "var(--txt2)", display: "flex", gap: 8, alignItems: "center" }}>
+              <span style={{ color: "var(--green)", fontWeight: 700 }}>✓ {bulkProgress.ok} aplicado{bulkProgress.ok !== 1 ? "s" : ""}</span>
               {bulkProgress.err > 0 && (
                 <button
-                  onClick={() => alert(bulkErrors.map(e => `${e.sku}: ${e.error}`).join("\n"))}
-                  style={{ color: "var(--red)", background: "transparent", border: "none", cursor: "pointer", fontSize: 11, textDecoration: "underline" }}
-                >✗ {bulkProgress.err} — ver detalle</button>
+                  onClick={() => setShowErrorsModal(true)}
+                  style={{ color: "var(--red)", background: "var(--redBg)", border: "1px solid var(--red)", padding: "3px 8px", borderRadius: 4, cursor: "pointer", fontSize: 10, fontWeight: 700 }}
+                >✗ {bulkProgress.err} error{bulkProgress.err !== 1 ? "es" : ""} — ver</button>
               )}
+              {loading && <span style={{ fontSize: 10, color: "var(--cyan)" }}>refrescando cache...</span>}
             </div>
           )}
           <div style={{ flex: 1 }} />
@@ -668,6 +684,29 @@ export default function AdminMargenes() {
             disabled={bulkApplying !== "none"}
             style={{ padding: "6px 10px", borderRadius: 4, fontSize: 11, background: "var(--bg3)", color: "var(--txt3)", border: "1px solid var(--bg4)", cursor: "pointer" }}
           >Cancelar</button>
+        </div>
+      )}
+
+      {/* Modal de errores del bulk */}
+      {showErrorsModal && bulkErrors.length > 0 && (
+        <div
+          style={{ position: "fixed", inset: 0, zIndex: 10002, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+          onClick={() => setShowErrorsModal(false)}
+        >
+          <div onClick={e => e.stopPropagation()} style={{ background: "var(--bg2)", borderRadius: 12, width: "100%", maxWidth: 600, maxHeight: "80vh", overflow: "auto", border: "1px solid var(--red)", boxShadow: "0 20px 60px rgba(0,0,0,0.4)" }}>
+            <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--bg4)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "var(--red)" }}>Errores en bulk ({bulkErrors.length})</div>
+              <button onClick={() => setShowErrorsModal(false)} style={{ background: "transparent", border: "none", color: "var(--txt2)", fontSize: 18, cursor: "pointer" }}>✕</button>
+            </div>
+            <div style={{ padding: "10px 18px 16px" }}>
+              {bulkErrors.map((e, i) => (
+                <div key={i} style={{ padding: "8px 10px", marginBottom: 6, background: "var(--bg3)", borderRadius: 6, borderLeft: "3px solid var(--red)", fontSize: 11 }}>
+                  <div className="mono" style={{ fontWeight: 700, color: "var(--txt)" }}>{e.sku}</div>
+                  <div style={{ color: "var(--red)", marginTop: 2 }}>{e.error}</div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 
