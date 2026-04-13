@@ -1,7 +1,7 @@
 "use client";
 /* v3.1 — conteos + pedidos ML + cron fix */
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, refreshStore, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote, reconciliarStock, aplicarReconciliacion, editarStockVariante, sustituirProducto, getRecepcionAjustes, registrarAjuste, backfillFacturaOriginal, getNotasOperativas, despickearComponente, buildPickingLineasFull, getSkuFisicoPorSkuVenta, syncFlexPickingSession, resetearLineaRecepcion } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, refreshStore, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote, reconciliarStock, aplicarReconciliacion, editarStockVariante, sustituirProducto, getRecepcionAjustes, registrarAjuste, backfillFacturaOriginal, getNotasOperativas, despickearComponente, buildPickingLineasFull, getSkuFisicoPorSkuVenta, syncFlexPickingSession, resetearLineaRecepcion, sincronizarCostoMovimientosRecepcion } from "@/lib/store";
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia, IntegrityError } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
@@ -623,6 +623,10 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
         const oldCosto = originalLinea.costo_unitario || 0;
         if (oldCosto !== editLineaData.costo_unitario) {
           await registrarAjuste({ recepcion_id: selRec.id!, tipo: "costo", sku_original: originalLinea.sku, campo: "costo_unitario", valor_anterior: String(oldCosto), valor_nuevo: String(editLineaData.costo_unitario), motivo: "Ajuste costo por admin", admin: "admin" });
+          // Si la línea ya había sido ubicada, propagar el nuevo costo a movimientos + costo_promedio
+          if ((originalLinea.qty_ubicada || 0) > 0) {
+            await sincronizarCostoMovimientosRecepcion(originalLinea.sku, selRec.id!, editLineaData.costo_unitario);
+          }
         }
       }
     } catch (e: unknown) {
@@ -908,11 +912,18 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                           const newFactura: FacturaOriginal = { lineas: editFacturaLineas, neto, iva, bruto };
                           setLoading(true);
                           await updateRecepcionFacturaOriginal(selRec.id!, newFactura);
-                          // Sync qty_factura y costo_unitario en recepcion_lineas; crear línea si es nueva
+                          // Sync qty_factura y costo_unitario en recepcion_lineas; crear línea si es nueva.
+                          // Si la línea ya había sido ubicada y el costo cambió, sincronizamos también
+                          // los movimientos y el costo_promedio (de lo contrario queda inconsistente).
                           for (const fl of editFacturaLineas) {
                             const match = lineas.find(l => l.sku === fl.sku);
                             if (match) {
+                              const oldCosto = match.costo_unitario || 0;
+                              const costoCambio = oldCosto !== fl.costo_unitario;
                               await actualizarLineaRecepcion(match.id!, { qty_factura: fl.cantidad, costo_unitario: fl.costo_unitario });
+                              if (costoCambio && (match.qty_ubicada || 0) > 0) {
+                                await sincronizarCostoMovimientosRecepcion(fl.sku, selRec.id!, fl.costo_unitario);
+                              }
                             } else {
                               await agregarLineaRecepcion(selRec.id!, { sku: fl.sku, nombre: fl.nombre, codigoML: "", cantidad: fl.cantidad, costo: fl.costo_unitario, requiereEtiqueta: false });
                             }

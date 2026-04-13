@@ -1031,6 +1031,69 @@ export async function actualizarLineaRecepcion(id: string, fields: Partial<db.DB
   await db.updateRecepcionLinea(id, fields);
 }
 
+/**
+ * Sincroniza el costo_unitario de los movimientos de entrada existentes de
+ * una recepción para un SKU dado, y recalcula productos.costo_promedio como
+ * promedio ponderado real sobre todas las entradas con costo del SKU.
+ *
+ * Usar cuando se edita el costo de una línea ya ubicada (factura original
+ * corregida a posteriori), para que la cache de costo promedio y el audit
+ * trail de movimientos reflejen el costo correcto.
+ */
+export async function sincronizarCostoMovimientosRecepcion(
+  skuOrigen: string,
+  recepcionId: string,
+  nuevoCostoUnitario: number,
+) {
+  const sb = db.getSupabase();
+  if (!sb) return;
+  const skuUp = (skuOrigen || "").toUpperCase().trim();
+  if (!skuUp || !recepcionId) return;
+
+  // 1. Update movimientos de entrada de esta recepción+sku con el nuevo costo
+  await sb.from("movimientos").update({ costo_unitario: nuevoCostoUnitario })
+    .eq("recepcion_id", recepcionId)
+    .eq("sku", skuUp)
+    .eq("tipo", "entrada");
+
+  // 2. Recalcular productos.costo_promedio como promedio ponderado real
+  const { data: mvs } = await sb.from("movimientos")
+    .select("cantidad,costo_unitario")
+    .eq("sku", skuUp)
+    .eq("tipo", "entrada")
+    .not("costo_unitario", "is", null)
+    .gt("costo_unitario", 0);
+
+  if (mvs && mvs.length > 0) {
+    let sumQty = 0;
+    let sumQtyCost = 0;
+    for (const m of mvs as Array<{ cantidad: number; costo_unitario: number }>) {
+      sumQty += m.cantidad;
+      sumQtyCost += m.cantidad * m.costo_unitario;
+    }
+    const nuevoPromedio = sumQty > 0 ? Math.round((sumQtyCost / sumQty) * 100) / 100 : 0;
+    await sb.from("productos").update({ costo_promedio: nuevoPromedio }).eq("sku", skuUp);
+    // Sync cache
+    if (_cache.products[skuUp]) {
+      _cache.products[skuUp].costAvg = nuevoPromedio;
+    }
+  } else {
+    // No hay movimientos con costo — dejar costo_promedio igual a costo catálogo si existe
+    const { data: p } = await sb.from("productos").select("costo").eq("sku", skuUp).limit(1);
+    const costoCat = (p?.[0] as { costo?: number } | undefined)?.costo || 0;
+    if (costoCat > 0) {
+      await sb.from("productos").update({ costo_promedio: costoCat }).eq("sku", skuUp);
+      if (_cache.products[skuUp]) _cache.products[skuUp].costAvg = costoCat;
+    }
+  }
+
+  await db.auditLog("sincronizarCostoMovimientosRecepcion", {
+    entidad: "recepcion", entidad_id: recepcionId, operario: "admin",
+    params: { sku: skuUp, nuevoCostoUnitario },
+    resultado: { movs_actualizados: true },
+  });
+}
+
 // Reset línea a PENDIENTE — revierte stock si ya fue ubicada
 export async function resetearLineaRecepcion(lineaId: string, recepcionId: string) {
   const lineas = await db.fetchRecepcionLineas(recepcionId);
