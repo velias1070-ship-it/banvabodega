@@ -69,9 +69,29 @@ export default function AdminMargenes() {
   // Selección múltiple + bulk apply
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkPrice, setBulkPrice] = useState<string>("");
-  const [bulkApplying, setBulkApplying] = useState<"none" | "lista" | "promo">("none");
+  const [bulkApplying, setBulkApplying] = useState<"none" | "lista" | "promo" | "campaign">("none");
   const [bulkProgress, setBulkProgress] = useState({ done: 0, total: 0, ok: 0, err: 0 });
   const [bulkErrors, setBulkErrors] = useState<Array<{ sku: string; error: string }>>([]);
+
+  // Bulk campaign modal
+  const [campaignModalOpen, setCampaignModalOpen] = useState(false);
+  const [campaignLoading, setCampaignLoading] = useState(false);
+  type CommonPromo = {
+    id: string | null;
+    type: string;
+    name: string;
+    min_price: number;
+    max_price: number;
+    suggested_price: number;
+    start_date: string | null;
+    finish_date: string | null;
+    offer_type: string | null;
+    itemsPostulables: string[]; // item_ids en candidate
+    itemsActivos: string[];     // item_ids ya started/pending
+    itemsNoDisponible: string[]; // item_ids sin esta promo
+  };
+  const [commonPromos, setCommonPromos] = useState<CommonPromo[]>([]);
+  const [selectedPromoKey, setSelectedPromoKey] = useState<string | null>(null);
 
   const toggleSelect = (itemId: string) => {
     setSelected(prev => {
@@ -173,6 +193,124 @@ export default function AdminMargenes() {
       }
       return next;
     });
+  };
+
+  const abrirCampaignModal = async () => {
+    const items = rows.filter(r => selected.has(r.item_id));
+    if (items.length === 0) return;
+    setCampaignModalOpen(true);
+    setCampaignLoading(true);
+    setCommonPromos([]);
+    setSelectedPromoKey(null);
+
+    // Fetch promos para todos en batches de 5 para no saturar ML API
+    type FetchResult = { item_id: string; promos: Array<{ id: string | null; type: string; name: string; status: string; min_price: number; max_price: number; suggested_price: number; start_date: string | null; finish_date: string | null; offer_type: string | null; permite_custom_price: boolean }> };
+    const results: FetchResult[] = [];
+    const batchSize = 5;
+    for (let i = 0; i < items.length; i += batchSize) {
+      const batch = items.slice(i, i + batchSize);
+      const batchResults = await Promise.all(batch.map(async it => {
+        try {
+          const res = await fetch(`/api/ml/item-promotions?item_id=${it.item_id}&_=${Date.now()}`, { cache: "no-store" });
+          const data = await res.json();
+          return { item_id: it.item_id, promos: Array.isArray(data.promotions) ? data.promotions : [] };
+        } catch {
+          return { item_id: it.item_id, promos: [] };
+        }
+      }));
+      results.push(...batchResults);
+    }
+
+    // Agrupar por (promotion_id || type) para encontrar promos comunes
+    const byKey = new Map<string, CommonPromo>();
+    for (const r of results) {
+      for (const p of r.promos) {
+        if (!p.permite_custom_price) continue;
+        const key = p.id ? `${p.type}::${p.id}` : `${p.type}::_`;
+        let common = byKey.get(key);
+        if (!common) {
+          common = {
+            id: p.id,
+            type: p.type,
+            name: p.name,
+            min_price: p.min_price,
+            max_price: p.max_price,
+            suggested_price: p.suggested_price,
+            start_date: p.start_date,
+            finish_date: p.finish_date,
+            offer_type: p.offer_type,
+            itemsPostulables: [],
+            itemsActivos: [],
+            itemsNoDisponible: [],
+          };
+          byKey.set(key, common);
+        }
+        if (p.status === "candidate") common.itemsPostulables.push(r.item_id);
+        else if (p.status === "started" || p.status === "pending") common.itemsActivos.push(r.item_id);
+      }
+    }
+    // Completar itemsNoDisponible: los que no aparecen en ninguna lista
+    const commonList = Array.from(byKey.values());
+    for (const common of commonList) {
+      const inEither = new Set([...common.itemsPostulables, ...common.itemsActivos]);
+      for (const r of items) {
+        if (!inEither.has(r.item_id)) common.itemsNoDisponible.push(r.item_id);
+      }
+    }
+
+    // Ordenar por mayor cantidad de items que pueden participar
+    const sorted = commonList.sort((a, b) =>
+      (b.itemsPostulables.length + b.itemsActivos.length) - (a.itemsPostulables.length + a.itemsActivos.length)
+    );
+    setCommonPromos(sorted);
+    setCampaignLoading(false);
+  };
+
+  const runBulkCampaign = async () => {
+    const target = parseInt(bulkPrice) || 0;
+    if (target <= 0) { alert("Ingresa un precio válido"); return; }
+    if (!selectedPromoKey) return;
+    const promo = commonPromos.find(p => (p.id ? `${p.type}::${p.id}` : `${p.type}::_`) === selectedPromoKey);
+    if (!promo) return;
+    // Validar rango
+    if (promo.min_price > 0 && target < promo.min_price) { alert(`Precio bajo mínimo (${promo.min_price})`); return; }
+    if (promo.max_price > 0 && target > promo.max_price) { alert(`Precio sobre máximo (${promo.max_price})`); return; }
+
+    const todosAplicables = [...promo.itemsPostulables, ...promo.itemsActivos];
+    if (todosAplicables.length === 0) { alert("Ningún ítem puede participar de esta promo"); return; }
+
+    setBulkApplying("campaign");
+    setBulkProgress({ done: 0, total: todosAplicables.length, ok: 0, err: 0 });
+    setBulkErrors([]);
+    const errors: Array<{ sku: string; error: string }> = [];
+    let ok = 0;
+
+    for (let i = 0; i < todosAplicables.length; i++) {
+      const itemId = todosAplicables[i];
+      const row = rows.find(r => r.item_id === itemId);
+      try {
+        const res = await fetch("/api/ml/promotions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            item_id: itemId,
+            action: "join",
+            promotion_id: promo.id,
+            promotion_type: promo.type,
+            deal_price: target,
+            offer_type: promo.offer_type,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        ok++;
+      } catch (e) {
+        errors.push({ sku: row?.sku || itemId, error: e instanceof Error ? e.message : "Error" });
+      }
+      setBulkProgress({ done: i + 1, total: todosAplicables.length, ok, err: errors.length });
+    }
+    setBulkErrors(errors);
+    setBulkApplying("none");
   };
 
   const runBulk = async (mode: "lista" | "promo") => {
@@ -487,6 +625,17 @@ export default function AdminMargenes() {
               whiteSpace: "nowrap",
             }}
           >Aplicar como descuento 30d</button>
+          <button
+            onClick={abrirCampaignModal}
+            disabled={bulkApplying !== "none"}
+            style={{
+              padding: "8px 14px", borderRadius: 6, fontSize: 12, fontWeight: 700,
+              background: "var(--greenBg)", color: "var(--green)", border: "1px solid var(--green)",
+              cursor: bulkApplying !== "none" ? "wait" : "pointer",
+              opacity: bulkApplying !== "none" ? 0.5 : 1,
+              whiteSpace: "nowrap",
+            }}
+          >Postular a campaña ML →</button>
           {bulkApplying !== "none" && bulkProgress.total > 0 && (
             <div style={{ fontSize: 11, color: "var(--txt2)", display: "flex", gap: 8 }}>
               <span>{bulkProgress.done}/{bulkProgress.total}</span>
@@ -511,6 +660,165 @@ export default function AdminMargenes() {
             disabled={bulkApplying !== "none"}
             style={{ padding: "6px 10px", borderRadius: 4, fontSize: 11, background: "var(--bg3)", color: "var(--txt3)", border: "1px solid var(--bg4)", cursor: "pointer" }}
           >Cancelar</button>
+        </div>
+      )}
+
+      {/* Modal selección de campaña para bulk */}
+      {campaignModalOpen && (
+        <div
+          style={{ position: "fixed", inset: 0, zIndex: 10001, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+          onClick={() => bulkApplying === "none" && setCampaignModalOpen(false)}
+        >
+          <div onClick={e => e.stopPropagation()} style={{ background: "var(--bg2)", borderRadius: 14, width: "100%", maxWidth: 760, maxHeight: "90vh", overflow: "auto", border: "1px solid var(--bg4)", boxShadow: "0 20px 60px rgba(0,0,0,0.4)" }}>
+            <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--bg4)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "var(--cyan)" }}>Postular {selected.size} ítems a una campaña ML</div>
+                <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 2 }}>
+                  Promos comunes detectadas. Elige una y todos los ítems que puedan participar irán con el mismo precio.
+                </div>
+              </div>
+              <button onClick={() => bulkApplying === "none" && setCampaignModalOpen(false)} style={{ background: "transparent", border: "none", color: "var(--txt2)", fontSize: 20, cursor: "pointer", padding: "0 4px" }}>✕</button>
+            </div>
+
+            {campaignLoading ? (
+              <div style={{ padding: 40, textAlign: "center", color: "var(--txt3)" }}>
+                Analizando promos disponibles en cada ítem...
+              </div>
+            ) : commonPromos.length === 0 ? (
+              <div style={{ padding: 40, textAlign: "center", color: "var(--txt3)" }}>
+                No hay promos con precio custom comunes a los ítems seleccionados.
+              </div>
+            ) : (
+              <>
+                <div style={{ padding: "14px 20px 10px" }}>
+                  <div style={{ fontSize: 9, color: "var(--txt3)", marginBottom: 4 }}>Precio objetivo</div>
+                  <input
+                    type="number"
+                    value={bulkPrice}
+                    onChange={e => setBulkPrice(e.target.value.replace(/\D/g, ""))}
+                    placeholder="ej. 19980"
+                    className="form-input"
+                    style={{ width: "100%", padding: "10px 12px", fontSize: 16, fontWeight: 700, fontFamily: "var(--font-mono, monospace)", textAlign: "right" }}
+                    inputMode="numeric"
+                    disabled={bulkApplying !== "none"}
+                  />
+                </div>
+
+                <div style={{ padding: "0 20px 14px", display: "flex", flexDirection: "column", gap: 8 }}>
+                  {commonPromos.map(p => {
+                    const key = p.id ? `${p.type}::${p.id}` : `${p.type}::_`;
+                    const isSelected = selectedPromoKey === key;
+                    const totalAplicables = p.itemsPostulables.length + p.itemsActivos.length;
+                    const target = parseInt(bulkPrice) || 0;
+                    const fueraRango = p.min_price > 0 && p.max_price > 0 && (target < p.min_price || target > p.max_price);
+                    return (
+                      <label
+                        key={key}
+                        style={{
+                          display: "block",
+                          padding: 12,
+                          borderRadius: 8,
+                          background: isSelected ? "var(--cyanBg)" : "var(--bg3)",
+                          border: `1px solid ${isSelected ? "var(--cyan)" : "var(--bg4)"}`,
+                          cursor: bulkApplying !== "none" ? "wait" : "pointer",
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                          <input
+                            type="radio"
+                            name="bulk-campaign"
+                            checked={isSelected}
+                            onChange={() => setSelectedPromoKey(key)}
+                            disabled={bulkApplying !== "none"}
+                          />
+                          <div style={{ flex: 1 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                              <span style={{ fontSize: 13, fontWeight: 700, color: "var(--txt)" }}>{p.type}</span>
+                              <span style={{ fontSize: 11, color: "var(--txt2)" }}>{p.name}</span>
+                            </div>
+                            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginTop: 6, fontSize: 10 }}>
+                              <div>
+                                <div style={{ color: "var(--txt3)", fontSize: 8, textTransform: "uppercase" }}>Postulables</div>
+                                <div className="mono" style={{ color: "var(--amber)", fontWeight: 700 }}>{p.itemsPostulables.length}</div>
+                              </div>
+                              <div>
+                                <div style={{ color: "var(--txt3)", fontSize: 8, textTransform: "uppercase" }}>Ya en promo</div>
+                                <div className="mono" style={{ color: "var(--green)", fontWeight: 700 }}>{p.itemsActivos.length}</div>
+                              </div>
+                              <div>
+                                <div style={{ color: "var(--txt3)", fontSize: 8, textTransform: "uppercase" }}>No aplica</div>
+                                <div className="mono" style={{ color: "var(--red)", fontWeight: 700 }}>{p.itemsNoDisponible.length}</div>
+                              </div>
+                              <div>
+                                <div style={{ color: "var(--txt3)", fontSize: 8, textTransform: "uppercase" }}>Total a tocar</div>
+                                <div className="mono" style={{ color: "var(--cyan)", fontWeight: 700 }}>{totalAplicables}</div>
+                              </div>
+                            </div>
+                            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginTop: 8, fontSize: 10 }}>
+                              {p.min_price > 0 && (
+                                <div>
+                                  <div style={{ color: "var(--txt3)", fontSize: 8, textTransform: "uppercase" }}>Rango ML</div>
+                                  <div className="mono" style={{ color: "var(--txt2)" }}>${p.min_price.toLocaleString("es-CL")} – ${p.max_price.toLocaleString("es-CL")}</div>
+                                </div>
+                              )}
+                              {p.suggested_price > 0 && (
+                                <div>
+                                  <div style={{ color: "var(--txt3)", fontSize: 8, textTransform: "uppercase" }}>Sugerido ML</div>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => { e.preventDefault(); setBulkPrice(String(p.suggested_price)); }}
+                                    className="mono"
+                                    style={{ color: "var(--cyan)", background: "transparent", border: "none", cursor: "pointer", padding: 0, fontWeight: 700 }}
+                                  >${p.suggested_price.toLocaleString("es-CL")} ↵</button>
+                                </div>
+                              )}
+                              {p.finish_date && (
+                                <div>
+                                  <div style={{ color: "var(--txt3)", fontSize: 8, textTransform: "uppercase" }}>Hasta</div>
+                                  <div className="mono" style={{ color: "var(--txt2)" }}>{new Date(p.finish_date).toLocaleDateString("es-CL", { day: "2-digit", month: "short" })}</div>
+                                </div>
+                              )}
+                            </div>
+                            {isSelected && fueraRango && target > 0 && (
+                              <div style={{ marginTop: 6, fontSize: 10, color: "var(--red)", fontWeight: 600 }}>
+                                ⚠ Precio {fmtCLP(target)} fuera del rango permitido
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+
+                <div style={{ padding: "12px 20px 16px", borderTop: "1px solid var(--bg4)", display: "flex", alignItems: "center", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
+                  {bulkApplying === "campaign" && bulkProgress.total > 0 && (
+                    <div style={{ fontSize: 11, color: "var(--txt2)", marginRight: "auto" }}>
+                      {bulkProgress.done}/{bulkProgress.total} · <span style={{ color: "var(--green)" }}>✓ {bulkProgress.ok}</span>
+                      {bulkProgress.err > 0 && <span style={{ color: "var(--red)", marginLeft: 6 }}>✗ {bulkProgress.err}</span>}
+                    </div>
+                  )}
+                  <button
+                    onClick={() => setCampaignModalOpen(false)}
+                    disabled={bulkApplying === "campaign"}
+                    style={{ padding: "8px 14px", borderRadius: 6, fontSize: 12, background: "var(--bg3)", color: "var(--txt3)", border: "1px solid var(--bg4)", cursor: "pointer" }}
+                  >Cerrar</button>
+                  <button
+                    onClick={runBulkCampaign}
+                    disabled={!selectedPromoKey || !bulkPrice || bulkApplying === "campaign"}
+                    style={{
+                      padding: "8px 16px", borderRadius: 6, fontSize: 12, fontWeight: 700,
+                      background: "var(--greenBg)", color: "var(--green)", border: "1px solid var(--green)",
+                      cursor: bulkApplying === "campaign" ? "wait" : "pointer",
+                      opacity: (!selectedPromoKey || !bulkPrice || bulkApplying === "campaign") ? 0.5 : 1,
+                    }}
+                  >
+                    {bulkApplying === "campaign" ? "Procesando..." : "Aplicar a todos"}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       )}
     </div>
