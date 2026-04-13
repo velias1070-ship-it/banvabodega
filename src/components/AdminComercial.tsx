@@ -775,11 +775,21 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
         const pesoGr = item.peso_facturable || 0;
         const tramo = tramoPorPeso(pesoGr);
         const comisionPct = item.comision_pct || 14;
+        // Precio efectivo = precio más bajo entre las promos activas (status "started").
+        // Si no hay promo activa, usa el precio lista (price_ml).
+        const promoActiva = item.promotions
+          .filter(p => p.status === "started" && p.price > 0)
+          .sort((a, b) => a.price - b.price)[0];
+        const precioVenta = promoActiva ? promoActiva.price : item.price_ml;
+        const descPromoPct = promoActiva && item.price_ml > 0
+          ? Math.round(((item.price_ml - promoActiva.price) / item.price_ml) * 100)
+          : 0;
         const curva: CurvaRow[] = generarCurvaMargen({
-          precioActual: item.price_ml,
+          precioActual: precioVenta,
           costoBruto: item.costo_bruto,
           pesoGr,
           comisionPct,
+          extraPoints: promoActiva ? [item.price_ml] : [],
         });
         const pesoFisicoKg = pesoGr ? (pesoGr / 1000).toFixed(2) + " kg" : "—";
         return (
@@ -810,8 +820,15 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                   <div className="mono" style={{ fontSize: 13, fontWeight: 700 }}>{comisionPct}%</div>
                 </div>
                 <div>
-                  <div style={{ color: "var(--txt3)", fontSize: 9, textTransform: "uppercase", marginBottom: 2 }}>Precio actual</div>
-                  <div className="mono" style={{ fontSize: 13, fontWeight: 700, color: "var(--cyan)" }}>{fmtCLP(item.price_ml)}</div>
+                  <div style={{ color: "var(--txt3)", fontSize: 9, textTransform: "uppercase", marginBottom: 2 }}>
+                    {promoActiva ? "Precio venta (promo)" : "Precio actual"}
+                  </div>
+                  <div className="mono" style={{ fontSize: 13, fontWeight: 700, color: "var(--cyan)" }}>{fmtCLP(precioVenta)}</div>
+                  {promoActiva && (
+                    <div style={{ fontSize: 9, color: "var(--amber)", marginTop: 2 }}>
+                      Lista: <span className="mono" style={{ textDecoration: "line-through" }}>{fmtCLP(item.price_ml)}</span> −{descPromoPct}%
+                    </div>
+                  )}
                 </div>
               </div>
 
