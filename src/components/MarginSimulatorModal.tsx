@@ -71,7 +71,7 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
   const [targetPrice, setTargetPrice] = useState<string>(String(initialPrecio));
   const target = parseInt(targetPrice) || 0;
   const [applying, setApplying] = useState<"none" | "lista" | "promo">("none");
-  const [msg, setMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
+  const [msg, setMsg] = useState<{ type: "ok" | "err" | "warn"; text: string } | null>(null);
 
   // Promociones disponibles del ítem
   const [promos, setPromos] = useState<NormalizedPromo[]>([]);
@@ -272,7 +272,15 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Error");
       const verb = accion === "join" ? "Postulado" : "Actualizado";
-      setMsg({ type: "ok", text: `${verb} a "${promo.name}" con precio ${fmtCLP(target)}` });
+      if (data.warning?.type === "price_overridden") {
+        const w = data.warning as { requested: number; applied: number };
+        setMsg({
+          type: "warn",
+          text: `⚠ ML aceptó la acción pero aplicó ${fmtCLP(w.applied)} en vez de ${fmtCLP(w.requested)}. "${promo.name}" usa descuento porcentual fijo — no acepta precio custom por ítem. Para forzar ${fmtCLP(w.requested)}: crea un PRICE_DISCOUNT propio (botón "Aplicar como descuento 30d" arriba) o baja el precio lista a ${fmtCLP(Math.round(w.requested / (w.applied / item.price_ml)))}.`,
+        });
+      } else {
+        setMsg({ type: "ok", text: `${verb} a "${promo.name}" con precio ${fmtCLP(target)}` });
+      }
       if (onApplied) onApplied();
     } catch (e) {
       const raw = e instanceof Error ? e.message : "Error";
@@ -486,10 +494,10 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
             </button>
             {msg && (
               <div style={{
-                padding: "6px 12px", borderRadius: 6, fontSize: 11,
-                background: msg.type === "ok" ? "var(--greenBg)" : "var(--redBg)",
-                color: msg.type === "ok" ? "var(--green)" : "var(--red)",
-                border: `1px solid ${msg.type === "ok" ? "var(--green)" : "var(--red)"}`,
+                padding: "8px 12px", borderRadius: 6, fontSize: 11, lineHeight: 1.4,
+                background: msg.type === "ok" ? "var(--greenBg)" : msg.type === "warn" ? "var(--amberBg)" : "var(--redBg)",
+                color: msg.type === "ok" ? "var(--green)" : msg.type === "warn" ? "var(--amber)" : "var(--red)",
+                border: `1px solid ${msg.type === "ok" ? "var(--green)" : msg.type === "warn" ? "var(--amber)" : "var(--red)"}`,
                 flex: "1 1 100%",
               }}>
                 {msg.text}

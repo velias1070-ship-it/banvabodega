@@ -224,6 +224,24 @@ export async function POST(req: NextRequest) {
         const errMsg = (data as { message?: string }).message || `HTTP ${resp.status}`;
         return NextResponse.json({ error: errMsg, detail: data }, { status: resp.status });
       }
+
+      // ML puede aceptar el POST (201 Created) pero silenciosamente ignorar
+      // el deal_price si la campaña es FLEXIBLE_PERCENTAGE (descuento fijo).
+      // En la respuesta viene el precio REAL aplicado. Si difiere del que pedimos,
+      // avisamos al caller con un flag para que muestre un warning.
+      const appliedPrice = (data as { price?: number }).price;
+      if (deal_price && appliedPrice && Math.abs(appliedPrice - deal_price) > 1) {
+        return NextResponse.json({
+          ok: true,
+          result: data,
+          warning: {
+            type: "price_overridden",
+            requested: deal_price,
+            applied: appliedPrice,
+            message: `ML ignoró tu precio ($${deal_price.toLocaleString("es-CL")}) y aplicó $${appliedPrice.toLocaleString("es-CL")} según la regla de la campaña (probablemente descuento porcentual fijo).`,
+          },
+        });
+      }
       return NextResponse.json({ ok: true, result: data });
     }
 
