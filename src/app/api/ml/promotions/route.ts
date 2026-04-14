@@ -211,7 +211,14 @@ export async function POST(req: NextRequest) {
       const { offer_type } = body;
       const joinBody: Record<string, unknown> = { promotion_type };
       if (promotion_id) joinBody.promotion_id = promotion_id;
-      if (deal_price) joinBody.deal_price = deal_price;
+      // ML usa distintos campos según el tipo de promo:
+      //   - PRICE_DISCOUNT, DEAL, MELI_CHOICE, MARKETPLACE_CAMPAIGN, DOD → deal_price
+      //   - SELLER_CAMPAIGN (FLEXIBLE_PERCENTAGE, CUSTOM_PRICE) → price
+      // Mandamos AMBOS para cubrir todos los casos — ML ignora el que no aplica.
+      if (deal_price) {
+        joinBody.deal_price = deal_price;
+        joinBody.price = deal_price;
+      }
       if (offer_type) joinBody.offer_type = offer_type;
 
       const resp = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${item_id}?app_version=v2`, {
@@ -226,11 +233,16 @@ export async function POST(req: NextRequest) {
       }
 
       // ML puede aceptar el POST (201 Created) pero silenciosamente ignorar
-      // el deal_price si la campaña es FLEXIBLE_PERCENTAGE (descuento fijo).
-      // En la respuesta viene el precio REAL aplicado. Si difiere del que pedimos,
+      // el precio si la campaña no lo soporta. En la respuesta viene el
+      // precio REAL aplicado. Si difiere significativamente del que pedimos,
       // avisamos al caller con un flag para que muestre un warning.
+      //
+      // Threshold: 2% del precio pedido o $200, lo que sea mayor — para
+      // tolerar redondeos de ML (que redondea a múltiplos de 10 o similar)
+      // sin perder la detección de "ML ignoró completamente mi precio".
       const appliedPrice = (data as { price?: number }).price;
-      if (deal_price && appliedPrice && Math.abs(appliedPrice - deal_price) > 1) {
+      const priceTolerance = Math.max(200, Math.round(deal_price * 0.02));
+      if (deal_price && appliedPrice && Math.abs(appliedPrice - deal_price) > priceTolerance) {
         return NextResponse.json({
           ok: true,
           result: data,
