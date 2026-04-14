@@ -597,7 +597,7 @@ export default function AdminMargenes() {
         <MarginSimulatorModal
           item={simItem}
           onClose={() => setSimItem(null)}
-          onApplied={() => { /* el cache se refresca manualmente con el botón Refrescar */ }}
+          onApplied={() => { refrescarItemsAfectados([simItem.item_id]); }}
         />
       )}
 

@@ -81,7 +81,7 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
 
   // Precio venta efectivo: si ya se cargaron las promos live, usa la promo activa
   // del feed. Si aún no, usa el snapshot del cache (item.precio_venta) como fallback.
-  const { precioVenta, tienePromo, descPromoPct, cacheStale } = useMemo(() => {
+  const { precioVenta, tienePromo, descPromoPct, cacheStale, cacheStaleMsg } = useMemo(() => {
     const cacheVenta = item.precio_venta && item.precio_venta > 0 ? item.precio_venta : item.price_ml;
     const cacheTienePromo = !!item.tiene_promo && cacheVenta !== item.price_ml;
 
@@ -93,6 +93,7 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
           ? (item.promo_pct ?? Math.round(((item.price_ml - cacheVenta) / item.price_ml) * 100))
           : 0,
         cacheStale: false,
+        cacheStaleMsg: "",
       };
     }
 
@@ -100,20 +101,28 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
     const activa = promos.find(p => p.activa && p.price_actual > 0);
     if (activa) {
       const pct = item.price_ml > 0 ? Math.round(((item.price_ml - activa.price_actual) / item.price_ml) * 100) : 0;
+      const stale = cacheVenta !== activa.price_actual;
       return {
         precioVenta: activa.price_actual,
         tienePromo: true,
         descPromoPct: pct,
-        cacheStale: cacheTienePromo && cacheVenta !== activa.price_actual,
+        cacheStale: stale,
+        cacheStaleMsg: stale
+          ? `Cache dice $${cacheVenta.toLocaleString("es-CL")}, ML live dice $${activa.price_actual.toLocaleString("es-CL")}. Mostrando el valor real de ML.`
+          : "",
       };
     }
 
     // Live dice que no hay promo activa
+    const stale = cacheTienePromo;
     return {
       precioVenta: item.price_ml,
       tienePromo: false,
       descPromoPct: 0,
-      cacheStale: cacheTienePromo, // cache decía que había promo pero live dice que no
+      cacheStale: stale,
+      cacheStaleMsg: stale
+        ? `Cache dice que tiene promo a $${cacheVenta.toLocaleString("es-CL")}, ML live dice que NO hay promo activa. Mostrando precio lista.`
+        : "",
     };
   }, [promos, promosLoaded, item.precio_venta, item.price_ml, item.tiene_promo, item.promo_pct]);
 
@@ -420,7 +429,7 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
         </div>
         {cacheStale && (
           <div style={{ padding: "8px 20px", fontSize: 10, color: "var(--amber)", background: "var(--amberBg)", borderBottom: "1px solid var(--amberBd)", borderTop: "1px solid var(--amberBd)" }}>
-            ⚠ El cache de Márgenes está desactualizado para este ítem (dice que tiene promo, pero ML dice que no). Refresca la vista Márgenes cuando puedas.
+            ⚠ Cache de Márgenes desactualizado: {cacheStaleMsg} Se va a auto-sincronizar cuando apliques una acción.
           </div>
         )}
 
