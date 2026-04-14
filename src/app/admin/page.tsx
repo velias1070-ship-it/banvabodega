@@ -3018,14 +3018,17 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
   };
 
   // Exportar para ML (formato SKU;Nombre;Cantidad) — agrupado por sku_venta
+  // IMPORTANTE: usa qtyVenta (listings de ML), NO qtyPedida (unidades físicas).
+  // Para un pack de 2 uds, qtyVenta=15 listings ≠ qtyPedida=30 almohadas físicas.
+  // qtyVenta se repite igual en líneas split por posición y en líneas de combo,
+  // así que se deduplica por sku_venta tomando el valor de la primera línea.
   const exportML = () => {
     const agg = new Map<string, { nombre: string; qty: number }>();
     for (const l of session.lineas) {
+      if (agg.has(l.skuVenta)) continue;
       const nombre = l.componentes[0]?.nombre || l.skuVenta;
-      const qty = l.qtyPedida || 0;
-      const prev = agg.get(l.skuVenta);
-      if (prev) prev.qty += qty;
-      else agg.set(l.skuVenta, { nombre, qty });
+      const qty = l.qtyVenta || 0;
+      agg.set(l.skuVenta, { nombre, qty });
     }
     const rows = Array.from(agg.entries()).filter(([, v]) => v.qty > 0);
     if (rows.length === 0) { showToast("Nada para exportar"); return; }
