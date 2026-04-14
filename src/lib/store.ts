@@ -1311,9 +1311,8 @@ export async function ubicarLinea(lineaId: string, sku: string, posicionId: stri
               unidadesPorPack: 1,
             };
 
-            // Add line to session
-            const updatedLineas = [...session.lineas, newLinea];
-            await db.updatePickingSession(session.id!, { lineas: updatedLineas });
+            // Add line atomically — append the new linea without clobbering concurrent writes
+            await db.agregarLineaPicking(session.id!, newLinea);
 
             // Reserve stock
             await db.reservarStock(sku, agregar);
@@ -2455,17 +2454,29 @@ export async function pickearComponente(
   (comp as unknown as Record<string, unknown>).scanMode = scanned?.mode || "manual";
   if (scanned?.codigo) (comp as unknown as Record<string, unknown>).scanCodigo = scanned.codigo;
 
-  if (linea.componentes.every(c => c.estado === "PICKEADO")) {
+  const lineaAllPicked = linea.componentes.every(c => c.estado === "PICKEADO");
+  if (lineaAllPicked) {
     linea.estado = "PICKEADO";
   }
 
-  const allDone = freshSession.lineas.every(l => l.estado === "PICKEADO");
+  const patch: Partial<db.PickingLinea> = {
+    componentes: linea.componentes,
+    estado: linea.estado,
+  };
+  const patched = await db.patchLineaPicking(sessionId, linea.id, patch);
+  if (!patched) {
+    console.error(`[Picking] patchLineaPicking failed for ${linea.id}, using FALLBACK`);
+    return pickearComponenteFallback(sessionId, lineaId, compIdx, operario, _session);
+  }
 
-  await db.updatePickingSession(sessionId, {
-    lineas: freshSession.lineas,
-    estado: allDone ? "COMPLETADA" : "EN_PROCESO",
-    ...(allDone ? { completed_at: new Date().toISOString() } : {}),
-  });
+  // Probable done: if every other line in the fresh snapshot was already PICKEADO
+  // and this one just finished, the session is likely complete. getActivePickingSessions
+  // only returns ABIERTA/EN_PROCESO — if it's gone, the RPC marked it COMPLETADA.
+  let allDone = false;
+  if (lineaAllPicked && freshSession.lineas.every(l => l.id === linea.id || l.estado === "PICKEADO")) {
+    const after = await db.getActivePickingSessions();
+    allDone = !after.some(s => s.id === sessionId);
+  }
 
   // Deduct stock — reservations are computed by reconciliar_reservas(), not managed here
   if (isConfigured()) {
@@ -2560,7 +2571,10 @@ export async function despickearComponente(
   sessionId: string, lineaId: string, compIdx: number, operario: string,
   session: db.DBPickingSession
 ): Promise<boolean> {
-  const linea = session.lineas.find(l => l.id === lineaId);
+  // Fresh read to avoid clobbering concurrent writes to the same session
+  const sessions = await db.getActivePickingSessions();
+  const freshSession = sessions.find(s => s.id === sessionId) || session;
+  const linea = freshSession.lineas.find(l => l.id === lineaId);
   if (!linea) return false;
   const comp = linea.componentes[compIdx];
   if (!comp || comp.estado !== "PICKEADO") return false;
@@ -2586,11 +2600,11 @@ export async function despickearComponente(
   linea.estado = "PENDIENTE";
   linea.estadoArmado = null;
 
-  // La sesión no puede estar completada si hay pendientes
-  await db.updatePickingSession(sessionId, {
-    lineas: session.lineas,
-    estado: "EN_PROCESO",
-    completed_at: null,
+  // Patch solo esta línea — la RPC recalcula estado de sesión (EN_PROCESO porque ahora hay pendientes)
+  await db.patchLineaPicking(sessionId, linea.id, {
+    componentes: linea.componentes,
+    estado: "PENDIENTE",
+    estadoArmado: null,
   });
   db.enqueueAndSync([comp.skuOrigen]);
 
@@ -2664,16 +2678,33 @@ export async function pickearLineaFull(
   if (scanned?.codigo) (comp as unknown as Record<string, unknown>).scanCodigo = scanned.codigo;
   linea.estado = "PICKEADO";
 
-  // Check if all lines are picked and armado done
-  const allPicked = freshSession.lineas.every(l => l.estado === "PICKEADO");
-  const allArmado = freshSession.lineas.every(l => !l.estadoArmado || l.estadoArmado === "COMPLETADO");
-  const sessionDone = allPicked && allArmado;
+  const patch: Partial<db.PickingLinea> = {
+    componentes: linea.componentes,
+    estado: "PICKEADO",
+  };
+  if (cantidadReal !== undefined && cantidadReal < (linea.qtyPedida ?? comp.unidades)) {
+    patch.qtyPedida = linea.qtyPedida;
+    patch.qtyFisica = linea.qtyFisica;
+  }
+  const patched = await db.patchLineaPicking(sessionId, linea.id, patch);
+  if (!patched) {
+    console.error(`[Picking Full] patchLineaPicking failed for ${linea.id}`);
+    await db.auditLog("pickearLineaFull:patch_error", {
+      entidad: "picking_session", entidad_id: sessionId, operario,
+      params: { lineaId: linea.id, sku: comp.skuOrigen },
+    }).catch(() => {});
+    return false;
+  }
 
-  await db.updatePickingSession(sessionId, {
-    lineas: freshSession.lineas,
-    estado: sessionDone ? "COMPLETADA" : "EN_PROCESO",
-    ...(sessionDone ? { completed_at: new Date().toISOString() } : {}),
-  });
+  // Probable done detection: if every other line in fresh snapshot was already
+  // PICKEADO+armado, this pick likely completed the session.
+  let sessionDone = false;
+  const prevAllPickedExceptMe = freshSession.lineas.every(l => l.id === linea.id || l.estado === "PICKEADO");
+  const prevAllArmadoExceptMe = freshSession.lineas.every(l => l.id === linea.id || !l.estadoArmado || l.estadoArmado === "COMPLETADO");
+  if (prevAllPickedExceptMe && prevAllArmadoExceptMe) {
+    const after = await db.getActivePickingSessions();
+    sessionDone = !after.some(s => s.id === sessionId);
+  }
 
   // Deduct stock fire & forget — don't block UI, session is already saved as PICKEADO
   if (isConfigured()) {
@@ -2726,17 +2757,12 @@ export async function guardarBultosLinea(
   bultos: number, bultoCompartido: string | null,
   _session: db.DBPickingSession
 ): Promise<boolean> {
-  // Re-read fresh session RIGHT BEFORE writing to avoid overwriting concurrent picks
-  const sessions = await db.getActivePickingSessions();
-  const freshSession = sessions.find(s => s.id === sessionId) || _session;
-  const linea = freshSession.lineas.find(l => l.id === lineaId);
-  if (!linea) return false;
-  // Only modify bultos fields — preserve estado/componentes from fresh read
-  linea.bultos = bultos;
-  linea.bultoCompartido = bultoCompartido;
-  // Don't change estado — let it remain whatever the fresh read has
-  await db.updatePickingSession(sessionId, { lineas: freshSession.lineas });
-  return true;
+  // Patch atómico: solo los campos de bultos. La RPC preserva estado/componentes
+  // y no los reescribe con un snapshot potencialmente viejo.
+  return db.patchLineaPicking(sessionId, lineaId, {
+    bultos,
+    bultoCompartido,
+  });
 }
 
 // Mark armado as completed for a line in envio_full session
@@ -2744,24 +2770,26 @@ export async function marcarArmadoFull(
   sessionId: string, lineaId: string, operario: string,
   _session: db.DBPickingSession
 ): Promise<boolean> {
-  // Re-read fresh session to avoid overwriting concurrent picks
+  // Read fresh solo para el probable-done check. El patch es atómico.
   const sessions = await db.getActivePickingSessions();
   const freshSession = sessions.find(s => s.id === sessionId) || _session;
   const linea = freshSession.lineas.find(l => l.id === lineaId);
   if (!linea || linea.estadoArmado === "COMPLETADO") return false;
 
-  linea.estadoArmado = "COMPLETADO";
-
-  // Check if session is fully done
-  const allPicked = freshSession.lineas.every(l => l.estado === "PICKEADO");
-  const allArmado = freshSession.lineas.every(l => !l.estadoArmado || l.estadoArmado === "COMPLETADO");
-  const sessionDone = allPicked && allArmado;
-
-  await db.updatePickingSession(sessionId, {
-    lineas: freshSession.lineas,
-    estado: sessionDone ? "COMPLETADA" : "EN_PROCESO",
-    ...(sessionDone ? { completed_at: new Date().toISOString() } : {}),
+  const patched = await db.patchLineaPicking(sessionId, lineaId, {
+    estadoArmado: "COMPLETADO",
   });
+  if (!patched) return false;
+
+  // Probable done: si antes todo estaba pickeado y todo menos esta línea estaba armado,
+  // este armado probablemente cerró la sesión.
+  let sessionDone = false;
+  const prevAllPicked = freshSession.lineas.every(l => l.estado === "PICKEADO");
+  const prevAllArmadoExceptMe = freshSession.lineas.every(l => l.id === lineaId || !l.estadoArmado || l.estadoArmado === "COMPLETADO");
+  if (prevAllPicked && prevAllArmadoExceptMe) {
+    const after = await db.getActivePickingSessions();
+    sessionDone = !after.some(s => s.id === sessionId);
+  }
 
   if (sessionDone) {
     import("./agents-triggers").then(m => m.dispararTrigger("picking_completado", { session_id: sessionId, tipo: "envio_full" })).catch(() => {});

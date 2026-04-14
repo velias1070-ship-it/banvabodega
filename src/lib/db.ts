@@ -1343,6 +1343,57 @@ export async function deletePickingSession(id: string): Promise<boolean> {
   return !error;
 }
 
+export async function patchLineaPicking(
+  sessionId: string,
+  lineaId: string,
+  patch: Partial<PickingLinea>,
+): Promise<boolean> {
+  const sb = getSupabase(); if (!sb) return false;
+  const { data, error } = await sb.rpc("actualizar_linea_picking", {
+    p_session_id: sessionId,
+    p_linea_id: lineaId,
+    p_patch: patch as unknown as Record<string, unknown>,
+  });
+  if (error) {
+    console.error("[patchLineaPicking]", error);
+    auditLog("patchLineaPicking:error", {
+      entidad: "picking_session", entidad_id: sessionId,
+      params: { lineaId, patchKeys: Object.keys(patch) },
+      error: error.message,
+    }).catch(() => {});
+    return false;
+  }
+  if (data == null) {
+    auditLog("patchLineaPicking:not_found", {
+      entidad: "picking_session", entidad_id: sessionId,
+      params: { lineaId, patchKeys: Object.keys(patch) },
+    }).catch(() => {});
+    return false;
+  }
+  return true;
+}
+
+export async function agregarLineaPicking(
+  sessionId: string,
+  linea: PickingLinea,
+): Promise<boolean> {
+  const sb = getSupabase(); if (!sb) return false;
+  const { error } = await sb.rpc("agregar_linea_picking", {
+    p_session_id: sessionId,
+    p_linea: linea as unknown as Record<string, unknown>,
+  });
+  if (error) {
+    console.error("[agregarLineaPicking]", error);
+    auditLog("agregarLineaPicking:error", {
+      entidad: "picking_session", entidad_id: sessionId,
+      params: { lineaId: linea.id },
+      error: error.message,
+    }).catch(() => {});
+    return false;
+  }
+  return true;
+}
+
 // ==================== CONTEOS CÍCLICOS ====================
 
 export interface ConteoLinea {
