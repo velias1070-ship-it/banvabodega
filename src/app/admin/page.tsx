@@ -2976,6 +2976,8 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
   const [addMode, setAddMode] = useState<"search" | "text">("search");
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState("");
+  const [splitMode, setSplitMode] = useState(false);
+  const [selectedForSplit, setSelectedForSplit] = useState<Set<string>>(new Set());
   const isFull = session.tipo === "envio_full";
   const totalComps = session.lineas.reduce((s, l) => s + l.componentes.length, 0);
   const doneComps = session.lineas.reduce((s, l) => s + l.componentes.filter(c => c.estado === "PICKEADO").length, 0);
@@ -3467,6 +3469,47 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
     }
   };
 
+  const toggleSplitLine = (lineaId: string) => {
+    setSelectedForSplit(prev => {
+      const next = new Set(prev);
+      if (next.has(lineaId)) next.delete(lineaId);
+      else next.add(lineaId);
+      return next;
+    });
+  };
+
+  const exitSplitMode = () => {
+    setSplitMode(false);
+    setSelectedForSplit(new Set());
+  };
+
+  const doSplit = async () => {
+    if (selectedForSplit.size === 0) { showToast("Selecciona al menos 1 línea"); return; }
+    if (selectedForSplit.size >= session.lineas.length) { showToast("No puedes mover todas las líneas"); return; }
+
+    const defaultTitle = `${session.titulo || `Envio Full ${session.fecha}`} — parte 2`;
+    const titulo = prompt("Título del nuevo envío:", defaultTitle);
+    if (!titulo) return;
+
+    const lineasMovidas = session.lineas.filter(l => selectedForSplit.has(l.id));
+    const lineasRestantes = session.lineas.filter(l => !selectedForSplit.has(l.id));
+
+    const renumbered = lineasMovidas.map((l, i) => ({ ...l, id: `F${String(i + 1).padStart(3, "0")}` }));
+
+    setSaving(true);
+    const newId = await crearPickingSession(session.fecha, renumbered, "envio_full", titulo);
+    if (!newId) {
+      setSaving(false);
+      showToast("Error creando nuevo envío");
+      return;
+    }
+    await actualizarPicking(session.id!, { lineas: lineasRestantes });
+    setSession({ ...session, lineas: lineasRestantes });
+    exitSplitMode();
+    setSaving(false);
+    showToast(`${lineasMovidas.length} líneas movidas a "${titulo}"`);
+  };
+
   return (
     <div>
       {toast && (
@@ -3495,9 +3538,32 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
               🔧 Reparar datos picking
             </button>
           )}
+          {isFull && !splitMode && (
+            <button onClick={() => { setSplitMode(true); setEditing(false); }} style={{padding:"6px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--cyan)",fontSize:11,fontWeight:600,border:"1px solid var(--cyan)33",cursor:"pointer"}}>
+              ✂️ Dividir envío
+            </button>
+          )}
+          {splitMode && (
+            <button onClick={exitSplitMode} style={{padding:"6px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--txt2)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)",cursor:"pointer"}}>
+              ✕ Cancelar split
+            </button>
+          )}
           <button onClick={doDelete} style={{padding:"6px 14px",borderRadius:6,background:"var(--redBg)",color:"var(--red)",fontSize:11,fontWeight:600,border:"1px solid var(--red)33"}}>Eliminar</button>
         </div>
       </div>
+
+      {splitMode && (
+        <div style={{padding:12,background:"var(--bg2)",borderRadius:10,border:"2px solid var(--cyan)",marginBottom:12,display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+          <div style={{fontSize:12,color:"var(--txt2)"}}>
+            <strong style={{color:"var(--cyan)"}}>Modo división:</strong> marca las líneas que quieres mover a un nuevo envío.{" "}
+            <span style={{color:"var(--cyan)",fontWeight:700}}>{selectedForSplit.size}</span> de {session.lineas.length} seleccionadas
+          </div>
+          <button onClick={doSplit} disabled={saving || selectedForSplit.size === 0 || selectedForSplit.size >= session.lineas.length}
+            style={{padding:"8px 16px",borderRadius:8,background:"var(--cyan)",color:"#0a0e17",fontSize:12,fontWeight:800,border:"none",cursor:"pointer",opacity:(saving||selectedForSplit.size===0||selectedForSplit.size>=session.lineas.length)?0.4:1}}>
+            {saving ? "Moviendo..." : "Crear nuevo envío con selección"}
+          </button>
+        </div>
+      )}
 
       {/* Header */}
       <div style={{padding:16,background:"var(--bg2)",borderRadius:10,border:"1px solid var(--bg3)",marginBottom:16}}>
@@ -3605,10 +3671,19 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
         <tbody>
           {session.lineas.map(linea => {
             const isPicked = linea.estado === "PICKEADO";
+            const isSelectedForSplit = selectedForSplit.has(linea.id);
             return linea.componentes.map((comp, ci) => (
-              <tr key={linea.id + "-" + ci} style={{borderBottom:"1px solid var(--bg3)",background:comp.estado==="PICKEADO"?"var(--greenBg)":"transparent"}}>
+              <tr key={linea.id + "-" + ci}
+                onClick={splitMode ? () => toggleSplitLine(linea.id) : undefined}
+                style={{borderBottom:"1px solid var(--bg3)",cursor:splitMode?"pointer":"default",
+                  background: splitMode && isSelectedForSplit ? "var(--cyan)22" : (comp.estado==="PICKEADO"?"var(--greenBg)":"transparent")}}>
                 {ci === 0 && (
                   <td rowSpan={linea.componentes.length} className="mono" style={{padding:"8px 6px",fontWeight:700,verticalAlign:"top"}}>
+                    {splitMode && (
+                      <input type="checkbox" checked={isSelectedForSplit} onChange={() => toggleSplitLine(linea.id)}
+                        onClick={e => e.stopPropagation()}
+                        style={{marginRight:6,cursor:"pointer",transform:"scale(1.2)",accentColor:"var(--cyan)"}}/>
+                    )}
                     {linea.skuVenta}
                     {isFull && linea.tipoFull && linea.tipoFull !== "simple" && (
                       <span style={{display:"block",fontSize:9,fontWeight:700,color:"var(--amber)",marginTop:2}}>
