@@ -131,9 +131,10 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
     setPromosLoading(false);
   }, [item.item_id]);
 
-  // Re-fetch con pequeño delay para dar tiempo a ML de propagar el cambio
+  // Re-fetch con delay para dar tiempo a ML de propagar. ML tarda ~3-5s en
+  // reflejar cambios en seller-promotions tras un POST/DELETE.
   const loadPromosConDelay = useCallback(async () => {
-    await new Promise(r => setTimeout(r, 700));
+    await new Promise(r => setTimeout(r, 3500));
     await loadPromos();
   }, [loadPromos]);
 

@@ -221,6 +221,22 @@ export async function POST(req: NextRequest) {
       }
       if (offer_type) joinBody.offer_type = offer_type;
 
+      // BUG confirmado probando live: cuando un ítem ya está en un SELLER_CAMPAIGN
+      // con un precio, el POST NO actualiza el precio aunque devuelva 201 Created.
+      // ML silenciosamente ignora el cambio. Para actualizar necesitamos
+      // DELETE → wait → POST fresh. DELETE sin query params extra es seguro
+      // (idempotente: si no estaba, no pasa nada).
+      if (promotion_type === "SELLER_CAMPAIGN") {
+        try {
+          await fetch(`https://api.mercadolibre.com/seller-promotions/items/${item_id}?app_version=v2`, {
+            method: "DELETE",
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          // ML propaga con ~3-5s de lag tras el DELETE
+          await new Promise(r => setTimeout(r, 2500));
+        } catch { /* ignore, el POST siguiente tirará error si hay algo mal */ }
+      }
+
       const resp = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${item_id}?app_version=v2`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -236,10 +252,6 @@ export async function POST(req: NextRequest) {
       // el precio si la campaña no lo soporta. En la respuesta viene el
       // precio REAL aplicado. Si difiere significativamente del que pedimos,
       // avisamos al caller con un flag para que muestre un warning.
-      //
-      // Threshold: 2% del precio pedido o $200, lo que sea mayor — para
-      // tolerar redondeos de ML (que redondea a múltiplos de 10 o similar)
-      // sin perder la detección de "ML ignoró completamente mi precio".
       const appliedPrice = (data as { price?: number }).price;
       const priceTolerance = Math.max(200, Math.round(deal_price * 0.02));
       if (deal_price && appliedPrice && Math.abs(appliedPrice - deal_price) > priceTolerance) {
@@ -250,7 +262,7 @@ export async function POST(req: NextRequest) {
             type: "price_overridden",
             requested: deal_price,
             applied: appliedPrice,
-            message: `ML ignoró tu precio ($${deal_price.toLocaleString("es-CL")}) y aplicó $${appliedPrice.toLocaleString("es-CL")} según la regla de la campaña (probablemente descuento porcentual fijo).`,
+            message: `ML ignoró tu precio ($${deal_price.toLocaleString("es-CL")}) y aplicó $${appliedPrice.toLocaleString("es-CL")} según la regla de la campaña.`,
           },
         });
       }
