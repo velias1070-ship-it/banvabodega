@@ -176,7 +176,10 @@ async function handleRefresh(req: NextRequest) {
   const cacheRows: Array<Record<string, unknown>> = [];
 
   for (const row of rows) {
-    const priceList = row.price || 0;
+    // IMPORTANTE: row.price (de ml_items_map) puede reflejar el precio CON
+    // promo aplicada, no el precio lista real. Vamos a corregirlo mas abajo
+    // con el original_price que viene en la respuesta de /seller-promotions.
+    let priceList = row.price || 0;
     const listingType = row.listing_type || "gold_special";
     const categoryId = row.category_id || "";
 
@@ -253,6 +256,14 @@ async function handleRefresh(req: NextRequest) {
         }
         comisionPct = feePct;
         if (Array.isArray(promos)) {
+          // Antes de buscar la promo activa, corregir priceList usando el
+          // original_price que ML reporta. Si el valor guardado en ml_items_map
+          // venia con la promo aplicada, el original_price es el "lista real".
+          const maxOriginal = Math.max(...promos.map(p => p.original_price || 0), 0);
+          if (maxOriginal > priceList) {
+            priceList = maxOriginal;
+          }
+
           const activa = promos
             .filter(p => p.status === "started" && p.price > 0)
             .sort((a, b) => a.price - b.price)[0];
@@ -260,9 +271,12 @@ async function handleRefresh(req: NextRequest) {
             tienePromo = true;
             precioVenta = activa.price;
             promoType = activa.type;
-            if (priceList > 0) {
-              promoPct = Math.round(((priceList - activa.price) / priceList) * 100);
+            // Usar el precio original real (no row.price que puede estar contaminado)
+            const listaReal = activa.original_price > 0 ? activa.original_price : priceList;
+            if (listaReal > 0) {
+              promoPct = Math.round(((listaReal - activa.price) / listaReal) * 100);
             }
+            priceList = listaReal;
           }
         }
       }
