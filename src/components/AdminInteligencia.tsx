@@ -390,6 +390,8 @@ export default function AdminInteligencia() {
   const [envioIpEdits, setEnvioIpEdits] = useState<Map<string, number>>(new Map());
   const [envioManualSearch, setEnvioManualSearch] = useState("");
   const [envioManualItems, setEnvioManualItems] = useState<{skuVenta:string;nombre:string;qty:number}[]>([]);
+  const envioManualItemsRef = useRef(envioManualItems);
+  useEffect(() => { envioManualItemsRef.current = envioManualItems; }, [envioManualItems]);
   const [vistaPedido, setVistaPedido] = useState(false);
 
   // Pedido a Proveedor
@@ -974,7 +976,8 @@ export default function AdminInteligencia() {
 
   // Crear picking from envío
   const crearPickingEnvioFull = useCallback(async () => {
-    if (envioSelected.length === 0 && envioManualItems.length === 0) return;
+    const manualesActuales = envioManualItemsRef.current;
+    if (envioSelected.length === 0 && manualesActuales.length === 0) return;
     if (creandoPicking) return;
     setCreandoPicking(true);
     setPickingCreado(null);
@@ -988,8 +991,10 @@ export default function AdminInteligencia() {
         componentes: i.componentes,
       }));
 
-      // Add manual items
-      for (const manual of envioManualItems) {
+      // Add manual items — siempre leer del ref, nunca del closure capturado.
+      // Bug histórico: el callback tenía deps incompletas y se quedaba con la
+      // lista vacía del primer render, ignorando los productos agregados a mano.
+      for (const manual of manualesActuales) {
         const comps = getComponentesPorSkuVenta(manual.skuVenta).filter(c => c.tipoRelacion !== "alternativo");
         source.push({
           skuVenta: manual.skuVenta,
@@ -1072,7 +1077,7 @@ export default function AdminInteligencia() {
     } finally {
       setCreandoPicking(false);
     }
-  }, [envioSelected, creandoPicking, envioEdits, envioSummary]);
+  }, [envioSelected, creandoPicking, envioEdits, envioSummary, envioManualItems]);
 
   // Log envio edit to admin_actions_log
   const logEnvioEdit = useCallback(async (skuVenta: string, cantidadSistema: number, cantidadAdmin: number, abc: string, cobFull: number) => {

@@ -3017,6 +3017,33 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
     showToast("CSV exportado");
   };
 
+  // Exportar para ML (formato SKU;Nombre;Cantidad) — agrupado por sku_venta
+  const exportML = () => {
+    const agg = new Map<string, { nombre: string; qty: number }>();
+    for (const l of session.lineas) {
+      const nombre = l.componentes[0]?.nombre || l.skuVenta;
+      const qty = l.qtyPedida || 0;
+      const prev = agg.get(l.skuVenta);
+      if (prev) prev.qty += qty;
+      else agg.set(l.skuVenta, { nombre, qty });
+    }
+    const rows = Array.from(agg.entries()).filter(([, v]) => v.qty > 0);
+    if (rows.length === 0) { showToast("Nada para exportar"); return; }
+
+    const headers = "SKU;Nombre;Cantidad";
+    const csvRows = rows.map(([sku, v]) => [sku, (v.nombre || "").replace(/;/g, ","), v.qty].join(";"));
+    const csv = "\uFEFF" + headers + "\n" + csvRows.join("\n");
+    const fecha = new Date().toISOString().slice(0, 10);
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `envio_full_meli_${fecha}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast("CSV ML exportado");
+  };
+
   const doDelete = async () => {
     if (!confirm("¿Eliminar esta sesión de picking completa?")) return;
     await eliminarPicking(session.id!);
@@ -3477,6 +3504,11 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
           {isFull && (
             <button onClick={exportCSV} style={{padding:"4px 10px",borderRadius:6,background:"var(--bg3)",color:"var(--cyan)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)",cursor:"pointer",marginLeft:4}}>
               📥 Exportar CSV
+            </button>
+          )}
+          {isFull && (
+            <button onClick={exportML} style={{padding:"4px 10px",borderRadius:6,background:"var(--bg3)",color:"var(--green)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)",cursor:"pointer",marginLeft:4}}>
+              📤 Exportar para ML
             </button>
           )}
         </div>
