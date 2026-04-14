@@ -1324,14 +1324,14 @@ export async function updatePickingSession(id: string, updates: Partial<DBPickin
   const lineasSummary = updates.lineas
     ? (updates.lineas as PickingLinea[]).map(l => `${l.id}:${l.estado}`).join(",")
     : undefined;
-  auditLog("updatePickingSession", {
+  void auditLog("updatePickingSession", {
     entidad: "picking_session", entidad_id: id,
     params: { estado: updates.estado, lineasCount: updates.lineas ? (updates.lineas as PickingLinea[]).length : 0, lineasSummary },
-  }).catch(() => {});
+  });
 
   const { error } = await sb.from("picking_sessions").update(payload).eq("id", id);
   if (error) {
-    auditLog("updatePickingSession:error", { entidad: "picking_session", entidad_id: id, error: error.message }).catch(() => {});
+    void auditLog("updatePickingSession:error", { entidad: "picking_session", entidad_id: id, error: error.message });
     throw new Error(`updatePickingSession failed for ${id}: ${error.message}`);
   }
   return true;
@@ -1356,18 +1356,18 @@ export async function patchLineaPicking(
   });
   if (error) {
     console.error("[patchLineaPicking]", error);
-    auditLog("patchLineaPicking:error", {
+    void auditLog("patchLineaPicking:error", {
       entidad: "picking_session", entidad_id: sessionId,
       params: { lineaId, patchKeys: Object.keys(patch) },
       error: error.message,
-    }).catch(() => {});
+    });
     return false;
   }
   if (data == null) {
-    auditLog("patchLineaPicking:not_found", {
+    void auditLog("patchLineaPicking:not_found", {
       entidad: "picking_session", entidad_id: sessionId,
       params: { lineaId, patchKeys: Object.keys(patch) },
-    }).catch(() => {});
+    });
     return false;
   }
   return true;
@@ -1384,14 +1384,60 @@ export async function agregarLineaPicking(
   });
   if (error) {
     console.error("[agregarLineaPicking]", error);
-    auditLog("agregarLineaPicking:error", {
+    void auditLog("agregarLineaPicking:error", {
       entidad: "picking_session", entidad_id: sessionId,
       params: { lineaId: linea.id },
       error: error.message,
-    }).catch(() => {});
+    });
     return false;
   }
   return true;
+}
+
+export async function eliminarLineaPicking(
+  sessionId: string,
+  lineaId: string,
+): Promise<boolean> {
+  const sb = getSupabase(); if (!sb) return false;
+  const { data, error } = await sb.rpc("eliminar_linea_picking", {
+    p_session_id: sessionId,
+    p_linea_id: lineaId,
+  });
+  if (error) {
+    console.error("[eliminarLineaPicking]", error);
+    void auditLog("eliminarLineaPicking:error", {
+      entidad: "picking_session", entidad_id: sessionId,
+      params: { lineaId },
+      error: error.message,
+    });
+    return false;
+  }
+  return data === true;
+}
+
+export async function dividirEnvioFull(
+  sessionId: string,
+  lineaIds: string[],
+  nuevoTitulo: string,
+  fecha: string,
+): Promise<string | null> {
+  const sb = getSupabase(); if (!sb) return null;
+  const { data, error } = await sb.rpc("dividir_envio_full", {
+    p_session_id: sessionId,
+    p_linea_ids: lineaIds,
+    p_nuevo_titulo: nuevoTitulo,
+    p_fecha: fecha,
+  });
+  if (error) {
+    console.error("[dividirEnvioFull]", error);
+    void auditLog("dividirEnvioFull:error", {
+      entidad: "picking_session", entidad_id: sessionId,
+      params: { lineaIds, nuevoTitulo, fecha },
+      error: error.message,
+    });
+    return null;
+  }
+  return (data as string) || null;
 }
 
 // ==================== CONTEOS CÍCLICOS ====================

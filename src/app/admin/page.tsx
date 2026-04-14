@@ -1,11 +1,11 @@
 "use client";
 /* v3.1 — conteos + pedidos ML + cron fix */
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, refreshStore, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, actualizarPicking, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote, reconciliarStock, aplicarReconciliacion, editarStockVariante, sustituirProducto, getRecepcionAjustes, registrarAjuste, backfillFacturaOriginal, getNotasOperativas, despickearComponente, buildPickingLineasFull, getSkuFisicoPorSkuVenta, syncFlexPickingSession, resetearLineaRecepcion, sincronizarCostoMovimientosRecepcion } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, refreshStore, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, eliminarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote, reconciliarStock, aplicarReconciliacion, editarStockVariante, sustituirProducto, getRecepcionAjustes, registrarAjuste, backfillFacturaOriginal, getNotasOperativas, despickearComponente, buildPickingLineasFull, getSkuFisicoPorSkuVenta, syncFlexPickingSession, resetearLineaRecepcion, sincronizarCostoMovimientosRecepcion } from "@/lib/store";
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia, IntegrityError } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
-import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado, transferirStock, reconciliarReservas, fetchResumenMovimientosHoy, fetchStockDisponible, fetchMovimientosHoy, fetchDesgloseReservas, enqueueAndSync, updateProductoCosto, toggleShipmentHidden } from "@/lib/db";
+import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado, transferirStock, reconciliarReservas, fetchResumenMovimientosHoy, fetchStockDisponible, fetchMovimientosHoy, fetchDesgloseReservas, enqueueAndSync, updateProductoCosto, toggleShipmentHidden, patchLineaPicking, agregarLineaPicking, eliminarLineaPicking, dividirEnvioFull } from "@/lib/db";
 import type { DBStockProyectado, DBReconciliacion } from "@/lib/db";
 import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap, ShipmentWithItems } from "@/lib/db";
 import { getOAuthUrl } from "@/lib/ml";
@@ -3057,13 +3057,16 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
 
   // Regenerar líneas pendientes con multi-posición
   const regenerarLineas = async () => {
-    // Agrupar SKUs pendientes por skuVenta sumando cantidades
-    const pendientes = session.lineas.filter(l => l.estado !== "PICKEADO");
-    const pickeadas = session.lineas.filter(l => l.estado === "PICKEADO");
-    if (pendientes.length === 0) { showToast("No hay líneas pendientes para regenerar"); return; }
-
     // Refrescar store para tener stock actualizado antes de recalcular posiciones
     await refreshStore();
+
+    // Fresh read de la sesión para no clobberar picks concurrentes
+    const freshList = await getActivePickings();
+    const live = freshList.find(s => s.id === session.id) || session;
+
+    const pendientes = live.lineas.filter(l => l.estado !== "PICKEADO");
+    const pickeadas = live.lineas.filter(l => l.estado === "PICKEADO");
+    if (pendientes.length === 0) { showToast("No hay líneas pendientes para regenerar"); return; }
 
     const skuMap = new Map<string, number>();
     for (const l of pendientes) {
@@ -3076,18 +3079,31 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
 
     // Re-numerar desde el máximo existente
     const prefix = isFull ? "F" : "P";
-    const maxNum = pickeadas.reduce((max, l) => {
+    let maxNum = pickeadas.reduce((max, l) => {
       const n = parseInt(l.id.replace(/^[A-Z]/, "")) || 0;
       return Math.max(max, n);
     }, 0);
-    const newLineas = result.lineas.map((l, i) => ({ ...l, id: `${prefix}${String(maxNum + i + 1).padStart(3, "0")}` }));
 
-    const allLineas = [...pickeadas, ...newLineas];
     setSaving(true);
-    await actualizarPicking(session.id!, { lineas: allLineas });
-    setSession({ ...session, lineas: allLineas });
+    // 1. Eliminar todas las pendientes viejas via RPC atómica
+    for (const l of pendientes) {
+      const ok = await eliminarLineaPicking(session.id!, l.id);
+      if (!ok) console.warn(`[regenerarLineas] no se pudo eliminar ${l.id}`);
+    }
+    // 2. Agregar las nuevas lineas renumeradas via RPC atómica
+    let added = 0;
+    for (const l of result.lineas) {
+      maxNum += 1;
+      const nueva: PickingLinea = { ...l, id: `${prefix}${String(maxNum).padStart(3, "0")}` };
+      const ok = await agregarLineaPicking(session.id!, nueva);
+      if (ok) added += 1;
+    }
+    // 3. Re-read fresco para reflejar estado final
+    const after = await getActivePickings();
+    const updated = after.find(s => s.id === session.id);
+    if (updated) setSession(updated);
     setSaving(false);
-    showToast(`Regeneradas ${newLineas.length} líneas (${pendientes.length} → ${newLineas.length} con multi-posición)`);
+    showToast(`Regeneradas ${added} líneas (${pendientes.length} → ${added} con multi-posición)`);
     if (result.errors.length > 0) alert("Advertencias:\n" + result.errors.join("\n"));
   };
 
@@ -3109,7 +3125,11 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
       return false;
     };
 
-    const lineasParaReparar = session.lineas.filter(needsRepair);
+    // Fresh read para trabajar con el estado actual (otros operadores pueden
+    // haber pickeado en paralelo y esos cambios deben preservarse)
+    const freshList = await getActivePickings();
+    const live = freshList.find(s => s.id === session.id) || session;
+    const lineasParaReparar = live.lineas.filter(needsRepair);
     if (lineasParaReparar.length === 0) { showToast("No hay líneas para reparar"); return; }
 
     setSaving(true);
@@ -3121,9 +3141,9 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
       const { data: otherSessions } = await sb
         .from("picking_sessions")
         .select("id, lineas, tipo")
-        .eq("tipo", session.tipo || "flex")
+        .eq("tipo", live.tipo || "flex")
         .in("estado", ["COMPLETADA", "COMPLETADO", "EN_PROCESO"])
-        .neq("id", session.id || "")
+        .neq("id", live.id || "")
         .order("created_at", { ascending: false })
         .limit(50);
 
@@ -3149,7 +3169,7 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
 
     // --- Source 2: Movements ---
     const skusToSearch = new Set<string>();
-    for (const l of session.lineas) {
+    for (const l of live.lineas) {
       const comp = l.componentes[0];
       if (comp) {
         skusToSearch.add(comp.skuOrigen);
@@ -3181,7 +3201,7 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
 
     // Track which movements are consumed by lines that are already OK (not needing repair)
     const movUsado = new Map<string, number>();
-    for (const l of session.lineas) {
+    for (const l of live.lineas) {
       if (!needsRepair(l) && l.estado === "PICKEADO" && l.componentes[0]?.posicion !== "?") {
         const comp = l.componentes[0];
         if (comp && comp.unidades > 0) {
@@ -3193,7 +3213,11 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
 
     let reparadas = 0;
     let sinEvidencia = 0;
-    const newLineas = [...session.lineas];
+    // Deep clone para mutar sin tocar el array live
+    const newLineas: PickingLinea[] = live.lineas.map(l => ({
+      ...l,
+      componentes: l.componentes.map(c => ({ ...c })),
+    }));
 
     for (const linea of newLineas) {
       if (!needsRepair(linea)) continue;
@@ -3310,12 +3334,38 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
       return;
     }
 
-    const allDone = newLineas.length > 0 && newLineas.every(l => l.estado === "PICKEADO");
-    const allArmado = isFull ? newLineas.every(l => !l.estadoArmado || l.estadoArmado === "COMPLETADO") : true;
-    const sessionDone = allDone && allArmado;
-    await actualizarPicking(session.id!, { lineas: newLineas, ...(sessionDone ? { estado: "COMPLETADA", completado_at: new Date().toISOString() } : {}) });
-    setSession({ ...session, lineas: newLineas, ...(sessionDone ? { estado: "COMPLETADA" } : {}) });
+    // Aplicar cambios via patch loop — solo las lineas que originalmente
+    // necesitaban reparar. Los ids se preservan, asi que un patch por id alcanza.
+    const lineasOriginales = new Map(live.lineas.map(l => [l.id, l]));
+    for (const nueva of newLineas) {
+      const orig = lineasOriginales.get(nueva.id);
+      if (!orig || !needsRepair(orig)) continue;
+      const patch: Partial<PickingLinea> = {
+        estado: nueva.estado,
+        componentes: nueva.componentes,
+        qtyPedida: nueva.qtyPedida,
+      };
+      if (nueva.qtyFisica !== undefined) patch.qtyFisica = nueva.qtyFisica;
+      if (isFull) {
+        if (nueva.bultos !== undefined) patch.bultos = nueva.bultos;
+        if (nueva.bultoCompartido !== undefined) patch.bultoCompartido = nueva.bultoCompartido;
+        if (nueva.estadoArmado !== undefined) patch.estadoArmado = nueva.estadoArmado;
+        if (nueva.qtyVenta !== undefined) patch.qtyVenta = nueva.qtyVenta;
+        if (nueva.tipoFull !== undefined) patch.tipoFull = nueva.tipoFull;
+        if (nueva.unidadesPorPack !== undefined) patch.unidadesPorPack = nueva.unidadesPorPack;
+        if (nueva.posicionOrden !== undefined) patch.posicionOrden = nueva.posicionOrden;
+        if (nueva.instruccionArmado !== undefined) patch.instruccionArmado = nueva.instruccionArmado;
+      }
+      const ok = await patchLineaPicking(session.id!, nueva.id, patch);
+      if (!ok) console.warn(`[repararPosiciones] patch fallo para ${nueva.id}`);
+    }
+
+    // Re-read fresco: incluye nuestros patches + cualquier cambio concurrente
+    const after = await getActivePickings();
+    const updated = after.find(s => s.id === session.id);
+    if (updated) setSession(updated);
     setSaving(false);
+    const sessionDone = updated?.estado === "COMPLETADA";
     const parts: string[] = [];
     if (reparadas > 0) parts.push(`${reparadas} líneas reparadas`);
     if (sinEvidencia > 0) parts.push(`${sinEvidencia} sin evidencia`);
@@ -3329,14 +3379,14 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
     if (linea?.estado === "PICKEADO") {
       if (!confirm("Esta línea ya fue pickeada. ¿Eliminar de todas formas? (no revierte el stock)")) return;
     }
-    const newLineas = session.lineas.filter(l => l.id !== lineaId);
     setSaving(true);
-    const allDone = newLineas.length > 0 && newLineas.every(l => l.estado === "PICKEADO");
-    await actualizarPicking(session.id!, {
-      lineas: newLineas,
-      estado: newLineas.length === 0 ? "ABIERTA" : allDone ? "COMPLETADA" : session.estado,
-    });
-    setSession({ ...session, lineas: newLineas });
+    const ok = await eliminarLineaPicking(session.id!, lineaId);
+    if (!ok) {
+      setSaving(false);
+      showToast("Error eliminando línea");
+      return;
+    }
+    setSession(s => ({ ...s, lineas: s.lineas.filter(l => l.id !== lineaId) }));
     setSaving(false);
     showToast(`Línea ${lineaId} eliminada`);
   };
@@ -3349,65 +3399,81 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
 
     if (linea.estado === "PICKEADO") {
       // For picked lines: adjust qty/unidades directly without rebuilding
-      const newLineas = session.lineas.map(l => {
-        if (l.id !== lineaId) return l;
-        const comp = { ...l.componentes[0] };
-        if (comp) comp.unidades = newQty;
-        return { ...l, qtyPedida: newQty, qtyFisica: newQty, componentes: comp ? [comp, ...l.componentes.slice(1)] : l.componentes };
-      });
+      const comp0 = linea.componentes[0] ? { ...linea.componentes[0], unidades: newQty } : null;
+      const nuevosComponentes = comp0 ? [comp0, ...linea.componentes.slice(1)] : linea.componentes;
       setSaving(true);
-      await actualizarPicking(session.id!, { lineas: newLineas });
-      setSession({ ...session, lineas: newLineas });
+      const ok = await patchLineaPicking(session.id!, lineaId, {
+        qtyPedida: newQty,
+        qtyFisica: newQty,
+        componentes: nuevosComponentes,
+      });
+      if (!ok) { setSaving(false); showToast("Error ajustando cantidad"); return; }
+      setSession(s => ({
+        ...s,
+        lineas: s.lineas.map(l => l.id === lineaId
+          ? { ...l, qtyPedida: newQty, qtyFisica: newQty, componentes: nuevosComponentes }
+          : l),
+      }));
       setSaving(false);
       showToast(`Cantidad ajustada a ${newQty}`);
     } else {
       // For pending lines: rebuild components with new positions
       await refreshStore();
-      const newLineas = session.lineas.map(l => {
-        if (l.id !== lineaId) return l;
-        const result = buildPickingLineas([{ skuVenta: l.skuVenta, qty: newQty }]);
-        if (result.lineas.length === 0) return l;
-        // Preserve Full-specific fields
-        const rebuilt = result.lineas[0];
-        if (isFull) {
-          rebuilt.tipoFull = l.tipoFull;
-          rebuilt.qtyVenta = l.qtyVenta;
-          rebuilt.unidadesPorPack = l.unidadesPorPack;
-          rebuilt.instruccionArmado = l.instruccionArmado;
-          rebuilt.estadoArmado = l.estadoArmado;
-          rebuilt.posicionOrden = l.posicionOrden;
-        }
-        return { ...rebuilt, id: l.id };
-      });
+      const result = buildPickingLineas([{ skuVenta: linea.skuVenta, qty: newQty }]);
+      if (result.lineas.length === 0) { showToast("No se pudo recalcular posiciones"); return; }
+      const rebuilt = result.lineas[0];
+      // Preserve Full-specific fields
+      if (isFull) {
+        rebuilt.tipoFull = linea.tipoFull;
+        rebuilt.qtyVenta = linea.qtyVenta;
+        rebuilt.unidadesPorPack = linea.unidadesPorPack;
+        rebuilt.instruccionArmado = linea.instruccionArmado;
+        rebuilt.estadoArmado = linea.estadoArmado;
+        rebuilt.posicionOrden = linea.posicionOrden;
+      }
+      const patch: Partial<PickingLinea> = {
+        estado: rebuilt.estado,
+        componentes: rebuilt.componentes,
+        qtyPedida: rebuilt.qtyPedida,
+        qtyFisica: rebuilt.qtyFisica,
+        skuOrigen: rebuilt.skuOrigen,
+      };
+      if (isFull) {
+        patch.tipoFull = rebuilt.tipoFull;
+        patch.qtyVenta = rebuilt.qtyVenta;
+        patch.unidadesPorPack = rebuilt.unidadesPorPack;
+        patch.instruccionArmado = rebuilt.instruccionArmado;
+        patch.estadoArmado = rebuilt.estadoArmado;
+        patch.posicionOrden = rebuilt.posicionOrden;
+      }
       setSaving(true);
-      await actualizarPicking(session.id!, { lineas: newLineas });
-      setSession({ ...session, lineas: newLineas });
+      const ok = await patchLineaPicking(session.id!, lineaId, patch);
+      if (!ok) { setSaving(false); showToast("Error recalculando posiciones"); return; }
+      setSession(s => ({
+        ...s,
+        lineas: s.lineas.map(l => l.id === lineaId ? { ...l, ...patch, id: l.id } : l),
+      }));
       setSaving(false);
       showToast("Cantidad actualizada");
+      if (result.errors.length > 0) alert("Advertencias:\n" + result.errors.join("\n"));
     }
   };
 
   // Change bultos count on a picked Full line
   const changeBultos = async (lineaId: string, bultos: number) => {
-    const newLineas = session.lineas.map(l => {
-      if (l.id !== lineaId) return l;
-      return { ...l, bultos };
-    });
     setSaving(true);
-    await actualizarPicking(session.id!, { lineas: newLineas });
-    setSession({ ...session, lineas: newLineas });
+    const ok = await patchLineaPicking(session.id!, lineaId, { bultos });
+    if (!ok) { setSaving(false); showToast("Error guardando bultos"); return; }
+    setSession(s => ({ ...s, lineas: s.lineas.map(l => l.id === lineaId ? { ...l, bultos } : l) }));
     setSaving(false);
   };
 
   // Change bultoCompartido on a line
   const changeBultoCompartido = async (lineaId: string, bultoCompartido: string | null) => {
-    const newLineas = session.lineas.map(l => {
-      if (l.id !== lineaId) return l;
-      return { ...l, bultoCompartido };
-    });
     setSaving(true);
-    await actualizarPicking(session.id!, { lineas: newLineas });
-    setSession({ ...session, lineas: newLineas });
+    const ok = await patchLineaPicking(session.id!, lineaId, { bultoCompartido });
+    if (!ok) { setSaving(false); showToast("Error guardando bulto compartido"); return; }
+    setSession(s => ({ ...s, lineas: s.lineas.map(l => l.id === lineaId ? { ...l, bultoCompartido } : l) }));
     setSaving(false);
   };
 
@@ -3428,6 +3494,43 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
     showToast(`Pick reiniciado — stock devuelto a ${comp.posicion}`);
   };
 
+  // Append N new lineas atomically: fresh read max id, loop append, fresh re-read.
+  const appendLineasAtomic = async (
+    orders: { skuVenta: string; qty: number }[],
+  ): Promise<{ added: number; errors: string[] }> => {
+    const result = buildPickingLineas(orders);
+    if (result.lineas.length === 0) return { added: 0, errors: result.errors };
+
+    // Fresh read to compute maxNum from the live state (another operator may
+    // have appended in the meantime via auto-add).
+    const fresh = await getActivePickings();
+    const live = fresh.find(s => s.id === session.id) || session;
+    const prefix = isFull ? "F" : "P";
+    let maxNum = live.lineas.reduce((max, l) => {
+      const n = parseInt(l.id.replace(/^[A-Z]/, "")) || 0;
+      return Math.max(max, n);
+    }, 0);
+
+    let added = 0;
+    for (const linea of result.lineas) {
+      maxNum += 1;
+      const nueva: PickingLinea = { ...linea, id: `${prefix}${String(maxNum).padStart(3, "0")}` };
+      const ok = await agregarLineaPicking(session.id!, nueva);
+      if (!ok) {
+        result.errors.push(`No se pudo agregar ${nueva.skuVenta} (${nueva.id})`);
+        break;
+      }
+      added += 1;
+    }
+
+    // Re-read to pick up any concurrent changes plus our new lineas
+    const after = await getActivePickings();
+    const updated = after.find(s => s.id === session.id);
+    if (updated) setSession(updated);
+
+    return { added, errors: result.errors };
+  };
+
   // Add new lines from text input
   const addLines = async () => {
     const lines = addRaw.trim().split("\n").filter(l => l.trim());
@@ -3441,32 +3544,20 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
       if (sku) orders.push({ skuVenta: sku, qty });
     }
 
-    const result = buildPickingLineas(orders);
-    if (result.lineas.length === 0) {
+    setSaving(true);
+    const { added, errors } = await appendLineasAtomic(orders);
+    setSaving(false);
+
+    if (added === 0) {
       showToast("No se pudo agregar ninguna línea");
+      if (errors.length > 0) alert("Advertencias:\n" + errors.join("\n"));
       return;
     }
 
-    // Re-number new lines to continue from existing
-    const prefix = isFull ? "F" : "P";
-    const maxNum = session.lineas.reduce((max, l) => {
-      const n = parseInt(l.id.replace(/^[A-Z]/, "")) || 0;
-      return Math.max(max, n);
-    }, 0);
-    const newLineas = result.lineas.map((l, i) => ({ ...l, id: `${prefix}${String(maxNum + i + 1).padStart(3, "0")}` }));
-
-    const allLineas = [...session.lineas, ...newLineas];
-    setSaving(true);
-    await actualizarPicking(session.id!, { lineas: allLineas, estado: "ABIERTA" });
-    setSession({ ...session, lineas: allLineas, estado: "ABIERTA" });
-    setSaving(false);
     setAddRaw("");
     setEditing(false);
-    showToast(`+${newLineas.length} pedidos agregados`);
-
-    if (result.errors.length > 0) {
-      alert("Advertencias:\n" + result.errors.join("\n"));
-    }
+    showToast(`+${added} pedidos agregados`);
+    if (errors.length > 0) alert("Advertencias:\n" + errors.join("\n"));
   };
 
   const toggleSplitLine = (lineaId: string) => {
@@ -3491,23 +3582,17 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
     const titulo = prompt("Título del nuevo envío:", defaultTitle);
     if (!titulo) return;
 
-    const lineasMovidas = session.lineas.filter(l => selectedForSplit.has(l.id));
-    const lineasRestantes = session.lineas.filter(l => !selectedForSplit.has(l.id));
-
-    const renumbered = lineasMovidas.map((l, i) => ({ ...l, id: `F${String(i + 1).padStart(3, "0")}` }));
-
+    const movidas = Array.from(selectedForSplit);
     setSaving(true);
-    const newId = await crearPickingSession(session.fecha, renumbered, "envio_full", titulo);
+    const newId = await dividirEnvioFull(session.id!, movidas, titulo, session.fecha);
+    setSaving(false);
     if (!newId) {
-      setSaving(false);
-      showToast("Error creando nuevo envío");
+      showToast("Error dividiendo envío");
       return;
     }
-    await actualizarPicking(session.id!, { lineas: lineasRestantes });
-    setSession({ ...session, lineas: lineasRestantes });
     exitSplitMode();
-    setSaving(false);
-    showToast(`${lineasMovidas.length} líneas movidas a "${titulo}"`);
+    showToast(`${movidas.length} líneas movidas a "${titulo}"`);
+    onBack();
   };
 
   return (
@@ -3609,32 +3694,19 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
           </div>
 
           {addMode === "search" ? (
-            <PickingProductSearch onAdd={(skuVenta, qty) => {
+            <PickingProductSearch onAdd={async (skuVenta, qty) => {
               const found = findSkuVenta(skuVenta);
               const nombre = found.find(f => f.skuVenta === skuVenta)?.nombre || skuVenta;
-              // Add directly via addLines logic
-              const result = buildPickingLineas([{ skuVenta, qty }]);
-              if (result.lineas.length === 0) {
+              setSaving(true);
+              const { added, errors } = await appendLineasAtomic([{ skuVenta, qty }]);
+              setSaving(false);
+              if (added === 0) {
                 showToast("Producto no encontrado en diccionario");
+                if (errors.length > 0) alert("Advertencias:\n" + errors.join("\n"));
                 return;
               }
-              // Re-number with correct prefix
-              const prefix = isFull ? "F" : "P";
-              const maxNum = session.lineas.reduce((max, l) => {
-                const n = parseInt(l.id.replace(/^[A-Z]/, "")) || 0;
-                return Math.max(max, n);
-              }, 0);
-              const newLineas = result.lineas.map((l, i) => ({ ...l, id: `${prefix}${String(maxNum + i + 1).padStart(3, "0")}` }));
-              const allLineas = [...session.lineas, ...newLineas];
-              setSaving(true);
-              actualizarPicking(session.id!, { lineas: allLineas, estado: "ABIERTA" }).then(() => {
-                setSession({ ...session, lineas: allLineas, estado: "ABIERTA" });
-                setSaving(false);
-                showToast(`+ ${qty}× ${nombre}`);
-                if (result.errors.length > 0) {
-                  alert("Advertencias:\n" + result.errors.join("\n"));
-                }
-              });
+              showToast(`+ ${qty}× ${nombre}`);
+              if (errors.length > 0) alert("Advertencias:\n" + errors.join("\n"));
             }}/>
           ) : (
             <>
