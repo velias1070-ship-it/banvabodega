@@ -9299,7 +9299,18 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
   const [loading, setLoading] = useState(true);
   const [queueing, setQueueing] = useState(false);
   const [queueResult, setQueueResult] = useState<string|null>(null);
+  const [selectedSkus, setSelectedSkus] = useState<Set<string>>(new Set());
+  const [selInitialized, setSelInitialized] = useState(false);
   const s = getStore();
+
+  // Auto-seleccionar todos los SKUs que necesitan Full la primera vez que cargan las líneas
+  useEffect(() => {
+    if (!selInitialized && lines.length > 0) {
+      const nf = lines.filter(l => l.mandarFullSugerido > 0).map(l => l.sku);
+      setSelectedSkus(new Set(nf));
+      setSelInitialized(true);
+    }
+  }, [lines, selInitialized]);
 
   useEffect(() => {
     (async () => {
@@ -9460,13 +9471,29 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
 
   // Priority receptions: incoming lines where the incoming units are NEEDED for Full
   // (mandarFull with just bodega < mandarFull with bodega + incoming)
+  // También respeta selección: SKUs desmarcados no entran al queue.
   const priorityIncoming = needsFull.filter(l => {
+    if (!selectedSkus.has(l.sku)) return false;
     if (l.incoming <= 0) return false;
     const qty = getQty(l.sku, l.mandarFullSugerido);
     if (qty <= 0) return false;
     // Would we be able to send the same amount without the incoming?
     return qty > l.disponible; // incoming is needed because bodega alone isn't enough
   });
+
+  // Toggle helpers
+  const toggleSku = (sku: string) => {
+    setSelectedSkus(prev => {
+      const next = new Set(prev);
+      if (next.has(sku)) next.delete(sku); else next.add(sku);
+      return next;
+    });
+  };
+  const allSelected = needsFull.length > 0 && needsFull.every(l => selectedSkus.has(l.sku));
+  const toggleAll = () => {
+    if (allSelected) setSelectedSkus(new Set());
+    else setSelectedSkus(new Set(needsFull.map(l => l.sku)));
+  };
   const priorityFolios = Array.from(new Set(priorityIncoming.map(l => l.folio).flatMap(f => f.split(", "))));
 
   return (
@@ -9519,7 +9546,7 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
         <div className="card" style={{padding:0,overflow:"hidden",marginBottom:12,border:"1px solid var(--amberBd)"}}>
           <div style={{padding:"10px 12px",background:"var(--amberBg)",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
             <span style={{fontWeight:700,fontSize:13,color:"var(--amber)"}}>
-              Enviar a Full ({needsFull.filter(l => getQty(l.sku, l.mandarFullSugerido) > 0).length} SKUs, {totalMandarFull} uds)
+              Enviar a Full ({needsFull.filter(l => getQty(l.sku, l.mandarFullSugerido) > 0).length} SKUs · {selectedSkus.size} seleccionados · {totalMandarFull} uds)
             </span>
             <div style={{display:"flex",gap:6}}>
               <button onClick={async () => {
@@ -9547,7 +9574,7 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
                 }
               }} disabled={queueing || priorityIncoming.length === 0}
                 style={{padding:"4px 12px",borderRadius:6,background:"var(--green)",color:"#fff",fontSize:11,fontWeight:700,border:"none",cursor:"pointer",opacity:queueing?0.5:1}}>
-                {queueing ? "Guardando..." : "Agregar al envio Full"}
+                {queueing ? "Guardando..." : `Agregar ${priorityIncoming.length} al envio Full`}
               </button>
               <button onClick={doExport} style={{padding:"4px 12px",borderRadius:6,background:"var(--amber)",color:"#000",fontSize:11,fontWeight:700,border:"none",cursor:"pointer"}}>
                 Exportar CSV
@@ -9557,6 +9584,11 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
           {queueResult && <div style={{padding:"8px 12px",fontSize:12,color:"var(--green)",background:"var(--greenBg)"}}>{queueResult}</div>}
           <table className="tbl" style={{width:"100%"}}>
             <thead><tr>
+              <th style={{width:32,textAlign:"center",padding:"6px 4px"}}>
+                <input type="checkbox" checked={allSelected} onChange={toggleAll}
+                  title={allSelected ? "Deseleccionar todo" : "Seleccionar todo"}
+                  style={{cursor:"pointer",width:14,height:14}}/>
+              </th>
               <th>SKU</th>
               <th>Producto</th>
               <th style={{textAlign:"right"}}>Viene</th>
@@ -9573,8 +9605,13 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
               {needsFull.map((l, i) => {
                 const qty = getQty(l.sku, l.mandarFullSugerido);
                 const cp = cobFullPost(l);
+                const isSelected = selectedSkus.has(l.sku);
                 return (
-                  <tr key={i} style={{background: l.cobFullActual < 7 ? "var(--redBg)" : l.cobFullActual < 14 ? "var(--amberBg)" : "transparent", borderBottom:"1px solid var(--bg3)"}}>
+                  <tr key={i} style={{background: !isSelected ? "var(--bg3)" : l.cobFullActual < 7 ? "var(--redBg)" : l.cobFullActual < 14 ? "var(--amberBg)" : "transparent", borderBottom:"1px solid var(--bg3)", opacity: isSelected ? 1 : 0.5}}>
+                    <td style={{textAlign:"center",padding:"8px 4px"}}>
+                      <input type="checkbox" checked={isSelected} onChange={() => toggleSku(l.sku)}
+                        style={{cursor:"pointer",width:14,height:14}}/>
+                    </td>
                     <td className="mono" style={{fontSize:11,fontWeight:700,padding:"8px 6px"}}>{l.sku}{l.sku !== l.skuVenta && <div style={{fontSize:9,color:"var(--txt3)",fontWeight:400}}>{l.skuVenta}</div>}</td>
                     <td style={{fontSize:11,padding:"8px 6px",color:"var(--txt2)"}}>{l.nombre.substring(0,28)}</td>
                     <td className="mono" style={{textAlign:"right",fontSize:12,padding:"8px 6px",color:l.incoming>0?"var(--green)":"var(--txt3)"}}>{l.incoming > 0 ? "+" + l.incoming : "—"}</td>
