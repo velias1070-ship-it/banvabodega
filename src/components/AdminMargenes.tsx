@@ -93,6 +93,7 @@ export default function AdminMargenes() {
   const [commonPromos, setCommonPromos] = useState<CommonPromo[]>([]);
   const [selectedPromoKey, setSelectedPromoKey] = useState<string | null>(null);
   const [showErrorsModal, setShowErrorsModal] = useState(false);
+  const [campaignMode, setCampaignMode] = useState<"join" | "leave">("join");
 
   const toggleSelect = (itemId: string) => {
     setSelected(prev => {
@@ -217,9 +218,10 @@ export default function AdminMargenes() {
     });
   };
 
-  const abrirCampaignModal = async () => {
+  const abrirCampaignModal = async (mode: "join" | "leave" = "join") => {
     const items = rows.filter(r => selected.has(r.item_id));
     if (items.length === 0) return;
+    setCampaignMode(mode);
     setCampaignModalOpen(true);
     setCampaignLoading(true);
     setCommonPromos([]);
@@ -351,6 +353,48 @@ export default function AdminMargenes() {
     setBulkApplying("none");
     // Refresh focalizado de la cache para ver los nuevos valores reales
     await refrescarItemsAfectados(todosAplicables);
+  };
+
+  const runBulkLeave = async () => {
+    if (!selectedPromoKey) return;
+    const promo = commonPromos.find(p => (p.id ? `${p.type}::${p.id}` : `${p.type}::_`) === selectedPromoKey);
+    if (!promo) return;
+    // Solo los items que están dentro (started/pending), no los candidates
+    const afectados = promo.itemsActivos;
+    if (afectados.length === 0) { alert("Ningún ítem está actualmente en esta promo"); return; }
+    if (!confirm(`¿Salir de "${promo.name}" para ${afectados.length} ítem${afectados.length !== 1 ? "s" : ""}?`)) return;
+
+    setBulkApplying("campaign");
+    setBulkProgress({ done: 0, total: afectados.length, ok: 0, err: 0 });
+    setBulkErrors([]);
+    const errors: Array<{ sku: string; error: string }> = [];
+    let ok = 0;
+
+    for (let i = 0; i < afectados.length; i++) {
+      const itemId = afectados[i];
+      const row = rows.find(r => r.item_id === itemId);
+      try {
+        const res = await fetch("/api/ml/promotions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            item_id: itemId,
+            action: "delete",
+            promotion_id: promo.id,
+            promotion_type: promo.type,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        ok++;
+      } catch (e) {
+        errors.push({ sku: row?.sku || itemId, error: e instanceof Error ? e.message : "Error" });
+      }
+      setBulkProgress({ done: i + 1, total: afectados.length, ok, err: errors.length });
+    }
+    setBulkErrors(errors);
+    setBulkApplying("none");
+    await refrescarItemsAfectados(afectados);
   };
 
   const runBulk = async (mode: "lista" | "promo") => {
@@ -683,7 +727,7 @@ export default function AdminMargenes() {
             }}
           >Aplicar como descuento 30d</button>
           <button
-            onClick={abrirCampaignModal}
+            onClick={() => abrirCampaignModal("join")}
             disabled={bulkApplying !== "none"}
             style={{
               padding: "8px 14px", borderRadius: 6, fontSize: 12, fontWeight: 700,
@@ -693,6 +737,17 @@ export default function AdminMargenes() {
               whiteSpace: "nowrap",
             }}
           >Postular a campaña ML →</button>
+          <button
+            onClick={() => abrirCampaignModal("leave")}
+            disabled={bulkApplying !== "none"}
+            style={{
+              padding: "8px 14px", borderRadius: 6, fontSize: 12, fontWeight: 700,
+              background: "var(--redBg)", color: "var(--red)", border: "1px solid var(--red)",
+              cursor: bulkApplying !== "none" ? "wait" : "pointer",
+              opacity: bulkApplying !== "none" ? 0.5 : 1,
+              whiteSpace: "nowrap",
+            }}
+          >Salir de promo ML</button>
           {bulkApplying !== "none" && bulkProgress.total > 0 && (
             <div style={{ fontSize: 11, color: "var(--txt2)", display: "flex", gap: 8 }}>
               <span>{bulkProgress.done}/{bulkProgress.total}</span>
@@ -753,9 +808,15 @@ export default function AdminMargenes() {
           <div onClick={e => e.stopPropagation()} style={{ background: "var(--bg2)", borderRadius: 14, width: "100%", maxWidth: 760, maxHeight: "90vh", overflow: "auto", border: "1px solid var(--bg4)", boxShadow: "0 20px 60px rgba(0,0,0,0.4)" }}>
             <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--bg4)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div>
-                <div style={{ fontSize: 14, fontWeight: 700, color: "var(--cyan)" }}>Postular {selected.size} ítems a una campaña ML</div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: campaignMode === "leave" ? "var(--red)" : "var(--cyan)" }}>
+                  {campaignMode === "leave"
+                    ? `Salir masivo de una promo (${selected.size} ítems)`
+                    : `Postular ${selected.size} ítems a una campaña ML`}
+                </div>
                 <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 2 }}>
-                  Promos comunes detectadas. Elige una y todos los ítems que puedan participar irán con el mismo precio.
+                  {campaignMode === "leave"
+                    ? "Promos donde hay ítems actualmente participando. Elige una y los ítems serán retirados."
+                    : "Promos comunes detectadas. Elige una y todos los ítems que puedan participar irán con el mismo precio."}
                 </div>
               </div>
               <button onClick={() => bulkApplying === "none" && setCampaignModalOpen(false)} style={{ background: "transparent", border: "none", color: "var(--txt2)", fontSize: 20, cursor: "pointer", padding: "0 4px" }}>✕</button>
@@ -765,12 +826,23 @@ export default function AdminMargenes() {
               <div style={{ padding: 40, textAlign: "center", color: "var(--txt3)" }}>
                 Analizando promos disponibles en cada ítem...
               </div>
-            ) : commonPromos.length === 0 ? (
-              <div style={{ padding: 40, textAlign: "center", color: "var(--txt3)" }}>
-                No hay promos con precio custom comunes a los ítems seleccionados.
-              </div>
-            ) : (
+            ) : (() => {
+              // Filtro según modo: para leave solo mostramos promos con items actualmente adentro
+              const visiblePromos = campaignMode === "leave"
+                ? commonPromos.filter(p => p.itemsActivos.length > 0)
+                : commonPromos;
+              if (visiblePromos.length === 0) {
+                return (
+                  <div style={{ padding: 40, textAlign: "center", color: "var(--txt3)" }}>
+                    {campaignMode === "leave"
+                      ? "Ninguno de los ítems seleccionados está actualmente en una promo."
+                      : "No hay promos con precio custom comunes a los ítems seleccionados."}
+                  </div>
+                );
+              }
+              return (
               <>
+                {campaignMode === "join" && (
                 <div style={{ padding: "14px 20px 10px" }}>
                   <div style={{ fontSize: 9, color: "var(--txt3)", marginBottom: 4 }}>Precio objetivo</div>
                   <input
@@ -784,9 +856,10 @@ export default function AdminMargenes() {
                     disabled={bulkApplying !== "none"}
                   />
                 </div>
+                )}
 
                 <div style={{ padding: "0 20px 14px", display: "flex", flexDirection: "column", gap: 8 }}>
-                  {commonPromos.map(p => {
+                  {visiblePromos.map(p => {
                     const key = p.id ? `${p.type}::${p.id}` : `${p.type}::_`;
                     const isSelected = selectedPromoKey === key;
                     const totalAplicables = p.itemsPostulables.length + p.itemsActivos.length;
@@ -884,21 +957,37 @@ export default function AdminMargenes() {
                     disabled={bulkApplying === "campaign"}
                     style={{ padding: "8px 14px", borderRadius: 6, fontSize: 12, background: "var(--bg3)", color: "var(--txt3)", border: "1px solid var(--bg4)", cursor: "pointer" }}
                   >Cerrar</button>
-                  <button
-                    onClick={runBulkCampaign}
-                    disabled={!selectedPromoKey || !bulkPrice || bulkApplying === "campaign"}
-                    style={{
-                      padding: "8px 16px", borderRadius: 6, fontSize: 12, fontWeight: 700,
-                      background: "var(--greenBg)", color: "var(--green)", border: "1px solid var(--green)",
-                      cursor: bulkApplying === "campaign" ? "wait" : "pointer",
-                      opacity: (!selectedPromoKey || !bulkPrice || bulkApplying === "campaign") ? 0.5 : 1,
-                    }}
-                  >
-                    {bulkApplying === "campaign" ? "Procesando..." : "Aplicar a todos"}
-                  </button>
+                  {campaignMode === "join" ? (
+                    <button
+                      onClick={runBulkCampaign}
+                      disabled={!selectedPromoKey || !bulkPrice || bulkApplying === "campaign"}
+                      style={{
+                        padding: "8px 16px", borderRadius: 6, fontSize: 12, fontWeight: 700,
+                        background: "var(--greenBg)", color: "var(--green)", border: "1px solid var(--green)",
+                        cursor: bulkApplying === "campaign" ? "wait" : "pointer",
+                        opacity: (!selectedPromoKey || !bulkPrice || bulkApplying === "campaign") ? 0.5 : 1,
+                      }}
+                    >
+                      {bulkApplying === "campaign" ? "Procesando..." : "Aplicar a todos"}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={runBulkLeave}
+                      disabled={!selectedPromoKey || bulkApplying === "campaign"}
+                      style={{
+                        padding: "8px 16px", borderRadius: 6, fontSize: 12, fontWeight: 700,
+                        background: "var(--redBg)", color: "var(--red)", border: "1px solid var(--red)",
+                        cursor: bulkApplying === "campaign" ? "wait" : "pointer",
+                        opacity: (!selectedPromoKey || bulkApplying === "campaign") ? 0.5 : 1,
+                      }}
+                    >
+                      {bulkApplying === "campaign" ? "Procesando..." : "Salir de todos"}
+                    </button>
+                  )}
                 </div>
               </>
-            )}
+              );
+            })()}
           </div>
         </div>
       )}
