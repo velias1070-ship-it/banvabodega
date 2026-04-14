@@ -267,10 +267,16 @@ export default function AdminMargenes() {
     setCampaignLoading(false);
   };
 
-  // Refresca el cache de margen solo para los items afectados (más rápido que refresh completo)
+  // Refresca el cache de margen solo para los items afectados (más rápido que refresh completo).
+  // IMPORTANTE: ML tarda 3-5s en propagar cambios de promociones tras un POST/DELETE. Si el
+  // refresh se ejecuta inmediatamente, el endpoint va a leer el estado VIEJO de ML y guardar
+  // en cache datos desactualizados. Por eso esperamos antes de gatillar el refresh.
   const refrescarItemsAfectados = async (itemIds: string[]) => {
     if (itemIds.length === 0) return;
     try {
+      // Delay de propagación ML: esperar a que /seller-promotions/items/{id} refleje
+      // los cambios hechos por el bulk antes de re-leerlo.
+      await new Promise(r => setTimeout(r, 4000));
       const q = itemIds.join(",");
       await fetch(`/api/ml/margin-cache/refresh?item_ids=${encodeURIComponent(q)}`, { method: "POST" });
       await loadCache();
