@@ -29,11 +29,21 @@ type FeeInfo = { sale_fee_amount: number; sale_fee_details?: { percentage_fee: n
 
 // POST /api/ml/margin-cache/refresh?offset=0&limit=20
 // POST /api/ml/margin-cache/refresh?item_ids=MLC123,MLC456  ← refresh focalizado
+// POST /api/ml/margin-cache/refresh?stale=true&limit=30     ← refresca los N mas viejos
+// GET  /api/ml/margin-cache/refresh?stale=true&limit=30     ← idem (para Vercel crons)
 //
 // Procesa un chunk de items y actualiza ml_margin_cache. Para refresh completo,
 // el cliente llama repetidamente avanzando el offset hasta processed >= total.
 // Con item_ids procesa exactamente esos y devuelve done=true al final.
+// Con stale=true ordena por synced_at ASC y procesa los mas viejos.
+export async function GET(req: NextRequest) {
+  return handleRefresh(req);
+}
 export async function POST(req: NextRequest) {
+  return handleRefresh(req);
+}
+
+async function handleRefresh(req: NextRequest) {
   const sb = getServerSupabase();
   if (!sb) return NextResponse.json({ error: "no_db" }, { status: 500 });
 
@@ -41,6 +51,32 @@ export async function POST(req: NextRequest) {
   const offset = parseInt(url.searchParams.get("offset") || "0", 10);
   const limit = Math.min(parseInt(url.searchParams.get("limit") || "15", 10), 30);
   const itemIdsFilter = url.searchParams.get("item_ids")?.split(",").map(s => s.trim()).filter(Boolean);
+  const staleMode = url.searchParams.get("stale") === "true";
+
+  // Modo stale: buscar los item_ids con synced_at mas antiguo en el cache
+  // (incluyendo los que nunca se han sincronizado aun), limitado a N.
+  let staleItemIds: string[] = [];
+  if (staleMode) {
+    // Items que existen en ml_items_map pero no estan en ml_margin_cache → prioridad
+    const { data: allMap } = await sb
+      .from("ml_items_map")
+      .select("item_id")
+      .eq("activo", true);
+    const allMapIds = new Set((allMap || []).map((r: { item_id: string }) => r.item_id).filter(Boolean));
+
+    const { data: cached } = await sb
+      .from("ml_margin_cache")
+      .select("item_id,synced_at")
+      .order("synced_at", { ascending: true, nullsFirst: true });
+    const cachedIds = new Set((cached || []).map((r: { item_id: string }) => r.item_id));
+
+    // Items sin cache primero, luego los mas viejos
+    const noCacheIds: string[] = Array.from(allMapIds).filter(id => !cachedIds.has(id));
+    const oldestCachedIds = (cached || [])
+      .filter((r: { item_id: string }) => allMapIds.has(r.item_id))
+      .map((r: { item_id: string }) => r.item_id);
+    staleItemIds = [...noCacheIds, ...oldestCachedIds].slice(0, limit);
+  }
 
   // Traer items activos y deduplicar por item_id (ml_items_map puede tener
   // varias filas con el mismo item_id por variantes de color/talla). Si viene
@@ -49,8 +85,9 @@ export async function POST(req: NextRequest) {
     .from("ml_items_map")
     .select("sku,item_id,titulo,price,listing_type,category_id,status_ml")
     .eq("activo", true);
-  if (itemIdsFilter && itemIdsFilter.length > 0) {
-    query = query.in("item_id", itemIdsFilter);
+  const effectiveFilter = staleMode ? staleItemIds : itemIdsFilter;
+  if (effectiveFilter && effectiveFilter.length > 0) {
+    query = query.in("item_id", effectiveFilter);
   }
   const { data: allItems, error: eAll } = await query;
   if (eAll) return NextResponse.json({ error: eAll.message }, { status: 500 });
@@ -69,8 +106,8 @@ export async function POST(req: NextRequest) {
   }
   const unique = Array.from(byId.values()).sort((a, b) => a.item_id.localeCompare(b.item_id));
   const total = unique.length;
-  // Cuando es refresh focalizado, ignoramos offset/limit y procesamos todo
-  const rows = itemIdsFilter && itemIdsFilter.length > 0
+  // Cuando es refresh focalizado o stale, ignoramos offset/limit y procesamos todo
+  const rows = (effectiveFilter && effectiveFilter.length > 0)
     ? unique
     : unique.slice(offset, offset + limit);
 
@@ -286,12 +323,13 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const isFocused = !!(itemIdsFilter && itemIdsFilter.length > 0);
+  const isFocused = !!(effectiveFilter && effectiveFilter.length > 0);
   const processed = isFocused ? rows.length : offset + rows.length;
   return NextResponse.json({
     processed,
     total: total || 0,
     chunk: rows.length,
+    stale_mode: staleMode,
     done: isFocused ? true : processed >= (total || 0),
   });
 }

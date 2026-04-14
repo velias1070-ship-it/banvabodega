@@ -103,6 +103,8 @@ export default function AdminMargenes() {
   };
   const clearSelection = () => setSelected(new Set());
 
+  const [bgSyncing, setBgSyncing] = useState(false);
+
   const loadCache = useCallback(async () => {
     setLoading(true);
     try {
@@ -115,7 +117,26 @@ export default function AdminMargenes() {
     }
   }, []);
 
-  useEffect(() => { loadCache(); }, [loadCache]);
+  // Auto-refresh silencioso en background: al montar la vista, trigger un
+  // refresh de los 30 items mas viejos. El cron de vercel tambien corre cada
+  // 5 min pero esto da frescura inmediata cuando el usuario entra.
+  const backgroundRefreshStale = useCallback(async () => {
+    setBgSyncing(true);
+    try {
+      await fetch("/api/ml/margin-cache/refresh?stale=true&limit=30", { method: "POST" });
+      await loadCache();
+    } catch { /* silent */ }
+    setBgSyncing(false);
+  }, [loadCache]);
+
+  useEffect(() => {
+    loadCache().then(() => {
+      // Disparar el refresh silencioso despues de cargar la cache existente,
+      // para que el usuario vea la data inmediatamente y luego se actualiza.
+      backgroundRefreshStale();
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -423,9 +444,16 @@ export default function AdminMargenes() {
     <div className="card" style={{ padding: 16 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
         <div>
-          <div style={{ fontSize: 16, fontWeight: 700, color: "var(--cyan)" }}>Márgenes por publicación</div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: "var(--cyan)", display: "flex", alignItems: "center", gap: 8 }}>
+            Márgenes por publicación
+            {bgSyncing && (
+              <span style={{ fontSize: 10, color: "var(--cyan)", fontWeight: 500, background: "var(--cyanBg)", padding: "2px 8px", borderRadius: 10, border: "1px solid var(--cyanBd)" }}>
+                ⟳ sincronizando...
+              </span>
+            )}
+          </div>
           <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 2 }}>
-            Último refresh: {lastSyncLabel} · {rows.length} items en cache
+            Último refresh: {lastSyncLabel} · {rows.length} items · auto-sync cada 5 min
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>

@@ -43,6 +43,10 @@
     {
       "path": "/api/ml/ads-rebalance",
       "schedule": "30 */6 * * *"
+    },
+    {
+      "path": "/api/ml/margin-cache/refresh?stale=true&limit=25",
+      "schedule": "*/5 * * * *"
     }
   ]
 }
