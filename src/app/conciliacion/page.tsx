@@ -632,24 +632,27 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
     return { fecha: venc.toISOString().slice(0, 10), diasRestantes: dias };
   };
 
-  const totalPagadas = data.filter(c => concCompraIds.has(c.id!)).length;
-  const porPagarList = data.filter(c => !concCompraIds.has(c.id!));
+  // Counts cruzados — se calculan sobre TODA la empresa, no solo el período actual.
+  // Permite ver "vencidas" y "por pagar" reales aunque la factura esté en otro período.
+  const totalPagadas = comprasGlobal.filter(c => concCompraIds.has(c.id!)).length;
+  const porPagarList = comprasGlobal.filter(c => !concCompraIds.has(c.id!) && c.tipo_doc !== 61);
   const vencidasList = porPagarList.filter(c => {
     const venc = getVencimiento(c);
     return venc && venc.diasRestantes < 0;
   });
 
   // Filtrar por texto, tipo, proveedor y estado conciliación
-  let filtered = data;
+  // "todos" usa data (período actual). Los filtros de estado usan comprasGlobal (cross-período).
+  let filtered: DBRcvCompra[] = concFilter === "todos" ? data : comprasGlobal;
   if (tipoFilter !== "todos") filtered = filtered.filter(c => String(c.tipo_doc) === tipoFilter);
   if (provFilterSet) filtered = filtered.filter(c => {
     const match = provFilterSet.has(c.rut_proveedor || "");
     return provFilterMode === "incluir" ? match : !match;
   });
-  if (concFilter === "por_pagar") filtered = filtered.filter(c => !concCompraIds.has(c.id!));
+  if (concFilter === "por_pagar") filtered = filtered.filter(c => !concCompraIds.has(c.id!) && c.tipo_doc !== 61);
   else if (concFilter === "vencidas") filtered = filtered.filter(c => {
     const venc = getVencimiento(c);
-    return !concCompraIds.has(c.id!) && venc && venc.diasRestantes < 0;
+    return !concCompraIds.has(c.id!) && c.tipo_doc !== 61 && venc && venc.diasRestantes < 0;
   });
   else if (concFilter === "pagadas") filtered = filtered.filter(c => concCompraIds.has(c.id!));
   else if (concFilter === "por_clasificar") filtered = filtered.filter(c => !getClasificacion(c));
