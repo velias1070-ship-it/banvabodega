@@ -16,6 +16,7 @@ import AdminAgentes from "@/components/AdminAgentes";
 import AdminInteligencia from "@/components/AdminInteligencia";
 import AdminSemaforo from "@/components/AdminSemaforo";
 import AdminCompras from "@/components/AdminCompras";
+import AdminDiscrepancias from "@/components/AdminDiscrepancias";
 import AdminEventos from "@/components/AdminEventos";
 import AdminVentasML from "@/components/AdminVentasML";
 import AdminComercial from "@/components/AdminComercial";
@@ -66,12 +67,13 @@ function LoginGate({ onLogin }: { onLogin: (pin: string) => boolean }) {
   );
 }
 
-type AdminTab = "dash"|"rec"|"flex"|"enviosfull"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"intel"|"semaforo"|"compras"|"eventos"|"ventasml"|"comercial"|"margenes"|"agentes"|"stockml"|"timeline"|"config";
+type AdminTab = "dash"|"rec"|"discrepancias"|"flex"|"enviosfull"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"intel"|"semaforo"|"compras"|"eventos"|"ventasml"|"comercial"|"margenes"|"agentes"|"stockml"|"timeline"|"config";
 
 const MOBILE_MENU_SECTIONS = [
   { section: "Principal", items: [
     ["dash","Dashboard","📊"],
     ["rec","Recepción","📦"],
+    ["discrepancias","Discrepancias","💰"],
     ["flex","Ultima Milla","🚚"],
     ["enviosfull","Envios Full","📤"],
   ] as const },
@@ -156,7 +158,7 @@ export default function AdminPage() {
   useEffect(() => { sessionStorage.setItem("banva_admin_tab", tab); }, [tab]);
 
   const SIDEBAR_GROUPS = [
-    {section:"OPERACIONES",icon:"⚡",items:[["rec","Recepciones","📦"],["flex","Ultima Milla","🚚"],["enviosfull","Envios Full","📦"],["ops","Operaciones","⚡"],["reposicion","Reposición","🔄"]] as const},
+    {section:"OPERACIONES",icon:"⚡",items:[["rec","Recepciones","📦"],["discrepancias","Discrepancias","💰"],["flex","Ultima Milla","🚚"],["enviosfull","Envios Full","📦"],["ops","Operaciones","⚡"],["reposicion","Reposición","🔄"]] as const},
     {section:"INVENTARIO",icon:"📦",items:[["inv","Inventario","📦"],["mov","Movimientos","📋"],["timeline","Timeline","📊"],["prod","Productos","🏷️"],["stockml","Stock ML","📡"]] as const},
     {section:"INTELIGENCIA",icon:"🧠",items:[["intel","Inteligencia","🧠"],["semaforo","Semaforo","🚦"],["compras","Compras","🛒"],["eventos","Eventos","📅"],["ventasml","Ventas ML","💰"]] as const},
     {section:"COMERCIAL",icon:"🏪",items:[["comercial","Publicaciones","📢"],["margenes","Márgenes","💹"]] as const},
@@ -263,6 +265,7 @@ export default function AdminPage() {
           <div className="admin-content">
             {tab==="dash"&&<Dashboard/>}
             {tab==="rec"&&<AdminRecepciones refresh={r}/>}
+            {tab==="discrepancias"&&<AdminDiscrepancias/>}
             {tab==="flex"&&<AdminUltimaMilla refresh={r}/>}
             {tab==="enviosfull"&&<AdminEnviosFull refresh={r}/>}
             {tab==="ops"&&<Operaciones refresh={r}/>}

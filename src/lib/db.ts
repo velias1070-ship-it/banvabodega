@@ -608,6 +608,19 @@ export async function fetchDiscrepancias(recepcionId: string): Promise<DBDiscrep
   } catch { return []; }
 }
 
+// Vista global: trae todas las discrepancias del sistema, opcionalmente
+// filtradas por estado. Sin join — el cliente hace el merge con productos
+// y recepciones desde el cache/fetch propio.
+export async function fetchDiscrepanciasGlobal(estados?: Array<"PENDIENTE"|"APROBADO"|"RECHAZADO">): Promise<DBDiscrepanciaCosto[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  try {
+    let q = sb.from("discrepancias_costo").select("*").order("created_at", { ascending: false });
+    if (estados && estados.length > 0) q = q.in("estado", estados);
+    const { data } = await q;
+    return data || [];
+  } catch { return []; }
+}
+
 export async function insertDiscrepancias(discs: Omit<DBDiscrepanciaCosto, "id" | "created_at">[]) {
   const sb = getSupabase(); if (!sb) return;
   if (discs.length === 0) return;
