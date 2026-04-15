@@ -1018,10 +1018,19 @@ export async function syncDiccionarioFromSheet(): Promise<{
     productMap.forEach((prod, sku) => {
       const ex = existingMap.get(sku);
       if (ex) {
+        // Proteccion contra contaminacion del catalogo desde el Sheet:
+        // el Sheet deriva costo por aritmetica de packs (row.costo/unidades)
+        // y es una fuente menos confiable que el WAC calculado desde
+        // movimientos reales. Si el WAC existe (costo_promedio > 0),
+        // NO permitimos que el sync del Sheet pise productos.costo.
+        // El WAC + registrar_movimiento_stock son la fuente de verdad.
+        const tieneWacReal = (ex.costo_promedio || 0) > 0;
+        const costoFinal = tieneWacReal ? ex.costo : prod.costo;
+
         // Update if anything changed (preserve price/reorder set by admin)
         if (ex.nombre !== prod.nombre || ex.proveedor !== prod.proveedor ||
             ex.categoria !== prod.categoria || ex.tamano !== prod.tamano ||
-            ex.color !== prod.color || ex.costo !== prod.costo ||
+            ex.color !== prod.color || ex.costo !== costoFinal ||
             ex.codigo_ml !== prod.codigo_ml || ex.sku_venta !== prod.sku_venta ||
             ex.requiere_etiqueta !== prod.requiere_etiqueta) {
           toUpsert.push({
@@ -1029,7 +1038,7 @@ export async function syncDiccionarioFromSheet(): Promise<{
             nombre: prod.nombre,
             proveedor: prod.proveedor,
             categoria: prod.categoria,
-            costo: prod.costo,
+            costo: costoFinal,
             tamano: prod.tamano,
             color: prod.color,
             codigo_ml: prod.codigo_ml,

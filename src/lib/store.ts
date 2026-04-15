@@ -2994,26 +2994,22 @@ export async function detectarDiscrepancias(recepcionId: string, lineas: db.DBRe
   const nuevas: Omit<db.DBDiscrepanciaCosto, "id" | "created_at">[] = [];
   for (const l of lineas) {
     const prod = _cache.products[l.sku];
-    // For SKUs with multiple composicion rows (individual + pack), we must use
-    // the unit cost (unidades=1 row), not the pack cost. The _cache.products cost
-    // may be stale or wrong if the first CSV row was a pack.
-    const ventasDelSku = _cache.composicion.filter(c => c.skuOrigen === l.sku);
-    let costoDic = prod?.cost || 0;
-    if (ventasDelSku.length > 1) {
-      // Multiple rows exist — find the one with unidades=1 for the true unit cost
-      const unitaria = ventasDelSku.find(c => c.unidades === 1);
-      if (unitaria && prod) {
-        // The product cost should be the unit cost; if it looks like a pack cost, recalculate
-        // We trust the product cost only if there's a unidades=1 row and the cost makes sense
-        costoDic = prod.cost;
-      } else if (!unitaria && ventasDelSku.length > 0) {
-        // No unidades=1 row; derive unit cost from smallest pack
-        const smallest = ventasDelSku.reduce((a, b) => a.unidades < b.unidades ? a : b);
-        // The product cost might be the pack cost, so divide by smallest unidades
-        if (prod && smallest.unidades > 1) {
-          costoDic = Math.round(prod.cost / smallest.unidades);
-        }
-      }
+    // Fuente de verdad para discrepancias: WAC (costo_promedio) del SKU origen.
+    // El WAC se reconstruye desde movimientos reales (registrar_movimiento_stock RPC)
+    // y ya representa el costo unitario del producto fisico.
+    //
+    // Antes comparabamos contra prod.cost (productos.costo), que a su vez se deriva
+    // del Google Sheet de diccionario mediante aritmetica de packs
+    // (costo_pack / unidades). Eso generaba falsos positivos si el Sheet tenia
+    // una fila mal cargada o si el sku_venta pack contaminaba la columna Costo
+    // del origen.
+    //
+    // Fallback a prod.cost solo cuando el WAC no existe (SKU sin entradas reales
+    // todavia, ej. primera recepcion historica).
+    let costoDic = 0;
+    if (prod) {
+      if (prod.costAvg > 0) costoDic = prod.costAvg;
+      else if (prod.cost > 0) costoDic = prod.cost;
     }
     const costoFact = l.costo_unitario || 0;
     if (costoDic === 0 && costoFact === 0) continue;
@@ -3023,7 +3019,7 @@ export async function detectarDiscrepancias(recepcionId: string, lineas: db.DBRe
     nuevas.push({
       recepcion_id: recepcionId, linea_id: l.id!, sku: l.sku,
       costo_diccionario: costoDic, costo_factura: costoFact,
-      diferencia: diff, porcentaje: pct, estado: costoDic === 0 ? "PENDIENTE" : "PENDIENTE",
+      diferencia: diff, porcentaje: pct, estado: "PENDIENTE",
     });
   }
   if (nuevas.length > 0) {
