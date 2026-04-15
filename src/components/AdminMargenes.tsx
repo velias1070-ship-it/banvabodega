@@ -76,10 +76,13 @@ export default function AdminMargenes() {
   // Bulk campaign modal
   const [campaignModalOpen, setCampaignModalOpen] = useState(false);
   const [campaignLoading, setCampaignLoading] = useState(false);
+  type RangoItem = { min: number; max: number; suggested: number };
   type CommonPromo = {
     id: string | null;
     type: string;
     name: string;
+    // Rango "intersección" — el único rango que sirve para TODOS los items
+    // (MAX de mins, MIN de maxes). Útil como default si se aplica a todos.
     min_price: number;
     max_price: number;
     suggested_price: number;
@@ -89,6 +92,9 @@ export default function AdminMargenes() {
     itemsPostulables: string[]; // item_ids en candidate
     itemsActivos: string[];     // item_ids ya started/pending
     itemsNoDisponible: string[]; // item_ids sin esta promo
+    // Rango específico de CADA item — las promos de ML tienen min/max por-item,
+    // no por-campaña. Validar con esto, no con min_price/max_price.
+    rangosPorItem: Map<string, RangoItem>;
   };
   const [commonPromos, setCommonPromos] = useState<CommonPromo[]>([]);
   const [selectedPromoKey, setSelectedPromoKey] = useState<string | null>(null);
@@ -257,6 +263,7 @@ export default function AdminMargenes() {
             id: p.id,
             type: p.type,
             name: p.name,
+            // Inicializar con el rango del primer item; se refina abajo a intersección
             min_price: p.min_price,
             max_price: p.max_price,
             suggested_price: p.suggested_price,
@@ -266,9 +273,19 @@ export default function AdminMargenes() {
             itemsPostulables: [],
             itemsActivos: [],
             itemsNoDisponible: [],
+            rangosPorItem: new Map(),
           };
           byKey.set(key, common);
         }
+        // Guardar rango ESPECÍFICO de este item para esta promo
+        common.rangosPorItem.set(r.item_id, {
+          min: p.min_price,
+          max: p.max_price,
+          suggested: p.suggested_price,
+        });
+        // Refinar rango global a la intersección: MAX(mins), MIN(maxes)
+        if (p.min_price > 0 && p.min_price > common.min_price) common.min_price = p.min_price;
+        if (p.max_price > 0 && (common.max_price === 0 || p.max_price < common.max_price)) common.max_price = p.max_price;
         if (p.status === "candidate") common.itemsPostulables.push(r.item_id);
         else if (p.status === "started" || p.status === "pending") common.itemsActivos.push(r.item_id);
       }
@@ -312,21 +329,50 @@ export default function AdminMargenes() {
     if (!selectedPromoKey) return;
     const promo = commonPromos.find(p => (p.id ? `${p.type}::${p.id}` : `${p.type}::_`) === selectedPromoKey);
     if (!promo) return;
-    // Validar rango
-    if (promo.min_price > 0 && target < promo.min_price) { alert(`Precio bajo mínimo (${promo.min_price})`); return; }
-    if (promo.max_price > 0 && target > promo.max_price) { alert(`Precio sobre máximo (${promo.max_price})`); return; }
 
     const todosAplicables = [...promo.itemsPostulables, ...promo.itemsActivos];
     if (todosAplicables.length === 0) { alert("Ningún ítem puede participar de esta promo"); return; }
 
+    // Pre-validar por-item: el min/max de cada item puede ser distinto dentro de
+    // la misma campaña. Separar en válidos/inválidos ANTES de mandar a ML.
+    const invalidos: Array<{ itemId: string; sku: string; rango: RangoItem; motivo: string }> = [];
+    const validos: string[] = [];
+    for (const itemId of todosAplicables) {
+      const rango = promo.rangosPorItem.get(itemId);
+      const row = rows.find(r => r.item_id === itemId);
+      const sku = row?.sku || itemId;
+      if (!rango) { validos.push(itemId); continue; }
+      if (rango.min > 0 && target < rango.min) {
+        invalidos.push({ itemId, sku, rango, motivo: `Precio ${fmtCLP(target)} < mínimo ${fmtCLP(rango.min)}` });
+      } else if (rango.max > 0 && target > rango.max) {
+        invalidos.push({ itemId, sku, rango, motivo: `Precio ${fmtCLP(target)} > máximo ${fmtCLP(rango.max)}` });
+      } else {
+        validos.push(itemId);
+      }
+    }
+
+    if (invalidos.length > 0) {
+      const lista = invalidos.slice(0, 10).map(i => `• ${i.sku}: ${i.motivo}`).join("\n");
+      const extra = invalidos.length > 10 ? `\n… y ${invalidos.length - 10} más` : "";
+      if (validos.length === 0) {
+        alert(`Ningún ítem acepta ${fmtCLP(target)} en esta campaña:\n\n${lista}${extra}`);
+        return;
+      }
+      const ok = confirm(
+        `${invalidos.length} ítem${invalidos.length !== 1 ? "s" : ""} fuera de rango (se van a skipear):\n\n${lista}${extra}\n\n¿Aplicar solo a los ${validos.length} válidos?`
+      );
+      if (!ok) return;
+    }
+
     setBulkApplying("campaign");
-    setBulkProgress({ done: 0, total: todosAplicables.length, ok: 0, err: 0 });
-    setBulkErrors([]);
-    const errors: Array<{ sku: string; error: string }> = [];
+    setBulkProgress({ done: 0, total: validos.length, ok: 0, err: invalidos.length });
+    // Los inválidos ya van con error desde el arranque — el usuario los ve en el modal
+    const errors: Array<{ sku: string; error: string }> = invalidos.map(i => ({ sku: i.sku, error: i.motivo }));
+    setBulkErrors(errors);
     let ok = 0;
 
-    for (let i = 0; i < todosAplicables.length; i++) {
-      const itemId = todosAplicables[i];
+    for (let i = 0; i < validos.length; i++) {
+      const itemId = validos[i];
       const row = rows.find(r => r.item_id === itemId);
       try {
         const res = await fetch("/api/ml/promotions", {
@@ -347,12 +393,12 @@ export default function AdminMargenes() {
       } catch (e) {
         errors.push({ sku: row?.sku || itemId, error: e instanceof Error ? e.message : "Error" });
       }
-      setBulkProgress({ done: i + 1, total: todosAplicables.length, ok, err: errors.length });
+      setBulkProgress({ done: i + 1, total: validos.length, ok, err: errors.length });
     }
     setBulkErrors(errors);
     setBulkApplying("none");
     // Refresh focalizado de la cache para ver los nuevos valores reales
-    await refrescarItemsAfectados(todosAplicables);
+    await refrescarItemsAfectados(validos);
   };
 
   const runBulkLeave = async () => {
@@ -408,17 +454,74 @@ export default function AdminMargenes() {
         if (!confirm(`${bloquean.length} ítems tienen precio lista <= ${target}. Esas fallarán. ¿Continuar con los que sí aplican?`)) return;
       }
     }
+
+    // Pre-validación: consultar promos activas/postulables por cada item en
+    // paralelo y chequear que el target caiga en algún rango permitido.
+    // Esto anticipa el ERROR_CREDIBILITY_DISCOUNTED_PRICE que ML tira cuando
+    // el precio no cumple el mínimo de credibilidad de la campaña vigente.
     setBulkApplying(mode);
     setBulkProgress({ done: 0, total: items.length, ok: 0, err: 0 });
     setBulkErrors([]);
-    const errors: Array<{ sku: string; error: string }> = [];
+    type PromoLite = { min_price: number; max_price: number; activa: boolean; postulable: boolean; permite_custom_price: boolean; name: string };
+    const promosPorItem = new Map<string, PromoLite[]>();
+    const batch = 5;
+    for (let i = 0; i < items.length; i += batch) {
+      const chunk = items.slice(i, i + batch);
+      const res = await Promise.all(chunk.map(async it => {
+        try {
+          const r = await fetch(`/api/ml/item-promotions?item_id=${it.item_id}&_=${Date.now()}`, { cache: "no-store" });
+          const d = await r.json();
+          return { id: it.item_id, promos: (Array.isArray(d.promotions) ? d.promotions : []) as PromoLite[] };
+        } catch {
+          return { id: it.item_id, promos: [] as PromoLite[] };
+        }
+      }));
+      for (const row of res) promosPorItem.set(row.id, row.promos);
+    }
+
+    const invalidos: Array<{ sku: string; motivo: string }> = [];
+    const aplicables: typeof items = [];
+    for (const it of items) {
+      const promos = (promosPorItem.get(it.item_id) || []).filter(p => p.permite_custom_price && (p.activa || p.postulable));
+      if (promos.length === 0) { aplicables.push(it); continue; }
+      // Si el item tiene alguna promo con rango, el target debe caer dentro de
+      // AL MENOS una de ellas (intersección con "cualquiera permite").
+      const encaja = promos.some(p =>
+        (p.min_price === 0 || target >= p.min_price) &&
+        (p.max_price === 0 || target <= p.max_price)
+      );
+      if (encaja) { aplicables.push(it); continue; }
+      const detalles = promos
+        .filter(p => p.min_price > 0 || p.max_price > 0)
+        .map(p => `${p.name}: ${fmtCLP(p.min_price)}-${fmtCLP(p.max_price)}`)
+        .join(" | ");
+      invalidos.push({ sku: it.sku, motivo: `Fuera de rango ${detalles || "(sin rango explícito)"}` });
+    }
+
+    if (invalidos.length > 0) {
+      const lista = invalidos.slice(0, 10).map(i => `• ${i.sku}: ${i.motivo}`).join("\n");
+      const extra = invalidos.length > 10 ? `\n… y ${invalidos.length - 10} más` : "";
+      if (aplicables.length === 0) {
+        setBulkApplying("none");
+        alert(`Ningún ítem acepta ${fmtCLP(target)} con sus campañas vigentes:\n\n${lista}${extra}`);
+        return;
+      }
+      const cont = confirm(
+        `${invalidos.length} ítem${invalidos.length !== 1 ? "s" : ""} no acepta${invalidos.length !== 1 ? "n" : ""} ${fmtCLP(target)}:\n\n${lista}${extra}\n\n¿Aplicar solo a los ${aplicables.length} válidos?`
+      );
+      if (!cont) { setBulkApplying("none"); return; }
+    }
+
+    const errors: Array<{ sku: string; error: string }> = invalidos.map(i => ({ sku: i.sku, error: i.motivo }));
+    setBulkErrors(errors);
+    setBulkProgress({ done: 0, total: aplicables.length, ok: 0, err: invalidos.length });
     let ok = 0;
 
     const start = new Date().toISOString().slice(0, 10) + "T00:00:00.000Z";
     const end = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10) + "T23:59:59.000Z";
 
-    for (let i = 0; i < items.length; i++) {
-      const it = items[i];
+    for (let i = 0; i < aplicables.length; i++) {
+      const it = aplicables[i];
       try {
         let res: Response;
         if (mode === "lista") {
@@ -447,12 +550,12 @@ export default function AdminMargenes() {
       } catch (e) {
         errors.push({ sku: it.sku, error: e instanceof Error ? e.message : "Error" });
       }
-      setBulkProgress({ done: i + 1, total: items.length, ok, err: errors.length });
+      setBulkProgress({ done: i + 1, total: aplicables.length, ok, err: errors.length });
     }
     setBulkErrors(errors);
     setBulkApplying("none");
     // Refresh focalizado de la cache
-    await refrescarItemsAfectados(items.map(x => x.item_id));
+    await refrescarItemsAfectados(aplicables.map(x => x.item_id));
   };
 
   // KPIs
@@ -864,7 +967,24 @@ export default function AdminMargenes() {
                     const isSelected = selectedPromoKey === key;
                     const totalAplicables = p.itemsPostulables.length + p.itemsActivos.length;
                     const target = parseInt(bulkPrice) || 0;
-                    const fueraRango = p.min_price > 0 && p.max_price > 0 && (target < p.min_price || target > p.max_price);
+                    // Breakdown por-item: cada item de la promo tiene su propio rango.
+                    // Contar cuántos aceptan el target actual vs cuántos quedan afuera.
+                    let validosCount = 0;
+                    const invalidosItems: Array<{ itemId: string; sku: string; rango: RangoItem }> = [];
+                    if (target > 0 && totalAplicables > 0) {
+                      const aplicablesIds = [...p.itemsPostulables, ...p.itemsActivos];
+                      for (const id of aplicablesIds) {
+                        const rango = p.rangosPorItem.get(id);
+                        if (!rango) { validosCount++; continue; }
+                        const ok = (rango.min === 0 || target >= rango.min) && (rango.max === 0 || target <= rango.max);
+                        if (ok) validosCount++;
+                        else {
+                          const row = rows.find(r => r.item_id === id);
+                          invalidosItems.push({ itemId: id, sku: row?.sku || id, rango });
+                        }
+                      }
+                    }
+                    const fueraRango = invalidosItems.length > 0;
                     return (
                       <label
                         key={key}
@@ -933,10 +1053,39 @@ export default function AdminMargenes() {
                                 </div>
                               )}
                             </div>
-                            {isSelected && fueraRango && target > 0 && (
-                              <div style={{ marginTop: 6, fontSize: 10, color: "var(--red)", fontWeight: 600 }}>
-                                ⚠ Precio {fmtCLP(target)} fuera del rango permitido
+                            {target > 0 && totalAplicables > 0 && (
+                              <div style={{ marginTop: 6, fontSize: 10, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                                <span style={{ color: "var(--green)", fontWeight: 600 }}>
+                                  ✓ {validosCount} acepta{validosCount !== 1 ? "n" : ""} {fmtCLP(target)}
+                                </span>
+                                {fueraRango && (
+                                  <span style={{ color: "var(--red)", fontWeight: 600 }}>
+                                    ✗ {invalidosItems.length} fuera de rango
+                                  </span>
+                                )}
                               </div>
+                            )}
+                            {isSelected && fueraRango && target > 0 && (
+                              <details style={{ marginTop: 6 }}>
+                                <summary style={{ fontSize: 10, color: "var(--red)", cursor: "pointer", fontWeight: 600 }}>
+                                  Ver {invalidosItems.length} ítem{invalidosItems.length !== 1 ? "s" : ""} fuera de rango
+                                </summary>
+                                <div style={{ marginTop: 6, maxHeight: 160, overflowY: "auto", background: "var(--bg4)", borderRadius: 6, padding: 8 }}>
+                                  {invalidosItems.slice(0, 50).map(inv => (
+                                    <div key={inv.itemId} style={{ fontSize: 10, display: "flex", justifyContent: "space-between", gap: 8, padding: "2px 0", color: "var(--txt2)" }}>
+                                      <span className="mono" style={{ color: "var(--txt)" }}>{inv.sku}</span>
+                                      <span className="mono" style={{ color: "var(--txt3)" }}>
+                                        {fmtCLP(inv.rango.min)}–{fmtCLP(inv.rango.max)}
+                                      </span>
+                                    </div>
+                                  ))}
+                                  {invalidosItems.length > 50 && (
+                                    <div style={{ fontSize: 9, color: "var(--txt3)", marginTop: 4, textAlign: "center" }}>
+                                      … y {invalidosItems.length - 50} más
+                                    </div>
+                                  )}
+                                </div>
+                              </details>
                             )}
                           </div>
                         </div>
