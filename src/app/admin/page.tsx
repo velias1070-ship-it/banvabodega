@@ -17,6 +17,7 @@ import AdminInteligencia from "@/components/AdminInteligencia";
 import AdminSemaforo from "@/components/AdminSemaforo";
 import AdminCompras from "@/components/AdminCompras";
 import AdminDiscrepancias from "@/components/AdminDiscrepancias";
+import AdminCostoAuditoria from "@/components/AdminCostoAuditoria";
 import AdminEventos from "@/components/AdminEventos";
 import AdminVentasML from "@/components/AdminVentasML";
 import AdminComercial from "@/components/AdminComercial";
@@ -67,7 +68,7 @@ function LoginGate({ onLogin }: { onLogin: (pin: string) => boolean }) {
   );
 }
 
-type AdminTab = "dash"|"rec"|"discrepancias"|"flex"|"enviosfull"|"ops"|"inv"|"mov"|"prod"|"reposicion"|"intel"|"semaforo"|"compras"|"eventos"|"ventasml"|"comercial"|"margenes"|"agentes"|"stockml"|"timeline"|"config";
+type AdminTab = "dash"|"rec"|"discrepancias"|"flex"|"enviosfull"|"ops"|"inv"|"mov"|"prod"|"costoauditoria"|"reposicion"|"intel"|"semaforo"|"compras"|"eventos"|"ventasml"|"comercial"|"margenes"|"agentes"|"stockml"|"timeline"|"config";
 
 const MOBILE_MENU_SECTIONS = [
   { section: "Principal", items: [
@@ -159,7 +160,7 @@ export default function AdminPage() {
 
   const SIDEBAR_GROUPS = [
     {section:"OPERACIONES",icon:"⚡",items:[["rec","Recepciones","📦"],["discrepancias","Discrepancias","💰"],["flex","Ultima Milla","🚚"],["enviosfull","Envios Full","📦"],["ops","Operaciones","⚡"],["reposicion","Reposición","🔄"]] as const},
-    {section:"INVENTARIO",icon:"📦",items:[["inv","Inventario","📦"],["mov","Movimientos","📋"],["timeline","Timeline","📊"],["prod","Productos","🏷️"],["stockml","Stock ML","📡"]] as const},
+    {section:"INVENTARIO",icon:"📦",items:[["inv","Inventario","📦"],["mov","Movimientos","📋"],["timeline","Timeline","📊"],["prod","Productos","🏷️"],["costoauditoria","Auditoría Costos","📊"],["stockml","Stock ML","📡"]] as const},
     {section:"INTELIGENCIA",icon:"🧠",items:[["intel","Inteligencia","🧠"],["semaforo","Semaforo","🚦"],["compras","Compras","🛒"],["eventos","Eventos","📅"],["ventasml","Ventas ML","💰"]] as const},
     {section:"COMERCIAL",icon:"🏪",items:[["comercial","Publicaciones","📢"],["margenes","Márgenes","💹"]] as const},
     {section:"SISTEMA",icon:"⚙️",items:[["agentes","Agentes IA","🤖"],["config","Configuración","⚙️"]] as const},
@@ -272,6 +273,7 @@ export default function AdminPage() {
             {tab==="inv"&&<Inventario/>}
             {tab==="mov"&&<Movimientos/>}
             {tab==="prod"&&<Productos refresh={r}/>}
+            {tab==="costoauditoria"&&<AdminCostoAuditoria/>}
             {tab==="reposicion"&&<AdminReposicion/>}
             {tab==="intel"&&<AdminInteligencia/>}
             {tab==="semaforo"&&<AdminSemaforo/>}
