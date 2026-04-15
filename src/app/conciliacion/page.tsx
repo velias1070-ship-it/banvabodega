@@ -532,12 +532,12 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   // Factura "pagada" cuando el monto acumulado cubre el total (tolerancia 1 peso)
   const concCompraIds = useMemo(() => {
     const s = new Set<string>();
-    for (const c of data) {
+    for (const c of comprasGlobal) {
       const aplicado = montoAplicadoPorCompra.get(c.id!) || 0;
       if (aplicado + 1 >= (c.monto_total || 0) && aplicado > 0) s.add(c.id!);
     }
     return s;
-  }, [montoAplicadoPorCompra, data]);
+  }, [montoAplicadoPorCompra, comprasGlobal]);
 
   // Mapa de anulaciones: compraId -> { concId, ncIds[] }
   // Una anulación es una conciliación con tipo_partida='anulacion' y sus items
