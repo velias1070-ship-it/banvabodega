@@ -2084,6 +2084,9 @@ export interface DBRcvCompra {
   fecha_vencimiento?: string | null;
   categoria_cuenta_id?: string | null;
   notas?: string | null;
+  factura_ref_tipo?: number | null;
+  factura_ref_folio?: string | null;
+  factura_ref_id?: string | null;
   created_at?: string;
 }
 

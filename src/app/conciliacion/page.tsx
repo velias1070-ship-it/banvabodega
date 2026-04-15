@@ -558,6 +558,31 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
     return map;
   }, [conciliaciones, conciliacionItems, data]);
 
+  // Mapa de NCs vinculadas a cada factura (via factura_ref_id) y viceversa
+  const ncsPorFactura = useMemo(() => {
+    const map = new Map<string, DBRcvCompra[]>();
+    for (const c of data) {
+      if (c.tipo_doc === 61 && c.factura_ref_id) {
+        const arr = map.get(c.factura_ref_id) || [];
+        arr.push(c);
+        map.set(c.factura_ref_id, arr);
+      }
+    }
+    return map;
+  }, [data]);
+
+  const facturaPorNc = useMemo(() => {
+    const map = new Map<string, DBRcvCompra>();
+    const byId = new Map(data.map(d => [d.id!, d]));
+    for (const c of data) {
+      if (c.tipo_doc === 61 && c.factura_ref_id) {
+        const fac = byId.get(c.factura_ref_id);
+        if (fac) map.set(c.id!, fac);
+      }
+    }
+    return map;
+  }, [data]);
+
   // Set de IDs de documentos "consumidos" por cualquier conciliación confirmada (pagadas o anuladas)
   const usedDocIds = useMemo(() => {
     const s = new Set<string>();
@@ -932,6 +957,32 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ fontWeight: 500, color: "var(--cyan)", fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.razon_social || "\u2014"}</div>
                             <div className="mono" style={{ fontSize: 10, color: "var(--txt3)", marginTop: 2 }}>{fmtRut(c.rut_proveedor)}</div>
+                            {(() => {
+                              if (c.tipo_doc === 61) {
+                                const fac = facturaPorNc.get(c.id!);
+                                if (fac) return (
+                                  <div style={{ fontSize: 9, color: "var(--amber)", marginTop: 3, fontWeight: 600 }}>
+                                    &larr; FAC {fac.nro_doc} &middot; {fmtMoney(fac.monto_total || 0)}
+                                  </div>
+                                );
+                                if (c.factura_ref_folio) return (
+                                  <div style={{ fontSize: 9, color: "var(--txt3)", marginTop: 3 }}>
+                                    &larr; ref FAC {c.factura_ref_folio} (no encontrada)
+                                  </div>
+                                );
+                              } else {
+                                const ncs = ncsPorFactura.get(c.id!) || [];
+                                if (ncs.length > 0) {
+                                  const totalNC = ncs.reduce((s, n) => s + (n.monto_total || 0), 0);
+                                  return (
+                                    <div style={{ fontSize: 9, color: "var(--amber)", marginTop: 3, fontWeight: 600 }}>
+                                      &larr; {ncs.length} NC asociada{ncs.length > 1 ? "s" : ""} &middot; -{fmtMoney(totalNC)}
+                                    </div>
+                                  );
+                                }
+                              }
+                              return null;
+                            })()}
                           </div>
                           <span onClick={() => { setEditingNota(c.id!); setNotaText(c.notas || ""); }}
                             title={c.notas || "Agregar comentario"}
@@ -1243,24 +1294,33 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
               </div>
             </div>
             {/* Notas de Crédito del proveedor */}
-            {ncsDisponibles.length > 0 && (
+            {ncsDisponibles.length > 0 && (() => {
+              const ncsOrdenadas = [...ncsDisponibles].sort((a, b) => {
+                const aLink = a.factura_ref_id === pagoItem.id ? 0 : 1;
+                const bLink = b.factura_ref_id === pagoItem.id ? 0 : 1;
+                return aLink - bLink;
+              });
+              return (
               <div style={{ padding: "8px 28px", borderBottom: "1px solid var(--bg4)", background: ncsSelected.length > 0 ? "var(--amberBg)" : "var(--bg3)" }}>
                 <div style={{ fontSize: 10, fontWeight: 600, color: "var(--amber)", marginBottom: 4 }}>Notas de Cr&eacute;dito disponibles ({ncsDisponibles.length})</div>
-                {ncsDisponibles.map(nc => {
+                {ncsOrdenadas.map(nc => {
                   const sel = pagoNCs.has(nc.id!);
+                  const asociada = nc.factura_ref_id === pagoItem.id;
                   return (
                     <label key={nc.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", cursor: "pointer", borderBottom: "1px solid var(--bg4)" }}>
                       <input type="checkbox" checked={sel} onChange={() => handleToggleNC(nc.id!)} style={{ accentColor: "var(--amber)" }} />
                       <span style={{ flex: 1, fontSize: 11 }}>
-                        <span className="mono" style={{ fontWeight: 700, fontSize: 10, padding: "1px 5px", borderRadius: 3, background: "var(--amberBg)", color: "var(--amber)", marginRight: 4 }}>NC</span>
+                        <span className="mono" style={{ fontWeight: 700, fontSize: 10, padding: "1px 5px", borderRadius: 3, background: asociada ? "var(--amber)" : "var(--amberBg)", color: asociada ? "#fff" : "var(--amber)", marginRight: 4 }}>NC</span>
                         N&deg; {nc.nro_doc} &mdash; {fmtDate(nc.fecha_docto)}
+                        {asociada && <span style={{ fontSize: 9, marginLeft: 6, padding: "1px 6px", borderRadius: 3, background: "var(--amber)", color: "#fff", fontWeight: 700 }}>&larr; ASOCIADA A ESTA FACTURA</span>}
                       </span>
                       <span className="mono" style={{ fontSize: 12, fontWeight: 700, color: "var(--amber)" }}>-{fmtMoney(nc.monto_total || 0)}</span>
                     </label>
                   );
                 })}
               </div>
-            )}
+              );
+            })()}
             {/* Movimientos seleccionados */}
             {pagoSelected.length > 0 && (
               <div style={{ padding: "8px 28px", borderBottom: "1px solid var(--bg4)", background: "var(--bg3)" }}>
