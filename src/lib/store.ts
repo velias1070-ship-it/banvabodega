@@ -2889,7 +2889,16 @@ export async function cerrarRecepcion(id: string): Promise<{ ok: boolean; pendie
     return { ok: false, integridad: erroresCriticos };
   }
 
-  // 3. Check discrepancies
+  // 3. Asegurar que las discrepancias existen antes de chequearlas.
+  //    detectarDiscrepancias/Qty hacen early-return si ya existen filas,
+  //    así que es idempotente y seguro llamarlas al cierre. Sin esto, si
+  //    nadie abrió el detalle en el admin, las filas nunca existen y el
+  //    cierre pasa silencioso con el WAC contaminado.
+  const lineasActuales = await db.fetchRecepcionLineas(id);
+  await detectarDiscrepancias(id, lineasActuales);
+  await detectarDiscrepanciasQty(id, lineasActuales);
+
+  // 4. Check discrepancies
   const [discs, discsQty] = await Promise.all([
     db.fetchDiscrepancias(id),
     db.fetchDiscrepanciasQty(id),
