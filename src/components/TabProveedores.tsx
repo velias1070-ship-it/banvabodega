@@ -5,9 +5,10 @@ import {
   fetchConciliaciones,
   fetchProveedorCuentas,
   upsertProveedorCuenta,
+  fetchMovimientosBanco,
 } from "@/lib/db";
 import type {
-  DBEmpresa, DBRcvCompra, DBConciliacion, DBProveedorCuenta,
+  DBEmpresa, DBRcvCompra, DBConciliacion, DBProveedorCuenta, DBMovimientoBanco,
 } from "@/lib/db";
 
 const fmtMoney = (n: number) => n.toLocaleString("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 });
@@ -48,6 +49,7 @@ export default function TabProveedores({ empresa, periodo }: { empresa: DBEmpres
   const [compras, setCompras] = useState<DBRcvCompra[]>([]);
   const [conciliaciones, setConciliaciones] = useState<DBConciliacion[]>([]);
   const [provCuentas, setProvCuentas] = useState<DBProveedorCuenta[]>([]);
+  const [movsBanco, setMovsBanco] = useState<DBMovimientoBanco[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("por_pagar");
@@ -63,9 +65,14 @@ export default function TabProveedores({ empresa, periodo }: { empresa: DBEmpres
   const load = useCallback(async () => {
     if (!empresa.id) return;
     setLoading(true);
-    const [conc, pc] = await Promise.all([fetchConciliaciones(empresa.id), fetchProveedorCuentas()]);
+    const [conc, pc, movs] = await Promise.all([
+      fetchConciliaciones(empresa.id),
+      fetchProveedorCuentas(),
+      fetchMovimientosBanco(empresa.id, { desde: undefined, hasta: undefined }),
+    ]);
     setConciliaciones(conc);
     setProvCuentas(pc);
+    setMovsBanco(movs);
     // Cargar compras del periodo
     if (isAnual) {
       const promises = [];
@@ -220,6 +227,26 @@ export default function TabProveedores({ empresa, periodo }: { empresa: DBEmpres
   const viewProv = viewRut ? proveedores.find(p => p.rut === viewRut) : null;
   const viewFacturas = viewRut ? compras.filter(c => c.rut_proveedor === viewRut) : [];
   const viewPorPagar = viewFacturas.filter(c => !concCompraIds.has(c.id!));
+
+  // Transferencias bancarias al proveedor: todas las conciliaciones confirmadas
+  // con rcv_compra_id apuntando a alguna factura del proveedor, más su mov bancario
+  const transferenciasBanco = useMemo(() => {
+    if (!viewRut) return [];
+    const facIds = new Set(viewFacturas.map(f => f.id!));
+    const movById = new Map(movsBanco.map(m => [m.id!, m]));
+    type Transfer = { mov: DBMovimientoBanco; factura: DBRcvCompra; monto_aplicado: number; concId: string };
+    const transfers: Transfer[] = [];
+    for (const c of conciliaciones) {
+      if (c.estado !== "confirmado") continue;
+      if (!c.rcv_compra_id || !c.movimiento_banco_id) continue;
+      if (!facIds.has(c.rcv_compra_id)) continue;
+      const mov = movById.get(c.movimiento_banco_id);
+      const factura = viewFacturas.find(f => f.id === c.rcv_compra_id);
+      if (!mov || !factura) continue;
+      transfers.push({ mov, factura, monto_aplicado: c.monto_aplicado || 0, concId: c.id! });
+    }
+    return transfers.sort((a, b) => (b.mov.fecha || "").localeCompare(a.mov.fecha || ""));
+  }, [viewRut, viewFacturas, conciliaciones, movsBanco]);
   // Facturación por mes para el gráfico
   const facturacionPorMes = useMemo(() => {
     if (!viewRut) return [];
@@ -322,6 +349,64 @@ export default function TabProveedores({ empresa, periodo }: { empresa: DBEmpres
               </div>
             )}
           </div>
+        </div>
+
+        {/* Transferencias bancarias al proveedor */}
+        <div className="card" style={{ overflow: "hidden", padding: 0, marginBottom: 20 }}>
+          <div style={{ padding: "14px 20px", borderBottom: "1px solid var(--bg4)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <h4 style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>Transferencias bancarias al proveedor</h4>
+              <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 2 }}>
+                {transferenciasBanco.length === 0
+                  ? "Sin transferencias registradas"
+                  : `${transferenciasBanco.length} movimiento${transferenciasBanco.length !== 1 ? "s" : ""} — Total ${fmtMoney(transferenciasBanco.reduce((s, t) => s + t.monto_aplicado, 0))}`}
+              </div>
+            </div>
+          </div>
+          {transferenciasBanco.length === 0 ? (
+            <div style={{ padding: 24, textAlign: "center", color: "var(--txt3)", fontSize: 12 }}>
+              No hay movimientos bancarios conciliados a facturas de este proveedor.
+            </div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ borderBottom: "2px solid var(--bg4)", background: "var(--bg3)" }}>
+                  <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: 600, fontSize: 11, color: "var(--txt3)" }}>Fecha</th>
+                  <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: 600, fontSize: 11, color: "var(--txt3)" }}>Banco</th>
+                  <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: 600, fontSize: 11, color: "var(--txt3)" }}>Descripción</th>
+                  <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: 600, fontSize: 11, color: "var(--txt3)" }}>Factura</th>
+                  <th style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600, fontSize: 11, color: "var(--txt3)" }}>Aplicado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {transferenciasBanco.map((t, i) => (
+                  <tr key={t.concId || i} style={{ borderBottom: "1px solid var(--bg4)" }}>
+                    <td className="mono" style={{ padding: "10px 12px" }}>{fmtDate(t.mov.fecha)}</td>
+                    <td style={{ padding: "10px 12px", fontSize: 11 }}>
+                      <span style={{ padding: "2px 8px", borderRadius: 4, background: "var(--bg3)", color: "var(--txt2)", fontWeight: 600 }}>{t.mov.banco || "—"}</span>
+                    </td>
+                    <td style={{ padding: "10px 12px", maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={t.mov.descripcion || ""}>{t.mov.descripcion || "—"}</td>
+                    <td style={{ padding: "10px 12px" }}>
+                      <span className="mono" style={{ fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 4, background: "var(--cyanBg)", color: "var(--cyan)" }}>
+                        {(TIPO_DOC_NAMES[t.factura.tipo_doc] || "DOC").slice(0, 3).toUpperCase()} {t.factura.nro_doc}
+                      </span>
+                    </td>
+                    <td className="mono" style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, color: "var(--green)" }}>
+                      {fmtMoney(t.monto_aplicado)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr style={{ background: "var(--bg3)", fontWeight: 700 }}>
+                  <td colSpan={4} style={{ padding: "10px 12px" }}>Total transferido</td>
+                  <td className="mono" style={{ padding: "10px 12px", textAlign: "right", color: "var(--green)" }}>
+                    {fmtMoney(transferenciasBanco.reduce((s, t) => s + t.monto_aplicado, 0))}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          )}
         </div>
 
         {/* Tabla de facturas */}
