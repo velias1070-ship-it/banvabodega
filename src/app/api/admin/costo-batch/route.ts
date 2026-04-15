@@ -21,17 +21,22 @@ export const maxDuration = 120;
  *       → modo "entradas": actualiza esos movimientos por recepcion_id,
  *         replica la lógica auditada de sincronizarCostoMovimientosRecepcion,
  *         recalcula WAC desde todas las entradas con costo > 0.
- *   - Si NO hay movimientos para ese SKU
+ *   - Si NO hay movimientos para ese SKU y hay stock > 0
  *       → modo "huerfano": inserta UN movimiento sintético
  *         tipo='entrada', motivo='regularizacion_historica' por el stock
  *         físico actual + costo de la planilla, NO mueve stock, y setea
  *         productos.costo_promedio = costo_neto directamente.
+ *   - Si NO hay movimientos ni stock físico
+ *       → modo "huerfano_sin_stock": solo UPDATE productos.costo_promedio
+ *         + audit_log. No inserta movimiento (no hay cantidad real que
+ *         justificar). Sirve para costear ventas futuras o historicas
+ *         que referencien este SKU.
  *
  * Toda escritura deja entradas en audit_log con un run_id común por llamada.
  */
 
 type FilaInput = { sku: string; costo_neto: number; factura_ref?: string };
-type Modo = "entradas" | "huerfano" | "skip";
+type Modo = "entradas" | "huerfano" | "huerfano_sin_stock" | "skip";
 
 type Resultado = {
   sku: string;
@@ -224,8 +229,41 @@ export async function POST(req: Request) {
         res.stock_actual = stockTotal;
 
         if (stockTotal <= 0) {
-          res.error = "sin_stock_fisico_para_regularizar";
-          errores++;
+          // Opción 2: SKU sin stock físico y sin entradas en movimientos.
+          // Solo actualizamos productos.costo_promedio + audit, sin meter
+          // movimiento sintético (no hay cantidad real que justificar).
+          res.modo = "huerfano_sin_stock";
+
+          if (dryRun) {
+            res.wac_nuevo = costo;
+            exitosos++;
+            detalle.push(res);
+            continue;
+          }
+
+          const { error: prodErr } = await sb
+            .from("productos")
+            .update({ costo_promedio: costo })
+            .eq("sku", sku);
+          if (prodErr) throw new Error(`update_producto_sin_stock: ${prodErr.message}`);
+          res.wac_nuevo = costo;
+
+          await sb.from("audit_log").insert({
+            accion: "regularizacion_costo_sin_stock",
+            entidad: "producto",
+            entidad_id: sku,
+            operario: "costo-batch",
+            params: {
+              sku,
+              costo_neto: costo,
+              factura_ref,
+              run_id: runId,
+              nota: "SKU sin stock fisico y sin entradas; solo se actualiza costo_promedio",
+            },
+            resultado: { costo_promedio: costo, sin_movimiento_sintetico: true },
+          });
+
+          exitosos++;
           detalle.push(res);
           continue;
         }
