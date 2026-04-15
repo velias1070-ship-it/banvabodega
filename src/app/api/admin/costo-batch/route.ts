@@ -7,16 +7,21 @@ export const maxDuration = 120;
 /**
  * POST /api/admin/costo-batch
  *
- * Regulariza en lote el costo_unitario de SKUs cuyas entradas históricas
- * quedaron con costo NULL (falta de ingreso de factura en recepciones).
+ * Regulariza en lote el costo_unitario de SKUs.
  *
  * Body:
  *   {
- *     filas: [{ sku: string, costo_neto: number, factura_ref?: string }],
+ *     mode?: "auto" | "override_wac",   // default "auto"
+ *     filas: [{
+ *       sku: string,
+ *       costo_neto: number,
+ *       factura_ref?: string,   // solo mode "auto"
+ *       nota?: string           // OBLIGATORIA en mode "override_wac"
+ *     }],
  *     dryRun?: boolean   // default false
  *   }
  *
- * Comportamiento por SKU:
+ * Modo "auto" — comportamiento por SKU:
  *   - Si existen movimientos tipo='entrada' con costo_unitario IS NULL
  *       → modo "entradas": actualiza esos movimientos por recepcion_id,
  *         replica la lógica auditada de sincronizarCostoMovimientosRecepcion,
@@ -32,11 +37,25 @@ export const maxDuration = 120;
  *         justificar). Sirve para costear ventas futuras o historicas
  *         que referencien este SKU.
  *
+ * Modo "override_wac" — correccion manual del WAC:
+ *   - Ignora movimientos y stock. Hace UPDATE productos.costo_promedio
+ *     directo al valor dado. NO toca movimientos ni recalcula nada.
+ *   - Requiere nota de texto libre por fila explicando la razon del
+ *     ajuste (ej. "ajuste WAC a valor reconstruido desde movimientos").
+ *     Las filas sin nota fallan individualmente con
+ *     error="nota_obligatoria_en_override_wac".
+ *   - Audit con accion="override_wac_manual".
+ *
  * Toda escritura deja entradas en audit_log con un run_id común por llamada.
  */
 
-type FilaInput = { sku: string; costo_neto: number; factura_ref?: string };
-type Modo = "entradas" | "huerfano" | "huerfano_sin_stock" | "skip";
+type FilaInput = {
+  sku: string;
+  costo_neto: number;
+  factura_ref?: string;
+  nota?: string;
+};
+type Modo = "entradas" | "huerfano" | "huerfano_sin_stock" | "override_wac" | "skip";
 
 type Resultado = {
   sku: string;
@@ -57,12 +76,14 @@ export async function POST(req: Request) {
   const sb = getServerSupabase();
   if (!sb) return NextResponse.json({ error: "no_db" }, { status: 500 });
 
-  let body: { filas?: FilaInput[]; dryRun?: boolean };
+  let body: { filas?: FilaInput[]; dryRun?: boolean; mode?: string };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "body_invalido" }, { status: 400 });
   }
+
+  const mode: "auto" | "override_wac" = body.mode === "override_wac" ? "override_wac" : "auto";
 
   const filasRaw = Array.isArray(body.filas) ? body.filas : [];
   const filas = filasRaw
@@ -70,6 +91,7 @@ export async function POST(req: Request) {
       sku: String(f?.sku || "").toUpperCase().trim(),
       costo_neto: Number(f?.costo_neto),
       factura_ref: f?.factura_ref ? String(f.factura_ref).trim() : null,
+      nota: f?.nota ? String(f.nota).trim() : null,
     }))
     .filter(f => f.sku && Number.isFinite(f.costo_neto) && f.costo_neto > 0);
 
@@ -87,7 +109,7 @@ export async function POST(req: Request) {
   let errores = 0;
 
   for (const fila of filas) {
-    const { sku, costo_neto: costo, factura_ref } = fila;
+    const { sku, costo_neto: costo, factura_ref, nota } = fila;
     const res: Resultado = {
       sku,
       modo: "skip",
@@ -112,6 +134,52 @@ export async function POST(req: Request) {
       }
       const prod = prodRows[0] as { costo: number | null; costo_promedio: number | null };
       res.wac_anterior = Number(prod.costo_promedio || 0);
+
+      // ────────────────────────────────────────────────────────────────
+      // MODE "override_wac" — correccion manual del WAC
+      // ────────────────────────────────────────────────────────────────
+      if (mode === "override_wac") {
+        res.modo = "override_wac";
+        if (!nota || !nota.length) {
+          res.error = "nota_obligatoria_en_override_wac";
+          errores++;
+          detalle.push(res);
+          continue;
+        }
+
+        if (dryRun) {
+          res.wac_nuevo = costo;
+          exitosos++;
+          detalle.push(res);
+          continue;
+        }
+
+        const { error: prodErr } = await sb
+          .from("productos")
+          .update({ costo_promedio: costo })
+          .eq("sku", sku);
+        if (prodErr) throw new Error(`override_wac_update: ${prodErr.message}`);
+        res.wac_nuevo = costo;
+
+        await sb.from("audit_log").insert({
+          accion: "override_wac_manual",
+          entidad: "producto",
+          entidad_id: sku,
+          operario: "costo-batch",
+          params: {
+            sku,
+            costo_anterior: res.wac_anterior,
+            costo_nuevo: costo,
+            nota,
+            run_id: runId,
+          },
+          resultado: { costo_promedio: costo },
+        });
+
+        exitosos++;
+        detalle.push(res);
+        continue;
+      }
 
       // 2. Contar movimientos de entrada con costo NULL
       const { data: movsNullRaw } = await sb
@@ -361,7 +429,7 @@ export async function POST(req: Request) {
       entidad: "batch",
       entidad_id: runId,
       operario: "costo-batch",
-      params: { total: filas.length, dry_run: dryRun },
+      params: { total: filas.length, dry_run: dryRun, mode },
       resultado: { exitosos, errores },
     });
   } catch {
@@ -371,6 +439,7 @@ export async function POST(req: Request) {
   return NextResponse.json({
     ok: errores === 0,
     run_id: runId,
+    mode,
     dry_run: dryRun,
     total: filas.length,
     exitosos,
