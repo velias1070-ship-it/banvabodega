@@ -1052,14 +1052,31 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                           )}
                           {(() => {
                             const anul = anulacionByCompra.get(c.id!);
-                            if (anul) {
-                              const label = c.tipo_doc === 61 ? "NC aplicada" : "Anulada";
+                            // NCs aplicadas (tipo_doc=61): siempre mostrar "NC aplicada" si la NC fue consumida
+                            if (anul && c.tipo_doc === 61) {
                               return (
-                                <span title={label}
+                                <span title="NC aplicada"
                                   style={{ fontSize: 11, fontWeight: 600, padding: "4px 12px", borderRadius: 6, background: "var(--amberBg)", color: "var(--amber)", cursor: "default" }}>
-                                  {label}
+                                  NC aplicada
                                 </span>
                               );
+                            }
+                            // Facturas: "Anulada" SOLO si está totalmente cubierta y NO hay pago bancario
+                            // Si tiene pago bancario + NC = "Pagado" (mixto)
+                            if (anul && isConciliada) {
+                              const tieneBanco = conciliaciones.some(x =>
+                                x.estado === "confirmado" &&
+                                x.rcv_compra_id === c.id &&
+                                x.movimiento_banco_id
+                              );
+                              if (!tieneBanco) {
+                                return (
+                                  <span title="Anulada (cubierta por NC sin pago bancario)"
+                                    style={{ fontSize: 11, fontWeight: 600, padding: "4px 12px", borderRadius: 6, background: "var(--amberBg)", color: "var(--amber)", cursor: "default" }}>
+                                    Anulada
+                                  </span>
+                                );
+                              }
                             }
                             if (isConciliada) {
                               return (
