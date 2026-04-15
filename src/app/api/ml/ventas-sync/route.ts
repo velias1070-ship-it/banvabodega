@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
 import { mlGet, getMLConfig } from "@/lib/ml";
 import { preloadCostos, resolverCostoVenta, calcularMargenVenta } from "@/lib/costos";
+import { decidirSnapshotCosto } from "@/lib/snapshot-costo";
 import { preloadAdsForSales, resolverAdsVenta, calcularMargenNeto } from "@/lib/ads";
 
 export const maxDuration = 300;
@@ -283,19 +284,15 @@ export async function GET(req: NextRequest) {
           // cambiar por re-balance de envío en packs compartidos).
           const snapshotKey = `${order.id}|${sku}`;
           const prev = snapshotByKey.get(snapshotKey);
-          let costoProducto: number;
-          let costoFuente: string;
-          let costoSnapshotAt: string;
-          if (prev && prev.costo_producto != null) {
-            costoProducto = prev.costo_producto;
-            costoFuente = prev.costo_fuente || "promedio";
-            costoSnapshotAt = prev.costo_snapshot_at || snapshotAt;
-          } else {
-            const resolved = resolverCostoVenta(sku, item.quantity, preload);
-            costoProducto = resolved.costo_producto;
-            costoFuente = resolved.costo_fuente;
-            costoSnapshotAt = snapshotAt;
-          }
+          const snapshot = decidirSnapshotCosto(
+            prev,
+            () => resolverCostoVenta(sku, item.quantity, preload),
+            snapshotAt,
+            { order_id: order.id, sku_venta: sku },
+          );
+          const costoProducto = snapshot.costo_producto;
+          const costoFuente = snapshot.costo_fuente;
+          const costoSnapshotAt = snapshot.costo_snapshot_at;
           const mBruto = calcularMargenVenta(totalNeto, costoProducto, subtotal);
           const margenFinal = mBruto.margen;
           const margenPct = mBruto.margen_pct;
