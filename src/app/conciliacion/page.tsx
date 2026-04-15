@@ -636,10 +636,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   // Cross-período pero scoped al año seleccionado: una factura de febrero vencida
   // se ve desde cualquier mes de 2026, pero no aparecen facturas de 2025.
   const anioActual = periodo.slice(0, 4);
-  const comprasAnio = useMemo(
-    () => comprasGlobal.filter(c => (c.periodo || "").startsWith(anioActual)),
-    [comprasGlobal, anioActual]
-  );
+  const comprasAnio = comprasGlobal.filter(c => (c.periodo || "").startsWith(anioActual));
   const totalPagadas = comprasAnio.filter(c => concCompraIds.has(c.id!)).length;
   const porPagarList = comprasAnio.filter(c => !concCompraIds.has(c.id!) && c.tipo_doc !== 61);
   const vencidasList = porPagarList.filter(c => {
