@@ -1,6 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-export type CostoFuente = "promedio" | "catalogo" | "sin_costo" | "backfill_estimado";
+export type CostoFuente =
+  | "promedio"           // WAC real desde productos.costo_promedio
+  | "catalogo"           // Fallback a productos.costo (editado manual)
+  | "sin_costo"          // Sin WAC ni catálogo para el SKU
+  | "sin_fuente"         // Snapshot heredado con costo_producto poblado pero costo_fuente NULL
+  | "backfill_estimado"; // Legacy: UPDATE masivo del 2026-04-12 fuera del código versionado
 
 export interface CostoResuelto {
   costo_producto: number;

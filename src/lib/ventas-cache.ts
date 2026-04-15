@@ -1,6 +1,7 @@
 import { getServerSupabase } from "@/lib/supabase-server";
 import { mlGet } from "@/lib/ml";
 import { preloadCostos, resolverCostoVenta, calcularMargenVenta } from "@/lib/costos";
+import { decidirSnapshotCosto } from "@/lib/snapshot-costo";
 import { preloadAdsForSales, resolverAdsVenta, calcularMargenNeto } from "@/lib/ads";
 
 const TARIFA_FLEX = 3320;
@@ -147,19 +148,15 @@ export async function upsertOrderToVentasCache(
     // SIEMPRE porque dependen de total_neto (que puede cambiar por re-balance
     // de envío en packs compartidos).
     const existing = existingBySku.get(sku);
-    let costo_producto: number;
-    let costo_fuente: string;
-    let costo_snapshot_at: string;
-    if (existing && existing.costo_producto != null) {
-      costo_producto = existing.costo_producto;
-      costo_fuente = existing.costo_fuente || "promedio";
-      costo_snapshot_at = existing.costo_snapshot_at || snapshotAt;
-    } else {
-      const resolved = resolverCostoVenta(sku, item.quantity, preload!);
-      costo_producto = resolved.costo_producto;
-      costo_fuente = resolved.costo_fuente;
-      costo_snapshot_at = snapshotAt;
-    }
+    const snapshot = decidirSnapshotCosto(
+      existing,
+      () => resolverCostoVenta(sku, item.quantity, preload!),
+      snapshotAt,
+      { order_id: order.id, sku_venta: sku },
+    );
+    const costo_producto = snapshot.costo_producto;
+    const costo_fuente = snapshot.costo_fuente;
+    const costo_snapshot_at = snapshot.costo_snapshot_at;
     const mBruto = calcularMargenVenta(totalNeto, costo_producto, subtotal);
     const margen = mBruto.margen;
     const margen_pct = mBruto.margen_pct;
