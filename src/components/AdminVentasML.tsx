@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect } from "react";
 import * as XLSX from "xlsx";
+import type { CostoFuente } from "@/lib/costos";
 
 interface OrderRow {
   order_id: string;
@@ -23,7 +24,7 @@ interface OrderRow {
   total: number;
   total_neto?: number;
   costo_producto?: number | null;
-  costo_fuente?: "promedio" | "catalogo" | "sin_costo" | "backfill_estimado" | null;
+  costo_fuente?: CostoFuente | null;
   costo_snapshot_at?: string | null;
   margen?: number | null;
   margen_pct?: number | null;
@@ -569,13 +570,36 @@ export default function AdminVentasML() {
                       ? "var(--amber)"
                       : fuente === "backfill_estimado"
                         ? "var(--cyan)"
-                        : "var(--txt)";
+                        : fuente === "sin_fuente"
+                          ? "var(--txt3)"
+                          : "var(--txt)";
                 const fuenteLabel: Record<string, string> = {
                   promedio: "ponderado real",
                   catalogo: "catálogo",
-                  backfill_estimado: "backfill estimado",
+                  backfill_estimado: "costo histórico estimado — no usar para decisiones",
+                  sin_fuente: "snapshot legacy sin fuente",
                   sin_costo: "SIN COSTO",
                 };
+                const fuenteBadgeText: string | null =
+                  sinCosto ? "sin costo"
+                  : fuente === "backfill_estimado" ? "est."
+                  : fuente === "sin_fuente" ? "legacy"
+                  : null;
+                const fuenteBadge = fuenteBadgeText ? (
+                  <span
+                    title={fuente ? fuenteLabel[fuente] || fuente : "sin costo"}
+                    style={{
+                      marginLeft: 4,
+                      fontSize: 9,
+                      padding: "1px 4px",
+                      borderRadius: 3,
+                      background: "var(--bg4)",
+                      color: "var(--amber)",
+                    }}
+                  >
+                    {fuenteBadgeText}
+                  </span>
+                ) : null;
                 return (
                 <tr key={i} style={enMediacion ? { opacity: 0.5, textDecoration: "line-through" } : undefined}>
                   <td className="mono" style={{ fontSize: 10 }}>{o.order_id}{enMediacion && <span style={{ display: "block", fontSize: 9, color: o.estado === "Cancelada" ? "var(--red)" : "var(--amber)", textDecoration: "none" }}>{o.estado?.toUpperCase()}</span>}</td>
@@ -590,9 +614,11 @@ export default function AdminVentasML() {
                   <td className="mono" style={{ textAlign: "right", fontWeight: 700, color: enMediacion ? "var(--txt3)" : "var(--green)" }}>{fmt(o.total_neto ?? (o.subtotal - o.comision_total - o.costo_envio + (o.ingreso_envio || 0)))}</td>
                   <td className="mono" style={{ textAlign: "right", color: sinCosto ? "var(--red)" : "var(--txt3)" }} title={fuente ? fuenteLabel[fuente] || fuente : ""}>
                     {sinCosto ? "—" : fmt(o.costo_producto || 0)}
+                    {fuenteBadge}
                   </td>
                   <td className="mono" style={{ textAlign: "right", fontWeight: 700, color: margenColor }} title={fuente ? `Fuente: ${fuenteLabel[fuente] || fuente}` : ""}>
                     {sinCosto ? "—" : `${fmt(o.margen || 0)} (${(o.subtotal > 0 ? ((o.margen || 0) / o.subtotal) * 100 : 0).toFixed(1)}%)`}
+                    {fuenteBadge}
                   </td>
                   {(() => {
                     const adsCost = o.ads_cost_asignado || 0;
