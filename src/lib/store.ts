@@ -1277,14 +1277,20 @@ export async function ubicarLinea(lineaId: string, sku: string, posicionId: stri
       const pendientes = await db.fetchEnvioFullPendiente();
       const match = pendientes.find(p => p.sku === sku && p.cantidad_agregada < p.cantidad);
       if (match && match.picking_session_id) {
-        const falta = match.cantidad - match.cantidad_agregada;
-        const agregar = Math.min(falta, qty); // don't add more than what was just located
-        if (agregar > 0) {
-          // Find the active picking session
-          const sessions = await db.getActivePickingSessions();
-          const session = sessions.find(s => s.id === match.picking_session_id);
-          if (session && session.tipo === "envio_full") {
-            // Create new picking line — same structure as buildPickingLineasFull
+        // Find the active picking session first so the session is the source of truth
+        const sessions = await db.getActivePickingSessions();
+        const session = sessions.find(s => s.id === match.picking_session_id);
+        if (session && session.tipo === "envio_full") {
+          // Count units of this sku already present in the session (manual adds + previous auto-adds)
+          const yaEnSesion = session.lineas.reduce((sum, l) => {
+            const comp = l.componentes[0];
+            if (!comp) return sum;
+            if (comp.skuOrigen === sku || l.skuVenta === sku) return sum + (l.qtyPedida || comp.unidades || 0);
+            return sum;
+          }, 0);
+          const falta = Math.max(0, match.cantidad - yaEnSesion);
+          const agregar = Math.min(falta, qty);
+          if (agregar > 0) {
             const nextId = `FA${String(session.lineas.length + 1).padStart(3, "0")}`;
             const skuVentaLine = match.sku_venta || sku;
             const newLinea: db.PickingLinea = {
@@ -1317,12 +1323,12 @@ export async function ubicarLinea(lineaId: string, sku: string, posicionId: stri
             // Reserve stock
             await db.reservarStock(sku, agregar);
 
-            // Update pendiente
-            await db.updateEnvioFullPendiente(match.id!, { cantidad_agregada: match.cantidad_agregada + agregar });
+            // Sync cola so cantidad_agregada reflects reality (yaEnSesion + agregar)
+            await db.updateEnvioFullPendiente(match.id!, { cantidad_agregada: yaEnSesion + agregar });
 
             await db.auditLog("envioFullPendiente:auto_add", {
               entidad: "picking_session", entidad_id: session.id!, operario,
-              resultado: { sku, posicionId, qty: agregar, lineaId: nextId, skuVenta: skuVentaLine, pendienteId: match.id },
+              resultado: { sku, posicionId, qty: agregar, lineaId: nextId, skuVenta: skuVentaLine, pendienteId: match.id, yaEnSesion, falta },
             });
           }
         }
