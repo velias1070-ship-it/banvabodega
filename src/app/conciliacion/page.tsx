@@ -632,18 +632,24 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
     return { fecha: venc.toISOString().slice(0, 10), diasRestantes: dias };
   };
 
-  // Counts cruzados — se calculan sobre TODA la empresa, no solo el período actual.
-  // Permite ver "vencidas" y "por pagar" reales aunque la factura esté en otro período.
-  const totalPagadas = comprasGlobal.filter(c => concCompraIds.has(c.id!)).length;
-  const porPagarList = comprasGlobal.filter(c => !concCompraIds.has(c.id!) && c.tipo_doc !== 61);
+  // Counts cruzados dentro del mismo AÑO (no todo el histórico).
+  // Cross-período pero scoped al año seleccionado: una factura de febrero vencida
+  // se ve desde cualquier mes de 2026, pero no aparecen facturas de 2025.
+  const anioActual = periodo.slice(0, 4);
+  const comprasAnio = useMemo(
+    () => comprasGlobal.filter(c => (c.periodo || "").startsWith(anioActual)),
+    [comprasGlobal, anioActual]
+  );
+  const totalPagadas = comprasAnio.filter(c => concCompraIds.has(c.id!)).length;
+  const porPagarList = comprasAnio.filter(c => !concCompraIds.has(c.id!) && c.tipo_doc !== 61);
   const vencidasList = porPagarList.filter(c => {
     const venc = getVencimiento(c);
     return venc && venc.diasRestantes < 0;
   });
 
   // Filtrar por texto, tipo, proveedor y estado conciliación
-  // "todos" usa data (período actual). Los filtros de estado usan comprasGlobal (cross-período).
-  let filtered: DBRcvCompra[] = concFilter === "todos" ? data : comprasGlobal;
+  // "todos" usa data (período actual). Los filtros de estado usan comprasAnio (todo el año).
+  let filtered: DBRcvCompra[] = concFilter === "todos" ? data : comprasAnio;
   if (tipoFilter !== "todos") filtered = filtered.filter(c => String(c.tipo_doc) === tipoFilter);
   if (provFilterSet) filtered = filtered.filter(c => {
     const match = provFilterSet.has(c.rut_proveedor || "");
