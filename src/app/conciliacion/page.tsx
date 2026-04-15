@@ -383,6 +383,7 @@ function SiiImportModal({ tipo, empresa, periodoActual, onClose, onImported }: S
 // ==================== RCV COMPRAS ====================
 function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: string }) {
   const [data, setData] = useState<DBRcvCompra[]>([]);
+  const [comprasGlobal, setComprasGlobal] = useState<DBRcvCompra[]>([]);
   const [conciliaciones, setConciliaciones] = useState<DBConciliacion[]>([]);
   const [conciliacionItems, setConciliacionItems] = useState<DBConciliacionItem[]>([]);
   const [provCuentas, setProvCuentas] = useState<DBProveedorCuenta[]>([]);
@@ -423,21 +424,22 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const load = useCallback(async () => {
     if (!empresa.id) return;
     setLoading(true);
-    const [conc, items, pc, ctas] = await Promise.all([fetchConciliaciones(empresa.id), fetchAllConciliacionItems(), fetchProveedorCuentas(), fetchPlanCuentasHojas()]);
+    const [conc, items, pc, ctas, allCompras] = await Promise.all([
+      fetchConciliaciones(empresa.id),
+      fetchAllConciliacionItems(),
+      fetchProveedorCuentas(),
+      fetchPlanCuentasHojas(),
+      fetchRcvCompras(empresa.id),
+    ]);
     setConciliaciones(conc);
     setConciliacionItems(items);
     setProvCuentas(pc);
     setCuentasHoja(ctas.map(c => ({ id: c.id!, codigo: c.codigo, nombre: c.nombre })));
+    setComprasGlobal(allCompras);
     if (isAnual) {
-      const promises = [];
-      for (let m = 1; m <= 12; m++) {
-        promises.push(fetchRcvCompras(empresa.id!, `${periodo}${String(m).padStart(2, "0")}`));
-      }
-      const results = await Promise.all(promises);
-      setData(results.flat());
+      setData(allCompras.filter(c => (c.periodo || "").startsWith(periodo)));
     } else {
-      const d = await fetchRcvCompras(empresa.id, periodo);
-      setData(d);
+      setData(allCompras.filter(c => c.periodo === periodo));
     }
     setLoading(false);
   }, [empresa.id, periodo, isAnual]);
@@ -559,9 +561,11 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   }, [conciliaciones, conciliacionItems, data]);
 
   // Mapa de NCs vinculadas a cada factura (via factura_ref_id) y viceversa
+  // Usa comprasGlobal (todas las compras de la empresa) para resolver referencias
+  // cross-período: una NC en abril puede apuntar a una factura en enero
   const ncsPorFactura = useMemo(() => {
     const map = new Map<string, DBRcvCompra[]>();
-    for (const c of data) {
+    for (const c of comprasGlobal) {
       if (c.tipo_doc === 61 && c.factura_ref_id) {
         const arr = map.get(c.factura_ref_id) || [];
         arr.push(c);
@@ -569,19 +573,19 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
       }
     }
     return map;
-  }, [data]);
+  }, [comprasGlobal]);
 
   const facturaPorNc = useMemo(() => {
     const map = new Map<string, DBRcvCompra>();
-    const byId = new Map(data.map(d => [d.id!, d]));
-    for (const c of data) {
+    const byId = new Map(comprasGlobal.map(d => [d.id!, d]));
+    for (const c of comprasGlobal) {
       if (c.tipo_doc === 61 && c.factura_ref_id) {
         const fac = byId.get(c.factura_ref_id);
         if (fac) map.set(c.id!, fac);
       }
     }
     return map;
-  }, [data]);
+  }, [comprasGlobal]);
 
   // Set de IDs de documentos "consumidos" por cualquier conciliación confirmada (pagadas o anuladas)
   const usedDocIds = useMemo(() => {
