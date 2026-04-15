@@ -2269,7 +2269,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
       {view === "precios" && <PreciosHistorico onGoToRecepcion={async (recId) => {
         const all = await getRecepciones();
         const rec = all.find(r => r.id === recId);
-        if (rec) { setSelRec(rec); setView("facturas"); }
+        if (rec) { setView("facturas"); await openRec(rec); }
       }} />}
     </div>
   );
