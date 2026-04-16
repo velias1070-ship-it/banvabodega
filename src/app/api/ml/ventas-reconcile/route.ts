@@ -49,12 +49,18 @@ export async function GET(req: NextRequest) {
     } catch { stats.errors++; }
 
     // 2. Closed claims → "Reembolsada" or restore "Pagada"
+    // Paginar porque si hay más de 200 claims cerrados acumulados, los de meses
+    // anteriores quedaban fuera y las órdenes se quedaban trabadas en "En mediación".
     try {
-      const closedClaims = await mlGet<{ data: Array<{ resource_id: number; resolution: { reason: string } | null }> }>(
-        "/post-purchase/v1/claims/search?status=closed&limit=200"
-      );
-      if (closedClaims?.data) {
-        for (const claim of closedClaims.data) {
+      let offset = 0;
+      const MAX_PAGES = 20; // hasta 4000 claims cerrados — cubre ~6 meses típicos
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const closedClaims = await mlGet<{ data: Array<{ resource_id: number; resolution: { reason: string } | null }>; paging?: { total: number } }>(
+          `/post-purchase/v1/claims/search?status=closed&limit=200&offset=${offset}`
+        );
+        const data = closedClaims?.data || [];
+        if (data.length === 0) break;
+        for (const claim of data) {
           if (!claim.resource_id || openOrderIds.has(claim.resource_id)) continue;
           if (claim.resolution?.reason === "refunded" || claim.resolution?.reason === "buyer_refunded") {
             const ok = await updateVentaEstado(claim.resource_id, "Reembolsada");
@@ -64,6 +70,9 @@ export async function GET(req: NextRequest) {
             if (ok) stats.closed_seller_won++;
           }
         }
+        offset += 200;
+        if (closedClaims?.paging?.total && offset >= closedClaims.paging.total) break;
+        await new Promise(r => setTimeout(r, 100));
       }
     } catch { stats.errors++; }
 

@@ -126,15 +126,14 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ status: "ok", synced: 0, range: `${fromDate} → ${toDate}` });
     }
 
-    // 3. Check claims (1 single API call)
+    // 3. Check OPEN claims — only orders with an open claim right now should
+    // be "En mediación". Orders with order.mediations[] may have a historical
+    // claim that already closed; those are NOT in mediation anymore.
     const claimOrderIds = new Set<number>();
     try {
-      const claims = await mlGet<{ data: Array<{ resource_id: number }> }>("/post-purchase/v1/claims/search?status=opened&limit=100");
+      const claims = await mlGet<{ data: Array<{ resource_id: number }> }>("/post-purchase/v1/claims/search?status=opened&limit=200");
       if (claims?.data) for (const c of claims.data) claimOrderIds.add(c.resource_id);
     } catch { /* ignore */ }
-    for (const o of orders) {
-      if (o.mediations?.length) claimOrderIds.add(o.id);
-    }
 
     // 4. Resolve logistic types + costs — DB cache first, then ML API for missing
     const shipIds = Array.from(new Set(orders.map(o => o.shipping?.id).filter(Boolean))) as number[];
