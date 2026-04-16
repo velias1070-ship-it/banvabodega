@@ -5,15 +5,26 @@ export const maxDuration = 120;
 export async function GET(req: NextRequest) {
   const ids = (req.nextUrl.searchParams.get("ids") || "").split(",").filter(Boolean);
   const results: any[] = [];
-  for (let i = 0; i < ids.length; i += 5) {
-    const batch = ids.slice(i, i + 5);
+  for (let i = 0; i < ids.length; i += 3) {
+    const batch = ids.slice(i, i + 3);
     await Promise.all(batch.map(async (id) => {
       try {
-        const o: any = await mlGet(`/orders/${id}`);
-        results.push({ id, status: o?.status, mediations: o?.mediations?.length || 0, tags: o?.tags || [] });
+        const claims: any = await mlGet(`/post-purchase/v1/claims/search?resource_id=${id}&limit=10`);
+        const arr = claims?.data || [];
+        results.push({
+          id,
+          claims: arr.map((c: any) => ({
+            claim_id: c.id,
+            status: c.status,
+            stage: c.stage,
+            resolution_reason: c.resolution?.reason,
+            type: c.type,
+            date_closed: c.date_closed,
+          })),
+        });
       } catch (e: any) { results.push({ id, error: e.message }); }
     }));
-    if (i + 5 < ids.length) await new Promise(r => setTimeout(r, 200));
+    if (i + 3 < ids.length) await new Promise(r => setTimeout(r, 300));
   }
   return NextResponse.json({ results });
 }
