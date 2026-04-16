@@ -1,40 +1,38 @@
 import { NextResponse } from "next/server";
 import { mlGet } from "@/lib/ml";
 export const dynamic = "force-dynamic";
-export const maxDuration = 90;
+export const maxDuration = 120;
 
-type Item = Record<string, unknown>;
+type Item = {
+  charge_info?: {
+    detail_id?: number;
+    detail_amount?: number;
+    detail_sub_type?: string;
+    creation_date_time?: string;
+    legal_document_number?: string;
+    transaction_detail?: string;
+  };
+  fulfillment_info?: {
+    type?: string;
+    amount?: number;
+    amount_per_unit?: number;
+    sku?: string | null;
+    item_id?: string | null;
+    item_title?: string | null;
+    quantity?: number;
+    inventory_id?: string | null;
+  };
+};
 
 export async function GET() {
-  const key = "2026-03-01";
-  // Probar variantes de paginación
-  const tests: Record<string, unknown> = {};
-
-  const urls = [
-    `/billing/integration/periods/key/${key}/group/ML/full/details?document_type=BILL&limit=5`,
-    `/billing/integration/periods/key/${key}/group/ML/full/details?document_type=BILL&limit=5&from_id=0`,
-    `/billing/integration/periods/key/${key}/group/ML/full/details?document_type=BILL&limit=5&offset=0`,
-  ];
-  for (const url of urls) {
-    const raw = await mlGet<Record<string, unknown>>(url).catch(() => null);
-    tests[url] = {
-      null: raw === null,
-      keys: raw ? Object.keys(raw) : null,
-      total: raw ? (raw as { total?: number }).total : null,
-      results_count: raw && Array.isArray((raw as { results?: unknown[] }).results)
-        ? (raw as { results: unknown[] }).results.length
-        : 0,
-      last_id: raw ? (raw as { last_id?: number }).last_id : null,
-    };
-  }
-
-  // Fetch completo correcto: sin from_id en primera, luego con last_id
+  // Abril en curso — período 2026-04-01
+  const key = "2026-04-01";
   const all: Item[] = [];
   let lastId: number | undefined = undefined;
-  for (let p = 0; p < 10; p++) {
-    const query: string = lastId ? `from_id=${lastId}&limit=50` : `limit=50`;
-    const url: string = `/billing/integration/periods/key/${key}/group/ML/full/details?document_type=BILL&${query}`;
-    const raw: { results?: Item[]; last_id?: number; total?: number } | null = await mlGet<{ results?: Item[]; last_id?: number; total?: number }>(url).catch(() => null);
+  for (let p = 0; p < 20; p++) {
+    const q = lastId ? `from_id=${lastId}&limit=50` : `limit=50`;
+    const url = `/billing/integration/periods/key/${key}/group/ML/full/details?document_type=BILL&${q}`;
+    const raw = await mlGet<{ results?: Item[]; last_id?: number; total?: number }>(url).catch(() => null);
     if (!raw?.results?.length) break;
     all.push(...raw.results);
     if (!raw.last_id || raw.last_id === lastId) break;
@@ -42,27 +40,51 @@ export async function GET() {
     if (raw.results.length < 50) break;
   }
 
-  // Agregaciones sobre todo
-  const byType: Record<string, { count: number; total: number; with_sku: number; with_item_id: number; with_inventory: number; total_units: number }> = {};
+  // Agrupar por día (fecha del charge) x tipo
+  const byDay: Record<string, Record<string, { count: number; total: number; units: number }>> = {};
   for (const item of all) {
-    const fi = (item as { fulfillment_info?: Record<string, unknown> }).fulfillment_info;
-    const ci = (item as { charge_info?: Record<string, unknown> }).charge_info;
-    const t = (fi?.type as string) || "UNKNOWN";
-    if (!byType[t]) byType[t] = { count: 0, total: 0, with_sku: 0, with_item_id: 0, with_inventory: 0, total_units: 0 };
-    byType[t].count++;
-    byType[t].total += (fi?.amount as number) || (ci?.detail_amount as number) || 0;
-    byType[t].total_units += (fi?.quantity as number) || 0;
-    if (fi?.sku) byType[t].with_sku++;
-    if (fi?.item_id) byType[t].with_item_id++;
-    if (fi?.inventory_id) byType[t].with_inventory++;
+    const dt = item.charge_info?.creation_date_time || "";
+    const day = dt.slice(0, 10);
+    const type = item.fulfillment_info?.type || "UNKNOWN";
+    if (!byDay[day]) byDay[day] = {};
+    if (!byDay[day][type]) byDay[day][type] = { count: 0, total: 0, units: 0 };
+    byDay[day][type].count++;
+    byDay[day][type].total += item.fulfillment_info?.amount || item.charge_info?.detail_amount || 0;
+    byDay[day][type].units += item.fulfillment_info?.quantity || 0;
   }
+
+  // Total global
+  const totalByType: Record<string, { count: number; total: number; units: number }> = {};
+  for (const item of all) {
+    const t = item.fulfillment_info?.type || "UNKNOWN";
+    if (!totalByType[t]) totalByType[t] = { count: 0, total: 0, units: 0 };
+    totalByType[t].count++;
+    totalByType[t].total += item.fulfillment_info?.amount || item.charge_info?.detail_amount || 0;
+    totalByType[t].units += item.fulfillment_info?.quantity || 0;
+  }
+
+  // Items de abril 15 específicamente
+  const items15 = all.filter(i => (i.charge_info?.creation_date_time || "").slice(0, 10) === "2026-04-15");
 
   return NextResponse.json({
     key,
-    pagination_tests: tests,
-    total_items_fetched: all.length,
-    by_fulfillment_type: byType,
-    sample_first: all[0],
-    sample_last: all[all.length - 1],
+    total_items: all.length,
+    global_by_type: totalByType,
+    by_day: byDay,
+    abril_15: {
+      count: items15.length,
+      items: items15.map(i => ({
+        detail_id: i.charge_info?.detail_id,
+        date: i.charge_info?.creation_date_time,
+        transaction: i.charge_info?.transaction_detail,
+        type: i.fulfillment_info?.type,
+        amount: i.fulfillment_info?.amount,
+        amount_per_unit: i.fulfillment_info?.amount_per_unit,
+        quantity: i.fulfillment_info?.quantity,
+        sku: i.fulfillment_info?.sku,
+        item_id: i.fulfillment_info?.item_id,
+        item_title: i.fulfillment_info?.item_title,
+      })),
+    },
   });
 }
