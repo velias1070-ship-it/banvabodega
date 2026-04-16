@@ -437,6 +437,7 @@ export default function AdminInteligencia() {
   const [envioSelAllInit, setEnvioSelAllInit] = useState(false);
   const [creandoPicking, setCreandoPicking] = useState(false);
   const [pickingCreado, setPickingCreado] = useState<string | null>(null);
+  const [envioExcluidosOpen, setEnvioExcluidosOpen] = useState(false);
 
   // Filtros
   const [filtroAccion, setFiltroAccion] = useState<string>("todos");
@@ -896,6 +897,109 @@ export default function AdminInteligencia() {
 
     return items;
   }, [vistaEnvio, ventaRows, rows, envioEdits]);
+
+  // SKUs excluidos del envío por reglas automáticas.
+  // Replica los filtros de envioItems para capturar los rechazados y mostrar por qué.
+  // Casos cubiertos:
+  //   - "no_alcanza_bulto": mandar_full>0 pero stock bodega < bulto mínimo del proveedor
+  //   - "motor_descarto":   mandar_full=0 pese a stock_full=0 + vel_full>0 + bodega>0
+  //                         (típicamente rampup 0 por quiebre >120d, discontinuación)
+  const envioExcluidos = useMemo(() => {
+    if (!vistaEnvio || ventaRows.length === 0) return [] as Array<{
+      skuVenta: string; skuOrigen: string; nombre: string; abc: string;
+      stockBodega: number; stockFull: number; velPonderada: number; velFull: number;
+      cobFull: number; mandarMotor: number; innerPack: number;
+      bultoMinimo: number; falta: number; diasEnQuiebre: number | null;
+      motivo: "no_alcanza_bulto" | "motor_descarto"; motivoLabel: string;
+      accion: string; proveedor: string | null;
+    }>;
+
+    const excluidos: Array<{
+      skuVenta: string; skuOrigen: string; nombre: string; abc: string;
+      stockBodega: number; stockFull: number; velPonderada: number; velFull: number;
+      cobFull: number; mandarMotor: number; innerPack: number;
+      bultoMinimo: number; falta: number; diasEnQuiebre: number | null;
+      motivo: "no_alcanza_bulto" | "motor_descarto"; motivoLabel: string;
+      accion: string; proveedor: string | null;
+    }> = [];
+
+    for (const r of ventaRows) {
+      const skuOrigenUp = (r.sku_origen || r.sku_venta || "").toUpperCase();
+      const intelOrigen = rows.find(o => o.sku_origen === skuOrigenUp || o.sku_origen === r.sku_origen);
+      const ip = intelOrigen?.inner_pack || 1;
+      const upp = r.unidades_por_pack > 1 ? r.unidades_por_pack : 1;
+
+      // Caso A: el motor ya puso mandar_full = 0 pese a tener bodega + demanda.
+      // Se filtra en la línea "if (r.mandar_full <= 0) continue;".
+      if (r.mandar_full <= 0) {
+        if (r.stock_bodega > 0 && r.stock_full === 0 && r.vel_full > 0) {
+          excluidos.push({
+            skuVenta: r.sku_venta,
+            skuOrigen: skuOrigenUp,
+            nombre: r.nombre || r.sku_venta,
+            abc: r.abc,
+            stockBodega: r.stock_bodega,
+            stockFull: r.stock_full,
+            velPonderada: r.vel_ponderada,
+            velFull: r.vel_full,
+            cobFull: r.cob_full,
+            mandarMotor: 0,
+            innerPack: ip,
+            bultoMinimo: 0,
+            falta: 0,
+            diasEnQuiebre: r.dias_en_quiebre,
+            motivo: "motor_descarto",
+            motivoLabel: (r.dias_en_quiebre ?? 0) > 120 && !r.es_quiebre_proveedor
+              ? `Quiebre prolongado ${r.dias_en_quiebre}d — candidato a discontinuar`
+              : "Motor no lo propone (revisar velocidad/alertas)",
+            accion: r.accion,
+            proveedor: r.proveedor,
+          });
+        }
+        continue;
+      }
+
+      // Caso B: redondeo al inner_pack lo baja a 0 porque bulto mínimo > stock bodega.
+      // Replica la lógica del bloque de redondeo (líneas ~767-800).
+      const udsFisicas = r.mandar_full * upp;
+      if (ip > 1 && udsFisicas % ip !== 0) {
+        const opArribaFis = Math.ceil(udsFisicas / ip) * ip;
+        const opAbajoFis  = Math.floor(udsFisicas / ip) * ip;
+        if (opArribaFis > r.stock_bodega && opAbajoFis === 0) {
+          excluidos.push({
+            skuVenta: r.sku_venta,
+            skuOrigen: skuOrigenUp,
+            nombre: r.nombre || r.sku_venta,
+            abc: r.abc,
+            stockBodega: r.stock_bodega,
+            stockFull: r.stock_full,
+            velPonderada: r.vel_ponderada,
+            velFull: r.vel_full,
+            cobFull: r.cob_full,
+            mandarMotor: r.mandar_full,
+            innerPack: ip,
+            bultoMinimo: opArribaFis,
+            falta: opArribaFis - r.stock_bodega,
+            diasEnQuiebre: r.dias_en_quiebre,
+            motivo: "no_alcanza_bulto",
+            motivoLabel: `Stock ${r.stock_bodega} < bulto ${opArribaFis} (falta ${opArribaFis - r.stock_bodega})`,
+            accion: r.accion,
+            proveedor: r.proveedor,
+          });
+        }
+      }
+    }
+
+    // Ordenar: ABC A primero, luego por cob_full (lo más urgente arriba)
+    excluidos.sort((a, b) => {
+      const abcA = ENVIO_ABC_ORDEN[a.abc] ?? 9;
+      const abcB = ENVIO_ABC_ORDEN[b.abc] ?? 9;
+      if (abcA !== abcB) return abcA - abcB;
+      return a.cobFull - b.cobFull;
+    });
+
+    return excluidos;
+  }, [vistaEnvio, ventaRows, rows]);
 
   // Initialize selection when envioItems changes
   useEffect(() => {
@@ -2057,6 +2161,83 @@ export default function AdminInteligencia() {
                   </tbody>
                 </table>
               </div>
+
+              {/* SKUs excluidos por reglas */}
+              {envioExcluidos.length > 0 && (
+                <div style={{ marginTop: 12, borderRadius: 8, background: "var(--bg2)", border: "1px solid var(--amberBd)" }}>
+                  <button
+                    onClick={() => setEnvioExcluidosOpen(v => !v)}
+                    style={{ width: "100%", padding: "10px 14px", background: "transparent", border: "none", cursor: "pointer",
+                      display: "flex", justifyContent: "space-between", alignItems: "center", color: "var(--amber)", fontSize: 12, fontWeight: 700 }}
+                  >
+                    <span>{envioExcluidosOpen ? "▾" : "▸"} SKUs excluidos por reglas automáticas ({envioExcluidos.length})</span>
+                    <span style={{ fontSize: 10, fontWeight: 500, color: "var(--txt3)" }}>
+                      {envioExcluidos.filter(e => e.motivo === "no_alcanza_bulto").length} stock &lt; bulto ·{" "}
+                      {envioExcluidos.filter(e => e.motivo === "motor_descarto").length} motor descartó
+                    </span>
+                  </button>
+                  {envioExcluidosOpen && (
+                    <div style={{ padding: "8px 14px 14px", borderTop: "1px solid var(--bg4)" }}>
+                      <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 8 }}>
+                        Estos SKUs no aparecen en el listado principal porque el sistema los filtró. Si querés incluirlos, usá el botón <b>Forzar</b> para agregarlos con el stock disponible (editable después en la tabla de arriba).
+                      </div>
+                      <div style={{ overflowX: "auto" }}>
+                        <table className="tbl" style={{ minWidth: 1000, fontSize: 11 }}>
+                          <thead>
+                            <tr>
+                              <th>SKU Venta</th>
+                              <th>Nombre</th>
+                              <th>ABC</th>
+                              <th style={{ textAlign: "right" }}>St.Bod</th>
+                              <th style={{ textAlign: "right" }}>St.Full</th>
+                              <th style={{ textAlign: "right" }}>Vel/sem</th>
+                              <th style={{ textAlign: "right" }}>Cob Full</th>
+                              <th style={{ textAlign: "right" }}>IP</th>
+                              <th style={{ textAlign: "right" }}>Motor dijo</th>
+                              <th>Motivo</th>
+                              <th>Acción</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {envioExcluidos.map(ex => (
+                              <tr key={ex.skuVenta} style={{ background: ex.motivo === "motor_descarto" ? "var(--redBg)" : "var(--amberBg)" }}>
+                                <td className="mono" style={{ fontSize: 10 }}>{ex.skuVenta}</td>
+                                <td style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ex.nombre}</td>
+                                <td><span style={{ padding: "1px 6px", borderRadius: 3, fontSize: 9, fontWeight: 700, background: abcColor(ex.abc) + "22", color: abcColor(ex.abc) }}>{ex.abc}</span></td>
+                                <td className="mono" style={{ textAlign: "right" }}>{ex.stockBodega}</td>
+                                <td className="mono" style={{ textAlign: "right", color: ex.stockFull === 0 ? "var(--red)" : "var(--txt2)" }}>{ex.stockFull}</td>
+                                <td className="mono" style={{ textAlign: "right" }}>{fmtN(ex.velPonderada, 1)}</td>
+                                <td className="mono" style={{ textAlign: "right", color: ex.cobFull < 14 ? "var(--red)" : "var(--txt2)" }}>{ex.cobFull >= 999 ? "—" : Math.round(ex.cobFull) + "d"}</td>
+                                <td className="mono" style={{ textAlign: "right" }}>{ex.innerPack > 1 ? ex.innerPack : "—"}</td>
+                                <td className="mono" style={{ textAlign: "right", color: "var(--txt3)" }}>{ex.mandarMotor}</td>
+                                <td style={{ fontSize: 10, color: "var(--txt2)" }}>{ex.motivoLabel}</td>
+                                <td>
+                                  <button
+                                    onClick={() => {
+                                      const qty = ex.motivo === "no_alcanza_bulto"
+                                        ? Math.max(1, Math.floor(ex.stockBodega / (ex.innerPack > 1 && ex.stockBodega >= ex.innerPack ? ex.innerPack : 1)) * (ex.innerPack > 1 && ex.stockBodega >= ex.innerPack ? ex.innerPack : 1) || ex.stockBodega)
+                                        : ex.stockBodega;
+                                      setEnvioEdits(prev => {
+                                        const next = new Map(prev);
+                                        next.set(ex.skuVenta, qty);
+                                        return next;
+                                      });
+                                      setEnvioSelection(prev => new Set(prev).add(ex.skuVenta));
+                                    }}
+                                    style={{ padding: "3px 10px", borderRadius: 4, background: "var(--blue)", color: "#fff", fontSize: 10, fontWeight: 700, border: "none", cursor: "pointer" }}
+                                  >
+                                    Forzar
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Resumen al pie */}
               <div style={{ marginTop: 12, padding: "10px 14px", borderRadius: 8, background: "var(--bg2)", border: "1px solid var(--bg4)", fontSize: 11 }}>
