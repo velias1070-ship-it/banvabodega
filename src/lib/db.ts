@@ -2986,6 +2986,8 @@ export interface DBOrdenCompraLinea {
   cantidad_facturada?: number;
   /** Estado de la línea: pendiente | recibida_total | facturada_total | cerrada | cancelada */
   estado_linea?: string;
+  /** Fuente del precio_acordado_neto: 'catalogo' | 'wac_fallback' | 'manual' */
+  precio_fuente?: string | null;
   created_at?: string;
 }
 

@@ -259,6 +259,7 @@ interface PedidoProveedorItem {
   innerPack: number;
   bultos: number;
   costoUnit: number;
+  costoFuente: "catalogo" | "wac_fallback";
   subtotal: number;
   stockProveedor: number;
   proveedor: string;
@@ -412,6 +413,8 @@ export default function AdminInteligencia() {
   const [pedidoCollapsed, setPedidoCollapsed] = useState<Set<string>>(new Set());
   const [modalOC, setModalOC] = useState<{ proveedor: string; lineas: PedidoProveedorItem[] } | null>(null);
   const [creandoOC, setCreandoOC] = useState(false);
+  // Catálogo proveedor: precio neto + IP por SKU (fuente preferida para OC)
+  const [catalogoPorSku, setCatalogoPorSku] = useState<Map<string, { precio_neto: number; inner_pack: number }>>(new Map());
   const [ocCreada, setOcCreada] = useState<string | null>(null);
 
   // Envío a Full
@@ -521,11 +524,28 @@ export default function AdminInteligencia() {
     } catch { /* ignore */ }
   }, []);
 
+  const cargarCatalogo = useCallback(async () => {
+    const sb = getSupabase();
+    if (!sb) return;
+    const { data } = await sb.from("proveedor_catalogo").select("sku_origen, precio_neto, inner_pack");
+    const map = new Map<string, { precio_neto: number; inner_pack: number }>();
+    for (const row of (data || []) as { sku_origen: string; precio_neto: number; inner_pack: number }[]) {
+      const sku = row.sku_origen.toUpperCase();
+      // En caso de duplicados (multi-proveedor) quedarse con el de mayor precio (más conservador)
+      const existing = map.get(sku);
+      const precio = row.precio_neto || 0;
+      if (!existing || precio > existing.precio_neto) {
+        map.set(sku, { precio_neto: precio, inner_pack: row.inner_pack || 1 });
+      }
+    }
+    setCatalogoPorSku(map);
+  }, []);
+
   const cargar = useCallback(async () => {
     setLoading(true);
-    await Promise.all([cargarOrigen(), cargarVenta(), cargarMlMap(), cargarPendientes()]);
+    await Promise.all([cargarOrigen(), cargarVenta(), cargarMlMap(), cargarPendientes(), cargarCatalogo()]);
     setLoading(false);
-  }, [cargarOrigen, cargarVenta, cargarMlMap, cargarPendientes]);
+  }, [cargarOrigen, cargarVenta, cargarMlMap, cargarPendientes, cargarCatalogo]);
 
   useEffect(() => { cargar(); }, [cargar]);
 
@@ -910,7 +930,14 @@ export default function AdminInteligencia() {
         const pedirRedondeado = ip > 1 ? Math.ceil(pedirBase / ip) * ip : pedirBase;
         const edited = pedidoEdits.get(r.sku_origen);
         const pedir = edited !== undefined ? edited : pedirRedondeado;
-        const costo = r.costo_bruto > 0 ? Math.round(r.costo_bruto / 1.19) : 0;
+        // Precio para OC: prioridad catálogo del proveedor > WAC.
+        // Idetex factura por catálogo, no por WAC histórico — usar catálogo evita
+        // discrepancias falsas al comparar factura recibida vs precio congelado.
+        const cat = catalogoPorSku.get(r.sku_origen.toUpperCase());
+        const wacNeto = r.costo_bruto > 0 ? Math.round(r.costo_bruto / 1.19) : 0;
+        const usaCatalogo = !!(cat && cat.precio_neto > 0);
+        const costo = usaCatalogo ? cat!.precio_neto : wacNeto;
+        const costoFuente: "catalogo" | "wac_fallback" = usaCatalogo ? "catalogo" : "wac_fallback";
         return {
           skuOrigen: r.sku_origen,
           nombre: r.nombre || "",
@@ -925,6 +952,7 @@ export default function AdminInteligencia() {
           innerPack: ip,
           bultos: ip > 1 ? Math.ceil(pedir / ip) : pedir,
           costoUnit: costo,
+          costoFuente,
           subtotal: pedir * costo,
           stockProveedor: r.stock_proveedor ?? -1,
           proveedor: r.proveedor || "Sin proveedor",
@@ -933,7 +961,7 @@ export default function AdminInteligencia() {
         };
       })
       .sort((a, b) => a.proveedor.localeCompare(b.proveedor) || b.velPonderada - a.velPonderada);
-  }, [vistaPedido, rows, pedidoEdits]);
+  }, [vistaPedido, rows, pedidoEdits, pedidoIpEdits, catalogoPorSku]);
 
   // Grouped by proveedor
   const pedidoPorProveedor = useMemo(() => {
@@ -1150,6 +1178,7 @@ export default function AdminInteligencia() {
           // Fase 1 lite: si se confirma directo, congelar precio acordado (snapshot inmutable)
           precio_acordado_neto: congelarPrecio ? l.costoUnit : null,
           precio_acordado_at: congelarPrecio ? ahoraIso : null,
+          precio_fuente: l.costoFuente,
           cantidad_facturada: 0,
           estado_linea: "pendiente",
         };
@@ -2386,7 +2415,17 @@ export default function AdminInteligencia() {
                       <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtInt(l.pedirEditado)}</td>
                       <td className="mono" style={{ textAlign: "right", fontSize: 10, color: "var(--txt3)" }}>{l.innerPack > 1 ? l.innerPack : "—"}</td>
                       <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{l.bultos}</td>
-                      <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtMoney(l.costoUnit)}</td>
+                      <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>
+                        <div style={{ display: "inline-flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
+                          {fmtMoney(l.costoUnit)}
+                          {l.costoFuente === "wac_fallback" && (
+                            <span title="Sin precio en catálogo Idetex — usa WAC histórico. Verificar antes de emitir."
+                              style={{ padding: "1px 5px", borderRadius: 4, background: "var(--amberBg)", color: "var(--amber)", fontSize: 9, fontWeight: 700, border: "1px solid var(--amberBd)" }}>
+                              WAC
+                            </span>
+                          )}
+                        </div>
+                      </td>
                       <td className="mono" style={{ textAlign: "right", fontSize: 11, fontWeight: 600 }}>{fmtMoney(l.subtotal)}</td>
                     </tr>
                   ))}
