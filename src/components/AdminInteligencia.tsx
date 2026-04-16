@@ -1475,6 +1475,45 @@ export default function AdminInteligencia() {
         </div>
       )}
 
+      {/* ═══ 3.5. CHIPS DE RED DE SEGURIDAD: SKUs sin costo o con costo obsoleto ═══ */}
+      {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && (() => {
+        const sinCosto = activeRows.filter((r: AnyRow) => (r.alertas || []).includes("sin_costo"));
+        const costoStale = activeRows.filter((r: AnyRow) => (r.alertas || []).includes("costo_posiblemente_obsoleto"));
+        if (sinCosto.length === 0 && costoStale.length === 0) return null;
+        return (
+          <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+            {sinCosto.length > 0 && (
+              <button
+                onClick={() => setFiltroAlerta(filtroAlerta === "sin_costo" ? "todos" : "sin_costo")}
+                title="SKUs activos sin costo cargado en ningún sistema. Margen no se puede calcular."
+                style={{
+                  padding: "5px 12px", borderRadius: 6,
+                  background: filtroAlerta === "sin_costo" ? "var(--red)" : "var(--redBg)",
+                  color: filtroAlerta === "sin_costo" ? "#fff" : "var(--red)",
+                  border: "1px solid var(--red)", fontSize: 11, fontWeight: 700, cursor: "pointer",
+                }}
+              >
+                ⚠ Sin costo: {sinCosto.length}
+              </button>
+            )}
+            {costoStale.length > 0 && (
+              <button
+                onClick={() => setFiltroAlerta(filtroAlerta === "costo_posiblemente_obsoleto" ? "todos" : "costo_posiblemente_obsoleto")}
+                title="SKUs activos con costo manual o de catálogo no actualizado en >90 días. El margen puede estar distorsionado."
+                style={{
+                  padding: "5px 12px", borderRadius: 6,
+                  background: filtroAlerta === "costo_posiblemente_obsoleto" ? "var(--amber)" : "var(--amberBg)",
+                  color: filtroAlerta === "costo_posiblemente_obsoleto" ? "#000" : "var(--amber)",
+                  border: "1px solid var(--amber)", fontSize: 11, fontWeight: 700, cursor: "pointer",
+                }}
+              >
+                ⚠ Costo {'>'}90d: {costoStale.length}
+              </button>
+            )}
+          </div>
+        );
+      })()}
+
       {/* ═══ 4. FILTROS ═══ */}
       {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
         <input
