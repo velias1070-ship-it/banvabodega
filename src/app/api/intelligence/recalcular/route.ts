@@ -419,6 +419,7 @@ function rowToUpsert(r: SkuIntelRow): SkuIntelligenceUpsert {
     pct_ingreso_acumulado: r.pct_ingreso_acumulado,
     margen_neto_30d: r.margen_neto_30d,
     pct_margen_acumulado: r.pct_margen_acumulado,
+    uds_30d: r.uds_30d,
     pct_unidades_acumulado: r.pct_unidades_acumulado,
     cv: r.cv,
     xyz: r.xyz,
