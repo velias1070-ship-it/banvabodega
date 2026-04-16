@@ -53,8 +53,22 @@ interface ProveedorRow {
   notas: string | null;
 }
 
+interface FaltanteCatalogo {
+  sku: string;
+  nombre: string;
+  proveedor: string;
+  inner_pack: number;
+  wac_actual: number;
+  abc_margen: string;
+  abc_ingreso: string;
+  cuadrante: string;
+  vel_ponderada: number;
+  margen_neto_30d: number;
+  stock_total: number;
+}
+
 export default function AdminCompras() {
-  const [tab, setTab] = useState<"ocs" | "proveedores">("ocs");
+  const [tab, setTab] = useState<"ocs" | "proveedores" | "catalogo">("ocs");
   const [ocs, setOcs] = useState<DBOrdenCompra[]>([]);
   const [loading, setLoading] = useState(true);
   const [filtroEstado, setFiltroEstado] = useState<string>("todos");
@@ -65,6 +79,67 @@ export default function AdminCompras() {
   const [provEdits, setProvEdits] = useState<Map<string, { lt?: number; sigma?: number; notas?: string }>>(new Map());
   const [provSaving, setProvSaving] = useState<string | null>(null);
 
+  // Tab Cargar Catálogo (faltantes)
+  const [faltantes, setFaltantes] = useState<FaltanteCatalogo[]>([]);
+  const [faltLoading, setFaltLoading] = useState(false);
+  const [faltPrecios, setFaltPrecios] = useState<Map<string, number>>(new Map()); // sku -> precio editado (default = wac_actual)
+  const [faltSelected, setFaltSelected] = useState<Set<string>>(new Set());
+  const [faltSaving, setFaltSaving] = useState(false);
+  const [faltResult, setFaltResult] = useState<string | null>(null);
+
+  const cargarFaltantes = useCallback(async () => {
+    setFaltLoading(true);
+    setFaltResult(null);
+    try {
+      const res = await fetch("/api/proveedor-catalogo/faltantes");
+      if (res.ok) {
+        const data = await res.json();
+        const list = (data.faltantes || []) as FaltanteCatalogo[];
+        setFaltantes(list);
+        // Pre-rellenar precios con WAC actual
+        const precios = new Map<string, number>();
+        for (const f of list) precios.set(f.sku, f.wac_actual);
+        setFaltPrecios(precios);
+        setFaltSelected(new Set());
+      }
+    } finally {
+      setFaltLoading(false);
+    }
+  }, []);
+
+  const aplicarFaltantes = useCallback(async () => {
+    if (faltSelected.size === 0) return;
+    if (!window.confirm(`Cargar precio de ${faltSelected.size} SKUs al catálogo?`)) return;
+    setFaltSaving(true);
+    setFaltResult(null);
+    try {
+      const items = Array.from(faltSelected).map(sku => {
+        const f = faltantes.find(x => x.sku === sku);
+        if (!f) return null;
+        return {
+          sku_origen: sku,
+          proveedor: f.proveedor,
+          precio_neto: faltPrecios.get(sku) || f.wac_actual,
+          inner_pack: f.inner_pack,
+        };
+      }).filter(Boolean);
+      const res = await fetch("/api/proveedor-catalogo/bulk-update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setFaltResult(`✓ ${data.escritos} SKUs cargados al catálogo. ${data.omitidos?.length ? `${data.omitidos.length} omitidos.` : ""}`);
+        await cargarFaltantes(); // refresca lista (los cargados desaparecen)
+      } else {
+        setFaltResult(`Error: ${data.error || "desconocido"}`);
+      }
+    } finally {
+      setFaltSaving(false);
+    }
+  }, [faltSelected, faltantes, faltPrecios, cargarFaltantes]);
+
   const cargarProveedores = useCallback(async () => {
     const sb = getSupabase();
     if (!sb) return;
@@ -74,6 +149,7 @@ export default function AdminCompras() {
   }, []);
 
   useEffect(() => { if (tab === "proveedores") cargarProveedores(); }, [tab, cargarProveedores]);
+  useEffect(() => { if (tab === "catalogo") cargarFaltantes(); }, [tab, cargarFaltantes]);
 
   const guardarProveedor = useCallback(async (p: ProveedorRow) => {
     const edits = provEdits.get(p.id);
@@ -686,7 +762,7 @@ export default function AdminCompras() {
     <div style={{ padding: "0 4px" }}>
       {/* Tabs */}
       <div style={{ display: "flex", gap: 4, marginBottom: 12, borderBottom: "1px solid var(--bg4)" }}>
-        {(["ocs", "proveedores"] as const).map(t => (
+        {(["ocs", "proveedores", "catalogo"] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
             style={{
               padding: "8px 14px", border: "none", background: "none",
@@ -694,7 +770,7 @@ export default function AdminCompras() {
               borderBottom: tab === t ? "2px solid var(--cyan)" : "2px solid transparent",
               fontSize: 12, fontWeight: 700, cursor: "pointer",
             }}>
-            {t === "ocs" ? "Órdenes de Compra" : "Proveedores"}
+            {t === "ocs" ? "Órdenes de Compra" : t === "proveedores" ? "Proveedores" : "Cargar Catálogo"}
           </button>
         ))}
       </div>
@@ -783,6 +859,112 @@ export default function AdminCompras() {
             <strong>manual</strong>: editado por admin ·{" "}
             <strong>fallback</strong>: 5 días + σ=1.5 (default)
           </div>
+        </div>
+      ) : tab === "catalogo" ? (
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+            <div>
+              <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Cargar precios al catálogo</h2>
+              <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 4 }}>
+                SKUs A/B sin precio en proveedor_catalogo (excl. Idetex). El precio se pre-rellena con el WAC actual — ajustá donde corresponda.
+              </div>
+            </div>
+            <button onClick={cargarFaltantes} disabled={faltLoading}
+              style={{ padding: "6px 12px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt2)", border: "1px solid var(--bg4)", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
+              {faltLoading ? "Cargando..." : "Refrescar"}
+            </button>
+          </div>
+
+          {faltResult && (
+            <div style={{ padding: "8px 12px", borderRadius: 6, background: faltResult.startsWith("✓") ? "var(--greenBg)" : "var(--redBg)", color: faltResult.startsWith("✓") ? "var(--green)" : "var(--red)", border: `1px solid ${faltResult.startsWith("✓") ? "var(--greenBd)" : "var(--redBd)"}`, fontSize: 12, marginBottom: 12 }}>
+              {faltResult}
+            </div>
+          )}
+
+          {faltantes.length === 0 ? (
+            <div style={{ padding: 24, textAlign: "center", color: "var(--txt3)", fontSize: 13 }}>
+              {faltLoading ? "Cargando..." : "🎉 No hay SKUs A/B sin catálogo. Todos los críticos cubiertos."}
+            </div>
+          ) : (
+            <>
+              <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 8, fontSize: 11 }}>
+                <button onClick={() => setFaltSelected(new Set(faltantes.map(f => f.sku)))}
+                  style={{ padding: "4px 10px", borderRadius: 4, background: "var(--bg3)", color: "var(--txt2)", border: "1px solid var(--bg4)", fontSize: 10, fontWeight: 600, cursor: "pointer" }}>
+                  Seleccionar todos
+                </button>
+                <button onClick={() => setFaltSelected(new Set())}
+                  style={{ padding: "4px 10px", borderRadius: 4, background: "var(--bg3)", color: "var(--txt2)", border: "1px solid var(--bg4)", fontSize: 10, fontWeight: 600, cursor: "pointer" }}>
+                  Deseleccionar
+                </button>
+                <span style={{ color: "var(--txt3)" }}>{faltSelected.size} de {faltantes.length} seleccionados</span>
+              </div>
+
+              <div style={{ overflowX: "auto" }}>
+                <table className="tbl" style={{ width: "100%" }}>
+                  <thead>
+                    <tr>
+                      <th style={{ width: 32 }}></th>
+                      <th>SKU</th>
+                      <th>Nombre</th>
+                      <th>Proveedor</th>
+                      <th style={{ textAlign: "center" }}>ABC</th>
+                      <th>Cuadrante</th>
+                      <th style={{ textAlign: "right" }}>WAC</th>
+                      <th style={{ textAlign: "right" }}>Precio neto</th>
+                      <th style={{ textAlign: "right" }}>Diff %</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {faltantes.map(f => {
+                      const sel = faltSelected.has(f.sku);
+                      const precio = faltPrecios.get(f.sku) ?? f.wac_actual;
+                      const diff = f.wac_actual > 0 ? Math.round(1000 * (precio - f.wac_actual) / f.wac_actual) / 10 : 0;
+                      const absDiff = Math.abs(diff);
+                      const diffColor = absDiff < 10 ? "var(--green)" : absDiff < 20 ? "var(--amber)" : "var(--red)";
+                      return (
+                        <tr key={f.sku} style={{ background: sel ? "var(--cyanBg)" : undefined }}>
+                          <td style={{ textAlign: "center" }}>
+                            <input type="checkbox" checked={sel}
+                              onChange={(e) => {
+                                setFaltSelected(s => {
+                                  const n = new Set(s);
+                                  if (e.target.checked) n.add(f.sku); else n.delete(f.sku);
+                                  return n;
+                                });
+                              }} />
+                          </td>
+                          <td className="mono" style={{ fontSize: 10 }}>{f.sku}</td>
+                          <td style={{ fontSize: 11, maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.nombre}</td>
+                          <td style={{ fontSize: 11 }}>{f.proveedor}</td>
+                          <td style={{ textAlign: "center", fontSize: 11, fontWeight: 700, color: f.abc_margen === "A" ? "var(--green)" : f.abc_margen === "B" ? "var(--amber)" : "var(--txt3)" }}>{f.abc_margen}</td>
+                          <td style={{ fontSize: 10, color: "var(--txt3)" }}>{f.cuadrante}</td>
+                          <td className="mono" style={{ textAlign: "right", fontSize: 11, color: "var(--txt3)" }}>{f.wac_actual.toLocaleString("es-CL")}</td>
+                          <td>
+                            <input type="number" min="0" step="1" value={precio}
+                              onChange={(e) => {
+                                const v = parseFloat(e.target.value);
+                                setFaltPrecios(m => { const n = new Map(m); n.set(f.sku, isNaN(v) ? 0 : v); return n; });
+                              }}
+                              style={{ width: 100, padding: "4px 6px", borderRadius: 4, background: "var(--bg2)", border: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 11, textAlign: "right" }} />
+                          </td>
+                          <td className="mono" style={{ textAlign: "right", fontSize: 11, fontWeight: 700, color: diffColor }}>
+                            {diff > 0 ? "+" : ""}{diff.toFixed(1)}%
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12, gap: 8 }}>
+                <button onClick={aplicarFaltantes} disabled={faltSaving || faltSelected.size === 0}
+                  style={{ padding: "10px 20px", borderRadius: 8, background: faltSelected.size > 0 ? "var(--green)" : "var(--bg3)", color: faltSelected.size > 0 ? "#0a0e17" : "var(--txt3)", fontWeight: 700, fontSize: 12, border: "none", cursor: faltSelected.size > 0 ? "pointer" : "not-allowed" }}>
+                  {faltSaving ? "Guardando..." : `Cargar ${faltSelected.size} seleccionados al catálogo`}
+                </button>
+              </div>
+            </>
+          )}
         </div>
       ) : (<>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
