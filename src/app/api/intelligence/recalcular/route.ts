@@ -15,7 +15,6 @@ import {
   insertHistorySnapshots,
   upsertStockSnapshots,
   queryPrevIntelligence,
-  queryVelProfitguard,
   queryStockFullDetail,
   queryVelObjetivos,
   queryIntelConfig,
@@ -92,7 +91,6 @@ async function ejecutarRecalculo(params: { skus?: string[]; full: boolean; snaps
       conteos,
       movimientos,
       prevIntelligence,
-      velProfitguard,
       stockFullDetail,
       proveedorCatalogo,
     ] = await Promise.all([
@@ -106,7 +104,6 @@ async function ejecutarRecalculo(params: { skus?: string[]; full: boolean; snaps
       queryConteos(3),
       queryMovimientos(60),
       queryPrevIntelligence(),
-      queryVelProfitguard(),
       queryStockFullDetail(),
       queryProveedorCatalogo(),
     ]);

@@ -321,7 +321,6 @@ export interface RecalculoInput {
   stockBodega: Map<string, number>;
   stockFull: Map<string, number>;
   stockFullDetail: Map<string, StockFullDetailRow>;
-  velProfitguard: Map<string, number>;
   eventosActivos: EventoInput[];
   quiebres: QuiebreSnapshot[];
   conteos: ConteoInput[];
@@ -408,7 +407,7 @@ function zScore(nivel: number): number {
 export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; debugLog?: DebugSkuLog } {
   const {
     productos, composicion, ordenes, stockBodega, stockFull, stockFullDetail,
-    velProfitguard, eventosActivos, quiebres, conteos, movimientos,
+    eventosActivos, quiebres, conteos, movimientos,
     stockEnTransito, ocPendientesPorSku, prevIntelligence, velObjetivos,
     proveedorCatalogo, config, hoy,
     debugSku,
@@ -733,16 +732,7 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     const vel60d = sumar(ordenesFisicas60d) / semanasActivas60d;
 
     // Velocidad ponderada (Promedio Móvil Ponderado)
-    let velPonderada = (vel7d * 0.5) + (vel30d * 0.3) + (vel60d * 0.2);
-
-    // Referencia ProfitGuard: max (no suma) de vel_promedio de los SKU Venta asociados.
-    // PG reporta velocidad total del listing, no por formato — sumar duplica la velocidad.
-    let velPG = 0;
-    for (const va of ventasAsoc) {
-      const vpg = velProfitguard.get(va.skuVenta) || 0;
-      velPG = Math.max(velPG, vpg * va.unidades);
-    }
-    if (velPG > velPonderada) velPonderada = velPG;
+    const velPonderada = (vel7d * 0.5) + (vel30d * 0.3) + (vel60d * 0.2);
 
     // ── DEBUG: capturar datos intermedios para un SKU específico ──
     if (debugSkuUp && skuOrigen.toUpperCase() === debugSkuUp) {
@@ -755,17 +745,6 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
           count: ords.length,
           totalQty,
           udsFisicas: totalQty * va.unidades,
-        };
-      }
-
-      // Detalle ProfitGuard por formato
-      const pgPorFormato: Record<string, { velPG_raw: number; unidades: number; velPG_fisico: number }> = {};
-      for (const va of ventasAsoc) {
-        const vpg = velProfitguard.get(va.skuVenta) || 0;
-        pgPorFormato[va.skuVenta] = {
-          velPG_raw: vpg,
-          unidades: va.unidades,
-          velPG_fisico: vpg * va.unidades,
         };
       }
 
@@ -794,10 +773,7 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
         vel_7d: round2(vel7d),
         vel_30d: round2(vel30d),
         vel_60d: round2(vel60d),
-        vel_ponderada_antes_PG: round2((vel7d * 0.5) + (vel30d * 0.3) + (vel60d * 0.2)),
-        velPG_max: round2(velPG),
-        velPG_por_formato: pgPorFormato,
-        vel_ponderada_final: round2(velPonderada),
+        vel_ponderada: round2(velPonderada),
         fullQty30d,
         flexQty30d,
       };
