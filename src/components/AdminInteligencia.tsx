@@ -260,7 +260,7 @@ interface PedidoProveedorItem {
   innerPack: number;
   bultos: number;
   costoUnit: number;
-  costoFuente: "catalogo" | "wac_fallback";
+  costoFuente: "catalogo" | "ultima_recepcion" | "wac_fallback" | "sin_precio";
   subtotal: number;
   stockProveedor: number;
   proveedor: string;
@@ -416,6 +416,8 @@ export default function AdminInteligencia() {
   const [creandoOC, setCreandoOC] = useState(false);
   // Catálogo proveedor: precio neto + IP por SKU (fuente preferida para OC)
   const [catalogoPorSku, setCatalogoPorSku] = useState<Map<string, { precio_neto: number; inner_pack: number }>>(new Map());
+  // Última recepción por SKU: costo_unitario de la línea más reciente (recepción no anulada)
+  const [ultimaRecepcionPorSku, setUltimaRecepcionPorSku] = useState<Map<string, number>>(new Map());
   const [ocCreada, setOcCreada] = useState<string | null>(null);
 
   // Envío a Full
@@ -542,11 +544,31 @@ export default function AdminInteligencia() {
     setCatalogoPorSku(map);
   }, []);
 
+  const cargarUltimasRecepciones = useCallback(async () => {
+    const sb = getSupabase();
+    if (!sb) return;
+    // Traer líneas de recepciones NO anuladas, ordenadas por created_at desc.
+    // El primer hit por SKU es la última recepción.
+    const { data } = await sb.from("recepcion_lineas")
+      .select("sku, costo_unitario, recepciones!inner(created_at, estado)")
+      .neq("recepciones.estado", "ANULADA")
+      .gt("costo_unitario", 0)
+      .order("created_at", { foreignTable: "recepciones", ascending: false })
+      .limit(5000);
+    const map = new Map<string, number>();
+    for (const row of (data || []) as { sku: string; costo_unitario: number }[]) {
+      const sku = (row.sku || "").toUpperCase();
+      if (!sku || map.has(sku)) continue; // primera = más reciente
+      map.set(sku, row.costo_unitario);
+    }
+    setUltimaRecepcionPorSku(map);
+  }, []);
+
   const cargar = useCallback(async () => {
     setLoading(true);
-    await Promise.all([cargarOrigen(), cargarVenta(), cargarMlMap(), cargarPendientes(), cargarCatalogo()]);
+    await Promise.all([cargarOrigen(), cargarVenta(), cargarMlMap(), cargarPendientes(), cargarCatalogo(), cargarUltimasRecepciones()]);
     setLoading(false);
-  }, [cargarOrigen, cargarVenta, cargarMlMap, cargarPendientes, cargarCatalogo]);
+  }, [cargarOrigen, cargarVenta, cargarMlMap, cargarPendientes, cargarCatalogo, cargarUltimasRecepciones]);
 
   useEffect(() => { cargar(); }, [cargar]);
 
@@ -931,15 +953,28 @@ export default function AdminInteligencia() {
         const pedirRedondeado = ip > 1 ? Math.ceil(pedirBase / ip) * ip : pedirBase;
         const edited = pedidoEdits.get(r.sku_origen);
         const pedir = edited !== undefined ? edited : pedirRedondeado;
-        // Precio para OC: prioridad catálogo del proveedor > WAC.
-        // Idetex factura por catálogo, no por WAC histórico — usar catálogo evita
-        // discrepancias falsas al comparar factura recibida vs precio congelado.
-        // Nota: costo_neto y precio_neto del catálogo ya están en NETO sin IVA.
+        // Precio para OC: cascada por confiabilidad respecto al precio que el
+        // proveedor va a cobrar al facturar:
+        //   1. proveedor_catalogo.precio_neto (lista vigente publicada)
+        //   2. Última recepción no anulada (precio efectivo más reciente)
+        //   3. WAC histórico (productos.costo_promedio = costo_neto)
+        //   4. $0 + 'sin_precio' → bloquear emisión hasta cargar precio
+        // Nota: costo_neto, precio_neto y costo_unitario ya están en NETO sin IVA.
         const cat = catalogoPorSku.get(r.sku_origen.toUpperCase());
+        const ultRec = ultimaRecepcionPorSku.get(r.sku_origen.toUpperCase());
         const wacNeto = r.costo_neto > 0 ? Math.round(r.costo_neto) : 0;
-        const usaCatalogo = !!(cat && cat.precio_neto > 0);
-        const costo = usaCatalogo ? cat!.precio_neto : wacNeto;
-        const costoFuente: "catalogo" | "wac_fallback" = usaCatalogo ? "catalogo" : "wac_fallback";
+        let costo = 0;
+        let costoFuente: "catalogo" | "ultima_recepcion" | "wac_fallback" | "sin_precio" = "sin_precio";
+        if (cat && cat.precio_neto > 0) {
+          costo = cat.precio_neto;
+          costoFuente = "catalogo";
+        } else if (ultRec && ultRec > 0) {
+          costo = Math.round(ultRec);
+          costoFuente = "ultima_recepcion";
+        } else if (wacNeto > 0) {
+          costo = wacNeto;
+          costoFuente = "wac_fallback";
+        }
         return {
           skuOrigen: r.sku_origen,
           nombre: r.nombre || "",
@@ -963,7 +998,7 @@ export default function AdminInteligencia() {
         };
       })
       .sort((a, b) => a.proveedor.localeCompare(b.proveedor) || b.velPonderada - a.velPonderada);
-  }, [vistaPedido, rows, pedidoEdits, pedidoIpEdits, catalogoPorSku]);
+  }, [vistaPedido, rows, pedidoEdits, pedidoIpEdits, catalogoPorSku, ultimaRecepcionPorSku]);
 
   // Grouped by proveedor
   const pedidoPorProveedor = useMemo(() => {
@@ -2420,10 +2455,22 @@ export default function AdminInteligencia() {
                       <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>
                         <div style={{ display: "inline-flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
                           {fmtMoney(l.costoUnit)}
-                          {l.costoFuente === "wac_fallback" && (
-                            <span title="Sin precio en catálogo Idetex — usa WAC histórico. Verificar antes de emitir."
+                          {l.costoFuente === "ultima_recepcion" && (
+                            <span title="Sin precio en catálogo. Usa el costo de la última recepción no anulada."
                               style={{ padding: "1px 5px", borderRadius: 4, background: "var(--amberBg)", color: "var(--amber)", fontSize: 9, fontWeight: 700, border: "1px solid var(--amberBd)" }}>
+                              ÚLT REC
+                            </span>
+                          )}
+                          {l.costoFuente === "wac_fallback" && (
+                            <span title="Sin catálogo ni recepción reciente. Usa WAC histórico (puede estar desfasado). Verificar antes de emitir."
+                              style={{ padding: "1px 5px", borderRadius: 4, background: "#f97316bb", color: "#000", fontSize: 9, fontWeight: 700, border: "1px solid #f97316" }}>
                               WAC
+                            </span>
+                          )}
+                          {l.costoFuente === "sin_precio" && (
+                            <span title="SIN PRECIO conocido. Cargar precio antes de emitir o la OC saldrá con $0."
+                              style={{ padding: "1px 5px", borderRadius: 4, background: "var(--redBg)", color: "var(--red)", fontSize: 9, fontWeight: 700, border: "1px solid var(--redBd)" }}>
+                              SIN PRECIO
                             </span>
                           )}
                         </div>

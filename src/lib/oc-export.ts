@@ -31,7 +31,9 @@ export function exportarOCExcel(oc: DBOrdenCompra, lineas: DBOrdenCompraLinea[])
     ...lineas.map(l => {
       const precio = l.precio_acordado_neto ?? l.costo_unitario;
       const fuente = l.precio_fuente === "catalogo" ? "Catálogo" :
-                     l.precio_fuente === "wac_fallback" ? "WAC (sin catálogo)" :
+                     l.precio_fuente === "ultima_recepcion" ? "Última recepción" :
+                     l.precio_fuente === "wac_fallback" ? "WAC histórico" :
+                     l.precio_fuente === "sin_precio" ? "SIN PRECIO" :
                      l.precio_fuente === "manual" ? "Manual" : "—";
       return [
         l.sku_origen,
