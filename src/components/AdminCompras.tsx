@@ -9,7 +9,7 @@ import {
 } from "@/lib/db";
 import type { DBOrdenCompra, DBOrdenCompraLinea, DBRecepcion, OCEstado } from "@/lib/db";
 import { getSupabase } from "@/lib/supabase";
-import * as XLSX from "xlsx";
+import { exportarOCExcel } from "@/lib/oc-export";
 
 // ============================================
 // Helpers
@@ -188,48 +188,8 @@ export default function AdminCompras() {
     }
   }, [nuevaProveedor, nuevaFechaEsperada, nuevaNotas, nuevaLineas, cargar]);
 
-  // ── Exportar OC a Excel ──
-  const exportarExcel = useCallback((oc: DBOrdenCompra, lineas: DBOrdenCompraLinea[]) => {
-    const totalNeto = lineas.reduce((s, l) => s + l.cantidad_pedida * (l.precio_acordado_neto ?? l.costo_unitario), 0);
-    const iva = Math.round(totalNeto * 0.19);
-    const totalBruto = totalNeto + iva;
-
-    // Datos como matriz para mantener layout
-    const aoa: (string | number)[][] = [
-      [`ORDEN DE COMPRA ${oc.numero}`],
-      [],
-      [`Proveedor:`, oc.proveedor],
-      [`Fecha emisión:`, oc.fecha_emision || ""],
-      [`Fecha esperada:`, oc.fecha_esperada || "—"],
-      [`Estado:`, oc.estado || ""],
-      ...(oc.notas ? [[`Notas:`, oc.notas]] : []),
-      [],
-      ["SKU", "Descripción", "Cantidad", "Precio Unit. Neto", "Subtotal Neto", "Notas línea"],
-      ...lineas.map(l => {
-        const precio = l.precio_acordado_neto ?? l.costo_unitario;
-        return [
-          l.sku_origen,
-          l.nombre || "",
-          l.cantidad_pedida,
-          precio,
-          l.cantidad_pedida * precio,
-          "",
-        ];
-      }),
-      [],
-      ["", "", "", "Subtotal Neto:", totalNeto, ""],
-      ["", "", "", "IVA 19%:", iva, ""],
-      ["", "", "", "TOTAL BRUTO:", totalBruto, ""],
-    ];
-
-    const ws = XLSX.utils.aoa_to_sheet(aoa);
-    ws["!cols"] = [
-      { wch: 18 }, { wch: 35 }, { wch: 10 }, { wch: 16 }, { wch: 16 }, { wch: 25 },
-    ];
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "OC");
-    XLSX.writeFile(wb, `OC-${oc.numero}-${oc.proveedor.replace(/\s+/g, "_")}.xlsx`);
-  }, []);
+  // ── Exportar OC a Excel (usa helper compartido) ──
+  // exportarOCExcel está en src/lib/oc-export.ts y se usa también desde AdminInteligencia.
 
   // Proveedores únicos
   const proveedores = useMemo(() => Array.from(new Set(ocs.map(o => o.proveedor))).sort(), [ocs]);
@@ -497,7 +457,7 @@ export default function AdminCompras() {
         <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
           {/* Exportar Excel: disponible en todos los estados excepto BORRADOR vacío */}
           {ocLineas.length > 0 && (
-            <button onClick={() => exportarExcel(selectedOC, ocLineas)}
+            <button onClick={() => exportarOCExcel(selectedOC, ocLineas)}
               title="Descargar OC como Excel para enviar al proveedor"
               style={{ padding: "8px 16px", borderRadius: 6, background: "var(--bg3)", color: "var(--green)", fontWeight: 700, fontSize: 12, border: "1px solid var(--green)", cursor: "pointer" }}>
               📊 Exportar Excel

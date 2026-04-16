@@ -3,7 +3,8 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { buildPickingLineasFull, crearPickingSession, skuPositions, getComponentesPorSkuVenta, getSkusVenta, getNotasOperativas, getSkuFisicoPorSkuVenta, findProduct, skuTotal } from "@/lib/store";
 import { upsertNotasOperativas, insertOrdenCompra, insertOrdenCompraLineas, nextOCNumero, insertAdminActionLog } from "@/lib/db";
-import type { DBOrdenCompraLinea } from "@/lib/db";
+import type { DBOrdenCompra, DBOrdenCompraLinea } from "@/lib/db";
+import { exportarOCExcel } from "@/lib/oc-export";
 import AdminMLSinVincular from "./AdminMLSinVincular";
 
 // ============================================
@@ -1103,10 +1104,16 @@ export default function AdminInteligencia() {
       const totalBruto = Math.round(totalNeto * 1.19);
       const totalUds = lineas.reduce((s, l) => s + l.pedirEditado, 0);
       const numero = await nextOCNumero();
+      const fechaEmision = new Date().toISOString().slice(0, 10);
+      const ahoraIso = new Date().toISOString();
+      // Si la OC se crea como PENDIENTE, congelamos precio_acordado_neto al momento.
+      // En BORRADOR queda nulo y se congela cuando alguien aprete "Confirmar" en AdminCompras.
+      const congelarPrecio = estado === "PENDIENTE";
 
       const ocId = await insertOrdenCompra({
         numero,
         proveedor,
+        fecha_emision: fechaEmision,
         estado,
         total_neto: totalNeto,
         total_bruto: totalBruto,
@@ -1115,7 +1122,7 @@ export default function AdminInteligencia() {
 
       if (!ocId) { alert("Error al crear OC"); return; }
 
-      // Insertar líneas con snapshot
+      // Insertar líneas con snapshot + (opcional) precio acordado congelado
       const ocLineas: Omit<DBOrdenCompraLinea, "id" | "created_at">[] = lineas.map(l => {
         const row = rows.find(r => r.sku_origen === l.skuOrigen);
         return {
@@ -1132,6 +1139,11 @@ export default function AdminInteligencia() {
           stock_full_al_pedir: l.stockFull,
           stock_bodega_al_pedir: l.stockBodega,
           accion_al_pedir: l.accion,
+          // Fase 1 lite: si se confirma directo, congelar precio acordado (snapshot inmutable)
+          precio_acordado_neto: congelarPrecio ? l.costoUnit : null,
+          precio_acordado_at: congelarPrecio ? ahoraIso : null,
+          cantidad_facturada: 0,
+          estado_linea: "pendiente",
         };
       });
       await insertOrdenCompraLineas(ocLineas);
@@ -1140,25 +1152,37 @@ export default function AdminInteligencia() {
       await insertAdminActionLog("crear_oc", "ordenes_compra", ocId, {
         oc_id: ocId, numero, proveedor, lineas: lineas.length,
         total_neto: totalNeto, total_uds: totalUds, fuente: "inteligencia",
+        precio_congelado: congelarPrecio,
       });
 
-      // Si PENDIENTE, descargar CSV
-      if (estado === "PENDIENTE") {
-        const csvHeaders = "Código;Descripción;Cantidad;Inner Pack;Bultos;Precio Neto;Subtotal";
-        const csvRows = lineas.map(l =>
-          `${l.skuOrigen};${(l.nombre || "").replace(/;/g, ",")};${l.pedirEditado};${l.innerPack};${l.bultos};$${l.costoUnit.toLocaleString("es-CL")};$${l.subtotal.toLocaleString("es-CL")}`
-        );
-        const bom = "\uFEFF";
-        const blob = new Blob([bom + csvHeaders + "\n" + csvRows.join("\n")], { type: "text/csv;charset=utf-8;" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `OC_${proveedor.replace(/\s+/g, "_")}_${new Date().toISOString().slice(0, 10)}.csv`;
-        a.click();
-        URL.revokeObjectURL(url);
+      // Si PENDIENTE, descargar Excel formateado (mismo helper que AdminCompras)
+      if (congelarPrecio) {
+        const ocSnapshot: DBOrdenCompra = {
+          numero,
+          proveedor,
+          fecha_emision: fechaEmision,
+          estado,
+          total_neto: totalNeto,
+          total_bruto: totalBruto,
+          notas: `Creada desde Inteligencia — ${lineas.length} SKUs`,
+        };
+        // Mapear líneas al shape de DBOrdenCompraLinea para el helper
+        const lineasParaExcel: DBOrdenCompraLinea[] = ocLineas.map(l => ({
+          ...l,
+          orden_id: ocId,
+        }));
+        try {
+          exportarOCExcel(ocSnapshot, lineasParaExcel);
+        } catch (e) {
+          console.warn("[OC] Error al exportar Excel:", e);
+        }
       }
 
-      setOcCreada(`${numero} — ${proveedor} (${estado})`);
+      setOcCreada(
+        congelarPrecio
+          ? `${numero} — ${proveedor} (PENDIENTE) · Precio congelado · Excel descargado. También disponible en /admin → Compras`
+          : `${numero} — ${proveedor} (BORRADOR) · Confirmar desde /admin → Compras para congelar precios`
+      );
       setModalOC(null);
 
       // Disparar recálculo
