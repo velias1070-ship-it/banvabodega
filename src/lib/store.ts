@@ -2833,6 +2833,25 @@ export async function anularRecepcion(id: string, motivo: string) {
   const meta = parseRecepcionMeta(rec?.notas || "");
   meta.motivo_anulacion = motivo;
   await db.updateRecepcion(id, { estado: "ANULADA" as db.DBRecepcion["estado"], notas: encodeRecepcionMeta(meta) });
+
+  // Auto-rechazar discrepancias de costo pendientes de esta recepción.
+  // No tiene sentido revisarlas si la recepción ya no existe.
+  const sb = getSupabase();
+  if (sb) {
+    try {
+      await sb.from("discrepancias_costo")
+        .update({
+          estado: "RECHAZADO",
+          resuelto_por: "sistema",
+          resuelto_at: new Date().toISOString(),
+          notas: `Auto-rechazada: recepción anulada. Motivo: ${motivo}`,
+        })
+        .eq("recepcion_id", id)
+        .eq("estado", "PENDIENTE");
+    } catch (e) {
+      console.warn("[anularRecepcion] No se pudieron auto-rechazar discrepancias:", e);
+    }
+  }
 }
 
 export async function pausarRecepcion(id: string) {
