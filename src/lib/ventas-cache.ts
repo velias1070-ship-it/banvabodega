@@ -270,8 +270,14 @@ export async function updateVentaEstado(orderId: number, estado: string): Promis
   const sb = getServerSupabase();
   if (!sb) return false;
 
+  const esAnulacion = estado === "Cancelada" || estado === "Reembolsada";
+  const now = new Date().toISOString();
   const { error } = await sb.from("ventas_ml_cache")
-    .update({ estado, updated_at: new Date().toISOString() })
+    .update({
+      estado,
+      ...(esAnulacion ? { anulada: true, anulada_at: now } : {}),
+      updated_at: now,
+    })
     .eq("order_id", String(orderId));
 
   if (error) {
