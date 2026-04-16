@@ -59,6 +59,10 @@
     {
       "path": "/api/ml/ventas-sync?days=7",
       "schedule": "0 10 * * *"
+    },
+    {
+      "path": "/api/intelligence/actualizar-lead-times",
+      "schedule": "0 12 * * 1"
     }
   ]
 }

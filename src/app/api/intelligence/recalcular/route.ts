@@ -22,6 +22,7 @@ import {
   queryProveedorCatalogo,
   queryEnviosFullPendientes,
   queryMargenPorSku,
+  queryProveedores,
   type SkuIntelligenceUpsert,
 } from "@/lib/intelligence-queries";
 import {
@@ -110,11 +111,12 @@ async function ejecutarRecalculo(params: { skus?: string[]; full: boolean; snaps
       queryProveedorCatalogo(),
     ]);
 
-    // Fetch vel_objetivo, config y margen por SKU desde ventas_ml_cache
-    const [velObjetivos, intelConfig, ventasMlAgregado] = await Promise.all([
+    // Fetch vel_objetivo, config, margen y proveedores LT
+    const [velObjetivos, intelConfig, ventasMlAgregado, proveedoresLT] = await Promise.all([
       queryVelObjetivos(),
       queryIntelConfig(),
-      queryMargenPorSku(30),  // 30d de margen + unidades por sku_origen
+      queryMargenPorSku(30),
+      queryProveedores(),  // Fase B: lead times por proveedor
     ]);
 
     // Eventos activos para hoy
@@ -202,6 +204,7 @@ async function ejecutarRecalculo(params: { skus?: string[]; full: boolean; snaps
       proveedorCatalogo,
       margenPorSku: ventasMlAgregado.margen,
       unidadesPorSku: ventasMlAgregado.unidades,
+      proveedoresLT,
       config: {
         ...DEFAULT_INTEL_CONFIG,
         targetDiasA: intelConfig.target_dias_a,
@@ -434,6 +437,17 @@ function rowToUpsert(r: SkuIntelRow): SkuIntelligenceUpsert {
     stock_seguridad: r.stock_seguridad,
     punto_reorden: r.punto_reorden,
     nivel_servicio: r.nivel_servicio,
+    // Fase B reposición
+    lead_time_real_dias: r.lead_time_real_dias,
+    lead_time_real_sigma: r.lead_time_real_sigma,
+    lead_time_usado_dias: r.lead_time_usado_dias,
+    lead_time_fuente: r.lead_time_fuente,
+    lt_muestras: r.lt_muestras,
+    safety_stock_simple: r.safety_stock_simple,
+    safety_stock_completo: r.safety_stock_completo,
+    safety_stock_fuente: r.safety_stock_fuente,
+    rop_calculado: r.rop_calculado,
+    necesita_pedir: r.necesita_pedir,
     dias_sin_stock_full: r.dias_sin_stock_full,
     semanas_con_quiebre: r.semanas_con_quiebre,
     venta_perdida_uds: r.venta_perdida_uds,

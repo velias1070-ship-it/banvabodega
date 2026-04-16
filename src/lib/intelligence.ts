@@ -57,7 +57,9 @@ export type AlertaIntel =
   | "bajo_meta"
   | "sobre_meta"
   | "sin_costo"
-  | "costo_posiblemente_obsoleto";
+  | "costo_posiblemente_obsoleto"
+  | "pedido_bajo_moq"
+  | "necesita_pedir";
 
 export interface SkuIntelRow {
   sku_origen: string;
@@ -138,9 +140,20 @@ export interface SkuIntelRow {
   costo_fuente: "costo_promedio" | "costo_manual" | "proveedor_catalogo" | null;
   costo_inventario_total: number;
 
-  stock_seguridad: number;
-  punto_reorden: number;
+  stock_seguridad: number;       // legacy: SS_simple = Z × σ_D × √LT (sin σ_LT)
+  punto_reorden: number;          // legacy: vel × LT + stock_seguridad
   nivel_servicio: number;
+  // Fase B reposición: cálculos nuevos en paralelo
+  lead_time_real_dias: number | null;       // LT promedio observado (cuando hay OCs)
+  lead_time_real_sigma: number | null;      // σ_LT observada
+  lead_time_usado_dias: number;             // el que efectivamente entró al cálculo
+  lead_time_fuente: "oc_real" | "manual_proveedor" | "manual_producto_legacy" | "fallback_default";
+  lt_muestras: number;
+  safety_stock_simple: number;              // copia de stock_seguridad (legacy)
+  safety_stock_completo: number;            // Z × √(LT × σ_D² + D̄² × σ_LT²)
+  safety_stock_fuente: "formula_completa" | "fallback_simple";
+  rop_calculado: number;                    // D̄ × LT + safety_stock_completo
+  necesita_pedir: boolean;                  // stock_total ≤ rop_calculado
 
   dias_sin_stock_full: number;
   semanas_con_quiebre: number;
@@ -217,7 +230,7 @@ export interface ProductoInput {
   precio: number;
   inner_pack: number | null;
   lead_time_dias: number;
-  moq: number;
+  moq: number;                 // mínimo de compra al proveedor
   estado_sku: string;
   updated_at: string | null;
 }
@@ -325,6 +338,14 @@ export interface RecalculoInput {
   /** Unidades vendidas últimos 30d agregadas por sku_origen desde ventas_ml_cache.
    *  Input del Pareto abc_unidades. */
   unidadesPorSku?: Map<string, number>;
+  /** Lead time por proveedor desde tabla `proveedores` (Fase B reposición).
+   *  Map<nombre_proveedor, {lt_dias, sigma_dias, fuente, muestras}>. */
+  proveedoresLT?: Map<string, {
+    lead_time_dias: number;
+    lead_time_sigma_dias: number;
+    lead_time_fuente: string;
+    lead_time_muestras: number;
+  }>;
   config: RecalculoConfig;
   hoy: Date;
   debugSku?: string;
@@ -392,6 +413,7 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     proveedorCatalogo, config, hoy,
     debugSku,
   } = input;
+  const proveedoresLT = input.proveedoresLT || new Map();
   const debugSkuUp = debugSku?.toUpperCase();
   let debugLog: DebugSkuLog | undefined;
 
@@ -1131,6 +1153,17 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       stock_seguridad: round2(stockSeguridad),
       punto_reorden: round2(puntoReorden),
       nivel_servicio: nivelServicio,
+      // Fase B: defaults, se completan en paso de SS por ABC global
+      lead_time_real_dias: null,
+      lead_time_real_sigma: null,
+      lead_time_usado_dias: leadTimeDias,
+      lead_time_fuente: "fallback_default",
+      lt_muestras: 0,
+      safety_stock_simple: round2(stockSeguridad),
+      safety_stock_completo: 0,
+      safety_stock_fuente: "fallback_simple",
+      rop_calculado: 0,
+      necesita_pedir: false,
 
       dias_sin_stock_full: diasQuiebre,
       semanas_con_quiebre: semanasQuiebre,
@@ -1281,6 +1314,15 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
   }
 
   // ── Recalcular mandar_full y pedir_proveedor con targets actualizados ──
+  // Fase B: refactor del cálculo. Antes se duplicaba Full/Flex con 30d hardcoded.
+  // Ahora una sola cantidad por SKU (en unidades físicas, ya respetan composición).
+  // La distribución Full vs Flex se decide en envío (mandar_full), no en el pedido.
+  //
+  // Fórmula:
+  //   demanda_ciclo = D̄ × target_dias / 7  (en unidades semanales)
+  //   cantidad_objetivo = demanda_ciclo + safety_stock_completo
+  //   pedir_proveedor = max(0, ceil(cantidad_objetivo − stock_total))
+  // donde stock_total = stock_full + stock_bodega + stock_en_transito.
   for (const r of rows) {
     const prod = prodMap.get(r.sku_origen);
     const provCatR = proveedorCatalogo?.get(r.sku_origen);
@@ -1288,21 +1330,28 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     const velCalcR = r.multiplicador_evento > 1 ? r.vel_ajustada_evento : r.vel_ponderada;
     const enQP = r.stock_full === 0 && r.vel_ponderada > 0 && r.dias_en_quiebre >= 14 && r.vel_pre_quiebre > 2;
     const velParaPedir = enQP ? r.vel_pre_quiebre : velCalcR;
+
+    // mandar_full: solo el split a Full según target_dias_full y pct_full.
+    // (Mantengo lógica vieja porque mandar_full es decisión operativa diaria,
+    // no parte del pedido al proveedor.)
     const targetFullUds = velParaPedir * r.pct_full * r.target_dias_full / 7;
-    const targetFlexUds = velParaPedir * r.pct_flex * 30 / 7;
+    const targetFlexUds = velParaPedir * r.pct_flex * r.target_dias_full / 7;  // unificado: usa target por ABC, no 30d hardcoded
     const disponibleParaFullR = Math.max(0, r.stock_bodega - Math.ceil(targetFlexUds));
     r.mandar_full = Math.max(0, Math.min(Math.ceil(targetFullUds - r.stock_full - r.stock_en_transito), disponibleParaFullR));
-    // Productos nuevos: mantener lote inicial si vel=0 y sin stock en Full
     if (r.vel_ponderada === 0 && r.vel_pre_quiebre === 0 && r.stock_full === 0 && r.stock_en_transito === 0 && r.stock_bodega > 0) {
       const loteInicial = Math.max(innerPack, 2);
       r.mandar_full = Math.min(loteInicial, r.stock_bodega);
     }
-    const pedirFullR = Math.max(0, Math.ceil(targetFullUds - r.stock_full - r.stock_en_transito));
-    const pedirFlexR = Math.max(0, Math.ceil(targetFlexUds - r.stock_bodega));
-    r.pedir_proveedor = pedirFullR + pedirFlexR;
+
+    // pedir_proveedor: cantidad agregada al proveedor.
+    // demanda_ciclo cubre target_dias × velocidad. SS_completo amortigua variabilidad demanda+LT.
+    const demandaCicloUds = velParaPedir * r.target_dias_full / 7;
+    const cantidadObjetivo = demandaCicloUds + r.safety_stock_completo;
+    const stockTotalR = r.stock_full + r.stock_bodega + r.stock_en_transito;  // fix bug Flex: en_transito también del lado bodega
+    r.pedir_proveedor = Math.max(0, Math.ceil(cantidadObjetivo - stockTotalR));
     r.pedir_proveedor_bultos = innerPack > 1 && r.pedir_proveedor > 0 ? Math.ceil(r.pedir_proveedor / innerPack) : r.pedir_proveedor;
 
-    // Recalcular cobertura
+    // Recalcular cobertura Full (visualización)
     const velFullCalcR = velCalcR * r.pct_full;
     r.cob_full = round2(calcularCobertura(r.stock_full, velFullCalcR));
   }
@@ -1365,16 +1414,74 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     else r.cuadrante = "REVISAR";
   }
 
-  // ── Ajustar stock de seguridad y punto de reorden por ABC (paso 12 refinado) ──
+  // ── Ajustar safety stock + ROP por ABC (Fase B: doble cálculo) ──
+  // Resolver LT por SKU usando cascada: oc_real → manual_proveedor → manual_producto_legacy → fallback
+  function resolverLeadTime(prodInput: ProductoInput | undefined): {
+    dias: number;
+    sigma_dias: number;
+    fuente: "oc_real" | "manual_proveedor" | "manual_producto_legacy" | "fallback_default";
+    muestras: number;
+  } {
+    const provNombre = (prodInput?.proveedor || "").trim();
+    const provData = provNombre ? proveedoresLT.get(provNombre) : undefined;
+
+    if (provData && provData.lead_time_fuente === "oc_real" && provData.lead_time_muestras >= 3) {
+      return { dias: provData.lead_time_dias, sigma_dias: provData.lead_time_sigma_dias, fuente: "oc_real", muestras: provData.lead_time_muestras };
+    }
+    if (provData) {
+      return { dias: provData.lead_time_dias, sigma_dias: provData.lead_time_sigma_dias, fuente: "manual_proveedor", muestras: provData.lead_time_muestras };
+    }
+    // Fallback a productos.lead_time_dias si difiere del default 7 (señal de que fue editado manual)
+    if (prodInput?.lead_time_dias && prodInput.lead_time_dias !== 7) {
+      return { dias: prodInput.lead_time_dias, sigma_dias: 0.30 * prodInput.lead_time_dias, fuente: "manual_producto_legacy", muestras: 0 };
+    }
+    return { dias: 5, sigma_dias: 1.5, fuente: "fallback_default", muestras: 0 };
+  }
+
   for (const r of rows) {
+    // Nivel de servicio por ABC
     let ns = 0.95;
     if (r.abc === "A") ns = 0.97;
     else if (r.abc === "C") ns = 0.90;
     r.nivel_servicio = ns;
     const Z = zScore(ns);
-    const lt = (prodMap.get(r.sku_origen)?.lead_time_dias || 7) / 7;
-    r.stock_seguridad = round2(Z * r.desviacion_std * Math.sqrt(lt));
-    r.punto_reorden = round2((r.vel_ponderada * lt) + r.stock_seguridad);
+
+    // Resolver LT (cascada por proveedor)
+    const prodR = prodMap.get(r.sku_origen);
+    const lt = resolverLeadTime(prodR);
+    r.lead_time_real_dias = lt.fuente === "oc_real" ? lt.dias : null;
+    r.lead_time_real_sigma = lt.fuente === "oc_real" ? lt.sigma_dias : null;
+    r.lead_time_usado_dias = lt.dias;
+    r.lead_time_fuente = lt.fuente;
+    r.lt_muestras = lt.muestras;
+
+    const ltSem = lt.dias / 7;
+    const sigmaLtSem = lt.sigma_dias / 7;
+    const D = r.vel_ponderada;            // u/semana, ya en unidades físicas (composición × cantidad)
+    const sigmaD = r.desviacion_std;      // u/semana, ya calculada en paso XYZ
+
+    // SS legacy (solo σ_D × √LT, sin σ_LT) — para compatibilidad y comparación
+    const ssSimple = round2(Z * sigmaD * Math.sqrt(ltSem));
+    r.safety_stock_simple = ssSimple;
+    r.stock_seguridad = ssSimple;          // se preserva el campo viejo
+    r.punto_reorden = round2((D * ltSem) + ssSimple);
+
+    // SS completo: incluye σ_LT
+    // Fórmula: Z × √(LT × σ_D² + D̄² × σ_LT²)
+    if (sigmaD > 0 || sigmaLtSem > 0) {
+      const ssCompleto = round2(Z * Math.sqrt(ltSem * sigmaD * sigmaD + D * D * sigmaLtSem * sigmaLtSem));
+      r.safety_stock_completo = ssCompleto;
+      r.safety_stock_fuente = "formula_completa";
+    } else {
+      // Sin variabilidad medida → cae al simple
+      r.safety_stock_completo = ssSimple;
+      r.safety_stock_fuente = "fallback_simple";
+    }
+    r.rop_calculado = round2((D * ltSem) + r.safety_stock_completo);
+
+    // necesita_pedir: stock total disponible ≤ ROP
+    const stockTotal = r.stock_full + r.stock_bodega + r.stock_en_transito;
+    r.necesita_pedir = stockTotal <= r.rop_calculado && D > 0;
   }
 
   // ── Ajustar prioridad por ABC ──
@@ -1417,6 +1524,12 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       if (prod?.updated_at && new Date(prod.updated_at) < limiteStale && r.vel_ponderada > 0) {
         alertas.push("costo_posiblemente_obsoleto");
       }
+    }
+    // Fase B: alertas de reposición
+    if (r.necesita_pedir) alertas.push("necesita_pedir");
+    const prodMoq = prodMap.get(r.sku_origen)?.moq;
+    if (r.pedir_proveedor > 0 && prodMoq && prodMoq > 1 && r.pedir_proveedor < prodMoq) {
+      alertas.push("pedido_bajo_moq");
     }
 
     if (r.stock_full === 0 && r.vel_full > 0) alertas.push("agotado_full");
@@ -1559,6 +1672,9 @@ export function generarHistoryRows(
       alertas: r.alertas,
       margen_neto_30d: r.margen_neto_30d,
       margen_unitario_pre_quiebre: r.margen_unitario_pre_quiebre,
+      lead_time_usado_dias: r.lead_time_usado_dias,
+      safety_stock_completo: r.safety_stock_completo,
+      rop_calculado: r.rop_calculado,
       venta_perdida_pesos: r.venta_perdida_pesos,
       vel_objetivo: r.vel_objetivo,
       gap_vel_pct: r.gap_vel_pct,

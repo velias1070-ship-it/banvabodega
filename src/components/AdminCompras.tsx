@@ -41,11 +41,62 @@ const ESTADO_COLORS: Record<string, string> = {
 // Component
 // ============================================
 
+interface ProveedorRow {
+  id: string;
+  nombre: string;
+  rut: string | null;
+  lead_time_dias: number;
+  lead_time_sigma_dias: number;
+  lead_time_fuente: string;
+  lead_time_muestras: number;
+  lead_time_updated_at: string | null;
+  notas: string | null;
+}
+
 export default function AdminCompras() {
+  const [tab, setTab] = useState<"ocs" | "proveedores">("ocs");
   const [ocs, setOcs] = useState<DBOrdenCompra[]>([]);
   const [loading, setLoading] = useState(true);
   const [filtroEstado, setFiltroEstado] = useState<string>("todos");
   const [filtroProveedor, setFiltroProveedor] = useState<string>("todos");
+
+  // Tab Proveedores
+  const [proveedoresList, setProveedoresList] = useState<ProveedorRow[]>([]);
+  const [provEdits, setProvEdits] = useState<Map<string, { lt?: number; sigma?: number; notas?: string }>>(new Map());
+  const [provSaving, setProvSaving] = useState<string | null>(null);
+
+  const cargarProveedores = useCallback(async () => {
+    const sb = getSupabase();
+    if (!sb) return;
+    const { data } = await sb.from("proveedores").select("*").order("nombre");
+    setProveedoresList((data || []) as ProveedorRow[]);
+    setProvEdits(new Map());
+  }, []);
+
+  useEffect(() => { if (tab === "proveedores") cargarProveedores(); }, [tab, cargarProveedores]);
+
+  const guardarProveedor = useCallback(async (p: ProveedorRow) => {
+    const edits = provEdits.get(p.id);
+    if (!edits) return;
+    const sb = getSupabase();
+    if (!sb) return;
+    setProvSaving(p.id);
+    try {
+      await sb.from("proveedores").update({
+        lead_time_dias: edits.lt ?? p.lead_time_dias,
+        lead_time_sigma_dias: edits.sigma ?? p.lead_time_sigma_dias,
+        notas: edits.notas ?? p.notas,
+        lead_time_fuente: "manual",
+        lead_time_updated_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }).eq("id", p.id);
+      // Disparar recálculo en background
+      try { await fetch("/api/intelligence/recalcular?full=true", { method: "GET" }); } catch { /* ignore */ }
+      await cargarProveedores();
+    } finally {
+      setProvSaving(null);
+    }
+  }, [provEdits, cargarProveedores]);
 
   // Detail view
   const [selectedOC, setSelectedOC] = useState<DBOrdenCompra | null>(null);
@@ -633,6 +684,107 @@ export default function AdminCompras() {
   // ══════════════════════
   return (
     <div style={{ padding: "0 4px" }}>
+      {/* Tabs */}
+      <div style={{ display: "flex", gap: 4, marginBottom: 12, borderBottom: "1px solid var(--bg4)" }}>
+        {(["ocs", "proveedores"] as const).map(t => (
+          <button key={t} onClick={() => setTab(t)}
+            style={{
+              padding: "8px 14px", border: "none", background: "none",
+              color: tab === t ? "var(--cyan)" : "var(--txt3)",
+              borderBottom: tab === t ? "2px solid var(--cyan)" : "2px solid transparent",
+              fontSize: 12, fontWeight: 700, cursor: "pointer",
+            }}>
+            {t === "ocs" ? "Órdenes de Compra" : "Proveedores"}
+          </button>
+        ))}
+      </div>
+
+      {tab === "proveedores" ? (
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Proveedores — Lead time</h2>
+            <button onClick={cargarProveedores}
+              style={{ padding: "6px 12px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt2)", border: "1px solid var(--bg4)", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
+              Refrescar
+            </button>
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table className="tbl" style={{ width: "100%" }}>
+              <thead>
+                <tr>
+                  <th>Proveedor</th>
+                  <th>RUT</th>
+                  <th style={{ textAlign: "right" }}>LT días</th>
+                  <th style={{ textAlign: "right" }}>σ_LT días</th>
+                  <th>Fuente</th>
+                  <th style={{ textAlign: "right" }}>Muestras</th>
+                  <th>Última act.</th>
+                  <th>Notas</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {proveedoresList.map(p => {
+                  const edit = provEdits.get(p.id) || {};
+                  const isDirty = edit.lt !== undefined || edit.sigma !== undefined || edit.notas !== undefined;
+                  const fuenteColor: Record<string, string> = {
+                    oc_real: "var(--green)",
+                    manual: "var(--cyan)",
+                    fallback: "var(--amber)",
+                  };
+                  return (
+                    <tr key={p.id}>
+                      <td style={{ fontWeight: 600 }}>{p.nombre}</td>
+                      <td className="mono" style={{ fontSize: 10, color: "var(--txt3)" }}>{p.rut || "—"}</td>
+                      <td>
+                        <input type="number" step="0.5" defaultValue={p.lead_time_dias}
+                          onChange={(e) => {
+                            const v = parseFloat(e.target.value);
+                            setProvEdits(m => { const n = new Map(m); n.set(p.id, { ...n.get(p.id), lt: isNaN(v) ? undefined : v }); return n; });
+                          }}
+                          style={{ width: 70, padding: "4px 6px", borderRadius: 4, background: "var(--bg2)", border: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 11, textAlign: "right" }} />
+                      </td>
+                      <td>
+                        <input type="number" step="0.5" defaultValue={p.lead_time_sigma_dias}
+                          onChange={(e) => {
+                            const v = parseFloat(e.target.value);
+                            setProvEdits(m => { const n = new Map(m); n.set(p.id, { ...n.get(p.id), sigma: isNaN(v) ? undefined : v }); return n; });
+                          }}
+                          style={{ width: 70, padding: "4px 6px", borderRadius: 4, background: "var(--bg2)", border: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 11, textAlign: "right" }} />
+                      </td>
+                      <td>
+                        <span style={{ padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700, background: (fuenteColor[p.lead_time_fuente] || "var(--txt3)") + "22", color: fuenteColor[p.lead_time_fuente] || "var(--txt3)" }}>
+                          {p.lead_time_fuente}
+                        </span>
+                      </td>
+                      <td className="mono" style={{ textAlign: "right" }}>{p.lead_time_muestras}</td>
+                      <td style={{ fontSize: 10, color: "var(--txt3)" }}>{p.lead_time_updated_at ? new Date(p.lead_time_updated_at).toLocaleDateString("es-CL") : "—"}</td>
+                      <td>
+                        <input type="text" defaultValue={p.notas || ""}
+                          onChange={(e) => {
+                            setProvEdits(m => { const n = new Map(m); n.set(p.id, { ...n.get(p.id), notas: e.target.value }); return n; });
+                          }}
+                          style={{ width: "100%", minWidth: 150, padding: "4px 6px", borderRadius: 4, background: "var(--bg2)", border: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 11 }} />
+                      </td>
+                      <td>
+                        <button disabled={!isDirty || provSaving === p.id} onClick={() => guardarProveedor(p)}
+                          style={{ padding: "4px 10px", borderRadius: 4, background: isDirty ? "var(--green)" : "var(--bg3)", color: isDirty ? "#0a0e17" : "var(--txt3)", border: "none", fontSize: 10, fontWeight: 700, cursor: isDirty ? "pointer" : "not-allowed", opacity: provSaving === p.id ? 0.5 : 1 }}>
+                          {provSaving === p.id ? "..." : "Guardar"}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ marginTop: 12, fontSize: 11, color: "var(--txt3)" }}>
+            <strong>oc_real</strong>: lead time medido desde OCs cerradas (≥3 muestras) ·{" "}
+            <strong>manual</strong>: editado por admin ·{" "}
+            <strong>fallback</strong>: 5 días + σ=1.5 (default)
+          </div>
+        </div>
+      ) : (<>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
         <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Compras — Órdenes de Compra</h2>
         <div style={{ display: "flex", gap: 8 }}>
@@ -915,6 +1067,7 @@ export default function AdminCompras() {
           </div>
         </div>
       )}
+      </>)}
     </div>
   );
 }

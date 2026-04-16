@@ -368,6 +368,82 @@ export async function queryPrevIntelligence(): Promise<Map<string, {
   return map;
 }
 
+/** Lead time por proveedor desde la tabla proveedores. Map<nombre, {...}> */
+export async function queryProveedores(): Promise<Map<string, {
+  lead_time_dias: number;
+  lead_time_sigma_dias: number;
+  lead_time_fuente: string;
+  lead_time_muestras: number;
+}>> {
+  const sb = getServerSupabase();
+  if (!sb) return new Map();
+  const { data } = await sb.from("proveedores")
+    .select("nombre, lead_time_dias, lead_time_sigma_dias, lead_time_fuente, lead_time_muestras")
+    .eq("activo", true);
+  const map = new Map<string, {
+    lead_time_dias: number; lead_time_sigma_dias: number;
+    lead_time_fuente: string; lead_time_muestras: number;
+  }>();
+  for (const row of (data || []) as Array<{
+    nombre: string; lead_time_dias: number; lead_time_sigma_dias: number;
+    lead_time_fuente: string; lead_time_muestras: number;
+  }>) {
+    map.set((row.nombre || "").trim(), {
+      lead_time_dias: row.lead_time_dias || 5,
+      lead_time_sigma_dias: row.lead_time_sigma_dias ?? 1.5,
+      lead_time_fuente: row.lead_time_fuente || "fallback",
+      lead_time_muestras: row.lead_time_muestras || 0,
+    });
+  }
+  return map;
+}
+
+/** Calcula LT real promedio + sigma por proveedor desde OCs cerradas/recibidas.
+ *  Usado por el cron actualizar-lead-times. Hoy probablemente devuelve Map vacío
+ *  porque no hay OCs reales con fecha_recepcion poblada todavía.
+ */
+export async function queryLeadTimeReal(): Promise<Map<string, {
+  lead_time_dias: number; lead_time_sigma_dias: number; muestras: number;
+}>> {
+  const sb = getServerSupabase();
+  if (!sb) return new Map();
+  const { data } = await sb.from("ordenes_compra")
+    .select("proveedor, fecha_emision, fecha_recepcion")
+    .in("estado", ["RECIBIDA", "CERRADA"])
+    .not("fecha_recepcion", "is", null)
+    .not("fecha_emision", "is", null);
+  if (!data || data.length === 0) return new Map();
+
+  // Agrupar dias_lt por proveedor
+  const buckets = new Map<string, number[]>();
+  for (const row of data as Array<{ proveedor: string; fecha_emision: string; fecha_recepcion: string }>) {
+    if (!row.proveedor || !row.fecha_emision || !row.fecha_recepcion) continue;
+    const dias = Math.round(
+      (new Date(row.fecha_recepcion).getTime() - new Date(row.fecha_emision).getTime()) / 86400000
+    );
+    if (dias < 0 || dias > 365) continue; // descarta outliers absurdos
+    const key = (row.proveedor || "").trim();
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key)!.push(dias);
+  }
+
+  const result = new Map<string, { lead_time_dias: number; lead_time_sigma_dias: number; muestras: number }>();
+  buckets.forEach((dias, prov) => {
+    if (dias.length < 1) return;
+    const avg = dias.reduce((s: number, x: number) => s + x, 0) / dias.length;
+    const variance = dias.length > 1
+      ? dias.reduce((s: number, x: number) => s + Math.pow(x - avg, 2), 0) / (dias.length - 1)
+      : Math.pow(0.30 * avg, 2);
+    const sigma = Math.sqrt(variance);
+    result.set(prov, {
+      lead_time_dias: Math.round(avg * 10) / 10,
+      lead_time_sigma_dias: Math.round(sigma * 10) / 10,
+      muestras: dias.length,
+    });
+  });
+  return result;
+}
+
 /** Margen bruto y unidades últimos N días por sku_origen, desde ventas_ml_cache.
  *  Usa composicion_venta para traducir sku_venta → sku_origen. Filtra:
  *   - tipo_relacion = 'componente' (evita doble-conteo de alternativas)

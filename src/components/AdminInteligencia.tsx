@@ -62,6 +62,14 @@ interface IntelRow {
   liquidacion_descuento_sugerido: number;
   stock_seguridad: number;
   punto_reorden: number;
+  // Fase B reposición
+  lead_time_usado_dias?: number;
+  lead_time_fuente?: string;
+  safety_stock_simple?: number;
+  safety_stock_completo?: number;
+  safety_stock_fuente?: string;
+  rop_calculado?: number;
+  necesita_pedir?: boolean;
   vel_pre_quiebre: number;
   dias_en_quiebre: number;
   es_quiebre_proveedor: boolean;
@@ -1475,41 +1483,36 @@ export default function AdminInteligencia() {
         </div>
       )}
 
-      {/* ═══ 3.5. CHIPS DE RED DE SEGURIDAD: SKUs sin costo o con costo obsoleto ═══ */}
+      {/* ═══ 3.5. CHIPS DE RED DE SEGURIDAD: SKUs sin costo, stale, sin LT, bajo MOQ ═══ */}
       {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && (() => {
         const sinCosto = activeRows.filter((r: AnyRow) => (r.alertas || []).includes("sin_costo"));
         const costoStale = activeRows.filter((r: AnyRow) => (r.alertas || []).includes("costo_posiblemente_obsoleto"));
-        if (sinCosto.length === 0 && costoStale.length === 0) return null;
+        const sinLt = activeRows.filter((r: AnyRow) => "lead_time_fuente" in r && r.lead_time_fuente === "fallback_default" && (r.vel_ponderada || 0) > 0);
+        const bajoMoq = activeRows.filter((r: AnyRow) => (r.alertas || []).includes("pedido_bajo_moq"));
+        const necesitaPedir = activeRows.filter((r: AnyRow) => "necesita_pedir" in r && r.necesita_pedir);
+        if (sinCosto.length + costoStale.length + sinLt.length + bajoMoq.length + necesitaPedir.length === 0) return null;
+        const chip = (label: string, count: number, alertaKey: string, color: string, title: string) => (
+          <button
+            key={label}
+            onClick={() => setFiltroAlerta(filtroAlerta === alertaKey ? "todos" : alertaKey)}
+            title={title}
+            style={{
+              padding: "5px 12px", borderRadius: 6,
+              background: filtroAlerta === alertaKey ? color : color + "22",
+              color: filtroAlerta === alertaKey ? "#fff" : color,
+              border: `1px solid ${color}`, fontSize: 11, fontWeight: 700, cursor: "pointer",
+            }}
+          >
+            {label}: {count}
+          </button>
+        );
         return (
           <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
-            {sinCosto.length > 0 && (
-              <button
-                onClick={() => setFiltroAlerta(filtroAlerta === "sin_costo" ? "todos" : "sin_costo")}
-                title="SKUs activos sin costo cargado en ningún sistema. Margen no se puede calcular."
-                style={{
-                  padding: "5px 12px", borderRadius: 6,
-                  background: filtroAlerta === "sin_costo" ? "var(--red)" : "var(--redBg)",
-                  color: filtroAlerta === "sin_costo" ? "#fff" : "var(--red)",
-                  border: "1px solid var(--red)", fontSize: 11, fontWeight: 700, cursor: "pointer",
-                }}
-              >
-                ⚠ Sin costo: {sinCosto.length}
-              </button>
-            )}
-            {costoStale.length > 0 && (
-              <button
-                onClick={() => setFiltroAlerta(filtroAlerta === "costo_posiblemente_obsoleto" ? "todos" : "costo_posiblemente_obsoleto")}
-                title="SKUs activos con costo manual o de catálogo no actualizado en >90 días. El margen puede estar distorsionado."
-                style={{
-                  padding: "5px 12px", borderRadius: 6,
-                  background: filtroAlerta === "costo_posiblemente_obsoleto" ? "var(--amber)" : "var(--amberBg)",
-                  color: filtroAlerta === "costo_posiblemente_obsoleto" ? "#000" : "var(--amber)",
-                  border: "1px solid var(--amber)", fontSize: 11, fontWeight: 700, cursor: "pointer",
-                }}
-              >
-                ⚠ Costo {'>'}90d: {costoStale.length}
-              </button>
-            )}
+            {necesitaPedir.length > 0 && chip("📦 Pedir ya", necesitaPedir.length, "necesita_pedir", "var(--cyan)", "SKUs cuyo stock total ≤ ROP. Pedir ahora.")}
+            {sinCosto.length > 0 && chip("⚠ Sin costo", sinCosto.length, "sin_costo", "var(--red)", "SKUs activos sin costo cargado.")}
+            {costoStale.length > 0 && chip("⚠ Costo >90d", costoStale.length, "costo_posiblemente_obsoleto", "var(--amber)", "Costo manual sin actualizar en >90 días.")}
+            {bajoMoq.length > 0 && chip("⚠ < MOQ", bajoMoq.length, "pedido_bajo_moq", "var(--amber)", "Sugerencia de pedido < mínimo del proveedor.")}
+            {sinLt.length > 0 && chip("⚠ LT no medido", sinLt.length, "todos", "var(--amber)", "SKUs cuyo lead time es default 5d. Asignar proveedor o medir desde OCs.")}
           </div>
         );
       })()}
