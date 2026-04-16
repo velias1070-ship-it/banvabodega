@@ -30,7 +30,8 @@ export async function GET(req: NextRequest) {
   const group = (url.searchParams.get("group") || "ML").toUpperCase();
   const subtypes = url.searchParams.get("subtypes");
   const docType = url.searchParams.get("document_type") || "BILL";
-  const pageSize = Math.min(parseInt(url.searchParams.get("limit") || "150"), 150);
+  // ML permite hasta limit=1000 en billing details (best practice oficial).
+  const pageSize = Math.min(parseInt(url.searchParams.get("limit") || "1000"), 1000);
   const raw = url.searchParams.get("raw") === "1";
   const allPages = url.searchParams.get("all_pages") === "1";
   const dayFilter = url.searchParams.get("day"); // YYYY-MM-DD
@@ -53,25 +54,35 @@ export async function GET(req: NextRequest) {
     [k: string]: unknown;
   };
 
-  type Resp = { results?: Row[]; paging?: { total?: number; offset?: number; limit?: number } };
+  type Resp = { results?: Row[]; paging?: { total?: number; offset?: number; limit?: number }; last_id?: number | string };
 
-  // Paginar
+  // Paginar con cursor from_id (el único que la API de billing acepta).
+  // Devolvemos metadata de cada página para debugging.
+  type PageMeta = { path: string; count: number; first_detail_id?: number; last_detail_id?: number };
   const allRows: Row[] = [];
-  let offset = 0;
   let firstPath = "";
   let pagesFetched = 0;
-  const maxPages = allPages ? 40 : 1;
+  let stopReason = "";
+  const maxPages = allPages ? 100 : 1;
+  const pagesLog: PageMeta[] = [];
+  // Pagination oficial ML: sort_by=ID, order_by=ASC, from_id=0 inicial,
+  // luego usar el campo top-level `last_id` de la respuesta. Seguir hasta
+  // que la respuesta no traiga más results o no traiga last_id.
+  let fromId: string = "0";
 
   while (pagesFetched < maxPages) {
     const qs = new URLSearchParams();
     qs.set("document_type", docType);
     qs.set("limit", String(pageSize));
-    qs.set("offset", String(offset));
+    qs.set("sort_by", "ID");
+    qs.set("order_by", "ASC");
+    qs.set("from_id", fromId);
     if (subtypes) qs.set("detail_sub_types", subtypes);
     const path = `/billing/integration/periods/key/${key}/group/${group}/details?${qs.toString()}`;
     if (!firstPath) firstPath = path;
     const data = await mlGetRaw(path) as Resp | null;
     if (!data) {
+      stopReason = `ml_request_failed at page ${pagesFetched + 1}`;
       if (allRows.length === 0) return NextResponse.json({ error: "ml_request_failed", path }, { status: 502 });
       break;
     }
@@ -79,10 +90,16 @@ export async function GET(req: NextRequest) {
     if (raw && pagesFetched === 0) {
       return NextResponse.json({ path, data });
     }
+    const lastDetailId = page.length > 0 ? (page[page.length - 1].charge_info as { detail_id?: number } | undefined)?.detail_id : undefined;
+    const firstDetailId = page.length > 0 ? (page[0].charge_info as { detail_id?: number } | undefined)?.detail_id : undefined;
+    pagesLog.push({ path, count: page.length, first_detail_id: firstDetailId, last_detail_id: lastDetailId });
     allRows.push(...page);
     pagesFetched++;
-    if (page.length < pageSize) break;
-    offset += pageSize;
+    if (page.length === 0) { stopReason = `page ${pagesFetched} returned 0 rows`; break; }
+    const nextFromId = data.last_id ?? lastDetailId;
+    if (!nextFromId) { stopReason = `no last_id on page ${pagesFetched}`; break; }
+    if (String(nextFromId) === fromId) { stopReason = `last_id didn't advance (${nextFromId}) on page ${pagesFetched}`; break; }
+    fromId = String(nextFromId);
   }
 
   // Aggregations
@@ -106,7 +123,9 @@ export async function GET(req: NextRequest) {
     const gross = Number(di.charge_amount_without_discount || amt);
     const disc = Number(di.discount_amount || 0);
     const mk = r.marketplace_info?.marketplace || "—";
-    const dt = ci.creation_date_time || r.sales_info?.[0]?.sale_date_time || "";
+    // Preferir sale_date_time (día real de la venta) sobre creation_date_time
+    // (cuándo ML posteó el cargo a la factura, que suele ser un único día).
+    const dt = r.sales_info?.[0]?.sale_date_time || ci.creation_date_time || "";
     const day = dt ? dt.slice(0, 10) : "—";
 
     if (dayFilter && day !== dayFilter) continue;
@@ -153,6 +172,8 @@ export async function GET(req: NextRequest) {
     group,
     rows_total: allRows.length,
     pages_fetched: pagesFetched,
+    stop_reason: stopReason,
+    pages_log: pagesLog.slice(0, 20),
     day_filter: dayFilter,
     totals: { amount_net: totalAmount, amount_gross: totalGross, discount: totalDiscount },
     by_detail_type: byType,
