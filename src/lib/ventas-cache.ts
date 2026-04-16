@@ -72,22 +72,18 @@ export async function upsertOrderToVentasCache(
     } catch { /* skip */ }
   }
 
-  // Item count del pack completo: si la orden es parte de un shipment compartido
-  // con otras órdenes (pack_id != null), el costo del envío debe dividirse entre
-  // TODOS los items del pack, no solo los de esta orden. Buscamos hermanas en DB.
-  let packItemCount = order.order_items?.length || 1;
-  let siblingOrderIds: string[] = [];
-  if (order.pack_id && order.pack_id !== order.id) {
-    const { data: siblings } = await sb.from("ventas_ml_cache")
-      .select("order_id, cantidad")
-      .eq("order_number", String(order.pack_id))
-      .neq("order_id", String(order.id));
-    if (siblings && siblings.length > 0) {
-      siblingOrderIds = Array.from(new Set(siblings.map(s => s.order_id)));
-      // Sumar cantidad de hermanas ya guardadas (cada row ya es 1 item del sku_venta)
-      packItemCount += siblings.length;
-    }
-  }
+  // Item count del pack: solo cuenta los items DENTRO de esta orden.
+  //
+  // ANTES: se buscaban hermanas en DB para sumar items de otras órdenes del
+  // mismo pack_id. Eso fallaba cuando las hermanas cambiaban (cancelaciones,
+  // re-asignaciones de pack), dejando packItemCount inflado y costo_envio
+  // subestimado. Bug observado: orden Flex de 1 ítem registraba envío $1660
+  // (=$3320/2) en vez de $3320.
+  //
+  // AHORA: el webhook calcula con los items propios. El cron diario de
+  // /api/ml/ventas-sync agrupa correctamente por shipping.id y corrige el
+  // costo_envio si la orden es parte de un pack real.
+  const packItemCount = order.order_items?.length || 1;
 
   const packCostoEnvio = isFull ? senderCost : TARIFA_FLEX;
   const packBonificacion = isFull ? 0 : (senderBonif + receiverLoyal + receiverPaid);
@@ -234,34 +230,10 @@ export async function upsertOrderToVentasCache(
     return false;
   }
 
-  // Re-balancear costo_envio de las hermanas del pack con el nuevo packItemCount.
-  // Solo tocamos costos de envío y totales derivados. No ads_cost, no costo_producto.
-  if (siblingOrderIds.length > 0) {
-    const { data: siblings } = await sb.from("ventas_ml_cache")
-      .select("id, subtotal, comision_total, costo_producto, ads_cost_asignado")
-      .in("order_id", siblingOrderIds);
-    for (const s of siblings || []) {
-      const sub = s.subtotal || 0;
-      const com = s.comision_total || 0;
-      const cp = s.costo_producto || 0;
-      const ads = s.ads_cost_asignado || 0;
-      const newTotalNeto = sub - com - costoEnvioPorItem + bonifPorItem;
-      const newMargen = newTotalNeto - cp;
-      const newMargenPct = sub > 0 ? Math.round((newMargen / sub) * 10000) / 100 : 0;
-      const newMargenNeto = newMargen - ads;
-      const newMargenNetoPct = sub > 0 ? Math.round((newMargenNeto / sub) * 10000) / 100 : 0;
-      await sb.from("ventas_ml_cache").update({
-        costo_envio: costoEnvioPorItem,
-        ingreso_envio: bonifPorItem,
-        total_neto: newTotalNeto,
-        margen: newMargen,
-        margen_pct: newMargenPct,
-        margen_neto: newMargenNeto,
-        margen_neto_pct: newMargenNetoPct,
-        updated_at: snapshotAt,
-      }).eq("id", s.id);
-    }
-  }
+  // El re-balanceo de hermanas se hace ahora en el cron diario de
+  // /api/ml/ventas-sync que agrupa correctamente por shipping.id.
+  // El webhook ya no toca costos de hermanas porque la lógica vieja
+  // generaba el bug de packItemCount inflado.
 
   return true;
 }
