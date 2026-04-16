@@ -732,6 +732,9 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     const vel60d = sumar(ordenesFisicas60d) / semanasActivas60d;
 
     // Velocidad ponderada (Promedio Móvil Ponderado)
+    // Override PG eliminado (decisión Vicente, sesión auditoría Fase B)
+    // vel_ponderada se calcula solo desde ventas reales + exclusión de quiebres
+    // Para SKUs en quiebre prolongado, vel_pre_quiebre cubre la imputación
     const velPonderada = (vel7d * 0.5) + (vel30d * 0.3) + (vel60d * 0.2);
 
     // ── DEBUG: capturar datos intermedios para un SKU específico ──

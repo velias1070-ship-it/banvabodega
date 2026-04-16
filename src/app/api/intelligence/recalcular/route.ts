@@ -179,7 +179,6 @@ async function ejecutarRecalculo(params: { skus?: string[]; full: boolean; snaps
       stockBodega,
       stockFull: stockFullCache,
       stockFullDetail,
-      velProfitguard,
       eventosActivos: eventosActivos.map(e => ({
         nombre: e.nombre,
         multiplicador: e.multiplicador,
