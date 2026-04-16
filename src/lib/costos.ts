@@ -21,6 +21,7 @@ interface ComposicionRow { sku_venta: string; sku_origen: string; unidades: numb
 export interface CostosPreload {
   composicion: Map<string, ComposicionRow[]>;
   productos: Map<string, { costo_promedio: number; costo: number }>;
+  stock: Map<string, number>;
 }
 
 /**
@@ -46,7 +47,14 @@ export async function preloadCostos(sb: SupabaseClient): Promise<CostosPreload> 
     });
   }
 
-  return { composicion: compMap, productos: prodMap };
+  const { data: stocks } = await sb.from("stock").select("sku, cantidad");
+  const stockMap = new Map<string, number>();
+  for (const s of (stocks || []) as Array<{ sku: string; cantidad: number }>) {
+    const key = (s.sku || "").toUpperCase();
+    stockMap.set(key, (stockMap.get(key) || 0) + (s.cantidad || 0));
+  }
+
+  return { composicion: compMap, productos: prodMap, stock: stockMap };
 }
 
 /**
@@ -75,38 +83,60 @@ export function resolverCostoVenta(
   let fuente: CostoFuente = "promedio";
   let costoNetoTotal = 0;
 
-  // Si no hay composición, tratamos el sku_venta como si fuera su propio origen
-  // (fallback: no toda venta está en composicion_venta todavía).
-  // Excluir alternativos: solo se despacha UNO (principal o alternativo),
-  // el costo corresponde al componente principal.
-  const comps = componentes && componentes.length > 0
-    ? componentes.filter(c => c.tipo_relacion !== "alternativo")
+  // Si no hay composición, tratamos el sku_venta como si fuera su propio origen.
+  const allComps = componentes && componentes.length > 0
+    ? componentes
     : [{ sku_venta: sv, sku_origen: sv, unidades: 1, tipo_relacion: "componente" }];
 
-  // Si todos eran alternativos (no debería pasar), fallback al primero
-  if (comps.length === 0 && componentes && componentes.length > 0) {
-    comps.push(componentes[0]);
+  // Separar componentes principales de alternativos.
+  // Un componente principal puede tener N alternativos que lo reemplazan en picking.
+  // El costo de ese "slot" es el WAC ponderado por stock de (principal + alternativas).
+  const principales = allComps.filter(c => c.tipo_relacion !== "alternativo");
+  const alternativos = allComps.filter(c => c.tipo_relacion === "alternativo");
+
+  // Si no hay principales (solo alternativos), usar el primero como principal
+  if (principales.length === 0 && alternativos.length > 0) {
+    principales.push(alternativos.shift()!);
   }
 
-  for (const c of comps) {
-    const prod = preload.productos.get(c.sku_origen);
-    let costoUnit = 0;
-    let fuenteComp: CostoFuente;
+  function costoDeOrigen(skuOrigen: string): { costo: number; fuente: CostoFuente } {
+    const prod = preload.productos.get(skuOrigen);
+    if (prod && prod.costo_promedio > 0) return { costo: prod.costo_promedio, fuente: "promedio" };
+    if (prod && prod.costo > 0) return { costo: prod.costo, fuente: "catalogo" };
+    return { costo: 0, fuente: "sin_costo" };
+  }
 
-    if (prod && prod.costo_promedio > 0) {
-      costoUnit = prod.costo_promedio;
-      fuenteComp = "promedio";
-    } else if (prod && prod.costo > 0) {
-      costoUnit = prod.costo;
-      fuenteComp = "catalogo";
-    } else {
-      costoUnit = 0;
-      fuenteComp = "sin_costo";
+  for (const c of principales) {
+    // Buscar alternativas para este slot (mismo unidades)
+    const alts = alternativos.filter(a => a.unidades === c.unidades);
+    const candidatos = [c, ...alts];
+
+    // WAC ponderado por stock entre principal + alternativas
+    let numerador = 0;
+    let denominador = 0;
+    let peorFuente: CostoFuente = "promedio";
+
+    for (const cand of candidatos) {
+      const { costo: costoUnit, fuente: fuenteCand } = costoDeOrigen(cand.sku_origen);
+      const stock = preload.stock.get(cand.sku_origen) || 0;
+      if (costoUnit > 0 && stock > 0) {
+        numerador += costoUnit * stock;
+        denominador += stock;
+      }
+      if (fuenteCand === "sin_costo") peorFuente = "sin_costo";
+      else if (fuenteCand === "catalogo" && peorFuente === "promedio") peorFuente = "catalogo";
     }
 
-    // Peor caso: sin_costo > catalogo > promedio
-    if (fuenteComp === "sin_costo") fuente = "sin_costo";
-    else if (fuenteComp === "catalogo" && fuente === "promedio") fuente = "catalogo";
+    let costoUnit: number;
+    if (denominador > 0) {
+      costoUnit = Math.round(numerador / denominador);
+    } else {
+      // Sin stock en ninguno: usar costo del principal
+      costoUnit = costoDeOrigen(c.sku_origen).costo;
+    }
+
+    if (peorFuente === "sin_costo") fuente = "sin_costo";
+    else if (peorFuente === "catalogo" && fuente === "promedio") fuente = "catalogo";
 
     costoNetoTotal += costoUnit * c.unidades * qty;
     detalle.push({
