@@ -95,17 +95,49 @@ export async function GET(req: NextRequest) {
     if (samplesBySubType[st].length < 3) samplesBySubType[st].push(r);
   }
 
+  // Agrupado por día: busca primer campo tipo fecha y lo usa.
+  // Campos candidatos (en orden de preferencia).
+  const DATE_FIELDS = ["date_created", "date", "detail_date", "charge_date"];
+  const pickDate = (r: DetailRow): string | null => {
+    for (const f of DATE_FIELDS) {
+      const v = r[f];
+      if (typeof v === "string" && v.length >= 10) return v.slice(0, 10);
+    }
+    return null;
+  };
+
+  const byDay: Record<string, { total_amount: number; count: number; by_sub_type: Record<string, { count: number; amount: number }> }> = {};
+  let rowsSinFecha = 0;
+  for (const r of rows) {
+    const day = pickDate(r);
+    if (!day) { rowsSinFecha++; continue; }
+    const st = r.detail_sub_type || "—";
+    const amt = Number(r.amount ?? r.charge_amount ?? 0) || 0;
+    byDay[day] = byDay[day] || { total_amount: 0, count: 0, by_sub_type: {} };
+    byDay[day].count++;
+    byDay[day].total_amount += amt;
+    byDay[day].by_sub_type[st] = byDay[day].by_sub_type[st] || { count: 0, amount: 0 };
+    byDay[day].by_sub_type[st].count++;
+    byDay[day].by_sub_type[st].amount += amt;
+  }
+
+  const byDaySorted = Object.fromEntries(
+    Object.entries(byDay).sort(([a], [b]) => a.localeCompare(b))
+  );
+
   return NextResponse.json({
     path,
     period_key: key,
     group,
     total_rows: rows.length,
+    rows_without_date: rowsSinFecha,
     paging: d.paging ?? null,
     by_detail_type: byType,
     by_detail_sub_type: Object.fromEntries(
       Object.entries(bySubType).map(([k, v]) => [k, { count: v.count, amount: v.amount, fields_seen: Array.from(v.sampleKeys).sort() }])
     ),
     by_marketplace: byMarketplace,
+    by_day: byDaySorted,
     samples_by_sub_type: samplesBySubType,
   });
 }
