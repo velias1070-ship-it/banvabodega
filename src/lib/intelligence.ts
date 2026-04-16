@@ -10,6 +10,39 @@ import { calcularCobertura, calcularTargetDias, calcularMargen, COSTO_ENVIO_FLEX
 import type { FinancialAgg } from "./reposicion";
 import { calcularFactorRampup } from "./rampup";
 
+/**
+ * Determina si un SKU está en "quiebre prolongado" para dimensionar
+ * pedir_proveedor usando vel_pre_quiebre en vez de vel_ponderada actual
+ * (que queda aplastada cuando no hay ventas por no haber stock).
+ *
+ * Tres caminos (OR):
+ *
+ *   1) Zara genérica — días >= 14 con historia robusta (vel_pre > 2).
+ *   2) Protección ESTRELLA / CASHCOW — basta 7 días si la velocidad
+ *      actual cayó a la mitad (o menos) de la histórica. Evita aplastar
+ *      SKUs A que el quiebre está suprimiendo (Manual Parte 1 §2.4;
+ *      Guía Completa: "quiebre crónico de A's requiere alerta temprana").
+ *   3) Quiebre de proveedor — sin umbral de días si la velocidad actual
+ *      cayó a la mitad, la caída viene del proveedor y no del producto
+ *      (Manual Parte 3 Error #5).
+ *
+ * Preconds comunes: stock_full=0 (agotado real) y vel_pre_quiebre > 0.
+ */
+function esQuiebreProlongadoProtegido(r: SkuIntelRow): boolean {
+  if (r.stock_full !== 0) return false;
+  if (r.vel_pre_quiebre <= 0) return false;
+  const diasQ = r.dias_en_quiebre ?? 0;
+  const velAct = r.vel_ponderada;
+  const cuad = r.cuadrante;
+  // Rama 1: Zara genérica.
+  if (diasQ >= 14 && r.vel_pre_quiebre > 2 && velAct > 0) return true;
+  // Rama 2: protección ESTRELLA/CASHCOW con caída de velocidad.
+  if (diasQ >= 7 && (cuad === "ESTRELLA" || cuad === "CASHCOW") && r.vel_pre_quiebre > velAct * 2) return true;
+  // Rama 3: quiebre de proveedor con caída de velocidad.
+  if (r.es_quiebre_proveedor && r.vel_pre_quiebre > velAct * 2) return true;
+  return false;
+}
+
 /* ═══════════════════════════════════════════════════════════
    TIPOS
    ═══════════════════════════════════════════════════════════ */
@@ -1320,6 +1353,19 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     else r.target_dias_full = config.targetDiasC;
   }
 
+  // ── PASO 11: Cuadrante (matriz fija abc_margen × abc_unidades) ──
+  // Movido aquí (antes del recálculo de pedir_proveedor) para que
+  // esQuiebreProlongadoProtegido() pueda leer r.cuadrante — la
+  // protección ESTRELLA/CASHCOW depende de esta clasificación.
+  for (const r of rows) {
+    const esMargenA = r.abc_margen === "A";
+    const esUnidadesA = r.abc_unidades === "A";
+    if (esMargenA && esUnidadesA) r.cuadrante = "ESTRELLA";
+    else if (esMargenA && !esUnidadesA) r.cuadrante = "CASHCOW";
+    else if (!esMargenA && esUnidadesA) r.cuadrante = "VOLUMEN";
+    else r.cuadrante = "REVISAR";
+  }
+
   // ── Recalcular mandar_full y pedir_proveedor con targets actualizados ──
   // Fase B: refactor del cálculo. Antes se duplicaba Full/Flex con 30d hardcoded.
   // Ahora una sola cantidad por SKU (en unidades físicas, ya respetan composición).
@@ -1335,7 +1381,7 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     const provCatR = proveedorCatalogo?.get(r.sku_origen);
     const innerPack = provCatR?.inner_pack || prod?.inner_pack || 1;
     const velCalcR = r.multiplicador_evento > 1 ? r.vel_ajustada_evento : r.vel_ponderada;
-    const enQP = r.stock_full === 0 && r.vel_ponderada > 0 && (r.dias_en_quiebre ?? 0) >= 14 && r.vel_pre_quiebre > 2;
+    const enQP = esQuiebreProlongadoProtegido(r);
     const velParaPedir = enQP ? r.vel_pre_quiebre : velCalcR;
 
     // mandar_full: solo el split a Full según target_dias_full y pct_full.
@@ -1379,7 +1425,7 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     // The demand is shared — it's the same publication/listing
     // So we only need to cover it once, not per SKU origen
     const velCalcR = r.multiplicador_evento > 1 ? r.vel_ajustada_evento : r.vel_ponderada;
-    const enQP = r.stock_full === 0 && r.vel_ponderada > 0 && (r.dias_en_quiebre ?? 0) >= 14 && r.vel_pre_quiebre > 2;
+    const enQP = esQuiebreProlongadoProtegido(r);
     const velR = enQP ? r.vel_pre_quiebre : velCalcR;
     const tFull = velR * r.pct_full * r.target_dias_full / 7;
     const tFlex = velR * r.pct_flex * 30 / 7;
@@ -1419,26 +1465,6 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
         ? Math.ceil(r.pedir_proveedor / ipR)
         : r.pedir_proveedor;
     }
-  }
-
-  // ── PASO 11: Cuadrante (matriz fija abc_margen × abc_unidades) ──
-  //
-  // Matriz estable (no depende de mediana dinámica del corpus actual):
-  //
-  //   ESTRELLA = abc_margen='A' AND abc_unidades='A'   (alta utilidad + alto volumen)
-  //   CASHCOW  = abc_margen='A' AND abc_unidades∈(B,C) (alta utilidad pero poco volumen)
-  //   VOLUMEN  = abc_margen∈(B,C) AND abc_unidades='A' (mucho volumen pero poco margen)
-  //   REVISAR  = abc_margen∈(B,C) AND abc_unidades∈(B,C) (bajo margen y bajo volumen)
-  //
-  // Beneficio vs mediana: dos corridas comparables. Un SKU con la misma performance
-  // siempre cae en el mismo cuadrante; no se mueve solo porque cambió la mediana global.
-  for (const r of rows) {
-    const esMargenA = r.abc_margen === "A";
-    const esUnidadesA = r.abc_unidades === "A";
-    if (esMargenA && esUnidadesA) r.cuadrante = "ESTRELLA";
-    else if (esMargenA && !esUnidadesA) r.cuadrante = "CASHCOW";
-    else if (!esMargenA && esUnidadesA) r.cuadrante = "VOLUMEN";
-    else r.cuadrante = "REVISAR";
   }
 
   // ── Ajustar safety stock + ROP por ABC (Fase B: doble cálculo) ──
