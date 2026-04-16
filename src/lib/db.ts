@@ -2979,6 +2979,13 @@ export interface DBOrdenCompraLinea {
   stock_full_al_pedir?: number | null;
   stock_bodega_al_pedir?: number | null;
   accion_al_pedir?: string | null;
+  /** Precio neto congelado al confirmar la OC (Fase 1 lite) */
+  precio_acordado_neto?: number | null;
+  precio_acordado_at?: string | null;
+  /** Cantidad facturada acumulada (Fase 2, por ahora 0) */
+  cantidad_facturada?: number;
+  /** Estado de la línea: pendiente | recibida_total | facturada_total | cerrada | cancelada */
+  estado_linea?: string;
   created_at?: string;
 }
 

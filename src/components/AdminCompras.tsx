@@ -2,11 +2,14 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   fetchOrdenesCompra, fetchOrdenCompra, fetchOrdenCompraLineas,
-  updateOrdenCompra, deleteOrdenCompra, fetchRecepcionesDeOC,
-  fetchRecepcionesSinOC, vincularRecepcionOC, fetchRecepcionLineas,
-  insertAdminActionLog,
+  updateOrdenCompra, updateOrdenCompraLinea, deleteOrdenCompra,
+  fetchRecepcionesDeOC, fetchRecepcionesSinOC, vincularRecepcionOC,
+  fetchRecepcionLineas, insertAdminActionLog,
+  insertOrdenCompra, insertOrdenCompraLineas, nextOCNumero,
 } from "@/lib/db";
 import type { DBOrdenCompra, DBOrdenCompraLinea, DBRecepcion, OCEstado } from "@/lib/db";
+import { getSupabase } from "@/lib/supabase";
+import * as XLSX from "xlsx";
 
 // ============================================
 // Helpers
@@ -57,6 +60,15 @@ export default function AdminCompras() {
   const [recepcionesSinOC, setRecepcionesSinOC] = useState<DBRecepcion[]>([]);
   const [procesando, setProcesando] = useState(false);
 
+  // Modal Nueva OC
+  const [modalNueva, setModalNueva] = useState(false);
+  const [nuevaProveedor, setNuevaProveedor] = useState("");
+  const [nuevaFechaEsperada, setNuevaFechaEsperada] = useState("");
+  const [nuevaNotas, setNuevaNotas] = useState("");
+  const [nuevaLineas, setNuevaLineas] = useState<Array<{ sku_origen: string; nombre: string; cantidad_pedida: number; costo_unitario: number }>>([]);
+  const [proveedorCatalogo, setProveedorCatalogo] = useState<Map<string, { proveedor: string; precio_neto: number; nombre: string }>>(new Map());
+  const [skuBusqueda, setSkuBusqueda] = useState("");
+
   const cargar = useCallback(async () => {
     setLoading(true);
     const data = await fetchOrdenesCompra();
@@ -64,7 +76,160 @@ export default function AdminCompras() {
     setLoading(false);
   }, []);
 
-  useEffect(() => { cargar(); }, [cargar]);
+  // Cargar proveedor_catalogo para autocompletar precios
+  const cargarProveedorCatalogo = useCallback(async () => {
+    const sb = getSupabase();
+    if (!sb) return;
+    const { data } = await sb.from("proveedor_catalogo")
+      .select("sku_origen, proveedor, precio_neto, nombre")
+      .gt("precio_neto", 0);
+    const map = new Map<string, { proveedor: string; precio_neto: number; nombre: string }>();
+    for (const row of (data || []) as Array<{ sku_origen: string; proveedor: string; precio_neto: number; nombre: string }>) {
+      const key = (row.sku_origen || "").toUpperCase();
+      const existing = map.get(key);
+      // Si hay duplicados con distintos proveedores, quedarse con el de mayor precio_neto
+      if (!existing || row.precio_neto > existing.precio_neto) {
+        map.set(key, { proveedor: row.proveedor, precio_neto: row.precio_neto, nombre: row.nombre || "" });
+      }
+    }
+    setProveedorCatalogo(map);
+  }, []);
+
+  useEffect(() => { cargar(); cargarProveedorCatalogo(); }, [cargar, cargarProveedorCatalogo]);
+
+  // ── Crear Nueva OC ──
+  const abrirNueva = useCallback(() => {
+    setNuevaProveedor("");
+    setNuevaFechaEsperada("");
+    setNuevaNotas("");
+    setNuevaLineas([]);
+    setSkuBusqueda("");
+    setModalNueva(true);
+  }, []);
+
+  const agregarLinea = useCallback((skuRaw: string) => {
+    const sku = skuRaw.trim().toUpperCase();
+    if (!sku) return;
+    if (nuevaLineas.some(l => l.sku_origen === sku)) {
+      alert(`SKU ${sku} ya está en la OC`);
+      return;
+    }
+    const cat = proveedorCatalogo.get(sku);
+    setNuevaLineas(prev => [...prev, {
+      sku_origen: sku,
+      nombre: cat?.nombre || "",
+      cantidad_pedida: 1,
+      costo_unitario: cat?.precio_neto || 0,
+    }]);
+    if (cat?.proveedor && !nuevaProveedor) setNuevaProveedor(cat.proveedor);
+    setSkuBusqueda("");
+  }, [nuevaLineas, proveedorCatalogo, nuevaProveedor]);
+
+  const updateLinea = useCallback((idx: number, field: "cantidad_pedida" | "costo_unitario", value: number) => {
+    setNuevaLineas(prev => prev.map((l, i) => i === idx ? { ...l, [field]: value } : l));
+  }, []);
+
+  const removerLinea = useCallback((idx: number) => {
+    setNuevaLineas(prev => prev.filter((_, i) => i !== idx));
+  }, []);
+
+  const crearNuevaOC = useCallback(async (estadoInicial: "BORRADOR" | "PENDIENTE") => {
+    if (!nuevaProveedor.trim()) { alert("Falta proveedor"); return; }
+    if (nuevaLineas.length === 0) { alert("Agrega al menos una línea"); return; }
+    if (nuevaLineas.some(l => l.cantidad_pedida <= 0 || l.costo_unitario <= 0)) {
+      alert("Todas las líneas deben tener cantidad y precio mayor a 0");
+      return;
+    }
+    setProcesando(true);
+    try {
+      const numero = await nextOCNumero();
+      const totalNeto = nuevaLineas.reduce((s, l) => s + l.cantidad_pedida * l.costo_unitario, 0);
+      const totalBruto = Math.round(totalNeto * 1.19);
+      const ahora = new Date().toISOString();
+
+      const ocId = await insertOrdenCompra({
+        numero,
+        proveedor: nuevaProveedor.trim(),
+        fecha_emision: new Date().toISOString().slice(0, 10),
+        fecha_esperada: nuevaFechaEsperada || null,
+        estado: estadoInicial,
+        notas: nuevaNotas.trim() || null,
+        total_neto: totalNeto,
+        total_bruto: totalBruto,
+      });
+      if (!ocId) { alert("Error creando OC"); return; }
+
+      const lineas: Omit<DBOrdenCompraLinea, "id" | "created_at">[] = nuevaLineas.map(l => ({
+        orden_id: ocId,
+        sku_origen: l.sku_origen,
+        nombre: l.nombre,
+        cantidad_pedida: l.cantidad_pedida,
+        cantidad_recibida: 0,
+        costo_unitario: l.costo_unitario,
+        inner_pack: 1,
+        bultos: 0,
+        estado: "PENDIENTE",
+        // Si se confirma directo (PENDIENTE), congelar precio acordado
+        precio_acordado_neto: estadoInicial === "PENDIENTE" ? l.costo_unitario : null,
+        precio_acordado_at: estadoInicial === "PENDIENTE" ? ahora : null,
+        cantidad_facturada: 0,
+        estado_linea: "pendiente",
+      }));
+      await insertOrdenCompraLineas(lineas);
+
+      await insertAdminActionLog("crear_oc", "ordenes_compra", ocId, {
+        numero, proveedor: nuevaProveedor, lineas: lineas.length, total_neto: totalNeto, estado: estadoInicial,
+      });
+
+      setModalNueva(false);
+      cargar();
+    } finally {
+      setProcesando(false);
+    }
+  }, [nuevaProveedor, nuevaFechaEsperada, nuevaNotas, nuevaLineas, cargar]);
+
+  // ── Exportar OC a Excel ──
+  const exportarExcel = useCallback((oc: DBOrdenCompra, lineas: DBOrdenCompraLinea[]) => {
+    const totalNeto = lineas.reduce((s, l) => s + l.cantidad_pedida * (l.precio_acordado_neto ?? l.costo_unitario), 0);
+    const iva = Math.round(totalNeto * 0.19);
+    const totalBruto = totalNeto + iva;
+
+    // Datos como matriz para mantener layout
+    const aoa: (string | number)[][] = [
+      [`ORDEN DE COMPRA ${oc.numero}`],
+      [],
+      [`Proveedor:`, oc.proveedor],
+      [`Fecha emisión:`, oc.fecha_emision || ""],
+      [`Fecha esperada:`, oc.fecha_esperada || "—"],
+      [`Estado:`, oc.estado || ""],
+      ...(oc.notas ? [[`Notas:`, oc.notas]] : []),
+      [],
+      ["SKU", "Descripción", "Cantidad", "Precio Unit. Neto", "Subtotal Neto", "Notas línea"],
+      ...lineas.map(l => {
+        const precio = l.precio_acordado_neto ?? l.costo_unitario;
+        return [
+          l.sku_origen,
+          l.nombre || "",
+          l.cantidad_pedida,
+          precio,
+          l.cantidad_pedida * precio,
+          "",
+        ];
+      }),
+      [],
+      ["", "", "", "Subtotal Neto:", totalNeto, ""],
+      ["", "", "", "IVA 19%:", iva, ""],
+      ["", "", "", "TOTAL BRUTO:", totalBruto, ""],
+    ];
+
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws["!cols"] = [
+      { wch: 18 }, { wch: 35 }, { wch: 10 }, { wch: 16 }, { wch: 16 }, { wch: 25 },
+    ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "OC");
+    XLSX.writeFile(wb, `OC-${oc.numero}-${oc.proveedor.replace(/\s+/g, "_")}.xlsx`);
+  }, []);
 
   // Proveedores únicos
   const proveedores = useMemo(() => Array.from(new Set(ocs.map(o => o.proveedor))).sort(), [ocs]);
@@ -114,10 +279,42 @@ export default function AdminCompras() {
 
   const confirmarOC = useCallback(async () => {
     if (!selectedOC) return;
-    await updateOrdenCompra(selectedOC.id!, { estado: "PENDIENTE" });
-    await insertAdminActionLog("confirmar_oc", "ordenes_compra", selectedOC.id!, { numero: selectedOC.numero });
-    backToList();
-  }, [selectedOC, backToList]);
+    if (ocLineas.length === 0) {
+      alert("La OC no tiene líneas. Agrega al menos un SKU antes de confirmar.");
+      return;
+    }
+    if (!window.confirm(
+      `¿Confirmar OC ${selectedOC.numero}?\n\n` +
+      `Esto va a:\n` +
+      `• Cambiar estado BORRADOR → PENDIENTE\n` +
+      `• CONGELAR el precio acordado de cada línea (inmutable)\n` +
+      `• Registrar timestamp de confirmación\n\n` +
+      `Después de esto, el precio_acordado_neto NO se podrá editar.`
+    )) return;
+    setProcesando(true);
+    try {
+      const ahora = new Date().toISOString();
+      // Congelar precio_acordado_neto en cada línea (Fase 1: snapshot inmutable)
+      for (const l of ocLineas) {
+        if (l.id) {
+          await updateOrdenCompraLinea(l.id, {
+            precio_acordado_neto: l.costo_unitario,
+            precio_acordado_at: ahora,
+            estado_linea: "pendiente",
+          });
+        }
+      }
+      await updateOrdenCompra(selectedOC.id!, { estado: "PENDIENTE" });
+      await insertAdminActionLog("confirmar_oc", "ordenes_compra", selectedOC.id!, {
+        numero: selectedOC.numero,
+        lineas: ocLineas.length,
+        precio_congelado_at: ahora,
+      });
+      backToList();
+    } finally {
+      setProcesando(false);
+    }
+  }, [selectedOC, ocLineas, backToList]);
 
   const eliminarOC = useCallback(async () => {
     if (!selectedOC) return;
@@ -298,9 +495,17 @@ export default function AdminCompras() {
 
         {/* Action buttons */}
         <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+          {/* Exportar Excel: disponible en todos los estados excepto BORRADOR vacío */}
+          {ocLineas.length > 0 && (
+            <button onClick={() => exportarExcel(selectedOC, ocLineas)}
+              title="Descargar OC como Excel para enviar al proveedor"
+              style={{ padding: "8px 16px", borderRadius: 6, background: "var(--bg3)", color: "var(--green)", fontWeight: 700, fontSize: 12, border: "1px solid var(--green)", cursor: "pointer" }}>
+              📊 Exportar Excel
+            </button>
+          )}
           {estado === "BORRADOR" && (
             <>
-              <button onClick={confirmarOC} style={{ padding: "8px 16px", borderRadius: 6, background: "var(--amber)", color: "#000", fontWeight: 700, fontSize: 12, border: "none", cursor: "pointer" }}>Confirmar</button>
+              <button onClick={confirmarOC} disabled={procesando} style={{ padding: "8px 16px", borderRadius: 6, background: "var(--amber)", color: "#000", fontWeight: 700, fontSize: 12, border: "none", cursor: procesando ? "wait" : "pointer", opacity: procesando ? 0.6 : 1 }}>Confirmar (congela precios)</button>
               <button onClick={eliminarOC} style={{ padding: "8px 16px", borderRadius: 6, background: "var(--redBg)", color: "var(--red)", fontWeight: 600, fontSize: 12, border: "1px solid var(--redBd)", cursor: "pointer" }}>Eliminar</button>
             </>
           )}
@@ -470,10 +675,41 @@ export default function AdminCompras() {
     <div style={{ padding: "0 4px" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
         <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Compras — Órdenes de Compra</h2>
-        <button onClick={cargar} style={{ padding: "6px 12px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt2)", fontWeight: 600, fontSize: 11, border: "1px solid var(--bg4)", cursor: "pointer" }}>
-          Refrescar
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={abrirNueva} style={{ padding: "6px 14px", borderRadius: 6, background: "var(--green)", color: "#0a0e17", fontWeight: 700, fontSize: 11, border: "none", cursor: "pointer" }}>
+            + Nueva OC
+          </button>
+          <button onClick={cargar} style={{ padding: "6px 12px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt2)", fontWeight: 600, fontSize: 11, border: "1px solid var(--bg4)", cursor: "pointer" }}>
+            Refrescar
+          </button>
+        </div>
       </div>
+
+      {/* KPIs OCs abiertas */}
+      {(() => {
+        const abiertas = ocs.filter(o => ["PENDIENTE", "EN_TRANSITO", "RECIBIDA_PARCIAL"].includes(o.estado));
+        const montoComprometido = abiertas.reduce((s, o) => s + (o.total_neto || 0), 0);
+        const borradores = ocs.filter(o => o.estado === "BORRADOR").length;
+        return (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8, marginBottom: 12 }}>
+            <div className="card" style={{ padding: 12, background: "var(--bg3)" }}>
+              <div style={{ fontSize: 10, color: "var(--txt3)", textTransform: "uppercase", letterSpacing: 0.5 }}>OCs abiertas</div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: abiertas.length > 0 ? "var(--cyan)" : "var(--txt3)", marginTop: 4 }}>{abiertas.length}</div>
+              <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 2 }}>Pendientes + en tránsito + parciales</div>
+            </div>
+            <div className="card" style={{ padding: 12, background: "var(--bg3)" }}>
+              <div style={{ fontSize: 10, color: "var(--txt3)", textTransform: "uppercase", letterSpacing: 0.5 }}>Monto comprometido</div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: "var(--amber)", marginTop: 4 }}>{fmtK(montoComprometido)}</div>
+              <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 2 }}>Suma neta de abiertas</div>
+            </div>
+            <div className="card" style={{ padding: 12, background: "var(--bg3)" }}>
+              <div style={{ fontSize: 10, color: "var(--txt3)", textTransform: "uppercase", letterSpacing: 0.5 }}>Borradores</div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: borradores > 0 ? "var(--txt2)" : "var(--txt3)", marginTop: 4 }}>{borradores}</div>
+              <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 2 }}>Sin confirmar</div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Filtros */}
       <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
@@ -543,6 +779,180 @@ export default function AdminCompras() {
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Modal Nueva OC */}
+      {modalNueva && (
+        <div onClick={() => !procesando && setModalNueva(false)}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div onClick={(e) => e.stopPropagation()}
+            style={{ background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 14, padding: 24, maxWidth: 900, width: "100%", maxHeight: "90vh", overflowY: "auto" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>+ Nueva orden de compra</h3>
+              <button onClick={() => setModalNueva(false)} disabled={procesando}
+                style={{ background: "var(--bg4)", border: "none", color: "var(--txt)", padding: "4px 10px", borderRadius: 6, cursor: procesando ? "wait" : "pointer" }}>✕</button>
+            </div>
+
+            {/* Header: proveedor, fecha esperada, notas */}
+            <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12, marginBottom: 12 }}>
+              <div>
+                <label style={{ fontSize: 11, color: "var(--txt3)", display: "block", marginBottom: 4 }}>Proveedor *</label>
+                <input
+                  type="text"
+                  list="proveedor-list"
+                  value={nuevaProveedor}
+                  onChange={(e) => setNuevaProveedor(e.target.value)}
+                  placeholder="Idetex, Verbo Divino, etc"
+                  style={{ width: "100%", padding: "8px 10px", borderRadius: 6, background: "var(--bg3)", border: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 12 }}
+                />
+                <datalist id="proveedor-list">
+                  {Array.from(new Set(Array.from(proveedorCatalogo.values()).map(p => p.proveedor))).sort().map(p => (
+                    <option key={p} value={p} />
+                  ))}
+                </datalist>
+              </div>
+              <div>
+                <label style={{ fontSize: 11, color: "var(--txt3)", display: "block", marginBottom: 4 }}>Fecha esperada</label>
+                <input
+                  type="date"
+                  value={nuevaFechaEsperada}
+                  onChange={(e) => setNuevaFechaEsperada(e.target.value)}
+                  style={{ width: "100%", padding: "8px 10px", borderRadius: 6, background: "var(--bg3)", border: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 12 }}
+                />
+              </div>
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ fontSize: 11, color: "var(--txt3)", display: "block", marginBottom: 4 }}>Notas (opcional)</label>
+              <input
+                type="text"
+                value={nuevaNotas}
+                onChange={(e) => setNuevaNotas(e.target.value)}
+                placeholder="Ej: pedido reposición temporada invierno"
+                style={{ width: "100%", padding: "8px 10px", borderRadius: 6, background: "var(--bg3)", border: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 12 }}
+              />
+            </div>
+
+            {/* Agregar línea */}
+            <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+              <input
+                type="text"
+                list="sku-catalogo-list"
+                value={skuBusqueda}
+                onChange={(e) => setSkuBusqueda(e.target.value.toUpperCase())}
+                onKeyDown={(e) => { if (e.key === "Enter" && skuBusqueda.trim()) agregarLinea(skuBusqueda); }}
+                placeholder="Tipea SKU y Enter (autocompletará precio si está en catálogo)"
+                style={{ flex: 1, padding: "8px 10px", borderRadius: 6, background: "var(--bg3)", border: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 12 }}
+              />
+              <datalist id="sku-catalogo-list">
+                {Array.from(proveedorCatalogo.entries())
+                  .filter(([, v]) => !nuevaProveedor || v.proveedor === nuevaProveedor)
+                  .slice(0, 100)
+                  .map(([sku, v]) => (
+                    <option key={sku} value={sku}>{v.nombre} — {fmtMoney(v.precio_neto)}</option>
+                  ))}
+              </datalist>
+              <button
+                onClick={() => agregarLinea(skuBusqueda)}
+                disabled={!skuBusqueda.trim()}
+                style={{ padding: "8px 16px", borderRadius: 6, background: "var(--cyan)", color: "#0a0e17", fontWeight: 700, fontSize: 11, border: "none", cursor: "pointer" }}>
+                + Agregar
+              </button>
+            </div>
+
+            {/* Tabla de líneas */}
+            {nuevaLineas.length > 0 ? (
+              <div style={{ overflowX: "auto", marginBottom: 16 }}>
+                <table className="tbl" style={{ width: "100%", fontSize: 11 }}>
+                  <thead>
+                    <tr>
+                      <th>SKU</th>
+                      <th>Nombre</th>
+                      <th style={{ textAlign: "right", width: 90 }}>Cantidad</th>
+                      <th style={{ textAlign: "right", width: 120 }}>Precio neto</th>
+                      <th style={{ textAlign: "right", width: 120 }}>Subtotal</th>
+                      <th style={{ width: 40 }}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {nuevaLineas.map((l, i) => (
+                      <tr key={i}>
+                        <td className="mono" style={{ fontSize: 10, fontWeight: 600 }}>{l.sku_origen}</td>
+                        <td style={{ fontSize: 10, color: "var(--txt2)" }}>{l.nombre || <span style={{ color: "var(--amber)" }}>sin nombre</span>}</td>
+                        <td>
+                          <input
+                            type="number"
+                            value={l.cantidad_pedida}
+                            onChange={(e) => updateLinea(i, "cantidad_pedida", parseInt(e.target.value) || 0)}
+                            style={{ width: "100%", padding: "4px 6px", borderRadius: 4, background: "var(--bg2)", border: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 11, textAlign: "right" }}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            value={l.costo_unitario}
+                            onChange={(e) => updateLinea(i, "costo_unitario", parseFloat(e.target.value) || 0)}
+                            style={{ width: "100%", padding: "4px 6px", borderRadius: 4, background: "var(--bg2)", border: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 11, textAlign: "right" }}
+                          />
+                        </td>
+                        <td className="mono" style={{ textAlign: "right", fontWeight: 700 }}>
+                          {fmtMoney(l.cantidad_pedida * l.costo_unitario)}
+                        </td>
+                        <td>
+                          <button onClick={() => removerLinea(i)}
+                            style={{ background: "var(--bg3)", border: "1px solid var(--red)", color: "var(--red)", padding: "2px 6px", borderRadius: 4, fontSize: 10, cursor: "pointer" }}>✕</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr style={{ borderTop: "2px solid var(--bg4)" }}>
+                      <td colSpan={4} style={{ textAlign: "right", fontSize: 11, fontWeight: 600, color: "var(--txt3)", padding: "8px 4px" }}>Subtotal neto:</td>
+                      <td className="mono" style={{ textAlign: "right", fontWeight: 700 }}>
+                        {fmtMoney(nuevaLineas.reduce((s, l) => s + l.cantidad_pedida * l.costo_unitario, 0))}
+                      </td>
+                      <td></td>
+                    </tr>
+                    <tr>
+                      <td colSpan={4} style={{ textAlign: "right", fontSize: 11, color: "var(--txt3)", padding: "4px" }}>IVA 19%:</td>
+                      <td className="mono" style={{ textAlign: "right", color: "var(--txt2)" }}>
+                        {fmtMoney(Math.round(nuevaLineas.reduce((s, l) => s + l.cantidad_pedida * l.costo_unitario, 0) * 0.19))}
+                      </td>
+                      <td></td>
+                    </tr>
+                    <tr>
+                      <td colSpan={4} style={{ textAlign: "right", fontSize: 12, fontWeight: 700, padding: "4px" }}>TOTAL BRUTO:</td>
+                      <td className="mono" style={{ textAlign: "right", fontWeight: 700, color: "var(--green)" }}>
+                        {fmtMoney(Math.round(nuevaLineas.reduce((s, l) => s + l.cantidad_pedida * l.costo_unitario, 0) * 1.19))}
+                      </td>
+                      <td></td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            ) : (
+              <div style={{ textAlign: "center", padding: 32, color: "var(--txt3)", fontSize: 12, marginBottom: 16, border: "1px dashed var(--bg4)", borderRadius: 8 }}>
+                Tipea el SKU del primer producto y presioná Enter
+              </div>
+            )}
+
+            {/* Botones de acción */}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", borderTop: "1px solid var(--bg4)", paddingTop: 16 }}>
+              <button onClick={() => setModalNueva(false)} disabled={procesando}
+                style={{ padding: "8px 16px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt2)", border: "1px solid var(--bg4)", fontSize: 11, fontWeight: 600, cursor: procesando ? "wait" : "pointer" }}>
+                Cancelar
+              </button>
+              <button onClick={() => crearNuevaOC("BORRADOR")} disabled={procesando || nuevaLineas.length === 0}
+                style={{ padding: "8px 16px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 11, fontWeight: 600, cursor: procesando ? "wait" : "pointer", opacity: nuevaLineas.length === 0 ? 0.5 : 1 }}>
+                Guardar como borrador
+              </button>
+              <button onClick={() => crearNuevaOC("PENDIENTE")} disabled={procesando || nuevaLineas.length === 0 || !nuevaProveedor.trim()}
+                title="Crea la OC y CONGELA el precio acordado de cada línea inmediatamente"
+                style={{ padding: "8px 16px", borderRadius: 6, background: "var(--green)", color: "#0a0e17", border: "none", fontSize: 11, fontWeight: 700, cursor: procesando ? "wait" : "pointer", opacity: (nuevaLineas.length === 0 || !nuevaProveedor.trim()) ? 0.5 : 1 }}>
+                {procesando ? "Creando…" : "Confirmar (congela precios)"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
