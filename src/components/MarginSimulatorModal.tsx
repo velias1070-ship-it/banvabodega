@@ -608,6 +608,40 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
                 {msg.text}
               </div>
             )}
+            {retryHint && applying === "none" && (
+              <div style={{
+                padding: "10px 12px", borderRadius: 6, fontSize: 11, lineHeight: 1.4,
+                background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)",
+                flex: "1 1 100%", display: "flex", flexDirection: "column", gap: 8,
+              }}>
+                <div>
+                  Para postular <strong>{fmtCLP(target)}</strong> en &quot;{retryHint.promoLabel}&quot; con el descuento mínimo exigido por ML (≥{retryHint.requiredPct}%), el precio lista debe ser <strong>≥{fmtCLP(retryHint.newLista)}</strong>. Lista actual: {fmtCLP(item.price_ml)}.
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button
+                    onClick={ajustarListaYReintentar}
+                    style={{
+                      padding: "6px 12px", borderRadius: 4, fontSize: 11, fontWeight: 700,
+                      background: "var(--cyan)", color: "var(--bg)", border: "1px solid var(--cyan)",
+                      cursor: "pointer",
+                    }}
+                    title="Sube el precio lista y reintenta la acción"
+                  >
+                    Subir lista a {fmtCLP(retryHint.newLista)} y reintentar
+                  </button>
+                  <button
+                    onClick={() => setRetryHint(null)}
+                    style={{
+                      padding: "6px 12px", borderRadius: 4, fontSize: 11, fontWeight: 600,
+                      background: "transparent", color: "var(--txt2)", border: "1px solid var(--bg4)",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
