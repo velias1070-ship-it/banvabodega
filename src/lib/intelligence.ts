@@ -124,6 +124,7 @@ export interface SkuIntelRow {
   dio: number;
   costo_neto: number;
   costo_bruto: number;
+  costo_fuente: "costo_promedio" | "costo_manual" | "proveedor_catalogo" | null;
   costo_inventario_total: number;
 
   stock_seguridad: number;
@@ -198,11 +199,13 @@ export interface ProductoInput {
   categoria: string;
   proveedor: string;
   costo: number;
+  costo_promedio: number;
   precio: number;
   inner_pack: number | null;
   lead_time_dias: number;
   moq: number;
   estado_sku: string;
+  updated_at: string | null;
 }
 
 export interface ComposicionInput {
@@ -556,7 +559,22 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     const nombre = prod?.nombre || null;
     const categoria = prod?.categoria || null;
     const proveedor = prod?.proveedor || provCat?.proveedor || null;
-    const costoNeto = provCat?.precio_neto || prod?.costo || 0;
+    // Cascada de costo (prioridad más alta = fuente más confiable)
+    // 1. costo_promedio (WAC real calculado desde recepciones)
+    // 2. costo (catálogo manual, editado desde admin)
+    // 3. precio_neto del proveedor (lista ofrecida por el proveedor)
+    let costoNeto = 0;
+    let costoFuente: "costo_promedio" | "costo_manual" | "proveedor_catalogo" | null = null;
+    if (prod?.costo_promedio && prod.costo_promedio > 0) {
+      costoNeto = prod.costo_promedio;
+      costoFuente = "costo_promedio";
+    } else if (prod?.costo && prod.costo > 0) {
+      costoNeto = prod.costo;
+      costoFuente = "costo_manual";
+    } else if (provCat?.precio_neto && provCat.precio_neto > 0) {
+      costoNeto = provCat.precio_neto;
+      costoFuente = "proveedor_catalogo";
+    }
     const costoBruto = costoNeto > 0 ? Math.round(costoNeto * 1.19) : 0;
     const leadTimeDias = prod?.lead_time_dias || 7;
     const innerPack = provCat?.inner_pack || prod?.inner_pack || 1;
@@ -1072,6 +1090,7 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       dio: round2(dio),
       costo_neto: costoNeto,
       costo_bruto: costoBruto,
+      costo_fuente: costoFuente,
       costo_inventario_total: costoInventarioTotal,
 
       stock_seguridad: round2(stockSeguridad),

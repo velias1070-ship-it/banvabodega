@@ -39,15 +39,37 @@ import type { SkuIntelRow, OrdenInput, QuiebreSnapshot } from "@/lib/intelligenc
  * - skus: recalcula solo esos SKUs
  * - sin params: recalcula SKUs con movimientos desde último recálculo
  * - snapshot=true: además guarda history + stock_snapshots (usado por cron diario)
+ *
+ * GET /api/intelligence/recalcular?full=true&snapshot=true
+ * Usado por Vercel crons (GET con query params). Equivalente al POST.
  */
+export async function GET(req: NextRequest) {
+  const url = new URL(req.url);
+  const full = url.searchParams.get("full") === "true";
+  const snapshot = url.searchParams.get("snapshot") === "true";
+  const skusParam = url.searchParams.get("skus");
+  const debugSku = url.searchParams.get("debug_sku") || undefined;
+  const skus = skusParam ? skusParam.split(",").map(s => s.trim()).filter(Boolean) : undefined;
+  return ejecutarRecalculo({ skus, full, snapshot, debugSku });
+}
+
 export async function POST(req: NextRequest) {
+  const body = await req.json().catch(() => ({}));
+  return ejecutarRecalculo({
+    skus: body.skus,
+    full: body.full === true,
+    snapshot: body.snapshot === true,
+    debugSku: body.debug_sku,
+  });
+}
+
+async function ejecutarRecalculo(params: { skus?: string[]; full: boolean; snapshot: boolean; debugSku?: string }) {
   const start = Date.now();
   try {
-    const body = await req.json().catch(() => ({}));
-    const skusFilter: string[] | undefined = body.skus;
-    const full: boolean = body.full === true;
-    const doSnapshot: boolean = body.snapshot === true;
-    const debugSku: string | undefined = body.debug_sku;
+    const skusFilter = params.skus;
+    const full = params.full;
+    const doSnapshot = params.snapshot;
+    const debugSku = params.debugSku;
 
     const sb = getServerSupabase();
     if (!sb) {
@@ -396,6 +418,7 @@ function rowToUpsert(r: SkuIntelRow): SkuIntelligenceUpsert {
     dio: r.dio,
     costo_neto: r.costo_neto,
     costo_bruto: r.costo_bruto,
+    costo_fuente: r.costo_fuente,
     costo_inventario_total: r.costo_inventario_total,
     stock_seguridad: r.stock_seguridad,
     punto_reorden: r.punto_reorden,

@@ -14,11 +14,13 @@ export interface ProductoRow {
   categoria: string;
   proveedor: string;
   costo: number;
+  costo_promedio: number;
   precio: number;
   inner_pack: number | null;
   lead_time_dias: number;
   moq: number;
   estado_sku: string;
+  updated_at: string | null;
 }
 
 export interface ComposicionRow {
@@ -138,7 +140,7 @@ export async function queryProductos(): Promise<ProductoRow[]> {
   const sb = getServerSupabase();
   if (!sb) return [];
   const data = await paginatedSelect(() =>
-    sb.from("productos").select("sku, sku_venta, nombre, categoria, proveedor, costo, precio, inner_pack, lead_time_dias, moq, estado_sku")
+    sb.from("productos").select("sku, sku_venta, nombre, categoria, proveedor, costo, costo_promedio, precio, inner_pack, lead_time_dias, moq, estado_sku, updated_at")
   );
   return data.map((p) => ({
     sku: p.sku as string,
@@ -147,11 +149,13 @@ export async function queryProductos(): Promise<ProductoRow[]> {
     categoria: (p.categoria as string) || "",
     proveedor: (p.proveedor as string) || "",
     costo: (p.costo as number) || 0,
+    costo_promedio: (p.costo_promedio as number) || 0,
     precio: (p.precio as number) || 0,
     inner_pack: (p.inner_pack as number | null) ?? null,
     lead_time_dias: (p.lead_time_dias as number) || 7,
     moq: (p.moq as number) || 1,
     estado_sku: (p.estado_sku as string) || "activo",
+    updated_at: (p.updated_at as string) || null,
   }));
 }
 

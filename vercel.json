@@ -47,6 +47,14 @@
     {
       "path": "/api/ml/margin-cache/refresh?stale=true&limit=25",
       "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/intelligence/recalcular?full=true&snapshot=true",
+      "schedule": "0 11 * * *"
+    },
+    {
+      "path": "/api/ml/sync-stock-full",
+      "schedule": "0 */6 * * *"
     }
   ]
 }
