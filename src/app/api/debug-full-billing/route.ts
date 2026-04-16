@@ -39,7 +39,7 @@ export async function GET() {
     all.push(...raw.results);
     if (!raw.last_id || raw.last_id === lastId) break;
     lastId = raw.last_id;
-    if (raw.results.length < 1000) break;
+    if (raw.results.length < 50) break;
   }
 
   // Agregaciones sobre todo
