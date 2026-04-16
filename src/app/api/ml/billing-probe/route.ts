@@ -87,9 +87,16 @@ export async function GET(req: NextRequest) {
     if (subtypes) qs.set("detail_sub_types", subtypes);
     const path = `/billing/integration/periods/key/${key}/group/${group}/details?${qs.toString()}`;
     if (!firstPath) firstPath = path;
-    const data = await mlGetRaw(path) as Resp | null;
+    // Retry con backoff en caso de 429 (rate limit).
+    let data: Resp | null = null;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      data = await mlGetRaw(path) as Resp | null;
+      if (data) break;
+      // null = non-200. Asumimos 429 o similar y esperamos.
+      await new Promise(r => setTimeout(r, 20000 * (attempt + 1)));
+    }
     if (!data) {
-      stopReason = `ml_request_failed at page ${pagesFetched + 1}`;
+      stopReason = `ml_request_failed after 4 retries at page ${pagesFetched + 1}`;
       if (allRows.length === 0) return NextResponse.json({ error: "ml_request_failed", path }, { status: 502 });
       break;
     }
@@ -108,9 +115,10 @@ export async function GET(req: NextRequest) {
     if (!nextFromId) { stopReason = `no last_id on page ${pagesFetched}`; break; }
     if (String(nextFromId) === fromId) { stopReason = `last_id didn't advance (${nextFromId}) on page ${pagesFetched}`; break; }
     fromId = String(nextFromId);
-    // Billing API tiene rate limit de 5 req/minuto. 13s entre requests = ~4.6/min.
+    // Billing API tiene rate limit de 5 req/minuto. 15s entre requests = 4/min,
+    // margen para coexistir con otros endpoints que también tocan /billing.
     if (pagesFetched < maxPages) {
-      await new Promise(r => setTimeout(r, 13000));
+      await new Promise(r => setTimeout(r, 15000));
     }
   }
 
