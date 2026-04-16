@@ -3,7 +3,7 @@ import { mlGetRaw } from "@/lib/ml";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 /**
  * Probe del billing API de ML.
@@ -54,7 +54,13 @@ export async function GET(req: NextRequest) {
     [k: string]: unknown;
   };
 
-  type Resp = { results?: Row[]; paging?: { total?: number; offset?: number; limit?: number }; last_id?: number | string };
+  type Resp = {
+    results?: Row[];
+    paging?: { total?: number; offset?: number; limit?: number };
+    total?: number;
+    last_id?: number | string;
+    errors?: unknown[];
+  };
 
   // Paginar con cursor from_id (el único que la API de billing acepta).
   // Devolvemos metadata de cada página para debugging.
@@ -69,6 +75,7 @@ export async function GET(req: NextRequest) {
   // luego usar el campo top-level `last_id` de la respuesta. Seguir hasta
   // que la respuesta no traiga más results o no traiga last_id.
   let fromId: string = "0";
+  let mlReportedTotal: number | undefined;
 
   while (pagesFetched < maxPages) {
     const qs = new URLSearchParams();
@@ -90,6 +97,7 @@ export async function GET(req: NextRequest) {
     if (raw && pagesFetched === 0) {
       return NextResponse.json({ path, data });
     }
+    if (mlReportedTotal === undefined && typeof data.total === "number") mlReportedTotal = data.total;
     const lastDetailId = page.length > 0 ? (page[page.length - 1].charge_info as { detail_id?: number } | undefined)?.detail_id : undefined;
     const firstDetailId = page.length > 0 ? (page[0].charge_info as { detail_id?: number } | undefined)?.detail_id : undefined;
     pagesLog.push({ path, count: page.length, first_detail_id: firstDetailId, last_detail_id: lastDetailId });
@@ -100,6 +108,10 @@ export async function GET(req: NextRequest) {
     if (!nextFromId) { stopReason = `no last_id on page ${pagesFetched}`; break; }
     if (String(nextFromId) === fromId) { stopReason = `last_id didn't advance (${nextFromId}) on page ${pagesFetched}`; break; }
     fromId = String(nextFromId);
+    // Billing API tiene rate limit de 5 req/minuto. 13s entre requests = ~4.6/min.
+    if (pagesFetched < maxPages) {
+      await new Promise(r => setTimeout(r, 13000));
+    }
   }
 
   // Aggregations
@@ -171,6 +183,7 @@ export async function GET(req: NextRequest) {
     period_key: key,
     group,
     rows_total: allRows.length,
+    rows_ml_reported: mlReportedTotal,
     pages_fetched: pagesFetched,
     stop_reason: stopReason,
     pages_log: pagesLog.slice(0, 20),
