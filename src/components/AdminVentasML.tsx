@@ -3,6 +3,22 @@ import { useState, useEffect } from "react";
 import * as XLSX from "xlsx";
 import type { CostoFuente } from "@/lib/costos";
 
+interface TrazaResponse {
+  skus_venta: Array<{
+    sku_venta: string;
+    costo_resuelto: { costo_neto: number; costo_bruto_iva: number; fuente: string };
+    componentes: Array<{
+      sku_origen: string;
+      unidades: number;
+      tipo_relacion: string;
+      costo_promedio: number;
+      costo_catalogo: number;
+      stock_actual: number;
+      recepciones: Array<{ folio: string; fecha: string; estado: string; costo_unitario: number; qty: number }>;
+    }>;
+  }>;
+}
+
 interface OrderRow {
   order_id: string;
   order_number?: string;
@@ -26,6 +42,7 @@ interface OrderRow {
   costo_producto?: number | null;
   costo_fuente?: CostoFuente | null;
   costo_snapshot_at?: string | null;
+  costo_detalle?: Array<{ sku_origen: string; unidades: number; costo_unit_neto: number }> | null;
   margen?: number | null;
   margen_pct?: number | null;
   ads_cost_asignado?: number | null;
@@ -110,6 +127,18 @@ export default function AdminVentasML() {
   const [productoSearch, setProductoSearch] = useState("");
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const [source, setSource] = useState<"cache" | "live" | "session">("cache");
+  const [trazaModal, setTrazaModal] = useState<{ order: OrderRow; traza: TrazaResponse | null; loading: boolean } | null>(null);
+
+  async function abrirTraza(order: OrderRow) {
+    setTrazaModal({ order, traza: null, loading: true });
+    try {
+      const res = await fetch(`/api/costos/traza?sku_venta=${encodeURIComponent(order.sku_venta)}`);
+      const traza = res.ok ? await res.json() : null;
+      setTrazaModal({ order, traza, loading: false });
+    } catch {
+      setTrazaModal({ order, traza: null, loading: false });
+    }
+  }
 
   // Load from DB cache (instant)
   const loadFromDBCache = async (f: string, t: string) => {
@@ -613,7 +642,19 @@ export default function AdminVentasML() {
                   <td className="mono" style={{ textAlign: "right", color: o.ingreso_envio > 0 ? "var(--green)" : "var(--txt3)" }}>{o.ingreso_envio > 0 ? `+${fmt(o.ingreso_envio)}` : "-"}</td>
                   <td className="mono" style={{ textAlign: "right", fontWeight: 700, color: enMediacion ? "var(--txt3)" : "var(--green)" }}>{fmt(o.total_neto ?? (o.subtotal - o.comision_total - o.costo_envio + (o.ingreso_envio || 0)))}</td>
                   <td className="mono" style={{ textAlign: "right", color: sinCosto ? "var(--red)" : "var(--txt3)" }} title={fuente ? fuenteLabel[fuente] || fuente : ""}>
-                    {sinCosto ? "—" : fmt(o.costo_producto || 0)}
+                    {sinCosto ? "—" : (
+                      <button
+                        onClick={() => abrirTraza(o)}
+                        title="Ver cómo se calculó este costo"
+                        style={{
+                          background: "none", border: "none", color: "inherit",
+                          cursor: "pointer", padding: 0, fontFamily: "inherit",
+                          fontSize: "inherit", textDecoration: "underline dotted",
+                        }}
+                      >
+                        {fmt(o.costo_producto || 0)} 🔍
+                      </button>
+                    )}
                     {fuenteBadge}
                   </td>
                   <td className="mono" style={{ textAlign: "right", fontWeight: 700, color: margenColor }} title={fuente ? `Fuente: ${fuenteLabel[fuente] || fuente}` : ""}>
@@ -759,6 +800,105 @@ export default function AdminVentasML() {
           <div style={{ fontSize: 32, marginBottom: 8 }}>💰</div>
           <div style={{ fontSize: 14, fontWeight: 600 }}>Selecciona un rango de fechas</div>
           <div style={{ fontSize: 12, marginTop: 4 }}>Usa "Solo ML" para ver datos directos o "Comparar" para contrastar con ProfitGuard</div>
+        </div>
+      )}
+
+      {/* Modal de trazabilidad de costo */}
+      {trazaModal && (
+        <div
+          onClick={() => setTrazaModal(null)}
+          style={{
+            position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 1000,
+            display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 14,
+              padding: 24, maxWidth: 720, width: "100%", maxHeight: "85vh", overflowY: "auto",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: 16 }}>
+              <div>
+                <div style={{ fontSize: 16, fontWeight: 700 }}>Trazabilidad de costo</div>
+                <div style={{ fontSize: 12, color: "var(--txt3)", marginTop: 2 }}>
+                  Orden #{trazaModal.order.order_id} · {trazaModal.order.sku_venta} × {trazaModal.order.cantidad}
+                </div>
+              </div>
+              <button
+                onClick={() => setTrazaModal(null)}
+                style={{ background: "var(--bg4)", border: "none", color: "var(--txt)", padding: "4px 10px", borderRadius: 6, cursor: "pointer" }}
+              >✕</button>
+            </div>
+
+            {/* Snapshot de la venta */}
+            <div className="card" style={{ background: "var(--bg3)", padding: 12, marginBottom: 12 }}>
+              <div style={{ fontSize: 11, color: "var(--txt3)", marginBottom: 6 }}>SNAPSHOT INMUTABLE DE LA VENTA</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 12 }}>
+                <div><b>Costo registrado:</b> <span className="mono">{fmt(trazaModal.order.costo_producto || 0)}</span></div>
+                <div><b>Fuente:</b> <span style={{ color: "var(--cyan)" }}>{trazaModal.order.costo_fuente || "—"}</span></div>
+                <div><b>Cuándo se snapshotó:</b> <span className="mono" style={{ fontSize: 10 }}>{trazaModal.order.costo_snapshot_at?.slice(0, 19).replace("T", " ") || "—"}</span></div>
+                <div><b>Margen neto:</b> <span style={{ color: (trazaModal.order.margen_neto || 0) >= 0 ? "var(--green)" : "var(--red)" }} className="mono">{fmt(trazaModal.order.margen_neto || 0)}</span></div>
+              </div>
+
+              {/* Detalle persistido en JSONB */}
+              {trazaModal.order.costo_detalle && trazaModal.order.costo_detalle.length > 0 && (
+                <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--bg4)" }}>
+                  <div style={{ fontSize: 11, color: "var(--txt3)", marginBottom: 4 }}>DETALLE GUARDADO AL MOMENTO DEL SYNC:</div>
+                  {trazaModal.order.costo_detalle.map((d, i) => (
+                    <div key={i} style={{ fontSize: 12, fontFamily: "var(--monospace-font, monospace)", color: "var(--txt2)" }}>
+                      • {d.sku_origen} × {d.unidades} ud @ {fmt(d.costo_unit_neto)} neto
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Estado actual de la cadena (vivo) */}
+            <div style={{ fontSize: 12, color: "var(--txt3)", marginBottom: 6, marginTop: 16 }}>ESTADO ACTUAL DE LA CADENA (en vivo)</div>
+
+            {trazaModal.loading && (
+              <div style={{ padding: 20, textAlign: "center", color: "var(--txt3)" }}>Cargando…</div>
+            )}
+
+            {!trazaModal.loading && trazaModal.traza && trazaModal.traza.skus_venta?.[0] && (
+              <div className="card" style={{ background: "var(--bg3)", padding: 12 }}>
+                <div style={{ fontSize: 12, marginBottom: 8 }}>
+                  <b>Costo resuelto hoy:</b> <span className="mono">{fmt(trazaModal.traza.skus_venta[0].costo_resuelto.costo_bruto_iva)}</span> bruto
+                  ({fmt(trazaModal.traza.skus_venta[0].costo_resuelto.costo_neto)} neto +IVA)
+                </div>
+                {trazaModal.traza.skus_venta[0].componentes.map((c, i) => (
+                  <div key={i} style={{ marginTop: 12, padding: 10, background: "var(--bg2)", borderRadius: 6, borderLeft: `3px solid ${c.tipo_relacion === "alternativo" ? "var(--amber)" : "var(--cyan)"}` }}>
+                    <div style={{ fontSize: 12, fontWeight: 600 }}>
+                      {c.sku_origen}
+                      <span style={{ marginLeft: 8, fontSize: 10, padding: "2px 6px", borderRadius: 4, background: c.tipo_relacion === "alternativo" ? "var(--amberBg)" : "var(--cyanBg)", color: c.tipo_relacion === "alternativo" ? "var(--amber)" : "var(--cyan)" }}>
+                        {c.tipo_relacion} × {c.unidades}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--txt2)", marginTop: 4 }}>
+                      WAC: <span className="mono">{fmt(c.costo_promedio)}</span> · Catálogo: <span className="mono">{fmt(c.costo_catalogo)}</span> · Stock: <span className="mono">{c.stock_actual}</span> uds
+                    </div>
+                    {c.recepciones && c.recepciones.length > 0 && (
+                      <div style={{ marginTop: 6, fontSize: 10, color: "var(--txt3)" }}>
+                        Últimas recepciones: {c.recepciones.slice(0, 3).map((r, j) => (
+                          <span key={j} style={{ marginRight: 8 }}>
+                            #{r.folio}: {r.qty}u @ {fmt(r.costo_unitario)} ({r.fecha?.slice(0, 10)})
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {!trazaModal.loading && !trazaModal.traza && (
+              <div style={{ padding: 20, textAlign: "center", color: "var(--red)" }}>
+                Error cargando trazabilidad
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

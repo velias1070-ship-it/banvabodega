@@ -67,31 +67,38 @@ export async function GET(req: NextRequest) {
       }
     } catch { stats.errors++; }
 
-    // 3. Cancelled orders — search ML for cancelled orders in last 30 days
-    try {
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-      const fromISO = thirtyDaysAgo.toISOString();
+    // 3. Cancelled + partially_refunded orders — last 30 days
+    let partiallyRefunded = 0;
+    for (const mlStatus of ["cancelled", "partially_refunded"] as const) {
+      try {
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        const fromISO = thirtyDaysAgo.toISOString();
 
-      let offset = 0;
-      for (let page = 0; page < 20; page++) {
-        const url = `/orders/search?seller=${config.seller_id}&order.status=cancelled&sort=date_desc&order.date_created.from=${encodeURIComponent(fromISO)}&limit=50&offset=${offset}`;
-        const result = await mlGet<{ results: Array<{ id: number }>; paging: { total: number } }>(url);
-        if (!result?.results?.length) break;
+        let offset = 0;
+        for (let page = 0; page < 20; page++) {
+          const url = `/orders/search?seller=${config.seller_id}&order.status=${mlStatus}&sort=date_desc&order.date_created.from=${encodeURIComponent(fromISO)}&limit=50&offset=${offset}`;
+          const result = await mlGet<{ results: Array<{ id: number }>; paging: { total: number } }>(url);
+          if (!result?.results?.length) break;
 
-        for (const order of result.results) {
-          const ok = await updateVentaEstado(order.id, "Cancelada");
-          if (ok) stats.cancelled++;
+          for (const order of result.results) {
+            const estado = mlStatus === "partially_refunded" ? "Parcialmente reembolsada" : "Cancelada";
+            const ok = await updateVentaEstado(order.id, estado);
+            if (ok) {
+              if (mlStatus === "cancelled") stats.cancelled++;
+              else partiallyRefunded++;
+            }
+          }
+
+          offset += 50;
+          if (offset >= result.paging.total) break;
+          await new Promise(r => setTimeout(r, 100));
         }
+      } catch { stats.errors++; }
+    }
 
-        offset += 50;
-        if (offset >= result.paging.total) break;
-        await new Promise(r => setTimeout(r, 100));
-      }
-    } catch { stats.errors++; }
-
-    console.log(`[Ventas Reconcile] claims:${stats.opened_claims} refunded:${stats.closed_refunded} seller_won:${stats.closed_seller_won} cancelled:${stats.cancelled}`);
-    return NextResponse.json({ status: "ok", ...stats });
+    console.log(`[Ventas Reconcile] claims:${stats.opened_claims} refunded:${stats.closed_refunded} seller_won:${stats.closed_seller_won} cancelled:${stats.cancelled} partially_refunded:${partiallyRefunded}`);
+    return NextResponse.json({ status: "ok", ...stats, partially_refunded: partiallyRefunded });
   } catch (err) {
     return NextResponse.json({ error: String(err), stats }, { status: 500 });
   }
