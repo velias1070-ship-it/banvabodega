@@ -223,8 +223,9 @@ interface EnvioFullItem {
   stockBodega: number;
   cobFull: number;
   targetDias: number;
-  mandarSugerido: number;
-  mandarEditado: number;
+  mandarMotor: number;      // valor crudo del motor antes del redondeo al inner_pack
+  mandarSugerido: number;   // redondeado al inner_pack (lo que la UI propone)
+  mandarEditado: number;    // valor final (edición manual o redondeado)
   innerPack: number;
   bultos: number;
   redondeo: "arriba" | "abajo" | "sin_cambio" | null;
@@ -837,6 +838,7 @@ export default function AdminInteligencia() {
         stockBodega: r.stock_bodega,
         cobFull: r.cob_full,
         targetDias: r.target_dias_full,
+        mandarMotor: mandarBase,
         mandarSugerido: mandarRedondeado,
         mandarEditado: mandarFinal,
         innerPack: ip,
@@ -1996,6 +1998,7 @@ export default function AdminInteligencia() {
               else if (col === "stBod") { va = a.stockBodega; vb = b.stockBodega; }
               else if (col === "cob") { va = a.cobFull; vb = b.cobFull; }
               else if (col === "target") { va = a.targetDias; vb = b.targetDias; }
+              else if (col === "motor") { va = a.mandarMotor; vb = b.mandarMotor; }
               else if (col === "mandar") { va = a.mandarEditado; vb = b.mandarEditado; }
               else if (col === "ip") { va = a.innerPack; vb = b.innerPack; }
               else if (col === "bultos") { va = a.bultos; vb = b.bultos; }
@@ -2055,6 +2058,7 @@ export default function AdminInteligencia() {
                       <SH col="stBod" label="St.Bod" right />
                       <SH col="cob" label="Cob Full" right />
                       <SH col="target" label="Target" right />
+                      <SH col="motor" label="Motor" right />
                       <SH col="mandar" label="Mandar" right />
                       <SH col="ip" label="IP" right />
                       <SH col="bultos" label="Bultos" right />
@@ -2098,6 +2102,19 @@ export default function AdminInteligencia() {
                           <td className="mono" style={{ textAlign: "right", fontSize: 11, color: "var(--txt3)" }}>
                             {fmtN(item.targetDias, 0)}d
                             {item.multiplicadorEvento > 1 && <span style={{ color: "var(--amber)", fontSize: 9, marginLeft: 2 }} title={`Evento: ${item.eventoActivo}`}>E</span>}
+                          </td>
+                          <td
+                            className="mono"
+                            style={{ textAlign: "right", fontSize: 11, color: "var(--txt3)" }}
+                            title="Sugerencia cruda del motor antes de redondear al inner_pack"
+                          >
+                            {fmtInt(item.mandarMotor)}
+                            {item.mandarMotor !== item.mandarSugerido && (
+                              <span style={{ fontSize: 9, marginLeft: 2, color: item.mandarSugerido > item.mandarMotor ? "var(--amber)" : "var(--green)" }}
+                                    title={item.redondeoRazon || ""}>
+                                →{item.mandarSugerido}
+                              </span>
+                            )}
                           </td>
                           <td style={{ textAlign: "right" }}>
                             <MandarCell
