@@ -30,9 +30,9 @@ export async function GET() {
   const all: Item[] = [];
   let lastId: number | undefined = undefined;
   for (let p = 0; p < 20; p++) {
-    const q = lastId ? `from_id=${lastId}&limit=50` : `limit=50`;
-    const url = `/billing/integration/periods/key/${key}/group/ML/full/details?document_type=BILL&${q}`;
-    const raw = await mlGet<{ results?: Item[]; last_id?: number; total?: number }>(url).catch(() => null);
+    const q: string = lastId ? `from_id=${lastId}&limit=50` : `limit=50`;
+    const url: string = `/billing/integration/periods/key/${key}/group/ML/full/details?document_type=BILL&${q}`;
+    const raw: { results?: Item[]; last_id?: number; total?: number } | null = await mlGet<{ results?: Item[]; last_id?: number; total?: number }>(url).catch(() => null);
     if (!raw?.results?.length) break;
     all.push(...raw.results);
     if (!raw.last_id || raw.last_id === lastId) break;

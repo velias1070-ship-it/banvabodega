@@ -72,6 +72,12 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
   const target = parseInt(targetPrice) || 0;
   const [applying, setApplying] = useState<"none" | "lista" | "promo">("none");
   const [msg, setMsg] = useState<{ type: "ok" | "err" | "warn"; text: string } | null>(null);
+  const [retryHint, setRetryHint] = useState<{
+    newLista: number;
+    requiredPct: number;
+    promoLabel: string;
+    onRetry: () => Promise<void>;
+  } | null>(null);
 
   // Promociones disponibles del ítem
   const [promos, setPromos] = useState<NormalizedPromo[]>([]);
@@ -194,6 +200,7 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
     }
     setApplying("promo");
     setMsg(null);
+    setRetryHint(null);
     try {
       const start = new Date().toISOString().slice(0, 10) + "T00:00:00.000Z";
       const end = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10) + "T23:59:59.000Z";
@@ -209,12 +216,29 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Error");
+      if (!res.ok) {
+        const err = new Error(data.error || "Error") as Error & { detail?: unknown };
+        err.detail = (data as { detail?: unknown }).detail;
+        throw err;
+      }
       setMsg({ type: "ok", text: `Descuento creado/actualizado a ${fmtCLP(target)} por 30 días` });
       if (onApplied) onApplied();
     } catch (e) {
       const raw = e instanceof Error ? e.message : "Error";
+      const detail = (e as { detail?: unknown })?.detail;
       setMsg({ type: "err", text: traducirErrorML(raw, "PRICE_DISCOUNT") });
+      if (raw.toLowerCase().includes("minimum_discount") && target > 0) {
+        const pct = parseMinimumDiscountPct(raw, detail);
+        const newLista = Math.ceil(target / (1 - pct / 100));
+        if (newLista > item.price_ml) {
+          setRetryHint({
+            newLista,
+            requiredPct: pct,
+            promoLabel: "Descuento propio (30d)",
+            onRetry: aplicarComoDescuento,
+          });
+        }
+      }
     } finally {
       setApplying("none");
       await loadPromosConDelay();
@@ -247,6 +271,59 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
     return msg;
   }
 
+  // Extrae el % mínimo de descuento que ML exige, de mensaje/detalle.
+  // Fallback: 5 (valor documentado para PRICE_DISCOUNT).
+  function parseMinimumDiscountPct(rawMsg: string, detail: unknown): number {
+    const haystack: string[] = [rawMsg];
+    if (detail && typeof detail === "object") {
+      const d = detail as Record<string, unknown>;
+      if (typeof d.message === "string") haystack.push(d.message);
+      if (Array.isArray(d.cause)) {
+        for (const c of d.cause as unknown[]) {
+          if (c && typeof c === "object") {
+            const cc = c as Record<string, unknown>;
+            if (typeof cc.message === "string") haystack.push(cc.message);
+            if (typeof cc.code === "string") haystack.push(cc.code);
+          }
+        }
+      }
+    }
+    for (const h of haystack) {
+      const m = h.match(/(\d+(?:[.,]\d+)?)\s*%/);
+      if (m) {
+        const n = parseFloat(m[1].replace(",", "."));
+        if (n > 0 && n < 100) return n;
+      }
+    }
+    return 5;
+  }
+
+  async function ajustarListaYReintentar() {
+    if (!retryHint) return;
+    const hint = retryHint;
+    setRetryHint(null);
+    setApplying("lista");
+    setMsg({ type: "warn", text: `Subiendo precio lista a ${fmtCLP(hint.newLista)}…` });
+    try {
+      const res = await fetch("/api/ml/item-update", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ item_id: item.item_id, updates: { price: hint.newLista } }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Error");
+      setMsg({ type: "warn", text: `Lista actualizada a ${fmtCLP(hint.newLista)}. Esperando propagación ML y reintentando…` });
+      if (onApplied) onApplied();
+      await new Promise(r => setTimeout(r, 3500));
+      setApplying("none");
+      await hint.onRetry();
+    } catch (e) {
+      const raw = e instanceof Error ? e.message : "Error";
+      setMsg({ type: "err", text: `No pude subir precio lista: ${traducirErrorML(raw)}` });
+      setApplying("none");
+    }
+  }
+
   async function postularPromo(promo: NormalizedPromo, accion: "join" | "update") {
     if (!promo.permite_custom_price) {
       setMsg({ type: "err", text: "Esta promo no acepta precio custom, contáctate con ML" });
@@ -266,6 +343,7 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
     }
     setPromoAction(promo.id || promo.type);
     setMsg(null);
+    setRetryHint(null);
     try {
       const res = await fetch("/api/ml/promotions", {
         method: "POST",
@@ -280,7 +358,11 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Error");
+      if (!res.ok) {
+        const err = new Error(data.error || "Error") as Error & { detail?: unknown };
+        err.detail = (data as { detail?: unknown }).detail;
+        throw err;
+      }
       const verb = accion === "join" ? "Postulado" : "Actualizado";
       if (data.warning?.type === "price_overridden") {
         const w = data.warning as { requested: number; applied: number };
@@ -294,7 +376,20 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
       if (onApplied) onApplied();
     } catch (e) {
       const raw = e instanceof Error ? e.message : "Error";
+      const detail = (e as { detail?: unknown })?.detail;
       setMsg({ type: "err", text: traducirErrorML(raw, promo.type) });
+      if (raw.toLowerCase().includes("minimum_discount") && target > 0) {
+        const pct = parseMinimumDiscountPct(raw, detail);
+        const newLista = Math.ceil(target / (1 - pct / 100));
+        if (newLista > item.price_ml) {
+          setRetryHint({
+            newLista,
+            requiredPct: pct,
+            promoLabel: promo.name || (PROMO_LABELS[promo.type] || promo.type),
+            onRetry: () => postularPromo(promo, accion),
+          });
+        }
+      }
     } finally {
       setPromoAction(null);
       // Siempre re-fetchear: a veces el error es un falso positivo y queremos ver el estado real
