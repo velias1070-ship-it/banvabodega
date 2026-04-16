@@ -330,6 +330,7 @@ export async function queryEnviosFullPendientes(): Promise<Map<string, number>> 
 export async function queryPrevIntelligence(): Promise<Map<string, {
   sku_origen: string;
   vel_pre_quiebre: number;
+  margen_unitario_pre_quiebre: number;
   dias_en_quiebre: number;
   es_quiebre_proveedor: boolean;
   abc_pre_quiebre: string | null;
@@ -342,18 +343,19 @@ export async function queryPrevIntelligence(): Promise<Map<string, {
   if (!sb) return new Map();
   const rows = await paginatedSelect(() =>
     sb.from("sku_intelligence")
-      .select("sku_origen, vel_pre_quiebre, dias_en_quiebre, es_quiebre_proveedor, abc_pre_quiebre, vel_ponderada, abc, stock_full, tiene_stock_prov")
+      .select("sku_origen, vel_pre_quiebre, margen_unitario_pre_quiebre, dias_en_quiebre, es_quiebre_proveedor, abc_pre_quiebre, vel_ponderada, abc, stock_full, tiene_stock_prov")
       .or("dias_en_quiebre.gt.0,vel_pre_quiebre.gt.0")
   );
   const map = new Map<string, {
-    sku_origen: string; vel_pre_quiebre: number; dias_en_quiebre: number;
-    es_quiebre_proveedor: boolean; abc_pre_quiebre: string | null;
+    sku_origen: string; vel_pre_quiebre: number; margen_unitario_pre_quiebre: number;
+    dias_en_quiebre: number; es_quiebre_proveedor: boolean; abc_pre_quiebre: string | null;
     vel_ponderada: number; abc: string; stock_full: number; tiene_stock_prov: boolean;
   }>();
   for (const row of rows) {
     map.set(row.sku_origen as string, {
       sku_origen: row.sku_origen as string,
       vel_pre_quiebre: (row.vel_pre_quiebre as number) || 0,
+      margen_unitario_pre_quiebre: (row.margen_unitario_pre_quiebre as number) || 0,
       dias_en_quiebre: (row.dias_en_quiebre as number) || 0,
       es_quiebre_proveedor: (row.es_quiebre_proveedor as boolean) || false,
       abc_pre_quiebre: (row.abc_pre_quiebre as string) || null,
@@ -364,6 +366,69 @@ export async function queryPrevIntelligence(): Promise<Map<string, {
     });
   }
   return map;
+}
+
+/** Margen bruto y unidades últimos N días por sku_origen, desde ventas_ml_cache.
+ *  Usa composicion_venta para traducir sku_venta → sku_origen. Filtra:
+ *   - tipo_relacion = 'componente' (evita doble-conteo de alternativas)
+ *   - anulada = false
+ *   - costo_fuente != 'sin_costo' (solo ventas con costo confiable)
+ */
+export async function queryMargenPorSku(diasAtras: number = 30): Promise<{
+  margen: Map<string, number>;
+  unidades: Map<string, number>;
+}> {
+  const sb = getServerSupabase();
+  if (!sb) return { margen: new Map(), unidades: new Map() };
+
+  const desde = new Date(Date.now() - diasAtras * 86400000).toISOString().slice(0, 10);
+
+  const { data: ventas } = await sb
+    .from("ventas_ml_cache")
+    .select("sku_venta, margen, cantidad")
+    .gte("fecha_date", desde)
+    .eq("anulada", false)
+    .neq("costo_fuente", "sin_costo");
+
+  if (!ventas || ventas.length === 0) {
+    return { margen: new Map(), unidades: new Map() };
+  }
+
+  // Composición sku_venta → sku_origen (solo componentes, no alternativos)
+  const { data: comp } = await sb
+    .from("composicion_venta")
+    .select("sku_venta, sku_origen, tipo_relacion")
+    .eq("tipo_relacion", "componente");
+
+  const compMap = new Map<string, string[]>();
+  for (const c of (comp || []) as Array<{ sku_venta: string; sku_origen: string }>) {
+    const key = (c.sku_venta || "").toUpperCase();
+    const arr = compMap.get(key) || [];
+    arr.push((c.sku_origen || "").toUpperCase());
+    compMap.set(key, arr);
+  }
+
+  const margen = new Map<string, number>();
+  const unidades = new Map<string, number>();
+  for (const v of ventas as Array<{ sku_venta: string; margen: number; cantidad: number }>) {
+    const orígenes = compMap.get((v.sku_venta || "").toUpperCase());
+    // Atribuir a cada componente (un sku_venta puede tener múltiples componentes en un pack).
+    // Para packs reales (unidades > 1), la atribución es 1:N — el margen va al componente
+    // pero la métrica se mantiene a nivel sku_origen agregada.
+    if (orígenes && orígenes.length > 0) {
+      for (const sku_origen of orígenes) {
+        margen.set(sku_origen, (margen.get(sku_origen) || 0) + (v.margen || 0));
+        unidades.set(sku_origen, (unidades.get(sku_origen) || 0) + (v.cantidad || 0));
+      }
+    } else {
+      // Fallback: sku_venta = sku_origen
+      const sku = (v.sku_venta || "").toUpperCase();
+      margen.set(sku, (margen.get(sku) || 0) + (v.margen || 0));
+      unidades.set(sku, (unidades.get(sku) || 0) + (v.cantidad || 0));
+    }
+  }
+
+  return { margen, unidades };
 }
 
 /** Velocidad objetivo por SKU Origen */

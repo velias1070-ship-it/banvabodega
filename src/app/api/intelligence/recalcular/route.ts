@@ -21,6 +21,7 @@ import {
   queryIntelConfig,
   queryProveedorCatalogo,
   queryEnviosFullPendientes,
+  queryMargenPorSku,
   type SkuIntelligenceUpsert,
 } from "@/lib/intelligence-queries";
 import {
@@ -109,10 +110,11 @@ async function ejecutarRecalculo(params: { skus?: string[]; full: boolean; snaps
       queryProveedorCatalogo(),
     ]);
 
-    // Fetch vel_objetivo y config de targets ABC (no bloquean el paralelo principal)
-    const [velObjetivos, intelConfig] = await Promise.all([
+    // Fetch vel_objetivo, config y margen por SKU desde ventas_ml_cache
+    const [velObjetivos, intelConfig, ventasMlAgregado] = await Promise.all([
       queryVelObjetivos(),
       queryIntelConfig(),
+      queryMargenPorSku(30),  // 30d de margen + unidades por sku_origen
     ]);
 
     // Eventos activos para hoy
@@ -198,6 +200,8 @@ async function ejecutarRecalculo(params: { skus?: string[]; full: boolean; snaps
       prevIntelligence,
       velObjetivos,
       proveedorCatalogo,
+      margenPorSku: ventasMlAgregado.margen,
+      unidadesPorSku: ventasMlAgregado.unidades,
       config: {
         ...DEFAULT_INTEL_CONFIG,
         targetDiasA: intelConfig.target_dias_a,
@@ -408,8 +412,14 @@ function rowToUpsert(r: SkuIntelRow): SkuIntelligenceUpsert {
     canal_mas_rentable: r.canal_mas_rentable,
     precio_promedio: r.precio_promedio,
     abc: r.abc,
+    abc_margen: r.abc_margen,
+    abc_ingreso: r.abc_ingreso,
+    abc_unidades: r.abc_unidades,
     ingreso_30d: r.ingreso_30d,
     pct_ingreso_acumulado: r.pct_ingreso_acumulado,
+    margen_neto_30d: r.margen_neto_30d,
+    pct_margen_acumulado: r.pct_margen_acumulado,
+    pct_unidades_acumulado: r.pct_unidades_acumulado,
     cv: r.cv,
     xyz: r.xyz,
     desviacion_std: r.desviacion_std,
@@ -446,6 +456,7 @@ function rowToUpsert(r: SkuIntelRow): SkuIntelligenceUpsert {
     alertas: r.alertas,
     alertas_count: r.alertas_count,
     vel_pre_quiebre: r.vel_pre_quiebre,
+    margen_unitario_pre_quiebre: r.margen_unitario_pre_quiebre,
     dias_en_quiebre: r.dias_en_quiebre,
     es_quiebre_proveedor: r.es_quiebre_proveedor,
     abc_pre_quiebre: r.abc_pre_quiebre,

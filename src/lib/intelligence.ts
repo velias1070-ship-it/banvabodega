@@ -55,7 +55,9 @@ export type AlertaIntel =
   | "catch_up_post_quiebre"
   | "stock_danado_full"
   | "bajo_meta"
-  | "sobre_meta";
+  | "sobre_meta"
+  | "sin_costo"
+  | "costo_posiblemente_obsoleto";
 
 export interface SkuIntelRow {
   sku_origen: string;
@@ -112,9 +114,18 @@ export interface SkuIntelRow {
   precio_promedio: number;
 
   // ABC-XYZ se asignan después del loop global
+  // 3 ejes Pareto: margen_bruto (principal), ingreso, unidades.
+  // El campo `abc` se mantiene para compatibilidad y siempre = abc_margen.
   abc: ClaseABC;
+  abc_margen: ClaseABC;
+  abc_ingreso: ClaseABC;
+  abc_unidades: ClaseABC;
   ingreso_30d: number;
   pct_ingreso_acumulado: number;
+  margen_neto_30d: number;            // margen bruto últimos 30d (input del Pareto)
+  pct_margen_acumulado: number;
+  uds_30d: number;
+  pct_unidades_acumulado: number;
   cv: number;
   xyz: ClaseXYZ;
   desviacion_std: number;
@@ -163,6 +174,9 @@ export interface SkuIntelRow {
 
   // Quiebre prolongado
   vel_pre_quiebre: number;
+  /** Snapshot del margen unitario al entrar en quiebre. Permite imputar
+   *  margen_neto_30d cuando no hay ventas reales últimos 30d. */
+  margen_unitario_pre_quiebre: number;
   dias_en_quiebre: number;
   es_quiebre_proveedor: boolean;
   abc_pre_quiebre: string | null;
@@ -259,6 +273,8 @@ export const DEFAULT_INTEL_CONFIG: RecalculoConfig = {
 export interface PrevIntelRow {
   sku_origen: string;
   vel_pre_quiebre: number;
+  /** Snapshot del margen unitario al entrar en quiebre. Se preserva entre recálculos. */
+  margen_unitario_pre_quiebre: number;
   dias_en_quiebre: number;
   es_quiebre_proveedor: boolean;
   abc_pre_quiebre: string | null;
@@ -302,6 +318,13 @@ export interface RecalculoInput {
   prevIntelligence: Map<string, PrevIntelRow>;
   velObjetivos: Map<string, number>;
   proveedorCatalogo?: Map<string, ProveedorCatalogoInput>;
+  /** Margen bruto últimos 30d agregado por sku_origen desde ventas_ml_cache.
+   *  Input principal del Pareto abc_margen. Si vacío para un sku, se imputa
+   *  desde vel_pre_quiebre × margen_unitario_pre_quiebre × 4.3 (SKUs en quiebre). */
+  margenPorSku?: Map<string, number>;
+  /** Unidades vendidas últimos 30d agregadas por sku_origen desde ventas_ml_cache.
+   *  Input del Pareto abc_unidades. */
+  unidadesPorSku?: Map<string, number>;
   config: RecalculoConfig;
   hoy: Date;
   debugSku?: string;
@@ -878,6 +901,7 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     // ── PASO 14b: Quiebre prolongado ──
     const prev = prevIntelligence.get(skuOrigen);
     let velPreQuiebre = prev?.vel_pre_quiebre || 0;
+    let margenUnitarioPreQuiebre = prev?.margen_unitario_pre_quiebre || 0;
     let diasEnQuiebre = prev?.dias_en_quiebre || 0;
     // Flag re-evaluado SIEMPRE contra el catálogo actual — no se arrastra del
     // estado previo. La semántica ahora es "el proveedor está agotado HOY",
@@ -895,11 +919,13 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
         // Continúa en quiebre — incrementar días (flag ya re-evaluado arriba)
         diasEnQuiebre = prev.dias_en_quiebre + 1;
         velPreQuiebre = prev.vel_pre_quiebre;
+        margenUnitarioPreQuiebre = prev.margen_unitario_pre_quiebre || 0;
         abcPreQuiebre = prev.abc_pre_quiebre;
       } else {
-        // Acaba de entrar en quiebre — congelar velocidad actual
+        // Acaba de entrar en quiebre — congelar velocidad y margen actuales
         diasEnQuiebre = diasQuiebre > 0 ? diasQuiebre : 1;
         velPreQuiebre = velPonderada;
+        margenUnitarioPreQuiebre = margenProm;  // snapshot del margen unitario al entrar en quiebre
         abcPreQuiebre = null; // Se asigna después del paso ABC global
       }
     } else if (prev && prev.dias_en_quiebre > 0 && stFull > 0) {
@@ -910,11 +936,13 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       if (vel30d > 0 && !esCatchUp) {
         // 3+ semanas vendiendo → reset completo de quiebre prolongado
         velPreQuiebre = 0;
+        margenUnitarioPreQuiebre = 0;
         diasEnQuiebre = 0;
         abcPreQuiebre = null;
       } else {
         // Primeras semanas post-reposición
         velPreQuiebre = prev.vel_pre_quiebre;
+        margenUnitarioPreQuiebre = prev.margen_unitario_pre_quiebre || 0;
         diasEnQuiebre = 0;
         abcPreQuiebre = prev.abc_pre_quiebre;
       }
@@ -1077,10 +1105,17 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       canal_mas_rentable: canalMasRentable,
       precio_promedio: precioPromedio,
 
-      // ABC se asigna después (paso 9 global)
+      // ABC se asigna después (paso 11 global). Defaults a "C".
       abc: "C",
+      abc_margen: "C",
+      abc_ingreso: "C",
+      abc_unidades: "C",
       ingreso_30d: round2(ingreso30d),
       pct_ingreso_acumulado: 0,
+      margen_neto_30d: 0,        // se asigna en paso 11 desde input.margenPorSku
+      pct_margen_acumulado: 0,
+      uds_30d: 0,                // se asigna en paso 11 desde input.unidadesPorSku
+      pct_unidades_acumulado: 0,
       cv: round2(cv),
       xyz,
       desviacion_std: round2(stdSemanal),
@@ -1128,6 +1163,7 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
 
       // Quiebre prolongado
       vel_pre_quiebre: round2(velPreQuiebre),
+      margen_unitario_pre_quiebre: round2(margenUnitarioPreQuiebre),
       dias_en_quiebre: diasEnQuiebre,
       es_quiebre_proveedor: esQuiebreProveedor,
       abc_pre_quiebre: abcPreQuiebre,
@@ -1147,31 +1183,89 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
   // PASOS GLOBALES (9, 11, 12-ajuste, 17, 19)
   // ════════════════════════════════════════
 
-  // ── PASO 9: Clasificación ABC (Pareto 80/20) ──
-  // Para SKUs en quiebre prolongado, usar vel_pre_quiebre × precio para ingreso estimado
+  // ── PASO 9: Clasificación ABC sobre 3 ejes (margen / ingreso / unidades) ──
+  //
+  // El motor calcula tres clasificaciones Pareto independientes:
+  //
+  //   - abc_margen   → Pareto sobre margen bruto últimos 30d (ventas_ml_cache.margen)
+  //                    Es el PRINCIPAL. abc = abc_margen (compatibilidad).
+  //   - abc_ingreso  → Pareto sobre ingreso bruto últimos 30d (vel × precio)
+  //   - abc_unidades → Pareto sobre unidades vendidas 30d
+  //
+  // Para SKUs en quiebre prolongado se imputa cada métrica con el snapshot
+  // pre-quiebre × velPreQuiebre × 4.3 semanas para que no caigan injustamente.
+
+  const margenPorSku = input.margenPorSku || new Map<string, number>();
+  const unidadesPorSku = input.unidadesPorSku || new Map<string, number>();
+
   for (const r of rows) {
+    // Imputar ingreso para SKUs en quiebre prolongado (lógica histórica)
     if (r.dias_en_quiebre >= 14 && r.vel_pre_quiebre > 2) {
       r.ingreso_30d = round2(r.vel_pre_quiebre * r.precio_promedio * 4.3);
     }
-  }
-  const rowsConIngreso = rows.filter(r => r.ingreso_30d > 0);
-  rowsConIngreso.sort((a, b) => b.ingreso_30d - a.ingreso_30d);
-  const ingresoTotal = rowsConIngreso.reduce((s, r) => s + r.ingreso_30d, 0);
-
-  if (ingresoTotal > 0) {
-    let acum = 0;
-    for (const r of rowsConIngreso) {
-      acum += r.ingreso_30d;
-      r.pct_ingreso_acumulado = round2((acum / ingresoTotal) * 100);
-      if (r.pct_ingreso_acumulado <= 80) r.abc = "A";
-      else if (r.pct_ingreso_acumulado <= 95) r.abc = "B";
-      else r.abc = "C";
+    // Margen real desde ventas_ml_cache (input externo)
+    const margenReal = margenPorSku.get(r.sku_origen) || 0;
+    if (margenReal > 0) {
+      r.margen_neto_30d = round2(margenReal);
+    } else if (r.dias_en_quiebre >= 14 && r.vel_pre_quiebre > 2 && r.margen_unitario_pre_quiebre > 0) {
+      // Imputación pre-quiebre: vel × margen_unitario × 4.3 sem
+      r.margen_neto_30d = round2(r.vel_pre_quiebre * r.margen_unitario_pre_quiebre * 4.3);
+    } else {
+      r.margen_neto_30d = round2(margenReal); // 0 o negativo
+    }
+    // Unidades reales desde ventas_ml_cache, con fallback imputado
+    const udsReal = unidadesPorSku.get(r.sku_origen) || 0;
+    if (udsReal > 0) {
+      r.uds_30d = udsReal;
+    } else if (r.dias_en_quiebre >= 14 && r.vel_pre_quiebre > 2) {
+      r.uds_30d = Math.round(r.vel_pre_quiebre * 4.3);
+    } else {
+      r.uds_30d = udsReal;
     }
   }
-  // SKUs sin ingreso → C
-  for (const r of rows) {
-    if (r.ingreso_30d <= 0) r.abc = "C";
+
+  // Helper Pareto: ordena desc, asigna A (≤80%), B (≤95%), C (resto). Retorna pct acum por SKU.
+  function paretoABC<T extends { sku_origen: string }>(
+    items: T[], getVal: (r: T) => number,
+  ): Map<string, { clase: ClaseABC; pctAcum: number }> {
+    const result = new Map<string, { clase: ClaseABC; pctAcum: number }>();
+    const positivos = items.filter(r => getVal(r) > 0).sort((a, b) => getVal(b) - getVal(a));
+    const total = positivos.reduce((s, r) => s + getVal(r), 0);
+    if (total <= 0) return result;
+    let acum = 0;
+    for (const r of positivos) {
+      acum += getVal(r);
+      const pct = round2((acum / total) * 100);
+      let clase: ClaseABC;
+      if (pct <= 80) clase = "A";
+      else if (pct <= 95) clase = "B";
+      else clase = "C";
+      result.set(r.sku_origen, { clase, pctAcum: pct });
+    }
+    return result;
   }
+
+  const paretoMargen = paretoABC(rows, r => r.margen_neto_30d);
+  const paretoIngreso = paretoABC(rows, r => r.ingreso_30d);
+  const paretoUnidades = paretoABC(rows, r => r.uds_30d);
+
+  for (const r of rows) {
+    const m = paretoMargen.get(r.sku_origen);
+    r.abc_margen = m?.clase || "C";
+    r.pct_margen_acumulado = m?.pctAcum || 0;
+
+    const i = paretoIngreso.get(r.sku_origen);
+    r.abc_ingreso = i?.clase || "C";
+    r.pct_ingreso_acumulado = i?.pctAcum || 0;
+
+    const u = paretoUnidades.get(r.sku_origen);
+    r.abc_unidades = u?.clase || "C";
+    r.pct_unidades_acumulado = u?.pctAcum || 0;
+
+    // Compatibilidad: abc = abc_margen (el principal, dispara decisiones)
+    r.abc = r.abc_margen;
+  }
+
   // Asignar abc_pre_quiebre para SKUs que acaban de entrar en quiebre
   for (const r of rows) {
     if (r.dias_en_quiebre > 0 && !r.abc_pre_quiebre) {
@@ -1251,21 +1345,24 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     }
   }
 
-  // ── PASO 11: Cuadrante (mediana vel × margen) ──
-  const rowsActivos = rows.filter(r => r.vel_ponderada > 0);
-  if (rowsActivos.length > 0) {
-    const vels = rowsActivos.map(r => r.vel_ponderada).sort((a, b) => a - b);
-    const margenes = rowsActivos.map(r => r.margen_full_30d * r.pct_full + r.margen_flex_30d * r.pct_flex).sort((a, b) => a - b);
-    const velMediana = mediana(vels);
-    const margenMediana = mediana(margenes);
-
-    for (const r of rowsActivos) {
-      const margenProm = r.margen_full_30d * r.pct_full + r.margen_flex_30d * r.pct_flex;
-      if (r.vel_ponderada >= velMediana && margenProm >= margenMediana) r.cuadrante = "ESTRELLA";
-      else if (r.vel_ponderada >= velMediana && margenProm < margenMediana) r.cuadrante = "VOLUMEN";
-      else if (r.vel_ponderada < velMediana && margenProm >= margenMediana) r.cuadrante = "CASHCOW";
-      else r.cuadrante = "REVISAR";
-    }
+  // ── PASO 11: Cuadrante (matriz fija abc_margen × abc_unidades) ──
+  //
+  // Matriz estable (no depende de mediana dinámica del corpus actual):
+  //
+  //   ESTRELLA = abc_margen='A' AND abc_unidades='A'   (alta utilidad + alto volumen)
+  //   CASHCOW  = abc_margen='A' AND abc_unidades∈(B,C) (alta utilidad pero poco volumen)
+  //   VOLUMEN  = abc_margen∈(B,C) AND abc_unidades='A' (mucho volumen pero poco margen)
+  //   REVISAR  = abc_margen∈(B,C) AND abc_unidades∈(B,C) (bajo margen y bajo volumen)
+  //
+  // Beneficio vs mediana: dos corridas comparables. Un SKU con la misma performance
+  // siempre cae en el mismo cuadrante; no se mueve solo porque cambió la mediana global.
+  for (const r of rows) {
+    const esMargenA = r.abc_margen === "A";
+    const esUnidadesA = r.abc_unidades === "A";
+    if (esMargenA && esUnidadesA) r.cuadrante = "ESTRELLA";
+    else if (esMargenA && !esUnidadesA) r.cuadrante = "CASHCOW";
+    else if (!esMargenA && esUnidadesA) r.cuadrante = "VOLUMEN";
+    else r.cuadrante = "REVISAR";
   }
 
   // ── Ajustar stock de seguridad y punto de reorden por ABC (paso 12 refinado) ──
@@ -1305,8 +1402,22 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
   }
 
   // ── PASO 19: Alertas ──
+  // Staleness de costo: 90 días sin update de productos.updated_at para SKUs
+  // cuya fuente de costo es manual/proveedor (no costo_promedio que se actualiza con recepciones).
+  const limiteStale = new Date(hoy);
+  limiteStale.setDate(limiteStale.getDate() - 90);
   for (const r of rows) {
     const alertas: AlertaIntel[] = [];
+
+    if (r.vel_ponderada > 0 && (!r.costo_bruto || r.costo_bruto === 0)) {
+      alertas.push("sin_costo");
+    }
+    if (r.costo_fuente === "costo_manual" || r.costo_fuente === "proveedor_catalogo") {
+      const prod = prodMap.get(r.sku_origen);
+      if (prod?.updated_at && new Date(prod.updated_at) < limiteStale && r.vel_ponderada > 0) {
+        alertas.push("costo_posiblemente_obsoleto");
+      }
+    }
 
     if (r.stock_full === 0 && r.vel_full > 0) alertas.push("agotado_full");
     if (r.cob_full < r.punto_reorden && r.cob_full < 999) alertas.push("urgente");
@@ -1437,11 +1548,17 @@ export function generarHistoryRows(
       margen_full: r.margen_full_30d,
       margen_flex: r.margen_flex_30d,
       abc: r.abc,
+      abc_margen: r.abc_margen,
+      abc_ingreso: r.abc_ingreso,
+      abc_unidades: r.abc_unidades,
+      xyz: r.xyz,
       cuadrante: r.cuadrante,
       gmroi: r.gmroi,
       dio: r.dio,
       accion: r.accion,
       alertas: r.alertas,
+      margen_neto_30d: r.margen_neto_30d,
+      margen_unitario_pre_quiebre: r.margen_unitario_pre_quiebre,
       venta_perdida_pesos: r.venta_perdida_pesos,
       vel_objetivo: r.vel_objetivo,
       gap_vel_pct: r.gap_vel_pct,
