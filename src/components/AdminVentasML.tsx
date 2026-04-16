@@ -125,6 +125,7 @@ export default function AdminVentasML() {
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<"comparativa" | "ml_directo" | "productos">("comparativa");
   const [productoSearch, setProductoSearch] = useState("");
+  const [mlDirectoSearch, setMlDirectoSearch] = useState("");
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const [source, setSource] = useState<"cache" | "live" | "session">("cache");
   const [trazaModal, setTrazaModal] = useState<{ order: OrderRow; traza: TrazaResponse | null; loading: boolean } | null>(null);
@@ -568,8 +569,55 @@ export default function AdminVentasML() {
       )}
 
       {/* ML Directo table */}
-      {view === "ml_directo" && mlOrders.length > 0 && (
-        <div className="card" style={{ overflowX: "auto" }}>
+      {view === "ml_directo" && mlOrders.length > 0 && (() => {
+        const q = mlDirectoSearch.trim().toLowerCase();
+        const filtered = q === "" ? mlOrders : mlOrders.filter(o =>
+          (o.sku_venta || "").toLowerCase().includes(q) ||
+          (o.nombre_producto || "").toLowerCase().includes(q) ||
+          (o.order_id || "").toLowerCase().includes(q) ||
+          (o.order_number || "").toLowerCase().includes(q) ||
+          (o.cliente || "").toLowerCase().includes(q) ||
+          (o.razon_social || "").toLowerCase().includes(q) ||
+          (o.canal || "").toLowerCase().includes(q) ||
+          (o.estado || "").toLowerCase().includes(q)
+        );
+        const totales = filtered.reduce((s, o) => ({
+          subtotal: s.subtotal + (o.subtotal || 0),
+          comision: s.comision + (o.comision_total || 0),
+          neto: s.neto + (o.total_neto ?? (o.subtotal - o.comision_total - o.costo_envio + (o.ingreso_envio || 0))),
+          margen: s.margen + (o.margen || 0),
+        }), { subtotal: 0, comision: 0, neto: 0, margen: 0 });
+        return (
+        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+          <div style={{ padding: 12, borderBottom: "1px solid var(--bg3)", display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <input
+              className="form-input"
+              placeholder="Buscar por SKU, producto, Order ID, cliente, canal, estado..."
+              value={mlDirectoSearch}
+              onChange={e => setMlDirectoSearch(e.target.value)}
+              style={{ flex: 1, minWidth: 240, padding: "6px 10px", fontSize: 12 }}
+            />
+            {mlDirectoSearch && (
+              <button
+                onClick={() => setMlDirectoSearch("")}
+                style={{ padding: "6px 10px", fontSize: 11, background: "var(--bg3)", color: "var(--txt2)", border: "1px solid var(--bg4)", borderRadius: 4, cursor: "pointer" }}
+              >Limpiar</button>
+            )}
+            <div style={{ fontSize: 11, color: "var(--txt2)", whiteSpace: "nowrap" }}>
+              <span className="mono" style={{ color: filtered.length === mlOrders.length ? "var(--txt2)" : "var(--cyan)", fontWeight: 700 }}>
+                {filtered.length}
+              </span>
+              {filtered.length !== mlOrders.length && <span style={{ color: "var(--txt3)" }}> de {mlOrders.length}</span>} filas
+              {q && (
+                <span style={{ marginLeft: 10, color: "var(--txt3)" }}>
+                  | Subtotal <span className="mono" style={{ color: "var(--txt)" }}>{fmt(totales.subtotal)}</span>
+                  {" · "}Neto <span className="mono" style={{ color: "var(--green)" }}>{fmt(totales.neto)}</span>
+                  {" · "}Margen <span className="mono" style={{ color: totales.margen >= 0 ? "var(--green)" : "var(--red)" }}>{fmt(totales.margen)}</span>
+                </span>
+              )}
+            </div>
+          </div>
+          <div style={{ overflowX: "auto" }}>
           <table className="tbl" style={{ width: "100%", fontSize: 11 }}>
             <thead>
               <tr>
@@ -587,7 +635,10 @@ export default function AdminVentasML() {
               </tr>
             </thead>
             <tbody>
-              {mlOrders.map((o, i) => {
+              {filtered.length === 0 && (
+                <tr><td colSpan={14} style={{ textAlign: "center", padding: 20, color: "var(--txt3)" }}>Sin resultados para &quot;{mlDirectoSearch}&quot;</td></tr>
+              )}
+              {filtered.map((o, i) => {
                 const enMediacion = excludedEstados.has(o.estado || "");
                 const fuente = o.costo_fuente || null;
                 const sinCosto = fuente === "sin_costo" || o.costo_producto == null;
@@ -685,8 +736,10 @@ export default function AdminVentasML() {
               })}
             </tbody>
           </table>
+          </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* Productos view (agrupado por SKU) */}
       {view === "productos" && mlOrders.length > 0 && (
