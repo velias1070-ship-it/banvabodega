@@ -64,48 +64,63 @@ export async function GET(req: NextRequest) {
   console.log(`[Ventas Sync] ${fromDate} → ${toDate}`);
 
   try {
-    // 1. Fetch orders from ML (fast — only /orders/search, no billing/costs)
+    // 1. Fetch orders from ML for ALL relevant statuses.
+    // Bug fix: previously only fetched status=paid, losing cancelled/refunded
+    // orders on re-sync (delete-then-insert wiped them permanently).
+    // Also expand date_created range by -30 days to catch orders created in
+    // a prior month but closed in the target month (cross-month gap).
+    const STATUSES_TO_FETCH = ["paid", "cancelled", "partially_refunded"];
     const allOrders: MLOrder[] = [];
-    const cursor = new Date(fromDate + "T00:00:00");
-    const end = new Date(toDate + "T00:00:00");
+    const seenIds = new Set<number>();
 
-    while (cursor <= end) {
-      const chunkEnd = new Date(cursor);
-      chunkEnd.setDate(chunkEnd.getDate() + 14);
-      const actualEnd = chunkEnd > end ? end : chunkEnd;
+    for (const mlStatus of STATUSES_TO_FETCH) {
+      const cursor = new Date(fromDate + "T00:00:00");
+      const end = new Date(toDate + "T00:00:00");
 
-      const expandedFrom = new Date(cursor);
-      expandedFrom.setDate(expandedFrom.getDate() - 1);
-      const fromISO = new Date(expandedFrom.toISOString().slice(0, 10) + "T00:00:00-04:00").toISOString();
-      const toISO = new Date(actualEnd.toISOString().slice(0, 10) + "T23:59:59-03:00").toISOString();
+      while (cursor <= end) {
+        const chunkEnd = new Date(cursor);
+        chunkEnd.setDate(chunkEnd.getDate() + 14);
+        const actualEnd = chunkEnd > end ? end : chunkEnd;
 
-      let offset = 0;
-      let emptyRetries = 0;
-      for (let page = 0; page < 40; page++) {
-        const url = `/orders/search?seller=${config.seller_id}&order.status=paid&sort=date_desc&order.date_created.from=${encodeURIComponent(fromISO)}&order.date_created.to=${encodeURIComponent(toISO)}&limit=50&offset=${offset}`;
-        const result = await mlGet<{ results: MLOrder[]; paging: { total: number } }>(url);
-        if (!result?.results?.length) {
-          // Retry once in case of transient failure
-          emptyRetries++;
-          if (emptyRetries >= 2) break;
-          await new Promise(r => setTimeout(r, 500));
-          continue;
+        // Expand date_created range: -30 days for paid (catches cross-month),
+        // -1 day for cancelled/refunded (they close same day typically).
+        const expandedFrom = new Date(cursor);
+        expandedFrom.setDate(expandedFrom.getDate() - (mlStatus === "paid" ? 30 : 1));
+        const fromISO = new Date(expandedFrom.toISOString().slice(0, 10) + "T00:00:00-04:00").toISOString();
+        const toISO = new Date(actualEnd.toISOString().slice(0, 10) + "T23:59:59-03:00").toISOString();
+
+        let offset = 0;
+        let emptyRetries = 0;
+        for (let page = 0; page < 40; page++) {
+          const url = `/orders/search?seller=${config.seller_id}&order.status=${mlStatus}&sort=date_desc&order.date_created.from=${encodeURIComponent(fromISO)}&order.date_created.to=${encodeURIComponent(toISO)}&limit=50&offset=${offset}`;
+          const result = await mlGet<{ results: MLOrder[]; paging: { total: number } }>(url);
+          if (!result?.results?.length) {
+            emptyRetries++;
+            if (emptyRetries >= 2) break;
+            await new Promise(r => setTimeout(r, 500));
+            continue;
+          }
+          emptyRetries = 0;
+          for (const o of result.results) {
+            if (!seenIds.has(o.id)) { seenIds.add(o.id); allOrders.push(o); }
+          }
+          offset += 50;
+          if (offset >= result.paging.total) break;
+          await new Promise(r => setTimeout(r, 150));
         }
-        emptyRetries = 0;
-        allOrders.push(...result.results);
-        offset += 50;
-        if (offset >= result.paging.total) break;
-        await new Promise(r => setTimeout(r, 150));
+        cursor.setDate(actualEnd.getDate() + 1);
       }
-      cursor.setDate(actualEnd.getDate() + 1);
     }
 
-    // 2. Filter by Chile date_closed
+    // 2. Filter by Chile date_closed (the actual report date)
     const orders = allOrders.filter(o => {
       const chileDate = toChileISO(o.date_closed || o.date_created).slice(0, 10);
       return chileDate >= fromDate && chileDate <= toDate;
     });
-    console.log(`[Ventas Sync] ${orders.length} orders (${allOrders.length} raw)`);
+    const paidCount = orders.filter(o => o.status === "paid").length;
+    const cancelledCount = orders.filter(o => o.status === "cancelled").length;
+    const refundedCount = orders.filter(o => o.status === "partially_refunded").length;
+    console.log(`[Ventas Sync] ${orders.length} orders (${allOrders.length} raw) — paid:${paidCount} cancelled:${cancelledCount} refunded:${refundedCount}`);
 
     if (orders.length === 0) {
       return NextResponse.json({ status: "ok", synced: 0, range: `${fromDate} → ${toDate}` });
@@ -192,7 +207,7 @@ export async function GET(req: NextRequest) {
     // 6b. Inmutabilidad contable: leer snapshots existentes en el rango ANTES de borrar.
     // Si una venta ya tenía costo_producto o ads_cost_asignado capturados, los preservamos.
     const { data: existingSnapshots } = await sb.from("ventas_ml_cache")
-      .select("order_id, sku_venta, costo_producto, costo_fuente, margen, margen_pct, costo_snapshot_at, anulada, anulada_at, ads_cost_asignado, ads_atribucion, margen_neto, margen_neto_pct")
+      .select("order_id, sku_venta, costo_producto, costo_fuente, margen, margen_pct, costo_snapshot_at, anulada, anulada_at, ads_cost_asignado, ads_atribucion, margen_neto, margen_neto_pct, costo_detalle")
       .gte("fecha_date", fromDate).lte("fecha_date", toDate);
     const snapshotByKey = new Map<string, {
       costo_producto: number | null;
@@ -206,6 +221,7 @@ export async function GET(req: NextRequest) {
       ads_atribucion: string | null;
       margen_neto: number | null;
       margen_neto_pct: number | null;
+      costo_detalle: unknown | null;
     }>();
     for (const r of (existingSnapshots || [])) {
       snapshotByKey.set(`${r.order_id}|${(r.sku_venta || "").toUpperCase()}`, r);
@@ -261,13 +277,6 @@ export async function GET(req: NextRequest) {
       }
 
       for (const order of packOrders) {
-        // Debug: log Full orders with non-zero shipping
-        if (isFull && packCostoEnvio > 0) {
-          console.log(`[Ventas Sync DEBUG] Full order ${order.id}: shipId=${shipId} lt=${lt} senderCost=${costs?.sender_cost} packCostoEnvio=${packCostoEnvio}`);
-        }
-        if (order.id === 2000015841100856) {
-          console.log(`[Ventas Sync DEBUG] TARGET ORDER: shipId=${shipId} lt=${lt} isFull=${isFull} costs=${JSON.stringify(costs)} packCostoEnvio=${packCostoEnvio} packBonificacion=${packBonificacion}`);
-        }
         for (const item of (order.order_items || [])) {
           const sku = (item.item?.seller_sku || `ML-${item.item?.id}`).toUpperCase();
           const subtotal = Math.round(item.unit_price * item.quantity);
@@ -284,15 +293,17 @@ export async function GET(req: NextRequest) {
           // cambiar por re-balance de envío en packs compartidos).
           const snapshotKey = `${order.id}|${sku}`;
           const prev = snapshotByKey.get(snapshotKey);
+          const resolved = resolverCostoVenta(sku, item.quantity, preload);
           const snapshot = decidirSnapshotCosto(
             prev,
-            () => resolverCostoVenta(sku, item.quantity, preload),
+            () => resolved,
             snapshotAt,
             { order_id: order.id, sku_venta: sku },
           );
           const costoProducto = snapshot.costo_producto;
           const costoFuente = snapshot.costo_fuente;
           const costoSnapshotAt = snapshot.costo_snapshot_at;
+          const costoDetalle = snapshot.fromSnapshot ? (prev?.costo_detalle || null) : resolved.detalle;
           const mBruto = calcularMargenVenta(totalNeto, costoProducto, subtotal);
           const margenFinal = mBruto.margen;
           const margenPct = mBruto.margen_pct;
@@ -313,8 +324,16 @@ export async function GET(req: NextRequest) {
           const margenNeto = mnFinal.margen_neto;
           const margenNetoPct = mnFinal.margen_neto_pct;
 
-          const anuladaVenta = prev?.anulada === true;
-          const anuladaAt = prev?.anulada_at || null;
+          // Estado: mapear desde ML status real + claims
+          let estado: string;
+          if (order.status === "cancelled") estado = "Cancelada";
+          else if (order.status === "partially_refunded") estado = "Parcialmente reembolsada";
+          else if (claimOrderIds.has(order.id)) estado = "En mediación";
+          else estado = "Pagada";
+
+          const esCancelOrRefund = order.status === "cancelled" || order.status === "partially_refunded";
+          const anuladaVenta = esCancelOrRefund || (prev?.anulada === true);
+          const anuladaAt = prev?.anulada_at || (esCancelOrRefund ? snapshotAt : null);
 
           rows.push({
             order_id: String(order.id),
@@ -339,6 +358,7 @@ export async function GET(req: NextRequest) {
             costo_producto: costoProducto,
             costo_fuente: costoFuente,
             costo_snapshot_at: costoSnapshotAt,
+            costo_detalle: costoDetalle,
             margen: margenFinal,
             margen_pct: margenPct,
             ads_cost_asignado: adsCostAsignado,
@@ -348,7 +368,7 @@ export async function GET(req: NextRequest) {
             anulada: anuladaVenta,
             anulada_at: anuladaAt,
             logistic_type: lt,
-            estado: claimOrderIds.has(order.id) ? "En mediación" : "Pagada",
+            estado,
             documento_tributario: "",
             estado_documento: "",
             updated_at: snapshotAt,
@@ -366,8 +386,14 @@ export async function GET(req: NextRequest) {
       return true;
     });
 
-    // 7. Delete existing rows in range, then insert fresh (upsert has issues with non-PK constraints)
-    await sb.from("ventas_ml_cache").delete().gte("fecha_date", fromDate).lte("fecha_date", toDate);
+    // 7. Delete ONLY rows for orders we're about to re-insert — NOT the entire range.
+    // Bug fix: deleting the entire range wiped orders that ML didn't return
+    // (status changed, API pagination gaps, transient failures), losing them permanently.
+    const fetchedOrderIds = Array.from(new Set(uniqueRows.map(r => String(r.order_id))));
+    for (let i = 0; i < fetchedOrderIds.length; i += 500) {
+      const chunk = fetchedOrderIds.slice(i, i + 500);
+      await sb.from("ventas_ml_cache").delete().in("order_id", chunk);
+    }
 
     let upserted = 0;
     const upsertErrors: string[] = [];
@@ -382,22 +408,16 @@ export async function GET(req: NextRequest) {
     const fullCount = rows.filter(r => r.canal === "Full").length;
     const missingLt = shipIds.filter(id => !logisticMap.has(id)).length;
 
-    // Debug: find target order
-    const targetRow = rows.find(r => r.order_id === "2000015841100856");
-    const targetShipId = 46789050063;
-    const debugInfo = {
-      target_row: targetRow ? { canal: targetRow.canal, costo_envio: targetRow.costo_envio, ingreso_envio: targetRow.ingreso_envio, logistic_type: targetRow.logistic_type } : "not_found",
-      logistic_resolved: logisticMap.get(targetShipId) || "missing",
-      costs_resolved: costsCache.get(targetShipId) || "missing",
-      full_with_3320: rows.filter(r => r.canal === "Full" && r.costo_envio === 3320).length,
-    };
-    console.log(`[Ventas Sync] Done: ${upserted} rows (flex:${flexCount} full:${fullCount} missing_lt:${missingLt})`);
+    const cancelledCount2 = uniqueRows.filter(r => r.estado === "Cancelada").length;
+    const refundedCount2 = uniqueRows.filter(r => r.estado === "Parcialmente reembolsada").length;
+    const mediacionCount = uniqueRows.filter(r => r.estado === "En mediación").length;
+    console.log(`[Ventas Sync] Done: ${upserted} rows (flex:${flexCount} full:${fullCount} cancelled:${cancelledCount2} refunded:${refundedCount2} mediacion:${mediacionCount} missing_lt:${missingLt})`);
     return NextResponse.json({
       status: "ok", synced: upserted, orders_filtered: orders.length, orders_raw: allOrders.length, rows: rows.length,
-      flex: flexCount, full: fullCount, missing_logistic: missingLt,
+      flex: flexCount, full: fullCount, cancelled: cancelledCount2, partially_refunded: refundedCount2, en_mediacion: mediacionCount,
+      missing_logistic: missingLt,
       claims: claimOrderIds.size, range: `${fromDate} → ${toDate}`,
       ...(upsertErrors.length > 0 ? { upsert_errors: upsertErrors } : {}),
-      debug: debugInfo,
     });
   } catch (err) {
     console.error("[Ventas Sync] Error:", err);

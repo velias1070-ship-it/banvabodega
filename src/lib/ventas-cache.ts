@@ -99,7 +99,7 @@ export async function upsertOrderToVentasCache(
   // Inmutabilidad contable: si ya existen filas para esta orden, preservar
   // el costo/margen original que ya se había snapshotado.
   const { data: existingRows } = await sb.from("ventas_ml_cache")
-    .select("sku_venta, costo_producto, costo_fuente, margen, margen_pct, costo_snapshot_at, anulada, anulada_at, ads_cost_asignado, ads_atribucion, margen_neto, margen_neto_pct")
+    .select("sku_venta, costo_producto, costo_fuente, margen, margen_pct, costo_snapshot_at, anulada, anulada_at, ads_cost_asignado, ads_atribucion, margen_neto, margen_neto_pct, costo_detalle")
     .eq("order_id", String(order.id));
   const existingBySku = new Map<string, {
     costo_producto: number | null;
@@ -113,6 +113,7 @@ export async function upsertOrderToVentasCache(
     ads_atribucion: string | null;
     margen_neto: number | null;
     margen_neto_pct: number | null;
+    costo_detalle: unknown | null;
   }>();
   for (const r of (existingRows || [])) {
     existingBySku.set((r.sku_venta || "").toUpperCase(), r);
@@ -148,15 +149,17 @@ export async function upsertOrderToVentasCache(
     // SIEMPRE porque dependen de total_neto (que puede cambiar por re-balance
     // de envío en packs compartidos).
     const existing = existingBySku.get(sku);
+    const resolved = preload ? resolverCostoVenta(sku, item.quantity, preload) : null;
     const snapshot = decidirSnapshotCosto(
       existing,
-      () => resolverCostoVenta(sku, item.quantity, preload!),
+      () => resolved || { costo_producto: 0, costo_fuente: "sin_costo" as const },
       snapshotAt,
       { order_id: order.id, sku_venta: sku },
     );
     const costo_producto = snapshot.costo_producto;
     const costo_fuente = snapshot.costo_fuente;
     const costo_snapshot_at = snapshot.costo_snapshot_at;
+    const costo_detalle = snapshot.fromSnapshot ? (existing?.costo_detalle || null) : (resolved?.detalle || null);
     const mBruto = calcularMargenVenta(totalNeto, costo_producto, subtotal);
     const margen = mBruto.margen;
     const margen_pct = mBruto.margen_pct;
@@ -204,6 +207,7 @@ export async function upsertOrderToVentasCache(
       costo_producto,
       costo_fuente,
       costo_snapshot_at,
+      costo_detalle,
       margen,
       margen_pct,
       ads_cost_asignado,
@@ -270,7 +274,7 @@ export async function updateVentaEstado(orderId: number, estado: string): Promis
   const sb = getServerSupabase();
   if (!sb) return false;
 
-  const esAnulacion = estado === "Cancelada" || estado === "Reembolsada";
+  const esAnulacion = estado === "Cancelada" || estado === "Reembolsada" || estado === "Parcialmente reembolsada";
   const now = new Date().toISOString();
   const { error } = await sb.from("ventas_ml_cache")
     .update({
