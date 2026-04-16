@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { fetchDiscrepanciasGlobal, fetchProductos, fetchRecepciones } from "@/lib/db";
 import type { DBDiscrepanciaCosto, DBProduct, DBRecepcion } from "@/lib/db";
-import { aprobarNuevoCosto, rechazarNuevoCosto } from "@/lib/store";
+import { aprobarNuevoCosto, rechazarNuevoCosto, marcarPendienteNC } from "@/lib/store";
 
 // ============================================
 // Helpers
@@ -28,9 +28,10 @@ const ESTADO_COLORS: Record<string, string> = {
   PENDIENTE: "var(--amber)",
   APROBADO: "var(--green)",
   RECHAZADO: "var(--red)",
+  PENDIENTE_NC: "var(--cyan)",
 };
 
-type Estado = "PENDIENTE" | "APROBADO" | "RECHAZADO";
+type Estado = "PENDIENTE" | "APROBADO" | "RECHAZADO" | "PENDIENTE_NC";
 type EstadoFiltro = "TODAS" | Estado;
 type AntiguedadFiltro = "TODAS" | "7d" | "15d" | "30d" | "60d";
 
@@ -179,6 +180,53 @@ export default function AdminDiscrepancias() {
       await cargar();
     } catch (e) {
       alert("Error al rechazar: " + (e instanceof Error ? e.message : e));
+    } finally {
+      setActioning(null);
+    }
+  };
+
+  const doPendienteNC = async (row: Row) => {
+    const sugerido = row.costo_diccionario && row.costo_diccionario > 0
+      ? String(row.costo_diccionario)
+      : String(Math.round((row.costo_factura || 0) / 2));
+    const costo = prompt(
+      `⏳ Esperando NC del proveedor — ${row.sku}\n\n`
+      + `Costo facturado (incorrecto): ${fmtMoney(row.costo_factura)}\n`
+      + `Costo histórico (referencia): ${fmtMoney(row.costo_diccionario)}\n\n`
+      + `Ingrese el costo REAL esperado luego de la NC:`,
+      sugerido,
+    );
+    if (costo === null) return;
+    const n = Number(costo);
+    if (!Number.isFinite(n) || n <= 0) {
+      alert("Costo inválido");
+      return;
+    }
+    const notas = prompt(
+      `Notas obligatorias (qué pasó, cuándo confirmó el proveedor la NC):`,
+      `Idetex confirmó NC por diferencia de ${fmtMoney((row.costo_factura || 0) - n)}/ud el ${new Date().toLocaleDateString("es-CL")}. Esperando emisión.`,
+    );
+    if (!notas || notas.trim().length === 0) {
+      alert("Las notas son obligatorias");
+      return;
+    }
+    const diffPorUnidad = (row.costo_factura || 0) - n;
+    const confirma = window.confirm(
+      `Confirmar acción:\n\n`
+      + `• Marca discrepancia como PENDIENTE_NC\n`
+      + `• Override WAC: ${fmtMoney(row.costo_factura)} → ${fmtMoney(n)}\n`
+      + `• Diferencia esperada: ${fmtMoney(diffPorUnidad)}/ud\n`
+      + `• Audit log con motivo override_pre_nc\n\n`
+      + `¿Continuar?`
+    );
+    if (!confirma) return;
+    setActioning(row.id!);
+    try {
+      const res = await marcarPendienteNC(row.id!, row.sku, n, notas);
+      alert(`WAC actualizado: ${fmtMoney(res.wac_anterior)} → ${fmtMoney(res.wac_nuevo)}`);
+      await cargar();
+    } catch (e) {
+      alert("Error: " + (e instanceof Error ? e.message : e));
     } finally {
       setActioning(null);
     }
@@ -352,6 +400,14 @@ export default function AdminDiscrepancias() {
                             style={{ padding: "4px 10px", borderRadius: 4, background: "var(--green)", color: "#0a0e17", fontSize: 10, fontWeight: 700, border: "none", marginRight: 4, cursor: isWorking ? "wait" : "pointer", opacity: isWorking ? 0.5 : 1 }}
                           >
                             Aprobar
+                          </button>
+                          <button
+                            disabled={isWorking}
+                            onClick={() => doPendienteNC(row)}
+                            title="Esperando NC del proveedor: corrige WAC al costo real esperado y deja la discrepancia abierta"
+                            style={{ padding: "4px 10px", borderRadius: 4, background: "var(--bg3)", color: "var(--cyan)", fontSize: 10, fontWeight: 700, border: "1px solid var(--cyan)", marginRight: 4, cursor: isWorking ? "wait" : "pointer", opacity: isWorking ? 0.5 : 1 }}
+                          >
+                            ⏳ Esperando NC
                           </button>
                           <button
                             disabled={isWorking}

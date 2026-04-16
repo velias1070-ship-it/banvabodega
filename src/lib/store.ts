@@ -1,6 +1,6 @@
 "use client";
 import * as db from "./db";
-import { isConfigured } from "./supabase";
+import { isConfigured, getSupabase } from "./supabase";
 export { isConfigured as isSupabaseConfigured } from "./supabase";
 
 // ==================== TYPES (backward compatible) ====================
@@ -3078,6 +3078,72 @@ export async function rechazarNuevoCosto(discId: string, notas?: string) {
     estado: "RECHAZADO", resuelto_por: "admin", resuelto_at: new Date().toISOString(),
     notas: notas || "Rechazado - error de proveedor",
   });
+}
+
+/**
+ * Marcar discrepancia como "esperando NC" del proveedor + corregir WAC preventivamente.
+ *
+ * Caso de uso: el proveedor (ej. Idetex) facturó con costo erróneo, ya confirmó que
+ * va a emitir una nota de crédito por la diferencia, pero la NC todavía no llegó.
+ * Mientras tanto, el WAC ya quedó contaminado con el costo facturado.
+ *
+ * Este flujo:
+ *  1. Marca la discrepancia como PENDIENTE_NC con el costo esperado y notas.
+ *  2. Override del WAC y catálogo a `costoEsperado` para que motor/margen operen
+ *     con el valor correcto desde ya.
+ *  3. Audit log con accion='override_pre_nc' para trazabilidad.
+ *
+ * Cuando llegue la NC, ingresarla como recepción negativa o ajuste, y aprobar/cerrar
+ * la discrepancia manualmente desde la UI.
+ */
+export async function marcarPendienteNC(
+  discId: string,
+  sku: string,
+  costoEsperado: number,
+  notas: string,
+): Promise<{ ok: boolean; wac_anterior: number; wac_nuevo: number }> {
+  if (!notas || notas.trim().length === 0) {
+    throw new Error("Las notas son obligatorias para marcar como pendiente NC");
+  }
+  if (costoEsperado <= 0) {
+    throw new Error("El costo esperado debe ser mayor a 0");
+  }
+  const sb = getSupabase();
+  if (!sb) throw new Error("Sin conexión a Supabase");
+
+  // 1. Leer WAC anterior para audit
+  const { data: prodPrev } = await sb.from("productos")
+    .select("costo, costo_promedio")
+    .eq("sku", sku)
+    .single();
+  const wacAnterior = (prodPrev?.costo_promedio as number) || 0;
+
+  // 2. Marcar discrepancia como PENDIENTE_NC con costo esperado
+  await db.updateDiscrepancia(discId, {
+    estado: "PENDIENTE_NC",
+    resuelto_por: "admin",
+    resuelto_at: new Date().toISOString(),
+    notas,
+    costo_esperado_post_nc: costoEsperado,
+  });
+
+  // 3. Override WAC + catálogo al costo esperado
+  await sb.from("productos")
+    .update({ costo: costoEsperado, costo_promedio: costoEsperado, updated_at: new Date().toISOString() })
+    .eq("sku", sku);
+  if (_cache.products[sku]) _cache.products[sku].cost = costoEsperado;
+
+  // 4. Audit log
+  await sb.from("audit_log").insert({
+    accion: "override_pre_nc",
+    entidad: "productos",
+    entidad_id: sku,
+    params: { costo_anterior: wacAnterior, costo_esperado: costoEsperado, discrepancia_id: discId },
+    resultado: { wac_actualizado: true, motivo: notas },
+    operario: "admin",
+  });
+
+  return { ok: true, wac_anterior: wacAnterior, wac_nuevo: costoEsperado };
 }
 
 export function tieneDiscrepanciasPendientes(discs: db.DBDiscrepanciaCosto[]): boolean {

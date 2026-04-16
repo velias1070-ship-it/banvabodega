@@ -90,7 +90,10 @@ export async function upsertOrderToVentasCache(
   const costoEnvioPorItem = Math.round(packCostoEnvio / packItemCount);
   const bonifPorItem = Math.round(packBonificacion / packItemCount);
   const esCancelada = order.status === "cancelled";
-  const estado = options?.estado || (esCancelada ? "Cancelada" : "Pagada");
+  const esParcialRefund = order.status === "partially_refunded";
+  const esAnulacion = esCancelada || esParcialRefund;
+  const estado = options?.estado
+    || (esCancelada ? "Cancelada" : esParcialRefund ? "Parcialmente reembolsada" : "Pagada");
 
   // Inmutabilidad contable: si ya existen filas para esta orden, preservar
   // el costo/margen original que ya se había snapshotado.
@@ -177,8 +180,8 @@ export async function upsertOrderToVentasCache(
     const margen_neto_pct = mn.margen_neto_pct;
 
     // Anulada: si ya estaba marcada preservar la fecha original; si recién se anula ahora, timestamp.
-    const anulada = esCancelada || (existing?.anulada === true);
-    const anulada_at = existing?.anulada_at || (esCancelada ? snapshotAt : null);
+    const anulada = esAnulacion || (existing?.anulada === true);
+    const anulada_at = existing?.anulada_at || (esAnulacion ? snapshotAt : null);
 
     return {
       order_id: String(order.id),

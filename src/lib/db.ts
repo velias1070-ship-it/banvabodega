@@ -171,10 +171,11 @@ export interface DBDiscrepanciaCosto {
   costo_factura: number;
   diferencia: number;
   porcentaje: number;
-  estado: "PENDIENTE" | "APROBADO" | "RECHAZADO";
+  estado: "PENDIENTE" | "APROBADO" | "RECHAZADO" | "PENDIENTE_NC";
   resuelto_por?: string;
   resuelto_at?: string;
   notas?: string;
+  costo_esperado_post_nc?: number | null;
   created_at?: string;
 }
 
