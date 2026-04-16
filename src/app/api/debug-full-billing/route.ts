@@ -32,7 +32,7 @@ export async function GET() {
   const all: Item[] = [];
   let lastId: number | undefined = undefined;
   for (let p = 0; p < 10; p++) {
-    const query: string = lastId ? `from_id=${lastId}&limit=200` : `limit=200`;
+    const query: string = lastId ? `from_id=${lastId}&limit=50` : `limit=50`;
     const url: string = `/billing/integration/periods/key/${key}/group/ML/full/details?document_type=BILL&${query}`;
     const raw: { results?: Item[]; last_id?: number; total?: number } | null = await mlGet<{ results?: Item[]; last_id?: number; total?: number }>(url).catch(() => null);
     if (!raw?.results?.length) break;
