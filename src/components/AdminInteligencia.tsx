@@ -46,6 +46,7 @@ interface IntelRow {
   margen_flex_30d: number;
   canal_mas_rentable: string | null;
   precio_promedio: number;
+  costo_neto: number;
   costo_bruto: number;
   gmroi: number;
   dio: number;
@@ -933,8 +934,9 @@ export default function AdminInteligencia() {
         // Precio para OC: prioridad catálogo del proveedor > WAC.
         // Idetex factura por catálogo, no por WAC histórico — usar catálogo evita
         // discrepancias falsas al comparar factura recibida vs precio congelado.
+        // Nota: costo_neto y precio_neto del catálogo ya están en NETO sin IVA.
         const cat = catalogoPorSku.get(r.sku_origen.toUpperCase());
-        const wacNeto = r.costo_bruto > 0 ? Math.round(r.costo_bruto / 1.19) : 0;
+        const wacNeto = r.costo_neto > 0 ? Math.round(r.costo_neto) : 0;
         const usaCatalogo = !!(cat && cat.precio_neto > 0);
         const costo = usaCatalogo ? cat!.precio_neto : wacNeto;
         const costoFuente: "catalogo" | "wac_fallback" = usaCatalogo ? "catalogo" : "wac_fallback";
