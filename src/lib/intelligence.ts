@@ -966,13 +966,26 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
 
     const enQuiebreAhora = stFull === 0 && velPonderada > 0;
 
+    // Velocidad histórica para quiebre prolongado: vel60d ya excluye
+    // semanas en quiebre (línea 737, usa semanasActivas60d), así que
+    // representa la demanda real antes del quiebre. Si vel60d se degradó
+    // por SKU nuevo o quiebre >60d, se cae a velPonderada como fallback.
+    // Sin este max, velPreQuiebre quedaba aplastada cuando el SKU llevaba
+    // días sin stock — subestimando SKUs legítimos (Guía Completa:
+    // "quiebre crónico de A's requiere reconstruir vel histórica").
+    const velHistorica = Math.max(vel60d, velPonderada);
+
     if (enQuiebreAhora) {
       const prevDias = prev?.dias_en_quiebre;
       if (prev && (prevDias === null || (prevDias ?? 0) > 0)) {
         // Continúa en quiebre — incrementar días (flag ya re-evaluado arriba).
         // Si prev era null (historia incompleta), se preserva null.
         diasEnQuiebre = prevDias === null ? null : (prevDias ?? 0) + 1;
-        velPreQuiebre = prev.vel_pre_quiebre;
+        // velPre: preservar el mayor entre histórico calculado y persistido.
+        // Evita perder velocidad buena si vel60d ahora está degradado pero
+        // prev capturó un buen valor, y recupera velocidad si prev quedó
+        // bajo (caso SKUs con vel_pre=velPonderada heredado).
+        velPreQuiebre = Math.max(velHistorica, prev.vel_pre_quiebre);
         margenUnitarioPreQuiebre = prev.margen_unitario_pre_quiebre || 0;
         abcPreQuiebre = prev.abc_pre_quiebre;
       } else {
@@ -983,7 +996,7 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
         } else {
           diasEnQuiebre = null;
         }
-        velPreQuiebre = velPonderada;
+        velPreQuiebre = velHistorica;
         margenUnitarioPreQuiebre = margenProm;  // snapshot del margen unitario al entrar en quiebre
         abcPreQuiebre = null; // Se asigna después del paso ABC global
       }
