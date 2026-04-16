@@ -97,6 +97,7 @@ export interface DBRecepcion {
   iva?: number;
   costo_bruto?: number;
   factura_original?: FacturaOriginal | null;
+  orden_compra_id?: string | null;
 }
 
 export interface FacturaOriginal {
@@ -145,6 +146,7 @@ export interface DBRecepcionLinea {
   etiqueta_impresa?: boolean;
   tiene_variantes?: boolean;
   sku_venta?: string;
+  orden_compra_linea_id?: string | null;
 }
 
 export interface DBMapConfig {
@@ -3049,10 +3051,81 @@ export async function nextOCNumero(): Promise<string> {
   return `OC-${String(num + 1).padStart(3, "0")}`;
 }
 
-/** Vincular recepción a OC */
-export async function vincularRecepcionOC(recepcionId: string, ordenCompraId: string) {
-  const sb = getSupabase(); if (!sb) return;
+/**
+ * Vincular recepción a OC. Sin `lineMapping` solo setea
+ * `recepciones.orden_compra_id` (comportamiento histórico). Con `lineMapping`
+ * también escribe `recepcion_lineas.orden_compra_linea_id`, incrementa
+ * `ordenes_compra_lineas.cantidad_recibida` por lo `qty_recibida` de cada
+ * línea mapeada, recalcula `estado_linea` por línea y `estado` de cabecera
+ * (RECIBIDA_PARCIAL vs RECIBIDA) y dispara recálculo del motor.
+ */
+export async function vincularRecepcionOC(
+  recepcionId: string,
+  ordenCompraId: string,
+  lineMapping?: Record<string, string>, // recepcion_linea_id → oc_linea_id
+): Promise<{ estado_cabecera: OCEstado; lineas_actualizadas: number } | null> {
+  const sb = getSupabase();
+  if (!sb) return null;
+
+  // 1) Vincular cabecera (idempotente)
   await sb.from("recepciones").update({ orden_compra_id: ordenCompraId }).eq("id", recepcionId);
+
+  if (!lineMapping || Object.keys(lineMapping).length === 0) {
+    return { estado_cabecera: "EN_TRANSITO", lineas_actualizadas: 0 };
+  }
+
+  // 2) Cargar líneas recepción y líneas OC involucradas
+  const recIds = Object.keys(lineMapping);
+  const ocIds = Array.from(new Set(Object.values(lineMapping)));
+
+  const { data: recLineas } = await sb.from("recepcion_lineas").select("id, qty_recibida").in("id", recIds);
+  const { data: ocLineas } = await sb.from("ordenes_compra_lineas").select("id, cantidad_pedida, cantidad_recibida").eq("orden_id", ordenCompraId);
+  if (!recLineas || !ocLineas) return null;
+
+  // 3) Por cada línea mapeada: setear FK + acumular qty
+  const deltaPorOcLinea = new Map<string, number>();
+  for (const rec of recLineas as { id: string; qty_recibida: number }[]) {
+    const ocLineId = lineMapping[rec.id];
+    if (!ocLineId) continue;
+    const qty = rec.qty_recibida || 0;
+    await sb.from("recepcion_lineas").update({ orden_compra_linea_id: ocLineId }).eq("id", rec.id);
+    deltaPorOcLinea.set(ocLineId, (deltaPorOcLinea.get(ocLineId) || 0) + qty);
+  }
+
+  // 4) Actualizar OC líneas: sumar cantidad_recibida y recalcular estado_linea
+  const ocLineasMap = new Map(
+    (ocLineas as { id: string; cantidad_pedida: number; cantidad_recibida: number | null }[])
+      .map(l => [l.id, l]),
+  );
+  for (const [ocLineId, delta] of Array.from(deltaPorOcLinea.entries())) {
+    const l = ocLineasMap.get(ocLineId);
+    if (!l) continue;
+    const nueva = (l.cantidad_recibida || 0) + delta;
+    const pedida = l.cantidad_pedida || 0;
+    const estado_linea = nueva >= pedida ? "RECIBIDA" : nueva > 0 ? "RECIBIDA_PARCIAL" : "PENDIENTE";
+    await sb.from("ordenes_compra_lineas").update({
+      cantidad_recibida: nueva,
+      estado: estado_linea,
+      estado_linea: estado_linea.toLowerCase(),
+    }).eq("id", ocLineId);
+    l.cantidad_recibida = nueva; // actualizar local para paso 5
+  }
+
+  // 5) Recalcular estado de cabecera OC
+  let totalLineasRecibidas = 0;
+  const totalLineas = (ocLineas as { cantidad_pedida: number }[]).length;
+  for (const l of Array.from(ocLineasMap.values())) {
+    if ((l.cantidad_recibida || 0) >= l.cantidad_pedida) totalLineasRecibidas++;
+  }
+  let estadoCabecera: OCEstado = "EN_TRANSITO";
+  if (totalLineasRecibidas >= totalLineas) estadoCabecera = "RECIBIDA";
+  else if (totalLineasRecibidas > 0) estadoCabecera = "RECIBIDA_PARCIAL";
+  await sb.from("ordenes_compra").update({ estado: estadoCabecera }).eq("id", ordenCompraId);
+
+  // 6) Trigger recálculo del motor (stock_en_transito baja)
+  try { await fetch("/api/intelligence/recalcular", { method: "POST" }); } catch { /* silenciar */ }
+
+  return { estado_cabecera: estadoCabecera, lineas_actualizadas: deltaPorOcLinea.size };
 }
 
 /** Fetch recepciones vinculadas a una OC */
@@ -3072,6 +3145,49 @@ export async function fetchRecepcionesSinOC(proveedor: string): Promise<DBRecepc
     .order("created_at", { ascending: false })
     .limit(20);
   return (data || []) as DBRecepcion[];
+}
+
+/**
+ * Recepciones sin OC vinculada (cualquier proveedor, ventana de días).
+ * Default 30d. Excluye ANULADA. Usado por la vista /admin/recepciones/sin-vincular.
+ */
+export async function fetchRecepcionesSinVincular(dias: number = 30): Promise<DBRecepcion[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const desde = new Date(Date.now() - dias * 86400000).toISOString();
+  const { data } = await sb.from("recepciones").select("*")
+    .is("orden_compra_id", null)
+    .neq("estado", "ANULADA")
+    .gte("created_at", desde)
+    .order("created_at", { ascending: false });
+  return (data || []) as DBRecepcion[];
+}
+
+/**
+ * OCs abiertas candidatas para vincular a una recepción dada. Match de
+ * proveedor ILIKE bidireccional para tolerar variantes "Idetex" vs "IDETEX S.A.".
+ * Sin `proveedor` o con `anyProveedor=true` devuelve todas las OCs abiertas.
+ */
+export async function fetchOrdenesAbiertasParaVincular(
+  proveedor?: string,
+  anyProveedor: boolean = false,
+): Promise<DBOrdenCompra[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const estadosAbiertos = ["PENDIENTE", "EN_TRANSITO", "RECIBIDA_PARCIAL"];
+  if (anyProveedor || !proveedor) {
+    const { data } = await sb.from("ordenes_compra").select("*")
+      .in("estado", estadosAbiertos)
+      .order("fecha_emision", { ascending: false });
+    return (data || []) as DBOrdenCompra[];
+  }
+  const norm = proveedor.trim().toLowerCase();
+  const { data } = await sb.from("ordenes_compra").select("*")
+    .in("estado", estadosAbiertos)
+    .order("fecha_emision", { ascending: false });
+  const rows = (data || []) as DBOrdenCompra[];
+  return rows.filter(oc => {
+    const ocNorm = (oc.proveedor || "").trim().toLowerCase();
+    return ocNorm.includes(norm) || norm.includes(ocNorm);
+  });
 }
 
 /** Insertar log de acción admin */
