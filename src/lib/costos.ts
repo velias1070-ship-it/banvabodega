@@ -16,7 +16,7 @@ export interface CostoResuelto {
 const IVA = 1.19;
 
 interface ProductoCostoRow { sku: string; costo_promedio: number | null; costo: number | null }
-interface ComposicionRow { sku_venta: string; sku_origen: string; unidades: number }
+interface ComposicionRow { sku_venta: string; sku_origen: string; unidades: number; tipo_relacion: string }
 
 export interface CostosPreload {
   composicion: Map<string, ComposicionRow[]>;
@@ -28,12 +28,12 @@ export interface CostosPreload {
  * Usar cuando tenés muchas ventas que resolver (sync, backfill).
  */
 export async function preloadCostos(sb: SupabaseClient): Promise<CostosPreload> {
-  const { data: comp } = await sb.from("composicion_venta").select("sku_venta, sku_origen, unidades");
+  const { data: comp } = await sb.from("composicion_venta").select("sku_venta, sku_origen, unidades, tipo_relacion");
   const compMap = new Map<string, ComposicionRow[]>();
   for (const c of (comp || []) as ComposicionRow[]) {
     const key = (c.sku_venta || "").toUpperCase();
     const arr = compMap.get(key) || [];
-    arr.push({ sku_venta: key, sku_origen: (c.sku_origen || "").toUpperCase(), unidades: c.unidades || 1 });
+    arr.push({ sku_venta: key, sku_origen: (c.sku_origen || "").toUpperCase(), unidades: c.unidades || 1, tipo_relacion: c.tipo_relacion || "componente" });
     compMap.set(key, arr);
   }
 
@@ -77,9 +77,16 @@ export function resolverCostoVenta(
 
   // Si no hay composición, tratamos el sku_venta como si fuera su propio origen
   // (fallback: no toda venta está en composicion_venta todavía).
+  // Excluir alternativos: solo se despacha UNO (principal o alternativo),
+  // el costo corresponde al componente principal.
   const comps = componentes && componentes.length > 0
-    ? componentes
-    : [{ sku_venta: sv, sku_origen: sv, unidades: 1 }];
+    ? componentes.filter(c => c.tipo_relacion !== "alternativo")
+    : [{ sku_venta: sv, sku_origen: sv, unidades: 1, tipo_relacion: "componente" }];
+
+  // Si todos eran alternativos (no debería pasar), fallback al primero
+  if (comps.length === 0 && componentes && componentes.length > 0) {
+    comps.push(componentes[0]);
+  }
 
   for (const c of comps) {
     const prod = preload.productos.get(c.sku_origen);
