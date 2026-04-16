@@ -21,7 +21,7 @@ export async function GET() {
     // ── Fetch en paralelo ──
     const [intelRes, compRes, prodRes, cacheRes, ordRes] = await Promise.all([
       sb.from("sku_intelligence")
-        .select("sku_origen, nombre, categoria, proveedor, skus_venta, abc, xyz, cuadrante, accion, prioridad, alertas, alertas_count, target_dias_full, stock_bodega, stock_en_transito, mandar_full, pedir_proveedor, evento_activo, multiplicador_evento, liquidacion_accion, dias_en_quiebre, vel_pre_quiebre, es_quiebre_proveedor, abc_pre_quiebre, es_catch_up, venta_perdida_pesos, updated_at, vel_ponderada, vel_objetivo, gap_vel_pct, gmroi, dio")
+        .select("sku_origen, nombre, categoria, proveedor, skus_venta, abc, xyz, cuadrante, accion, prioridad, alertas, alertas_count, target_dias_full, stock_bodega, stock_en_transito, mandar_full, pedir_proveedor, pedir_proveedor_sin_rampup, factor_rampup_aplicado, rampup_motivo, evento_activo, multiplicador_evento, liquidacion_accion, dias_en_quiebre, vel_pre_quiebre, es_quiebre_proveedor, abc_pre_quiebre, es_catch_up, venta_perdida_pesos, updated_at, vel_ponderada, vel_objetivo, gap_vel_pct, gmroi, dio")
         .or("vel_ponderada.gt.0,stock_total.gt.0"),
       sb.from("composicion_venta").select("sku_venta, sku_origen, unidades, tipo_relacion"),
       sb.from("productos").select("sku, sku_venta, nombre, costo, precio"),
@@ -232,6 +232,9 @@ export async function GET() {
           stock_en_transito: intel.stock_en_transito,
           mandar_full: intel.mandar_full,
           pedir_proveedor: intel.pedir_proveedor,
+          pedir_proveedor_sin_rampup: intel.pedir_proveedor_sin_rampup,
+          factor_rampup_aplicado: intel.factor_rampup_aplicado,
+          rampup_motivo: intel.rampup_motivo,
           evento_activo: intel.evento_activo,
           dias_en_quiebre: intel.dias_en_quiebre,
           vel_pre_quiebre: intel.vel_pre_quiebre,

@@ -71,8 +71,11 @@ interface IntelRow {
   safety_stock_fuente?: string;
   rop_calculado?: number;
   necesita_pedir?: boolean;
+  pedir_proveedor_sin_rampup?: number;
+  factor_rampup_aplicado?: number;
+  rampup_motivo?: string;
   vel_pre_quiebre: number;
-  dias_en_quiebre: number;
+  dias_en_quiebre: number | null;
   es_quiebre_proveedor: boolean;
   abc_pre_quiebre: string | null;
   gmroi_potencial: number;
@@ -108,9 +111,12 @@ interface VentaRow {
   mandar_full: number;
   pedir_proveedor: number;
   evento_activo: string | null;
-  dias_en_quiebre: number;
+  dias_en_quiebre: number | null;
   vel_pre_quiebre: number;
   es_quiebre_proveedor: boolean;
+  pedir_proveedor_sin_rampup?: number;
+  factor_rampup_aplicado?: number;
+  rampup_motivo?: string;
   abc_pre_quiebre: string | null;
   es_catch_up: boolean;
   venta_perdida_pesos: number;
@@ -236,7 +242,7 @@ interface EnvioFullItem {
   multiplicadorEvento: number;
   stockEnTransito: number;
   velPreQuiebre: number;
-  diasEnQuiebre: number;
+  diasEnQuiebre: number | null;
   esQuiebreProveedor: boolean;
   puntoReorden: number;
   unidadesPorPack: number;
@@ -266,6 +272,11 @@ interface PedidoProveedorItem {
   proveedor: string;
   alertas: string[];
   accion: string;
+  pedirSinRampup: number;
+  factorRampup: number;
+  rampupMotivo: string;
+  diasEnQuiebre: number | null;
+  esQuiebreProveedor: boolean;
 }
 
 const ENVIO_ACCION_ORDEN: Record<string, number> = {
@@ -811,7 +822,7 @@ export default function AdminInteligencia() {
       if (r.es_quiebre_proveedor) notas.push("Proveedor sin stock");
       if (r.stock_en_transito > 0) notas.push(`OC en transito: ${r.stock_en_transito} uds`);
       if (r.evento_activo) notas.push(`Target ajustado por ${r.evento_activo}`);
-      if (r.vel_pre_quiebre > 0 && r.dias_en_quiebre > 14) notas.push("Producto estrella en quiebre");
+      if (r.vel_pre_quiebre > 0 && (r.dias_en_quiebre ?? 0) > 14) notas.push("Producto estrella en quiebre");
 
       items.push({
         skuVenta: r.sku_venta,
@@ -995,6 +1006,11 @@ export default function AdminInteligencia() {
           proveedor: r.proveedor || "Sin proveedor",
           alertas: r.alertas || [],
           accion: r.accion,
+          pedirSinRampup: r.pedir_proveedor_sin_rampup ?? r.pedir_proveedor,
+          factorRampup: r.factor_rampup_aplicado ?? 1.0,
+          rampupMotivo: r.rampup_motivo ?? "no_aplica",
+          diasEnQuiebre: r.dias_en_quiebre,
+          esQuiebreProveedor: r.es_quiebre_proveedor,
         };
       })
       .sort((a, b) => a.proveedor.localeCompare(b.proveedor) || b.velPonderada - a.velPonderada);
@@ -1376,7 +1392,7 @@ export default function AdminInteligencia() {
   const eventoActivo = rows.find((r: IntelRow) => r.evento_activo);
 
   // Estrellas en quiebre
-  const estrellasQuiebre = rows.filter((r: IntelRow) => r.dias_en_quiebre >= 14 && r.vel_pre_quiebre > 2 && (r.abc === "A" || r.abc_pre_quiebre === "A"));
+  const estrellasQuiebre = rows.filter((r: IntelRow) => (r.dias_en_quiebre ?? 0) >= 14 && r.vel_pre_quiebre > 2 && (r.abc === "A" || r.abc_pre_quiebre === "A"));
 
   if (loading) return <div style={{ padding: 24, color: "var(--txt3)" }}>Cargando inteligencia...</div>;
 
@@ -1529,7 +1545,12 @@ export default function AdminInteligencia() {
                 <span className="mono" style={{ fontWeight: 700, color: "var(--txt)" }}>{r.sku_origen}</span>
                 <span style={{ color: "var(--txt2)", flex: 1, minWidth: 80 }}>{r.nombre || ""}</span>
                 <span style={{ color: "var(--cyan)" }}>Vel pre: {fmtN(r.vel_pre_quiebre)}/sem</span>
-                <span style={{ color: "var(--red)" }}>{r.dias_en_quiebre}d</span>
+                <span
+                  style={{ color: "var(--red)" }}
+                  title={r.dias_en_quiebre === null ? "Historia de quiebre incompleta, revisar manualmente" : undefined}
+                >
+                  {r.dias_en_quiebre !== null ? `${r.dias_en_quiebre}d` : "—"}
+                </span>
                 <span style={{ color: "var(--red)" }} title={r.oportunidad_perdida_es_estimacion ? "Estimación: margen 25% asumido (sin datos reales en últimos 60 días)" : "Derivado de margen real"}>
                   {fmtMoney(r.venta_perdida_pesos)}{r.oportunidad_perdida_es_estimacion && <span style={{ color: "var(--amber)", marginLeft: 2, fontSize: 9 }}>*est</span>}
                 </span>
@@ -1771,11 +1792,11 @@ export default function AdminInteligencia() {
             </thead>
             <tbody>
               {(filtered as IntelRow[]).map((r: IntelRow) => {
-                const esEstrellaQuiebre = r.dias_en_quiebre >= 14 && r.vel_pre_quiebre > 2 && (r.abc === "A" || r.abc_pre_quiebre === "A");
+                const esEstrellaQuiebre = (r.dias_en_quiebre ?? 0) >= 14 && r.vel_pre_quiebre > 2 && (r.abc === "A" || r.abc_pre_quiebre === "A");
                 return (
                 <tr key={r.sku_origen} style={esEstrellaQuiebre ? { background: "var(--redBg)" } : undefined}>
                   <td className="mono" style={{ fontSize: 11, whiteSpace: "nowrap" }}>
-                    {esEstrellaQuiebre && <span title={`Quiebre ${r.dias_en_quiebre}d`} style={{ marginRight: 3 }}>*</span>}
+                    {esEstrellaQuiebre && <span title={`Quiebre ${r.dias_en_quiebre ?? "?"}d`} style={{ marginRight: 3 }}>*</span>}
                     {r.es_catch_up && <span title="Catch-up" style={{ marginRight: 3, color: "var(--amber)" }}>!</span>}
                     {r.sku_origen}
                   </td>
@@ -1784,7 +1805,8 @@ export default function AdminInteligencia() {
                     <span style={{ padding: "2px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, background: accionColor(r.accion) + "22", color: accionColor(r.accion), border: `1px solid ${accionColor(r.accion)}44` }}>
                       {r.accion}
                     </span>
-                    {r.dias_en_quiebre > 0 && <div style={{ fontSize: 8, color: "var(--txt3)", marginTop: 1 }}>{r.dias_en_quiebre}d quiebre</div>}
+                    {(r.dias_en_quiebre ?? 0) > 0 && <div style={{ fontSize: 8, color: "var(--txt3)", marginTop: 1 }}>{r.dias_en_quiebre}d quiebre</div>}
+                    {r.dias_en_quiebre === null && <div style={{ fontSize: 8, color: "var(--amber)", marginTop: 1 }} title="Historia de quiebre incompleta">quiebre s/d</div>}
                   </td>
                   <td style={{ textAlign: "center" }}>
                     <span style={{ color: abcColor(r.abc), fontWeight: 700, fontSize: 11 }}>{r.abc}</span>
@@ -2311,6 +2333,7 @@ export default function AdminInteligencia() {
                               <PSH col="transito" label="En Transito" right />
                               <PSH col="cob" label="Cob Total" right />
                               <PSH col="pedir" label="Pedir" right />
+                              <th style={{ textAlign: "center" }}>Rampup</th>
                               <PSH col="ip" label="IP" right />
                               <PSH col="bultos" label="Bultos" right />
                               <th style={{ textAlign: "right" }}>Costo Unit</th>
@@ -2339,7 +2362,40 @@ export default function AdminInteligencia() {
                                   <td style={{ textAlign: "right" }}>
                                     <input type="number" value={item.pedirEditado}
                                       onChange={e => setPedidoEdits(prev => new Map(prev).set(item.skuOrigen, Math.max(0, parseInt(e.target.value) || 0)))}
+                                      title={item.factorRampup !== 1.0 ? `Pre-rampup: ${item.pedirSinRampup} uds` : undefined}
                                       style={{ width: 60, textAlign: "right", padding: "2px 4px", fontSize: 11, background: "var(--bg3)", border: "1px solid var(--bg4)", borderRadius: 4, color: "var(--txt)", fontFamily: "var(--font-mono)" }} />
+                                  </td>
+                                  <td style={{ textAlign: "center" }}>
+                                    {(() => {
+                                      const f = item.factorRampup;
+                                      const color = f === 1.0 ? "var(--green)"
+                                        : f >= 0.5 ? "var(--amber)"
+                                        : f > 0 ? "var(--red)"
+                                        : "var(--txt3)";
+                                      const bg = f === 1.0 ? "var(--greenBg)"
+                                        : f >= 0.5 ? "var(--amberBg)"
+                                        : f > 0 ? "var(--redBg)"
+                                        : "var(--bg3)";
+                                      const tooltip = `Factor: ${f.toFixed(2)}\nMotivo: ${item.rampupMotivo}\nDías quiebre: ${item.diasEnQuiebre ?? "s/d"}\nProveedor agotado: ${item.esQuiebreProveedor ? "sí" : "no"}\nPre-rampup: ${item.pedirSinRampup} uds → Ajustado: ${item.pedirEditado} uds`;
+                                      return (
+                                        <span
+                                          title={tooltip}
+                                          style={{
+                                            display: "inline-block",
+                                            padding: "2px 6px",
+                                            borderRadius: 4,
+                                            fontSize: 10,
+                                            fontWeight: 700,
+                                            color,
+                                            background: bg,
+                                            border: `1px solid ${color}`,
+                                            minWidth: 36,
+                                          }}
+                                        >
+                                          {f.toFixed(2)}
+                                        </span>
+                                      );
+                                    })()}
                                   </td>
                                   <td style={{ textAlign: "right" }}>
                                     <input type="number" value={pedidoIpEdits.get(item.skuOrigen) ?? (item.innerPack > 1 ? item.innerPack : "")}

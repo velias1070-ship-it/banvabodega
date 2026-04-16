@@ -8,6 +8,7 @@
 
 import { calcularCobertura, calcularTargetDias, calcularMargen, COSTO_ENVIO_FLEX } from "./reposicion";
 import type { FinancialAgg } from "./reposicion";
+import { calcularFactorRampup } from "./rampup";
 
 /* ═══════════════════════════════════════════════════════════
    TIPOS
@@ -170,6 +171,9 @@ export interface SkuIntelRow {
   mandar_full: number;
   pedir_proveedor: number;
   pedir_proveedor_bultos: number;
+  pedir_proveedor_sin_rampup: number;
+  factor_rampup_aplicado: number;
+  rampup_motivo: string;
   requiere_ajuste_precio: boolean;
 
   liquidacion_accion: string | null;
@@ -190,7 +194,8 @@ export interface SkuIntelRow {
   /** Snapshot del margen unitario al entrar en quiebre. Permite imputar
    *  margen_neto_30d cuando no hay ventas reales últimos 30d. */
   margen_unitario_pre_quiebre: number;
-  dias_en_quiebre: number;
+  /** null = historia de quiebre incompleta (sin snapshot válido >= 2020). */
+  dias_en_quiebre: number | null;
   es_quiebre_proveedor: boolean;
   abc_pre_quiebre: string | null;
   gmroi_potencial: number;
@@ -288,7 +293,7 @@ export interface PrevIntelRow {
   vel_pre_quiebre: number;
   /** Snapshot del margen unitario al entrar en quiebre. Se preserva entre recálculos. */
   margen_unitario_pre_quiebre: number;
-  dias_en_quiebre: number;
+  dias_en_quiebre: number | null;
   es_quiebre_proveedor: boolean;
   abc_pre_quiebre: string | null;
   vel_ponderada: number;
@@ -896,14 +901,27 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     // ── PASO 14: Oportunidad perdida (dias + semanas) ──
     // El cálculo en pesos se hace más abajo, después de paso 14b,
     // porque depende de vel_pre_quiebre para SKUs en quiebre prolongado.
-    const diasQuiebre = quiebresDelSku.filter(q => q.en_quiebre_full).length;
+    //
+    // diasQuiebre: días calendario desde el primer snapshot válido de quiebre
+    // (NO el COUNT bruto de registros, que se disparaba a miles cuando el
+    // histórico de stock_snapshots acumulaba filas viejas). Guard contra
+    // fechas pre-2020 (epoch/datos corruptos) y cap a 365 días.
+    const fechasQuiebreValidas = quiebresDelSku
+      .filter(q => q.en_quiebre_full && q.fecha)
+      .map(q => new Date(q.fecha))
+      .filter(d => !Number.isNaN(d.getTime()) && d.getFullYear() >= 2020)
+      .sort((a, b) => a.getTime() - b.getTime());
+    const primerQuiebre = fechasQuiebreValidas[0] ?? null;
+    const diasQuiebre = primerQuiebre
+      ? Math.min(365, Math.max(0, Math.floor((hoyMs - primerQuiebre.getTime()) / 86400000)))
+      : 0;
     const semanasQuiebre = semanasEnQuiebre.size;
 
     // ── PASO 14b: Quiebre prolongado ──
     const prev = prevIntelligence.get(skuOrigen);
     let velPreQuiebre = prev?.vel_pre_quiebre || 0;
     let margenUnitarioPreQuiebre = prev?.margen_unitario_pre_quiebre || 0;
-    let diasEnQuiebre = prev?.dias_en_quiebre || 0;
+    let diasEnQuiebre: number | null = prev?.dias_en_quiebre ?? 0;
     // Flag re-evaluado SIEMPRE contra el catálogo actual — no se arrastra del
     // estado previo. La semántica ahora es "el proveedor está agotado HOY",
     // no "estaba agotado cuando el SKU entró en quiebre".
@@ -916,20 +934,27 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     const enQuiebreAhora = stFull === 0 && velPonderada > 0;
 
     if (enQuiebreAhora) {
-      if (prev && prev.dias_en_quiebre > 0) {
-        // Continúa en quiebre — incrementar días (flag ya re-evaluado arriba)
-        diasEnQuiebre = prev.dias_en_quiebre + 1;
+      const prevDias = prev?.dias_en_quiebre;
+      if (prev && (prevDias === null || (prevDias ?? 0) > 0)) {
+        // Continúa en quiebre — incrementar días (flag ya re-evaluado arriba).
+        // Si prev era null (historia incompleta), se preserva null.
+        diasEnQuiebre = prevDias === null ? null : (prevDias ?? 0) + 1;
         velPreQuiebre = prev.vel_pre_quiebre;
         margenUnitarioPreQuiebre = prev.margen_unitario_pre_quiebre || 0;
         abcPreQuiebre = prev.abc_pre_quiebre;
       } else {
-        // Acaba de entrar en quiebre — congelar velocidad y margen actuales
-        diasEnQuiebre = diasQuiebre > 0 ? diasQuiebre : 1;
+        // Acaba de entrar en quiebre — inicializar desde primer snapshot válido.
+        // Si no hay snapshot confiable, diasEnQuiebre = null (historia incompleta).
+        if (primerQuiebre) {
+          diasEnQuiebre = diasQuiebre > 0 ? diasQuiebre : 1;
+        } else {
+          diasEnQuiebre = null;
+        }
         velPreQuiebre = velPonderada;
         margenUnitarioPreQuiebre = margenProm;  // snapshot del margen unitario al entrar en quiebre
         abcPreQuiebre = null; // Se asigna después del paso ABC global
       }
-    } else if (prev && prev.dias_en_quiebre > 0 && stFull > 0) {
+    } else if (prev && (prev.dias_en_quiebre ?? 0) > 0 && stFull > 0) {
       // SKU se repuso — verificar catch-up
       if (prev.vel_pre_quiebre > 2 && vel7d > prev.vel_pre_quiebre * 1.5) {
         esCatchUp = true;
@@ -949,13 +974,13 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       }
     }
 
-    const enQuiebreProlongado = enQuiebreAhora && diasEnQuiebre >= 14 && velPreQuiebre > 2;
+    const enQuiebreProlongado = enQuiebreAhora && (diasEnQuiebre ?? 0) >= 14 && velPreQuiebre > 2;
 
     // ── PASO 14c: Oportunidad perdida en pesos (depende de 14b) ──
     // Días efectivos: diasQuiebre cuenta registros explícitos en stock_snapshots
     // pero SKUs agotados hace mucho (antes de que existiera el tracking) pueden
     // tener diasQuiebre=0 con diasEnQuiebre=78. Usar el max para no subestimar.
-    const diasEfectivos = Math.max(diasQuiebre, diasEnQuiebre);
+    const diasEfectivos = Math.max(diasQuiebre, diasEnQuiebre ?? 0);
     // Cuando el SKU lleva tiempo en quiebre, velFull está artificialmente
     // baja (no hay órdenes recientes) y margenFull30d puede ser 0. Caer a:
     //  1) vel_pre_quiebre × pctFull si estamos en quiebre prolongado
@@ -1156,6 +1181,9 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       mandar_full: mandarFull,
       pedir_proveedor: pedirTotal,
       pedir_proveedor_bultos: pedirProvBultos,
+      pedir_proveedor_sin_rampup: pedirTotal,
+      factor_rampup_aplicado: 1.0,
+      rampup_motivo: "no_aplica",
       requiere_ajuste_precio: requiereAjustePrecio,
 
       // Liquidación se asigna después (paso 17 global, requiere ABC)
@@ -1212,14 +1240,14 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
 
   for (const r of rows) {
     // Imputar ingreso para SKUs en quiebre prolongado (lógica histórica)
-    if (r.dias_en_quiebre >= 14 && r.vel_pre_quiebre > 2) {
+    if ((r.dias_en_quiebre ?? 0) >= 14 && r.vel_pre_quiebre > 2) {
       r.ingreso_30d = round2(r.vel_pre_quiebre * r.precio_promedio * 4.3);
     }
     // Margen real desde ventas_ml_cache (input externo)
     const margenReal = margenPorSku.get(r.sku_origen) || 0;
     if (margenReal > 0) {
       r.margen_neto_30d = round2(margenReal);
-    } else if (r.dias_en_quiebre >= 14 && r.vel_pre_quiebre > 2 && r.margen_unitario_pre_quiebre > 0) {
+    } else if ((r.dias_en_quiebre ?? 0) >= 14 && r.vel_pre_quiebre > 2 && r.margen_unitario_pre_quiebre > 0) {
       // Imputación pre-quiebre: vel × margen_unitario × 4.3 sem
       r.margen_neto_30d = round2(r.vel_pre_quiebre * r.margen_unitario_pre_quiebre * 4.3);
     } else {
@@ -1229,7 +1257,7 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     const udsReal = unidadesPorSku.get(r.sku_origen) || 0;
     if (udsReal > 0) {
       r.uds_30d = udsReal;
-    } else if (r.dias_en_quiebre >= 14 && r.vel_pre_quiebre > 2) {
+    } else if ((r.dias_en_quiebre ?? 0) >= 14 && r.vel_pre_quiebre > 2) {
       r.uds_30d = Math.round(r.vel_pre_quiebre * 4.3);
     } else {
       r.uds_30d = udsReal;
@@ -1280,7 +1308,7 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
 
   // Asignar abc_pre_quiebre para SKUs que acaban de entrar en quiebre
   for (const r of rows) {
-    if (r.dias_en_quiebre > 0 && !r.abc_pre_quiebre) {
+    if ((r.dias_en_quiebre ?? 0) > 0 && !r.abc_pre_quiebre) {
       r.abc_pre_quiebre = r.abc;
     }
   }
@@ -1307,7 +1335,7 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     const provCatR = proveedorCatalogo?.get(r.sku_origen);
     const innerPack = provCatR?.inner_pack || prod?.inner_pack || 1;
     const velCalcR = r.multiplicador_evento > 1 ? r.vel_ajustada_evento : r.vel_ponderada;
-    const enQP = r.stock_full === 0 && r.vel_ponderada > 0 && r.dias_en_quiebre >= 14 && r.vel_pre_quiebre > 2;
+    const enQP = r.stock_full === 0 && r.vel_ponderada > 0 && (r.dias_en_quiebre ?? 0) >= 14 && r.vel_pre_quiebre > 2;
     const velParaPedir = enQP ? r.vel_pre_quiebre : velCalcR;
 
     // mandar_full: solo el split a Full según target_dias_full y pct_full.
@@ -1351,7 +1379,7 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     // The demand is shared — it's the same publication/listing
     // So we only need to cover it once, not per SKU origen
     const velCalcR = r.multiplicador_evento > 1 ? r.vel_ajustada_evento : r.vel_ponderada;
-    const enQP = r.stock_full === 0 && r.vel_ponderada > 0 && r.dias_en_quiebre >= 14 && r.vel_pre_quiebre > 2;
+    const enQP = r.stock_full === 0 && r.vel_ponderada > 0 && (r.dias_en_quiebre ?? 0) >= 14 && r.vel_pre_quiebre > 2;
     const velR = enQP ? r.vel_pre_quiebre : velCalcR;
     const tFull = velR * r.pct_full * r.target_dias_full / 7;
     const tFlex = velR * r.pct_flex * 30 / 7;
@@ -1370,6 +1398,26 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       const provCat2 = proveedorCatalogo?.get(r.sku_origen);
       const ip2 = provCat2?.inner_pack || prod2?.inner_pack || 1;
       r.pedir_proveedor_bultos = ip2 > 1 && r.pedir_proveedor > 0 ? Math.ceil(r.pedir_proveedor / ip2) : r.pedir_proveedor;
+    }
+  }
+
+  // ── Aplicar factor ramp-up post-quiebre sobre pedir_proveedor ──
+  // Matriz en src/lib/rampup.ts. Distingue quiebre propio vs proveedor y
+  // modula por duración (Manual Inv. Parte 3 Error #5, Parte 2 §7.4).
+  for (const r of rows) {
+    const rampup = calcularFactorRampup(r.dias_en_quiebre, r.es_quiebre_proveedor);
+    const pedirSinRampup = r.pedir_proveedor;
+    r.pedir_proveedor_sin_rampup = pedirSinRampup;
+    r.factor_rampup_aplicado = rampup.factor;
+    r.rampup_motivo = rampup.motivo;
+    if (rampup.factor !== 1.0 && pedirSinRampup > 0) {
+      r.pedir_proveedor = Math.round(pedirSinRampup * rampup.factor);
+      const prodR = prodMap.get(r.sku_origen);
+      const provCatR = proveedorCatalogo?.get(r.sku_origen);
+      const ipR = provCatR?.inner_pack || prodR?.inner_pack || 1;
+      r.pedir_proveedor_bultos = ipR > 1 && r.pedir_proveedor > 0
+        ? Math.ceil(r.pedir_proveedor / ipR)
+        : r.pedir_proveedor;
     }
   }
 
@@ -1549,7 +1597,7 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     }
 
     // Quiebre prolongado
-    if (r.dias_en_quiebre >= 14 && r.vel_pre_quiebre > 2 && (r.abc === "A" || r.abc_pre_quiebre === "A")) {
+    if ((r.dias_en_quiebre ?? 0) >= 14 && r.vel_pre_quiebre > 2 && (r.abc === "A" || r.abc_pre_quiebre === "A")) {
       alertas.push("estrella_quiebre_prolongado");
     }
     if (r.es_catch_up) alertas.push("catch_up_post_quiebre");

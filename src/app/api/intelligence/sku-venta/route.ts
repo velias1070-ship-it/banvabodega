@@ -43,7 +43,7 @@ export async function GET(request: Request) {
     const fechaDesde = new Date(Date.now() - 60 * 86400000).toISOString();
     const [intelRows, composicion, cacheRows, ordenes, productosRows] = await Promise.all([
       paginate(() => sb.from("sku_intelligence")
-        .select("sku_origen, nombre, categoria, proveedor, abc, xyz, cuadrante, accion, prioridad, alertas, alertas_count, target_dias_full, stock_bodega, stock_en_transito, mandar_full, pedir_proveedor, evento_activo, liquidacion_accion, dias_en_quiebre, vel_pre_quiebre, es_quiebre_proveedor, abc_pre_quiebre, es_catch_up, venta_perdida_pesos, oportunidad_perdida_es_estimacion, updated_at, vel_ponderada, stock_total, vel_objetivo, gap_vel_pct, gmroi, dio")
+        .select("sku_origen, nombre, categoria, proveedor, abc, xyz, cuadrante, accion, prioridad, alertas, alertas_count, target_dias_full, stock_bodega, stock_en_transito, mandar_full, pedir_proveedor, pedir_proveedor_sin_rampup, factor_rampup_aplicado, rampup_motivo, evento_activo, liquidacion_accion, dias_en_quiebre, vel_pre_quiebre, es_quiebre_proveedor, abc_pre_quiebre, es_catch_up, venta_perdida_pesos, oportunidad_perdida_es_estimacion, updated_at, vel_ponderada, stock_total, vel_objetivo, gap_vel_pct, gmroi, dio")
         .or("vel_ponderada.gt.0,stock_total.gt.0")),
       paginate(() => sb.from("composicion_venta").select("sku_venta, sku_origen, unidades, tipo_relacion")),
       paginate(() => sb.from("stock_full_cache").select("sku_venta, cantidad")),
@@ -356,6 +356,9 @@ export async function GET(request: Request) {
           stock_en_transito: intel.stock_en_transito,
           mandar_full: share > 0 ? Math.round((intel.mandar_full as number) * share) : 0,
           pedir_proveedor: share > 0 ? Math.round((intel.pedir_proveedor as number) * share) : 0,
+          pedir_proveedor_sin_rampup: share > 0 ? Math.round((intel.pedir_proveedor_sin_rampup as number) * share) : 0,
+          factor_rampup_aplicado: intel.factor_rampup_aplicado,
+          rampup_motivo: intel.rampup_motivo,
           evento_activo: intel.evento_activo,
           dias_en_quiebre: intel.dias_en_quiebre,
           vel_pre_quiebre: intel.vel_pre_quiebre,
