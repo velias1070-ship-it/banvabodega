@@ -3,88 +3,48 @@ import { mlGet } from "@/lib/ml";
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
-type Item = {
-  charge_info?: {
-    detail_id?: number;
-    detail_amount?: number;
-    detail_sub_type?: string;
-    creation_date_time?: string;
-    legal_document_number?: string;
-    transaction_detail?: string;
-  };
-  fulfillment_info?: {
-    type?: string;
-    amount?: number;
-    amount_per_unit?: number;
-    sku?: string | null;
-    item_id?: string | null;
-    item_title?: string | null;
-    quantity?: number;
-    inventory_id?: string | null;
-  };
-};
-
 export async function GET() {
-  // Abril en curso — período 2026-04-01
-  const key = "2026-04-01";
-  const all: Item[] = [];
-  let lastId: number | undefined = undefined;
-  for (let p = 0; p < 20; p++) {
-    const q: string = lastId ? `from_id=${lastId}&limit=50` : `limit=50`;
-    const url: string = `/billing/integration/periods/key/${key}/group/ML/full/details?document_type=BILL&${q}`;
-    const raw: { results?: Item[]; last_id?: number; total?: number } | null = await mlGet<{ results?: Item[]; last_id?: number; total?: number }>(url).catch(() => null);
-    if (!raw?.results?.length) break;
-    all.push(...raw.results);
-    if (!raw.last_id || raw.last_id === lastId) break;
-    lastId = raw.last_id;
-    if (raw.results.length < 50) break;
-  }
+  // 1. Listar periods para ver estado de abril y anteriores cerrados
+  const periods = await mlGet<Record<string, unknown>>(
+    `/billing/integration/monthly/periods?group=ML&document_type=BILL&limit=10`
+  ).catch(() => null);
 
-  // Agrupar por día (fecha del charge) x tipo
-  const byDay: Record<string, Record<string, { count: number; total: number; units: number }>> = {};
-  for (const item of all) {
-    const dt = item.charge_info?.creation_date_time || "";
-    const day = dt.slice(0, 10);
-    const type = item.fulfillment_info?.type || "UNKNOWN";
-    if (!byDay[day]) byDay[day] = {};
-    if (!byDay[day][type]) byDay[day][type] = { count: 0, total: 0, units: 0 };
-    byDay[day][type].count++;
-    byDay[day][type].total += item.fulfillment_info?.amount || item.charge_info?.detail_amount || 0;
-    byDay[day][type].units += item.fulfillment_info?.quantity || 0;
+  // 2. Probar abril con los 2 endpoints y ambos document_type
+  const aprilKey = "2026-04-01";
+  const marchKey = "2026-03-01";
+  const probes: Record<string, Record<string, unknown>> = {};
+  const urls = [
+    `/billing/integration/periods/key/${aprilKey}/group/ML/full/details?document_type=BILL&limit=5`,
+    `/billing/integration/periods/key/${aprilKey}/group/ML/details?document_type=BILL&limit=5`,
+    `/billing/integration/periods/key/${aprilKey}/group/ML/full/details?document_type=CREDIT_NOTE&limit=5`,
+    `/billing/integration/periods/key/${aprilKey}/group/ML/details?document_type=CREDIT_NOTE&limit=5`,
+    `/billing/integration/periods/key/${aprilKey}/group/ML/details?limit=5`,  // sin doc_type
+    `/billing/integration/periods/key/${aprilKey}/group/ML/full/details?limit=5`,
+    // Marzo con CREDIT_NOTE (por comparar)
+    `/billing/integration/periods/key/${marchKey}/group/ML/full/details?document_type=CREDIT_NOTE&limit=5`,
+  ];
+  for (const url of urls) {
+    const raw = await mlGet<Record<string, unknown>>(url).catch(() => null);
+    probes[url] = {
+      null: raw === null,
+      keys: raw ? Object.keys(raw) : null,
+      total: raw ? (raw as { total?: number }).total : null,
+      has_results: raw && Array.isArray((raw as { results?: unknown[] }).results)
+        ? (raw as { results: unknown[] }).results.length
+        : 0,
+      sample: raw && Array.isArray((raw as { results?: unknown[] }).results) && (raw as { results: unknown[] }).results.length > 0
+        ? JSON.stringify((raw as { results: unknown[] }).results[0]).slice(0, 800)
+        : null,
+    };
   }
-
-  // Total global
-  const totalByType: Record<string, { count: number; total: number; units: number }> = {};
-  for (const item of all) {
-    const t = item.fulfillment_info?.type || "UNKNOWN";
-    if (!totalByType[t]) totalByType[t] = { count: 0, total: 0, units: 0 };
-    totalByType[t].count++;
-    totalByType[t].total += item.fulfillment_info?.amount || item.charge_info?.detail_amount || 0;
-    totalByType[t].units += item.fulfillment_info?.quantity || 0;
-  }
-
-  // Items de abril 15 específicamente
-  const items15 = all.filter(i => (i.charge_info?.creation_date_time || "").slice(0, 10) === "2026-04-15");
 
   return NextResponse.json({
-    key,
-    total_items: all.length,
-    global_by_type: totalByType,
-    by_day: byDay,
-    abril_15: {
-      count: items15.length,
-      items: items15.map(i => ({
-        detail_id: i.charge_info?.detail_id,
-        date: i.charge_info?.creation_date_time,
-        transaction: i.charge_info?.transaction_detail,
-        type: i.fulfillment_info?.type,
-        amount: i.fulfillment_info?.amount,
-        amount_per_unit: i.fulfillment_info?.amount_per_unit,
-        quantity: i.fulfillment_info?.quantity,
-        sku: i.fulfillment_info?.sku,
-        item_id: i.fulfillment_info?.item_id,
-        item_title: i.fulfillment_info?.item_title,
-      })),
-    },
+    periods_list: periods ? {
+      total: (periods as { total?: number }).total,
+      results: Array.isArray((periods as { results?: unknown[] }).results)
+        ? (periods as { results: unknown[] }).results
+        : null,
+    } : null,
+    probes,
   });
 }
