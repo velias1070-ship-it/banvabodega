@@ -65,6 +65,10 @@
       "schedule": "0 12 * * 1"
     },
     {
+      "path": "/api/intelligence/forecast-accuracy",
+      "schedule": "30 12 * * 1"
+    },
+    {
       "path": "/api/ml/billing-cfwa-sync",
       "schedule": "0 13 * * *"
     }

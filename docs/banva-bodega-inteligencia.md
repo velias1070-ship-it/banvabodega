@@ -745,7 +745,7 @@ Explícito — estos no existen en el código hoy:
 | 1 | **Recalc incremental por evento** | El cron siempre corre `full=true`. No hay enqueue tipo `intelligence_dirty_queue` cuando cambia stock/venta/costo. |
 | 2 | **Tests del motor** | Cero coverage en `intelligence.ts`. Único test del repo: `src/lib/__tests__/reposicion.test.ts`. |
 | 3 | **Versionado de configuración** | `intel_config` no guarda snapshot por corrida. `config_historial` existe pero no se usa desde el motor. |
-| 4 | **Forecast accuracy** (WMAPE / bias / tracking signal) | No se compara vel real con vel prevista. No hay tabla backtest. |
+| 4 | **Forecast accuracy** (WMAPE / bias / tracking signal) | **Parcial (medición OK, alertas pendientes).** PR1/3 agregó tablas `forecast_snapshots_semanales` + `forecast_accuracy`, módulo puro `src/lib/forecast-accuracy.ts` con WMAPE / bias / MAD / tracking_signal, cron lunes 12:30 UTC y backfill reconstruido para 12 semanas. PR2 agrega alertas `tracking_signal_alto` en motor + UI. PR3: TSB. |
 | 5 | **TSB para demanda intermitente** | Clase Z usa mismo SS que X/Y. No hay Teunter-Syntetos-Babai. |
 | 6 | **Holt-Winters / Croston** | Nada más allá del SMA ponderado 50/30/20. |
 | 7 | **EOQ / costo de orden** | `moq` se respeta vía alerta pero no se optimiza tamaño de lote. |
@@ -804,9 +804,56 @@ Explícito — estos no existen en el código hoy:
 
 ---
 
+## 15. Forecast accuracy (PR1/3)
+
+Medición de error de `vel_ponderada` sobre ventanas móviles. PR1 (este) implementa la medición sin alertas ni UI; PR2 engancha alertas al motor; PR3 agrega TSB para clase Z.
+
+### 15.1 Tablas
+
+| Tabla | Propósito |
+|---|---|
+| `forecast_snapshots_semanales` | Una fila por `(sku_origen, semana_inicio)`. Guarda el forecast que estaba vigente ese lunes. `origen='real'` vs `'reconstruido'`. `en_quiebre` es **NULLABLE**: `NULL` en filas reconstruidas o cuando `stock_snapshots` no cubre los 7 días previos. |
+| `forecast_accuracy` | Métricas por `(sku_origen, ventana_semanas, calculado_at)`. Ventanas fijas 4/8/12. FK a `sku_intelligence(sku_origen)` ON DELETE CASCADE. |
+
+### 15.2 Fórmulas (`src/lib/forecast-accuracy.ts`)
+
+```
+error_i = actual_i − forecast_i             # positivo = subestimamos
+WMAPE   = Σ|error_i| / Σ actual_i           # NULL si Σactual=0
+BIAS    = Σ error_i / n                     # promedio con signo
+MAD     = Σ|error_i| / n
+TS      = Σ error_i / MAD                   # NULL si MAD=0
+```
+
+Reglas:
+- Tomar últimas N semanas cerradas (`ventanaSemanas` = 4|8|12).
+- Excluir semanas con `en_quiebre=true` **o** `en_quiebre=null`.
+- `semanas_evaluadas < 4` ⇒ todas las métricas NULL y `es_confiable=false`.
+
+Benchmark del manual (Parte 2 §6.6.2): WMAPE < 20 % para A, < 35 % para B, `|TS| < 4` target.
+
+### 15.3 Endpoints
+
+| Método | Path | Función |
+|---|---|---|
+| POST | `/api/intelligence/forecast-accuracy` | Valida `Authorization: Bearer ${CRON_SECRET}` (o `x-cron-secret`). Corre `snapshotSemanalActual()` + `calcularYGuardarAccuracy()`. |
+| GET | `/api/intelligence/forecast-accuracy?sku_origen=X` | Últimas 3 corridas × 3 ventanas del SKU. Lectura pública. |
+
+### 15.4 Cron
+
+```
+0 11 * * *   /api/intelligence/recalcular           (ya existía)
+0 12 * * 1   /api/intelligence/actualizar-lead-times (ya existía)
+30 12 * * 1  /api/intelligence/forecast-accuracy    ← NUEVO
+```
+
+### 15.5 Backfill
+
+Script `scripts/backfill-forecast-snapshots.ts` (o via SQL directo; éste se usó en producción). Reconstruye los últimos 12 lunes cerrados usando `ventas_ml_cache` + `composicion_venta` con las mismas fórmulas que el motor P2. Todas las filas reconstruidas llevan `origen='reconstruido'` y `en_quiebre=NULL`. El primer snapshot con `origen='real'` lo graba el cron cada lunes.
+
 ## Metadata
 
-- **Fecha de generación:** 2026-04-16
+- **Fecha de generación:** 2026-04-16 (actualizado 2026-04-17 con PR1 forecast accuracy)
 - **Último commit revisado:** `352e7a4` (`fix(ml/webhook): parsear formato real de stock-locations`)
 - **Snapshot del motor al momento de redactar:** último `recalcularTodo()` corrido el **2026-04-17 01:52 UTC** — 533 SKUs.
 - **Archivos fuente principales:** `src/lib/intelligence.ts` (1 766 LOC), `src/lib/intelligence-queries.ts` (635 LOC), `src/lib/reposicion.ts` (199 LOC), `src/lib/rampup.ts` (41 LOC), `src/components/AdminInteligencia.tsx` (3 315 LOC), `src/app/api/intelligence/**` (8 rutas), `vercel.json` (16 crons).
