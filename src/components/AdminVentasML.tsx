@@ -190,17 +190,37 @@ export default function AdminVentasML() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Carga CFWA (almacenamiento Full) y Ads totales del rango seleccionado
+  // Carga CFWA (almacenamiento Full) y Ads totales del rango seleccionado.
+  // Ads cache tiene ~330 items/día × N días; paginamos para sortear el limit 1000 de Supabase.
   useEffect(() => {
     (async () => {
       const sb = getSupabase(); if (!sb) return;
-      const [{ data: cfwaData }, { data: adsData }] = await Promise.all([
-        sb.from("ml_billing_cfwa").select("amount").gte("day", from).lte("day", to),
-        sb.from("ml_ads_daily_cache").select("cost_neto").gte("date", from).lte("date", to),
-      ]);
+
+      // CFWA: pocos rows (4/día), cabe en una llamada.
+      const { data: cfwaData } = await sb
+        .from("ml_billing_cfwa")
+        .select("amount")
+        .gte("day", from).lte("day", to)
+        .limit(10000);
       const cfwa = (cfwaData || []).reduce((s: number, r: { amount: number | string }) => s + Number(r.amount || 0), 0);
-      const adsNeto = (adsData || []).reduce((s: number, r: { cost_neto: number | string }) => s + Number(r.cost_neto || 0), 0);
       setCfwaRango(cfwa);
+
+      // Ads: paginamos por rangos de 1000 hasta agotar.
+      let adsNeto = 0;
+      let offset = 0;
+      const pageSize = 1000;
+      while (true) {
+        const { data, error } = await sb
+          .from("ml_ads_daily_cache")
+          .select("cost_neto")
+          .gte("date", from).lte("date", to)
+          .range(offset, offset + pageSize - 1);
+        if (error || !data || data.length === 0) break;
+        adsNeto += data.reduce((s: number, r: { cost_neto: number | string }) => s + Number(r.cost_neto || 0), 0);
+        if (data.length < pageSize) break;
+        offset += pageSize;
+        if (offset > 100000) break; // safety
+      }
       setAdsTotalRango(Math.round(adsNeto * 1.19));
     })();
   }, [from, to]);
