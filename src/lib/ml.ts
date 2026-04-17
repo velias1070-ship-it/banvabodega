@@ -2017,8 +2017,10 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     console.log(`[syncStockFull] Items sin mapeo (primeros 10): ${unmapped.slice(0, 10).map(r => `${r.item_id}(scf=${r.titulo})`).join(", ")}`);
   }
 
-  const mlItemsUpsert = itemsMapRows.map(r => ({
-    sku: r.sku_venta || r.item_id,
+  // Solo insertar filas con sku_venta resuelto. Usar item_id como SKU contamina
+  // ml_items_map con filas "fantasma" que luego aparecen como SKU basura en ventas.
+  const mlItemsUpsert = mapped.map(r => ({
+    sku: r.sku_venta!,
     item_id: r.item_id,
     variation_id: r.variation_id ? parseInt(r.variation_id) : null,
     inventory_id: r.inventory_id,
@@ -2075,6 +2077,58 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
         }
       }
     }
+  }
+
+  // 5b. Auto-crear productos y composicion_venta faltantes.
+  // Sin esto, un SKU nuevo en ML vende pero el motor de inteligencia no lo ve
+  // (vel_ponderada=0 aunque haya ventas reales) — bug histórico detectado abr-2026.
+  //   - productos: si sku_origen o sku_venta no está, se crea con nombre=titulo ML.
+  //   - composicion_venta: mapping trivial (sku_venta=sku_origen, 1u) si no existe
+  //     y sku_venta === sku_origen (SKU simple, no pack). Packs/combos quedan
+  //     a configuración manual desde la UI.
+  try {
+    const productosACrear = new Map<string, { sku: string; nombre: string }>();
+    const composicionesACrear: { sku_venta: string; sku_origen: string }[] = [];
+    for (const r of mapped) {
+      const skuOrigen = (r.sku_origen || r.sku_venta || "").trim();
+      const skuVenta = (r.sku_venta || "").trim();
+      if (!skuOrigen || !skuVenta) continue;
+      const nombre = r.titulo || skuOrigen;
+      if (!productosACrear.has(skuOrigen)) productosACrear.set(skuOrigen, { sku: skuOrigen, nombre });
+      if (skuVenta !== skuOrigen && !productosACrear.has(skuVenta)) {
+        productosACrear.set(skuVenta, { sku: skuVenta, nombre });
+      }
+      if (skuVenta === skuOrigen) composicionesACrear.push({ sku_venta: skuVenta, sku_origen: skuOrigen });
+    }
+
+    if (productosACrear.size > 0) {
+      const existentesRes = await sb.from("productos").select("sku").in("sku", Array.from(productosACrear.keys()));
+      const existentes = new Set((existentesRes.data || []).map(p => p.sku));
+      const nuevos = Array.from(productosACrear.values()).filter(p => !existentes.has(p.sku));
+      if (nuevos.length > 0) {
+        const { error: prodErr } = await sb.from("productos").insert(nuevos.map(p => ({
+          sku: p.sku, nombre: p.nombre, categoria: "Otros", proveedor: "Otro",
+        })));
+        if (prodErr) errores.push(`Auto-crear productos: ${prodErr.message}`);
+        else console.log(`[syncStockFull] ${nuevos.length} productos nuevos auto-creados desde ML`);
+      }
+    }
+
+    if (composicionesACrear.length > 0) {
+      const ventas = Array.from(new Set(composicionesACrear.map(c => c.sku_venta)));
+      const existentesRes = await sb.from("composicion_venta").select("sku_venta").in("sku_venta", ventas);
+      const existentes = new Set((existentesRes.data || []).map(c => c.sku_venta));
+      const nuevas = composicionesACrear.filter(c => !existentes.has(c.sku_venta));
+      if (nuevas.length > 0) {
+        const { error: compErr } = await sb.from("composicion_venta").insert(nuevas.map(c => ({
+          sku_venta: c.sku_venta, sku_origen: c.sku_origen, unidades: 1, tipo_relacion: "componente",
+        })));
+        if (compErr) errores.push(`Auto-crear composicion_venta: ${compErr.message}`);
+        else console.log(`[syncStockFull] ${nuevas.length} composiciones triviales auto-creadas desde ML`);
+      }
+    }
+  } catch (err) {
+    errores.push(`Auto-create productos/composicion: ${err}`);
   }
 
   // 6. Obtener cantidad real desde API distribuida (fuente de verdad)
