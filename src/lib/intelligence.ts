@@ -9,6 +9,7 @@
 import { calcularCobertura, calcularTargetDias, calcularMargen, COSTO_ENVIO_FLEX } from "./reposicion";
 import type { FinancialAgg } from "./reposicion";
 import { calcularFactorRampup } from "./rampup";
+import { calcularTSB, seleccionarModeloZ } from "./tsb";
 
 /**
  * Determina si un SKU está en "quiebre prolongado" para dimensionar
@@ -249,6 +250,14 @@ export interface SkuIntelRow {
   forecast_es_confiable_8s: boolean | null;
   forecast_calculado_at: string | null;
 
+  // PR3 Fase A — TSB shadow (no consumido por el motor, sólo persistido).
+  vel_ponderada_tsb: number | null;
+  tsb_alpha: number | null;
+  tsb_beta: number | null;
+  tsb_modelo_usado: "sma_ponderado" | "tsb" | null;
+  primera_venta: string | null;           // YYYY-MM-DD
+  dias_desde_primera_venta: number | null;
+
   updated_at: string;
   datos_desde: string | null;
   datos_hasta: string | null;
@@ -406,6 +415,11 @@ export interface RecalculoInput {
     es_confiable: boolean;
     calculado_at: string;
   }>;
+  /** PR3 Fase A — primera venta histórica por sku_origen (fuera de la ventana
+   *  de 60d que trae `ordenes`). Usada para la puerta "edad mínima 60d" que
+   *  decide si el SKU entra al régimen TSB. Map<sku_origen (UPPER), Date>.
+   *  Si no se pasa, todos los SKUs quedan en régimen SMA ponderado (seguro). */
+  primeraVentaPorSkuOrigen?: Map<string, Date>;
   config: RecalculoConfig;
   hoy: Date;
   debugSku?: string;
@@ -978,6 +992,47 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     if (cv < 0.5) xyz = "X";
     else if (cv < 1.0) xyz = "Y";
 
+    // ── PASO 10b (PR3 Fase A): TSB shadow ──
+    // Corre TSB en paralelo al SMA ponderado. NO se consume para decisiones
+    // del motor — sólo se persiste. Fase C decide activar. Try/catch: cualquier
+    // error en TSB no rompe el recálculo, sólo queda con valores null.
+    let velPonderadaTsb: number | null = null;
+    let tsbAlpha: number | null = null;
+    let tsbBeta: number | null = null;
+    let tsbModeloUsado: "sma_ponderado" | "tsb" | null = null;
+    let primeraVentaIso: string | null = null;
+    let diasDesdePrimeraVenta: number | null = null;
+    try {
+      const primeraVentaDate = input.primeraVentaPorSkuOrigen?.get(skuOrigen);
+      if (primeraVentaDate) {
+        primeraVentaIso = primeraVentaDate.toISOString().slice(0, 10);
+        diasDesdePrimeraVenta = Math.floor(
+          (hoyMs - primeraVentaDate.getTime()) / 86_400_000,
+        );
+      }
+      const modelo = seleccionarModeloZ(
+        { primera_venta: primeraVentaDate ?? null, xyz },
+        hoy,
+      );
+      tsbModeloUsado = modelo;
+      if (modelo === "tsb") {
+        // ventasSemana[0] = semana más reciente; TSB espera ASC (vieja → nueva).
+        const ventasAsc = [...ventasSemana].reverse();
+        const tsb = calcularTSB(ventasAsc);
+        if (tsb) {
+          velPonderadaTsb = tsb.forecast;
+          tsbAlpha = tsb.alpha_usado;
+          tsbBeta = tsb.beta_usado;
+        }
+      }
+    } catch (err) {
+      // Falla silenciosa — shadow mode no debe romper el motor.
+      // Deja los campos en null; el warning es útil para debug puntual.
+      if (debugSkuUp && skuOrigen.toUpperCase() === debugSkuUp) {
+        console.warn(`[intelligence] TSB falló para ${skuOrigen}:`, err);
+      }
+    }
+
     // ── PASO 12: Stock de seguridad (preliminar, se ajusta después con ABC) ──
     const leadTimeSemanas = leadTimeDias / 7;
     // Nivel de servicio se ajusta después con ABC
@@ -1328,6 +1383,14 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       forecast_semanas_evaluadas_8s: null,
       forecast_es_confiable_8s: null,
       forecast_calculado_at: null,
+
+      // PR3 Fase A — TSB shadow (computado en Paso 10b, no consumido)
+      vel_ponderada_tsb: velPonderadaTsb,
+      tsb_alpha: tsbAlpha,
+      tsb_beta: tsbBeta,
+      tsb_modelo_usado: tsbModeloUsado,
+      primera_venta: primeraVentaIso,
+      dias_desde_primera_venta: diasDesdePrimeraVenta,
 
       updated_at: hoy.toISOString(),
       datos_desde: fechaMin ? fechaMin.slice(0, 10) : null,

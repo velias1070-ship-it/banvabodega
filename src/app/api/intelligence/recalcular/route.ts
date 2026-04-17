@@ -22,6 +22,7 @@ import {
   queryEnviosFullPendientes,
   queryMargenPorSku,
   queryProveedores,
+  queryPrimeraVentaPorSkuOrigen,
   type SkuIntelligenceUpsert,
 } from "@/lib/intelligence-queries";
 import {
@@ -134,6 +135,19 @@ async function ejecutarRecalculo(params: { skus?: string[]; full: boolean; snaps
       );
     }
 
+    // PR3 Fase A — primera venta por sku_origen (puerta TSB "edad mínima 60d").
+    // Query separada porque el motor sólo trae 60d de órdenes; para saber la
+    // edad real del SKU necesitamos MIN sobre toda la historia de ventas_ml_cache.
+    let primeraVentaPorSkuOrigen: Map<string, Date> = new Map();
+    try {
+      primeraVentaPorSkuOrigen = await queryPrimeraVentaPorSkuOrigen();
+    } catch (err) {
+      console.warn(
+        "[intelligence] primera_venta no disponible, TSB queda en sma_ponderado por default:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+
     // ── Stock en tránsito desde órdenes de compra ──
     const stockEnTransito = new Map<string, number>();
     const ocPendientesPorSku = new Map<string, number>();
@@ -215,6 +229,7 @@ async function ejecutarRecalculo(params: { skus?: string[]; full: boolean; snaps
       unidadesPorSku: ventasMlAgregado.unidades,
       proveedoresLT,
       metricasAccuracy,
+      primeraVentaPorSkuOrigen,
       config: {
         ...DEFAULT_INTEL_CONFIG,
         targetDiasA: intelConfig.target_dias_a,
@@ -499,6 +514,13 @@ function rowToUpsert(r: SkuIntelRow): SkuIntelligenceUpsert {
     forecast_semanas_evaluadas_8s: r.forecast_semanas_evaluadas_8s,
     forecast_es_confiable_8s: r.forecast_es_confiable_8s,
     forecast_calculado_at: r.forecast_calculado_at,
+    // PR3 Fase A — TSB shadow
+    vel_ponderada_tsb: r.vel_ponderada_tsb,
+    tsb_alpha: r.tsb_alpha,
+    tsb_beta: r.tsb_beta,
+    tsb_modelo_usado: r.tsb_modelo_usado,
+    primera_venta: r.primera_venta,
+    dias_desde_primera_venta: r.dias_desde_primera_venta,
     updated_at: r.updated_at,
     datos_desde: r.datos_desde,
     datos_hasta: r.datos_hasta,

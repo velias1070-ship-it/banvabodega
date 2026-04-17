@@ -569,6 +569,54 @@ export async function insertHistorySnapshots(rows: Record<string, unknown>[]): P
   return total;
 }
 
+/**
+ * Primera venta histórica por sku_origen (PR3 Fase A — puerta TSB).
+ *
+ * Lee MIN(fecha_date) de ventas_ml_cache por sku_venta y expande a sku_origen
+ * vía composicion_venta (mismo patrón que Paso 2 del motor, excluyendo
+ * tipo_relacion='alternativo' para evitar doble mapeo). Query única, ~100ms
+ * sobre 10k rows / 400 composiciones.
+ *
+ * Devuelve sku_origen (UPPER) → Date del primer registro de venta histórica
+ * (no filtrado por anulada=false intencionalmente: si hubo intento de venta
+ * en una fecha, esa fecha cuenta para "edad comercial" del SKU).
+ */
+export async function queryPrimeraVentaPorSkuOrigen(): Promise<Map<string, Date>> {
+  const sb = getServerSupabase();
+  if (!sb) return new Map();
+
+  const [primeraVentaRaw, composicionRaw] = await Promise.all([
+    paginatedSelect(() => sb.from("ventas_ml_cache").select("sku_venta, fecha_date")),
+    paginatedSelect(() => sb.from("composicion_venta").select("sku_venta, sku_origen, tipo_relacion")),
+  ]);
+
+  // Min por sku_venta.
+  const minPorSkuVenta = new Map<string, Date>();
+  for (const r of primeraVentaRaw) {
+    const sv = (r.sku_venta as string | null)?.toUpperCase();
+    const fecha = r.fecha_date as string | null;
+    if (!sv || !fecha) continue;
+    const d = new Date(fecha + "T00:00:00.000Z");
+    if (Number.isNaN(d.getTime())) continue;
+    const prev = minPorSkuVenta.get(sv);
+    if (!prev || d < prev) minPorSkuVenta.set(sv, d);
+  }
+
+  // Expansión sku_venta → sku_origen (excluye alternativos).
+  const minPorSkuOrigen = new Map<string, Date>();
+  for (const c of composicionRaw) {
+    if (c.tipo_relacion === "alternativo") continue;
+    const sv = (c.sku_venta as string | null)?.toUpperCase();
+    const so = (c.sku_origen as string | null)?.toUpperCase();
+    if (!sv || !so) continue;
+    const d = minPorSkuVenta.get(sv);
+    if (!d) continue;
+    const prev = minPorSkuOrigen.get(so);
+    if (!prev || d < prev) minPorSkuOrigen.set(so, d);
+  }
+  return minPorSkuOrigen;
+}
+
 /** Insertar snapshots de stock diarios */
 export async function upsertStockSnapshots(rows: Record<string, unknown>[]): Promise<void> {
   const sb = getServerSupabase();
