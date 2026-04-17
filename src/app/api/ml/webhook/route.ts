@@ -159,9 +159,17 @@ export async function POST(req: NextRequest) {
     }
 
     // ─── Fulfillment Stock (Full) ───
-    // Topics soportados: marketplace_fbm_stock (legacy) + stock-location (actual).
-    // Ambos traen el inventory_id en el resource.
-    if (topic === "marketplace_fbm_stock" || topic === "stock-location") {
+    // Topics reales en ML (verificado contra /applications/:id):
+    //   - stock-locations (plural, actual)
+    //   - fbm_stock_operations (operaciones en bodega Full)
+    //   - marketplace_fbm_stock (legacy, por compatibilidad)
+    // Todos traen inventory_id en el resource.
+    if (
+      topic === "stock-locations" ||
+      topic === "fbm_stock_operations" ||
+      topic === "marketplace_fbm_stock" ||
+      topic === "stock-location"
+    ) {
       const invMatch = resource?.match(/inventories\/([^/]+)/) || resource?.match(/stock\/([^/]+)/);
       const inventoryId = invMatch ? invMatch[1] : null;
 
@@ -188,9 +196,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ status: "ignored", reason: "no_inventory_id" });
     }
 
-    // ─── Items (cambio de publicación: precio, status, etc.) ───
+    // ─── Items y cambios de precio ───
+    // Topics: items, items_prices. Ambos apuntan a /items/MLC...
     // Dispara re-sync del sku mapeado para mantener available_quantity fresco.
-    if (topic === "items") {
+    if (topic === "items" || topic === "items_prices") {
       const itemMatch = resource?.match(/items\/([A-Z0-9]+)/);
       const itemId = itemMatch ? itemMatch[1] : null;
       if (itemId) {
@@ -223,5 +232,5 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET() {
-  return NextResponse.json({ status: "ok", service: "banva-wms-ml-webhook", topics: ["orders_v2", "shipments", "claims", "marketplace_fbm_stock", "stock-location", "items"] });
+  return NextResponse.json({ status: "ok", service: "banva-wms-ml-webhook", topics: ["orders_v2", "shipments", "claims", "stock-locations", "fbm_stock_operations", "marketplace_fbm_stock", "items", "items_prices"] });
 }
