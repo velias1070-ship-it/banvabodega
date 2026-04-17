@@ -460,13 +460,31 @@ export async function GET(req: NextRequest) {
       shipGroups.set(key, group);
     }
 
+    // 5b. Resolver tamaño canónico de cada pack vía /packs/{pack_id}.
+    // Si este batch no incluye TODAS las órdenes de un pack, sin este lookup
+    // el costo de envío se sobreestima (se asigna completo a las que están).
+    const packSizeMap = new Map<string, number>();
+    const packIds = new Set<number>();
+    for (const o of orders) if (o.pack_id && o.pack_id !== o.id) packIds.add(o.pack_id);
+    for (const pid of Array.from(packIds)) {
+      try {
+        const packInfo = await mlGet<{ orders?: Array<{ id: number }> }>(`/packs/${pid}`);
+        const size = Array.isArray(packInfo?.orders) ? packInfo.orders.length : 0;
+        if (size > 0) packSizeMap.set(String(pid), size);
+      } catch { /* fallback al count local */ }
+    }
+    console.log(`[ML Orders History] ${packIds.size} packs consultados, ${packSizeMap.size} resueltos`);
+
     // 5. Map to MappedOrder format, prorate shipping across pack
     const ordenes: MappedOrder[] = [];
     const debugData: Array<{ order_id: number; billing: BillingOrderDetail | undefined; order: MLOrderFull }> = [];
 
     for (const [shipKey, packOrders] of Array.from(shipGroups.entries())) {
       // Count total items in pack for equal split
-      const packItemCount = packOrders.reduce((s, o) => s + o.order_items.length, 0);
+      const batchItemCount = packOrders.reduce((s, o) => s + o.order_items.length, 0);
+      const canonicalPackId = packOrders.find(o => o.pack_id && o.pack_id !== o.id)?.pack_id;
+      const canonicalPackSize = canonicalPackId ? packSizeMap.get(String(canonicalPackId)) : undefined;
+      const packItemCount = canonicalPackSize || batchItemCount;
 
       // Resolve logistic_type for the shipment group
       const groupLogisticType = (() => {

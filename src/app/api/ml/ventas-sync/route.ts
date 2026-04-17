@@ -250,11 +250,35 @@ export async function GET(req: NextRequest) {
     }
     const adsPreload = await preloadAdsForSales(sb, adsPairs);
 
+    // 6d. Resolver tamaño real de cada pack vía /packs/{pack_id}.
+    // Crítico: si una orden es parte de un pack con 2+ órdenes pero
+    // solo una llegó en este batch de sync, sin este lookup el costo
+    // de envío se asignaría completo a esa única orden → sobreestimación
+    // sistemática. ML expone la lista canónica de órdenes del pack.
+    const packSizeMap = new Map<string, number>();
+    const packIds = new Set<number>();
+    for (const o of orders) {
+      if (o.pack_id && o.pack_id !== o.id) packIds.add(o.pack_id);
+    }
+    for (const pid of Array.from(packIds)) {
+      try {
+        const packInfo = await mlGet<{ orders?: Array<{ id: number }> }>(`/packs/${pid}`);
+        const size = Array.isArray(packInfo?.orders) ? packInfo.orders.length : 0;
+        if (size > 0) packSizeMap.set(String(pid), size);
+      } catch { /* ignore, cae al fallback de este batch */ }
+    }
+    console.log(`[Ventas Sync] ${packIds.size} packs consultados, ${packSizeMap.size} resueltos`);
+
     // 7. Map to cache rows
     const rows: Array<Record<string, unknown>> = [];
 
     for (const [, packOrders] of Array.from(shipGroups.entries())) {
-      const packItemCount = packOrders.reduce((s, o) => s + (o.order_items?.length || 1), 0);
+      const batchItemCount = packOrders.reduce((s, o) => s + (o.order_items?.length || 1), 0);
+      // Si alguna orden del grupo tiene pack_id canónico y lo resolvimos,
+      // usamos ese total. Sino fallback al count local del batch.
+      const canonicalPackId = packOrders.find(o => o.pack_id && o.pack_id !== o.id)?.pack_id;
+      const canonicalPackSize = canonicalPackId ? packSizeMap.get(String(canonicalPackId)) : undefined;
+      const packItemCount = canonicalPackSize || batchItemCount;
       const shipId = packOrders[0]?.shipping?.id;
       const lt = shipId ? logisticMap.get(shipId) || "" : "";
       const isFull = lt === "fulfillment" || lt === "xd_drop_off" || lt === "cross_docking" || lt === "drop_off";
