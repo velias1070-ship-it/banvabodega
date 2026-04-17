@@ -85,6 +85,13 @@ interface IntelRow {
   /** v42: null = desconocido; 0 = agotado explícito por proveedor; >0 = disponible */
   stock_proveedor: number | null;
   tiene_stock_prov: boolean;
+  // PR2/3 — forecast accuracy cacheado en sku_intelligence (ventana 8s)
+  forecast_wmape_8s?: number | null;
+  forecast_bias_8s?: number | null;
+  forecast_tracking_signal_8s?: number | null;
+  forecast_semanas_evaluadas_8s?: number | null;
+  forecast_es_confiable_8s?: boolean | null;
+  forecast_calculado_at?: string | null;
   updated_at: string;
 }
 
@@ -405,6 +412,10 @@ export default function AdminInteligencia() {
   const [vistaEnvio, setVistaEnvio] = useState(false);
   const [vistaProveedorAgotado, setVistaProveedorAgotado] = useState(false);
   const [provAgotadoSort, setProvAgotadoSort] = useState<{ col: string; asc: boolean }>({ col: "dias_hasta_quiebre", asc: true });
+  // PR2/3 — tab Accuracy (forecast accuracy)
+  const [vistaAccuracy, setVistaAccuracy] = useState(false);
+  const [accuracyFiltroEstrella, setAccuracyFiltroEstrella] = useState(false);
+  const [accuracyFiltroBias, setAccuracyFiltroBias] = useState<"todos" | "subestimamos" | "sobrestimamos">("todos");
   const [envioSort, setEnvioSort] = useState<{ col: string; asc: boolean }>({ col: "accion", asc: true });
   const [envioFilter, setEnvioFilter] = useState<"todos"|"sin_ip"|"abc_a"|"abc_b"|"abc_c"|"urgente"|"stock_insuf">("todos");
   const [envioIpEdits, setEnvioIpEdits] = useState<Map<string, number>>(new Map());
@@ -1422,20 +1433,23 @@ export default function AdminInteligencia() {
         </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
           <div style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--bg4)" }}>
-            <button onClick={() => { setVistaOrigen(false); setVistaEnvio(false); setVistaPedido(false); setVistaProveedorAgotado(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: !vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado ? "var(--cyan)" : "var(--bg3)", color: !vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+            <button onClick={() => { setVistaOrigen(false); setVistaEnvio(false); setVistaPedido(false); setVistaProveedorAgotado(false); setVistaAccuracy(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: !vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy ? "var(--cyan)" : "var(--bg3)", color: !vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
               SKU Venta
             </button>
-            <button onClick={() => { setVistaOrigen(true); setVistaEnvio(false); setVistaPedido(false); setVistaProveedorAgotado(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado ? "var(--cyan)" : "var(--bg3)", color: vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+            <button onClick={() => { setVistaOrigen(true); setVistaEnvio(false); setVistaPedido(false); setVistaProveedorAgotado(false); setVistaAccuracy(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy ? "var(--cyan)" : "var(--bg3)", color: vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
               SKU Origen
             </button>
-            <button onClick={() => { setVistaEnvio(true); setVistaOrigen(false); setVistaPedido(false); setVistaProveedorAgotado(false); setPickingCreado(null); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaEnvio ? "var(--blue)" : "var(--bg3)", color: vistaEnvio ? "#fff" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+            <button onClick={() => { setVistaEnvio(true); setVistaOrigen(false); setVistaPedido(false); setVistaProveedorAgotado(false); setVistaAccuracy(false); setPickingCreado(null); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaEnvio ? "var(--blue)" : "var(--bg3)", color: vistaEnvio ? "#fff" : "var(--txt3)", border: "none", cursor: "pointer" }}>
               Envio a Full
             </button>
-            <button onClick={() => { setVistaPedido(true); setVistaEnvio(false); setVistaOrigen(false); setVistaProveedorAgotado(false); setOcCreada(null); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaPedido ? "var(--amber)" : "var(--bg3)", color: vistaPedido ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+            <button onClick={() => { setVistaPedido(true); setVistaEnvio(false); setVistaOrigen(false); setVistaProveedorAgotado(false); setVistaAccuracy(false); setOcCreada(null); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaPedido ? "var(--amber)" : "var(--bg3)", color: vistaPedido ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
               Pedido a Proveedor
             </button>
-            <button onClick={() => { setVistaProveedorAgotado(true); setVistaEnvio(false); setVistaOrigen(false); setVistaPedido(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaProveedorAgotado ? "var(--red)" : "var(--bg3)", color: vistaProveedorAgotado ? "#fff" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+            <button onClick={() => { setVistaProveedorAgotado(true); setVistaEnvio(false); setVistaOrigen(false); setVistaPedido(false); setVistaAccuracy(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaProveedorAgotado ? "var(--red)" : "var(--bg3)", color: vistaProveedorAgotado ? "#fff" : "var(--txt3)", border: "none", cursor: "pointer" }}>
               Ventana Proveedor
+            </button>
+            <button onClick={() => { setVistaAccuracy(true); setVistaOrigen(false); setVistaEnvio(false); setVistaPedido(false); setVistaProveedorAgotado(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaAccuracy ? "var(--cyan)" : "var(--bg3)", color: vistaAccuracy ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }} title="Forecast accuracy — mide el error de vel_ponderada">
+              📊 Accuracy
             </button>
           </div>
           <button onClick={recalcular} disabled={recalculando} style={{ padding: "6px 12px", borderRadius: 6, background: "var(--cyanBg)", color: "var(--cyan)", fontWeight: 600, fontSize: 11, border: "1px solid var(--cyanBd)", cursor: "pointer" }}>
@@ -1553,7 +1567,7 @@ export default function AdminInteligencia() {
       )}
 
       {/* ═══ 3.5. CHIPS DE RED DE SEGURIDAD: SKUs sin costo, stale, sin LT, bajo MOQ ═══ */}
-      {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && (() => {
+      {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && (() => {
         const sinCosto = activeRows.filter((r: AnyRow) => (r.alertas || []).includes("sin_costo"));
         const costoStale = activeRows.filter((r: AnyRow) => (r.alertas || []).includes("costo_posiblemente_obsoleto"));
         const sinLt = activeRows.filter((r: AnyRow) => "lead_time_fuente" in r && r.lead_time_fuente === "fallback_default" && (r.vel_ponderada || 0) > 0);
@@ -1587,7 +1601,7 @@ export default function AdminInteligencia() {
       })()}
 
       {/* ═══ 4. FILTROS ═══ */}
-      {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+      {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
         <input
           type="text"
           placeholder="Buscar SKU, nombre o ML..."
@@ -1642,12 +1656,12 @@ export default function AdminInteligencia() {
         </select>
       </div>}
 
-      {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 6 }}>
+      {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 6 }}>
         {filtered.length} de {vistaOrigen ? totalSkus : totalVentas} {vistaOrigen ? "SKUs Origen" : "SKUs Venta"}
       </div>}
 
       {/* ═══ 5. TABLA SKU VENTA ═══ */}
-      {!vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && (
+      {!vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && (
         <div style={{ overflowX: "auto" }}>
           <table className="tbl" style={{ minWidth: 1500 }}>
             <thead>
@@ -1746,7 +1760,7 @@ export default function AdminInteligencia() {
       )}
 
       {/* ═══ 5b. TABLA SKU ORIGEN ═══ */}
-      {vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && (
+      {vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && (
         <div style={{ overflowX: "auto" }}>
           <table className="tbl" style={{ minWidth: 1500 }}>
             <thead>
@@ -2729,7 +2743,139 @@ export default function AdminInteligencia() {
         </div>
       )}
 
-      {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && filtered.length === 0 && <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>No hay datos. Ejecuta &quot;Recalcular&quot; para generar.</div>}
+      {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && filtered.length === 0 && <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>No hay datos. Ejecuta &quot;Recalcular&quot; para generar.</div>}
+
+      {/* ═══════════════════════════════════════════════
+          VISTA ACCURACY — forecast accuracy (PR2/3)
+         ═══════════════════════════════════════════════ */}
+      {vistaAccuracy && (() => {
+        // SKUs con alguna alerta forecast_* o con métricas confiables.
+        const confiables = rows.filter(r => r.forecast_es_confiable_8s === true);
+        const descalibrados = confiables.filter(r => {
+          const tiene = r.alertas?.some(a => a === "forecast_descalibrado_critico"
+                                          || a === "forecast_descalibrado"
+                                          || a === "forecast_sesgo_sostenido");
+          if (!tiene) return false;
+          if (accuracyFiltroEstrella && r.cuadrante !== "ESTRELLA") return false;
+          if (accuracyFiltroBias === "subestimamos" && !(r.forecast_bias_8s != null && r.forecast_bias_8s > 0)) return false;
+          if (accuracyFiltroBias === "sobrestimamos" && !(r.forecast_bias_8s != null && r.forecast_bias_8s < 0)) return false;
+          return true;
+        });
+
+        // Prioridad: ESTRELLA crítica > CASHCOW/VOLUMEN > REVISAR; luego |TS| DESC.
+        const cuadRank = (c: string) => c === "ESTRELLA" ? 0 : (c === "CASHCOW" || c === "VOLUMEN") ? 1 : 2;
+        descalibrados.sort((a, b) => {
+          const d = cuadRank(a.cuadrante) - cuadRank(b.cuadrante);
+          if (d !== 0) return d;
+          const ta = Math.abs(a.forecast_tracking_signal_8s ?? 0);
+          const tb = Math.abs(b.forecast_tracking_signal_8s ?? 0);
+          return tb - ta;
+        });
+
+        const kpiEstrellas = confiables.filter(r => r.cuadrante === "ESTRELLA" && r.alertas?.some(a => a === "forecast_descalibrado_critico")).length;
+        const kpiSesgo = confiables.filter(r => r.alertas?.includes("forecast_sesgo_sostenido")).length;
+        const ultimaMed = confiables.reduce<string | null>((acc, r) => {
+          if (!r.forecast_calculado_at) return acc;
+          if (!acc || r.forecast_calculado_at > acc) return r.forecast_calculado_at;
+          return acc;
+        }, null);
+
+        return (
+          <div style={{ marginTop: 8 }}>
+            {/* Banner contextual */}
+            <div style={{ padding: "8px 12px", borderRadius: 6, background: "var(--cyanBg)", color: "var(--cyan)", fontSize: 11, border: "1px solid var(--cyanBd)", marginBottom: 8 }}>
+              📊 <strong>Forecast accuracy</strong> — {kpiEstrellas} ESTRELLAS descalibradas · {kpiSesgo} SKUs A/B con sesgo sostenido
+              {ultimaMed && <> · Última medición: {new Date(ultimaMed).toLocaleString("es-CL")}</>}
+            </div>
+
+            {/* Pills de filtros */}
+            <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap" }}>
+              <button onClick={() => setAccuracyFiltroEstrella(v => !v)} style={{ padding: "4px 10px", fontSize: 10, borderRadius: 10, border: `1px solid ${accuracyFiltroEstrella ? "var(--cyan)" : "var(--bg4)"}`, background: accuracyFiltroEstrella ? "var(--cyanBg)" : "var(--bg3)", color: accuracyFiltroEstrella ? "var(--cyan)" : "var(--txt3)", cursor: "pointer" }}>
+                Solo ESTRELLA
+              </button>
+              <button onClick={() => setAccuracyFiltroBias("todos")} style={{ padding: "4px 10px", fontSize: 10, borderRadius: 10, border: `1px solid ${accuracyFiltroBias === "todos" ? "var(--cyan)" : "var(--bg4)"}`, background: accuracyFiltroBias === "todos" ? "var(--cyanBg)" : "var(--bg3)", color: accuracyFiltroBias === "todos" ? "var(--cyan)" : "var(--txt3)", cursor: "pointer" }}>
+                Todos
+              </button>
+              <button onClick={() => setAccuracyFiltroBias("subestimamos")} style={{ padding: "4px 10px", fontSize: 10, borderRadius: 10, border: `1px solid ${accuracyFiltroBias === "subestimamos" ? "var(--red)" : "var(--bg4)"}`, background: accuracyFiltroBias === "subestimamos" ? "var(--redBg)" : "var(--bg3)", color: accuracyFiltroBias === "subestimamos" ? "var(--red)" : "var(--txt3)", cursor: "pointer" }}>
+                Subestimamos demanda
+              </button>
+              <button onClick={() => setAccuracyFiltroBias("sobrestimamos")} style={{ padding: "4px 10px", fontSize: 10, borderRadius: 10, border: `1px solid ${accuracyFiltroBias === "sobrestimamos" ? "var(--amber)" : "var(--bg4)"}`, background: accuracyFiltroBias === "sobrestimamos" ? "var(--amberBg)" : "var(--bg3)", color: accuracyFiltroBias === "sobrestimamos" ? "var(--amber)" : "var(--txt3)", cursor: "pointer" }}>
+                Sobrestimamos demanda
+              </button>
+            </div>
+
+            {/* Placeholder: aún no hay métricas confiables */}
+            {confiables.length === 0 && (
+              <div style={{ padding: 40, textAlign: "center", color: "var(--txt3)", background: "var(--bg2)", borderRadius: 8, border: "1px solid var(--bg4)" }}>
+                <div style={{ fontSize: 14, marginBottom: 6 }}>Aún no hay métricas confiables</div>
+                <div style={{ fontSize: 11 }}>
+                  El cron de forecast-accuracy corre los lunes 12:30 UTC. La primera medición real
+                  con <code>es_confiable=true</code> llega el <strong>lunes 2026-05-18</strong> (4 lunes reales acumulados).
+                </div>
+              </div>
+            )}
+
+            {/* Placeholder: hay métricas pero nada descalibrado */}
+            {confiables.length > 0 && descalibrados.length === 0 && (
+              <div style={{ padding: 24, textAlign: "center", color: "var(--green)", background: "var(--greenBg)", borderRadius: 8, border: "1px solid var(--greenBd)", fontSize: 12 }}>
+                ✅ {confiables.length} SKUs con métricas confiables — ninguno cruza los umbrales de alerta.
+              </div>
+            )}
+
+            {/* Tabla de descalibrados */}
+            {descalibrados.length > 0 && (
+              <div style={{ overflowX: "auto" }}>
+                <table className="tbl" style={{ fontSize: 11, width: "100%" }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: "left" }}>SKU</th>
+                      <th style={{ textAlign: "left" }}>Nombre</th>
+                      <th>Cuadrante</th>
+                      <th>ABC-XYZ</th>
+                      <th style={{ textAlign: "right" }} title="Velocidad ponderada (uds/semana)">Vel pond.</th>
+                      <th style={{ textAlign: "right" }} title="WMAPE sobre ventana 8 semanas">WMAPE</th>
+                      <th style={{ textAlign: "right" }} title="Bias con signo (uds/sem). Positivo = subestimamos.">Bias</th>
+                      <th style={{ textAlign: "right" }} title="Tracking signal. Positivo = subestimamos (riesgo stockout). Negativo = sobrestimamos (riesgo exceso). Target: ABS(TS) < 4.">TS</th>
+                      <th>Alerta</th>
+                      <th style={{ textAlign: "right" }} title="Semanas confiables usadas para calcular las métricas">Semanas</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {descalibrados.map(r => {
+                      const ts = r.forecast_tracking_signal_8s ?? 0;
+                      const absTs = Math.abs(ts);
+                      const tsColor = absTs > 4 ? "var(--red)" : absTs > 2 ? "var(--amber)" : "var(--txt2)";
+                      const bias = r.forecast_bias_8s ?? 0;
+                      const wmape = r.forecast_wmape_8s;
+                      const critica = r.alertas?.includes("forecast_descalibrado_critico");
+                      const sesgo = r.alertas?.includes("forecast_sesgo_sostenido");
+                      const chipText = critica ? "🔴 Crítica" : (r.alertas?.includes("forecast_descalibrado") ? "🟡 Descalibrado" : sesgo ? "🟡 Sesgo sostenido" : "—");
+                      return (
+                        <tr key={r.sku_origen}>
+                          <td className="mono" style={{ fontSize: 10 }}>{r.sku_origen}</td>
+                          <td style={{ fontSize: 10, maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.nombre || "—"}</td>
+                          <td>{r.cuadrante}</td>
+                          <td className="mono">{r.abc}-{r.xyz}</td>
+                          <td style={{ textAlign: "right" }}>{r.vel_ponderada.toFixed(1)}</td>
+                          <td style={{ textAlign: "right" }}>{wmape != null ? `${(wmape * 100).toFixed(0)}%` : "—"}</td>
+                          <td style={{ textAlign: "right", color: bias > 0 ? "var(--red)" : bias < 0 ? "var(--amber)" : "var(--txt3)" }}>
+                            {bias > 0 ? "+" : ""}{bias.toFixed(2)}
+                          </td>
+                          <td style={{ textAlign: "right", color: tsColor, fontWeight: 600 }}>
+                            {ts > 0 ? "+" : ""}{ts.toFixed(2)}
+                          </td>
+                          <td>{chipText}</td>
+                          <td style={{ textAlign: "right" }}>{r.forecast_semanas_evaluadas_8s ?? "—"}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
     </div>
   );

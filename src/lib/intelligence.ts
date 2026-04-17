@@ -82,8 +82,11 @@ export type AlertaIntel =
   | "sin_conteo_30d"
   | "liquidar"
   | "evento_activo"
-  | "cambio_canal_rentable"
   | "en_transito"
+  // PR2/3 — forecast accuracy
+  | "forecast_descalibrado_critico"
+  | "forecast_descalibrado"
+  | "forecast_sesgo_sostenido"
   | "estrella_quiebre_prolongado"
   | "proveedor_volvio_stock"
   | "catch_up_post_quiebre"
@@ -237,6 +240,15 @@ export interface SkuIntelRow {
   vel_objetivo: number;
   gap_vel_pct: number | null;
 
+  // PR2/3 — Forecast accuracy (snapshot de la última corrida confiable en ventana 8s).
+  // Redundante con forecast_accuracy; cacheado aquí para que la UI filtre sin join.
+  forecast_wmape_8s: number | null;
+  forecast_bias_8s: number | null;
+  forecast_tracking_signal_8s: number | null;
+  forecast_semanas_evaluadas_8s: number | null;
+  forecast_es_confiable_8s: boolean | null;
+  forecast_calculado_at: string | null;
+
   updated_at: string;
   datos_desde: string | null;
   datos_hasta: string | null;
@@ -383,6 +395,17 @@ export interface RecalculoInput {
     lead_time_fuente: string;
     lead_time_muestras: number;
   }>;
+  /** PR2/3 — últimas métricas de forecast_accuracy por SKU (ventana 8s).
+   *  Vacío o ausente si la tabla falla; el motor sigue funcionando sin las
+   *  alertas de forecast. Map<sku_origen, MetricaActual>. */
+  metricasAccuracy?: Map<string, {
+    wmape: number | null;
+    bias: number | null;
+    tracking_signal: number | null;
+    semanas_evaluadas: number;
+    es_confiable: boolean;
+    calculado_at: string;
+  }>;
   config: RecalculoConfig;
   hoy: Date;
   debugSku?: string;
@@ -436,6 +459,45 @@ function zScore(nivel: number): number {
   if (nivel >= 0.97) return 1.88;
   if (nivel >= 0.95) return 1.65;
   return 1.28;
+}
+
+/**
+ * Evalúa qué alertas de forecast_accuracy corresponden a un SKU, dada su
+ * clasificación y la última medición confiable (ventana 8s).
+ *
+ * Reglas:
+ *   - Sólo dispara si `metrica.es_confiable` (≥4 semanas evaluadas).
+ *   - Clase Z excluida: WMAPE alto en Z es ruido de intermitencia, no sesgo.
+ *     PR3 (TSB) lo va a tratar aparte.
+ *   - Clase A y B solamente (C no es foco; mucho ruido para la señal).
+ *   - Umbrales hardcoded (|TS| > 4 y |bias| > vel × 0.3); si hace falta config,
+ *     va en un PR posterior.
+ */
+export function evaluarAlertasForecast(
+  row: { abc: ClaseABC; xyz: ClaseXYZ; cuadrante: Cuadrante; vel_ponderada: number },
+  metrica: {
+    tracking_signal: number | null;
+    bias: number | null;
+    semanas_evaluadas: number;
+    es_confiable: boolean;
+  },
+): AlertaIntel[] {
+  const alertas: AlertaIntel[] = [];
+  if (!metrica.es_confiable) return alertas;
+
+  const esAB = row.abc === "A" || row.abc === "B";
+  const esXY = row.xyz === "X" || row.xyz === "Y";
+  const absTs = metrica.tracking_signal !== null ? Math.abs(metrica.tracking_signal) : 0;
+
+  if (esAB && esXY && absTs > 4) {
+    if (row.cuadrante === "ESTRELLA") alertas.push("forecast_descalibrado_critico");
+    else alertas.push("forecast_descalibrado");
+  }
+  if (esAB && metrica.bias !== null && metrica.semanas_evaluadas >= 8
+      && Math.abs(metrica.bias) > row.vel_ponderada * 0.3) {
+    alertas.push("forecast_sesgo_sostenido");
+  }
+  return alertas;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -1259,6 +1321,14 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       vel_objetivo: velObj,
       gap_vel_pct: gapVelPct,
 
+      // Forecast accuracy — se pueblan en paso 19 si el input trae metricasAccuracy
+      forecast_wmape_8s: null,
+      forecast_bias_8s: null,
+      forecast_tracking_signal_8s: null,
+      forecast_semanas_evaluadas_8s: null,
+      forecast_es_confiable_8s: null,
+      forecast_calculado_at: null,
+
       updated_at: hoy.toISOString(),
       datos_desde: fechaMin ? fechaMin.slice(0, 10) : null,
       datos_hasta: fechaMax ? fechaMax.slice(0, 10) : null,
@@ -1649,6 +1719,20 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     const prev2 = prevIntelligence.get(r.sku_origen);
     if (prev2 && prev2.es_quiebre_proveedor && !r.es_quiebre_proveedor && r.vel_pre_quiebre > 2) {
       alertas.push("proveedor_volvio_stock");
+    }
+
+    // PR2/3 — Forecast accuracy. Lógica extraída a evaluarAlertasForecast()
+    // para poder testearla sin montar todo el motor.
+    const fa = input.metricasAccuracy?.get(r.sku_origen);
+    if (fa && fa.es_confiable) {
+      r.forecast_wmape_8s = fa.wmape;
+      r.forecast_bias_8s = fa.bias;
+      r.forecast_tracking_signal_8s = fa.tracking_signal;
+      r.forecast_semanas_evaluadas_8s = fa.semanas_evaluadas;
+      r.forecast_es_confiable_8s = true;
+      r.forecast_calculado_at = fa.calculado_at;
+
+      for (const a of evaluarAlertasForecast(r, fa)) alertas.push(a);
     }
 
     r.alertas = alertas;

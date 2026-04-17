@@ -31,6 +31,7 @@ import {
   DEFAULT_INTEL_CONFIG,
 } from "@/lib/intelligence";
 import type { SkuIntelRow, OrdenInput, QuiebreSnapshot } from "@/lib/intelligence";
+import { ultimasMetricasAccuracy, type MetricaActual } from "@/lib/forecast-accuracy-queries";
 
 /**
  * POST /api/intelligence/recalcular
@@ -121,6 +122,18 @@ async function ejecutarRecalculo(params: { skus?: string[]; full: boolean; snaps
     const hoyStr = hoy.toISOString().slice(0, 10);
     const eventosActivos = await queryEventosActivos(hoyStr);
 
+    // PR2/3 — forecast accuracy. Falla silenciosa: si la tabla no existe o la
+    // query se cae, el motor sigue sin las 3 alertas nuevas.
+    let metricasAccuracy: Map<string, MetricaActual> = new Map();
+    try {
+      metricasAccuracy = await ultimasMetricasAccuracy(sb, 8);
+    } catch (err) {
+      console.warn(
+        "[intelligence] forecast_accuracy no disponible, continúo sin alertas de forecast:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+
     // ── Stock en tránsito desde órdenes de compra ──
     const stockEnTransito = new Map<string, number>();
     const ocPendientesPorSku = new Map<string, number>();
@@ -201,6 +214,7 @@ async function ejecutarRecalculo(params: { skus?: string[]; full: boolean; snaps
       margenPorSku: ventasMlAgregado.margen,
       unidadesPorSku: ventasMlAgregado.unidades,
       proveedoresLT,
+      metricasAccuracy,
       config: {
         ...DEFAULT_INTEL_CONFIG,
         targetDiasA: intelConfig.target_dias_a,
@@ -478,6 +492,13 @@ function rowToUpsert(r: SkuIntelRow): SkuIntelligenceUpsert {
     es_catch_up: r.es_catch_up,
     vel_objetivo: r.vel_objetivo,
     gap_vel_pct: r.gap_vel_pct,
+    // PR2/3 — forecast accuracy (8s)
+    forecast_wmape_8s: r.forecast_wmape_8s,
+    forecast_bias_8s: r.forecast_bias_8s,
+    forecast_tracking_signal_8s: r.forecast_tracking_signal_8s,
+    forecast_semanas_evaluadas_8s: r.forecast_semanas_evaluadas_8s,
+    forecast_es_confiable_8s: r.forecast_es_confiable_8s,
+    forecast_calculado_at: r.forecast_calculado_at,
     updated_at: r.updated_at,
     datos_desde: r.datos_desde,
     datos_hasta: r.datos_hasta,

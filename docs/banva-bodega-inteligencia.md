@@ -320,16 +320,20 @@ Todos los endpoints usan `anon key`; no hay auth propia. El cron se valida con `
 - **LOC total**: 3 315 (`src/components/AdminInteligencia.tsx`).
 - Renderizado desde `src/app/admin/page.tsx` (tab "Intel" del sidebar).
 
-### 5.1 Tabs / modos
+### 5.1 Vistas (botones-vista booleanos, no tabs)
 
-| Modo | Propósito | Fuente de datos |
-|---|---|---|
-| `origen` | Vista principal: tabla de SKU físicos con acción, stock, cobertura, margen, alertas | `GET /api/intelligence/recalcular` (lectura vía cache `sku_intelligence`) |
-| `envio` | Envío a Full: selección SKU venta → calcula uds a mandar → crear picking tipo `envio_full` | `GET /api/intelligence/sku-venta` |
-| `pedido` | Pedido a proveedor: selección SKU origen → cálculo bultos → exporta Excel (template factura-etiquetas) | `sku_intelligence` + `proveedor_catalogo` |
-| `proveedor-agotado` | SKUs donde `es_quiebre_proveedor=true` o `stock_proveedor=0`, agrupados por proveedor | derivado de `sku_intelligence` |
-| `notas` | Ficha por SKU: velocidad histórica, conteos, movimientos, alertas editables | `sku_intelligence` + `vel_objetivo_historial` |
-| `pendientes` | SKUs con problemas (sin producto, sin costo, sin mapeo ML) | `GET /api/intelligence/pendientes` |
+🆕 **CORRECCIÓN vs doc anterior:** el componente NO usa un `mode` enum tipo `"origen"|"envio"|...`; usa **booleans independientes** por vista (`vistaOrigen`, `vistaEnvio`, `vistaPedido`, `vistaProveedorAgotado`, `vistaAccuracy`). Al hacer click en un botón del header se pone ése en `true` y los otros en `false`. "Pendientes" y "Notas" son **modales**, no vistas.
+
+Botones actuales en el header (toggle group):
+
+| Botón | State boolean | Propósito | Fuente de datos |
+|---|---|---|---|
+| `SKU Venta` (default) | `!vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy` | Vista principal por SKU venta | `sku_intelligence` + composición |
+| `SKU Origen` | `vistaOrigen` | Tabla de SKU físicos con acción, stock, cobertura, margen, alertas | cache `sku_intelligence` |
+| `Envio a Full` | `vistaEnvio` | Selección SKU venta → uds a mandar → crear picking `envio_full` | `GET /api/intelligence/sku-venta` |
+| `Pedido a Proveedor` | `vistaPedido` | Selección SKU origen → cálculo bultos → exporta Excel | `sku_intelligence` + `proveedor_catalogo` |
+| `Ventana Proveedor` | `vistaProveedorAgotado` | SKUs donde `es_quiebre_proveedor=true` o `stock_proveedor=0`, agrupados | derivado de `sku_intelligence` |
+| `📊 Accuracy` 🆕 (PR2/3) | `vistaAccuracy` | Forecast accuracy: SKUs A/B con WMAPE/bias/TS descalibrados; placeholder hasta el 2026-05-18 | `forecast_*_8s` cacheado en `sku_intelligence` |
 
 ### 5.2 KPIs del header
 
@@ -369,7 +373,7 @@ Caja con métricas agregadas del portafolio:
 
 ## 6. Tipos de alerta
 
-29 strings posibles en `alertas[]`. Orden y condición según `intelligence.ts:1589-1652`.
+**31 strings posibles** en `alertas[]` (28 previos + 3 nuevas de PR2/3; `cambio_canal_rentable` fue eliminado como residuo muerto en PR2). Orden y condición según `intelligence.ts:1589-1680`.
 
 | # | `alertas[]` | Condición (código) | Urgencia |
 |---|---|---|---|
@@ -400,8 +404,12 @@ Caja con métricas agregadas del portafolio:
 | 25 | `bajo_meta` | `vel_objetivo > 0 && vel_ponderada < vel_objetivo × 0.8` | 🟡 Advertencia |
 | 26 | `sobre_meta` | `vel_objetivo > 0 && vel_ponderada > vel_objetivo × 1.3` | 🟢 Info |
 | 27 | `proveedor_volvio_stock` | `prev.es_quiebre_proveedor && !es_quiebre_proveedor && vel_pre > 2` | 🟢 Info |
+| 28 | `pedido_bajo_moq` | `pedir_proveedor > 0 && moq > 1 && pedir_proveedor < moq` | 🟢 Info |
+| 29 🆕 PR2 | `forecast_descalibrado_critico` | `es_confiable && abc ∈ {A,B} && xyz ∈ {X,Y} && abs(TS)>4 && cuadrante='ESTRELLA'` | 🔴 Crítica |
+| 30 🆕 PR2 | `forecast_descalibrado` | igual que anterior pero `cuadrante≠'ESTRELLA'` | 🟡 Advertencia |
+| 31 🆕 PR2 | `forecast_sesgo_sostenido` | `es_confiable && abc ∈ {A,B} && semanas_evaluadas ≥ 8 && abs(bias) > vel_ponderada × 0.3` | 🟡 Advertencia |
 
-(Hay hasta 29 entradas posibles; 2–3 se disparan sólo desde UI por datos externos (`stock_danado_full` requiere parsing detallado de `stock_full_cache`). Lista canon en `intelligence.ts:1589-1652`.)
+Lista canon en `intelligence.ts:1589-1680`. La lógica de las 3 nuevas está extraída a `evaluarAlertasForecast()` (exportada, testeable sin montar todo el motor).
 
 ---
 
@@ -745,7 +753,7 @@ Explícito — estos no existen en el código hoy:
 | 1 | **Recalc incremental por evento** | El cron siempre corre `full=true`. No hay enqueue tipo `intelligence_dirty_queue` cuando cambia stock/venta/costo. |
 | 2 | **Tests del motor** | Cero coverage en `intelligence.ts`. Único test del repo: `src/lib/__tests__/reposicion.test.ts`. |
 | 3 | **Versionado de configuración** | `intel_config` no guarda snapshot por corrida. `config_historial` existe pero no se usa desde el motor. |
-| 4 | **Forecast accuracy** (WMAPE / bias / tracking signal) | **Parcial (medición OK, alertas pendientes).** PR1/3 agregó tablas `forecast_snapshots_semanales` + `forecast_accuracy`, módulo puro `src/lib/forecast-accuracy.ts` con WMAPE / bias / MAD / tracking_signal, cron lunes 12:30 UTC y backfill reconstruido para 12 semanas. PR2 agrega alertas `tracking_signal_alto` en motor + UI. PR3: TSB. |
+| 4 | **Forecast accuracy** (WMAPE / bias / tracking signal) | **Cerrado en PR1 (medición) + PR2 (alertas + UI).** PR1 agregó tablas + módulo puro + cron. PR2 enganchó 3 alertas al motor (`forecast_descalibrado_critico`, `forecast_descalibrado`, `forecast_sesgo_sostenido`), 6 columnas `forecast_*_8s` en `sku_intelligence`, tab `📊 Accuracy` con filtros, banner y tabla priorizada por cuadrante. PR3 (pendiente): TSB para clase Z. |
 | 5 | **TSB para demanda intermitente** | Clase Z usa mismo SS que X/Y. No hay Teunter-Syntetos-Babai. |
 | 6 | **Holt-Winters / Croston** | Nada más allá del SMA ponderado 50/30/20. |
 | 7 | **EOQ / costo de orden** | `moq` se respeta vía alerta pero no se optimiza tamaño de lote. |
@@ -804,7 +812,7 @@ Explícito — estos no existen en el código hoy:
 
 ---
 
-## 15. Forecast accuracy (PR1/3)
+## 15. Forecast accuracy (PR1+PR2 de 3)
 
 Medición de error de `vel_ponderada` sobre ventanas móviles. PR1 (este) implementa la medición sin alertas ni UI; PR2 engancha alertas al motor; PR3 agrega TSB para clase Z.
 
@@ -850,6 +858,40 @@ Benchmark del manual (Parte 2 §6.6.2): WMAPE < 20 % para A, < 35 % para B, `|TS
 ### 15.5 Backfill
 
 Script `scripts/backfill-forecast-snapshots.ts` (o via SQL directo; éste se usó en producción). Reconstruye los últimos 12 lunes cerrados usando `ventas_ml_cache` + `composicion_venta` con las mismas fórmulas que el motor P2. Todas las filas reconstruidas llevan `origen='reconstruido'` y `en_quiebre=NULL`. El primer snapshot con `origen='real'` lo graba el cron cada lunes.
+
+### 15.6 Alertas en el motor (PR2)
+
+El paso 19 del motor lee `forecast_accuracy` al arranque de `recalcularTodo()` (función `ultimasMetricasAccuracy(sb, 8)`; una sola query, sin N+1) y pasa un `Map<sku_origen, MetricaActual>` al loop por SKU. La lógica de juicio está en `evaluarAlertasForecast(row, metrica)` (puro, exportado desde `intelligence.ts`, testeado en `forecast-accuracy.test.ts`).
+
+Reglas:
+- Sólo `es_confiable=true` → nunca alertar sobre métricas reconstruidas/no-confiables.
+- Clase Z excluida de `forecast_descalibrado_*` (es ruido de intermitencia; PR3 lo trata con TSB).
+- A/B solamente en las 3 alertas.
+- Falla silenciosa: si `forecast_accuracy` no existe o la query se cae, el motor continúa sin las alertas.
+
+### 15.7 Columnas cacheadas en `sku_intelligence` (PR2, migración v52)
+
+```sql
+ALTER TABLE sku_intelligence
+  ADD COLUMN forecast_wmape_8s             numeric NULL,
+  ADD COLUMN forecast_bias_8s              numeric NULL,
+  ADD COLUMN forecast_tracking_signal_8s   numeric NULL,
+  ADD COLUMN forecast_semanas_evaluadas_8s int NULL,
+  ADD COLUMN forecast_es_confiable_8s      boolean NULL,
+  ADD COLUMN forecast_calculado_at         timestamptz NULL;
+```
+
+Redundantes con `forecast_accuracy`, cacheadas por el motor en el upsert final para que la UI filtre/ordene sin joins. Índice parcial `idx_sku_intel_forecast_ts` acelera el tab Accuracy.
+
+### 15.8 Tab `📊 Accuracy` (PR2)
+
+Botón nuevo en el header de `AdminInteligencia` (patrón `vistaAccuracy` boolean). Contenido:
+
+- **Banner contextual**: `📊 Forecast accuracy — X ESTRELLAS descalibradas · Y SKUs A/B con sesgo sostenido · Última medición: …`
+- **Pills de filtro**: "Solo ESTRELLA", "Subestimamos demanda" (`bias>0`), "Sobrestimamos demanda" (`bias<0`).
+- **Tabla**: SKU + Nombre, Cuadrante, ABC-XYZ, Vel ponderada, WMAPE (%), Bias con signo, TS con color (rojo ABS>4, ámbar >2), chip de alerta (🔴/🟡), semanas confiables.
+- **Orden default**: ESTRELLA crítica → CASHCOW/VOLUMEN → REVISAR; secundario `ABS(TS)` DESC.
+- **Placeholder** si no hay `es_confiable=true` aún: "Aún no hay métricas confiables — primera medición real **2026-05-18**".
 
 ## Metadata
 

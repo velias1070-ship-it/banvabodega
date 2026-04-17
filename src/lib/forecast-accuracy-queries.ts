@@ -229,3 +229,51 @@ export async function calcularYGuardarAccuracy(
 // queries son por rango de fecha, no por lista de SKUs). Mantengo por si PR2
 // necesita ajustar.
 export { BATCH as BATCH_SIZE };
+
+// ════════════════════════════════════════════════════════════════════════════
+// PR2/3 — lectura agregada para el motor
+// ════════════════════════════════════════════════════════════════════════════
+
+export interface MetricaActual {
+  wmape: number | null;
+  bias: number | null;
+  tracking_signal: number | null;
+  semanas_evaluadas: number;
+  es_confiable: boolean;
+  calculado_at: string; // ISO
+}
+
+/**
+ * Última fila de forecast_accuracy por SKU para una ventana fija.
+ * Una sola query con DISTINCT ON — el motor la pide una vez y pasa el Map
+ * al loop por SKU (no hay N+1). Si la tabla no existe o falla, el caller
+ * debe atrapar el error y continuar sin estas métricas.
+ */
+export async function ultimasMetricasAccuracy(
+  sb: SupabaseClient,
+  ventana: 4 | 8 | 12,
+): Promise<Map<string, MetricaActual>> {
+  // DISTINCT ON no está expuesto por supabase-js — paginamos en memoria:
+  // traemos todas las filas de esa ventana ORDER BY sku, calculado_at DESC
+  // y nos quedamos con la primera por SKU.
+  const out = new Map<string, MetricaActual>();
+  const { data, error } = await sb
+    .from("forecast_accuracy")
+    .select("sku_origen, wmape, bias, tracking_signal, semanas_evaluadas, es_confiable, calculado_at")
+    .eq("ventana_semanas", ventana)
+    .order("sku_origen", { ascending: true })
+    .order("calculado_at", { ascending: false });
+  if (error) throw new Error(`ultimasMetricasAccuracy failed: ${error.message}`);
+  for (const r of data || []) {
+    if (out.has(r.sku_origen)) continue; // ya tenemos la más reciente para este SKU
+    out.set(r.sku_origen, {
+      wmape: r.wmape as number | null,
+      bias: r.bias as number | null,
+      tracking_signal: r.tracking_signal as number | null,
+      semanas_evaluadas: (r.semanas_evaluadas as number) || 0,
+      es_confiable: (r.es_confiable as boolean) || false,
+      calculado_at: r.calculado_at as string,
+    });
+  }
+  return out;
+}

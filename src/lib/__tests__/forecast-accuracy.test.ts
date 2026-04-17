@@ -4,6 +4,7 @@ import {
   type ForecastSemanal,
   type ActualSemanal,
 } from "../forecast-accuracy";
+import { evaluarAlertasForecast } from "../intelligence";
 
 // Helpers para construir fixtures rápido.
 // Devuelve N semanas ISO consecutivas terminando el lunes `hastaLunesIso`.
@@ -171,6 +172,53 @@ describe("calcularMetricas", () => {
     expect(m.bias).toBeCloseTo(-2, 3);
     expect(m.mad).toBeCloseTo(2, 3);
     expect(m.tracking_signal).toBeCloseTo(-4, 3); // -8/2
+  });
+
+  it("evaluarAlertasForecast — ESTRELLA A-X con |TS|>4 dispara crítica", () => {
+    const alertas = evaluarAlertasForecast(
+      { abc: "A", xyz: "X", cuadrante: "ESTRELLA", vel_ponderada: 20 },
+      { tracking_signal: 5.2, bias: 4, semanas_evaluadas: 8, es_confiable: true },
+    );
+    expect(alertas).toContain("forecast_descalibrado_critico");
+    expect(alertas).not.toContain("forecast_descalibrado");
+    // Bias 4 > 20 * 0.3 = 6? No, 4 < 6 → NO dispara sesgo
+    expect(alertas).not.toContain("forecast_sesgo_sostenido");
+  });
+
+  it("evaluarAlertasForecast — clase A con |TS|<4 NO dispara ninguna alerta", () => {
+    const alertas = evaluarAlertasForecast(
+      { abc: "A", xyz: "Y", cuadrante: "ESTRELLA", vel_ponderada: 20 },
+      { tracking_signal: 3.2, bias: 1, semanas_evaluadas: 8, es_confiable: true },
+    );
+    expect(alertas).toHaveLength(0);
+  });
+
+  it("evaluarAlertasForecast — clase Z queda excluida incluso con TS alto", () => {
+    const alertas = evaluarAlertasForecast(
+      { abc: "A", xyz: "Z", cuadrante: "ESTRELLA", vel_ponderada: 20 },
+      { tracking_signal: 8, bias: 10, semanas_evaluadas: 8, es_confiable: true },
+    );
+    // Z excluida de _descalibrado_*, pero SÍ dispara sesgo sostenido (A/B sin filtro xyz)
+    expect(alertas).not.toContain("forecast_descalibrado_critico");
+    expect(alertas).not.toContain("forecast_descalibrado");
+    expect(alertas).toContain("forecast_sesgo_sostenido"); // bias 10 > 20*0.3=6
+  });
+
+  it("evaluarAlertasForecast — es_confiable=false silencia todo", () => {
+    const alertas = evaluarAlertasForecast(
+      { abc: "A", xyz: "X", cuadrante: "ESTRELLA", vel_ponderada: 20 },
+      { tracking_signal: 8, bias: 10, semanas_evaluadas: 2, es_confiable: false },
+    );
+    expect(alertas).toHaveLength(0);
+  });
+
+  it("evaluarAlertasForecast — VOLUMEN A-X con |TS|>4 dispara advertencia (no crítica)", () => {
+    const alertas = evaluarAlertasForecast(
+      { abc: "A", xyz: "X", cuadrante: "VOLUMEN", vel_ponderada: 30 },
+      { tracking_signal: -6, bias: -3, semanas_evaluadas: 8, es_confiable: true },
+    );
+    expect(alertas).toContain("forecast_descalibrado");
+    expect(alertas).not.toContain("forecast_descalibrado_critico");
   });
 
   it("ventana=12 recorta semanas viejas si hay más de 12 pares", () => {
