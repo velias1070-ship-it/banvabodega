@@ -205,7 +205,8 @@ export default function AdminVentasML({ modo }: { modo?: VentasMlModo } = {}) {
       if (json.ordenes && json.ordenes.length > 0) {
         setMlOrders(json.ordenes);
         setPgOrders([]);
-        setView("ml_directo");
+        // Respeta el modo fijado por la tab. Solo fuerza ml_directo si no hay modo.
+        if (!modo) setView("ml_directo");
         setSource("cache");
         const syncTime = json.last_sync ? new Date(json.last_sync).toLocaleString("es-CL", { timeZone: "America/Santiago" }) : null;
         setLastUpdated(syncTime);
