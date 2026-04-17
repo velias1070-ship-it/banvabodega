@@ -5,7 +5,6 @@ import { buildPickingLineasFull, crearPickingSession, skuPositions, getComponent
 import { upsertNotasOperativas, insertOrdenCompra, insertOrdenCompraLineas, nextOCNumero, insertAdminActionLog } from "@/lib/db";
 import type { DBOrdenCompra, DBOrdenCompraLinea } from "@/lib/db";
 import { exportarOCExcel } from "@/lib/oc-export";
-import AdminMLSinVincular from "./AdminMLSinVincular";
 
 // ============================================
 // Tipos
@@ -402,8 +401,6 @@ export default function AdminInteligencia() {
   const [lastSyncFull, setLastSyncFull] = useState<string | null>(null);
   const [recalculando, setRecalculando] = useState(false);
   const [recalcResult, setRecalcResult] = useState<string | null>(null);
-  const [syncingML, setSyncingML] = useState(false);
-  const [syncMLResult, setSyncMLResult] = useState<string | null>(null);
   const [vistaOrigen, setVistaOrigen] = useState(false);
   const [vistaEnvio, setVistaEnvio] = useState(false);
   const [vistaProveedorAgotado, setVistaProveedorAgotado] = useState(false);
@@ -451,8 +448,6 @@ export default function AdminInteligencia() {
   const [mlItemsMap, setMlItemsMap] = useState<Map<string, string[]>>(new Map());
 
   // ML sin vincular
-  const [mlSinVincular, setMlSinVincular] = useState<{ item_id: string; title: string; available_quantity: number }[]>([]);
-  const [mlSinVincularOpen, setMlSinVincularOpen] = useState(false);
 
   // Pendientes de atención
   const [pendientes, setPendientes] = useState<{ sku: string; titulo: string; tipo: string; stock_full: number; stock_bodega: number }[]>([]);
@@ -460,17 +455,7 @@ export default function AdminInteligencia() {
   const [pendientesOpen, setPendientesOpen] = useState(false);
 
   // Modal masivo
-  const [modalMasivo, setModalMasivo] = useState(false);
   // Modal notas operativas
-  const [modalNotas, setModalNotas] = useState(false);
-  const [notasEdits, setNotasEdits] = useState<Map<string, string>>(new Map());
-  const [notasBusqueda, setNotasBusqueda] = useState("");
-  const [notasSaving, setNotasSaving] = useState(false);
-  const [masivoMode, setMasivoMode] = useState<"abc" | "categoria" | "manual">("abc");
-  const [masivoMultiplier, setMasivoMultiplier] = useState("1.1");
-  const [masivoAbcFilter, setMasivoAbcFilter] = useState("A");
-  const [masivoCatFilter, setMasivoCatFilter] = useState("");
-  const [masivoSaving, setMasivoSaving] = useState(false);
 
   const cargarOrigen = useCallback(async () => {
     const sb = getSupabase();
@@ -516,17 +501,6 @@ export default function AdminInteligencia() {
       map.set(row.sku, arr);
     }
     setMlItemsMap(map);
-
-    // Detectar items ML sin vincular
-    const allSkus = new Set((data || []).map((r: { sku: string }) => r.sku));
-    const { data: mlItems } = await sb.from("ml_items_map").select("item_id, sku, title, available_quantity");
-    const sinVincular: { item_id: string; title: string; available_quantity: number }[] = [];
-    for (const item of (mlItems || [])) {
-      if (!item.sku || item.sku.trim() === "") {
-        sinVincular.push({ item_id: item.item_id, title: item.title || "", available_quantity: item.available_quantity || 0 });
-      }
-    }
-    setMlSinVincular(sinVincular);
   }, []);
 
   const cargarPendientes = useCallback(async () => {
@@ -607,28 +581,6 @@ export default function AdminInteligencia() {
     setRecalculando(false);
   }, [cargar]);
 
-  const syncStockML = useCallback(async () => {
-    setSyncingML(true);
-    setSyncMLResult(null);
-    try {
-      const res = await fetch("/api/ml/sync-stock-full", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ recalcular: true }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setSyncMLResult(`ML Sync: ${data.items_sincronizados} items, ${data.stock_actualizado} SKUs actualizados en ${(data.tiempo_ms / 1000).toFixed(1)}s${data.errores?.length ? ` (${data.errores.length} errores)` : ""}`);
-        await cargar();
-      } else {
-        setSyncMLResult("Error al sincronizar stock ML");
-      }
-    } catch {
-      setSyncMLResult("Error de conexion con ML");
-    }
-    setSyncingML(false);
-  }, [cargar]);
-
   // Guardar vel_objetivo inline
   const guardarVelObjetivo = useCallback(async (skuOrigen: string, velObj: number) => {
     try {
@@ -650,39 +602,6 @@ export default function AdminInteligencia() {
       }));
     } catch { /* silenciar */ }
   }, []);
-
-  // Guardar masivo
-  const guardarMasivo = useCallback(async () => {
-    setMasivoSaving(true);
-    const mult = parseFloat(masivoMultiplier) || 1;
-    let targets: { sku_origen: string; vel_objetivo: number }[] = [];
-
-    if (masivoMode === "abc") {
-      targets = rows
-        .filter(r => r.abc === masivoAbcFilter && r.vel_ponderada > 0)
-        .map(r => ({ sku_origen: r.sku_origen, vel_objetivo: Math.round(r.vel_ponderada * mult * 10) / 10 }));
-    } else if (masivoMode === "categoria") {
-      targets = rows
-        .filter(r => r.categoria === masivoCatFilter && r.vel_ponderada > 0)
-        .map(r => ({ sku_origen: r.sku_origen, vel_objetivo: Math.round(r.vel_ponderada * mult * 10) / 10 }));
-    }
-
-    if (targets.length > 0) {
-      const motDesc = masivoMode === "abc"
-        ? `Ajuste masivo ABC ${masivoAbcFilter} x${mult}`
-        : `Ajuste masivo cat. ${masivoCatFilter} x${mult}`;
-      try {
-        await fetch("/api/intelligence/sku/_bulk", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ updates: targets, motivo: motDesc }),
-        });
-        await cargar();
-      } catch { /* silenciar */ }
-    }
-    setMasivoSaving(false);
-    setModalMasivo(false);
-  }, [masivoMode, masivoAbcFilter, masivoCatFilter, masivoMultiplier, rows, cargar]);
 
   // ── Envío a Full: calcular items ──
   const envioItems = useMemo((): EnvioFullItem[] => {
@@ -1480,17 +1399,7 @@ export default function AdminInteligencia() {
   const ventaPerdida = rows.reduce((a: number, r: IntelRow) => a + (r.venta_perdida_pesos || 0), 0);
   const ventaPerdidaEstimada = rows.reduce((a: number, r: IntelRow) => a + (r.oportunidad_perdida_es_estimacion ? (r.venta_perdida_pesos || 0) : 0), 0);
   const ventaPerdidaPctEstimada = ventaPerdida > 0 ? Math.round((ventaPerdidaEstimada / ventaPerdida) * 100) : 0;
-  const gmroiProm = rows.length > 0 ? rows.reduce((a: number, r: IntelRow) => a + (r.gmroi || 0), 0) / rows.length : 0;
-
-  // KPIs nuevos: % A en meta, % A con stock
-  const skusA = rows.filter((r: IntelRow) => r.abc === "A");
-  const skusAConObj = skusA.filter(r => r.vel_objetivo > 0);
-  const skusAEnMeta = skusAConObj.filter(r => r.vel_ponderada >= r.vel_objetivo);
-  const pctAEnMeta = skusAConObj.length > 0 ? Math.round((skusAEnMeta.length / skusAConObj.length) * 100) : null;
-  const skusAConStock = skusA.filter(r => r.stock_full > 0);
-  const pctAConStock = skusA.length > 0 ? Math.round((skusAConStock.length / skusA.length) * 100) : null;
-
-  const abcA = skusA.length;
+  const abcA = rows.filter((r: IntelRow) => r.abc === "A").length;
   const abcB = rows.filter((r: IntelRow) => r.abc === "B").length;
   const abcC = rows.filter((r: IntelRow) => r.abc === "C").length;
 
@@ -1529,15 +1438,6 @@ export default function AdminInteligencia() {
               Ventana Proveedor
             </button>
           </div>
-          <button onClick={() => setModalMasivo(true)} style={{ padding: "6px 12px", borderRadius: 6, background: "var(--amberBg)", color: "var(--amber)", fontWeight: 600, fontSize: 11, border: "1px solid var(--amberBd)", cursor: "pointer" }}>
-            Definir objetivos
-          </button>
-          <button onClick={() => setModalNotas(true)} style={{ padding: "6px 12px", borderRadius: 6, background: "var(--amberBg)", color: "var(--amber)", fontWeight: 600, fontSize: 11, border: "1px solid var(--amberBd)", cursor: "pointer" }}>
-            Notas operativas
-          </button>
-          <button onClick={syncStockML} disabled={syncingML} style={{ padding: "6px 12px", borderRadius: 6, background: "var(--blueBg)", color: "var(--blue)", fontWeight: 600, fontSize: 11, border: "1px solid var(--blueBd)", cursor: "pointer" }}>
-            {syncingML ? "Sync..." : "Sync ML"}
-          </button>
           <button onClick={recalcular} disabled={recalculando} style={{ padding: "6px 12px", borderRadius: 6, background: "var(--cyanBg)", color: "var(--cyan)", fontWeight: 600, fontSize: 11, border: "1px solid var(--cyanBd)", cursor: "pointer" }}>
             {recalculando ? "Recalculando..." : "Recalcular"}
           </button>
@@ -1550,8 +1450,7 @@ export default function AdminInteligencia() {
         </div>
       </div>
 
-      {syncMLResult && <div style={{ padding: "6px 10px", borderRadius: 6, background: "var(--blueBg)", color: "var(--blue)", fontSize: 11, marginBottom: 6, border: "1px solid var(--blueBd)" }}>{syncMLResult}</div>}
-      {recalcResult && <div style={{ padding: "6px 10px", borderRadius: 6, background: "var(--greenBg)", color: "var(--green)", fontSize: 11, marginBottom: 6, border: "1px solid var(--greenBd)" }}>{recalcResult}</div>}
+      {recalcResult &&<div style={{ padding: "6px 10px", borderRadius: 6, background: "var(--greenBg)", color: "var(--green)", fontSize: 11, marginBottom: 6, border: "1px solid var(--greenBd)" }}>{recalcResult}</div>}
 
       {/* KPIs en una línea compacta */}
       <div style={{ display: "flex", gap: 4, marginBottom: 8, flexWrap: "wrap", fontSize: 11 }}>
@@ -1563,19 +1462,6 @@ export default function AdminInteligencia() {
           value={fmtK(ventaPerdida) + (ventaPerdidaPctEstimada > 0 ? ` (${ventaPerdidaPctEstimada}%est)` : "")}
           color="var(--red)"
           title={ventaPerdidaPctEstimada > 0 ? `${fmtK(ventaPerdidaEstimada)} viene de estimación con margen 25% (textiles BANVA típicamente menor). Filtrar oportunidad_perdida_es_estimacion=false para descartar.` : "Todos los valores derivados de margen real"}
-        />
-        <KpiBadge label="GMROI" value={fmtN(gmroiProm, 1)} color="var(--txt)" />
-        <KpiBadge
-          label="A en meta"
-          value={pctAEnMeta !== null ? pctAEnMeta + "%" : "—"}
-          color={pctAEnMeta !== null && pctAEnMeta >= 80 ? "var(--green)" : pctAEnMeta !== null ? "var(--amber)" : "var(--txt3)"}
-          title={pctAEnMeta === null ? "Define vel. objetivo para activar" : `${skusAEnMeta.length}/${skusAConObj.length} SKUs A en meta`}
-        />
-        <KpiBadge
-          label="A c/stock"
-          value={pctAConStock !== null ? pctAConStock + "%" : "—"}
-          color={pctAConStock !== null && pctAConStock >= 97 ? "var(--green)" : pctAConStock !== null ? "var(--amber)" : "var(--txt3)"}
-          title={`${skusAConStock.length}/${skusA.length} SKUs A con stock Full > 0`}
         />
       </div>
 
@@ -1663,16 +1549,6 @@ export default function AdminInteligencia() {
               </div>
             ))}
           </div>
-        </div>
-      )}
-
-      {/* ML sin vincular banner */}
-      {mlSinVincular.length > 0 && (
-        <div style={{ padding: "5px 10px", borderRadius: 6, background: "var(--amberBg)", color: "var(--amber)", fontSize: 10, marginBottom: 8, border: "1px solid var(--amberBd)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span>{mlSinVincular.length} items ML sin vincular ({mlSinVincular.reduce((a, i) => a + i.available_quantity, 0)} uds invisibles)</span>
-          <button onClick={() => setMlSinVincularOpen(!mlSinVincularOpen)} style={{ background: "none", border: "none", color: "var(--amber)", fontWeight: 600, fontSize: 10, cursor: "pointer", textDecoration: "underline" }}>
-            {mlSinVincularOpen ? "Ocultar" : "Ver"}
-          </button>
         </div>
       )}
 
@@ -2403,9 +2279,6 @@ export default function AdminInteligencia() {
       {/* ═══ PEDIDO A PROVEEDOR ═══ */}
       {vistaPedido && (
         <div>
-          {/* Upload OC desde CSV */}
-          <OCFromCSV rows={rows} onCreated={(msg) => { setOcCreada(msg); }} />
-
           {/* KPIs pedido */}
           <div style={{ display: "flex", gap: 4, marginBottom: 8, flexWrap: "wrap", fontSize: 11 }}>
             <KpiBadge label="SKUs a pedir" value={String(pedidoKpis.skus)} color="var(--amber)" />
@@ -2858,179 +2731,6 @@ export default function AdminInteligencia() {
 
       {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && filtered.length === 0 && <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>No hay datos. Ejecuta &quot;Recalcular&quot; para generar.</div>}
 
-      {/* ═══ 7. ML SIN VINCULAR (colapsado al pie) ═══ */}
-      {mlSinVincularOpen && <AdminMLSinVincular />}
-
-      {/* ═══ MODAL MASIVO DE VEL OBJETIVO ═══ */}
-      {modalMasivo && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }} onClick={() => setModalMasivo(false)}>
-          <div style={{ background: "var(--bg2)", borderRadius: 12, padding: 24, maxWidth: 480, width: "95%", border: "1px solid var(--bg4)" }} onClick={e => e.stopPropagation()}>
-            <h3 style={{ margin: "0 0 16px", fontSize: 16, fontWeight: 700 }}>Definir velocidades objetivo</h3>
-
-            {/* Tabs */}
-            <div style={{ display: "flex", gap: 4, marginBottom: 16 }}>
-              <button onClick={() => setMasivoMode("abc")} style={{ padding: "6px 14px", borderRadius: 6, fontSize: 12, fontWeight: 600, background: masivoMode === "abc" ? "var(--cyan)" : "var(--bg3)", color: masivoMode === "abc" ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
-                Por ABC
-              </button>
-              <button onClick={() => setMasivoMode("categoria")} style={{ padding: "6px 14px", borderRadius: 6, fontSize: 12, fontWeight: 600, background: masivoMode === "categoria" ? "var(--cyan)" : "var(--bg3)", color: masivoMode === "categoria" ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
-                Por Categoria
-              </button>
-            </div>
-
-            {masivoMode === "abc" && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                <div>
-                  <label style={{ fontSize: 12, color: "var(--txt2)", display: "block", marginBottom: 4 }}>Clasificacion ABC</label>
-                  <select value={masivoAbcFilter} onChange={e => setMasivoAbcFilter(e.target.value)} className="form-input" style={{ width: "100%", fontSize: 13 }}>
-                    <option value="A">A ({rows.filter(r => r.abc === "A" && r.vel_ponderada > 0).length} SKUs)</option>
-                    <option value="B">B ({rows.filter(r => r.abc === "B" && r.vel_ponderada > 0).length} SKUs)</option>
-                    <option value="C">C ({rows.filter(r => r.abc === "C" && r.vel_ponderada > 0).length} SKUs)</option>
-                  </select>
-                </div>
-                <div>
-                  <label style={{ fontSize: 12, color: "var(--txt2)", display: "block", marginBottom: 4 }}>Multiplicador sobre vel actual</label>
-                  <input type="number" step="0.05" value={masivoMultiplier} onChange={e => setMasivoMultiplier(e.target.value)} className="form-input" style={{ width: "100%", fontSize: 13 }} />
-                  <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 4 }}>
-                    Ej: 1.1 = poner objetivo 10% arriba de la vel. actual
-                  </div>
-                </div>
-                <div style={{ fontSize: 11, color: "var(--txt2)", padding: "8px 10px", background: "var(--bg3)", borderRadius: 6 }}>
-                  Se aplicara a {rows.filter(r => r.abc === masivoAbcFilter && r.vel_ponderada > 0).length} SKUs con velocidad &gt; 0
-                </div>
-              </div>
-            )}
-
-            {masivoMode === "categoria" && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                <div>
-                  <label style={{ fontSize: 12, color: "var(--txt2)", display: "block", marginBottom: 4 }}>Categoria</label>
-                  <select value={masivoCatFilter} onChange={e => setMasivoCatFilter(e.target.value)} className="form-input" style={{ width: "100%", fontSize: 13 }}>
-                    <option value="">Seleccionar...</option>
-                    {categorias.map(c => <option key={c} value={c}>{c} ({rows.filter(r => r.categoria === c && r.vel_ponderada > 0).length})</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label style={{ fontSize: 12, color: "var(--txt2)", display: "block", marginBottom: 4 }}>Multiplicador sobre vel actual</label>
-                  <input type="number" step="0.05" value={masivoMultiplier} onChange={e => setMasivoMultiplier(e.target.value)} className="form-input" style={{ width: "100%", fontSize: 13 }} />
-                </div>
-                {masivoCatFilter && (
-                  <div style={{ fontSize: 11, color: "var(--txt2)", padding: "8px 10px", background: "var(--bg3)", borderRadius: 6 }}>
-                    Se aplicara a {rows.filter(r => r.categoria === masivoCatFilter && r.vel_ponderada > 0).length} SKUs
-                  </div>
-                )}
-              </div>
-            )}
-
-            <div style={{ display: "flex", gap: 8, marginTop: 20, justifyContent: "flex-end" }}>
-              <button onClick={() => setModalMasivo(false)} style={{ padding: "8px 16px", borderRadius: 8, background: "var(--bg3)", color: "var(--txt2)", fontWeight: 600, fontSize: 12, border: "1px solid var(--bg4)", cursor: "pointer" }}>
-                Cancelar
-              </button>
-              <button
-                onClick={guardarMasivo}
-                disabled={masivoSaving || (masivoMode === "categoria" && !masivoCatFilter)}
-                style={{ padding: "8px 20px", borderRadius: 8, background: "var(--cyan)", color: "#000", fontWeight: 700, fontSize: 12, border: "none", cursor: "pointer", opacity: masivoSaving ? 0.6 : 1 }}
-              >
-                {masivoSaving ? "Guardando..." : "Aplicar"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ═══ MODAL NOTAS OPERATIVAS ═══ */}
-      {modalNotas && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }} onClick={() => setModalNotas(false)}>
-          <div style={{ background: "var(--bg2)", borderRadius: 12, padding: 24, maxWidth: 700, width: "95%", maxHeight: "85vh", overflow: "auto", border: "1px solid var(--bg4)" }} onClick={e => e.stopPropagation()}>
-            <h3 style={{ margin: "0 0 12px", fontSize: 16, fontWeight: 700 }}>Notas operativas por SKU Venta</h3>
-            <input
-              type="text"
-              placeholder="Filtrar por SKU, nombre, categoria..."
-              value={notasBusqueda}
-              onChange={e => setNotasBusqueda(e.target.value)}
-              className="form-input"
-              style={{ width: "100%", fontSize: 12, padding: "6px 10px", marginBottom: 12 }}
-            />
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
-              <thead>
-                <tr style={{ borderBottom: "2px solid var(--bg3)" }}>
-                  <th style={{ textAlign: "left", padding: "6px 4px", color: "var(--txt3)" }}>SKU Venta</th>
-                  <th style={{ textAlign: "left", padding: "6px 4px", color: "var(--txt3)" }}>Nombre</th>
-                  <th style={{ textAlign: "left", padding: "6px 4px", color: "var(--txt3)", width: "40%" }}>Nota operativa</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(() => {
-                  const skusVenta = getSkusVenta();
-                  const q = notasBusqueda.toLowerCase();
-                  const filtered = q ? skusVenta.filter(s => {
-                    const nombre = ventaRows.find(v => v.sku_venta === s.skuVenta)?.nombre || "";
-                    const cat = ventaRows.find(v => v.sku_venta === s.skuVenta)?.proveedor || "";
-                    return s.skuVenta.toLowerCase().includes(q) || nombre.toLowerCase().includes(q) || cat.toLowerCase().includes(q);
-                  }) : skusVenta;
-                  return filtered.slice(0, 100).map(s => {
-                    const currentNotas = getNotasOperativas(s.skuVenta);
-                    const currentNota = currentNotas.join(" | ");
-                    const edited = notasEdits.get(s.skuVenta);
-                    const displayVal = edited !== undefined ? edited : currentNota;
-                    const nombre = ventaRows.find(v => v.sku_venta === s.skuVenta)?.nombre || "";
-                    return (
-                      <tr key={s.skuVenta} style={{ borderBottom: "1px solid var(--bg3)" }}>
-                        <td className="mono" style={{ padding: "4px", fontWeight: 600, fontSize: 10 }}>{s.skuVenta}</td>
-                        <td style={{ padding: "4px", fontSize: 10, color: "var(--txt2)" }}>{nombre.slice(0, 30)}</td>
-                        <td style={{ padding: "4px" }}>
-                          <input
-                            type="text"
-                            value={displayVal}
-                            onChange={e => setNotasEdits(prev => { const m = new Map(prev); m.set(s.skuVenta, e.target.value); return m; })}
-                            placeholder="Ej: Pack de 2. Armar antes de enviar."
-                            className="form-input"
-                            style={{ width: "100%", fontSize: 10, padding: "3px 6px" }}
-                          />
-                        </td>
-                      </tr>
-                    );
-                  });
-                })()}
-              </tbody>
-            </table>
-            <div style={{ display: "flex", gap: 8, marginTop: 16, justifyContent: "flex-end" }}>
-              <button onClick={() => { setModalNotas(false); setNotasEdits(new Map()); }} style={{ padding: "8px 16px", borderRadius: 8, background: "var(--bg3)", color: "var(--txt2)", fontWeight: 600, fontSize: 12, border: "1px solid var(--bg4)", cursor: "pointer" }}>
-                Cancelar
-              </button>
-              <button
-                onClick={async () => {
-                  if (notasEdits.size === 0) { setModalNotas(false); return; }
-                  setNotasSaving(true);
-                  const updates: { sku_venta: string; sku_origen: string; nota_operativa: string | null }[] = [];
-                  Array.from(notasEdits.entries()).forEach(([skuVenta, nota]) => {
-                    const comps = getComponentesPorSkuVenta(skuVenta);
-                    if (comps.length > 0) {
-                      for (const c of comps) {
-                        updates.push({ sku_venta: c.skuVenta, sku_origen: c.skuOrigen, nota_operativa: nota.trim() || null });
-                      }
-                    } else {
-                      // Producto simple sin composición — usar skuVenta como sku_origen
-                      const skuFisico = getSkuFisicoPorSkuVenta(skuVenta) || skuVenta;
-                      updates.push({ sku_venta: skuVenta, sku_origen: skuFisico, nota_operativa: nota.trim() || null });
-                    }
-                  });
-                  await upsertNotasOperativas(updates);
-                  // Refrescar cache para que las notas aparezcan inmediatamente
-                  const { refreshStore } = await import("@/lib/store");
-                  await refreshStore();
-                  setNotasSaving(false);
-                  setNotasEdits(new Map());
-                  setModalNotas(false);
-                }}
-                disabled={notasSaving || notasEdits.size === 0}
-                style={{ padding: "8px 20px", borderRadius: 8, background: "var(--cyan)", color: "#000", fontWeight: 700, fontSize: 12, border: "none", cursor: "pointer", opacity: notasSaving || notasEdits.size === 0 ? 0.6 : 1 }}
-              >
-                {notasSaving ? "Guardando..." : `Guardar todo (${notasEdits.size} cambios)`}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -3138,178 +2838,3 @@ function descargarCSV(csvRows: string[], prefix: string) {
   URL.revokeObjectURL(url);
 }
 
-// ==================== OC FROM CSV ====================
-function OCFromCSV({ rows, onCreated }: { rows: IntelRow[]; onCreated: (msg: string) => void }) {
-  const [show, setShow] = useState(false);
-  const [proveedor, setProveedor] = useState("");
-  const [csvText, setCsvText] = useState("");
-  const [parsed, setParsed] = useState<{ sku: string; nombre: string; cantidad: number; costoUnit: number; innerPack: number; bultos: number; found: boolean }[]>([]);
-  const [creating, setCreating] = useState(false);
-
-  const proveedores = Array.from(new Set(rows.map(r => r.proveedor).filter(Boolean))).sort() as string[];
-
-  const parseCsv = (text: string) => {
-    const lines = text.trim().split("\n").filter(l => l.trim());
-    const items: typeof parsed = [];
-    for (let i = 0; i < lines.length; i++) {
-      const cols = lines[i].split(/[;\t,]/).map(c => c.trim());
-      // Skip header
-      if (i === 0 && (cols[0]?.toLowerCase().includes("sku") || cols[0]?.toLowerCase().includes("codigo"))) continue;
-      const sku = (cols[0] || "").toUpperCase();
-      if (!sku) continue;
-      const nombre = cols[1] || "";
-      const cantidad = parseInt(cols[2] || "0") || 0;
-      if (cantidad <= 0) continue;
-      // Lookup from intelligence
-      const row = rows.find(r => r.sku_origen === sku);
-      const costoUnit = row ? (row.costo_bruto > 0 ? Math.round(row.costo_bruto / 1.19) : 0) : 0;
-      const ip = row?.inner_pack || 1;
-      items.push({
-        sku, nombre: nombre || row?.nombre || sku,
-        cantidad, costoUnit, innerPack: ip,
-        bultos: ip > 1 ? Math.ceil(cantidad / ip) : cantidad,
-        found: !!row,
-      });
-    }
-    setParsed(items);
-  };
-
-  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const isExcel = file.name.endsWith(".xlsx") || file.name.endsWith(".xls");
-    if (isExcel) {
-      const XLSX = await import("xlsx");
-      const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: "array" });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows: string[][] = XLSX.utils.sheet_to_json(ws, { header: 1 });
-      const text = rows.map(r => r.join(";")).join("\n");
-      setCsvText(text);
-      parseCsv(text);
-    } else {
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        const text = ev.target?.result as string;
-        setCsvText(text);
-        parseCsv(text);
-      };
-      reader.readAsText(file);
-    }
-  };
-
-  const doCreate = async (estado: "BORRADOR" | "PENDIENTE") => {
-    if (!proveedor || parsed.length === 0 || creating) return;
-    setCreating(true);
-    try {
-      const totalNeto = parsed.reduce((s, l) => s + l.cantidad * l.costoUnit, 0);
-      const totalBruto = Math.round(totalNeto * 1.19);
-      const numero = await nextOCNumero();
-      const ocId = await insertOrdenCompra({ numero, proveedor, estado, total_neto: totalNeto, total_bruto: totalBruto, notas: `Creada desde CSV — ${parsed.length} SKUs` });
-      if (!ocId) { alert("Error al crear OC"); setCreating(false); return; }
-      const ocLineas: Omit<DBOrdenCompraLinea, "id" | "created_at">[] = parsed.map(l => {
-        const row = rows.find(r => r.sku_origen === l.sku);
-        return {
-          orden_id: ocId, sku_origen: l.sku, nombre: l.nombre,
-          cantidad_pedida: l.cantidad, costo_unitario: l.costoUnit,
-          inner_pack: l.innerPack, bultos: l.bultos,
-          abc: row?.abc || null, vel_ponderada: row?.vel_ponderada ?? null,
-          cob_total_al_pedir: row?.cob_total ?? null,
-          stock_full_al_pedir: row?.stock_full ?? null,
-          stock_bodega_al_pedir: row?.stock_bodega ?? null,
-          accion_al_pedir: row?.accion ?? null,
-        };
-      });
-      await insertOrdenCompraLineas(ocLineas);
-      await insertAdminActionLog("crear_oc", "ordenes_compra", ocId, { oc_id: ocId, numero, proveedor, lineas: parsed.length, total_neto: totalNeto, fuente: "csv_upload" });
-      onCreated(`${numero} — ${proveedor} (${estado}, desde CSV)`);
-      setShow(false); setCsvText(""); setParsed([]);
-      try { await fetch("/api/intelligence/recalcular", { method: "POST" }); } catch {}
-    } catch (err) {
-      alert("Error: " + String(err));
-    } finally { setCreating(false); }
-  };
-
-  if (!show) return (
-    <button onClick={() => setShow(true)}
-      style={{ marginBottom: 12, padding: "8px 16px", borderRadius: 8, background: "var(--bg3)", color: "var(--cyan)", fontSize: 12, fontWeight: 600, border: "1px solid var(--bg4)" }}>
-      Crear OC desde CSV/Excel
-    </button>
-  );
-
-  return (
-    <div style={{ marginBottom: 16, padding: 16, borderRadius: 10, background: "var(--bg2)", border: "1px solid var(--bg4)" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-        <div style={{ fontSize: 14, fontWeight: 700 }}>Crear OC desde CSV</div>
-        <button onClick={() => { setShow(false); setParsed([]); setCsvText(""); }}
-          style={{ padding: "4px 10px", borderRadius: 4, background: "var(--bg3)", color: "var(--txt3)", fontSize: 11, border: "1px solid var(--bg4)" }}>Cerrar</button>
-      </div>
-
-      <div style={{ display: "flex", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
-        <div>
-          <label style={{ fontSize: 11, color: "var(--txt3)", display: "block", marginBottom: 4 }}>Proveedor</label>
-          <select value={proveedor} onChange={e => setProveedor(e.target.value)}
-            style={{ padding: "6px 10px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 12 }}>
-            <option value="">Seleccionar...</option>
-            {proveedores.map(p => <option key={p} value={p}>{p}</option>)}
-          </select>
-        </div>
-        <div>
-          <label style={{ fontSize: 11, color: "var(--txt3)", display: "block", marginBottom: 4 }}>Archivo CSV (SKU; Nombre; Cantidad)</label>
-          <input type="file" accept=".csv,.txt,.xlsx" onChange={handleFile}
-            style={{ fontSize: 11, color: "var(--txt3)" }} />
-        </div>
-      </div>
-
-      <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 8 }}>
-        Formato: SKU;Nombre;Cantidad (separado por ; o tab o coma). La primera fila se ignora si es encabezado.
-      </div>
-
-      {!csvText && (
-        <div>
-          <label style={{ fontSize: 11, color: "var(--txt3)", display: "block", marginBottom: 4 }}>O pegar texto directamente:</label>
-          <textarea value={csvText} onChange={e => { setCsvText(e.target.value); parseCsv(e.target.value); }}
-            placeholder={"SKU;Nombre;Cantidad\nLITAF400G4PGR;Set 4 Toallas Gris;72\nTXPMMF15PBOYG;Plumon Boy;24"}
-            style={{ width: "100%", minHeight: 80, padding: 8, borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 11, fontFamily: "var(--font-mono)", resize: "vertical" }} />
-        </div>
-      )}
-
-      {parsed.length > 0 && (
-        <div style={{ marginTop: 12 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Vista previa ({parsed.length} items, {parsed.reduce((s, l) => s + l.cantidad, 0)} uds)</div>
-          <div style={{ overflowX: "auto", maxHeight: 300 }}>
-            <table className="tbl" style={{ fontSize: 11 }}>
-              <thead><tr><th>SKU</th><th>Nombre</th><th style={{ textAlign: "right" }}>Cantidad</th><th style={{ textAlign: "right" }}>IP</th><th style={{ textAlign: "right" }}>Bultos</th><th>Estado</th></tr></thead>
-              <tbody>
-                {parsed.map((l, i) => (
-                  <tr key={i} style={{ background: l.found ? "transparent" : "var(--amberBg)" }}>
-                    <td className="mono">{l.sku}</td>
-                    <td>{l.nombre}</td>
-                    <td className="mono" style={{ textAlign: "right" }}>{l.cantidad}</td>
-                    <td className="mono" style={{ textAlign: "right", color: "var(--txt3)" }}>{l.innerPack > 1 ? l.innerPack : "—"}</td>
-                    <td className="mono" style={{ textAlign: "right" }}>{l.bultos}</td>
-                    <td><span style={{ fontSize: 9, padding: "2px 6px", borderRadius: 4, background: l.found ? "var(--greenBg)" : "var(--amberBg)", color: l.found ? "var(--green)" : "var(--amber)", fontWeight: 600 }}>
-                      {l.found ? "OK" : "No en intel"}
-                    </span></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-            <button onClick={() => doCreate("BORRADOR")} disabled={creating || !proveedor}
-              style={{ padding: "10px 20px", borderRadius: 8, background: "var(--bg3)", color: proveedor ? "var(--txt)" : "var(--txt3)", fontWeight: 700, fontSize: 12, border: "1px solid var(--bg4)", cursor: proveedor ? "pointer" : "default" }}>
-              {creating ? "Creando..." : "Guardar como Borrador"}
-            </button>
-            <button onClick={() => doCreate("PENDIENTE")} disabled={creating || !proveedor}
-              style={{ padding: "10px 20px", borderRadius: 8, background: proveedor ? "var(--amber)" : "var(--bg3)", color: proveedor ? "#000" : "var(--txt3)", fontWeight: 700, fontSize: 12, border: "none", cursor: proveedor ? "pointer" : "default" }}>
-              {creating ? "Creando..." : "Confirmar OC"}
-            </button>
-          </div>
-          {!proveedor && <div style={{ fontSize: 11, color: "var(--amber)", marginTop: 4 }}>Selecciona un proveedor</div>}
-        </div>
-      )}
-    </div>
-  );
-}
