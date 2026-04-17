@@ -144,6 +144,7 @@ export default function AdminVentasML() {
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<"comparativa" | "ml_directo" | "productos">("comparativa");
   const [cfwaRango, setCfwaRango] = useState(0);
+  const [adsTotalRango, setAdsTotalRango] = useState(0);
   const [productoSearch, setProductoSearch] = useState("");
   const [mlDirectoSearch, setMlDirectoSearch] = useState("");
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
@@ -189,15 +190,18 @@ export default function AdminVentasML() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Carga CFWA (almacenamiento Full) del rango seleccionado
+  // Carga CFWA (almacenamiento Full) y Ads totales del rango seleccionado
   useEffect(() => {
     (async () => {
       const sb = getSupabase(); if (!sb) return;
-      const { data } = await sb.from("ml_billing_cfwa")
-        .select("amount")
-        .gte("day", from).lte("day", to);
-      const total = (data || []).reduce((s: number, r: { amount: number | string }) => s + Number(r.amount || 0), 0);
-      setCfwaRango(total);
+      const [{ data: cfwaData }, { data: adsData }] = await Promise.all([
+        sb.from("ml_billing_cfwa").select("amount").gte("day", from).lte("day", to),
+        sb.from("ml_ads_daily_cache").select("cost_neto").gte("date", from).lte("date", to),
+      ]);
+      const cfwa = (cfwaData || []).reduce((s: number, r: { amount: number | string }) => s + Number(r.amount || 0), 0);
+      const adsNeto = (adsData || []).reduce((s: number, r: { cost_neto: number | string }) => s + Number(r.cost_neto || 0), 0);
+      setCfwaRango(cfwa);
+      setAdsTotalRango(Math.round(adsNeto * 1.19));
     })();
   }, [from, to]);
 
@@ -535,8 +539,12 @@ export default function AdminVentasML() {
       {/* KPIs — ERP dense grid */}
       {mlOrders.length > 0 && (() => {
         const envioNeto = mlTotals.envio - mlTotals.bonif;
-        const margenNetoFinal = margenTotals.margen_neto - cfwaRango;
+        // Usa el total real de ads del rango (DB ml_ads_daily_cache × 1.19)
+        // en lugar del per-order ads_cost_asignado que solo cubre atribución directa.
+        const adsReal = adsTotalRango;
+        const margenNetoFinal = margenTotals.margen - adsReal - cfwaRango;
         const margenNetoFinalPct = margenTotals.subtotal > 0 ? (margenNetoFinal / margenTotals.subtotal) * 100 : 0;
+        const adsDirectos = margenTotals.ads;
         return (
         <div className="card" style={{ marginBottom: 16, padding: 0, overflow: "hidden" }}>
           {/* Fila 1: Volumen e ingresos */}
@@ -545,7 +553,7 @@ export default function AdminVentasML() {
             <ErpKpi label="Items" value={mlTotals.items.toString()} sub={validOrders.length > 0 ? `${(mlTotals.items / validOrders.length).toFixed(1)}/orden` : undefined} />
             <ErpKpi label="Venta bruta" value={fmt(mlTotals.subtotal)} accent="cyan" />
             <ErpKpi label="Ticket prom." value={validOrders.length > 0 ? fmt(mlTotals.subtotal / validOrders.length) : "—"} />
-            <ErpKpi label="Ads" value={fmt(margenTotals.ads)} accent="red" />
+            <ErpKpi label="Ads (gasto real)" value={fmt(adsReal)} accent="red" sub={adsDirectos > 0 ? `atrib. directa ${fmt(adsDirectos)}` : undefined} />
             <ErpKpi label="Ingreso neto" value={fmt(mlTotals.neto)} accent="green" bold />
           </div>
           {/* Fila 2: Costos y margen */}
@@ -555,7 +563,7 @@ export default function AdminVentasML() {
             <ErpKpi label="Costo prod." value={fmt(margenTotals.costo)} accent="red" sub={ordersSinCosto.length > 0 ? `${ordersSinCosto.length} sin costo` : undefined} subColor="amber" />
             <ErpKpi label="Costo Full (CFWA)" value={fmt(cfwaRango)} accent="red" sub="almacén c/IVA" />
             <ErpKpi label="Margen bruto" value={fmt(margenTotals.margen)} accent={margenTotals.margen >= 0 ? "green" : "red"} sub={`${margenPctTotal.toFixed(1)}%`} bold />
-            <ErpKpi label="Margen neto" value={fmt(margenNetoFinal)} accent={margenNetoFinal >= 0 ? "green" : "red"} sub={`${margenNetoFinalPct.toFixed(1)}% · incl. Ads+CFWA`} bold />
+            <ErpKpi label="Margen neto" value={fmt(margenNetoFinal)} accent={margenNetoFinal >= 0 ? "green" : "red"} sub={`${margenNetoFinalPct.toFixed(1)}% · −Ads −CFWA`} bold />
           </div>
         </div>
         );
