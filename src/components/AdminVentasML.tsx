@@ -2,6 +2,7 @@
 import { useState, useEffect } from "react";
 import * as XLSX from "xlsx";
 import type { CostoFuente } from "@/lib/costos";
+import CostosFullCard from "./CostosFullCard";
 
 interface TrazaResponse {
   skus_venta: Array<{
@@ -529,6 +530,9 @@ export default function AdminVentasML() {
 
       {/* Daily chart */}
       {dailyChart}
+
+      {/* Costos Full (CFWA) — almacenamiento */}
+      <CostosFullCard />
 
       {/* View toggle */}
       {mlOrders.length > 0 && (
