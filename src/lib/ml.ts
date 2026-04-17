@@ -1824,7 +1824,7 @@ async function fetchMarketplaceItem(itemId: string): Promise<MLMarketplaceItem |
 /**
  * Fetch fulfillment stock detail for an inventory_id.
  */
-async function fetchFulfillmentStock(inventoryId: string, sellerId: string): Promise<FulfillmentStockDetail | null> {
+export async function fetchFulfillmentStock(inventoryId: string, sellerId: string): Promise<FulfillmentStockDetail | null> {
   return mlGet<FulfillmentStockDetail>(
     `/inventories/${inventoryId}/stock/fulfillment?seller_id=${sellerId}`
   );
