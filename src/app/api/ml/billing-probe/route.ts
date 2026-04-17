@@ -209,5 +209,24 @@ export async function GET(req: NextRequest) {
     by_marketplace: byMarketplace,
     by_day: byDaySorted,
     samples_by_sub_type: sampleBySubType,
+    raw_rows_filtered: dayFilter ? allRows
+      .filter(r => {
+        const ci = r.charge_info || {};
+        const dt = r.sales_info?.[0]?.sale_date_time || ci.creation_date_time || "";
+        return dt.slice(0,10) === dayFilter;
+      })
+      .map(r => ({
+        detail_id: (r.charge_info as { detail_id?: number } | undefined)?.detail_id,
+        detail_sub_type: r.charge_info?.detail_sub_type,
+        transaction_detail: r.charge_info?.transaction_detail,
+        detail_amount: r.charge_info?.detail_amount,
+        gross: r.discount_info?.charge_amount_without_discount,
+        discount: r.discount_info?.discount_amount,
+        creation_date_time: r.charge_info?.creation_date_time,
+        sale_date_time: r.sales_info?.[0]?.sale_date_time,
+        marketplace: r.marketplace_info?.marketplace,
+        item_id: r.items_info?.[0]?.item_id,
+        item_title: r.items_info?.[0]?.item_title,
+      })) : undefined,
   });
 }
