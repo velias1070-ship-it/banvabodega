@@ -2224,20 +2224,45 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     if (i + 10 < upIds.length) await delay(300);
   }
 
-  // Mapear user_product_id → sku_venta y sumar cantidades
+  // Mapear user_product_id → sku_venta y sumar cantidades.
+  // Si ningún user_product_id del SKU respondió (rate limit o API caída), NO escribir
+  // 0 — fallback a la suma de ml_items_map.available_quantity (fulfillment inventory).
+  // Sin este fallback, un rate limit transitorio borraba stock real del cache.
   const stockBySku = new Map<string, number>();
+  const skuConRespuestaDistribuida = new Set<string>();
   skuToUserProductIds.forEach((upIdSet, skuVenta) => {
     let total = 0;
+    let algunoRespondio = false;
     const counted = new Set<string>();
     Array.from(upIdSet).forEach(upId => {
       if (counted.has(upId)) return;
       counted.add(upId);
-      total += distributedResults.get(upId) || 0;
+      if (distributedResults.has(upId)) {
+        algunoRespondio = true;
+        total += distributedResults.get(upId) || 0;
+      }
     });
-    stockBySku.set(skuVenta, total);
+    if (algunoRespondio) {
+      stockBySku.set(skuVenta, total);
+      skuConRespuestaDistribuida.add(skuVenta);
+    }
   });
 
-  console.log(`[syncStockFull] ${stockBySku.size} SKUs con stock distribuido obtenido`);
+  // Fallback: para SKUs sin respuesta del distribuido, usar suma de
+  // ml_items_map.available_quantity (viene del paso 3 via fetchItemStock,
+  // fuente fulfillment inventory — ya lo tenemos en memoria).
+  const fallbackBySku = new Map<string, number>();
+  for (const row of itemsMapRows) {
+    if (!row.sku_venta) continue;
+    if (skuConRespuestaDistribuida.has(row.sku_venta)) continue;
+    const prev = fallbackBySku.get(row.sku_venta) || 0;
+    fallbackBySku.set(row.sku_venta, prev + (row.available_quantity || 0));
+  }
+  fallbackBySku.forEach((qty, sku) => {
+    if (!stockBySku.has(sku)) stockBySku.set(sku, qty);
+  });
+
+  console.log(`[syncStockFull] ${skuConRespuestaDistribuida.size} SKUs via API distribuida, ${fallbackBySku.size} via fallback ml_items_map`);
 
   // 6c. Upsert stock_full_cache combinando cantidad distribuida + detalle fulfillment
   const allSkus = new Set([...Array.from(stockBySku.keys()), ...Array.from(detailBySku.keys())]);
