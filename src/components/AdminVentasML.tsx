@@ -220,6 +220,15 @@ export default function AdminVentasML() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Auto-reload orders when dates change (debounced 500ms). Evita disparos en cada keystroke.
+  useEffect(() => {
+    // Skip on first render (loadFromDBCache ya corre en el mount effect)
+    if (from === today && to === today) return;
+    const t = setTimeout(() => { loadFromDBCache(from, to); }, 500);
+    return () => clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [from, to]);
+
   // Carga CFWA (almacenamiento Full) y Ads totales del rango seleccionado.
   // Ads cache tiene ~330 items/día × N días; paginamos para sortear el limit 1000 de Supabase.
   useEffect(() => {
@@ -607,7 +616,7 @@ export default function AdminVentasML() {
         const adsDirectos = margenTotals.ads;
 
         return (
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 16 }}>
             {/* INGRESOS */}
             <PnlSection title="Ingresos" accent="green">
               <PnlRow label="Venta bruta" value={fmt(venta)} />
