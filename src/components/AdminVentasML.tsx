@@ -115,6 +115,24 @@ function getDatePresets() {
   ];
 }
 
+function ErpKpi({ label, value, sub, subColor, accent, bold }: {
+  label: string;
+  value: string;
+  sub?: string;
+  subColor?: "amber" | "red" | "green";
+  accent?: "red" | "green" | "amber" | "cyan";
+  bold?: boolean;
+}) {
+  const color = accent ? `var(--${accent})` : "var(--txt)";
+  return (
+    <div style={{ padding: "10px 14px", borderRight: "1px solid var(--bg4)", display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
+      <div style={{ fontSize: 9, color: "var(--txt3)", textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{label}</div>
+      <div style={{ fontSize: bold ? 17 : 15, fontWeight: 700, fontFamily: "var(--font-mono, monospace)", color, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{value}</div>
+      {sub && <div style={{ fontSize: 9, color: subColor ? `var(--${subColor})` : "var(--txt3)", fontWeight: 500 }}>{sub}</div>}
+    </div>
+  );
+}
+
 export default function AdminVentasML() {
   const today = new Date().toLocaleDateString("sv-SE", { timeZone: "America/Santiago" });
   const [from, setFrom] = useState(today);
@@ -501,29 +519,26 @@ export default function AdminVentasML() {
         {lastUpdated && !loading && <div style={{ marginTop: 8, fontSize: 11, color: "var(--txt3)" }}>Última sync: {lastUpdated} · Fuente: {source === "cache" ? "Cache DB (auto)" : source === "live" ? "ML API (live)" : "Sesión"}</div>}
       </div>
 
-      {/* KPIs */}
+      {/* KPIs — ERP dense grid */}
       {mlOrders.length > 0 && (
-        <div className="kpi-grid" style={{ marginBottom: 16 }}>
-          <div className="kpi"><div className="kpi-label">Órdenes ML</div><div className="kpi-value">{validOrders.length}{excludedCount > 0 ? <span style={{ fontSize: 10, color: "var(--amber)", fontWeight: 400 }}> ({excludedCount} excluidas)</span> : null}</div></div>
-          <div className="kpi"><div className="kpi-label">Items</div><div className="kpi-value">{mlTotals.items}</div></div>
-          <div className="kpi"><div className="kpi-label">Venta bruta</div><div className="kpi-value" style={{ fontSize: 16 }}>{fmt(mlTotals.subtotal)}</div></div>
-          <div className="kpi"><div className="kpi-label">Comisiones</div><div className="kpi-value" style={{ color: "var(--red)", fontSize: 16 }}>{fmt(mlTotals.comision)}</div></div>
-          <div className="kpi"><div className="kpi-label">Envío</div><div className="kpi-value" style={{ color: "var(--amber)", fontSize: 16 }}>{fmt(mlTotals.envio)}</div></div>
-          {mlTotals.bonif > 0 && <div className="kpi"><div className="kpi-label">Bonificación</div><div className="kpi-value" style={{ color: "var(--green)", fontSize: 16 }}>+{fmt(mlTotals.bonif)}</div></div>}
-          <div className="kpi"><div className="kpi-label">Ingreso neto</div><div className="kpi-value" style={{ color: "var(--green)", fontSize: 16 }}>{fmt(mlTotals.neto)}</div></div>
-          <div className="kpi"><div className="kpi-label">Costo prod.</div><div className="kpi-value" style={{ color: "var(--red)", fontSize: 16 }}>{fmt(margenTotals.costo)}</div></div>
-          <div className="kpi">
-            <div className="kpi-label">Margen{ordersSinCosto.length > 0 && <span style={{ color: "var(--amber)", fontWeight: 400 }}> ({ordersSinCosto.length} sin costo)</span>}</div>
-            <div className="kpi-value" style={{ color: margenTotals.margen >= 0 ? "var(--green)" : "var(--red)", fontSize: 16 }}>
-              {fmt(margenTotals.margen)} <span style={{ fontSize: 11, opacity: 0.7 }}>({margenPctTotal.toFixed(1)}%)</span>
-            </div>
+        <div className="card" style={{ marginBottom: 16, padding: 0, overflow: "hidden" }}>
+          {/* Fila 1: Volumen */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", borderBottom: "1px solid var(--bg4)" }}>
+            <ErpKpi label="Órdenes" value={validOrders.length.toString()} sub={excludedCount > 0 ? `${excludedCount} excl.` : undefined} />
+            <ErpKpi label="Items" value={mlTotals.items.toString()} />
+            <ErpKpi label="Venta bruta" value={fmt(mlTotals.subtotal)} accent="cyan" />
+            <ErpKpi label="Bonificación" value={mlTotals.bonif > 0 ? `+${fmt(mlTotals.bonif)}` : "—"} accent={mlTotals.bonif > 0 ? "green" : undefined} />
+            <ErpKpi label="Ads" value={fmt(margenTotals.ads)} accent="red" />
+            <ErpKpi label="Ingreso neto" value={fmt(mlTotals.neto)} accent="green" bold />
           </div>
-          <div className="kpi"><div className="kpi-label">Ads</div><div className="kpi-value" style={{ color: "var(--red)", fontSize: 16 }}>{fmt(margenTotals.ads)}</div></div>
-          <div className="kpi">
-            <div className="kpi-label">Margen neto</div>
-            <div className="kpi-value" style={{ color: margenTotals.margen_neto >= 0 ? "var(--green)" : "var(--red)", fontSize: 16 }}>
-              {fmt(margenTotals.margen_neto)} <span style={{ fontSize: 11, opacity: 0.7 }}>({margenNetoPctTotal.toFixed(1)}%)</span>
-            </div>
+          {/* Fila 2: Costos */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", borderBottom: "1px solid var(--bg4)" }}>
+            <ErpKpi label="Comisión ML" value={fmt(mlTotals.comision)} accent="red" />
+            <ErpKpi label="Envío" value={fmt(mlTotals.envio)} accent="amber" />
+            <ErpKpi label="Costo prod." value={fmt(margenTotals.costo)} accent="red" sub={ordersSinCosto.length > 0 ? `${ordersSinCosto.length} sin costo` : undefined} subColor="amber" />
+            <ErpKpi label="Margen bruto" value={fmt(margenTotals.margen)} accent={margenTotals.margen >= 0 ? "green" : "red"} sub={`${margenPctTotal.toFixed(1)}%`} bold />
+            <ErpKpi label="Margen neto" value={fmt(margenTotals.margen_neto)} accent={margenTotals.margen_neto >= 0 ? "green" : "red"} sub={`${margenNetoPctTotal.toFixed(1)}%`} bold />
+            <ErpKpi label="Ticket prom." value={validOrders.length > 0 ? fmt(mlTotals.subtotal / validOrders.length) : "—"} sub={validOrders.length > 0 ? `${(mlTotals.items / validOrders.length).toFixed(1)} items/orden` : undefined} />
           </div>
         </div>
       )}
