@@ -54,7 +54,7 @@
     },
     {
       "path": "/api/ml/sync-stock-full",
-      "schedule": "0 */6 * * *"
+      "schedule": "*/30 * * * *"
     },
     {
       "path": "/api/ml/ventas-sync?days=7",

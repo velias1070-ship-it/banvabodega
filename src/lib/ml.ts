@@ -2326,17 +2326,27 @@ export async function syncSingleFulfillmentStock(inventoryId: string): Promise<s
   const config = await getMLConfig();
   if (!config?.seller_id || !sb) return null;
 
-  // Mapear inventory_id → sku_venta via composicion_venta
-  const { data: compData } = await sb.from("composicion_venta")
-    .select("sku_venta")
-    .ilike("codigo_ml", inventoryId);
+  // Mapear inventory_id → sku_venta. Primero via ml_items_map (fuente moderna),
+  // fallback a composicion_venta.codigo_ml (legacy).
+  let skuVenta: string | null = null;
+  const { data: itemsMapData } = await sb.from("ml_items_map")
+    .select("sku_venta, sku")
+    .ilike("inventory_id", inventoryId)
+    .limit(1);
+  if (itemsMapData && itemsMapData.length > 0) {
+    skuVenta = itemsMapData[0].sku_venta || itemsMapData[0].sku;
+  } else {
+    const { data: compData } = await sb.from("composicion_venta")
+      .select("sku_venta")
+      .ilike("codigo_ml", inventoryId)
+      .limit(1);
+    if (compData && compData.length > 0) skuVenta = compData[0].sku_venta;
+  }
 
-  if (!compData || compData.length === 0) {
+  if (!skuVenta) {
     console.log(`[syncSingleFulfillmentStock] No se encontró mapeo para inventory_id ${inventoryId}`);
     return null;
   }
-
-  const skuVenta = compData[0].sku_venta;
 
   // Obtener stock fulfillment
   const detail = await fetchFulfillmentStock(inventoryId, config.seller_id);

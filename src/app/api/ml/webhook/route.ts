@@ -2,16 +2,51 @@ import { NextRequest, NextResponse } from "next/server";
 import { processShipment, mlGet, MLOrder, syncSingleFulfillmentStock } from "@/lib/ml";
 import { upsertOrderToVentasCache, updateVentaEstado } from "@/lib/ventas-cache";
 import { getBaseUrl } from "@/lib/base-url";
+import { getServerSupabase } from "@/lib/supabase-server";
 
 /**
  * MercadoLibre webhook endpoint.
- * Handles: orders_v2, shipments, marketplace_fbm_stock, claims.
+ * Handles: orders_v2, shipments, marketplace_fbm_stock, claims, stock-location, items.
  * Must respond 200 quickly — ML retries on failure.
+ *
+ * Todo intento queda registrado en ml_webhook_log para auditoría + detección
+ * de drift (si un topic deja de llegar, la tabla lo muestra).
  */
+async function logWebhookStart(topic: string, resource: string | null): Promise<string | null> {
+  try {
+    const sb = getServerSupabase();
+    if (!sb) return null;
+    const { data } = await sb.from("ml_webhook_log")
+      .insert({ topic, resource, status: "received" })
+      .select("id").single();
+    return data?.id || null;
+  } catch { return null; }
+}
+
+async function logWebhookFinish(id: string | null, status: "ok"|"ignored"|"error", startMs: number, extras: { result?: unknown; error?: string; sku_afectado?: string | null; inventory_id?: string | null } = {}): Promise<void> {
+  if (!id) return;
+  try {
+    const sb = getServerSupabase();
+    if (!sb) return;
+    await sb.from("ml_webhook_log").update({
+      status,
+      processed_at: new Date().toISOString(),
+      latency_ms: Date.now() - startMs,
+      result: extras.result ?? null,
+      error: extras.error ?? null,
+      sku_afectado: extras.sku_afectado ?? null,
+      inventory_id: extras.inventory_id ?? null,
+    }).eq("id", id);
+  } catch { /* no bloquear respuesta al webhook */ }
+}
+
 export async function POST(req: NextRequest) {
+  const startMs = Date.now();
+  let logId: string | null = null;
   try {
     const body = await req.json();
     const { topic, resource } = body;
+    logId = await logWebhookStart(topic, resource);
 
     // ─── Orders ───
     if (topic === "orders_v2" || topic === "orders") {
@@ -58,6 +93,7 @@ export async function POST(req: NextRequest) {
         console.log(`[ML Webhook] Order ${orderId} marked as Cancelada`);
       }
 
+      await logWebhookFinish(logId, "ok", startMs, { result: { order_id: orderId } });
       return NextResponse.json({ status: "ok", order_id: orderId });
     }
 
@@ -75,9 +111,11 @@ export async function POST(req: NextRequest) {
       if (orderIds.length > 0) {
         const result = await processShipment(shipmentId, orderIds);
         console.log(`[ML Webhook] Shipment ${shipmentId}: ${result.items} items processed`);
+        await logWebhookFinish(logId, "ok", startMs, { result: { shipment_id: shipmentId, items: result.items } });
         return NextResponse.json({ status: "ok", shipment_id: shipmentId, items: result.items });
       }
 
+      await logWebhookFinish(logId, "ok", startMs, { result: { shipment_id: shipmentId, items: 0 } });
       return NextResponse.json({ status: "ok", shipment_id: shipmentId, items: 0 });
     }
 
@@ -116,16 +154,19 @@ export async function POST(req: NextRequest) {
         }
       }
 
+      await logWebhookFinish(logId, "ok", startMs, { result: { claim_id: claimId } });
       return NextResponse.json({ status: "ok", claim_id: claimId });
     }
 
-    // ─── Fulfillment Stock ───
-    if (topic === "marketplace_fbm_stock") {
-      const invMatch = resource?.match(/inventories\/([^/]+)/);
+    // ─── Fulfillment Stock (Full) ───
+    // Topics soportados: marketplace_fbm_stock (legacy) + stock-location (actual).
+    // Ambos traen el inventory_id en el resource.
+    if (topic === "marketplace_fbm_stock" || topic === "stock-location") {
+      const invMatch = resource?.match(/inventories\/([^/]+)/) || resource?.match(/stock\/([^/]+)/);
       const inventoryId = invMatch ? invMatch[1] : null;
 
       if (inventoryId) {
-        console.log(`[ML Webhook] Fulfillment stock change for inventory ${inventoryId}`);
+        console.log(`[ML Webhook] Stock change (${topic}) for inventory ${inventoryId}`);
         const skuVenta = await syncSingleFulfillmentStock(inventoryId);
 
         if (skuVenta) {
@@ -139,19 +180,48 @@ export async function POST(req: NextRequest) {
           } catch { /* fire and forget */ }
         }
 
+        await logWebhookFinish(logId, "ok", startMs, { result: { inventory_id: inventoryId, sku_venta: skuVenta }, sku_afectado: skuVenta, inventory_id: inventoryId });
         return NextResponse.json({ status: "ok", inventory_id: inventoryId, sku_venta: skuVenta });
       }
 
+      await logWebhookFinish(logId, "ignored", startMs, { result: { reason: "no_inventory_id" } });
       return NextResponse.json({ status: "ignored", reason: "no_inventory_id" });
     }
 
+    // ─── Items (cambio de publicación: precio, status, etc.) ───
+    // Dispara re-sync del sku mapeado para mantener available_quantity fresco.
+    if (topic === "items") {
+      const itemMatch = resource?.match(/items\/([A-Z0-9]+)/);
+      const itemId = itemMatch ? itemMatch[1] : null;
+      if (itemId) {
+        try {
+          const sb = getServerSupabase();
+          if (sb) {
+            const { data } = await sb.from("ml_items_map").select("sku, inventory_id").eq("item_id", itemId).limit(1);
+            const invId = data?.[0]?.inventory_id;
+            const sku = data?.[0]?.sku;
+            if (invId) await syncSingleFulfillmentStock(invId);
+            await logWebhookFinish(logId, "ok", startMs, { result: { item_id: itemId, sku, inventory_id: invId }, sku_afectado: sku, inventory_id: invId });
+            return NextResponse.json({ status: "ok", item_id: itemId, sku });
+          }
+        } catch (err) {
+          await logWebhookFinish(logId, "error", startMs, { error: String(err) });
+          return NextResponse.json({ status: "error", item_id: itemId, message: String(err) });
+        }
+      }
+      await logWebhookFinish(logId, "ignored", startMs, { result: { reason: "no_item_id" } });
+      return NextResponse.json({ status: "ignored", reason: "no_item_id" });
+    }
+
+    await logWebhookFinish(logId, "ignored", startMs, { result: { topic } });
     return NextResponse.json({ status: "ignored", topic });
   } catch (err) {
     console.error("[ML Webhook] Error:", err);
+    await logWebhookFinish(logId, "error", startMs, { error: String(err) });
     return NextResponse.json({ status: "error", message: String(err) });
   }
 }
 
 export async function GET() {
-  return NextResponse.json({ status: "ok", service: "banva-wms-ml-webhook", topics: ["orders_v2", "shipments", "claims", "marketplace_fbm_stock"] });
+  return NextResponse.json({ status: "ok", service: "banva-wms-ml-webhook", topics: ["orders_v2", "shipments", "claims", "marketplace_fbm_stock", "stock-location", "items"] });
 }
