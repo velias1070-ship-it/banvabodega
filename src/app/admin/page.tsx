@@ -68,7 +68,7 @@ function LoginGate({ onLogin }: { onLogin: (pin: string) => boolean }) {
   );
 }
 
-type AdminTab = "dash"|"rec"|"discrepancias"|"flex"|"enviosfull"|"ops"|"inv"|"mov"|"prod"|"costoauditoria"|"reposicion"|"intel"|"semaforo"|"compras"|"eventos"|"ventasml"|"comercial"|"margenes"|"agentes"|"stockml"|"timeline"|"config";
+type AdminTab = "dash"|"rec"|"discrepancias"|"flex"|"enviosfull"|"ops"|"inv"|"mov"|"prod"|"costoauditoria"|"reposicion"|"intel"|"semaforo"|"compras"|"eventos"|"ventasdash"|"ventasord"|"comercial"|"margenes"|"agentes"|"stockml"|"timeline"|"config";
 
 const MOBILE_MENU_SECTIONS = [
   { section: "Principal", items: [
@@ -91,7 +91,8 @@ const MOBILE_MENU_SECTIONS = [
     ["intel","Inteligencia","🧠"],
     ["compras","Compras","🛒"],
     ["eventos","Eventos","📅"],
-    ["ventasml","Ventas ML","💰"],
+    ["ventasdash","Ventas · Dashboard","📊"],
+    ["ventasord","Ventas · Órdenes","📋"],
     ["comercial","Publicaciones","📣"],
     ["margenes","Márgenes","💹"],
   ] as const },
@@ -152,6 +153,7 @@ export default function AdminPage() {
   const [tab, setTab] = useState<AdminTab>(() => {
     if (typeof window !== "undefined") {
       const saved = sessionStorage.getItem("banva_admin_tab");
+      if (saved === "ventasml") return "ventasdash"; // migración legacy
       if (saved) return saved as AdminTab;
     }
     return "dash";
@@ -161,8 +163,8 @@ export default function AdminPage() {
   const SIDEBAR_GROUPS = [
     {section:"OPERACIONES",icon:"⚡",items:[["rec","Recepciones","📦"],["discrepancias","Discrepancias","💰"],["flex","Ultima Milla","🚚"],["enviosfull","Envios Full","📦"],["ops","Operaciones","⚡"],["reposicion","Reposición","🔄"]] as const},
     {section:"INVENTARIO",icon:"📦",items:[["inv","Inventario","📦"],["mov","Movimientos","📋"],["timeline","Timeline","📊"],["prod","Productos","🏷️"],["costoauditoria","Auditoría Costos","📊"],["stockml","Stock ML","📡"]] as const},
-    {section:"INTELIGENCIA",icon:"🧠",items:[["intel","Inteligencia","🧠"],["semaforo","Semaforo","🚦"],["compras","Compras","🛒"],["eventos","Eventos","📅"],["ventasml","Ventas ML","💰"]] as const},
-    {section:"COMERCIAL",icon:"🏪",items:[["comercial","Publicaciones","📢"],["margenes","Márgenes","💹"]] as const},
+    {section:"INTELIGENCIA",icon:"🧠",items:[["intel","Inteligencia","🧠"],["semaforo","Semaforo","🚦"],["compras","Compras","🛒"],["eventos","Eventos","📅"]] as const},
+    {section:"COMERCIAL",icon:"🏪",items:[["ventasdash","Ventas · Dashboard","📊"],["ventasord","Ventas · Órdenes","📋"],["comercial","Publicaciones","📢"],["margenes","Márgenes","💹"]] as const},
     {section:"SISTEMA",icon:"⚙️",items:[["agentes","Agentes IA","🤖"],["config","Configuración","⚙️"]] as const},
   ] as const;
   const [openSections, setOpenSections] = useState<Record<string,boolean>>(()=>{
@@ -279,7 +281,8 @@ export default function AdminPage() {
             {tab==="semaforo"&&<AdminSemaforo/>}
             {tab==="compras"&&<AdminCompras/>}
             {tab==="eventos"&&<AdminEventos/>}
-            {tab==="ventasml"&&<AdminVentasML/>}
+            {tab==="ventasdash"&&<AdminVentasML modo="dashboard"/>}
+            {tab==="ventasord"&&<AdminVentasML modo="ordenes"/>}
             {tab==="comercial"&&<AdminComercial/>}
             {tab==="margenes"&&<AdminMargenes/>}
             {tab==="agentes"&&<AdminAgentes/>}

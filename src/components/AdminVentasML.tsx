@@ -163,7 +163,9 @@ function PnlHint({ children }: { children: React.ReactNode }) {
   return <div style={{ padding: "6px 14px 2px", fontSize: 9, color: "var(--txt3)", fontStyle: "italic" }}>{children}</div>;
 }
 
-export default function AdminVentasML() {
+type VentasMlModo = "dashboard" | "ordenes";
+
+export default function AdminVentasML({ modo }: { modo?: VentasMlModo } = {}) {
   const today = new Date().toLocaleDateString("sv-SE", { timeZone: "America/Santiago" });
   const [from, setFrom] = useState(today);
   const [to, setTo] = useState(today);
@@ -172,7 +174,8 @@ export default function AdminVentasML() {
   const [pgOrders, setPgOrders] = useState<OrderRow[]>([]);
   const [mlOrders, setMlOrders] = useState<OrderRow[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [view, setView] = useState<"comparativa" | "ml_directo" | "productos">("comparativa");
+  const defaultView = modo === "ordenes" ? "ml_directo" : modo === "dashboard" ? "productos" : "comparativa";
+  const [view, setView] = useState<"comparativa" | "ml_directo" | "productos">(defaultView);
   const [cfwaRango, setCfwaRango] = useState(0);
   const [adsTotalRango, setAdsTotalRango] = useState(0);
   const [productoSearch, setProductoSearch] = useState("");
@@ -595,8 +598,8 @@ export default function AdminVentasML() {
         {lastUpdated && !loading && <div style={{ marginTop: 8, fontSize: 11, color: "var(--txt3)" }}>Última sync: {lastUpdated} · Fuente: {source === "cache" ? "Cache DB (auto)" : source === "live" ? "ML API (live)" : "Sesión"}</div>}
       </div>
 
-      {/* P&L estilo ERP */}
-      {mlOrders.length > 0 && (() => {
+      {/* P&L estilo ERP — solo en modo dashboard (o sin modo) */}
+      {mlOrders.length > 0 && modo !== "ordenes" && (() => {
         const venta = mlTotals.subtotal;
         const envioBruto = mlTotals.envio;
         const bonif = mlTotals.bonif;
@@ -651,11 +654,22 @@ export default function AdminVentasML() {
         );
       })()}
 
-      {/* Daily chart */}
-      {dailyChart}
+      {/* Daily chart — solo en modo dashboard */}
+      {modo !== "ordenes" && dailyChart}
 
-      {/* View toggle */}
-      {mlOrders.length > 0 && (
+      {/* Mini stats en modo órdenes */}
+      {modo === "ordenes" && mlOrders.length > 0 && (
+        <div className="card" style={{ marginBottom: 12, padding: "10px 14px", display: "flex", gap: 24, fontSize: 12, flexWrap: "wrap", alignItems: "baseline" }}>
+          <div><span style={{ color: "var(--txt3)" }}>Órdenes</span> <strong style={{ marginLeft: 4 }}>{validOrders.length}</strong></div>
+          <div><span style={{ color: "var(--txt3)" }}>Items</span> <strong style={{ marginLeft: 4 }}>{mlTotals.items}</strong></div>
+          <div><span style={{ color: "var(--txt3)" }}>Venta bruta</span> <strong style={{ marginLeft: 4, color: "var(--cyan)" }}>{fmt(mlTotals.subtotal)}</strong></div>
+          <div><span style={{ color: "var(--txt3)" }}>Ingreso neto</span> <strong style={{ marginLeft: 4, color: "var(--green)" }}>{fmt(mlTotals.neto)}</strong></div>
+          {excludedCount > 0 && <div style={{ color: "var(--amber)" }}>{excludedCount} excluidas</div>}
+        </div>
+      )}
+
+      {/* View toggle — oculto cuando modo está fijado */}
+      {mlOrders.length > 0 && !modo && (
         <div style={{ display: "flex", gap: 4, marginBottom: 12 }}>
           <button className={`tab ${view === "ml_directo" ? "active-cyan" : ""}`} onClick={() => setView("ml_directo")} style={{ fontSize: 12, padding: "6px 12px" }}>
             ML Directo ({mlOrders.length})
