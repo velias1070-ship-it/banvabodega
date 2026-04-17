@@ -2,7 +2,7 @@
 import { useState, useEffect } from "react";
 import * as XLSX from "xlsx";
 import type { CostoFuente } from "@/lib/costos";
-import CostosFullCard from "./CostosFullCard";
+import { getSupabase } from "@/lib/supabase";
 
 interface TrazaResponse {
   skus_venta: Array<{
@@ -143,6 +143,7 @@ export default function AdminVentasML() {
   const [mlOrders, setMlOrders] = useState<OrderRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<"comparativa" | "ml_directo" | "productos">("comparativa");
+  const [cfwaRango, setCfwaRango] = useState(0);
   const [productoSearch, setProductoSearch] = useState("");
   const [mlDirectoSearch, setMlDirectoSearch] = useState("");
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
@@ -187,6 +188,18 @@ export default function AdminVentasML() {
     loadFromDBCache(today, today);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Carga CFWA (almacenamiento Full) del rango seleccionado
+  useEffect(() => {
+    (async () => {
+      const sb = getSupabase(); if (!sb) return;
+      const { data } = await sb.from("ml_billing_cfwa")
+        .select("amount")
+        .gte("day", from).lte("day", to);
+      const total = (data || []).reduce((s: number, r: { amount: number | string }) => s + Number(r.amount || 0), 0);
+      setCfwaRango(total);
+    })();
+  }, [from, to]);
 
   const fetchBoth = async () => {
     setLoading("Cargando ambas fuentes...");
@@ -520,34 +533,36 @@ export default function AdminVentasML() {
       </div>
 
       {/* KPIs — ERP dense grid */}
-      {mlOrders.length > 0 && (
+      {mlOrders.length > 0 && (() => {
+        const envioNeto = mlTotals.envio - mlTotals.bonif;
+        const margenNetoFinal = margenTotals.margen_neto - cfwaRango;
+        const margenNetoFinalPct = margenTotals.subtotal > 0 ? (margenNetoFinal / margenTotals.subtotal) * 100 : 0;
+        return (
         <div className="card" style={{ marginBottom: 16, padding: 0, overflow: "hidden" }}>
-          {/* Fila 1: Volumen */}
+          {/* Fila 1: Volumen e ingresos */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", borderBottom: "1px solid var(--bg4)" }}>
             <ErpKpi label="Órdenes" value={validOrders.length.toString()} sub={excludedCount > 0 ? `${excludedCount} excl.` : undefined} />
-            <ErpKpi label="Items" value={mlTotals.items.toString()} />
+            <ErpKpi label="Items" value={mlTotals.items.toString()} sub={validOrders.length > 0 ? `${(mlTotals.items / validOrders.length).toFixed(1)}/orden` : undefined} />
             <ErpKpi label="Venta bruta" value={fmt(mlTotals.subtotal)} accent="cyan" />
-            <ErpKpi label="Bonificación" value={mlTotals.bonif > 0 ? `+${fmt(mlTotals.bonif)}` : "—"} accent={mlTotals.bonif > 0 ? "green" : undefined} />
+            <ErpKpi label="Ticket prom." value={validOrders.length > 0 ? fmt(mlTotals.subtotal / validOrders.length) : "—"} />
             <ErpKpi label="Ads" value={fmt(margenTotals.ads)} accent="red" />
             <ErpKpi label="Ingreso neto" value={fmt(mlTotals.neto)} accent="green" bold />
           </div>
-          {/* Fila 2: Costos */}
+          {/* Fila 2: Costos y margen */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", borderBottom: "1px solid var(--bg4)" }}>
             <ErpKpi label="Comisión ML" value={fmt(mlTotals.comision)} accent="red" />
-            <ErpKpi label="Envío" value={fmt(mlTotals.envio)} accent="amber" />
+            <ErpKpi label="Envío neto" value={fmt(envioNeto)} accent={envioNeto > 0 ? "amber" : "green"} sub={mlTotals.bonif > 0 ? `envío ${fmt(mlTotals.envio)} − bonif ${fmt(mlTotals.bonif)}` : undefined} />
             <ErpKpi label="Costo prod." value={fmt(margenTotals.costo)} accent="red" sub={ordersSinCosto.length > 0 ? `${ordersSinCosto.length} sin costo` : undefined} subColor="amber" />
+            <ErpKpi label="Costo Full (CFWA)" value={fmt(cfwaRango)} accent="red" sub="almacén c/IVA" />
             <ErpKpi label="Margen bruto" value={fmt(margenTotals.margen)} accent={margenTotals.margen >= 0 ? "green" : "red"} sub={`${margenPctTotal.toFixed(1)}%`} bold />
-            <ErpKpi label="Margen neto" value={fmt(margenTotals.margen_neto)} accent={margenTotals.margen_neto >= 0 ? "green" : "red"} sub={`${margenNetoPctTotal.toFixed(1)}%`} bold />
-            <ErpKpi label="Ticket prom." value={validOrders.length > 0 ? fmt(mlTotals.subtotal / validOrders.length) : "—"} sub={validOrders.length > 0 ? `${(mlTotals.items / validOrders.length).toFixed(1)} items/orden` : undefined} />
+            <ErpKpi label="Margen neto" value={fmt(margenNetoFinal)} accent={margenNetoFinal >= 0 ? "green" : "red"} sub={`${margenNetoFinalPct.toFixed(1)}% · incl. Ads+CFWA`} bold />
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* Daily chart */}
       {dailyChart}
-
-      {/* Costos Full (CFWA) — almacenamiento */}
-      <CostosFullCard />
 
       {/* View toggle */}
       {mlOrders.length > 0 && (
