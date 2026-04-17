@@ -2449,6 +2449,85 @@ export async function syncSingleFulfillmentStock(inventoryId: string): Promise<s
   return skuVenta;
 }
 
+/**
+ * Actualiza stock Full a partir del user_product_id (formato real del webhook
+ * stock-location/stock-locations de ML: resource = "/user-products/:id/stock").
+ *
+ * Diferencia vs syncSingleFulfillmentStock (que usa inventory_id):
+ *   - Acá consultamos /user-products/:id/stock y sumamos locations[type=meli_facility].
+ *   - El mapping user_product_id → sku_venta va por ml_items_map.
+ *
+ * Retorna el sku_venta actualizado o null si no se pudo resolver.
+ */
+export async function syncStockByUserProductId(userProductId: string): Promise<string | null> {
+  const sb = getServerSupabase();
+  if (!sb) return null;
+
+  // 1. Mapear user_product_id → sku_venta via ml_items_map
+  const { data: mapRows } = await sb.from("ml_items_map")
+    .select("sku_venta, sku")
+    .eq("user_product_id", userProductId)
+    .eq("activo", true)
+    .limit(1);
+
+  const skuVenta = mapRows?.[0]?.sku_venta || mapRows?.[0]?.sku || null;
+  if (!skuVenta) {
+    console.log(`[syncStockByUserProductId] Sin mapping para user_product_id ${userProductId}`);
+    return null;
+  }
+
+  // 2. Obtener stock distribuido y sumar locations Full
+  const stockData = await getDistributedStock(userProductId);
+  if (!stockData) {
+    console.error(`[syncStockByUserProductId] Sin respuesta ML para ${userProductId}`);
+    return null;
+  }
+
+  const fullQty = (stockData.locations || [])
+    .filter(l => l.type === "meli_facility")
+    .reduce((sum, l) => sum + (l.quantity || 0), 0);
+
+  // 3. Si este sku_venta tiene múltiples user_product_ids, sumar los otros también
+  //    (multi-variante de un mismo producto vendedor).
+  const { data: otrosUp } = await sb.from("ml_items_map")
+    .select("user_product_id")
+    .eq("sku_venta", skuVenta)
+    .eq("activo", true);
+
+  const upIds = Array.from(new Set((otrosUp || [])
+    .map(r => r.user_product_id)
+    .filter((id): id is string => !!id && id !== userProductId)));
+
+  let totalFull = fullQty;
+  for (const upId of upIds) {
+    try {
+      const other = await getDistributedStock(upId);
+      if (other) {
+        totalFull += (other.locations || [])
+          .filter(l => l.type === "meli_facility")
+          .reduce((sum, l) => sum + (l.quantity || 0), 0);
+      }
+    } catch { /* continuar si falla */ }
+  }
+
+  // 4. Upsert stock_full_cache
+  await sb.from("stock_full_cache").upsert({
+    sku_venta: skuVenta,
+    cantidad: totalFull,
+    fuente: "webhook_stock_location",
+    updated_at: new Date().toISOString(),
+  }, { onConflict: "sku_venta" });
+
+  // 5. Keep ml_items_map.stock_full_cache en sync (para queries directas)
+  void sb.from("ml_items_map")
+    .update({ stock_full_cache: totalFull, cache_updated_at: new Date().toISOString() })
+    .eq("sku_venta", skuVenta)
+    .eq("activo", true);
+
+  console.log(`[syncStockByUserProductId] ${skuVenta} (${userProductId}): ${totalFull} en Full`);
+  return skuVenta;
+}
+
 // ==================== OAUTH URL ====================
 
 export function getOAuthUrl(clientId: string, redirectUri: string): string {

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { processShipment, mlGet, MLOrder, syncSingleFulfillmentStock } from "@/lib/ml";
+import { processShipment, mlGet, MLOrder, syncSingleFulfillmentStock, syncStockByUserProductId } from "@/lib/ml";
 import { upsertOrderToVentasCache, updateVentaEstado } from "@/lib/ventas-cache";
 import { getBaseUrl } from "@/lib/base-url";
 import { getServerSupabase } from "@/lib/supabase-server";
@@ -158,25 +158,25 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ status: "ok", claim_id: claimId });
     }
 
-    // ─── Fulfillment Stock (Full) ───
-    // Topics reales en ML (verificado contra /applications/:id):
-    //   - stock-locations (plural, actual)
-    //   - fbm_stock_operations (operaciones en bodega Full)
-    //   - marketplace_fbm_stock (legacy, por compatibilidad)
-    // Todos traen inventory_id en el resource.
-    if (
-      topic === "stock-locations" ||
-      topic === "fbm_stock_operations" ||
-      topic === "marketplace_fbm_stock" ||
-      topic === "stock-location"
-    ) {
-      const invMatch = resource?.match(/inventories\/([^/]+)/) || resource?.match(/stock\/([^/]+)/);
-      const inventoryId = invMatch ? invMatch[1] : null;
-
-      if (inventoryId) {
-        console.log(`[ML Webhook] Stock change (${topic}) for inventory ${inventoryId}`);
-        const skuVenta = await syncSingleFulfillmentStock(inventoryId);
-
+    // ─── Stock Full ───
+    // Topics y formatos reales en ML (verificado contra /applications/:id +
+    // docs oficiales de notificaciones):
+    //   - stock-locations / stock-location
+    //     resource: /user-products/{USER_PRODUCT_ID}/stock
+    //     → syncStockByUserProductId
+    //   - fbm_stock_operations
+    //     resource: /stock/fulfillment/operations/{OP_ID}
+    //     → el endpoint de la operación devuelve el inventory_id afectado.
+    //     Por ahora logueamos; el cron cada 30min reconcilia estos casos.
+    //   - marketplace_fbm_stock (legacy)
+    //     resource: /inventories/{INV_ID}
+    //     → syncSingleFulfillmentStock
+    if (topic === "stock-locations" || topic === "stock-location") {
+      const upMatch = resource?.match(/user-products\/([^/]+)\/stock/);
+      const userProductId = upMatch ? upMatch[1] : null;
+      if (userProductId) {
+        console.log(`[ML Webhook] Stock change for user_product ${userProductId}`);
+        const skuVenta = await syncStockByUserProductId(userProductId);
         if (skuVenta) {
           try {
             const baseUrl = getBaseUrl();
@@ -187,13 +187,44 @@ export async function POST(req: NextRequest) {
             }).catch(() => {});
           } catch { /* fire and forget */ }
         }
+        await logWebhookFinish(logId, "ok", startMs, { result: { user_product_id: userProductId, sku_venta: skuVenta }, sku_afectado: skuVenta });
+        return NextResponse.json({ status: "ok", user_product_id: userProductId, sku_venta: skuVenta });
+      }
+      await logWebhookFinish(logId, "ignored", startMs, { result: { reason: "no_user_product_id", resource } });
+      return NextResponse.json({ status: "ignored", reason: "no_user_product_id" });
+    }
 
+    if (topic === "marketplace_fbm_stock") {
+      const invMatch = resource?.match(/inventories\/([^/]+)/);
+      const inventoryId = invMatch ? invMatch[1] : null;
+      if (inventoryId) {
+        console.log(`[ML Webhook] Stock change (legacy) for inventory ${inventoryId}`);
+        const skuVenta = await syncSingleFulfillmentStock(inventoryId);
+        if (skuVenta) {
+          try {
+            const baseUrl = getBaseUrl();
+            fetch(`${baseUrl}/api/intelligence/recalcular`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ full: false, skus: [skuVenta] }),
+            }).catch(() => {});
+          } catch { /* fire and forget */ }
+        }
         await logWebhookFinish(logId, "ok", startMs, { result: { inventory_id: inventoryId, sku_venta: skuVenta }, sku_afectado: skuVenta, inventory_id: inventoryId });
         return NextResponse.json({ status: "ok", inventory_id: inventoryId, sku_venta: skuVenta });
       }
-
-      await logWebhookFinish(logId, "ignored", startMs, { result: { reason: "no_inventory_id" } });
+      await logWebhookFinish(logId, "ignored", startMs, { result: { reason: "no_inventory_id", resource } });
       return NextResponse.json({ status: "ignored", reason: "no_inventory_id" });
+    }
+
+    if (topic === "fbm_stock_operations") {
+      // Trae /stock/fulfillment/operations/{OP_ID}. La operación detalla qué
+      // inventory_id se afectó, pero el cron cada 30min ya reconcilia este caso
+      // vía syncStockFull completo. Logueamos y dejamos pasar.
+      const opMatch = resource?.match(/operations\/([^/]+)/);
+      const operationId = opMatch ? opMatch[1] : null;
+      await logWebhookFinish(logId, "ok", startMs, { result: { operation_id: operationId, note: "reconciliado por cron /sync-stock-full" } });
+      return NextResponse.json({ status: "ok", operation_id: operationId, note: "reconciled_by_cron" });
     }
 
     // ─── Items y cambios de precio ───
