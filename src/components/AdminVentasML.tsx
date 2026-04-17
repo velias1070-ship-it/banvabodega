@@ -115,22 +115,52 @@ function getDatePresets() {
   ];
 }
 
-function ErpKpi({ label, value, sub, subColor, accent, bold }: {
-  label: string;
-  value: string;
-  sub?: string;
-  subColor?: "amber" | "red" | "green";
-  accent?: "red" | "green" | "amber" | "cyan";
-  bold?: boolean;
-}) {
-  const color = accent ? `var(--${accent})` : "var(--txt)";
+type Accent = "red" | "green" | "amber" | "cyan";
+
+function PnlSection({ title, accent, children }: { title: string; accent: Accent; children: React.ReactNode }) {
+  const color = `var(--${accent})`;
   return (
-    <div style={{ padding: "10px 14px", borderRight: "1px solid var(--bg4)", display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
-      <div style={{ fontSize: 9, color: "var(--txt3)", textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{label}</div>
-      <div style={{ fontSize: bold ? 17 : 15, fontWeight: 700, fontFamily: "var(--font-mono, monospace)", color, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{value}</div>
-      {sub && <div style={{ fontSize: 9, color: subColor ? `var(--${subColor})` : "var(--txt3)", fontWeight: 500 }}>{sub}</div>}
+    <div className="card" style={{ padding: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+      <div style={{ padding: "10px 14px", borderBottom: `2px solid ${color}`, background: `var(--${accent}Bg)`, display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ width: 8, height: 8, borderRadius: 2, background: color }} />
+        <div style={{ fontSize: 11, fontWeight: 700, color, textTransform: "uppercase", letterSpacing: 0.8 }}>{title}</div>
+      </div>
+      <div style={{ padding: "8px 0", display: "flex", flexDirection: "column", flex: 1 }}>{children}</div>
     </div>
   );
+}
+
+function PnlRow({ label, value, hint, sub, subColor, accent }: { label: string; value: string; hint?: string; sub?: string; subColor?: Accent; accent?: Accent }) {
+  const color = accent ? `var(--${accent})` : "var(--txt)";
+  return (
+    <div style={{ padding: "8px 14px", display: "flex", flexDirection: "column", gap: 3, borderBottom: "1px dashed var(--bg4)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 }}>
+        <div style={{ fontSize: 12, color: "var(--txt2)" }}>{label}</div>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+          {hint && <div style={{ fontSize: 10, color: "var(--txt3)", fontFamily: "var(--font-mono, monospace)" }}>{hint}</div>}
+          <div style={{ fontSize: 14, fontWeight: 700, fontFamily: "var(--font-mono, monospace)", color, minWidth: 100, textAlign: "right" }}>{value}</div>
+        </div>
+      </div>
+      {sub && <div style={{ fontSize: 9, color: subColor ? `var(--${subColor})` : "var(--txt3)", fontStyle: "italic" }}>{sub}</div>}
+    </div>
+  );
+}
+
+function PnlTotal({ label, value, accent, hint }: { label: string; value: string; accent: Accent; hint?: string }) {
+  const color = `var(--${accent})`;
+  return (
+    <div style={{ padding: "12px 14px", marginTop: "auto", background: `var(--${accent}Bg)`, borderTop: `1px solid ${color}`, display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color, textTransform: "uppercase", letterSpacing: 0.5 }}>{label}</div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+        {hint && <div style={{ fontSize: 10, color, opacity: 0.75, fontFamily: "var(--font-mono, monospace)" }}>{hint}</div>}
+        <div style={{ fontSize: 18, fontWeight: 800, fontFamily: "var(--font-mono, monospace)", color }}>{value}</div>
+      </div>
+    </div>
+  );
+}
+
+function PnlHint({ children }: { children: React.ReactNode }) {
+  return <div style={{ padding: "6px 14px 2px", fontSize: 9, color: "var(--txt3)", fontStyle: "italic" }}>{children}</div>;
 }
 
 export default function AdminVentasML() {
@@ -556,36 +586,59 @@ export default function AdminVentasML() {
         {lastUpdated && !loading && <div style={{ marginTop: 8, fontSize: 11, color: "var(--txt3)" }}>Última sync: {lastUpdated} · Fuente: {source === "cache" ? "Cache DB (auto)" : source === "live" ? "ML API (live)" : "Sesión"}</div>}
       </div>
 
-      {/* KPIs — ERP dense grid */}
+      {/* P&L estilo ERP */}
       {mlOrders.length > 0 && (() => {
-        const envioNeto = mlTotals.envio - mlTotals.bonif;
-        // Usa el total real de ads del rango (DB ml_ads_daily_cache × 1.19)
-        // en lugar del per-order ads_cost_asignado que solo cubre atribución directa.
+        const venta = mlTotals.subtotal;
+        const envioBruto = mlTotals.envio;
+        const bonif = mlTotals.bonif;
+        const envioNeto = envioBruto - bonif;
+        const comision = mlTotals.comision;
+        const costoProd = margenTotals.costo;
         const adsReal = adsTotalRango;
-        const margenNetoFinal = margenTotals.margen - adsReal - cfwaRango;
-        const margenNetoFinalPct = margenTotals.subtotal > 0 ? (margenNetoFinal / margenTotals.subtotal) * 100 : 0;
+        const cfwa = cfwaRango;
+
+        const totalIngresos = venta + bonif;
+        const totalGastos = comision + envioBruto + costoProd + adsReal + cfwa;
+        const ingresoMl = mlTotals.neto;       // lo que ML deposita
+        const margenBruto = margenTotals.margen; // ingresoMl - costoProd (aprox)
+        const margenNeto = margenBruto - adsReal - cfwa;
+
+        const pct = (n: number) => venta > 0 ? `${(n / venta * 100).toFixed(1)}%` : "—";
         const adsDirectos = margenTotals.ads;
+
         return (
-        <div className="card" style={{ marginBottom: 16, padding: 0, overflow: "hidden" }}>
-          {/* Fila 1: Volumen e ingresos */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", borderBottom: "1px solid var(--bg4)" }}>
-            <ErpKpi label="Órdenes" value={validOrders.length.toString()} sub={excludedCount > 0 ? `${excludedCount} excl.` : undefined} />
-            <ErpKpi label="Items" value={mlTotals.items.toString()} sub={validOrders.length > 0 ? `${(mlTotals.items / validOrders.length).toFixed(1)}/orden` : undefined} />
-            <ErpKpi label="Venta bruta" value={fmt(mlTotals.subtotal)} accent="cyan" />
-            <ErpKpi label="Ticket prom." value={validOrders.length > 0 ? fmt(mlTotals.subtotal / validOrders.length) : "—"} />
-            <ErpKpi label="Ads (gasto real)" value={fmt(adsReal)} accent="red" sub={adsDirectos > 0 ? `atrib. directa ${fmt(adsDirectos)}` : undefined} />
-            <ErpKpi label="Ingreso neto" value={fmt(mlTotals.neto)} accent="green" bold />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
+            {/* INGRESOS */}
+            <PnlSection title="Ingresos" accent="green">
+              <PnlRow label="Venta bruta" value={fmt(venta)} />
+              {bonif > 0 && <PnlRow label="Bonificación envíos" value={`+${fmt(bonif)}`} />}
+              <PnlTotal label="Total ingresos" value={fmt(totalIngresos)} accent="green" />
+              <PnlHint>
+                {validOrders.length} órdenes · {mlTotals.items} items · Ticket prom. {validOrders.length > 0 ? fmt(venta / validOrders.length) : "—"}
+                {excludedCount > 0 && <> · {excludedCount} excluidas</>}
+              </PnlHint>
+            </PnlSection>
+
+            {/* GASTOS */}
+            <PnlSection title="Gastos" accent="red">
+              <PnlRow label="Comisión ML" value={fmt(comision)} hint={pct(comision)} />
+              <PnlRow label="Envío" value={fmt(envioBruto)} hint={pct(envioBruto)} sub={bonif > 0 ? `neto post-bonif ${fmt(envioNeto)}` : undefined} />
+              <PnlRow label="Costo producto" value={fmt(costoProd)} hint={pct(costoProd)} sub={ordersSinCosto.length > 0 ? `${ordersSinCosto.length} sin costo` : undefined} subColor="amber" />
+              <PnlRow label="Ads" value={fmt(adsReal)} hint={pct(adsReal)} sub={adsDirectos > 0 ? `atrib. directa ${fmt(adsDirectos)}` : undefined} />
+              <PnlRow label="Almacén Full (CFWA)" value={fmt(cfwa)} hint={pct(cfwa)} />
+              <PnlTotal label="Total gastos" value={fmt(totalGastos)} accent="red" hint={pct(totalGastos)} />
+            </PnlSection>
+
+            {/* RESULTADO */}
+            <PnlSection title="Resultado" accent="cyan">
+              <PnlRow label="Ingreso neto ML" value={fmt(ingresoMl)} hint={pct(ingresoMl)} sub="venta − comisión − envío" />
+              <PnlRow label="Margen bruto" value={fmt(margenBruto)} hint={pct(margenBruto)} sub="− costo producto" accent={margenBruto >= 0 ? "green" : "red"} />
+              <PnlTotal label="Margen neto" value={fmt(margenNeto)} accent={margenNeto >= 0 ? "green" : "red"} hint={pct(margenNeto)} />
+              <PnlHint>
+                Margen neto = margen bruto − Ads − CFWA
+              </PnlHint>
+            </PnlSection>
           </div>
-          {/* Fila 2: Costos y margen */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", borderBottom: "1px solid var(--bg4)" }}>
-            <ErpKpi label="Comisión ML" value={fmt(mlTotals.comision)} accent="red" />
-            <ErpKpi label="Envío neto" value={fmt(envioNeto)} accent={envioNeto > 0 ? "amber" : "green"} sub={mlTotals.bonif > 0 ? `envío ${fmt(mlTotals.envio)} − bonif ${fmt(mlTotals.bonif)}` : undefined} />
-            <ErpKpi label="Costo prod." value={fmt(margenTotals.costo)} accent="red" sub={ordersSinCosto.length > 0 ? `${ordersSinCosto.length} sin costo` : undefined} subColor="amber" />
-            <ErpKpi label="Costo Full (CFWA)" value={fmt(cfwaRango)} accent="red" sub="almacén c/IVA" />
-            <ErpKpi label="Margen bruto" value={fmt(margenTotals.margen)} accent={margenTotals.margen >= 0 ? "green" : "red"} sub={`${margenPctTotal.toFixed(1)}%`} bold />
-            <ErpKpi label="Margen neto" value={fmt(margenNetoFinal)} accent={margenNetoFinal >= 0 ? "green" : "red"} sub={`${margenNetoFinalPct.toFixed(1)}% · −Ads −CFWA`} bold />
-          </div>
-        </div>
         );
       })()}
 
