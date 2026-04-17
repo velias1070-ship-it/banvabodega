@@ -163,6 +163,28 @@ function PnlHint({ children }: { children: React.ReactNode }) {
   return <div style={{ padding: "6px 14px 2px", fontSize: 9, color: "var(--txt3)", fontStyle: "italic" }}>{children}</div>;
 }
 
+function SortHeader<K extends string>({ label, sortKey, align = "left", state, setState }: {
+  label: string;
+  sortKey: K;
+  align?: "left" | "right" | "center";
+  state: { key: K; dir: "asc" | "desc" };
+  setState: React.Dispatch<React.SetStateAction<{ key: K; dir: "asc" | "desc" }>>;
+}) {
+  const active = state.key === sortKey;
+  const arrow = active ? (state.dir === "asc" ? "▲" : "▼") : "⇅";
+  const onClick = () => setState(prev => prev.key === sortKey ? { key: sortKey, dir: prev.dir === "asc" ? "desc" : "asc" } : { key: sortKey, dir: "desc" });
+  return (
+    <th
+      onClick={onClick}
+      style={{ textAlign: align, cursor: "pointer", userSelect: "none", whiteSpace: "nowrap" }}
+      title={`Ordenar por ${label}`}
+    >
+      <span style={{ color: active ? "var(--cyan)" : undefined }}>{label}</span>
+      <span style={{ marginLeft: 4, fontSize: 9, opacity: active ? 1 : 0.35 }}>{arrow}</span>
+    </th>
+  );
+}
+
 type VentasMlModo = "dashboard" | "ordenes";
 
 export default function AdminVentasML({ modo }: { modo?: VentasMlModo } = {}) {
@@ -180,6 +202,8 @@ export default function AdminVentasML({ modo }: { modo?: VentasMlModo } = {}) {
   const [adsTotalRango, setAdsTotalRango] = useState(0);
   const [productoSearch, setProductoSearch] = useState("");
   const [mlDirectoSearch, setMlDirectoSearch] = useState("");
+  const [productosSort, setProductosSort] = useState<{ key: "sku_venta" | "canal" | "orders" | "unidades" | "ingresos" | "costo_producto" | "comision" | "envio" | "ads" | "margen" | "margen_neto"; dir: "asc" | "desc" }>({ key: "ingresos", dir: "desc" });
+  const [ordenesSort, setOrdenesSort] = useState<{ key: "fecha" | "order_id" | "sku_venta" | "cantidad" | "canal" | "precio_unitario" | "subtotal" | "comision_total" | "costo_envio" | "ingreso_envio" | "total_neto" | "costo_producto" | "margen" | "ads_cost_asignado" | "margen_neto"; dir: "asc" | "desc" }>({ key: "fecha", dir: "desc" });
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const [source, setSource] = useState<"cache" | "live" | "session">("cache");
   const [trazaModal, setTrazaModal] = useState<{ order: OrderRow; traza: TrazaResponse | null; loading: boolean } | null>(null);
@@ -490,7 +514,15 @@ export default function AdminVentasML({ modo }: { modo?: VentasMlModo } = {}) {
       const q = productoSearch.toLowerCase();
       return p.sku_venta.toLowerCase().includes(q) || p.nombre.toLowerCase().includes(q);
     })
-    .sort((a, b) => b.ingresos - a.ingresos);
+    .sort((a, b) => {
+      const k = productosSort.key;
+      const va = a[k] as string | number;
+      const vb = b[k] as string | number;
+      let cmp = 0;
+      if (typeof va === "number" && typeof vb === "number") cmp = va - vb;
+      else cmp = String(va).localeCompare(String(vb));
+      return productosSort.dir === "asc" ? cmp : -cmp;
+    });
 
   // Daily chart data
   const dailyChart = (() => {
@@ -710,7 +742,7 @@ export default function AdminVentasML({ modo }: { modo?: VentasMlModo } = {}) {
       {/* ML Directo table */}
       {view === "ml_directo" && mlOrders.length > 0 && (() => {
         const q = mlDirectoSearch.trim().toLowerCase();
-        const filtered = q === "" ? mlOrders : mlOrders.filter(o =>
+        const filteredRaw = q === "" ? mlOrders : mlOrders.filter(o =>
           (o.sku_venta || "").toLowerCase().includes(q) ||
           (o.nombre_producto || "").toLowerCase().includes(q) ||
           (o.order_id || "").toLowerCase().includes(q) ||
@@ -720,6 +752,15 @@ export default function AdminVentasML({ modo }: { modo?: VentasMlModo } = {}) {
           (o.canal || "").toLowerCase().includes(q) ||
           (o.estado || "").toLowerCase().includes(q)
         );
+        const filtered = [...filteredRaw].sort((a, b) => {
+          const k = ordenesSort.key;
+          const va = (a[k] ?? 0) as string | number | null;
+          const vb = (b[k] ?? 0) as string | number | null;
+          let cmp = 0;
+          if (typeof va === "number" && typeof vb === "number") cmp = va - vb;
+          else cmp = String(va ?? "").localeCompare(String(vb ?? ""));
+          return ordenesSort.dir === "asc" ? cmp : -cmp;
+        });
         const totales = filtered.reduce((s, o) => ({
           subtotal: s.subtotal + (o.subtotal || 0),
           comision: s.comision + (o.comision_total || 0),
@@ -760,17 +801,20 @@ export default function AdminVentasML({ modo }: { modo?: VentasMlModo } = {}) {
           <table className="tbl" style={{ width: "100%", fontSize: 11 }}>
             <thead>
               <tr>
-                <th>Order</th><th>SKU</th><th>Qty</th><th>Canal</th>
-                <th style={{ textAlign: "right" }}>Precio</th>
-                <th style={{ textAlign: "right" }}>Subtotal</th>
-                <th style={{ textAlign: "right" }}>Comisión</th>
-                <th style={{ textAlign: "right" }}>Envío</th>
-                <th style={{ textAlign: "right" }}>Bonif.</th>
-                <th style={{ textAlign: "right" }}>Neto</th>
-                <th style={{ textAlign: "right" }}>Costo Prod.</th>
-                <th style={{ textAlign: "right" }}>Margen</th>
-                <th style={{ textAlign: "right" }}>Ads</th>
-                <th style={{ textAlign: "right" }}>Margen Neto</th>
+                <SortHeader label="Order" sortKey="order_id" align="left" state={ordenesSort} setState={setOrdenesSort} />
+                <SortHeader label="SKU" sortKey="sku_venta" align="left" state={ordenesSort} setState={setOrdenesSort} />
+                <SortHeader label="Qty" sortKey="cantidad" align="left" state={ordenesSort} setState={setOrdenesSort} />
+                <SortHeader label="Canal" sortKey="canal" align="left" state={ordenesSort} setState={setOrdenesSort} />
+                <SortHeader label="Precio" sortKey="precio_unitario" align="right" state={ordenesSort} setState={setOrdenesSort} />
+                <SortHeader label="Subtotal" sortKey="subtotal" align="right" state={ordenesSort} setState={setOrdenesSort} />
+                <SortHeader label="Comisión" sortKey="comision_total" align="right" state={ordenesSort} setState={setOrdenesSort} />
+                <SortHeader label="Envío" sortKey="costo_envio" align="right" state={ordenesSort} setState={setOrdenesSort} />
+                <SortHeader label="Bonif." sortKey="ingreso_envio" align="right" state={ordenesSort} setState={setOrdenesSort} />
+                <SortHeader label="Neto" sortKey="total_neto" align="right" state={ordenesSort} setState={setOrdenesSort} />
+                <SortHeader label="Costo Prod." sortKey="costo_producto" align="right" state={ordenesSort} setState={setOrdenesSort} />
+                <SortHeader label="Margen" sortKey="margen" align="right" state={ordenesSort} setState={setOrdenesSort} />
+                <SortHeader label="Ads" sortKey="ads_cost_asignado" align="right" state={ordenesSort} setState={setOrdenesSort} />
+                <SortHeader label="Margen Neto" sortKey="margen_neto" align="right" state={ordenesSort} setState={setOrdenesSort} />
               </tr>
             </thead>
             <tbody>
@@ -897,11 +941,11 @@ export default function AdminVentasML({ modo }: { modo?: VentasMlModo } = {}) {
             <table className="tbl" style={{ width: "100%", fontSize: 11 }}>
               <thead>
                 <tr>
-                  <th style={{ textAlign: "left" }}>Producto</th>
-                  <th style={{ textAlign: "right" }}>Ingresos</th>
+                  <SortHeader label="Producto" sortKey="sku_venta" align="left" state={productosSort} setState={setProductosSort} />
+                  <SortHeader label="Ingresos" sortKey="ingresos" align="right" state={productosSort} setState={setProductosSort} />
                   <th style={{ textAlign: "left", minWidth: 200 }}>Costos</th>
-                  <th style={{ textAlign: "right" }}>Margen bruto</th>
-                  <th style={{ textAlign: "right" }}>Margen neto (post-ads)</th>
+                  <SortHeader label="Margen bruto" sortKey="margen" align="right" state={productosSort} setState={setProductosSort} />
+                  <SortHeader label="Margen neto (post-ads)" sortKey="margen_neto" align="right" state={productosSort} setState={setProductosSort} />
                 </tr>
               </thead>
               <tbody>
