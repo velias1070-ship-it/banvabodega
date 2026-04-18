@@ -320,6 +320,8 @@ export async function queryPrevIntelligence(): Promise<Map<string, {
   vel_pre_quiebre: number;
   margen_unitario_pre_quiebre: number;
   dias_en_quiebre: number | null;
+  /** PR5 — ancla temporal del quiebre previo. ISO YYYY-MM-DD UTC. */
+  fecha_entrada_quiebre: string | null;
   es_quiebre_proveedor: boolean;
   abc_pre_quiebre: string | null;
   vel_ponderada: number;
@@ -329,15 +331,16 @@ export async function queryPrevIntelligence(): Promise<Map<string, {
 }>> {
   const sb = getServerSupabase();
   if (!sb) return new Map();
-  // Incluir dias_en_quiebre IS NULL (historia incompleta, vel_pre_quiebre>0 los captura)
+  // Incluir dias_en_quiebre IS NULL + fecha_entrada_quiebre (PR5) para idempotencia.
   const rows = await paginatedSelect(() =>
     sb.from("sku_intelligence")
-      .select("sku_origen, vel_pre_quiebre, margen_unitario_pre_quiebre, dias_en_quiebre, es_quiebre_proveedor, abc_pre_quiebre, vel_ponderada, abc, stock_full, tiene_stock_prov")
-      .or("dias_en_quiebre.gt.0,vel_pre_quiebre.gt.0,dias_en_quiebre.is.null")
+      .select("sku_origen, vel_pre_quiebre, margen_unitario_pre_quiebre, dias_en_quiebre, fecha_entrada_quiebre, es_quiebre_proveedor, abc_pre_quiebre, vel_ponderada, abc, stock_full, tiene_stock_prov")
+      .or("dias_en_quiebre.gt.0,vel_pre_quiebre.gt.0,dias_en_quiebre.is.null,fecha_entrada_quiebre.not.is.null")
   );
   const map = new Map<string, {
     sku_origen: string; vel_pre_quiebre: number; margen_unitario_pre_quiebre: number;
-    dias_en_quiebre: number | null; es_quiebre_proveedor: boolean; abc_pre_quiebre: string | null;
+    dias_en_quiebre: number | null; fecha_entrada_quiebre: string | null;
+    es_quiebre_proveedor: boolean; abc_pre_quiebre: string | null;
     vel_ponderada: number; abc: string; stock_full: number; tiene_stock_prov: boolean;
   }>();
   for (const row of rows) {
@@ -347,6 +350,7 @@ export async function queryPrevIntelligence(): Promise<Map<string, {
       vel_pre_quiebre: (row.vel_pre_quiebre as number) || 0,
       margen_unitario_pre_quiebre: (row.margen_unitario_pre_quiebre as number) || 0,
       dias_en_quiebre: diasRaw === null || diasRaw === undefined ? null : (diasRaw as number),
+      fecha_entrada_quiebre: (row.fecha_entrada_quiebre as string | null) ?? null,
       es_quiebre_proveedor: (row.es_quiebre_proveedor as boolean) || false,
       abc_pre_quiebre: (row.abc_pre_quiebre as string) || null,
       vel_ponderada: (row.vel_ponderada as number) || 0,

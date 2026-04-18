@@ -233,6 +233,9 @@ export interface SkuIntelRow {
   margen_unitario_pre_quiebre: number;
   /** null = historia de quiebre incompleta (sin snapshot válido >= 2020). */
   dias_en_quiebre: number | null;
+  /** PR5 — ancla temporal del quiebre. ISO `YYYY-MM-DD` UTC. NULL si el SKU
+   *  no está en quiebre. `dias_en_quiebre` se deriva de `floor((hoy − fecha)/día)`. */
+  fecha_entrada_quiebre: string | null;
   es_quiebre_proveedor: boolean;
   abc_pre_quiebre: string | null;
   gmroi_potencial: number;
@@ -348,6 +351,8 @@ export interface PrevIntelRow {
   /** Snapshot del margen unitario al entrar en quiebre. Se preserva entre recálculos. */
   margen_unitario_pre_quiebre: number;
   dias_en_quiebre: number | null;
+  /** PR5 — fecha ancla del quiebre previo (ISO YYYY-MM-DD UTC). NULL si no estaba en quiebre. */
+  fecha_entrada_quiebre: string | null;
   es_quiebre_proveedor: boolean;
   abc_pre_quiebre: string | null;
   vel_ponderada: number;
@@ -477,6 +482,57 @@ function zScore(nivel: number): number {
   if (nivel >= 0.97) return 1.88;
   if (nivel >= 0.95) return 1.65;
   return 1.28;
+}
+
+/**
+ * PR5 — resuelve `dias_en_quiebre` y `fecha_entrada_quiebre` a partir de
+ * ancla temporal persistida (no un contador que se incrementa por recálculo).
+ *
+ * Reglas:
+ *   - Si NO está en quiebre ahora → ambos NULL/0. Aunque haya valor heredado,
+ *     se limpia (eso arregla los SKUs EXCESO/MANDAR_FULL con fósiles heredados).
+ *   - Si está en quiebre ahora y ya tenía fecha previa → preservar fecha y
+ *     derivar `dias = floor((hoy − fecha) / día)` en UTC.
+ *   - Si está en quiebre ahora y NO tenía fecha previa (acaba de entrar):
+ *     usar `primerQuiebre` del historial (stock_snapshots) si existe y es
+ *     posterior al 2025-01-01 (evita fósiles pre-2020). Si no, usar `hoy`.
+ *   - Cap a 365 días: ningún SKU legítimamente necesita más.
+ *   - Idempotencia: misma entrada → misma salida.
+ */
+export function resolverDiasEnQuiebre(params: {
+  enQuiebreAhora: boolean;
+  prevFechaEntradaQuiebre: string | null;
+  /** PrimerQuiebre desde stock_snapshots (primera fecha explícita con en_quiebre_full=true). */
+  primerQuiebre: Date | null;
+  hoy: Date;
+}): { dias_en_quiebre: number; fecha_entrada_quiebre: string | null } {
+  const MS_DIA = 86_400_000;
+  const CAP = 365;
+  const MIN_ISO = "2025-01-01";
+
+  if (!params.enQuiebreAhora) {
+    return { dias_en_quiebre: 0, fecha_entrada_quiebre: null };
+  }
+
+  const hoyUtcIso = params.hoy.toISOString().slice(0, 10);
+
+  // Elegir fecha ancla (prioridad: persistida > snapshot histórico > hoy)
+  let ancla: string;
+  if (params.prevFechaEntradaQuiebre && params.prevFechaEntradaQuiebre >= MIN_ISO) {
+    ancla = params.prevFechaEntradaQuiebre;
+  } else if (params.primerQuiebre) {
+    const pqIso = params.primerQuiebre.toISOString().slice(0, 10);
+    ancla = pqIso >= MIN_ISO ? pqIso : hoyUtcIso;
+  } else {
+    ancla = hoyUtcIso;
+  }
+
+  const anclaMs = new Date(ancla + "T00:00:00.000Z").getTime();
+  const hoyMs = new Date(hoyUtcIso + "T00:00:00.000Z").getTime();
+  const diasCalc = Math.floor((hoyMs - anclaMs) / MS_DIA);
+  const dias = Math.min(CAP, Math.max(0, diasCalc));
+
+  return { dias_en_quiebre: dias, fecha_entrada_quiebre: ancla };
 }
 
 /**
@@ -1076,7 +1132,9 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     const prev = prevIntelligence.get(skuOrigen);
     let velPreQuiebre = prev?.vel_pre_quiebre || 0;
     let margenUnitarioPreQuiebre = prev?.margen_unitario_pre_quiebre || 0;
-    let diasEnQuiebre: number | null = prev?.dias_en_quiebre ?? 0;
+    // PR5 — ya no se lee el contador persistido; se deriva fresh en cada run.
+    let diasEnQuiebre: number | null = 0;
+    let fechaEntradaQuiebre: string | null = null;
     // Flag re-evaluado SIEMPRE contra el catálogo actual — no se arrastra del
     // estado previo. La semántica ahora es "el proveedor está agotado HOY",
     // no "estaba agotado cuando el SKU entró en quiebre".
@@ -1097,30 +1155,30 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     // "quiebre crónico de A's requiere reconstruir vel histórica").
     const velHistorica = Math.max(vel60d, velPonderada);
 
+    // PR5 — resolver dias_en_quiebre desde ancla temporal persistida.
+    // Si !enQuiebreAhora → limpia ambos a 0/null (arregla EXCESO/MANDAR_FULL
+    // con fósiles heredados del bug previo).
+    const quiebreInfo = resolverDiasEnQuiebre({
+      enQuiebreAhora,
+      prevFechaEntradaQuiebre: prev?.fecha_entrada_quiebre ?? null,
+      primerQuiebre,
+      hoy,
+    });
+    diasEnQuiebre = quiebreInfo.dias_en_quiebre;
+    fechaEntradaQuiebre = quiebreInfo.fecha_entrada_quiebre;
+
     if (enQuiebreAhora) {
-      const prevDias = prev?.dias_en_quiebre;
-      if (prev && (prevDias === null || (prevDias ?? 0) > 0)) {
-        // Continúa en quiebre — incrementar días (flag ya re-evaluado arriba).
-        // Si prev era null (historia incompleta), se preserva null.
-        diasEnQuiebre = prevDias === null ? null : (prevDias ?? 0) + 1;
-        // velPre: preservar el mayor entre histórico calculado y persistido.
-        // Evita perder velocidad buena si vel60d ahora está degradado pero
-        // prev capturó un buen valor, y recupera velocidad si prev quedó
-        // bajo (caso SKUs con vel_pre=velPonderada heredado).
-        velPreQuiebre = Math.max(velHistorica, prev.vel_pre_quiebre);
-        margenUnitarioPreQuiebre = prev.margen_unitario_pre_quiebre || 0;
-        abcPreQuiebre = prev.abc_pre_quiebre;
+      const previaFecha = prev?.fecha_entrada_quiebre ?? null;
+      if (previaFecha) {
+        // Continúa en quiebre — preservar velPre/margen/abcPre del ciclo.
+        velPreQuiebre = Math.max(velHistorica, prev?.vel_pre_quiebre ?? 0);
+        margenUnitarioPreQuiebre = prev?.margen_unitario_pre_quiebre || 0;
+        abcPreQuiebre = prev?.abc_pre_quiebre ?? null;
       } else {
-        // Acaba de entrar en quiebre — inicializar desde primer snapshot válido.
-        // Si no hay snapshot confiable, diasEnQuiebre = null (historia incompleta).
-        if (primerQuiebre) {
-          diasEnQuiebre = diasQuiebre > 0 ? diasQuiebre : 1;
-        } else {
-          diasEnQuiebre = null;
-        }
+        // Acaba de entrar — snapshot inicial (fecha ya resuelta arriba).
         velPreQuiebre = velHistorica;
-        margenUnitarioPreQuiebre = margenProm;  // snapshot del margen unitario al entrar en quiebre
-        abcPreQuiebre = null; // Se asigna después del paso ABC global
+        margenUnitarioPreQuiebre = margenProm;
+        abcPreQuiebre = null;
       }
     } else if (prev && (prev.dias_en_quiebre ?? 0) > 0 && stFull > 0) {
       // SKU se repuso — verificar catch-up
@@ -1131,15 +1189,14 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
         // 3+ semanas vendiendo → reset completo de quiebre prolongado
         velPreQuiebre = 0;
         margenUnitarioPreQuiebre = 0;
-        diasEnQuiebre = 0;
         abcPreQuiebre = null;
       } else {
-        // Primeras semanas post-reposición
+        // Primeras semanas post-reposición — preservar vel/margen/abc pre.
         velPreQuiebre = prev.vel_pre_quiebre;
         margenUnitarioPreQuiebre = prev.margen_unitario_pre_quiebre || 0;
-        diasEnQuiebre = 0;
         abcPreQuiebre = prev.abc_pre_quiebre;
       }
+      // diasEnQuiebre y fechaEntradaQuiebre ya fueron reseteados a 0/null arriba.
     }
 
     const enQuiebreProlongado = enQuiebreAhora && (diasEnQuiebre ?? 0) >= 14 && velPreQuiebre > 2;
@@ -1373,6 +1430,7 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       vel_pre_quiebre: round2(velPreQuiebre),
       margen_unitario_pre_quiebre: round2(margenUnitarioPreQuiebre),
       dias_en_quiebre: diasEnQuiebre,
+      fecha_entrada_quiebre: fechaEntradaQuiebre,
       es_quiebre_proveedor: esQuiebreProveedor,
       abc_pre_quiebre: abcPreQuiebre,
       gmroi_potencial: gmroiPotencial,

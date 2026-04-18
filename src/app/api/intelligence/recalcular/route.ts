@@ -516,6 +516,7 @@ function rowToUpsert(r: SkuIntelRow): SkuIntelligenceUpsert {
     vel_pre_quiebre: r.vel_pre_quiebre,
     margen_unitario_pre_quiebre: r.margen_unitario_pre_quiebre,
     dias_en_quiebre: r.dias_en_quiebre,
+    fecha_entrada_quiebre: r.fecha_entrada_quiebre,
     es_quiebre_proveedor: r.es_quiebre_proveedor,
     abc_pre_quiebre: r.abc_pre_quiebre,
     gmroi_potencial: r.gmroi_potencial,

@@ -236,7 +236,7 @@ Lectura combinada de `banva-bodega-inteligencia.md §12` y `banva-bodega-estado-
 | 15 | PIN admin hardcoded + PINs operario en texto plano | Abierto | No |
 | 16 | Migraciones versionadas / aplicadas manual | Parcial (regla operativa acordada 2026-04-17) | Sí |
 | 17 | `pedidos_flex` legacy convive con `ml_shipments` | Abierto | No |
-| 18 | `dias_en_quiebre` con valores 4+ años (ver §2.3) | **Nuevo** — detectado en este snapshot | N/A |
+| 18 | `dias_en_quiebre` con valores 4+ años (ver §2.3) | **Cerrado PR5** (migración v55 + `fecha_entrada_quiebre` + backfill) | Sí |
 
 ## 7. Archivos fuente de verdad
 

@@ -630,6 +630,27 @@ si se repuso (stock>0 ahora, prev.dias > 0):
         vel_pre_quiebre = preservado
 ```
 
+### 8.15 `dias_en_quiebre` y `fecha_entrada_quiebre` (PR5)
+
+Derivación **idempotente** vía `resolverDiasEnQuiebre()` en `intelligence.ts`:
+
+```
+si !enQuiebreAhora:
+  dias_en_quiebre = 0
+  fecha_entrada_quiebre = NULL       ← limpia fósiles
+
+si enQuiebreAhora:
+  ancla = prev.fecha_entrada_quiebre   si existe y >= 2025-01-01
+        | primerQuiebre (stock_snapshots)  si existe y >= 2025-01-01
+        | hoy                              en cualquier otro caso
+  dias_en_quiebre = min(365, floor((hoy − ancla) / 1 día UTC))
+  fecha_entrada_quiebre = ancla        (se congela hasta que salga del quiebre)
+```
+
+Antes de PR5 el motor hacía `diasEnQuiebre = prev + 1` en cada corrida — contador por recálculo, no por día. Con ~80 runs/día llegaba a 2 000+ días en 25 días reales. 49 SKUs quedaban con factor_rampup=0.0/0.5 y `pedir_proveedor` recortado sin razón. Tests en `src/lib/__tests__/intelligence-quiebre.test.ts` (8 casos).
+
+**Reset correcto (PR5)**: la rama `!enQuiebreAhora` limpia SIEMPRE, sin condicionar a `stFull>0`. Eso arregla los SKUs `EXCESO` / `MANDAR_FULL` con valores fósiles heredados que antes nunca se limpiaban.
+
 ---
 
 ## 9. Flujos de datos críticos
@@ -819,6 +840,8 @@ Explícito — estos no existen en el código hoy:
 ---
 
 ## 14. Riesgos técnicos identificados
+
+⚠️ **Patrón a evitar — contadores derivados de recálculos** (aprendizaje del bug PR5 en `dias_en_quiebre`): cualquier campo que se incremente `+1` en cada corrida del motor se infla 2–3 órdenes de magnitud dado el volumen actual de recálculos (~80/día). Regla: **persistir ancla temporal** (`fecha_*`) y **derivar el contador** como `floor((hoy − ancla)/día)`. Es idempotente y no requiere conocer el histórico de ejecuciones. Ver `resolverDiasEnQuiebre()` como ejemplo canónico (§8.15).
 
 | # | Riesgo | Dónde | Probabilidad | Mitigación actual | Pendiente |
 |---|---|---|---|---|---|
