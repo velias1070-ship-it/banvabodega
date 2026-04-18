@@ -72,23 +72,31 @@ export async function upsertOrderToVentasCache(
     } catch { /* skip */ }
   }
 
-  // Item count del pack: solo cuenta los items DENTRO de esta orden.
+  // Split del costo de envío entre órdenes del pack.
   //
-  // ANTES: se buscaban hermanas en DB para sumar items de otras órdenes del
-  // mismo pack_id. Eso fallaba cuando las hermanas cambiaban (cancelaciones,
-  // re-asignaciones de pack), dejando packItemCount inflado y costo_envio
-  // subestimado. Bug observado: orden Flex de 1 ítem registraba envío $1660
-  // (=$3320/2) en vez de $3320.
+  // Un pack con N órdenes comparte UN shipment. /shipments/{id}/costs devuelve
+  // el cost total del shipment — no per-order. Sin dividir, el webhook se
+  // dispara por cada orden y cada una se atribuye el cost completo → el costo
+  // total atribuido queda multiplicado ×N.
   //
-  // AHORA: el webhook calcula con los items propios. El cron diario de
-  // /api/ml/ventas-sync agrupa correctamente por shipping.id y corrige el
-  // costo_envio si la orden es parte de un pack real.
-  const packItemCount = order.order_items?.length || 1;
+  // Fix: cuando la orden tiene pack_id canónico (pack real multi-orden),
+  // consultar /packs/{id} para obtener la cantidad de órdenes del pack y
+  // dividir el cost por esa cantidad. Dentro de cada orden, se divide además
+  // entre sus items.
+  let packOrdersCount = 1;
+  if (order.pack_id && order.pack_id !== order.id) {
+    try {
+      const pack = await mlGet<{ orders?: Array<{ id: number }> }>(`/packs/${order.pack_id}`);
+      const size = Array.isArray(pack?.orders) ? pack.orders.length : 0;
+      if (size > 0) packOrdersCount = size;
+    } catch { /* fallback a 1 */ }
+  }
+  const itemsEnEstaOrden = order.order_items?.length || 1;
 
   const packCostoEnvio = isFull ? senderCost : TARIFA_FLEX;
   const packBonificacion = isFull ? 0 : (senderBonif + receiverLoyal + receiverPaid);
-  const costoEnvioPorItem = Math.round(packCostoEnvio / packItemCount);
-  const bonifPorItem = Math.round(packBonificacion / packItemCount);
+  const costoEnvioPorItem = Math.round(packCostoEnvio / packOrdersCount / itemsEnEstaOrden);
+  const bonifPorItem = Math.round(packBonificacion / packOrdersCount / itemsEnEstaOrden);
   const esCancelada = order.status === "cancelled";
   const esParcialRefund = order.status === "partially_refunded";
   const esAnulacion = esCancelada || esParcialRefund;
