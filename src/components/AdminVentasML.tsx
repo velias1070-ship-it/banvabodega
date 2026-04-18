@@ -414,6 +414,38 @@ export default function AdminVentasML({ modo }: { modo?: VentasMlModo } = {}) {
 
   const exportToExcel = () => {
     if (mlOrders.length === 0) return;
+
+    if (modo === "ordenes") {
+      const rows = mlOrders.map(o => ({
+        "Cliente": o.cliente || "",
+        "Razón Social": o.razon_social || "",
+        "Canal": o.canal,
+        "Order ID": o.order_id,
+        "Order Number": o.order_number || o.order_id,
+        "Fecha": o.fecha || "",
+        "Producto": o.nombre_producto,
+        "SKU": o.sku_venta,
+        "Cantidad": o.cantidad,
+        "Precio Unitario": o.precio_unitario,
+        "Subtotal": o.subtotal,
+        "Comision Unitaria": o.comision_unitaria,
+        "Comision Total": o.comision_total,
+        "Estado": o.estado || "",
+        "Costo Envío": o.costo_envio,
+        "Ingreso Envío": o.ingreso_envio || 0,
+        "Ingreso Adicional Tarjeta de Crédito": o.ingreso_adicional_tc || 0,
+        "Total": o.total_neto ?? (o.subtotal - o.comision_total - o.costo_envio + (o.ingreso_envio || 0)),
+        "Logística": o.logistic_type,
+        "Documento Tributario": o.documento_tributario || "",
+        "Estado Documento": o.estado_documento || "",
+      }));
+      const ws = XLSX.utils.json_to_sheet(rows);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Ventas ML");
+      XLSX.writeFile(wb, `ventas_ml_${from}_${to}.xlsx`);
+      return;
+    }
+
     const excluded = new Set(["En mediación", "Cancelada", "Reembolsada"]);
     const orders = mlOrders.filter(o => !excluded.has(o.estado || "") && o.anulada !== true);
 
