@@ -221,7 +221,8 @@ export interface SkuIntelRow {
   dias_sin_conteo: number;
   diferencias_conteo: number;
   ultimo_movimiento: string | null;
-  dias_sin_movimiento: number;
+  /** PR6a: null si el SKU no tiene movimientos en la ventana consultada. */
+  dias_sin_movimiento: number | null;
 
   alertas: AlertaIntel[];
   alertas_count: number;
@@ -482,6 +483,39 @@ function zScore(nivel: number): number {
   if (nivel >= 0.97) return 1.88;
   if (nivel >= 0.95) return 1.65;
   return 1.28;
+}
+
+/**
+ * PR6a — decide si un SKU es "nuevo" desde el punto de vista operativo.
+ * Nuevo = sin ventas históricas (vel_ponderada y vel_pre_quiebre en 0),
+ * tiene algo de stock (evita confundirse con INACTIVO) y tuvo movimiento
+ * reciente (o el dato no existe, equivalente a "no sabemos que sea viejo").
+ *
+ * Regla de `movimientoReciente`:
+ *   - `null`  → true  (no hay evidencia de que sea un SKU abandonado)
+ *   - `≤ 30`  → true
+ *   - `> 30`  → false
+ *
+ * Esto evita que SKUs recién recepcionados queden atrapados en DEAD_STOCK
+ * por falta de dato de movimiento (el bug que PR6a arregla).
+ */
+export function esAccionNuevo(params: {
+  vel_ponderada: number;
+  vel_pre_quiebre: number;
+  stock_total: number;
+  stock_full: number;
+  stock_bodega: number;
+  dias_sin_movimiento: number | null;
+}): boolean {
+  const sinHistoriaVentas = params.vel_ponderada === 0 && params.vel_pre_quiebre === 0;
+  const tieneStock = params.stock_total > 0;
+  // Si ya pasaría a MANDAR_FULL por stock bodega + Full vacío, no es NUEVO todavía
+  // (la misma condición en el motor tiene precedencia; ver intelligence.ts:1270).
+  const yaEsMandarFull = sinHistoriaVentas && params.stock_full === 0 && params.stock_bodega > 0;
+  if (yaEsMandarFull) return false;
+  const mov = params.dias_sin_movimiento;
+  const movimientoReciente = mov === null || mov <= 30;
+  return sinHistoriaVentas && tieneStock && movimientoReciente;
 }
 
 /**
@@ -747,6 +781,13 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     if (!prev || m.created_at > prev) {
       ultimoMovPorSku.set(m.sku, m.created_at);
     }
+  }
+  // PR6a: si el fetch de movimientos falló silenciosamente (timeout, error swallowed),
+  // el motor no debería sobrescribir ultimo_movimiento con NULL para los 533 SKUs
+  // porque es indistinguible de "no tuvo movimiento". Loggear para detectar.
+  if (movimientos.length === 0) {
+    console.warn("[intelligence] movimientos.length === 0 — posible fetch silencioso fallido; " +
+      "dias_sin_movimiento quedará NULL para todos los SKUs de este run.");
   }
 
   // ── Fechas de referencia ──
@@ -1238,8 +1279,12 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     }
 
     // ── PASO 15: Acción y prioridad ──
+    // PR6a: NULL cuando no hay movimiento conocido. Antes se usaba el centinela
+    // 999 que escondía que el Map estaba vacío y apagaba la rama `NUEVO`.
     const ultimoMov = ultimoMovPorSku.get(skuOrigen) || null;
-    const diasSinMov = ultimoMov ? Math.floor((hoyMs - new Date(ultimoMov).getTime()) / 86400000) : 999;
+    const diasSinMov: number | null = ultimoMov
+      ? Math.floor((hoyMs - new Date(ultimoMov).getTime()) / 86400000)
+      : null;
 
     // Usar velEfectiva para pedir (vel_pre_quiebre si en quiebre prolongado)
     const velParaPedir = enQuiebreProlongado ? velPreQuiebre : (multiplicadorEvento > 1 ? velAjustadaEvento : velPonderada);
@@ -1261,11 +1306,16 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       mandarFull = Math.min(loteInicial, stBodega);
     }
 
+    // PR6a: `NUEVO` ahora también dispara cuando `diasSinMov` es NULL (movimiento
+    // desconocido = no tenemos evidencia de que sea viejo). Antes la condición
+    // `<= 30` fallaba siempre con el centinela 999 y la rama estaba muerta.
+    const movimientoReciente = diasSinMov === null || diasSinMov <= 30;
+
     let accion: AccionIntel;
     let prioridad: number;
     if (velPonderada === 0 && velPreQuiebre === 0 && stTotal === 0) { accion = "INACTIVO"; prioridad = 99; }
     else if (esNuevo && stFull === 0 && stBodega > 0) { accion = "MANDAR_FULL"; prioridad = 10; }
-    else if (esNuevo && diasSinMov <= 30) { accion = "NUEVO"; prioridad = 50; }
+    else if (esNuevo && movimientoReciente) { accion = "NUEVO"; prioridad = 50; }
     else if (velPonderada === 0 && velPreQuiebre === 0 && stTotal > 0) { accion = "DEAD_STOCK"; prioridad = 80; }
     else if (stFull === 0 && (velFull > 0 || enQuiebreProlongado) && stBodega > 0) { accion = "MANDAR_FULL"; prioridad = 10; }
     else if (stFull === 0 && (velFull > 0 || enQuiebreProlongado) && stBodega === 0 && (esQuiebreProveedor || !tieneStockProv)) { accion = "AGOTADO_SIN_PROVEEDOR"; prioridad = 3; }

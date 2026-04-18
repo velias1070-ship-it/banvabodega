@@ -630,6 +630,19 @@ si se repuso (stock>0 ahora, prev.dias > 0):
         vel_pre_quiebre = preservado
 ```
 
+### 8.16 `dias_sin_movimiento` y acción `NUEVO` (PR6a)
+
+Antes de PR6a: `dias_sin_movimiento` caía a un centinela `999` cuando `ultimoMovPorSku.get(sku)` era `undefined` (ya fuera porque el SKU no tenía movimientos o porque el Map venía vacío por un fetch silencioso). La condición `diasSinMov <= 30` en el paso 15 nunca se cumplía → **rama `NUEVO` muerta** → SKUs recién recepcionados quedaban atrapados como `DEAD_STOCK` / `INACTIVO`.
+
+Fix PR6a:
+- Columna nullable (`v56`): `DROP DEFAULT; DROP NOT NULL`.
+- `intelligence.ts:1241-1244`: `diasSinMov: number | null = ultimoMov ? … : null` — sin centinela.
+- Helper puro `esAccionNuevo({...})` expuesto y testeable (9 tests en `intelligence-nuevo.test.ts`).
+- El paso 15 usa `movimientoReciente = dias === null || dias <= 30`. Null (sin data) se trata como "no hay evidencia de que sea viejo" → eligible para `NUEVO`.
+- Log explícito si `movimientos.length === 0` en un recálculo — detecta fetch silencioso.
+
+Backfill `scripts/backfill-dias-sin-movimiento.ts`: lee `movimientos` sin filtro de ventana, recalcula `dias_sin_movimiento` y `ultimo_movimiento`, y deja `NULL` en SKUs sin historia. Dry-run/apply.
+
 ### 8.15 `dias_en_quiebre` y `fecha_entrada_quiebre` (PR5)
 
 Derivación **idempotente** vía `resolverDiasEnQuiebre()` en `intelligence.ts`:
@@ -816,6 +829,7 @@ Explícito — estos no existen en el código hoy:
 | 16 | **Migraciones versionadas** | Se ejecutan manualmente en SQL Editor; el historial `supabase-v*.sql` no se valida contra estado real. |
 | 17 | **PIN admin hardcoded (`1234`) + PINs operario en texto plano** | Sin hash. |
 | 18 | **Modelo shipment-centric final** | `pedidos_flex` legacy sigue vivo junto a `ml_shipments`. |
+| 19 | **σ_LT empírico de Idetex (y otros proveedores)** | El motor usa `proveedores.lead_time_sigma_dias` manual en 442/533 SKUs (82 %). SS_completo aporta protección vs simple en 252 SKUs (57 %). Para medir σ_LT real se necesita: (a) crear OCs formales con `fecha_emision` al momento de pedir, (b) conectar `recepciones.orden_compra_id` → `ordenes_compra.id` para cruzar fecha_emision/fecha_recepcion. Hoy hay 4 OCs totales todas ANULADAS + 66 recepciones huérfanas. Requiere cambio operativo en flujo de compras, no fix de código. Estimación: Sprint 8+ si se atacan PR6/PR7 antes. |
 
 ---
 
@@ -842,6 +856,12 @@ Explícito — estos no existen en el código hoy:
 ## 14. Riesgos técnicos identificados
 
 ⚠️ **Patrón a evitar — contadores derivados de recálculos** (aprendizaje del bug PR5 en `dias_en_quiebre`): cualquier campo que se incremente `+1` en cada corrida del motor se infla 2–3 órdenes de magnitud dado el volumen actual de recálculos (~80/día). Regla: **persistir ancla temporal** (`fecha_*`) y **derivar el contador** como `floor((hoy − ancla)/día)`. Es idempotente y no requiere conocer el histórico de ejecuciones. Ver `resolverDiasEnQuiebre()` como ejemplo canónico (§8.15).
+
+⚠️ **Patrón a evitar — centinelas numéricos esconden bugs** (2ª lección, PR6a). Los campos calculados que caen a un número "imposible" (ej. `999`, `2071`) cuando no hay data fuente, **sesgan silenciosamente** las decisiones del motor. Casos detectados:
+- `dias_en_quiebre = 2071` (PR5, f11eb07) → incrementaba por recálculo, falsificaba el factor de ramp-up.
+- `dias_sin_movimiento = 999` (PR6a) → centinela cuando el Map `ultimoMovPorSku` venía vacío, **apagaba la rama `NUEVO`** del motor y mal-clasificaba 63 SKUs como `DEAD_STOCK`.
+
+**Regla canónica**: nunca un valor centinela numérico en campos calculados. Usar `NULL` en DB con `DROP DEFAULT + DROP NOT NULL`; manejar explícitamente en código (`dias === null ? ... : ...`). Esto fue lo que hizo PR5 con `fecha_entrada_quiebre` y PR6a con `dias_sin_movimiento`.
 
 | # | Riesgo | Dónde | Probabilidad | Mitigación actual | Pendiente |
 |---|---|---|---|---|---|
