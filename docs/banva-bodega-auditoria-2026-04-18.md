@@ -377,3 +377,123 @@ BANVA está en **transición Fase 1 → Fase 2**. Tiene piezas sueltas de Fase 2
 13. La matriz BANVA de 4 cuadrantes (Estrella/Volumen/CashCow/Revisar) no es la matriz 9 del manual (AX…CZ) — migración recomendada en 6 meses.
 14. No existe `.claude/rules/inventory-policy.md` ni baseline firmado: hay motor sin manifiesto. Priorizar escribirlos.
 15. **Honesto:** BANVA está más cerca de la **Fase 1** del manual que de la 2, con varias piezas de Fase 2 en estado "calculado pero no consumido".
+
+---
+
+## Apéndice A — Números medibles hoy (snapshot 2026-04-18)
+
+Evidencia cuantitativa extraída directamente de DB para que esta auditoría sea reproducible.
+
+### Inventario y segmentación
+
+| Métrica | Valor | Query/fuente |
+|---|---|---|
+| SKUs en `sku_intelligence` | 533 | `SELECT COUNT(*) FROM sku_intelligence` |
+| SKUs con ABC (3 ejes) | 533 / 533 / 533 | `abc_margen`, `abc_ingreso`, `abc_unidades` |
+| SKUs con XYZ | 533 | `xyz IS NOT NULL` |
+| SKUs con cuadrante | 533 | `cuadrante IS NOT NULL` |
+| SKUs con vel=0 (zero-velocity) | 235 (44%) | `vel_ponderada = 0` |
+| SKUs cuasi-muertos (0<vel<0.25) | 46 | `vel_ponderada BETWEEN 0 AND 0.25` |
+| SKUs nuevos (\<60d primera venta) | 82 | `dias_desde_primera_venta < 60` |
+| SKUs sin primera venta registrada | 215 | `primera_venta IS NULL` |
+| SKUs actualmente en quiebre | 45 | `dias_en_quiebre > 0` |
+
+### Forecasting
+
+| Métrica | Valor |
+|---|---|
+| Filas en `forecast_accuracy` | 1,599 |
+| Filas en `forecast_snapshots_semanales` | 6,929 |
+| SKUs con `es_confiable=true` | **0** |
+| Filas con `semanas_evaluadas >= 4` | **0** |
+| SKUs con TSB calculado (shadow) | 104 |
+| Eventos en `eventos_demanda` | 7 (Día Madre, CyberDay Mayo, Fiestas Patrias, CyberMonday Oct, BF, Navidad, Año Nuevo) |
+
+### Reposición
+
+| Métrica | Valor |
+|---|---|
+| SKUs con `safety_stock_completo > 0` | 298 |
+| SKUs con `lead_time_real_sigma` real | **0** |
+| OCs en `ordenes_compra` | 4 (muestra insuficiente) |
+| Líneas de OC | 247 |
+
+### Operaciones bodega
+
+| Métrica | Valor |
+|---|---|
+| Conteos en `conteos` | 2 (!) |
+| Recepciones | 66 |
+| Líneas de recepción | 735 |
+| Movimientos de stock | 3,271 |
+| Picking sessions | 38 |
+
+### MELI
+
+| Métrica | Valor |
+|---|---|
+| Shipments ML registrados | 995 |
+| Stock Full cache | 753 SKUs |
+| Ads daily cache | 30,008 filas |
+| Margin cache ML | 623 SKUs |
+| Webhook log | 6,853 eventos |
+
+### Proveedores
+
+| Proveedor | # SKUs |
+|---|---|
+| Idetex | 398 (90%) |
+| Otro | 19 |
+| Verbo Divino | 14 |
+| Materos | 6 |
+| Container | 4 |
+| Textiles VJ | 1 |
+| LG | 1 |
+| Sin proveedor | 90 |
+
+### Gobernanza
+
+| Métrica | Valor |
+|---|---|
+| Audit log filas | 11,825 |
+| Admin actions log | 39 |
+| Sync log | 260 |
+| SKU revision log | 0 (tabla vacía) |
+
+---
+
+## Apéndice B — Bugs y rarezas detectados durante la auditoría
+
+1. **`dias_sin_movimiento = 999` para los 533 SKUs.** Columna nunca se popula correctamente con el delta real desde `movimientos.created_at`. Arreglar en PASO 17 o uno previo de `intelligence.ts`.
+2. **`lead_time_real_sigma IS NULL` para todos.** `src/lib/intelligence-queries.ts` tiene la función, pero `ordenes_compra` con 4 filas no alcanza para calcular por proveedor. Backfill histórico desde Excel o emails de Idetex.
+3. **`forecast_accuracy.semanas_evaluadas = 0` en todas las 1,599 filas.** La tabla se popula pero el contador de semanas no se incrementa. Revisar `/api/intelligence/forecast-accuracy/route.ts`.
+4. **`sku_revision_log` vacío:** tabla existe pero sin consumer. Decisión: activar o eliminar.
+5. **Tablas `_backup_*`:** `_backup_sku_intelligence_dias_quiebre_20260416` y `_backup_test_vinculacion_20260416` persisten en prod con RLS deshabilitado. Limpiar después de validar backup.
+
+---
+
+## Apéndice C — Referencias de código clave citadas
+
+| Ubicación | Rol |
+|---|---|
+| `src/lib/intelligence.ts:67` | Tipos `ClaseABC`, `ClaseXYZ`, `Cuadrante` |
+| `src/lib/intelligence.ts:974-982` | PASO 4 eventos (regresor) |
+| `src/lib/intelligence.ts:1055-1075` | CV y XYZ |
+| `src/lib/intelligence.ts:1099-1103` | Safety stock simple |
+| `src/lib/intelligence.ts:1198-1230` | Lost sales / venta_perdida |
+| `src/lib/intelligence.ts:1468-1558` | PASO 9 ABC 3 ejes |
+| `src/lib/intelligence.ts:1511-1574` | Matriz BANVA 4 cuadrantes |
+| `src/lib/intelligence.ts:1735-1742` | ROP = D×LT + SS |
+| `src/lib/intelligence.ts:1755-1771` | PASO 17 liquidación |
+| `src/lib/intelligence.ts:1773-1819` | PASO 19 alertas |
+| `src/lib/rampup.ts:1-41` | Matriz ramp-up 6×2 |
+| `src/lib/tsb.ts:1-100` | TSB shadow mode |
+| `src/lib/forecast-accuracy.ts:53-120` | WMAPE/Bias/Tracking Signal |
+| `src/lib/intelligence-queries.ts` | Cálculo σ_LT por proveedor |
+| `src/lib/reposicion.ts` | `calcularPedirVenta()` |
+| `supabase-v15-sku-intelligence.sql` | Tabla principal |
+| `supabase-v27-registrar-movimiento.sql` | RPC movimientos |
+| `supabase-v29-audit-log.sql` | Audit log |
+| `supabase-v51-forecast-accuracy.sql` | Tablas forecast |
+| `supabase-v53-tsb.sql` | Columnas TSB |
+| `supabase-v55-dias-en-quiebre.sql` | Tracking quiebre |
