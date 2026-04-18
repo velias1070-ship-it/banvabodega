@@ -682,8 +682,8 @@ export default function AdminVentasML({ modo }: { modo?: VentasMlModo } = {}) {
         const adsReal = adsTotalRango;
         const cfwa = cfwaRango;
 
-        const totalIngresos = venta + bonif;
-        const totalGastos = comision + envioBruto + costoProd + adsReal + cfwa;
+        const totalIngresos = venta;
+        const totalGastos = comision + envioNeto + costoProd + adsReal + cfwa;
         const ingresoMl = mlTotals.neto;       // lo que ML deposita
         const margenBruto = margenTotals.margen; // ingresoMl - costoProd (aprox)
         const margenNeto = margenBruto - adsReal - cfwa;
@@ -696,7 +696,6 @@ export default function AdminVentasML({ modo }: { modo?: VentasMlModo } = {}) {
             {/* INGRESOS */}
             <PnlSection title="Ingresos" accent="green">
               <PnlRow label="Venta bruta" value={fmt(venta)} />
-              {bonif > 0 && <PnlRow label="Bonificación envíos" value={`+${fmt(bonif)}`} />}
               <PnlTotal label="Total ingresos" value={fmt(totalIngresos)} accent="green" />
               <PnlHint>
                 {validOrders.length} órdenes · {mlTotals.items} items · Ticket prom. {validOrders.length > 0 ? fmt(venta / validOrders.length) : "—"}
@@ -707,7 +706,7 @@ export default function AdminVentasML({ modo }: { modo?: VentasMlModo } = {}) {
             {/* GASTOS */}
             <PnlSection title="Gastos" accent="red">
               <PnlRow label="Comisión ML" value={fmt(comision)} hint={pct(comision)} />
-              <PnlRow label="Envío" value={fmt(envioBruto)} hint={pct(envioBruto)} sub={bonif > 0 ? `neto post-bonif ${fmt(envioNeto)}` : undefined} />
+              <PnlRow label="Envío" value={fmt(envioNeto)} hint={pct(envioNeto)} sub={bonif > 0 ? `${fmt(envioBruto)} − bonif ${fmt(bonif)}` : undefined} />
               <PnlRow label="Costo producto" value={fmt(costoProd)} hint={pct(costoProd)} sub={ordersSinCosto.length > 0 ? `${ordersSinCosto.length} sin costo` : undefined} subColor="amber" />
               <PnlRow label="Ads" value={fmt(adsReal)} hint={pct(adsReal)} sub={adsDirectos > 0 ? `atrib. directa ${fmt(adsDirectos)}` : undefined} />
               <PnlRow label="Almacén Full (CFWA)" value={fmt(cfwa)} hint={pct(cfwa)} />
