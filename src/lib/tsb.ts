@@ -159,23 +159,32 @@ function round4(n: number): number {
 /**
  * Decide qué modelo de forecast usar para un SKU.
  *
- * Reglas (PR3 Fase A, "Ajuste 1" del plan):
+ * Reglas (PR3 Fase A + PR4 Fase 1):
  *   - Si `xyz !== 'Z'` → SMA ponderado (modelo actual). Sólo Z es candidato TSB.
+ *   - Si `es_estacional === true` → SMA ponderado. Flag manual que desactiva
+ *     TSB para SKUs con patrón estacional o fin-de-ciclo (donde TSB lee la
+ *     caída como obsolescencia y penaliza la recomendación). PR4 Fase 1.
  *   - Si `primera_venta` es null → SMA ponderado (no sé la edad, jugarla seguro).
  *   - Si días desde primera venta < 60 → SMA ponderado (puerta anti-ramp-up;
  *     TSB interpretaría ceros iniciales como obsolescencia de un producto
  *     que en realidad recién se lanzó).
- *   - Resto (Z maduro, ≥60 días) → TSB.
+ *   - Resto (Z maduro no-estacional, ≥60 días) → TSB.
  *
  * Intencionalmente no tenemos 3 modelos vivos simultáneos (SMA + Croston + TSB):
- * sólo 2 regímenes (nuevo = SMA, maduro = TSB) para que el comportamiento
- * sea auditable.
+ * sólo 2 regímenes (nuevo/estacional = SMA, maduro = TSB) para que el
+ * comportamiento sea auditable.
  */
 export function seleccionarModeloZ(
-  sku: { primera_venta: Date | string | null; xyz: string },
+  sku: {
+    primera_venta: Date | string | null;
+    xyz: string;
+    /** PR4 Fase 1: flag manual. `false` por default (sin marca). */
+    es_estacional?: boolean | null;
+  },
   hoy: Date,
 ): ModeloForecast {
   if (sku.xyz !== "Z") return "sma_ponderado";
+  if (sku.es_estacional === true) return "sma_ponderado";
   if (!sku.primera_venta) return "sma_ponderado";
   const pv = sku.primera_venta instanceof Date
     ? sku.primera_venta

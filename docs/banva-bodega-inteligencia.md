@@ -296,6 +296,20 @@ Tabla canon del motor. **118 columnas / 533 rows / 1.6 MB**. Abajo: columnas agr
 | `updated_at` | timestamptz | no | al upsert | I |
 | `datos_desde`, `datos_hasta` | date | sí | P2 | — |
 
+### 3.16 Flag estacional + metadata (PR4 Fase 1, migración v54)
+
+| Columna | Tipo | Null | Escrito | Leído |
+|---|---|---|---|---|
+| `es_estacional` | boolean | no (default `false`) | Manual (SQL Editor o script inicial) | I (banner Accuracy), motor P2 (vía `seleccionarModeloZ`) |
+| `estacional_motivo` | text | sí | Manual | Query admin |
+| `estacional_marcado_por` | text | sí | Manual | Query admin |
+| `estacional_marcado_at` | timestamptz | sí | Manual (`now()`) | Query admin |
+| `estacional_revisar_en` | date | sí | Manual (`marcado_at + 6 meses`) | I (count para banner vencidos) |
+
+Índice parcial `idx_sku_intel_estacional_revisar` sobre `estacional_revisar_en` WHERE `es_estacional=true` acelera la query del banner.
+
+Sin UI de edición — marcado y desmarcado se hacen vía Supabase SQL Editor. Script inicial: `scripts/marcar-estacionales-iniciales.sql`.
+
 ---
 
 ## 4. Endpoints `/api/intelligence/*`
@@ -563,6 +577,19 @@ Aplicado a `(stock_full, vel_full)`, `(stock_bodega, vel_flex)`, `(stock_total, 
 pedir_bultos = ceil(pedir_proveedor / inner_pack)     si inner_pack > 1
              = pedir_proveedor                         en otro caso
 ```
+
+### 8.14 Selección de modelo para Z (`tsb.ts:seleccionarModeloZ`) — PR3 Fase A + PR4 Fase 1
+
+```
+si xyz !== 'Z'                       → sma_ponderado
+si es_estacional === true            → sma_ponderado   (PR4 Fase 1)
+si primera_venta es null             → sma_ponderado   (fallback seguro)
+si fecha inválida                    → sma_ponderado
+si (hoy − primera_venta) < 60 días   → sma_ponderado   (puerta anti-ramp-up)
+resto                                → tsb
+```
+
+Intencionalmente 2 regímenes (no 3). El flag `es_estacional` gana sobre la puerta de edad — un SKU marcado estacional queda en SMA aunque sea maduro. 18 tests cubren todas las ramas (`src/lib/__tests__/tsb.test.ts`).
 
 ### 8.13 Factor ramp-up post-quiebre (`rampup.ts:1-41` · aplicación `intelligence.ts:1507-1524`)
 
@@ -892,6 +919,7 @@ Botón nuevo en el header de `AdminInteligencia` (patrón `vistaAccuracy` boolea
 - **Tabla**: SKU + Nombre, Cuadrante, ABC-XYZ, Vel ponderada, WMAPE (%), Bias con signo, TS con color (rojo ABS>4, ámbar >2), chip de alerta (🔴/🟡), semanas confiables.
 - **Orden default**: ESTRELLA crítica → CASHCOW/VOLUMEN → REVISAR; secundario `ABS(TS)` DESC.
 - **Placeholder** si no hay `es_confiable=true` aún: "Aún no hay métricas confiables — primera medición real **2026-05-18**".
+- 🆕 **Banner ⏰ estacionales vencidos** (PR4 Fase 1): si hay SKUs con `es_estacional=true AND estacional_revisar_en < hoy`, se muestra contador + query SQL para listar detalles. Se oculta cuando el contador es 0.
 
 ## Metadata
 

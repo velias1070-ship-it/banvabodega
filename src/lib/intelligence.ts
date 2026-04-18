@@ -420,6 +420,10 @@ export interface RecalculoInput {
    *  decide si el SKU entra al régimen TSB. Map<sku_origen (UPPER), Date>.
    *  Si no se pasa, todos los SKUs quedan en régimen SMA ponderado (seguro). */
   primeraVentaPorSkuOrigen?: Map<string, Date>;
+  /** PR4 Fase 1 — SKUs marcados manualmente como estacionales. Set<sku_origen
+   *  UPPER>. Si está en el set, `seleccionarModeloZ()` devuelve sma_ponderado
+   *  aunque sea Z maduro. Si no se pasa, todos los SKUs se consideran no-estacionales. */
+  skusEstacionales?: Set<string>;
   config: RecalculoConfig;
   hoy: Date;
   debugSku?: string;
@@ -1010,8 +1014,9 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
           (hoyMs - primeraVentaDate.getTime()) / 86_400_000,
         );
       }
+      const esEstacional = input.skusEstacionales?.has(skuOrigen) ?? false;
       const modelo = seleccionarModeloZ(
-        { primera_venta: primeraVentaDate ?? null, xyz },
+        { primera_venta: primeraVentaDate ?? null, xyz, es_estacional: esEstacional },
         hoy,
       );
       tsbModeloUsado = modelo;

@@ -128,4 +128,34 @@ describe("seleccionarModeloZ", () => {
       seleccionarModeloZ({ primera_venta: "no-es-fecha", xyz: "Z" }, hoy),
     ).toBe("sma_ponderado");
   });
+
+  // ── PR4 Fase 1: flag es_estacional ──────────────────────────────────────
+
+  it("PR4 — SKU Z maduro con es_estacional=true → sma_ponderado (flag gana)", () => {
+    const primera = new Date("2025-10-01T00:00:00Z"); // >6 meses, sería TSB sin flag
+    expect(
+      seleccionarModeloZ({ primera_venta: primera, xyz: "Z", es_estacional: true }, hoy),
+    ).toBe("sma_ponderado");
+  });
+
+  it("PR4 — SKU Z maduro con es_estacional=false → tsb (comportamiento preservado de PR3)", () => {
+    const primera = new Date("2025-10-01T00:00:00Z");
+    expect(
+      seleccionarModeloZ({ primera_venta: primera, xyz: "Z", es_estacional: false }, hoy),
+    ).toBe("tsb");
+  });
+
+  it("PR4 — SKU Z nuevo con es_estacional=true → sma_ponderado (flag gana sobre puerta edad)", () => {
+    const primera = new Date("2026-03-10T00:00:00Z"); // ~38 días
+    expect(
+      seleccionarModeloZ({ primera_venta: primera, xyz: "Z", es_estacional: true }, hoy),
+    ).toBe("sma_ponderado");
+  });
+
+  it("PR4 — es_estacional=null se trata igual que false (sin marca activa)", () => {
+    const primera = new Date("2025-10-01T00:00:00Z");
+    expect(
+      seleccionarModeloZ({ primera_venta: primera, xyz: "Z", es_estacional: null }, hoy),
+    ).toBe("tsb");
+  });
 });

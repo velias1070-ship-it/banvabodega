@@ -416,6 +416,8 @@ export default function AdminInteligencia() {
   const [vistaAccuracy, setVistaAccuracy] = useState(false);
   const [accuracyFiltroEstrella, setAccuracyFiltroEstrella] = useState(false);
   const [accuracyFiltroBias, setAccuracyFiltroBias] = useState<"todos" | "subestimamos" | "sobrestimamos">("todos");
+  // PR4 Fase 1 — contador de estacionales con revisión vencida (banner en tab Accuracy)
+  const [estacionalesVencidos, setEstacionalesVencidos] = useState<number>(0);
   const [envioSort, setEnvioSort] = useState<{ col: string; asc: boolean }>({ col: "accion", asc: true });
   const [envioFilter, setEnvioFilter] = useState<"todos"|"sin_ip"|"abc_a"|"abc_b"|"abc_c"|"urgente"|"stock_insuf">("todos");
   const [envioIpEdits, setEnvioIpEdits] = useState<Map<string, number>>(new Map());
@@ -562,11 +564,26 @@ export default function AdminInteligencia() {
     setUltimaRecepcionPorSku(map);
   }, []);
 
+  // PR4 Fase 1 — cuenta SKUs con es_estacional=true y revisión vencida.
+  // Falla silenciosa: si la columna no existe (v54 sin aplicar) queda en 0.
+  const cargarEstacionalesVencidos = useCallback(async () => {
+    try {
+      const sb = getSupabase();
+      if (!sb) return;
+      const hoy = new Date().toISOString().slice(0, 10);
+      const { count } = await sb.from("sku_intelligence")
+        .select("sku_origen", { count: "exact", head: true })
+        .eq("es_estacional", true)
+        .lt("estacional_revisar_en", hoy);
+      setEstacionalesVencidos(count ?? 0);
+    } catch { /* ignore — v54 puede no estar aplicada aún */ }
+  }, []);
+
   const cargar = useCallback(async () => {
     setLoading(true);
-    await Promise.all([cargarOrigen(), cargarVenta(), cargarMlMap(), cargarPendientes(), cargarCatalogo(), cargarUltimasRecepciones()]);
+    await Promise.all([cargarOrigen(), cargarVenta(), cargarMlMap(), cargarPendientes(), cargarCatalogo(), cargarUltimasRecepciones(), cargarEstacionalesVencidos()]);
     setLoading(false);
-  }, [cargarOrigen, cargarVenta, cargarMlMap, cargarPendientes, cargarCatalogo, cargarUltimasRecepciones]);
+  }, [cargarOrigen, cargarVenta, cargarMlMap, cargarPendientes, cargarCatalogo, cargarUltimasRecepciones, cargarEstacionalesVencidos]);
 
   useEffect(() => { cargar(); }, [cargar]);
 
@@ -2787,6 +2804,27 @@ export default function AdminInteligencia() {
               📊 <strong>Forecast accuracy</strong> — {kpiEstrellas} ESTRELLAS descalibradas · {kpiSesgo} SKUs A/B con sesgo sostenido
               {ultimaMed && <> · Última medición: {new Date(ultimaMed).toLocaleString("es-CL")}</>}
             </div>
+
+            {/* PR4 Fase 1 — banner estacionales vencidos */}
+            {estacionalesVencidos > 0 && (
+              <div style={{
+                background: "var(--amberBg)",
+                border: "1px solid var(--amberBd)",
+                color: "var(--amber)",
+                padding: "10px 14px",
+                borderRadius: 6,
+                marginBottom: 8,
+                fontSize: 11,
+              }}>
+                ⏰ <strong>{estacionalesVencidos} SKU(s)</strong> marcados como estacionales tienen revisión vencida. Verificá si siguen siendo estacionales o si hay que reclasificar.
+                <div style={{ fontSize: 10, marginTop: 4, opacity: 0.85 }}>
+                  Ver SKUs con:{" "}
+                  <code style={{ background: "var(--bg3)", padding: "1px 4px", borderRadius: 3 }}>
+                    SELECT sku_origen, estacional_motivo FROM sku_intelligence WHERE es_estacional=true AND estacional_revisar_en &lt; now();
+                  </code>
+                </div>
+              </div>
+            )}
 
             {/* Pills de filtros */}
             <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap" }}>

@@ -23,6 +23,7 @@ import {
   queryMargenPorSku,
   queryProveedores,
   queryPrimeraVentaPorSkuOrigen,
+  queryFlagEstacional,
   type SkuIntelligenceUpsert,
 } from "@/lib/intelligence-queries";
 import {
@@ -148,6 +149,19 @@ async function ejecutarRecalculo(params: { skus?: string[]; full: boolean; snaps
       );
     }
 
+    // PR4 Fase 1 — SKUs marcados manualmente como estacionales. Falla silenciosa:
+    // si la columna no existe (v54 no aplicada) o la query se cae, ningún SKU
+    // queda marcado y el motor sigue con el régimen TSB pre-PR4.
+    let skusEstacionales: Set<string> = new Set();
+    try {
+      skusEstacionales = await queryFlagEstacional();
+    } catch (err) {
+      console.warn(
+        "[intelligence] es_estacional no disponible (¿v54 sin aplicar?), TSB corre sin exclusión por estacionalidad:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+
     // ── Stock en tránsito desde órdenes de compra ──
     const stockEnTransito = new Map<string, number>();
     const ocPendientesPorSku = new Map<string, number>();
@@ -230,6 +244,7 @@ async function ejecutarRecalculo(params: { skus?: string[]; full: boolean; snaps
       proveedoresLT,
       metricasAccuracy,
       primeraVentaPorSkuOrigen,
+      skusEstacionales,
       config: {
         ...DEFAULT_INTEL_CONFIG,
         targetDiasA: intelConfig.target_dias_a,

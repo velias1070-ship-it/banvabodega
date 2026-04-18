@@ -358,6 +358,20 @@ export async function queryPrevIntelligence(): Promise<Map<string, {
   return map;
 }
 
+/** PR4 Fase 1 — flag es_estacional por SKU. Map<sku_origen (UPPER), true> para
+ *  los marcados; los no marcados no están en el map. Separado de prevIntelligence
+ *  porque aquél filtra a SKUs en quiebre; el flag aplica a cualquier SKU. */
+export async function queryFlagEstacional(): Promise<Set<string>> {
+  const sb = getServerSupabase();
+  if (!sb) return new Set();
+  const rows = await paginatedSelect(() =>
+    sb.from("sku_intelligence").select("sku_origen").eq("es_estacional", true)
+  );
+  const out = new Set<string>();
+  for (const r of rows) out.add((r.sku_origen as string).toUpperCase());
+  return out;
+}
+
 /** Lead time por proveedor desde la tabla proveedores. Map<nombre, {...}> */
 export async function queryProveedores(): Promise<Map<string, {
   lead_time_dias: number;
