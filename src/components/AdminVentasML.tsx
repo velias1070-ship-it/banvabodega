@@ -414,33 +414,73 @@ export default function AdminVentasML({ modo }: { modo?: VentasMlModo } = {}) {
 
   const exportToExcel = () => {
     if (mlOrders.length === 0) return;
-    const rows = mlOrders.map(o => ({
-      "Cliente": o.cliente || "",
-      "Razón Social": o.razon_social || "",
-      "Canal": o.canal,
-      "Order ID": o.order_id,
-      "Order Number": o.order_number || o.order_id,
-      "Fecha": o.fecha || "",
-      "Producto": o.nombre_producto,
-      "SKU": o.sku_venta,
-      "Cantidad": o.cantidad,
-      "Precio Unitario": o.precio_unitario,
-      "Subtotal": o.subtotal,
-      "Comision Unitaria": o.comision_unitaria,
-      "Comision Total": o.comision_total,
-      "Estado": o.estado || "",
-      "Costo Envío": o.costo_envio,
-      "Ingreso Envío": o.ingreso_envio || 0,
-      "Ingreso Adicional Tarjeta de Crédito": o.ingreso_adicional_tc || 0,
-      "Total": o.total_neto ?? (o.subtotal - o.comision_total - o.costo_envio + (o.ingreso_envio || 0)),
-      "Logística": o.logistic_type,
-      "Documento Tributario": o.documento_tributario || "",
-      "Estado Documento": o.estado_documento || "",
-    }));
+    const excluded = new Set(["En mediación", "Cancelada", "Reembolsada"]);
+    const orders = mlOrders.filter(o => !excluded.has(o.estado || "") && o.anulada !== true);
+
+    interface Agg {
+      sku: string;
+      nombre: string;
+      ingresos: number;
+      ventas: number;
+      unidades: number;
+      tc: number;
+      costo_producto: number;
+      publicidad: number;
+      fulfillment: number;
+      comision: number;
+      envio_neto: number;
+    }
+    const map = new Map<string, Agg>();
+    for (const o of orders) {
+      const sku = o.sku_venta || "(sin sku)";
+      const a = map.get(sku) || {
+        sku, nombre: o.nombre_producto || "",
+        ingresos: 0, ventas: 0, unidades: 0, tc: 0,
+        costo_producto: 0, publicidad: 0,
+        fulfillment: 0, comision: 0, envio_neto: 0,
+      };
+      const isFull = o.logistic_type === "fulfillment";
+      a.ingresos += o.subtotal || 0;
+      a.ventas += 1;
+      a.unidades += o.cantidad || 0;
+      a.tc += o.ingreso_adicional_tc || 0;
+      a.costo_producto += o.costo_producto || 0;
+      a.publicidad += o.ads_cost_asignado || 0;
+      a.comision += o.comision_total || 0;
+      if (isFull) a.fulfillment += o.costo_envio || 0;
+      else a.envio_neto += (o.costo_envio || 0) - (o.ingreso_envio || 0);
+      map.set(sku, a);
+    }
+
+    const rows = Array.from(map.values())
+      .sort((a, b) => b.ingresos - a.ingresos)
+      .map(a => {
+        const costo_total = a.costo_producto + a.publicidad + a.fulfillment + a.comision + a.envio_neto;
+        const margen = a.ingresos + a.tc - costo_total;
+        const base = a.ingresos + a.tc;
+        const margen_pct = base > 0 ? (margen / base) * 100 : 0;
+        return {
+          "SKU": a.sku,
+          "Nombre": a.nombre,
+          "Ingresos": Math.round(a.ingresos),
+          "Ventas": a.ventas,
+          "Unidades": a.unidades,
+          "Ingresos Adicionales TC": Math.round(a.tc),
+          "Costo total": Math.round(costo_total),
+          "Margen": Math.round(margen),
+          "Margen %": Math.round(margen_pct * 100) / 100,
+          "Costo producto": Math.round(a.costo_producto),
+          "Publicidad": Math.round(a.publicidad),
+          "Fulfillment": Math.round(a.fulfillment),
+          "Comisión": Math.round(a.comision),
+          "Envío neto": Math.round(a.envio_neto),
+        };
+      });
+
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Ventas ML");
-    XLSX.writeFile(wb, `ventas_ml_${from}_${to}.xlsx`);
+    XLSX.utils.book_append_sheet(wb, ws, "Report");
+    XLSX.writeFile(wb, `ventas_ml_productos_${from}_${to}.xlsx`);
   };
 
   // Totals for ML directo (exclude orders in mediation)
