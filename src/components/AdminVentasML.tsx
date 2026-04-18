@@ -200,6 +200,7 @@ export default function AdminVentasML({ modo }: { modo?: VentasMlModo } = {}) {
   const [view, setView] = useState<"comparativa" | "ml_directo" | "productos">(defaultView);
   const [cfwaRango, setCfwaRango] = useState(0);
   const [adsTotalRango, setAdsTotalRango] = useState(0);
+  const [stockSabanas, setStockSabanas] = useState<{ unidades: number; skus: number } | null>(null);
   const [productoSearch, setProductoSearch] = useState("");
   const [mlDirectoSearch, setMlDirectoSearch] = useState("");
   const [productosSort, setProductosSort] = useState<{ key: "sku_venta" | "canal" | "orders" | "unidades" | "ingresos" | "costo_producto" | "comision" | "envio" | "ads" | "margen" | "margen_neto"; dir: "asc" | "desc" }>({ key: "ingresos", dir: "desc" });
@@ -291,6 +292,29 @@ export default function AdminVentasML({ modo }: { modo?: VentasMlModo } = {}) {
       setAdsTotalRango(Math.round(adsNeto * 1.19));
     })();
   }, [from, to]);
+
+  // Stock de sábanas en bodega (solo dashboard, independiente del rango).
+  useEffect(() => {
+    if (modo === "ordenes") return;
+    (async () => {
+      const sb = getSupabase(); if (!sb) return;
+      const { data: prods } = await sb
+        .from("productos")
+        .select("sku")
+        .or("nombre.ilike.%sabana%,nombre.ilike.%sábana%");
+      const skus = (prods || []).map((p: { sku: string }) => p.sku);
+      if (skus.length === 0) { setStockSabanas({ unidades: 0, skus: 0 }); return; }
+      const { data: stockRows } = await sb
+        .from("stock")
+        .select("cantidad")
+        .in("sku", skus);
+      const unidades = (stockRows || []).reduce(
+        (s: number, r: { cantidad: number | null }) => s + (r.cantidad || 0),
+        0,
+      );
+      setStockSabanas({ unidades, skus: skus.length });
+    })();
+  }, [modo]);
 
   const fetchBoth = async () => {
     setLoading("Cargando ambas fuentes...");
@@ -702,6 +726,18 @@ export default function AdminVentasML({ modo }: { modo?: VentasMlModo } = {}) {
         {error && <div style={{ marginTop: 8, fontSize: 12, color: "var(--red)" }}>{error}</div>}
         {lastUpdated && !loading && <div style={{ marginTop: 8, fontSize: 11, color: "var(--txt3)" }}>Última sync: {lastUpdated} · Fuente: {source === "cache" ? "Cache DB (auto)" : source === "live" ? "ML API (live)" : "Sesión"}</div>}
       </div>
+
+      {/* KPI Stock Sábanas — solo dashboard */}
+      {modo !== "ordenes" && stockSabanas && (
+        <div style={{ padding: "12px 16px", background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 10, marginBottom: 16, display: "flex", alignItems: "center", gap: 16 }}>
+          <div style={{ fontSize: 10, color: "var(--txt3)", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700 }}>Stock bodega · Sábanas</div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: "var(--cyan)", fontFamily: "var(--font-mono, monospace)" }}>
+            {stockSabanas.unidades.toLocaleString("es-CL")}
+            <span style={{ fontSize: 11, color: "var(--txt3)", fontWeight: 500, marginLeft: 6 }}>unidades</span>
+          </div>
+          <div style={{ fontSize: 11, color: "var(--txt3)" }}>{stockSabanas.skus} SKUs</div>
+        </div>
+      )}
 
       {/* P&L estilo ERP — solo en modo dashboard (o sin modo) */}
       {mlOrders.length > 0 && modo !== "ordenes" && (() => {
