@@ -229,9 +229,14 @@ export async function queryMovimientos(desdeDias: number = 60): Promise<Movimien
   const sb = getServerSupabase();
   if (!sb) return [];
   const desde = new Date(Date.now() - desdeDias * 86400000).toISOString();
+  // PR6a-bis/3: quitamos `razon` del select — esa columna NO EXISTE en la
+  // tabla (se llama `motivo`). El select antes tiraba "column does not exist"
+  // y Supabase respondía error, pero paginatedSelect ignoraba error y
+  // devolvía []. Causa raíz real del bug "dias_sin_movimiento NULL en 533".
+  // El motor solo usa `sku` y `created_at` — el resto estaba de más.
   const data = await paginatedSelect(() =>
     sb.from("movimientos")
-      .select("sku, tipo, razon, cantidad, created_at")
+      .select("sku, created_at")
       .gte("created_at", desde)
   );
   return data as unknown as MovimientoRow[];

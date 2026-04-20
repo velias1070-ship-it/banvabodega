@@ -787,17 +787,16 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       ultimoMovPorSku.set(key, m.created_at);
     }
   }
-  // PR6a: si el fetch falló silenciosamente, dias_sin_movimiento quedaría NULL
-  // para todos. Loggear explícito para detectar.
+  // PR6a-bis/3: logging completo con sample para diagnosticar mismatches.
+  // Usa warn en todos los casos — Vercel filtra console.log por default.
   if (movimientos.length === 0) {
-    console.warn("[intelligence] movimientos.length === 0 — posible fetch silencioso fallido; " +
-      "dias_sin_movimiento quedará NULL para todos los SKUs de este run.");
+    console.warn("[intelligence] movimientos.length === 0 — fetch silencioso fallido");
   } else if (ultimoMovPorSku.size === 0) {
-    console.warn(`[intelligence] movimientos=${movimientos.length} pero ultimoMovPorSku vacío — ¿m.sku null?`);
+    const sample = movimientos.slice(0, 2).map(m => JSON.stringify({ sku: m.sku, type: typeof m.sku }));
+    console.warn(`[intelligence] movimientos=${movimientos.length} pero Map vacío — sample: ${sample.join(", ")}`);
   } else {
-    // Log de diagnóstico concreto: ¿cuántos SKUs del loop van a matchear?
-    // Sólo sample para no inflar logs.
-    console.log(`[intelligence] ultimoMovPorSku populated: movs=${movimientos.length} mapSize=${ultimoMovPorSku.size}`);
+    const mapKeys = Array.from(ultimoMovPorSku.keys()).slice(0, 3);
+    console.warn(`[intelligence] Map populated: movs=${movimientos.length} mapSize=${ultimoMovPorSku.size} sampleKeys=[${mapKeys.join(", ")}]`);
   }
 
   // ── Fechas de referencia ──
@@ -817,6 +816,8 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
   // LOOP POR SKU ORIGEN (pasos 1-8, 12-19)
   // ════════════════════════════════════════
   const rows: SkuIntelRow[] = [];
+  // PR6a-bis/3: debug — contador de matches reales en el Map de movimientos.
+  let debugMatchCount = 0;
 
   for (const skuOrigen of Array.from(allSkusOrigen)) {
     const prod = prodMap.get(skuOrigen);
@@ -1295,6 +1296,7 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     // normalización silenciosamente rompa el Map lookup.
     const skuKey = skuOrigen.trim().toUpperCase();
     const ultimoMov = ultimoMovPorSku.get(skuKey) || null;
+    if (ultimoMov) debugMatchCount++;
     const diasSinMov: number | null = ultimoMov
       ? Math.floor((hoyMs - new Date(ultimoMov).getTime()) / 86400000)
       : null;
