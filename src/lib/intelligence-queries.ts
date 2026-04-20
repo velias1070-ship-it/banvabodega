@@ -96,13 +96,23 @@ export interface OrdenCompraLineaRow {
 
 /* ───── Helpers ───── */
 
-/** Paginar queries de Supabase (default 1000 por request) */
+/** Paginar queries de Supabase (default 1000 por request).
+ *
+ * PR6a-bis: loggear errores silenciosos de supabase-js. Antes se ignoraba
+ * `error` del response, causando que queries falladas devolvieran [] sin
+ * aviso (caso real: `queryMovimientos` con `.order()+.range()` que Supabase
+ * tira timeout y responde vacío). Ahora warneamos y seguimos.
+ */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function paginatedSelect(query: () => any, pageSize = 1000): Promise<Record<string, unknown>[]> {
   const result: Record<string, unknown>[] = [];
   let offset = 0;
   while (true) {
-    const { data } = await query().range(offset, offset + pageSize - 1);
+    const { data, error } = await query().range(offset, offset + pageSize - 1);
+    if (error) {
+      console.error(`[paginatedSelect] error offset=${offset}: ${error.message} (code=${error.code ?? "n/a"})`);
+      break;
+    }
     if (!data || data.length === 0) break;
     result.push(...data);
     if (data.length < pageSize) break;
@@ -207,7 +217,14 @@ export async function queryConteos(limiteMeses: number = 3): Promise<ConteoRow[]
   return (data || []) as ConteoRow[];
 }
 
-/** Movimientos recientes — paginado */
+/** Movimientos recientes — paginado.
+ *
+ * PR6a-bis: removimos `.order("created_at", { ascending: false })`. Combinar
+ * order + range sobre `movimientos` (3k+ rows sin índice en created_at)
+ * provocaba que Supabase respondiera vacío en producción, rompiendo
+ * `ultimoMovPorSku` y dejando `dias_sin_movimiento` NULL para los 533.
+ * El motor no necesita orden — recorre todo y computa max() en memoria.
+ */
 export async function queryMovimientos(desdeDias: number = 60): Promise<MovimientoRow[]> {
   const sb = getServerSupabase();
   if (!sb) return [];
@@ -216,7 +233,6 @@ export async function queryMovimientos(desdeDias: number = 60): Promise<Movimien
     sb.from("movimientos")
       .select("sku, tipo, razon, cantidad, created_at")
       .gte("created_at", desde)
-      .order("created_at", { ascending: false })
   );
   return data as unknown as MovimientoRow[];
 }

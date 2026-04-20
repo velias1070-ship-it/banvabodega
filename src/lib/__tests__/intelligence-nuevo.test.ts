@@ -105,12 +105,10 @@ describe("PR6a-bis — matching sku normalizado UPPER+trim", () => {
     inner_pack: 1,
     moq: 1,
     lead_time_dias: 5,
-    lead_time_sigma_dias: 1.5,
     costo_promedio: 100,
-    costo_manual: 0,
     estado_sku: "activo",
     updated_at: "2026-04-01T00:00:00Z",
-  };
+  } as ProductoInput;
   const composicion: ComposicionInput[] = [
     { sku_venta: "ABC123", sku_origen: "ABC123", unidades: 1, tipo_relacion: "componente" },
   ];
