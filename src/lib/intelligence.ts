@@ -775,19 +775,29 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     }
   }
 
+  // PR6a-bis: normalizar sku UPPER+trim en AMBOS lados. La DB hoy está 100%
+  // UPPER y sin espacios, pero futuros imports podrían romper la asunción.
+  // Barato + defensivo + elimina la clase de bug "Map no matchea por encoding".
   const ultimoMovPorSku = new Map<string, string>();
   for (const m of movimientos) {
-    const prev = ultimoMovPorSku.get(m.sku);
+    const key = (m.sku || "").trim().toUpperCase();
+    if (!key) continue;
+    const prev = ultimoMovPorSku.get(key);
     if (!prev || m.created_at > prev) {
-      ultimoMovPorSku.set(m.sku, m.created_at);
+      ultimoMovPorSku.set(key, m.created_at);
     }
   }
-  // PR6a: si el fetch de movimientos falló silenciosamente (timeout, error swallowed),
-  // el motor no debería sobrescribir ultimo_movimiento con NULL para los 533 SKUs
-  // porque es indistinguible de "no tuvo movimiento". Loggear para detectar.
+  // PR6a: si el fetch falló silenciosamente, dias_sin_movimiento quedaría NULL
+  // para todos. Loggear explícito para detectar.
   if (movimientos.length === 0) {
     console.warn("[intelligence] movimientos.length === 0 — posible fetch silencioso fallido; " +
       "dias_sin_movimiento quedará NULL para todos los SKUs de este run.");
+  } else if (ultimoMovPorSku.size === 0) {
+    console.warn(`[intelligence] movimientos=${movimientos.length} pero ultimoMovPorSku vacío — ¿m.sku null?`);
+  } else {
+    // Log de diagnóstico concreto: ¿cuántos SKUs del loop van a matchear?
+    // Sólo sample para no inflar logs.
+    console.log(`[intelligence] ultimoMovPorSku populated: movs=${movimientos.length} mapSize=${ultimoMovPorSku.size}`);
   }
 
   // ── Fechas de referencia ──
@@ -1279,9 +1289,12 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     }
 
     // ── PASO 15: Acción y prioridad ──
-    // PR6a: NULL cuando no hay movimiento conocido. Antes se usaba el centinela
-    // 999 que escondía que el Map estaba vacío y apagaba la rama `NUEVO`.
-    const ultimoMov = ultimoMovPorSku.get(skuOrigen) || null;
+    // PR6a-bis: normalizar skuOrigen UPPER+trim al hacer lookup (misma regla
+    // que el populate). `skuOrigen` viene de `allSkusOrigen` que ya normaliza
+    // en línea 716, pero reforzamos — evita que una regresión futura en esa
+    // normalización silenciosamente rompa el Map lookup.
+    const skuKey = skuOrigen.trim().toUpperCase();
+    const ultimoMov = ultimoMovPorSku.get(skuKey) || null;
     const diasSinMov: number | null = ultimoMov
       ? Math.floor((hoyMs - new Date(ultimoMov).getTime()) / 86400000)
       : null;
