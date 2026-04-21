@@ -152,6 +152,8 @@ function MobileMenu({ tab, setTab }: { tab: AdminTab; setTab: (t: AdminTab) => v
 export default function AdminPage() {
   const [tab, setTab] = useState<AdminTab>(() => {
     if (typeof window !== "undefined") {
+      const urlTab = new URLSearchParams(window.location.search).get("tab");
+      if (urlTab) return urlTab as AdminTab;
       const saved = sessionStorage.getItem("banva_admin_tab");
       if (saved === "ventasml") return "ventasdash"; // migración legacy
       if (saved) return saved as AdminTab;

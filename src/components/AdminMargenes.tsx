@@ -112,13 +112,15 @@ export default function AdminMargenes() {
 
   const [bgSyncing, setBgSyncing] = useState(false);
 
-  const loadCache = useCallback(async () => {
+  const loadCache = useCallback(async (): Promise<MarginRow[]> => {
     setLoading(true);
     try {
       const res = await fetch("/api/ml/margin-cache");
       const data = await res.json();
-      setRows(data.items || []);
+      const items: MarginRow[] = data.items || [];
+      setRows(items);
       setLastSync(data.last_sync || null);
+      return items;
     } finally {
       setLoading(false);
     }
@@ -137,10 +139,35 @@ export default function AdminMargenes() {
   }, [loadCache]);
 
   useEffect(() => {
-    loadCache().then(() => {
+    loadCache().then((items) => {
       // Disparar el refresh silencioso despues de cargar la cache existente,
       // para que el usuario vea la data inmediatamente y luego se actualiza.
       backgroundRefreshStale();
+      // Deep-link: ?sku=XXX prefiltra la tabla. ?sim=1 además abre el simulador.
+      if (typeof window !== "undefined") {
+        const params = new URLSearchParams(window.location.search);
+        const skuParam = params.get("sku");
+        if (!skuParam) return;
+        setQ(skuParam);
+        if (params.get("sim") === "1") {
+          const row = items.find(r => r.sku.toUpperCase() === skuParam.toUpperCase());
+          if (row) {
+            setSimItem({
+              item_id: row.item_id,
+              sku: row.sku,
+              titulo: row.titulo,
+              price_ml: row.price_ml,
+              precio_venta: row.precio_venta,
+              costo_bruto: row.costo_bruto,
+              peso_facturable: row.peso_facturable,
+              comision_pct: Number(row.comision_pct),
+              tiene_promo: row.tiene_promo,
+              promo_pct: row.promo_pct,
+              promo_type: row.promo_type,
+            });
+          }
+        }
+      }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
