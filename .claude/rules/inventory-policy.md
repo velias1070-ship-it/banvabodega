@@ -108,6 +108,22 @@ if (error) {
 - `stock_full_cache` (tabla, canónica) vs `ml_items_map.stock_full_cache` (columna, legado) — PR6b-pivot-I `db58f8e`. El `syncStockFull.stale_cleanup` bajaba la tabla a 0 para SKUs que ML dejaba de reportar, pero NO tocaba la columna → 14 SKUs con valores zombi durante 3-22 días. El motor lee la tabla (correcto) pero `stock-compare phase=wms` leía la columna (mostraba stock fantasma al admin). Fix: `syncStockFull` ahora espejea el cleanup a la columna + `stock-compare` migró a LEFT JOIN contra la tabla + v58 `COMMENT ON COLUMN ... DEPRECADA`.
 - Bonus histórico (no fixeado aún): `pedidos_flex` (legacy, un registro por order+sku_venta) vs `ml_shipments` + `ml_shipment_items` (nuevo, shipment-centric). Coexisten por migración incompleta. A consolidar en sprint futuro.
 
+## Regla 6 — Autoheal debe escanear la fuente canónica, no la respuesta parcial
+
+**Patrón prohibido**: un autoheal (o cualquier backfill reactivo) que itere solo sobre `ítems devueltos por una API externa en la corrida actual` y asuma que esa lista es exhaustiva. APIs devuelven subconjuntos por paginación, filtros internos, estado, o timeouts.
+
+**Patrón correcto**: el autoheal escanea la **fuente canónica local** (p.ej. `ml_items_map.activo=true`) y rescata los huérfanos. La respuesta de la API externa es *input adicional*, no la única.
+
+**Razón**: si ML o cualquier API deja de devolver un ítem (filtro silencioso, paginación rota, item pausado), el autoheal nunca lo toca. Con el tiempo se acumulan huérfanos invisibles al sistema. Muy difícil de detectar porque "funciona" hasta que alguien investiga por qué un SKU específico no aparece en el motor.
+
+**Casos históricos**:
+- `syncStockFull` paso 5b (pre-PR6c) — autoheal de `composicion_venta` trivial iteraba solo sobre `mapped` (items que ML devolvió en la corrida). **26 SKUs** activos en `ml_items_map` no aparecían en la query de fulfillment ML y quedaron sin composición durante semanas → motor veía `stock_full=0` y `vel_ponderada=0` a pesar de que el stock canónico (`stock_full_cache`) tenía los valores correctos. Afectó ventas registradas por 216 uds en 30d que el motor nunca contó. Fix PR6c: nuevo paso 5c (`autohealComposicionExtendido`) escanea TODO `ml_items_map.activo=true` con filtros `sku=sku_venta`, `status_ml IN ('active','paused')`, producto existente, sin composición previa; upsert con `onConflict: "sku_venta,sku_origen"` (inmune a race condition con el cron concurrente).
+
+**Cómo aplicar**:
+- Todo autoheal debe tener una pregunta explícita: *¿la fuente de iteración es la canónica, o una respuesta parcial de un sistema externo?* Si es la segunda, agregar un segundo pase que barra la canónica.
+- Test de regresión obligatorio: un fixture donde el ítem esté en la canónica local pero ausente de la API externa — el autoheal debe rescatarlo.
+- Evitar el sesgo "si ML no lo devuelve, es porque no existe". Ejemplo contra: items `paused` pueden seguir siendo canónicos en BANVA pero ML los filtra de `fulfillment/inventories/searches`.
+
 **Cómo aplicar**:
 - Cada dato de stock/inventario debe tener **una** tabla canónica declarada en `docs/banva-bodega-inteligencia.md` §11.1.
 - Toda lectura desde otro lugar es JOIN o VIEW, no copia.
@@ -139,5 +155,6 @@ if (error) {
 | PR6a-bis | `2c09b8a` | Select inventaba columna `razon`, `paginatedSelect` tragaba el error → 3.271 filas perdidas | Regla 3 |
 | PR6b-pivot (fix enqueue_all) | `4bdfd43` | `?enqueue_all=1` silencioso via `new URL(req.url)` en Vercel | Regla 4 |
 | PR6b-pivot-I | `db58f8e` | Columna zombi `ml_items_map.stock_full_cache` + `void` update sin log | Reglas 3 + 5 |
+| PR6c | `(este commit)` | Autoheal `composicion_venta` solo cubría `mapped` → 26 SKUs huérfanos semanas; motor no veía 216 ventas/30d | Regla 6 |
 
 Observación: **5 PRs, 5 antipatrones distintos, todos fixeados en el mismo sprint**. La velocidad con la que aparecieron sugiere que estos patrones estaban latentes en el codebase desde hace tiempo y solo se detectaron al aumentar la observabilidad. Esperar más instancias en áreas no auditadas aún (profitguard, picking, recepciones).

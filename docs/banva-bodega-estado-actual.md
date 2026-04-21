@@ -413,8 +413,10 @@ App web externa (fuera de este repo) que:
 - **Webhooks recibidos** (POST `/api/ml/webhook`): `orders_v2`, `shipments`, `claims`, `stock-locations`, `fbm_stock_operations`, `items`, `marketplace_fbm_stock`.
 - **Endpoints consumidos**: `/orders/{id}`, `/shipments/{id}[/items]`, `/packs/{id}`, `/user-products/{id}/stock[/type/{T}]` (PUT con `x-version` optimistic locking), `/users/{seller_id}/items/search`, `/seller-promotions/items/{id}`, `/items/{id}`, `/categories/{id}/attributes`, `/marketplace/billing/*`.
 - **Stock distribuido**:
-  - `selling_address` (Flex) → push cada 1 min desde WMS.
+  - `selling_address` (Flex simple) → push cada 1 min desde WMS.
+  - `seller_warehouse` (Flex multi-origen) → mismo push, con `locations=[{store_id, network_node_id, quantity}]`. **BANVA tiene un único warehouse registrado**: `store_id=73722087`, `network_node_id=CLP19538063212` (formato `CL + P + {seller_id=1953806321} + 2`). Confirmado empíricamente en PR6b-pivot-I — no hay otros.
   - `meli_facility` (Full) → lectura cada 30 min a `stock_full_cache` + webhook `stock-locations` en vivo + health endpoint (drift cache vs live).
+- **Autoheal `composicion_venta` trivial** en `syncStockFull`: paso 5b cubre SKUs de la corrida + paso 5c (`autohealComposicionExtendido`, PR6c) barre TODO `ml_items_map.activo=true` para rescatar huérfanos que ML API no lista.
 - **Rate limits actuales**: billing-probe respeta 5 req/min (últimas correcciones en commits `a29440d`, `b924389`). Stock sync usa retry on 409 una vez.
 
 ### 5.3 Supabase

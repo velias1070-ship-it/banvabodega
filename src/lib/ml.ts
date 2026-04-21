@@ -1835,6 +1835,94 @@ function delay(ms: number): Promise<void> {
 }
 
 /**
+ * Autoheal extendido de composicion_venta trivial (PR6c).
+ *
+ * Itera sobre TODO `ml_items_map.activo=true` con `sku = sku_venta` y
+ * `status_ml IN ('active','paused')` e inserta una fila trivial
+ * `(sku_venta=X, sku_origen=X, unidades=1, tipo_relacion='componente')` en
+ * `composicion_venta` si no existe.
+ *
+ * Complementa al autoheal inline del paso 5b de syncStockFull, que solo
+ * cubre SKUs que ML devolvió en la corrida (`mapped`). Los que ML API no
+ * lista (paginación, estados) quedaban sin composición y el motor no veía
+ * su stock Full. Exportado para permitir test directo (regresión).
+ */
+export async function autohealComposicionExtendido(
+  sb: NonNullable<ReturnType<typeof getServerSupabase>>,
+): Promise<{ inserted: number; candidatos: number; errores: string[] }> {
+  const errores: string[] = [];
+  const { data: allActive, error: mimErr } = await sb.from("ml_items_map")
+    .select("sku, sku_venta, status_ml")
+    .eq("activo", true)
+    .in("status_ml", ["active", "paused"]);
+  if (mimErr) {
+    errores.push(`autoheal_ext ml_items_map select: ${mimErr.message}`);
+    return { inserted: 0, candidatos: 0, errores };
+  }
+
+  const skusActivos = Array.from(new Set(
+    (allActive || [])
+      .filter((r: { sku: string | null; sku_venta: string | null }) =>
+        r.sku && r.sku_venta && r.sku === r.sku_venta)
+      .map((r: { sku: string }) => r.sku),
+  ));
+  if (skusActivos.length === 0) return { inserted: 0, candidatos: 0, errores };
+
+  const { data: prodRows, error: prodErr } = await sb.from("productos")
+    .select("sku").in("sku", skusActivos);
+  if (prodErr) {
+    errores.push(`autoheal_ext productos select: ${prodErr.message}`);
+    return { inserted: 0, candidatos: skusActivos.length, errores };
+  }
+  const conProducto = new Set(
+    (prodRows || []).map((p: { sku: string }) => p.sku),
+  );
+
+  // Dos filtros sobre composicion_venta: como sku_origen Y como sku_venta.
+  // Excluimos SKUs que ya aparecen en cualquier rol — un SKU que es sku_venta
+  // de un pack real (con sku_origen distinto) NO debe recibir una fila trivial
+  // auto-referencial, eso corrompería el pack. Test 2 de PR6c previene esta
+  // regresión.
+  const { data: compRowsOrigen, error: compOrigenErr } = await sb.from("composicion_venta")
+    .select("sku_origen").in("sku_origen", skusActivos);
+  if (compOrigenErr) {
+    errores.push(`autoheal_ext composicion(origen) select: ${compOrigenErr.message}`);
+    return { inserted: 0, candidatos: skusActivos.length, errores };
+  }
+  const { data: compRowsVenta, error: compVentaErr } = await sb.from("composicion_venta")
+    .select("sku_venta").in("sku_venta", skusActivos);
+  if (compVentaErr) {
+    errores.push(`autoheal_ext composicion(venta) select: ${compVentaErr.message}`);
+    return { inserted: 0, candidatos: skusActivos.length, errores };
+  }
+  const conCompo = new Set<string>();
+  for (const c of (compRowsOrigen || []) as { sku_origen: string }[]) conCompo.add(c.sku_origen);
+  for (const c of (compRowsVenta || []) as { sku_venta: string }[]) conCompo.add(c.sku_venta);
+
+  const aInsertar = skusActivos
+    .filter(s => conProducto.has(s) && !conCompo.has(s))
+    .map(s => ({
+      sku_venta: s, sku_origen: s, unidades: 1, tipo_relacion: "componente",
+    }));
+
+  if (aInsertar.length === 0) {
+    return { inserted: 0, candidatos: skusActivos.length, errores };
+  }
+
+  // Upsert con onConflict para inmunidad a race conditions del cron
+  // concurrente (PR6c refinamiento 2).
+  const { error: insErr } = await sb.from("composicion_venta")
+    .upsert(aInsertar, { onConflict: "sku_venta,sku_origen" });
+  if (insErr) {
+    errores.push(`autoheal_ext composicion upsert: ${insErr.message}`);
+    return { inserted: 0, candidatos: skusActivos.length, errores };
+  }
+
+  console.log(`[syncStockFull] Autoheal extendido: ${aInsertar.length} composiciones triviales rescatadas`);
+  return { inserted: aInsertar.length, candidatos: skusActivos.length, errores };
+}
+
+/**
  * Sincroniza stock Full desde ML API a stock_full_cache.
  * Flujo:
  * 1. Lista todos los items del seller
@@ -2130,6 +2218,17 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
   } catch (err) {
     errores.push(`Auto-create productos/composicion: ${err}`);
   }
+
+  // 5c. Autoheal extendido (PR6c). El paso 5b solo cubre SKUs que ML devolvió
+  // en ESTA corrida (mapped). Items activos que ML no lista en la query de
+  // fulfillment (por paginación, filtros internos, estado paused, etc.) quedan
+  // sin composicion_venta → el motor no ve su stock Full. Este pase itera
+  // sobre TODO ml_items_map.activo y rescata las composiciones triviales
+  // faltantes. NO crea productos nuevos aquí (eso queda para 5b sobre
+  // mapped) — solo rescata SKUs con producto ya existente. Aditivo, no
+  // reemplaza al 5b.
+  const autohealExt = await autohealComposicionExtendido(sb);
+  if (autohealExt.errores.length > 0) errores.push(...autohealExt.errores);
 
   // 6. Obtener cantidad real desde API distribuida (fuente de verdad)
   // La API de fulfillment inventory puede dar valores incorrectos (doble conteo).
