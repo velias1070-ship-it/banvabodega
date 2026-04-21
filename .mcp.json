@@ -6,6 +6,13 @@
         "-c",
         "GITHUB_PERSONAL_ACCESS_TOKEN=\"$(cat ~/.config/claude/github-token)\" exec npx -y @modelcontextprotocol/server-github"
       ]
+    },
+    "supabase": {
+      "command": "sh",
+      "args": [
+        "-c",
+        "SUPABASE_ACCESS_TOKEN=\"$(cat ~/.config/claude/supabase-token)\" exec npx -y @supabase/mcp-server-supabase --read-only --project-ref=qaircihuiafgnnrwcjls"
+      ]
     }
   }
 }
