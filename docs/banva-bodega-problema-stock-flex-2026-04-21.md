@@ -515,3 +515,220 @@ grep -n "vel_flex" src/lib/intelligence.ts | grep -v "expuesto"
 grep -n "r\\.safety_stock_completo" src/lib/intelligence.ts  # verificar que todas las lecturas son POSTERIORES a las escrituras
 grep -n "r\\.stock_total\\|stockTotal" src/lib/intelligence.ts  # ver dónde se computa y si usa efectivo
 ```
+
+---
+
+# Anexo A — Diseño de fix estructural (2026-04-21)
+
+Tres bloques cerrados: contrato de función canon (B4.1), flag `flex_objetivo` (B4.2-B4.3), orden de PRs (B4.4). Con ajustes técnicos 1-3 y decisiones comerciales 1-3 aceptadas.
+
+## A1. Función canon `calcularEstadoFlexFull`
+
+**Archivo nuevo:** `src/lib/flex-full.ts`. Función pura, sin I/O, testeable en aislamiento.
+
+```ts
+export interface FlexFullContext {
+  // identidad
+  sku_origen: string;
+  // stock físico
+  stock_bodega: number;
+  stock_full: number;
+  stock_en_transito: number;
+  // demanda/política
+  vel_ponderada: number;
+  pct_full: number;               // necesario para targetFullUds
+  target_dias_full: number;       // por ABC (42/28/14)
+  flex_objetivo: boolean;
+  // ML constraints
+  buffer_ml: number;              // 2 default, 4 si sku_origen compartido
+  inner_pack: number;             // 1 default
+  // meta
+  abc: "A" | "B" | "C";
+}
+
+export interface FlexFullState {
+  // Partición REAL del bodega
+  para_flex: number;              // stock_bodega − buffer si flex_objetivo, 0 si no
+  para_full: number;              // stock_bodega − para_flex
+  // Decisiones operativas
+  publicar_flex: number;          // floor(para_flex / inner_pack)
+  mandar_full: number;            // max(0, min(targetFullUds − stFull − enTransito, para_full))
+  // Señales diagnósticas
+  flex_activo: boolean;           // publicar_flex > 0
+  flex_bloqueado_por_stock: boolean; // flex_objetivo=true && 0 < stock_bodega < buffer_ml
+  gap_fantasma: number;           // para_flex − publicar_flex × inner_pack (remanente)
+  reserva_ignorada: boolean;      // dummy TRUE cuando se compare contra fórmula vieja (diag)
+}
+
+export function calcularEstadoFlexFull(ctx: FlexFullContext): FlexFullState {
+  const para_flex = ctx.flex_objetivo
+    ? Math.max(0, ctx.stock_bodega - ctx.buffer_ml)
+    : 0;
+  const para_full = ctx.stock_bodega - para_flex;
+  const publicar_flex = Math.floor(para_flex / ctx.inner_pack);
+  const gap_fantasma = para_flex - (publicar_flex * ctx.inner_pack);
+  const flex_bloqueado_por_stock =
+    ctx.flex_objetivo && ctx.stock_bodega > 0 && ctx.stock_bodega < ctx.buffer_ml;
+
+  const targetFullUds = ctx.vel_ponderada * ctx.pct_full * ctx.target_dias_full / 7;
+  const deficit_full = targetFullUds - ctx.stock_full - ctx.stock_en_transito;
+  const mandar_full = Math.max(0, Math.min(Math.ceil(deficit_full), para_full));
+
+  return {
+    para_flex, para_full, publicar_flex, mandar_full,
+    flex_activo: publicar_flex > 0,
+    flex_bloqueado_por_stock,
+    gap_fantasma,
+    reserva_ignorada: false,
+  };
+}
+```
+
+**Casos borde cubiertos:**
+
+| stock_bodega | buffer | flex_objetivo | para_flex | para_full | publicar_flex | flex_bloqueado_por_stock |
+|---|---|---|---|---|---|---|
+| 0 | 2 | true | 0 | 0 | 0 | false (stock_bodega=0) |
+| 1 | 2 | true | 0 | 1 | 0 | **true** (<buffer) |
+| 2 | 2 | true | 0 | 2 | 0 | false (=buffer, no <) |
+| 3 | 2 | true | 1 | 2 | 1 | false |
+| 25 | 2 | true | 23 | 2 | 23 | false |
+| 25 | 2 | false | 0 | 25 | 0 | false |
+| 5 | 2 | true | 3 | 2 | 1 | false (inner_pack=3: 3/3=1, gap=0) |
+| 5 | 2 | true | 3 | 2 | 1 | false (inner_pack=2: 3/2=1, gap=1) |
+
+**Call sites a migrar (3):**
+
+1. `src/lib/intelligence.ts:1307-1314` (mandar_full viejo)
+2. `src/lib/intelligence.ts:1661-1667` (mandar_full Fase B)
+3. `src/app/api/ml/stock-sync/route.ts:125-145` (publicación ML)
+4. `src/lib/reposicion.ts:156-157` (tercer site detectado en grep, revisar si aplica)
+
+## A2. Nueva alerta `flex_bloqueado_por_stock` (en PR3)
+
+Agregar al union `AlertaIntel` en `intelligence.ts:69-101` y al PASO 19:
+
+```ts
+if (r.flex_bloqueado_por_stock) {
+  alertas.push("flex_bloqueado_por_stock");
+}
+```
+
+Urgencia: 🟡 Advertencia. Render en UI: "SKU con flex_objetivo pero stock_bodega insuficiente — reponer para habilitar publicación Flex".
+
+## A3. Nueva alerta `reponer_proactivo` (en PR1)
+
+Agregar al union `AlertaIntel` y al PASO 19 (`intelligence.ts:1773+`):
+
+```ts
+if (r.pedir_proveedor > 0 && !r.necesita_pedir) {
+  alertas.push("reponer_proactivo");
+}
+```
+
+Urgencia: 🟡 Info. Cubre los 43 SKUs del P7 que post-fix van a tener `pedir_proveedor>0` pero `necesita_pedir=false` (porque `necesita_pedir` sigue usando ROP clásico).
+
+## A4. Decisiones comerciales cerradas
+
+### Flag `flex_objetivo` — schema (PR2)
+
+```sql
+ALTER TABLE productos
+  ADD COLUMN flex_objetivo BOOL DEFAULT false,
+  ADD COLUMN flex_objetivo_auto BOOL DEFAULT false,
+  ADD COLUMN flex_objetivo_motivo TEXT;
+```
+
+### Migración inicial (Opción 3+4 con cutoff por ABC)
+
+```sql
+UPDATE productos p
+SET flex_objetivo = true,
+    flex_objetivo_auto = true,
+    flex_objetivo_motivo = 'migracion_inicial_ventas_flex'
+WHERE EXISTS (
+  SELECT 1 FROM sku_intelligence si
+  LEFT JOIN (
+    SELECT cv.sku_origen, COUNT(*) AS ventas_flex_90d
+    FROM ventas_ml_cache v
+    JOIN composicion_venta cv ON cv.sku_venta = v.sku_venta
+    WHERE v.canal = 'Flex'
+      AND v.fecha_date > (NOW() - INTERVAL '90 days')::date
+    GROUP BY cv.sku_origen
+  ) vf ON vf.sku_origen = si.sku_origen
+  WHERE si.sku_origen = p.sku
+    AND (
+      (si.abc = 'A' AND COALESCE(vf.ventas_flex_90d, 0) >= 2) OR
+      (si.abc = 'B' AND COALESCE(vf.ventas_flex_90d, 0) >= 3) OR
+      (si.abc = 'C' AND COALESCE(vf.ventas_flex_90d, 0) >= 5) OR
+      si.pct_flex = 0.30
+    )
+);
+```
+
+Cutoff diferenciado por ABC: A más permisivo (basta 2 ventas), C más estricto (requiere 5). SKUs con `pct_flex=0.30` actual se preservan por compatibilidad.
+
+### Default post-deploy
+
+Productos nuevos creados post-deploy: `flex_objetivo = false`. Hay que ganarse la condición de Flex con histórico, no asumir.
+
+### Timing PR3
+
+**Merge sábado en horario bodega vacío.** Primer recálculo post-deploy inflará `mandar_full` en ~50-80 SKUs. Vicente/Joaquín recibe diff por Slack/WhatsApp antes del lunes.
+
+## A5. Query diff pre/post PR3
+
+**Pre-deploy (sábado AM):**
+
+```sql
+CREATE TABLE IF NOT EXISTS deploy_pr3_pre_snapshot AS
+SELECT sku_origen, stock_bodega, mandar_full, pedir_proveedor, accion, pct_flex
+FROM sku_intelligence;
+```
+
+**Post-deploy (tras primer recálculo):**
+
+```sql
+SELECT pre.sku_origen, pre.mandar_full AS mandar_full_antes,
+       si.mandar_full AS mandar_full_despues,
+       si.mandar_full - pre.mandar_full AS delta,
+       si.accion, si.flex_objetivo
+FROM deploy_pr3_pre_snapshot pre
+JOIN sku_intelligence si USING (sku_origen)
+WHERE pre.mandar_full != si.mandar_full
+ORDER BY ABS(si.mandar_full - pre.mandar_full) DESC;
+```
+
+## A6. Grafo de PRs
+
+```
+PR1 (solo) ─ fix P7+P8 + alerta reponer_proactivo (esta semana)
+              └ rehabilita 43 SKUs de pedidos suprimidos
+              └ SKU testigo LITAF400G4PBL con 77 uds
+
+PR2 → PR3 → PR4
+       │      └ P5 en_quiebre_bodega efectivo (alertas +50-100 SKUs)
+       └ sábado deploy, diff Slack/WhatsApp antes lunes
+
+     PR5 (paralelo a PR2+PR3+PR4, empieza inmediato)
+          └ P6 snapshot histórico stock publicado
+          └ acumula data para PR6
+
+PR6 (+30d después de PR5) ─ P2+P3 vel_flex ajustada por exposición
+```
+
+| PR | Cuándo | Depende de | Scope |
+|---|---|---|---|
+| PR1 | Esta semana | — | Fix P7+P8, alerta `reponer_proactivo`, 8 tests |
+| PR2 | Próxima semana | — | Schema `flex_objetivo`, migración, UI toggle |
+| PR3 | Sábado post-PR2 | PR2 | Función canon + colapso Reglas 2+3 + alerta `flex_bloqueado_por_stock` |
+| PR4 | Post-PR3 | PR3 | Redefinir `en_quiebre_bodega` vía `publicar_flex` |
+| PR5 | En paralelo a PR2 | — | Schema `stock_flex_publicado` en snapshots + history |
+| PR6 | +30d post-PR5 prod | PR5 acumulando datos | `vel_flex_ajustada` y pct_flex dinámico con piso |
+
+## A7. Riesgos operativos del Sprint
+
+- **PR1:** pedir_proveedor sube para 43 SKUs. Sugerencia al operador, no OC automática. 397 uds adicionales en sugerencias de compra.
+- **PR3:** 10 SKUs con stock paria ven `mandar_full > 0` súbitamente. Reversible con toggle `flex_objetivo=false` por SKU.
+- **PR3 + migración A4:** 391 SKUs pasan de "reserva matemática Flex" a "todo disponible Full". Cambio macro de distribución stock. Mitigación: deploy sábado, diff compartido antes del lunes.
+- **PR4:** `en_quiebre_bodega` empieza a marcar ~50-100 SKUs antes silenciados. Revisar triage antes del deploy.
