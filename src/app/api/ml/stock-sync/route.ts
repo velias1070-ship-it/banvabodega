@@ -29,18 +29,33 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
+  // enqueue_all=1 bypass manual para reconciliación full. Se observa en el response
+  // como `enqueue_all_ran/enqueue_all_inserted` (regla: branches condicionales visibles).
+  const enqueueAllFlag = req.nextUrl.searchParams.get("enqueue_all") === "1";
+  let enqueueAllRan = false;
+  let enqueueAllInserted = 0;
+
   try {
     // 0. If enqueue_all=1, queue all active SKUs first (server-side, no client limits)
-    const url = new URL(req.url);
-    if (url.searchParams.get("enqueue_all") === "1") {
-      const { data: activeSkus } = await sb.from("ml_items_map").select("sku").eq("activo", true);
+    if (enqueueAllFlag) {
+      enqueueAllRan = true;
+      const { data: activeSkus, error: selErr } = await sb.from("ml_items_map").select("sku").eq("activo", true);
+      if (selErr) {
+        console.error(`[ML Stock Sync] enqueue_all select error: ${selErr.message}`);
+      }
       if (activeSkus && activeSkus.length > 0) {
-        const rows = (activeSkus as { sku: string }[]).map(r => ({ sku: r.sku, created_at: new Date().toISOString() }));
-        // Batch upsert in chunks of 500
+        const rows = (activeSkus as { sku: string }[])
+          .filter(r => r.sku && r.sku.trim())
+          .map(r => ({ sku: r.sku, created_at: new Date().toISOString() }));
         for (let i = 0; i < rows.length; i += 500) {
-          await sb.from("stock_sync_queue").upsert(rows.slice(i, i + 500), { onConflict: "sku" });
+          const { error: upErr } = await sb.from("stock_sync_queue").upsert(rows.slice(i, i + 500), { onConflict: "sku" });
+          if (upErr) {
+            console.error(`[ML Stock Sync] enqueue_all upsert error chunk=${i}: ${upErr.message}`);
+          } else {
+            enqueueAllInserted += rows.slice(i, i + 500).length;
+          }
         }
-        console.log(`[ML Stock Sync] Enqueued ${activeSkus.length} active SKUs`);
+        console.log(`[ML Stock Sync] Enqueued ${enqueueAllInserted}/${activeSkus.length} active SKUs`);
       }
     }
 
@@ -49,7 +64,10 @@ export async function POST(req: NextRequest) {
     const skus = (queue || []).map((d: { sku: string }) => d.sku);
 
     if (skus.length === 0) {
-      return NextResponse.json({ status: "ok", synced: 0, total: 0, remaining: 0, message: "queue empty" });
+      return NextResponse.json({
+        status: "ok", synced: 0, total: 0, remaining: 0, message: "queue empty",
+        enqueue_all_ran: enqueueAllRan, enqueue_all_inserted: enqueueAllInserted,
+      });
     }
 
     // 2. Load composicion_venta for pack resolution
@@ -160,6 +178,8 @@ export async function POST(req: NextRequest) {
       total: processed.length,
       remaining,
       errors: errors.length > 0 ? errors : undefined,
+      enqueue_all_ran: enqueueAllRan,
+      enqueue_all_inserted: enqueueAllInserted,
     });
   } catch (err) {
     console.error("[ML Stock Sync] Error:", err);
