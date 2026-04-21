@@ -97,7 +97,8 @@ export type AlertaIntel =
   | "sin_costo"
   | "costo_posiblemente_obsoleto"
   | "pedido_bajo_moq"
-  | "necesita_pedir";
+  | "necesita_pedir"
+  | "reponer_proactivo";
 
 export interface SkuIntelRow {
   sku_origen: string;
@@ -1640,6 +1641,84 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     else r.cuadrante = "REVISAR";
   }
 
+  // ── PASO 12: Safety Stock + ROP por ABC (Fase B) ──
+  // PR1 fix: movido ANTES del Recalc pedir_proveedor. Hasta 2026-04-21 este
+  // bloque corría DESPUÉS del Recalc, por lo que el Recalc leía
+  // r.safety_stock_completo = 0 (init default, intelligence.ts:1457) y
+  // calculaba pedir_proveedor sin el SS. Afectó a 43 SKUs suprimiendo 397
+  // uds. SKU testigo: LITAF400G4PBL (A, ESTRELLA, 77 uds suprimidas).
+  // Resolver LT por SKU usando cascada: oc_real → manual_proveedor → manual_producto_legacy → fallback
+  function resolverLeadTime(prodInput: ProductoInput | undefined): {
+    dias: number;
+    sigma_dias: number;
+    fuente: "oc_real" | "manual_proveedor" | "manual_producto_legacy" | "fallback_default";
+    muestras: number;
+  } {
+    const provNombre = (prodInput?.proveedor || "").trim();
+    const provData = provNombre ? proveedoresLT.get(provNombre) : undefined;
+
+    if (provData && provData.lead_time_fuente === "oc_real" && provData.lead_time_muestras >= 3) {
+      return { dias: provData.lead_time_dias, sigma_dias: provData.lead_time_sigma_dias, fuente: "oc_real", muestras: provData.lead_time_muestras };
+    }
+    if (provData) {
+      return { dias: provData.lead_time_dias, sigma_dias: provData.lead_time_sigma_dias, fuente: "manual_proveedor", muestras: provData.lead_time_muestras };
+    }
+    // Fallback a productos.lead_time_dias si difiere del default 7 (señal de que fue editado manual)
+    if (prodInput?.lead_time_dias && prodInput.lead_time_dias !== 7) {
+      return { dias: prodInput.lead_time_dias, sigma_dias: 0.30 * prodInput.lead_time_dias, fuente: "manual_producto_legacy", muestras: 0 };
+    }
+    return { dias: 5, sigma_dias: 1.5, fuente: "fallback_default", muestras: 0 };
+  }
+
+  for (const r of rows) {
+    // Nivel de servicio por ABC
+    let ns = 0.95;
+    if (r.abc === "A") ns = 0.97;
+    else if (r.abc === "C") ns = 0.90;
+    r.nivel_servicio = ns;
+    const Z = zScore(ns);
+
+    // Resolver LT (cascada por proveedor)
+    const prodR = prodMap.get(r.sku_origen);
+    const lt = resolverLeadTime(prodR);
+    r.lead_time_real_dias = lt.fuente === "oc_real" ? lt.dias : null;
+    r.lead_time_real_sigma = lt.fuente === "oc_real" ? lt.sigma_dias : null;
+    r.lead_time_usado_dias = lt.dias;
+    r.lead_time_fuente = lt.fuente;
+    r.lt_muestras = lt.muestras;
+
+    const ltSem = lt.dias / 7;
+    const sigmaLtSem = lt.sigma_dias / 7;
+    const D = r.vel_ponderada;            // u/semana, ya en unidades físicas (composición × cantidad)
+    const sigmaD = r.desviacion_std;      // u/semana, ya calculada en paso XYZ
+
+    // SS legacy (solo σ_D × √LT, sin σ_LT) — para compatibilidad y comparación
+    const ssSimple = round2(Z * sigmaD * Math.sqrt(ltSem));
+    r.safety_stock_simple = ssSimple;
+    r.stock_seguridad = ssSimple;          // se preserva el campo viejo
+    r.punto_reorden = round2((D * ltSem) + ssSimple);
+
+    // SS completo: incluye σ_LT
+    // Fórmula: Z × √(LT × σ_D² + D̄² × σ_LT²)
+    if (sigmaD > 0 || sigmaLtSem > 0) {
+      const ssCompleto = round2(Z * Math.sqrt(ltSem * sigmaD * sigmaD + D * D * sigmaLtSem * sigmaLtSem));
+      r.safety_stock_completo = ssCompleto;
+      r.safety_stock_fuente = "formula_completa";
+    } else {
+      // Sin variabilidad medida → cae al simple
+      r.safety_stock_completo = ssSimple;
+      r.safety_stock_fuente = "fallback_simple";
+    }
+    r.rop_calculado = round2((D * ltSem) + r.safety_stock_completo);
+
+    // necesita_pedir: stock total disponible ≤ ROP (semántica ROP clásica)
+    // El Recalc Fase B de pedir_proveedor usa cantidad_objetivo (D×target+SS),
+    // que puede dar pedir>0 cuando necesita_pedir=false. Alerta complementaria
+    // `reponer_proactivo` (P19) cubre ese caso.
+    const stockTotal = r.stock_full + r.stock_bodega + r.stock_en_transito;
+    r.necesita_pedir = stockTotal <= r.rop_calculado && D > 0;
+  }
+
   // ── Recalcular mandar_full y pedir_proveedor con targets actualizados ──
   // Fase B: refactor del cálculo. Antes se duplicaba Full/Flex con 30d hardcoded.
   // Ahora una sola cantidad por SKU (en unidades físicas, ya respetan composición).
@@ -1741,76 +1820,6 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     }
   }
 
-  // ── Ajustar safety stock + ROP por ABC (Fase B: doble cálculo) ──
-  // Resolver LT por SKU usando cascada: oc_real → manual_proveedor → manual_producto_legacy → fallback
-  function resolverLeadTime(prodInput: ProductoInput | undefined): {
-    dias: number;
-    sigma_dias: number;
-    fuente: "oc_real" | "manual_proveedor" | "manual_producto_legacy" | "fallback_default";
-    muestras: number;
-  } {
-    const provNombre = (prodInput?.proveedor || "").trim();
-    const provData = provNombre ? proveedoresLT.get(provNombre) : undefined;
-
-    if (provData && provData.lead_time_fuente === "oc_real" && provData.lead_time_muestras >= 3) {
-      return { dias: provData.lead_time_dias, sigma_dias: provData.lead_time_sigma_dias, fuente: "oc_real", muestras: provData.lead_time_muestras };
-    }
-    if (provData) {
-      return { dias: provData.lead_time_dias, sigma_dias: provData.lead_time_sigma_dias, fuente: "manual_proveedor", muestras: provData.lead_time_muestras };
-    }
-    // Fallback a productos.lead_time_dias si difiere del default 7 (señal de que fue editado manual)
-    if (prodInput?.lead_time_dias && prodInput.lead_time_dias !== 7) {
-      return { dias: prodInput.lead_time_dias, sigma_dias: 0.30 * prodInput.lead_time_dias, fuente: "manual_producto_legacy", muestras: 0 };
-    }
-    return { dias: 5, sigma_dias: 1.5, fuente: "fallback_default", muestras: 0 };
-  }
-
-  for (const r of rows) {
-    // Nivel de servicio por ABC
-    let ns = 0.95;
-    if (r.abc === "A") ns = 0.97;
-    else if (r.abc === "C") ns = 0.90;
-    r.nivel_servicio = ns;
-    const Z = zScore(ns);
-
-    // Resolver LT (cascada por proveedor)
-    const prodR = prodMap.get(r.sku_origen);
-    const lt = resolverLeadTime(prodR);
-    r.lead_time_real_dias = lt.fuente === "oc_real" ? lt.dias : null;
-    r.lead_time_real_sigma = lt.fuente === "oc_real" ? lt.sigma_dias : null;
-    r.lead_time_usado_dias = lt.dias;
-    r.lead_time_fuente = lt.fuente;
-    r.lt_muestras = lt.muestras;
-
-    const ltSem = lt.dias / 7;
-    const sigmaLtSem = lt.sigma_dias / 7;
-    const D = r.vel_ponderada;            // u/semana, ya en unidades físicas (composición × cantidad)
-    const sigmaD = r.desviacion_std;      // u/semana, ya calculada en paso XYZ
-
-    // SS legacy (solo σ_D × √LT, sin σ_LT) — para compatibilidad y comparación
-    const ssSimple = round2(Z * sigmaD * Math.sqrt(ltSem));
-    r.safety_stock_simple = ssSimple;
-    r.stock_seguridad = ssSimple;          // se preserva el campo viejo
-    r.punto_reorden = round2((D * ltSem) + ssSimple);
-
-    // SS completo: incluye σ_LT
-    // Fórmula: Z × √(LT × σ_D² + D̄² × σ_LT²)
-    if (sigmaD > 0 || sigmaLtSem > 0) {
-      const ssCompleto = round2(Z * Math.sqrt(ltSem * sigmaD * sigmaD + D * D * sigmaLtSem * sigmaLtSem));
-      r.safety_stock_completo = ssCompleto;
-      r.safety_stock_fuente = "formula_completa";
-    } else {
-      // Sin variabilidad medida → cae al simple
-      r.safety_stock_completo = ssSimple;
-      r.safety_stock_fuente = "fallback_simple";
-    }
-    r.rop_calculado = round2((D * ltSem) + r.safety_stock_completo);
-
-    // necesita_pedir: stock total disponible ≤ ROP
-    const stockTotal = r.stock_full + r.stock_bodega + r.stock_en_transito;
-    r.necesita_pedir = stockTotal <= r.rop_calculado && D > 0;
-  }
-
   // ── Ajustar prioridad por ABC ──
   for (const r of rows) {
     if (r.abc === "A") r.prioridad = Math.max(0, r.prioridad - 5);
@@ -1854,6 +1863,13 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     }
     // Fase B: alertas de reposición
     if (r.necesita_pedir) alertas.push("necesita_pedir");
+    // PR1: reponer_proactivo cubre el gap semántico entre `necesita_pedir`
+    // (usa ROP clásico D×LT+SS) y `pedir_proveedor` (usa cantidad_objetivo
+    // D×target_dias_full+SS). Un SKU puede tener pedir>0 sin que
+    // necesita_pedir dispare — sin esta alerta ese caso es invisible.
+    if (r.pedir_proveedor > 0 && !r.necesita_pedir) {
+      alertas.push("reponer_proactivo");
+    }
     const prodMoq = prodMap.get(r.sku_origen)?.moq;
     if (r.pedir_proveedor > 0 && prodMoq && prodMoq > 1 && r.pedir_proveedor < prodMoq) {
       alertas.push("pedido_bajo_moq");
