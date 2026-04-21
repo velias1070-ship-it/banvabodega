@@ -2288,12 +2288,20 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     if (error) errores.push(`Upsert stock_full_cache error: ${error.message}`);
   }
 
-  // 6d. Sync stock_full_cache to ml_items_map.stock_full_cache (keep both in sync)
+  // 6d. Sync stock_full_cache to ml_items_map.stock_full_cache (keep both in sync).
+  // Await explícito + log de error (regla anti silent-swallow PR6b-pivot-I).
+  // La columna `ml_items_map.stock_full_cache` está deprecada (v58) — la canónica
+  // es la tabla `stock_full_cache`. Este sync es por compatibilidad con el único
+  // callsite de lectura restante: stock-compare/route.ts phase=wms.
   for (const row of stockUpsert) {
-    void sb.from("ml_items_map")
+    const { error: colErr } = await sb.from("ml_items_map")
       .update({ stock_full_cache: row.cantidad, cache_updated_at: new Date().toISOString() })
       .eq("sku_venta", row.sku_venta)
       .eq("activo", true);
+    if (colErr) {
+      console.error(`[syncStockFull] col update error sku_venta=${row.sku_venta}: ${colErr.message}`);
+      errores.push(`col_update ${row.sku_venta}: ${colErr.message}`);
+    }
   }
 
   // 7. Pase final ya no es necesario: el paso 6b ahora usa todos los mapeos
@@ -2322,9 +2330,23 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
       console.log(`[syncStockFull] Limpiando ${staleSkus.length} entradas stale en stock_full_cache`);
       for (let i = 0; i < staleSkus.length; i += 500) {
         const batch = staleSkus.slice(i, i + 500).map(r => r.sku_venta);
-        await sb.from("stock_full_cache")
+        const { error: tablaErr } = await sb.from("stock_full_cache")
           .update({ cantidad: 0, fuente: "ml_stale_cleanup", updated_at: new Date().toISOString() })
           .in("sku_venta", batch);
+        if (tablaErr) {
+          console.error(`[syncStockFull] stale tabla error chunk=${i}: ${tablaErr.message}`);
+          errores.push(`stale_tabla: ${tablaErr.message}`);
+        }
+        // Espejar el cleanup en la columna deprecada (evita zombis que muestran
+        // stock fantasma en stock-compare phase=wms). PR6b-pivot-I.
+        const { error: colErr } = await sb.from("ml_items_map")
+          .update({ stock_full_cache: 0, cache_updated_at: new Date().toISOString() })
+          .in("sku_venta", batch)
+          .eq("activo", true);
+        if (colErr) {
+          console.error(`[syncStockFull] stale col error chunk=${i}: ${colErr.message}`);
+          errores.push(`stale_col: ${colErr.message}`);
+        }
       }
     }
   }
@@ -2518,11 +2540,15 @@ export async function syncStockByUserProductId(userProductId: string): Promise<s
     updated_at: new Date().toISOString(),
   }, { onConflict: "sku_venta" });
 
-  // 5. Keep ml_items_map.stock_full_cache en sync (para queries directas)
-  void sb.from("ml_items_map")
+  // 5. Keep ml_items_map.stock_full_cache en sync (para queries directas).
+  // Await explícito + log (PR6b-pivot-I: columna deprecada; ver v58).
+  const { error: colErr } = await sb.from("ml_items_map")
     .update({ stock_full_cache: totalFull, cache_updated_at: new Date().toISOString() })
     .eq("sku_venta", skuVenta)
     .eq("activo", true);
+  if (colErr) {
+    console.error(`[syncStockByUserProductId] col update error ${skuVenta}: ${colErr.message}`);
+  }
 
   console.log(`[syncStockByUserProductId] ${skuVenta} (${userProductId}): ${totalFull} en Full`);
   return skuVenta;

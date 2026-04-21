@@ -148,15 +148,35 @@ export async function GET(req: NextRequest) {
     }
 
     // ── Phase WMS: return INSTANTLY with cached ML data from DB ──
+    // PR6b-pivot-I: stock_full_ml ahora se lee de la tabla canónica stock_full_cache
+    // (antes leía ml_items_map.stock_full_cache — columna zombi deprecada v58).
     if (phase === "wms") {
+      const skuVentas = Array.from(new Set(
+        mappings
+          .map((m: { sku_venta?: string | null; sku: string }) => m.sku_venta || m.sku)
+          .filter((s): s is string => !!s),
+      ));
+      const sfcMap = new Map<string, number>();
+      for (let i = 0; i < skuVentas.length; i += 500) {
+        const batch = skuVentas.slice(i, i + 500);
+        const { data: sfcRows, error: sfcErr } = await sb.from("stock_full_cache")
+          .select("sku_venta, cantidad")
+          .in("sku_venta", batch);
+        if (sfcErr) {
+          console.error(`[stock-compare wms] stock_full_cache select error: ${sfcErr.message}`);
+          continue;
+        }
+        for (const r of (sfcRows || []) as { sku_venta: string; cantidad: number }[]) {
+          sfcMap.set(r.sku_venta, r.cantidad);
+        }
+      }
       const rows: CompareRow[] = mappings.map((map) => ({
         sku: map.sku,
         item_id: map.item_id,
         user_product_id: map.user_product_id || null,
         stock_wms: wmsStock[map.sku] || 0,
-        // Usar cache si existe, sino -1 (no data)
         stock_flex_ml: map.stock_flex_cache ?? -1,
-        stock_full_ml: map.stock_full_cache ?? 0,
+        stock_full_ml: sfcMap.get(map.sku_venta || map.sku) ?? 0,
         ultimo_sync: map.ultimo_sync || null,
         cache_updated_at: map.cache_updated_at || null,
         status_ml: map.status_ml || null,

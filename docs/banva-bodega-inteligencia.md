@@ -789,7 +789,7 @@ Vercel cron                API                                          DB
 ### 11.1 MercadoLibre (input principal)
 
 - **Órdenes → `ventas_ml_cache`** vía `/api/ml/ventas-sync` (cada 24h, últimos 7 días) + `/api/ml/sync` (polling cada minuto). Estos datos son el insumo principal de P2/P7.
-- **Stock Full → `stock_full_cache`** vía `/api/ml/sync-stock-full` cada 30 min + webhooks `stock-locations` en vivo (commits 2026-04-16: modelo dual con drift-check).
+- **Stock Full → `stock_full_cache`** (tabla, fuente canónica) vía `/api/ml/sync-stock-full` cada 30 min + webhooks `stock-locations` en vivo (commits 2026-04-16: modelo dual con drift-check). ⚠️ La columna `ml_items_map.stock_full_cache` está **DEPRECADA** desde v58 (PR6b-pivot-I, 2026-04-21): stale_cleanup no la limpiaba y dejaba valores zombi semanas en items que ML dejaba de reportar. Quedan 2 escritores (`syncStockFull` 6d + `syncStockByUserProductId` 5) y 1 lector (`stock-compare phase=wms`, ya migrado al LEFT JOIN contra la tabla). Cleanup físico de la columna → sprint futuro.
 - **Márgenes → `ml_margin_cache`** calculados en `/api/ml/margin-cache/refresh` combinando costo + comisión ML + costo de envío real del shipment.
 
 ### 11.2 ProfitGuard
