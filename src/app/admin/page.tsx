@@ -14,6 +14,7 @@ import SheetSync from "@/components/SheetSync";
 import AdminReposicion from "@/components/AdminReposicion";
 import AdminAgentes from "@/components/AdminAgentes";
 import AdminInteligencia from "@/components/AdminInteligencia";
+import AdminFlexObjetivo from "@/components/AdminFlexObjetivo";
 import AdminSemaforo from "@/components/AdminSemaforo";
 import AdminCompras from "@/components/AdminCompras";
 import AdminDiscrepancias from "@/components/AdminDiscrepancias";
@@ -68,7 +69,7 @@ function LoginGate({ onLogin }: { onLogin: (pin: string) => boolean }) {
   );
 }
 
-type AdminTab = "dash"|"rec"|"discrepancias"|"flex"|"enviosfull"|"ops"|"inv"|"mov"|"prod"|"costoauditoria"|"reposicion"|"intel"|"semaforo"|"compras"|"eventos"|"ventasdash"|"ventasord"|"comercial"|"margenes"|"agentes"|"stockml"|"timeline"|"config";
+type AdminTab = "dash"|"rec"|"discrepancias"|"flex"|"enviosfull"|"ops"|"inv"|"mov"|"prod"|"costoauditoria"|"reposicion"|"intel"|"semaforo"|"compras"|"eventos"|"ventasdash"|"ventasord"|"comercial"|"margenes"|"agentes"|"stockml"|"timeline"|"flexobj"|"config";
 
 const MOBILE_MENU_SECTIONS = [
   { section: "Principal", items: [
@@ -165,7 +166,7 @@ export default function AdminPage() {
   const SIDEBAR_GROUPS = [
     {section:"OPERACIONES",icon:"⚡",items:[["rec","Recepciones","📦"],["discrepancias","Discrepancias","💰"],["flex","Ultima Milla","🚚"],["enviosfull","Envios Full","📦"],["ops","Operaciones","⚡"],["reposicion","Reposición","🔄"]] as const},
     {section:"INVENTARIO",icon:"📦",items:[["inv","Inventario","📦"],["mov","Movimientos","📋"],["timeline","Timeline","📊"],["prod","Productos","🏷️"],["costoauditoria","Auditoría Costos","📊"],["stockml","Stock ML","📡"]] as const},
-    {section:"INTELIGENCIA",icon:"🧠",items:[["intel","Inteligencia","🧠"],["semaforo","Semaforo","🚦"],["compras","Compras","🛒"],["eventos","Eventos","📅"]] as const},
+    {section:"INTELIGENCIA",icon:"🧠",items:[["intel","Inteligencia","🧠"],["semaforo","Semaforo","🚦"],["compras","Compras","🛒"],["eventos","Eventos","📅"],["flexobj","Flex Objetivo","🎯"]] as const},
     {section:"COMERCIAL",icon:"🏪",items:[["ventasdash","Ventas · Dashboard","📊"],["ventasord","Ventas · Órdenes","📋"],["comercial","Publicaciones","📢"],["margenes","Márgenes","💹"]] as const},
     {section:"SISTEMA",icon:"⚙️",items:[["agentes","Agentes IA","🤖"],["config","Configuración","⚙️"]] as const},
   ] as const;
@@ -290,6 +291,7 @@ export default function AdminPage() {
             {tab==="agentes"&&<AdminAgentes/>}
             {tab==="stockml"&&<AdminStockML/>}
             {tab==="timeline"&&<AdminTimeline/>}
+            {tab==="flexobj"&&<AdminFlexObjetivo/>}
             {tab==="config"&&<Configuracion refresh={r} initialSubTab={mlAuthReturn ? "ml" : undefined}/>}
           </div>
         </main>
