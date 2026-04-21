@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
 import { syncStockToML } from "@/lib/ml";
+import { calcularEstadoFlexFull } from "@/lib/flex-full";
 
 // Vercel Pro: allow up to 60s execution
 export const maxDuration = 60;
@@ -123,6 +124,20 @@ export async function POST(req: NextRequest) {
       if (ventas.length > 1) sharedOrigins.add(origen);
     }
 
+    // 5b. PR3: pre-fetch flex_objetivo por sku_origen (política de canal).
+    //    La función canon calcularEstadoFlexFull lo consume para decidir si
+    //    el bodega se parte en (para_flex, para_full) o va 100% a Full.
+    const { data: prodFlex, error: prodFlexErr } = await sb
+      .from("productos")
+      .select("sku, flex_objetivo");
+    if (prodFlexErr) {
+      console.error(`[ML Stock Sync] fetch productos.flex_objetivo error: ${prodFlexErr.message}`);
+    }
+    const flexObjetivoPorSku: Record<string, boolean> = {};
+    for (const p of (prodFlex || []) as { sku: string; flex_objetivo: boolean | null }[]) {
+      flexObjetivoPorSku[p.sku] = Boolean(p.flex_objetivo);
+    }
+
     console.log(`[ML Stock Sync] Processing ${expandedSkus.size} SKUs (${skus.length} queued + siblings)`);
     const uniqueSkus = Array.from(expandedSkus);
     let synced = 0;
@@ -145,14 +160,34 @@ export async function POST(req: NextRequest) {
         const skuOrigen = comp?.sku_origen || mlSkuOrigen[sku] || sku;
         const unidadesPack = comp?.unidades || 1;
         const buffer = sharedOrigins.has(skuOrigen) ? 4 : 2;
+        const flexObjetivo = flexObjetivoPorSku[skuOrigen] ?? false;
 
         // 7. Get disponible from v_stock_disponible by sku_origen
         const { data: stockRow } = await sb.from("v_stock_disponible")
           .select("disponible").eq("sku", skuOrigen).maybeSingle();
         const disponibleOrigen = Math.max(0, (stockRow as { disponible: number } | null)?.disponible ?? 0);
 
-        // 8. Calculate: publicar = FLOOR((disponible - buffer) / unidades_pack)
-        const available = Math.max(0, Math.floor((disponibleOrigen - buffer) / unidadesPack));
+        // 8. PR3: función canon calcularEstadoFlexFull unifica con la lógica
+        //    del motor de inteligencia. Si flex_objetivo=false, para_flex=0 →
+        //    publicar=0 (SKU se gestiona solo por Full). Si flex_objetivo=true,
+        //    para_flex = max(0, stock_bodega − buffer) y se publica
+        //    floor(para_flex / inner_pack). Campos de Full (stock_full,
+        //    stock_en_transito, vel, pct, target, abc) no afectan publicar_flex
+        //    — los pasamos en 0 / default; solo importa la partición del bodega.
+        const flexState = calcularEstadoFlexFull({
+          sku_origen: skuOrigen,
+          stock_bodega: disponibleOrigen,
+          stock_full: 0,
+          stock_en_transito: 0,
+          vel_ponderada: 0,
+          pct_full: 1,
+          target_dias_full: 28,
+          flex_objetivo: flexObjetivo,
+          buffer_ml: buffer,
+          inner_pack: unidadesPack,
+          abc: "C",
+        });
+        const available = flexState.publicar_flex;
 
         // 9. Send to ML
         const count = await syncStockToML(sku, available);

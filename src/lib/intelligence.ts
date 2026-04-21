@@ -10,6 +10,7 @@ import { calcularCobertura, calcularTargetDias, calcularMargen, COSTO_ENVIO_FLEX
 import type { FinancialAgg } from "./reposicion";
 import { calcularFactorRampup } from "./rampup";
 import { calcularTSB, seleccionarModeloZ } from "./tsb";
+import { calcularEstadoFlexFull } from "./flex-full";
 
 /**
  * Determina si un SKU está en "quiebre prolongado" para dimensionar
@@ -98,7 +99,8 @@ export type AlertaIntel =
   | "costo_posiblemente_obsoleto"
   | "pedido_bajo_moq"
   | "necesita_pedir"
-  | "reponer_proactivo";
+  | "reponer_proactivo"
+  | "flex_bloqueado_por_stock";
 
 export interface SkuIntelRow {
   sku_origen: string;
@@ -213,6 +215,8 @@ export interface SkuIntelRow {
   factor_rampup_aplicado: number;
   rampup_motivo: string;
   requiere_ajuste_precio: boolean;
+  /** PR3: SKU con flex_objetivo=true pero stock_bodega < buffer_ml. No se persiste en DB. */
+  flex_bloqueado_por_stock?: boolean;
 
   liquidacion_accion: string | null;
   liquidacion_dias_extra: number;
@@ -297,6 +301,8 @@ export interface ProductoInput {
   moq: number;                 // mínimo de compra al proveedor
   estado_sku: string;
   updated_at: string | null;
+  /** PR3: política de canal. true = este SKU debe sostener stock para Flex. */
+  flex_objetivo?: boolean;
 }
 
 export interface ComposicionInput {
@@ -719,6 +725,15 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
   ventasPorOrigen.forEach((_, sku) => allSkusOrigen.add(sku));
   stockBodegaN.forEach((qty, sku) => {
     if (qty > 0) allSkusOrigen.add(sku);
+  });
+
+  // PR3: SKUs origen compartidos con >1 SKU Venta (pack/combo/variante) reciben
+  // buffer=4 en la publicación a ML; el resto buffer=2. Misma regla que
+  // src/app/api/ml/stock-sync/route.ts:103-106 (replicada para consistencia
+  // — la función canon calcularEstadoFlexFull recibe buffer_ml ya resuelto).
+  const sharedOrigins = new Set<string>();
+  ventasPorOrigen.forEach((ventas, skuOrigen) => {
+    if (ventas.length > 1) sharedOrigins.add(skuOrigen);
   });
 
   // ── Pre-agrupar órdenes por SKU Venta (normalizado UPPER) ──
@@ -1304,15 +1319,16 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
 
     // Usar velEfectiva para pedir (vel_pre_quiebre si en quiebre prolongado)
     const velParaPedir = enQuiebreProlongado ? velPreQuiebre : (multiplicadorEvento > 1 ? velAjustadaEvento : velPonderada);
-    const velTarget = multiplicadorEvento > 1 ? velAjustadaEvento : velPonderada;
-    const targetFullUds = velParaPedir * pctFull * targetDiasFull / 7;
-    const targetFlexUds = velParaPedir * pctFlex * 30 / 7;
-    const disponibleParaFull = Math.max(0, stBodega - Math.ceil(targetFlexUds));
-    let mandarFull = Math.max(0, Math.min(Math.ceil(targetFullUds - stFull - stEnTransito), disponibleParaFull));
-    const pedirFull = Math.max(0, Math.ceil(targetFullUds - stFull - stEnTransito));
-    const pedirFlex = Math.max(0, Math.ceil(targetFlexUds - stBodega));
-    const pedirTotal = pedirFull + pedirFlex;
-    const pedirProvBultos = innerPack > 1 && pedirTotal > 0 ? Math.ceil(pedirTotal / innerPack) : pedirTotal;
+
+    // PR3: mandar_full y pedir_proveedor se calculan en el Recalc Fase B
+    // (post-Pareto ABC + PASO 12 SS/ROP + función canon calcularEstadoFlexFull).
+    // Valores provisorios para la persistencia del row; se sobrescriben antes
+    // del upsert. El único cálculo de mandar_full que queda vivo acá es el
+    // lote inicial para SKU nuevo sin ventas, porque depende de datos del
+    // loop que no viajan al Recalc (esNuevo).
+    let mandarFull = 0;
+    const pedirTotal = 0;
+    const pedirProvBultos = 0;
 
     // Productos nuevos: si no tiene ventas, tiene stock en bodega y no tiene stock en Full,
     // sugerir enviar un lote inicial (inner pack o mínimo 2 unidades)
@@ -1476,6 +1492,10 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       factor_rampup_aplicado: 1.0,
       rampup_motivo: "no_aplica",
       requiere_ajuste_precio: requiereAjustePrecio,
+
+      // PR3: se setea en el Recalc Fase B (función canon). Default false
+      // mientras no corra el Recalc (SKUs "NUEVO" sin Pareto).
+      flex_bloqueado_por_stock: false,
 
       // Liquidación se asigna después (paso 17 global, requiere ABC)
       liquidacion_accion: null,
@@ -1737,13 +1757,30 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     const enQP = esQuiebreProlongadoProtegido(r);
     const velParaPedir = enQP ? r.vel_pre_quiebre : velCalcR;
 
-    // mandar_full: solo el split a Full según target_dias_full y pct_full.
-    // (Mantengo lógica vieja porque mandar_full es decisión operativa diaria,
-    // no parte del pedido al proveedor.)
-    const targetFullUds = velParaPedir * r.pct_full * r.target_dias_full / 7;
-    const targetFlexUds = velParaPedir * r.pct_flex * r.target_dias_full / 7;  // unificado: usa target por ABC, no 30d hardcoded
-    const disponibleParaFullR = Math.max(0, r.stock_bodega - Math.ceil(targetFlexUds));
-    r.mandar_full = Math.max(0, Math.min(Math.ceil(targetFullUds - r.stock_full - r.stock_en_transito), disponibleParaFullR));
+    // PR3: mandar_full + flag flex_bloqueado via función canon.
+    // La función unifica Regla 2 (split mandar_full) y Regla 3 (publicación
+    // ML buffer) sobre la partición REAL del bodega — antes Regla 2 reservaba
+    // matemáticamente para Flex y Regla 3 publicaba aparte, produciendo
+    // stock fantasma (ver doc problema-stock-flex-2026-04-21 §P9).
+    const flexObjetivo = Boolean(prod?.flex_objetivo);
+    const bufferMl = sharedOrigins.has(r.sku_origen) ? 4 : 2;
+    const abcCanon: "A" | "B" | "C" = (r.abc === "A" || r.abc === "B" || r.abc === "C") ? r.abc : "C";
+    const flexState = calcularEstadoFlexFull({
+      sku_origen: r.sku_origen,
+      stock_bodega: r.stock_bodega,
+      stock_full: r.stock_full,
+      stock_en_transito: r.stock_en_transito,
+      vel_ponderada: velParaPedir,
+      pct_full: r.pct_full,
+      target_dias_full: r.target_dias_full,
+      flex_objetivo: flexObjetivo,
+      buffer_ml: bufferMl,
+      inner_pack: innerPack,
+      abc: abcCanon,
+    });
+    r.mandar_full = flexState.mandar_full;
+    r.flex_bloqueado_por_stock = flexState.flex_bloqueado_por_stock;
+    // Lote inicial para SKU nuevo sin historia (preservado del cálculo pre-PR3)
     if (r.vel_ponderada === 0 && r.vel_pre_quiebre === 0 && r.stock_full === 0 && r.stock_en_transito === 0 && r.stock_bodega > 0) {
       const loteInicial = Math.max(innerPack, 2);
       r.mandar_full = Math.min(loteInicial, r.stock_bodega);
@@ -1863,6 +1900,10 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     }
     // Fase B: alertas de reposición
     if (r.necesita_pedir) alertas.push("necesita_pedir");
+    // PR3: flex_bloqueado_por_stock — SKU con política Flex pero stock_bodega
+    // insuficiente para publicar (0 < stock_bodega < buffer_ml). Acción:
+    // reponer bodega. Urgencia 🟡 advertencia.
+    if (r.flex_bloqueado_por_stock) alertas.push("flex_bloqueado_por_stock");
     // PR1: reponer_proactivo cubre el gap semántico entre `necesita_pedir`
     // (usa ROP clásico D×LT+SS) y `pedir_proveedor` (usa cantidad_objetivo
     // D×target_dias_full+SS). Un SKU puede tener pedir>0 sin que
