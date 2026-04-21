@@ -42,11 +42,32 @@ Desde el computador de la oficina:
 4. Seleccionar la recepción recién cerrada (folio de la factura).
 5. Confirmar.
 
-### Paso 4 — Cerrar la OC (si llegó todo)
+### Paso 4 — Cerrar la OC
 
-En el detalle de OC-005, botón **Cerrar OC** → confirmar.
+**Checklist antes de cerrar:**
+- [ ] ¿Llegó **toda** la mercadería de OC-005 (las 663 uds)?
+- [ ] Si sí → apretar **Cerrar OC** → confirmar.
+- [ ] Si no, y todavía vienen más camiones → **NO cerrar**. Dejar la OC en `RECIBIDA_PARCIAL`. Cuando llegue la siguiente factura: repetir Paso 1, 2, 3 con esa factura nueva.
 
-Si llegó incompleto: **no cerrar**. Queda abierta esperando el resto.
+**Decisión final:**
+
+> ¿Esta es la última recepción? → **Cerrar OC**
+> ¿Falta stock por llegar? → **NO cerrar todavía**
+
+---
+
+### Recepciones parciales (si OC-005 llega en 2+ camiones)
+
+Es muy probable que Idetex mande las 663 unidades en 2 o 3 despachos separados (distintos días/camiones). Procedimiento:
+
+1. **Cada camión = su propia factura = su propia recepción en la app Etiquetas.** Hacer Pasos 1-3 completos para cada uno por separado.
+2. Al vincular la primera recepción, OC-005 pasa automáticamente a `RECIBIDA_PARCIAL`.
+3. **NO cerrar la OC** hasta que llegue el último camión.
+4. Cuando llegue el último y se vincule, el sistema pasará la OC a `RECIBIDA`. Ahí sí se aprieta **Cerrar OC**.
+
+**Limitación conocida (2026-04-21):** durante el período que la OC está en `RECIBIDA_PARCIAL`, el motor **sigue creyendo** que las 663 vienen en camino, aunque ya haya llegado la mitad. Esto puede llevar a recomendaciones erróneas si se miran reportes de inteligencia antes del cierre. **Avisar a Vicente** cuando se vincule la primera recepción parcial — él correrá manualmente el script de ajuste (doc Parte B.3) para que el motor vea la realidad intermedia.
+
+Ver bug completo: `docs/banva-bodega-bug-cantidad-recibida-no-persiste.md`.
 
 ---
 
@@ -54,7 +75,7 @@ Si llegó incompleto: **no cerrar**. Queda abierta esperando el resto.
 
 Mientras no aprietes **Vincular recepción**, el sistema sigue creyendo que las 663 unidades vienen en camino. Aunque estén físicamente en bodega, el motor puede recomendar pedir otra vez lo mismo a Idetex. Es el único paso que "le avisa" al sistema que ya llegó.
 
-Es normal que durante las 2-3 horas del Paso 2 el sistema aún muestre las 663 en tránsito. No hay que alarmarse. El tránsito se limpia cuando se completa el Paso 3.
+Es normal que durante las 2-3 horas del Paso 2 el sistema aún muestre las 663 en tránsito. No hay que alarmarse. El tránsito se limpia cuando se completa el Paso 3 **y se cierra la OC** (o cuando Vicente corre el ajuste manual en caso de parciales).
 
 ---
 
@@ -70,9 +91,16 @@ Es normal que durante las 2-3 horas del Paso 2 el sistema aún muestre las 663 e
 
 ---
 
-## Parte B — Script SQL de emergencia (solo Vicente)
+## Parte B — Scripts SQL (solo Vicente)
 
-Usar **solo si** el botón Vincular recepción falla. Ejecutar en Supabase SQL Editor.
+**Dos casos de uso:**
+
+- **B.1-B.2 emergencia:** si el botón "Vincular recepción" falla.
+- **B.3 OBLIGATORIO en recepciones parciales:** tras cada vinculación si OC-005 llega en 2+ camiones, hasta que se aplique el fix del bug estructural. Sin este paso, el motor sigue viendo las 663 en tránsito aunque ya haya llegado parte (ver `docs/banva-bodega-bug-cantidad-recibida-no-persiste.md`).
+- **B.4 opcional:** para cerrar la OC via SQL si el botón de UI falla.
+- **B.5 opcional:** para disparar el recálculo del motor inmediatamente.
+
+Ejecutar en Supabase SQL Editor.
 
 ### B.1 — Identificar la recepción a vincular
 
