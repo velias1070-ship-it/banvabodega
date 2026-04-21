@@ -88,20 +88,28 @@ Fecha      vel_full  vel_flex
 
 ---
 
-## Problema 3 — pct_flex decae sin mecanismo de recuperación
+## Problema 3 — pct_flex hardcoded en 0.20 o 0.30, insensible a selection bias
 
-**Síntoma:** `pct_flex` histórico refleja 3 ventas viejas de marzo (cuando había 20-40 uds). Con cada recálculo donde vel_flex=0, el peso baja. Eventualmente → 0%, y el SKU se declara "Full-puro".
+**Síntoma:** `pct_flex` no decae — está pegado en 0.20 por default hardcoded. Solo sube a 0.30 cuando `margen_full_30d > 0 AND margen_flex_30d > 0 AND margen_flex/margen_full > 1.1`. Si `margen_flex=0` (típico cuando Flex está muerto por buffer), cae al else → 0.20 fijo.
 
-**Código (`intelligence.ts` en el loop por SKU):**
+**Código (`intelligence.ts:1085-1093`):**
 
 ```ts
-const pctFull = velTotal > 0 ? velFull / velTotal : 1;
-const pctFlex = velTotal > 0 ? velFlex / velTotal : 0;
+if (margen_full_30d > 0 && margen_flex_30d > 0 &&
+    margen_flex_30d / margen_full_30d > 1.1) {
+  pctFull = 0.70; pctFlex = 0.30;
+} else {
+  pctFull = 0.80; pctFlex = 0.20;
+}
 ```
 
-No hay memoria de largo plazo ni "modo comercial objetivo". El ratio sigue la señal rota.
+**Evidencia DB 2026-04-21 (Q5):** 245 SKUs con `pct_flex=0.20`, 52 con `pct_flex=0.30`. **Solo 2 valores distintos en los 297 SKUs con velocidad > 0.** Ninguna distribución continua → confirma que el histórico de línea 1014 (`pctFlex = 1 - pctFull`) queda sepultado por paso 7b.
 
-**Consecuencia:** `targetFlexUds = vel × pct_flex × target_dias / 7`. Si pct_flex→0, el motor deja de reservar stock para Flex.
+**Selection bias compuesto:** para saltar a 0.30, el motor necesita `margen_flex > 0`. Pero `margen_flex = 0` justamente porque ML Flex publicó 0 por buffer (P1). La señal que elegiría "Flex rentable" está suprimida por el mismo ciclo vicioso que P2.
+
+**Consecuencia:** `targetFlexUds = vel × 0.20 × target_dias_full / 7`. Para SKUs pequeños (vel bajo, target bajo), esto genera reservas teóricas de 1-4 uds que en la práctica son stock zombi (ver P9).
+
+**No es un fix de "agregar memoria de largo plazo".** Es una decisión de política: o se sube el default, o se introduce flag `flex_objetivo` por SKU y se mantiene el default como fallback para los que no tienen política explícita.
 
 ---
 
@@ -195,6 +203,100 @@ El ROP clásico (basado solo en LT, no en target_dias_full) protege para el pró
 El motor mezcla: calcula pedir con Fase B (`cantidad_objetivo − stock_total`) pero dispara alerta con ROP clásico. Resultado: ningún SKU con cobertura > LT × velocidad dispara alerta, aunque esté por debajo del cantidad_objetivo.
 
 **Consecuencia:** ningún aviso en `alertas[]` para los 43 SKUs del Problema 7. Invisibles para el operador.
+
+---
+
+## Problema 9 — Stock zombi por reserva teórica Flex
+
+**Síntoma:** stock en bodega queda sin canalizarse — no va a Full (el motor lo cree "reservado para Flex") y no vende Flex (buffer ML lo suprime). Stock paria invisible para el operador.
+
+**Cómo se genera:**
+
+Regla 2 (mandar_full, `intelligence.ts:1661-1667`):
+
+```ts
+const targetFlexUds = velParaPedir * r.pct_flex * r.target_dias_full / 7;
+const disponibleParaFullR = Math.max(0, r.stock_bodega - Math.ceil(targetFlexUds));
+r.mandar_full = Math.max(0, Math.min(
+  Math.ceil(targetFullUds - r.stock_full - r.stock_en_transito),
+  disponibleParaFullR
+));
+```
+
+Regla 3 (publicación ML, `stock-sync/route.ts:129,137`):
+
+```ts
+const buffer = sharedOrigins.has(skuOrigen) ? 4 : 2;
+const available = Math.max(0, Math.floor((disponibleOrigen - buffer) / unidadesPack));
+```
+
+**Ejemplo TXV24QLBRBA15 (stock_bodega=1, stock_full=19, vel=5, pct_flex=0.20, target=28):**
+- Regla 2: `targetFlexUds = 5 × 0.20 × 28/7 = 4` → cree que reserva 4 uds
+- Regla 2: `disponibleParaFull = max(0, 1−4) = 0` → no manda nada a Full
+- Regla 2: Full ya sobrado (19 > 16 target) → `mandar_full = 0`
+- Regla 3: `available = max(0, floor((1−2)/1)) = 0` → publica 0 en Flex
+- **Resultado: 1 uds en bodega que no va a ningún canal. Paria.**
+
+**Variante inversa: over-publishing en ABC=A**
+
+El mismo desalineamiento produce el problema simétrico cuando `stock_bodega` es alto y la reserva matemática es grande. Caso ABC=A-ESTRELLA (vel=17, target=42, pct_flex=0.20, stock_bodega=25):
+
+- Regla 2 nueva: `targetFlexUds = 17 × 0.20 × 42/7 = 20.4` → reserva 21 uds
+- Regla 2 nueva: `disponibleParaFull = 25 − 21 = 4` → manda solo 4 a Full
+- Regla 3: `available = max(0, floor((25−2)/1)) = 23` → ML publica 23 en Flex
+- **Gap invertido: ML puede vender 23 uds por Flex, pero el motor cree que 21 están reservadas para el próximo ciclo Full. Si Flex efectivamente vende 23, el motor no detecta que ese canal consumió stock que contabilizaba para Full → subestima reposición a Full → Full entra en quiebre antes de lo previsto.**
+
+Misma raíz causal (3 reglas no se hablan), efecto simétrico opuesto. P9 en substancia no es solo "paria": es **desalineamiento bidireccional** entre reserva matemática y publicación efectiva.
+
+**Impacto agregado (Q3, 2026-04-21):**
+
+| Caso | Total | ABC A/B | ESTRELLA |
+|---|---|---|---|
+| Paria (stock_bodega bajo, reserva supera bodega) | 10 SKUs / 15 uds | 8 | 3 |
+
+**Impacto estructural (Q2b, ventana 6d de historia disponible):** 25 SKUs con "daño real" definido como `≥3 ventas Flex en 90d AND ≥4 de 6 días recientes con stock_bodega ≤ 2`. De esos, 18 son ABC A/B y 13 son ESTRELLA. Nota: `stock_snapshots` solo tiene 6 días de historia (P6 bloquea análisis más profundo).
+
+**Fix conceptual:** colapsar Regla 2 y Regla 3 en una función única que devuelva la partición real del bodega, no una reserva matemática:
+
+```ts
+function particionBodega(stockBodega: number, buffer: number, flexObjetivo: boolean) {
+  const paraFlex = flexObjetivo ? Math.max(0, stockBodega - buffer) : 0;
+  const paraFull = stockBodega - paraFlex;
+  return { paraFlex, paraFull };
+}
+```
+
+Regla 2 usaría `paraFull` como base para `mandar_full`. Regla 3 publicaría `paraFlex / inner_pack`. Misma fuente de verdad para ambas decisiones.
+
+**Viola Regla 5 de `.claude/rules/inventory-policy.md`** ("Fuentes duplicadas del mismo dato → fuente única canónica + lecturas derivadas"). El stock_bodega efectivo vivo en 3 lugares distintos (motor, mandar_full, publicación ML) sin fuente canónica.
+
+---
+
+## Las 3 reglas Full/Flex no se hablan entre sí
+
+Hallazgo estructural que **precede y explica P1-P4**: la lógica Full/Flex no está en un solo lugar del motor. Son 3 reglas paralelas con orígenes independientes:
+
+| Regla | Qué decide | Archivo:línea | Base de cálculo |
+|---|---|---|---|
+| 1 — pct | Qué % de la velocidad asignar a cada canal | `intelligence.ts:1085-1093` | Margen (hardcoded 80/20 o 70/30) |
+| 2 — split mandar_full | Cuánto stock bodega reservar para Flex | `intelligence.ts:1661-1667` | `vel × pct × target / 7` (reserva matemática) |
+| 3 — publicación ML | Cuánto publicar en Flex | `stock-sync/route.ts:129` | `stock_bodega − buffer` (resta fija) |
+
+**Ninguna de las 3 sabe de las otras.** Convergen por casualidad cuando los números son grandes, divergen sistemáticamente cuando son chicos (que es la mayoría del catálogo C de BANVA).
+
+**Ejemplo de divergencia con `stock_bodega=5`, `pct_flex=0.20`, `target=28`, `vel=5`:**
+- Regla 2 cree que hay 4 uds "para Flex" disponibles
+- Regla 3 publica `5 − 2 = 3` uds en ML Flex
+- Operativamente vendibles: 3, no 4
+- Gap de 1 uds que el motor nunca detecta
+
+**Con `stock_bodega=1` (caso TXV24QLBRBA15):**
+- Regla 2 cree que tiene 1 uds "para Flex" (faltan 3 según su target)
+- Regla 3 publica 0 (buffer suprime)
+- Regla 1 nunca detecta que Flex no está vendiendo porque `margen_flex=0` mantiene el default 0.20 activo
+- Las 3 reglas "funcionan" individualmente pero el canal está muerto
+
+**P1, P2, P3, P4 son síntomas de este problema estructural.** Un fix aislado a cualquiera de ellos sin unificar las 3 reglas deja vivos los otros síntomas.
 
 ---
 
@@ -337,20 +439,23 @@ WHERE necesita_pedir = false
 
 ---
 
-## Resumen: 8 problemas encadenados
+## Resumen: 9 problemas encadenados + 1 hallazgo estructural superior
+
+**Hallazgo estructural:** las 3 reglas Full/Flex no se hablan entre sí (pct hardcoded en `intelligence.ts:1085-1093`, split mandar_full en `intelligence.ts:1661-1667`, publicación ML en `stock-sync/route.ts:129`). P1-P4 y P9 son síntomas de esta desalineación.
 
 | # | Problema | Código | Efecto | Severidad |
 |---|---|---|---|---|
 | 1 | Stock fantasma Flex (buffer=2 no visible en motor) | `stock-sync/route.ts:129,137` vs `intelligence.ts` no lo resta | Motor trata stock no-publicable como disponible | Alta |
 | 2 | vel_flex confunde demanda vs oferta | Loop intelligence.ts, fórmula vel_flex | Selection bias, señal rota | Alta |
-| 3 | pct_flex decae sin recovery | `intelligence.ts` pct = velFlex/velTotal | Deriva histórica, declara "Full-puro" falsamente | Media |
+| 3 | pct_flex hardcoded en 0.20 o 0.30 (Q5: 245+52 SKUs) | `intelligence.ts:1085-1093` | Sin política per-SKU, selection bias pega default | Media |
 | 4 | mandar_full refuerza vicioso | `intelligence.ts:1665-1667` | Nueva reposición se va toda a Full | Alta |
 | 5 | en_quiebre_bodega mal definido | `intelligence.ts:2038-2039` | No registra quiebre efectivo del canal | Media |
-| 6 | Sin snapshot histórico de stock publicado | Data modeling | Imposible auditoría retrospectiva | Alta (bloquea fix) |
-| 7 | Bug SS=0 en Recalc pedir_proveedor | `intelligence.ts:1676` vs `1800` orden invertido | 43 SKUs / 397 uds suprimidas | Crítica |
+| 6 | Sin snapshot histórico de stock publicado (hoy solo 6d) | Data modeling | Imposible auditoría retrospectiva | Alta (bloquea fix) |
+| 7 | Bug SS=0 en Recalc pedir_proveedor | `intelligence.ts:1676` vs `1800` orden invertido | 43 SKUs / 397 uds suprimidas; SKU testigo LITAF400G4PBL (ABC=A, ESTRELLA) con 77 uds suprimidas | Crítica |
 | 8 | necesita_pedir usa ROP viejo, no cantidad_objetivo Fase B | `intelligence.ts:1811` | Alertas no disparan para los 43 del P7 | Alta |
+| 9 | Stock zombi por reserva teórica Flex (bidireccional) | `intelligence.ts:1665-1667` + `stock-sync/route.ts:129` | 10 SKUs paria / 15 uds hoy; también over-publishing en ABC=A | Alta |
 
-**Severidad combinada:** crítica. El motor toma decisiones sobre un estado distorsionado sistemáticamente. Los SKUs más rentables (ABC=A, ESTRELLAs) son los más afectados por P7+P8. El canal Flex muere silenciosamente en SKUs con rotación mixta por P1-P4.
+**Severidad combinada:** crítica. El motor toma decisiones sobre un estado distorsionado sistemáticamente. Los SKUs más rentables (ABC=A, ESTRELLAs) son los más afectados por P7+P8+P9 inverso. El canal Flex muere silenciosamente en SKUs con rotación mixta por P1-P4+P9 directo.
 
 **Complementa los hallazgos previos:**
 - `docs/banva-bodega-auditoria-2026-04-18.md`
@@ -377,7 +482,7 @@ Dependencias: P6 bloquea análisis retrospectivo de P2/P3. P1/P4/P5 pueden avanz
 
 ## Tests de regresión mínimos al fixear
 
-Ninguno de los 8 está cubierto hoy. Al hacer PRs, agregar en `src/lib/__tests__/intelligence-flex.test.ts`:
+Ninguno de los 9 está cubierto hoy. Al hacer PRs, agregar en `src/lib/__tests__/intelligence-flex.test.ts`:
 
 1. **SKU con stock_bodega=1, buffer=2:** stock_efectivo debe ser 0, cob_total debe excluirlo, pedir debe considerarlo faltante.
 2. **SKU con stock_bodega=3, buffer=2:** stock_efectivo debe ser 1, ML publica 1 en Flex.
@@ -386,6 +491,8 @@ Ninguno de los 8 está cubierto hoy. Al hacer PRs, agregar en `src/lib/__tests__
 5. **SKU con vel_flex=0 por 30 días y stock_bodega=1:** debe entrar en en_quiebre_bodega efectivo.
 6. **SKU con vel_flex cayendo:** pct_flex no debe caer abajo de un piso si flex_objetivo=true (post-fix P6).
 7. **SKU con ramp-up activo:** pedir_proveedor_sin_rampup debe reflejar el Fase B correcto con SS real.
+8. **SKU ABC=A con stock_bodega=25, vel=17, pct_flex=0.20, target=42 (P9 inverso):** la función `particionBodega()` debe devolver `paraFlex=23` (stock_bodega−buffer) y `paraFull=2`. Sin función, asegurar que `mandar_full` refleja la partición efectiva, no la reserva matemática 20.4.
+9. **SKU no ABC=A con stock_bodega=1 (P9 paria):** `mandar_full=0` Y `publicar_flex=0` Y `pedir_proveedor>0`. Hoy las 3 condiciones son verdaderas pero ninguna alerta se dispara.
 
 ---
 
@@ -398,6 +505,7 @@ Al revisar otros SKUs o procesos:
 3. Cualquier flag tipo `en_quiebre_*` que compare stock con 0 en lugar de con umbral → candidato a Problema 5.
 4. Cualquier write de `r.X` que dependa de `r.Y` donde `r.Y` se asigna después en el código → candidato a Problema 7.
 5. Cualquier fórmula que mezcle ROP clásico con cantidad_objetivo Fase B → candidato a Problema 8.
+6. Cualquier decisión que calcule "reserva teórica" sin consultar la publicación efectiva (`ml_items_map.stock_flex_cache` o derivado de buffer) → candidato a Problema 9.
 
 Grep útil:
 
