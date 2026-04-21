@@ -4,100 +4,75 @@
 **Proveedor:** Idetex · **Neto:** $7.097.896 · **Bruto:** $8.446.496
 **49 SKUs · 663 unidades**
 
-Este documento está pensado para ser impreso y colgado al lado del computador de bodega. Lo puede ejecutar Joaquín o Vicho sin programador al costado.
-
-**Tiempo estimado total para 49 SKUs:** 2.5 a 4 horas (contar + etiquetar + ubicar). El vincular la OC son 30 segundos al final.
-
 ---
 
-## Parte A — Manual imprimible (1 página)
+## Parte A — Manual para bodega (1 hoja para imprimir)
 
-### Cuando llega el camión de Idetex
+**TIEMPO TOTAL: ~3 horas.** Factura 5 min · Bodega 2-3 h · Vincular 1 min.
 
-#### Paso 1. Registrar la factura con la app "Factura a Etiquetas"
+### Paso 1 — Registrar la factura (5 min)
 
-1. Abrir la app en el celular / tablet.
+1. App **Factura a Etiquetas** en celular/tablet.
 2. Foto a la factura física.
-3. Esperar que Gemini extraiga los SKUs y cantidades (~30 seg).
-4. **Verificar** que los SKUs/cantidades leídos coincidan con la factura.
-5. Botón **"Enviar recepción al WMS"**.
-6. Imprimir las etiquetas que genera la app.
+3. Verificar que los SKUs y cantidades leídos coincidan con la factura.
+4. Apretar **Enviar recepción al WMS**.
+5. Imprimir las etiquetas que salen.
 
-La app crea automáticamente:
-- 1 registro en `recepciones` (estado CREADA).
-- N líneas en `recepcion_lineas` (estado PENDIENTE).
+> En este paso el stock **no** sube todavía. Sólo quedó anotada la factura.
 
-En este punto el stock aún **NO** subió — solo quedó registrada la factura.
+### Paso 2 — Contar, etiquetar, ubicar (2-3 h)
 
----
+Entrar al celular a **banvabodega.vercel.app → Operador → PIN → Recepciones**.
 
-#### Paso 2. Ciclo de bodega (contar → etiquetar → ubicar)
+Por cada SKU de la lista:
 
-Entrar al celular a `banvabodega.vercel.app` → **Operador** → PIN → **Recepciones**.
+a. **Contar** la cantidad que bajó del camión.
+b. **Pegar la etiqueta** en cada unidad.
+c. **Escanear la posición** de bodega donde se guarda (B-5, A-3, etc.).
 
-Aparece la recepción recién creada. Por cada SKU de la lista:
+Al terminar el último SKU, la recepción queda **COMPLETADA** y el stock queda sumado en bodega.
 
-a. **Contar** la cantidad física que bajó del camión → registrar en el celular.
-b. **Etiquetar** (pegar la etiqueta impresa en cada unidad).
-c. **Ubicar** — escanear la posición de bodega donde lo guardan (B-5, A-3, etc.).
+### Paso 3 — Vincular la recepción a la OC-005 (30 segundos, NUEVO)
 
-Al terminar el último SKU, la app marca la recepción como **COMPLETADA** y el stock físico queda sumado automáticamente en bodega.
+Desde el computador de la oficina:
 
----
+1. **banvabodega.vercel.app/admin** → PIN admin → pestaña **Compras**.
+2. Click sobre la fila **OC-005** (Idetex).
+3. Botón azul arriba a la derecha: **Vincular recepción**.
+4. Seleccionar la recepción recién cerrada (folio de la factura).
+5. Confirmar.
 
-#### Paso 3. Vincular la recepción a la OC-005
+### Paso 4 — Cerrar la OC (si llegó todo)
 
-Esta es la parte **nueva** que hay que hacer.
+En el detalle de OC-005, botón **Cerrar OC** → confirmar.
 
-1. Desde el computador de la oficina, abrir `banvabodega.vercel.app/admin`.
-2. PIN admin (1234) → pestaña **Compras**.
-3. Click sobre la fila **OC-005** (Idetex, EN_TRANSITO).
-4. Arriba a la derecha, botón **"Vincular recepción"** (azul).
-5. Modal muestra las recepciones Idetex **sin OC**. Seleccionar la recepción recién cerrada (buscar por folio SII de la factura).
-6. Confirmar.
-
-El sistema:
-- Escribe `orden_compra_id` en la recepción.
-- Recalcula `cantidad_recibida` línea por línea de OC-005.
-- Si todo llegó → estado pasa a **RECIBIDA**. Si faltó algo → **RECIBIDA_PARCIAL**.
+Si llegó incompleto: **no cerrar**. Queda abierta esperando el resto.
 
 ---
 
-#### Paso 4. Cerrar la OC
+### Dato crítico — por qué el botón "Vincular" es importante
 
-Sólo si llegó **todo** lo pedido o si Vicente decide aceptar un parcial como cerrado:
+Mientras no aprietes **Vincular recepción**, el sistema sigue creyendo que las 663 unidades vienen en camino. Aunque estén físicamente en bodega, el motor puede recomendar pedir otra vez lo mismo a Idetex. Es el único paso que "le avisa" al sistema que ya llegó.
 
-1. En el detalle de OC-005, botón **"Cerrar OC"**.
-2. Confirmar en el diálogo.
-3. Sistema calcula `lead_time_real` (días entre emisión 2026-04-20 y hoy) y `pct_cumplimiento`.
-4. Dispara recálculo del motor de inteligencia automáticamente.
-
-Si **NO** llegó todo y esperamos más mercadería: NO cerrar. La OC queda en `RECIBIDA_PARCIAL`. Cuando llegue el segundo despacho, repetir Paso 1-3 con la nueva factura.
+Es normal que durante las 2-3 horas del Paso 2 el sistema aún muestre las 663 en tránsito. No hay que alarmarse. El tránsito se limpia cuando se completa el Paso 3.
 
 ---
 
 ### Si algo falla
 
-#### La app Etiquetas no lee bien la factura
-Registrar manualmente los SKUs/cantidades en la app antes de enviar al WMS. Si insiste, llamar a Vicente antes de hacer otra cosa.
+- **La app no lee bien la factura:** corregir los números a mano en la app antes de enviar al WMS.
+- **El botón "Vincular recepción" no muestra la recepción:** verificar el nombre exacto del proveedor en la recepción ("Idetex" vs "IDETEX S.A."). Si no aparece igual → llamar a Vicente.
+- **El botón da error:** no tocar nada más. El stock físico ya está sumado si se completó el Paso 2. Llamar a Vicente.
+- **Llegó de más:** en el Paso 2 ingresar la cantidad real. El sistema registra el exceso.
+- **Llegó incompleto:** cerrar igual el Paso 2 con lo que llegó. No cerrar la OC (Paso 4). Cuando venga el resto, repetir Paso 1-3 con la factura nueva.
 
-#### El botón "Vincular recepción" no muestra la recepción
-Verificar que la recepción tenga `proveedor = "Idetex"` exacto. Algunas vienen con "IDETEX S.A.". Si es el caso → usar script SQL de emergencia (Parte B abajo).
-
-#### El botón "Vincular recepción" da error
-Llamar a Vicente. Mientras tanto **no tocar nada más** — el stock físico ya está en bodega si se completó el ciclo del Paso 2, así que no hay urgencia operativa.
-
-#### Llegó más mercadería que la pedida
-Al etiquetar/ubicar en Paso 2, el operador puede ingresar la cantidad real (aunque sea más). El sistema registra el exceso. Al vincular con OC-005 queda la diferencia visible en el detalle.
-
-#### Llegó menos mercadería que la pedida (parcial)
-Flujo normal. El ciclo del Paso 2 se cierra con lo que llegó. Al vincular en Paso 3, OC-005 queda en `RECIBIDA_PARCIAL`. Cuando llegue el resto con otra factura, repetir el proceso (crea una segunda recepción, se vincula a la misma OC-005, cuando cubre todo cambia a `RECIBIDA` y se puede cerrar).
+**Contacto de emergencia:** Vicente — `{VICENTE_CELULAR}`.
 
 ---
 
-## Parte B — Script SQL de emergencia
+## Parte B — Script SQL de emergencia (solo Vicente)
 
-Usar **solo si** el botón "Vincular recepción" falla. Ejecutar en Supabase SQL Editor (proyecto banvabodega).
+Usar **solo si** el botón Vincular recepción falla. Ejecutar en Supabase SQL Editor.
 
 ### B.1 — Identificar la recepción a vincular
 
@@ -121,7 +96,7 @@ GROUP BY r.id, r.folio, r.created_at, r.proveedor, r.costo_bruto, r.estado
 ORDER BY r.created_at DESC;
 ```
 
-Anotar el `id` de la recepción (UUID) → **`<REC_ID>`**.
+Anotar el `id` → `<REC_ID>`.
 
 ### B.2 — Vincular recepción a OC-005
 
@@ -132,8 +107,6 @@ WHERE id = '<REC_ID>';
 ```
 
 ### B.3 — Rellenar `cantidad_recibida` en las líneas de OC-005
-
-El motor lee `cantidad_pedida − cantidad_recibida` para el tránsito. Este UPDATE cruza lo que quedó en `recepcion_lineas.qty_recibida` contra las líneas de OC-005:
 
 ```sql
 UPDATE ordenes_compra_lineas ocl
@@ -175,7 +148,7 @@ SET
 WHERE id = '34abb464-2dbf-4edb-bd88-8214da237192';
 ```
 
-Si llegó **parcial** y se espera más en otra fecha:
+Si llegó **parcial**:
 
 ```sql
 UPDATE ordenes_compra
@@ -185,25 +158,15 @@ WHERE id = '34abb464-2dbf-4edb-bd88-8214da237192';
 
 ### B.5 — Disparar recálculo del motor
 
-Desde navegador u otro cliente (no requiere auth):
-
-```
-POST https://banvabodega.vercel.app/api/intelligence/recalcular
-```
-
-O desde la terminal de Vicente:
-
 ```bash
 curl -X POST https://banvabodega.vercel.app/api/intelligence/recalcular
 ```
 
-Toma ~2 minutos. Cuando termina, los 49 SKUs deberían tener `stock_en_transito` reducido y `stock_bodega` aumentado.
+Toma ~2 minutos.
 
 ---
 
 ## Parte C — Verificación post-recepción
-
-Ejecutar cada query en el SQL Editor y validar resultados.
 
 ### C.1 — Estado de la OC cambió
 
@@ -215,13 +178,9 @@ FROM ordenes_compra
 WHERE id = '34abb464-2dbf-4edb-bd88-8214da237192';
 ```
 
-**Esperado:**
-- `estado` = `CERRADA` (total) o `RECIBIDA_PARCIAL`.
-- `fecha_recepcion` = fecha de hoy.
-- `lead_time_real` = 3 días (si llega al 2026-04-23 en tiempo).
-- `pct_cumplimiento` = 100 si completo, `<100` si parcial.
+**Esperado:** `estado` = `CERRADA` o `RECIBIDA_PARCIAL`. `fecha_recepcion` = hoy. `lead_time_real` ≈ 3 (si llega 2026-04-23). `pct_cumplimiento` = 100 si completo.
 
-### C.2 — Líneas de OC con cumplimiento por SKU
+### C.2 — Cumplimiento por SKU
 
 ```sql
 SELECT
@@ -236,55 +195,40 @@ WHERE orden_id = '34abb464-2dbf-4edb-bd88-8214da237192'
 ORDER BY faltante DESC, cantidad_pedida DESC;
 ```
 
-**Esperado:** todos `faltante = 0` si completo. Si parcial, identifica qué SKUs no llegaron.
+**Esperado:** todos `faltante = 0` si completo; si parcial identifica qué faltó.
 
 ### C.3 — Motor recalculó `stock_en_transito` a 0
 
 ```sql
 SELECT
-  sku_origen,
-  nombre,
-  stock_bodega,
-  stock_full,
-  stock_total,
-  stock_en_transito,
-  accion
+  sku_origen, nombre,
+  stock_bodega, stock_full, stock_total,
+  stock_en_transito, accion
 FROM sku_intelligence
 WHERE sku_origen IN (
-  SELECT sku_origen
-  FROM ordenes_compra_lineas
+  SELECT sku_origen FROM ordenes_compra_lineas
   WHERE orden_id = '34abb464-2dbf-4edb-bd88-8214da237192'
 )
 ORDER BY stock_en_transito DESC, sku_origen;
 ```
 
-**Esperado post-recálculo:**
-- `stock_en_transito = 0` en todos (si OC cerrada).
-- `stock_bodega` aumentó respecto al snapshot previo.
-- `accion` ya no debería ser `EN_TRANSITO` (pasan a `OK` / `PLANIFICAR` / lo que corresponda por cobertura).
+**Esperado:** `stock_en_transito = 0` en todos. `stock_bodega` aumentó. `accion` ya no es `EN_TRANSITO`.
 
-### C.4 — Velocidad se mantiene (no se borra por recalcular)
+### C.4 — Velocidad se mantiene (la velocidad se calcula con ventas, no con stock)
 
 ```sql
 SELECT
-  sku_origen,
-  vel_ponderada,
-  vel_pre_quiebre,
-  clase_abc,
-  xyz,
-  datos_hasta
+  sku_origen, vel_ponderada, vel_pre_quiebre,
+  clase_abc, xyz, datos_hasta
 FROM sku_intelligence
 WHERE sku_origen IN (
-  SELECT sku_origen
-  FROM ordenes_compra_lineas
+  SELECT sku_origen FROM ordenes_compra_lineas
   WHERE orden_id = '34abb464-2dbf-4edb-bd88-8214da237192'
 )
 ORDER BY vel_ponderada DESC;
 ```
 
-**Esperado:**
-- `datos_hasta` = fecha de hoy.
-- `vel_ponderada` similar a la pre-recepción (la velocidad se calcula con ventas, no con stock).
+**Esperado:** `datos_hasta` = hoy. `vel_ponderada` similar a pre-recepción.
 
 ### C.5 — Recepción quedó vinculada
 
@@ -294,7 +238,7 @@ FROM recepciones
 WHERE orden_compra_id = '34abb464-2dbf-4edb-bd88-8214da237192';
 ```
 
-**Esperado:** una (o varias si parcial) filas con `estado = COMPLETADA` o `CERRADA`, `orden_compra_id` seteado.
+**Esperado:** una (o varias si parcial) filas con `orden_compra_id` seteado.
 
 ---
 
@@ -306,23 +250,36 @@ WHERE orden_compra_id = '34abb464-2dbf-4edb-bd88-8214da237192';
 | 2. Ciclo bodega (49 SKUs) | Joaquín | 2-3 h | `/operador/recepciones` móvil |
 | 3. Vincular a OC-005 | Vicho / Vicente | 30 seg | `/admin/compras` botón |
 | 4. Cerrar OC | Vicente | 30 seg | `/admin/compras` botón |
-| 5. Verificar (C.1 a C.5) | Vicente | 5 min | Supabase SQL Editor |
+| 5. Verificar (C.1-C.5) | Vicente | 5 min | Supabase SQL Editor |
 
-**Total estimado:** 2.5 a 4 horas, casi todo es el ciclo físico de bodega (contar/etiquetar/ubicar). La parte administrativa (vincular + cerrar) toma 1 minuto.
+**Total:** 2.5 a 4 horas, casi todo es el ciclo físico de bodega. La parte administrativa toma 1 minuto.
 
-**Contacto de emergencia:** Vicente → escalar cualquier error del SQL o comportamiento extraño del sistema.
+---
+
+## Mensaje WhatsApp preview para Joaquín
+
+Para enviar el martes 22 o miércoles 23 en la mañana:
+
+```
+Joa, el jueves 23 llega OC-005 de Idetex. Son 663 unidades
+de 49 SKUs distintos.
+
+Te paso mañana el procedimiento impreso. Lo clave:
+cuando termines de contar + etiquetar + ubicar todo,
+hay que entrar a banvabodega.vercel.app/admin → pestaña
+Compras → abrir OC-005 → botón azul "Vincular recepción".
+30 segundos.
+
+Ese botón es nuevo, antes no se hacía. Si no lo apretás,
+el sistema sigue creyendo que la mercadería no llegó y
+puede pedir el mismo stock de nuevo.
+
+Te lo explico bien mañana con el papel. Cualquier duda,
+me escribís.
+```
 
 ---
 
 ## Cómo imprimir
 
-Abrir este archivo en cualquier visor Markdown (VS Code con preview, o el viewer de GitHub) → `Cmd+P` → imprimir. La Parte A cabe en una página. Opcionalmente se puede convertir a PDF con `Print → Save as PDF`.
-
-No se generó PDF automático en este commit porque no hay herramienta instalada para hacerlo sin agregar dependencias. Si se necesita formalmente, ejecutar una vez:
-
-```bash
-cd ~/banvabodega
-npx md-to-pdf docs/banva-bodega-procedimiento-recepcion-oc005.md
-```
-
-Eso genera `docs/banva-bodega-procedimiento-recepcion-oc005.pdf`.
+Abrir este archivo en VS Code (preview Markdown) o en el viewer de GitHub → `Cmd+P` → **Save as PDF** o imprimir directo. La Parte A cabe en una hoja A4.
