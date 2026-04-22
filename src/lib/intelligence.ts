@@ -45,6 +45,34 @@ function esQuiebreProlongadoProtegido(r: SkuIntelRow): boolean {
   return false;
 }
 
+/**
+ * v60 — paridad Flex con esQuiebreProlongadoProtegido (Full).
+ *
+ * Determina si `vel_flex_pre_quiebre` debe reemplazar a `vel_flex` en el
+ * calculo de pedir_proveedor. Simetrico a Full con adaptaciones:
+ *  - Rama 1 (≥14d): misma semantica.
+ *  - Rama 2 (≥7d ESTRELLA/CASHCOW): misma semantica.
+ *  - Rama 3 (v60-specifica): protege desde dia 0 a A/ESTRELLA que entran
+ *    en quiebre Flex con vel historica ≥ 1 u/sem. Necesario porque el
+ *    tracking Flex arranca con dias=0 y la Rama 3 de Full (es_quiebre_proveedor)
+ *    no tiene equivalente Flex — la no-publicacion se debe a buffer+inner_pack,
+ *    no a falta fisica. Sin esto, tomaria 7d en arrancar la proteccion.
+ */
+function esQuiebreFlexProlongadoProtegido(r: SkuIntelRow): boolean {
+  if (r.publicar_flex > 0) return false;
+  if (r.vel_flex_pre_quiebre <= 0) return false;
+  const diasQ = r.dias_en_quiebre_flex ?? 0;
+  const velFlexAct = r.vel_flex;
+  const cuad = r.cuadrante;
+  // Rama 1: quiebre prolongado generico.
+  if (diasQ >= 14 && r.vel_flex_pre_quiebre > 2 && velFlexAct > 0) return true;
+  // Rama 2: ESTRELLA/CASHCOW con degradacion marcada.
+  if (diasQ >= 7 && (cuad === "ESTRELLA" || cuad === "CASHCOW") && r.vel_flex_pre_quiebre > velFlexAct * 2) return true;
+  // Rama 3 (v60): proteccion inmediata para A/ESTRELLA con vel_flex_pre >= 1.
+  if ((r.abc === "A" || cuad === "ESTRELLA") && r.vel_flex_pre_quiebre >= 1) return true;
+  return false;
+}
+
 /* ═══════════════════════════════════════════════════════════
    TIPOS
    ═══════════════════════════════════════════════════════════ */
@@ -1771,7 +1799,19 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     const innerPack = provCatR?.inner_pack || prod?.inner_pack || 1;
     const velCalcR = r.multiplicador_evento > 1 ? r.vel_ajustada_evento : r.vel_ponderada;
     const enQP = esQuiebreProlongadoProtegido(r);
-    const velParaPedir = enQP ? r.vel_pre_quiebre : velCalcR;
+    const enQP_flex = esQuiebreFlexProlongadoProtegido(r);
+    // v60 — si Full no protege pero Flex si, sustituir vel_flex degradada por
+    // vel_flex_pre_quiebre en el total. Cuando vel_flex_pre === vel_flex
+    // (recien capturada), el swap no cambia nada; cuando vel_flex cae por no
+    // publicar, la proteccion restaura la demanda historica en el calculo.
+    let velParaPedir: number;
+    if (enQP) {
+      velParaPedir = r.vel_pre_quiebre;
+    } else if (enQP_flex) {
+      velParaPedir = Math.max(velCalcR, velCalcR - r.vel_flex + r.vel_flex_pre_quiebre);
+    } else {
+      velParaPedir = velCalcR;
+    }
 
     // mandar_full via función canon calcularEstadoFlexFull.
     // Política: todo SKU activo vive en Flex si stock_bodega > buffer.
