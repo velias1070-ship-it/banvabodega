@@ -198,7 +198,14 @@ export default function AdminPage() {
     }
     return init;
   });
-  const toggleSection = (section: string) => setOpenSections(prev=>({...prev,[section]:!prev[section]}));
+  // Accordion: al abrir una seccion, cerrar las otras. Click en la abierta = cerrarla.
+  const toggleSection = (section: string) => setOpenSections(prev => {
+    const wasOpen = prev[section];
+    const next: Record<string, boolean> = {};
+    for (const g of SIDEBAR_GROUPS) next[g.section] = false;
+    next[section] = !wasOpen;
+    return next;
+  });
   // Auto-open section when tab changes
   useEffect(()=>{
     for (const g of SIDEBAR_GROUPS) {
