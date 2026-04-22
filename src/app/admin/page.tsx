@@ -5742,6 +5742,18 @@ function Inventario() {
   const [reclasificando, setReclasificando] = useState(false);
   const [reclasResult, setReclasResult] = useState<{reclasificados:number;detalles:Array<{sku:string;posicion:string;skuVenta:string;qty:number;metodo:string}>}|null>(null);
 
+  // Dropdown de acciones (Export / Reclasificar / Reconciliar)
+  const [accionesOpen, setAccionesOpen] = useState(false);
+  const accionesRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!accionesOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (accionesRef.current && !accionesRef.current.contains(e.target as Node)) setAccionesOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [accionesOpen]);
+
   // Reconciliación
   const [reconOpen, setReconOpen] = useState(false);
   const [reconLoading, setReconLoading] = useState(false);
@@ -6068,19 +6080,34 @@ function Inventario() {
               Comprometidos ({skusComprometidos.length})
             </button>
           </>)}
-          <button onClick={doExportInventario} disabled={exporting} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
-            background:"var(--bg3)",color:"var(--green)",border:"1px solid var(--bg4)",cursor:exporting?"wait":"pointer",opacity:exporting?0.6:1}}>
-            {exporting ? "Exportando..." : "Exportar Inventario"}
-          </button>
-          <button onClick={doExportFull} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
-            background:"var(--bg3)",color:"var(--cyan)",border:"1px solid var(--cyanBd)",cursor:"pointer"}}>
-            Exportar Full
-          </button>
-          <button onClick={doReclasificar} disabled={reclasificando} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
-            background:reclasificando?"var(--bg3)":"var(--amberBg)",color:reclasificando?"var(--txt3)":"var(--amber)",border:"1px solid var(--amberBd)",cursor:reclasificando?"wait":"pointer",opacity:reclasificando?0.6:1}}>
-            {reclasificando ? "Reclasificando..." : "Reclasificar formatos"}
-          </button>
-          <input className="form-input mono" value={q} onChange={e=>setQ(e.target.value)} placeholder={viewMode==="fisico"?"Filtrar SKU, nombre, proveedor...":"Filtrar codigo ML, SKU venta, nombre..."} style={{fontSize:13,flex:1}}/>
+          <input className="form-input mono" value={q} onChange={e=>setQ(e.target.value)} placeholder={viewMode==="fisico"?"Filtrar SKU, nombre, proveedor...":"Filtrar codigo ML, SKU venta, nombre..."} style={{fontSize:13,flex:1,minWidth:200}}/>
+          {/* Menu de acciones agrupadas — limpia la toolbar y separa acciones "peligrosas" de filtros */}
+          <div ref={accionesRef} style={{position:"relative"}}>
+            <button onClick={()=>setAccionesOpen(!accionesOpen)} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
+              background:accionesOpen?"var(--bg4)":"var(--bg3)",color:"var(--txt)",border:"1px solid var(--bg4)",cursor:"pointer",whiteSpace:"nowrap"}}>
+              ⋯ Acciones
+            </button>
+            {accionesOpen && (
+              <div style={{position:"absolute",top:"100%",right:0,marginTop:4,background:"var(--bg2)",border:"1px solid var(--bg4)",borderRadius:8,minWidth:220,zIndex:50,boxShadow:"0 6px 24px rgba(0,0,0,0.4)",overflow:"hidden"}}>
+                <button onClick={()=>{setAccionesOpen(false);doExportInventario();}} disabled={exporting}
+                  style={{display:"block",width:"100%",textAlign:"left",padding:"10px 14px",background:"transparent",color:"var(--green)",border:"none",borderBottom:"1px solid var(--bg4)",fontSize:12,fontWeight:600,cursor:exporting?"wait":"pointer"}}>
+                  📥 {exporting ? "Exportando..." : "Exportar Inventario (CSV detallado)"}
+                </button>
+                <button onClick={()=>{setAccionesOpen(false);doExportFull();}}
+                  style={{display:"block",width:"100%",textAlign:"left",padding:"10px 14px",background:"transparent",color:"var(--cyan)",border:"none",borderBottom:"1px solid var(--bg4)",fontSize:12,fontWeight:600,cursor:"pointer"}}>
+                  📥 Exportar Full (CSV resumido por SKU venta)
+                </button>
+                <button onClick={()=>{setAccionesOpen(false);doReclasificar();}} disabled={reclasificando}
+                  style={{display:"block",width:"100%",textAlign:"left",padding:"10px 14px",background:"transparent",color:"var(--amber)",border:"none",borderBottom:"1px solid var(--bg4)",fontSize:12,fontWeight:600,cursor:reclasificando?"wait":"pointer"}}>
+                  🔄 {reclasificando ? "Reclasificando..." : "Reclasificar formatos"}
+                </button>
+                <button onClick={()=>{setAccionesOpen(false);setReconOpen(true);window.scrollTo({top:document.body.scrollHeight,behavior:"smooth"});}}
+                  style={{display:"block",width:"100%",textAlign:"left",padding:"10px 14px",background:"transparent",color:"var(--red)",border:"none",fontSize:12,fontWeight:600,cursor:"pointer"}}>
+                  🔍 Reconciliar stock vs movimientos
+                </button>
+              </div>
+            )}
+          </div>
           {viewMode === "fisico" && etiqGlobal.total > 0 && (
             <div style={{display:"flex",alignItems:"center",gap:6,padding:"4px 10px",borderRadius:6,background:"var(--bg3)",border:"1px solid var(--bg4)"}}>
               <div style={{width:40,height:40,borderRadius:"50%",background:`conic-gradient(var(--green) ${etiqGlobal.pct*3.6}deg, var(--amber) ${etiqGlobal.pct*3.6}deg)`,display:"flex",alignItems:"center",justifyContent:"center"}}>

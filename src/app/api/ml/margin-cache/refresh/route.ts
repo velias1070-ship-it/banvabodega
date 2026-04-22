@@ -232,6 +232,7 @@ async function handleRefresh(req: NextRequest) {
         }
       }
     }
+    costoNeto = Math.round(costoNeto);
     const costoBruto = Math.round(costoNeto * 1.19);
 
     let pesoFacturable = 0;
@@ -298,14 +299,14 @@ async function handleRefresh(req: NextRequest) {
       category_id: categoryId || null,
       listing_type: listingType,
       logistic_type: logisticType,
-      price_ml: priceList,
-      precio_venta: precioVenta,
+      price_ml: Math.round(priceList),
+      precio_venta: Math.round(precioVenta),
       tiene_promo: tienePromo,
       promo_type: promoType,
       promo_pct: promoPct,
       costo_neto: costoNeto,
       costo_bruto: costoBruto,
-      peso_facturable: pesoFacturable,
+      peso_facturable: Math.round(pesoFacturable),
       tramo_label: tramo.label,
       comision_pct: comisionPct,
       comision_clp: comisionClp,
