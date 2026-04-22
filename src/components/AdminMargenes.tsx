@@ -245,7 +245,7 @@ export default function AdminMargenes() {
     const out: ParsedQuery = { textTokens: [], numTokens: [], flags: new Set() };
     const parts = normalize(raw).split(/\s+/).filter(Boolean);
     for (const p of parts) {
-      if (p === "sin-costo" || p === "con-promo" || p === "en-perdida" || p === "sin-venta") {
+      if (p === "sin-costo" || p === "con-promo" || p === "sin-promo" || p === "en-perdida" || p === "sin-venta") {
         out.flags.add(p);
         continue;
       }
@@ -286,6 +286,7 @@ export default function AdminMargenes() {
       }
       if (parsedQ.flags.has("sin-costo") && r.costo_bruto > 0) return false;
       if (parsedQ.flags.has("con-promo") && !r.tiene_promo) return false;
+      if (parsedQ.flags.has("sin-promo") && r.tiene_promo) return false;
       if (parsedQ.flags.has("en-perdida") && r.margen_clp >= 0) return false;
       return true;
     };
@@ -867,12 +868,12 @@ export default function AdminMargenes() {
       <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 14, alignItems: "center" }}>
         <input
           type="text"
-          placeholder='Buscar: "sabana 144" · margen<10 · precio>30000 · en-perdida · sin-costo'
+          placeholder='Buscar: "sabana 144" · margen<10 · precio>30000 · sin-promo · en-perdida'
           value={q}
           onChange={e => setQ(e.target.value)}
           className="form-input"
           style={{ flex: "1 1 240px", minWidth: 200 }}
-          title={'Busqueda flexible:\n- Palabras sueltas: "sabana 144" matchea "Sabanas Cannon 144 Hilos" (sin acentos, tolera plurales)\n- Operadores numericos: precio<30000, precio>=20000, costo<15000, margen<10, margen>=20, comision>5000, envio>0\n- Flags: sin-costo, con-promo, en-perdida\n- Combinable: "cannon 144 precio>40000 margen<15"'}
+          title={'Busqueda flexible:\n- Palabras sueltas: "sabana 144" matchea "Sabanas Cannon 144 Hilos" (sin acentos, tolera plurales)\n- Operadores numericos: precio<30000, precio>=20000, costo<15000, margen<10, margen>=20, comision>5000, envio>0\n- Flags: sin-costo, con-promo, sin-promo, en-perdida\n- Combinable: "cannon 144 precio>40000 margen<15"'}
         />
         <select value={zona} onChange={e => setZona(e.target.value as ZonaFilter)} className="form-input" style={{ flex: "0 0 auto" }}>
           <option value="all">Todas las zonas</option>
