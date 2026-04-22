@@ -363,6 +363,22 @@ export default function AdminMargenes() {
     });
   };
 
+  // Selecciona/deselecciona todos los items del grupo de costo especificado
+  const toggleSelectGroup = (costoBruto: number) => {
+    const groupItems = filtered.filter(r => r.costo_bruto === costoBruto);
+    if (groupItems.length === 0) return;
+    const allGroupSelected = groupItems.every(r => selected.has(r.item_id));
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (allGroupSelected) {
+        for (const r of groupItems) next.delete(r.item_id);
+      } else {
+        for (const r of groupItems) next.add(r.item_id);
+      }
+      return next;
+    });
+  };
+
   const abrirCampaignModal = async (mode: "join" | "leave" = "join") => {
     const items = rows.filter(r => selected.has(r.item_id));
     if (items.length === 0) return;
@@ -880,23 +896,42 @@ export default function AdminMargenes() {
                 const spanColor = spanPct > 20 ? "var(--amber)" : "var(--txt3)";
                 return (
                   <Fragment key={r.item_id}>
-                  {showGroupHeader && grp && (
-                    <tr style={{ background: "var(--bg3)" }}>
-                      <td colSpan={12} style={{ padding: "6px 10px", fontSize: 10, color: "var(--txt2)" }}>
-                        <span style={{ color: "var(--cyan)", fontWeight: 700 }}>Costo+IVA {fmtCLP(r.costo_bruto)}</span>
-                        <span style={{ marginLeft: 10, color: "var(--txt3)" }}>· {grp.count} {grp.count === 1 ? "item" : "items"}</span>
-                        {grp.count > 1 && (
-                          <>
-                            <span style={{ marginLeft: 10 }}>precio {fmtCLP(grp.precioMin)} – {fmtCLP(grp.precioMax)}</span>
-                            <span style={{ marginLeft: 6, color: spanColor, fontWeight: spanPct > 20 ? 700 : 400 }}>
-                              (span {spanPct.toFixed(0)}%)
-                            </span>
-                            <span style={{ marginLeft: 10, color: "var(--txt3)" }}>margen {grp.margenMin.toFixed(1)}% – {grp.margenMax.toFixed(1)}%</span>
-                          </>
-                        )}
-                      </td>
-                    </tr>
-                  )}
+                  {showGroupHeader && grp && (() => {
+                    const groupItems = filtered.filter(x => x.costo_bruto === r.costo_bruto);
+                    const selInGroup = groupItems.filter(x => selected.has(x.item_id)).length;
+                    const allSel = selInGroup === groupItems.length;
+                    const someSel = selInGroup > 0 && !allSel;
+                    return (
+                      <tr style={{ background: "var(--bg3)" }}>
+                        <td style={{ padding: "6px 6px", textAlign: "center" }}>
+                          <input
+                            type="checkbox"
+                            checked={allSel}
+                            ref={el => { if (el) el.indeterminate = someSel; }}
+                            onChange={() => toggleSelectGroup(r.costo_bruto)}
+                            title={allSel ? `Deseleccionar los ${groupItems.length} items` : `Seleccionar los ${groupItems.length} items del grupo`}
+                            style={{ cursor: "pointer" }}
+                          />
+                        </td>
+                        <td colSpan={11} style={{ padding: "6px 10px", fontSize: 10, color: "var(--txt2)" }}>
+                          <span style={{ color: "var(--cyan)", fontWeight: 700 }}>Costo+IVA {fmtCLP(r.costo_bruto)}</span>
+                          <span style={{ marginLeft: 10, color: "var(--txt3)" }}>· {grp.count} {grp.count === 1 ? "item" : "items"}</span>
+                          {grp.count > 1 && (
+                            <>
+                              <span style={{ marginLeft: 10 }}>precio {fmtCLP(grp.precioMin)} – {fmtCLP(grp.precioMax)}</span>
+                              <span style={{ marginLeft: 6, color: spanColor, fontWeight: spanPct > 20 ? 700 : 400 }}>
+                                (span {spanPct.toFixed(0)}%)
+                              </span>
+                              <span style={{ marginLeft: 10, color: "var(--txt3)" }}>margen {grp.margenMin.toFixed(1)}% – {grp.margenMax.toFixed(1)}%</span>
+                            </>
+                          )}
+                          {selInGroup > 0 && (
+                            <span style={{ marginLeft: 10, color: "var(--cyan)" }}>· {selInGroup}/{groupItems.length} seleccionados</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })()}
                   <tr style={{ borderBottom: "1px solid var(--bg4)", background: isSelected ? "var(--cyanBg)" : "transparent" }}>
                     <td style={{ padding: "9px 6px", textAlign: "center" }}>
                       <input type="checkbox" checked={isSelected} onChange={() => toggleSelect(r.item_id)} />
