@@ -23,7 +23,7 @@ export async function GET() {
   // Get all rows for current week — use count to verify
   const { data: rows, count } = await sb
     .from("semaforo_semanal")
-    .select("sku_origen, cubeta, impacto_clp", { count: "exact" })
+    .select("item_id, sku_origen, cubeta, impacto_clp", { count: "exact" })
     .eq("semana_calculo", semana);
 
   // Get snapshot (current + previous)
@@ -36,7 +36,8 @@ export async function GET() {
   const currentSnap = snapshots?.find(s => s.semana === semana);
   const prevSnap = snapshots?.find(s => s.semana !== semana);
 
-  // Get reviews for this week
+  // Get reviews for this week — review se trackea por sku_origen (decision operativa
+  // puede aplicar a ambas pubs del mismo sku fisico)
   const { data: reviews } = await sb
     .from("sku_revision_log")
     .select("sku_origen")
@@ -44,7 +45,7 @@ export async function GET() {
 
   const reviewedSkus = new Set((reviews || []).map(r => r.sku_origen));
 
-  // Build cubeta summaries
+  // Build cubeta summaries (count por publicacion, revisado si sku_origen esta revisado)
   const cubetas: Record<string, { count: number; impacto_total: number; revisados: number; pendientes: number }> = {};
   for (const r of rows || []) {
     const c = r.cubeta;

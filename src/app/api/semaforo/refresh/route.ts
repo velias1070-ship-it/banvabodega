@@ -170,187 +170,241 @@ async function runRefresh(force = false) {
       if (row.key in cfg) (cfg as Record<string, number>)[row.key] = Number(row.value);
     }
 
-    // 3. Load sku_intelligence (active SKUs)
-    // Incluye campos del motor de inteligencia que el semaforo expone sin recalcular:
-    // accion, alertas, venta_perdida, rampup_*, liquidacion_*, tendencia, abc_ingreso.
+    // 3. Load sku_intelligence (atributos a nivel sku_origen compartidos entre pubs)
     const { data: intelRows, error: intelErr } = await sb
       .from("sku_intelligence")
-      .select("sku_origen, nombre, vel_7d, vel_30d, vel_60d, vel_ponderada, stock_total, stock_full, stock_bodega, cob_total, cob_full, pct_full, margen_full_30d, margen_flex_30d, cuadrante, es_holdout, accion, alertas, dias_sin_stock_full, venta_perdida_pesos, ingreso_perdido, liquidacion_accion, liquidacion_descuento_sugerido, factor_rampup_aplicado, rampup_motivo, vel_pre_quiebre, dias_en_quiebre, abc_ingreso, tendencia_vel, tendencia_vel_pct")
-      .or("vel_ponderada.gt.0,stock_total.gt.0");
-
+      .select("sku_origen, nombre, vel_7d, vel_30d, vel_60d, vel_ponderada, margen_full_30d, margen_flex_30d, cuadrante, es_holdout, accion, alertas, dias_sin_stock_full, venta_perdida_pesos, ingreso_perdido, liquidacion_accion, liquidacion_descuento_sugerido, factor_rampup_aplicado, rampup_motivo, vel_pre_quiebre, dias_en_quiebre, abc_ingreso, tendencia_vel, tendencia_vel_pct");
     if (intelErr) throw new Error(`Intel query error: ${intelErr.message}`);
-    if (!intelRows || intelRows.length === 0) {
-      return NextResponse.json({ error: "no data in sku_intelligence" }, { status: 500 });
-    }
+    const intelBySkuOrigen = new Map<string, Record<string, unknown>>();
+    for (const si of intelRows || []) intelBySkuOrigen.set(si.sku_origen as string, si);
 
-    // 4. Load ml_items_map for price, thumbnail, permalink, item_id
-    const { data: mlItems } = await sb
+    // 4. Load ml_items_map activos (fila por publicacion ML)
+    const { data: mlItems, error: mlErr } = await sb
       .from("ml_items_map")
-      .select("sku_origen, item_id, price, thumbnail, permalink, activo, sold_quantity");
+      .select("item_id, sku, sku_venta, sku_origen, titulo, price, thumbnail, permalink, activo, sold_quantity, status_ml, stock_full_cache, stock_flex_cache")
+      .eq("activo", true)
+      .order("sold_quantity", { ascending: false, nullsFirst: false });
+    if (mlErr) throw new Error(`ML items query error: ${mlErr.message}`);
 
-    // Build map: sku_origen -> best item (most sold, active preferred)
-    const mlMap = new Map<string, { item_id: string; price: number; thumbnail: string; permalink: string; count: number }>();
-    const mlCounts = new Map<string, number>();
+    // Contar publicaciones por sku_origen (para badge "N pub")
+    const mlCountsPorOrigen = new Map<string, number>();
     for (const m of mlItems || []) {
-      if (!m.sku_origen) continue;
-      mlCounts.set(m.sku_origen, (mlCounts.get(m.sku_origen) || 0) + 1);
-      const existing = mlMap.get(m.sku_origen);
-      if (!existing || (m.activo && (!existing || (m.sold_quantity || 0) > 0))) {
-        mlMap.set(m.sku_origen, {
-          item_id: m.item_id,
-          price: m.price || 0,
-          thumbnail: m.thumbnail || "",
-          permalink: m.permalink || "",
-          count: 0,
-        });
-      }
+      const so = (m.sku_origen || m.sku) as string;
+      if (so) mlCountsPorOrigen.set(so, (mlCountsPorOrigen.get(so) || 0) + 1);
     }
 
-    // 4b. Load LIVE stock from source tables (not intelligence snapshot)
-    // Bodega stock
+    // 4b. Stock bodega compartido por sku_origen
     const { data: stockRows } = await sb.from("stock").select("sku, cantidad");
     const stockBodegaMap = new Map<string, number>();
     for (const r of stockRows || []) {
       stockBodegaMap.set(r.sku, (stockBodegaMap.get(r.sku) || 0) + (r.cantidad || 0));
     }
-    // Full stock from stock_full_cache (synced from ML API)
-    const { data: fullRows } = await sb.from("stock_full_cache").select("sku_venta, cantidad");
-    // Map sku_venta -> sku_origen for Full stock
-    const { data: compForStock } = await sb.from("composicion_venta").select("sku_venta, sku_origen");
-    const svToSoStock = new Map<string, string>();
-    for (const c of compForStock || []) svToSoStock.set(c.sku_venta, c.sku_origen);
-    const stockFullMap = new Map<string, number>();
-    for (const r of fullRows || []) {
-      const so = svToSoStock.get(r.sku_venta) || r.sku_venta;
-      stockFullMap.set(so, (stockFullMap.get(so) || 0) + (r.cantidad || 0));
+
+    // 4c. Composicion: sku_venta -> { sku_origen, unidades_pack }
+    const { data: compRows } = await sb.from("composicion_venta").select("sku_venta, sku_origen, unidades");
+    const compBySkuVenta = new Map<string, { sku_origen: string; unidades: number }>();
+    for (const c of compRows || []) {
+      compBySkuVenta.set(c.sku_venta, {
+        sku_origen: c.sku_origen,
+        unidades: (c.unidades as number) || 1,
+      });
     }
 
     // 5. Load costo_promedio from productos
     const { data: prodRows } = await sb.from("productos").select("sku, costo_promedio");
     const costoMap = new Map<string, number>();
-    for (const p of prodRows || []) {
-      costoMap.set(p.sku, p.costo_promedio || 0);
-    }
+    for (const p of prodRows || []) costoMap.set(p.sku, p.costo_promedio || 0);
 
-    // 6. Calculate dias_sin_venta from orders_history.
-    // Paginar: Supabase retorna max 1000 rows por default; truncar silenciosamente
-    // clasifica como "nunca vendió" (999) SKUs que vendieron hace >14 días.
-    const { data: compRows } = await sb.from("composicion_venta").select("sku_venta, sku_origen");
-    const svToSo = new Map<string, string>();
-    for (const c of compRows || []) svToSo.set(c.sku_venta, c.sku_origen);
+    // 6. Traer todas las ordenes de los ultimos 60 dias paginadas — granularidad item_id
+    // Agregaremos vel_7d/30d/60d y precio_promedio_30d por sku_venta (-> item_id)
+    const now = new Date();
+    const hace7d = now.getTime() - 7 * 86400000;
+    const hace30d = now.getTime() - 30 * 86400000;
+    const hace60d = now.getTime() - 60 * 86400000;
+    const desdeISO = new Date(hace60d).toISOString();
 
-    const lastSaleMap = new Map<string, string>();
-    const LAST_SALES_PAGE = 1000;
-    let lsOffset = 0;
+    type VentasAgg = { uds7: number; uds30: number; uds60: number; revenue30: number; ventas30: number; ultFecha: number };
+    const ventasPorSkuVenta = new Map<string, VentasAgg>();
+    const ORDERS_PAGE = 1000;
+    let ordOffset = 0;
     while (true) {
-      const { data: lastSales, error: lsErr } = await sb
+      const { data: ords, error: ordErr } = await sb
         .from("orders_history")
-        .select("sku_venta, fecha")
-        .order("fecha", { ascending: false })
-        .range(lsOffset, lsOffset + LAST_SALES_PAGE - 1);
-      if (lsErr) {
-        console.error("[semaforo] lastSales query error:", lsErr.message);
+        .select("sku_venta, cantidad, subtotal, fecha")
+        .eq("estado", "Pagada")
+        .gte("fecha", desdeISO)
+        .range(ordOffset, ordOffset + ORDERS_PAGE - 1);
+      if (ordErr) {
+        console.error("[semaforo] orders_history query error:", ordErr.message);
         break;
       }
-      if (!lastSales || lastSales.length === 0) break;
-      for (const o of lastSales) {
-        const so = svToSo.get(o.sku_venta) || o.sku_venta;
-        if (!lastSaleMap.has(so)) lastSaleMap.set(so, o.fecha);
+      if (!ords || ords.length === 0) break;
+      for (const o of ords) {
+        const sv = o.sku_venta as string;
+        if (!sv) continue;
+        const t = new Date(o.fecha as string).getTime();
+        const cant = (o.cantidad as number) || 0;
+        const sub = (o.subtotal as number) || 0;
+        const agg = ventasPorSkuVenta.get(sv) || { uds7: 0, uds30: 0, uds60: 0, revenue30: 0, ventas30: 0, ultFecha: 0 };
+        if (t >= hace60d) agg.uds60 += cant;
+        if (t >= hace30d) { agg.uds30 += cant; agg.revenue30 += sub; agg.ventas30 += 1; }
+        if (t >= hace7d) agg.uds7 += cant;
+        if (t > agg.ultFecha) agg.ultFecha = t;
+        ventasPorSkuVenta.set(sv, agg);
       }
-      if (lastSales.length < LAST_SALES_PAGE) break;
-      lsOffset += LAST_SALES_PAGE;
+      if (ords.length < ORDERS_PAGE) break;
+      ordOffset += ORDERS_PAGE;
     }
 
-    const now = new Date();
+    // 7. Marketing/performance por item_id del ultimo mes (ml_snapshot_mensual)
+    const periodoActual = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    const periodoAnterior = (() => {
+      const d = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    })();
+    const { data: snapRows } = await sb
+      .from("ml_snapshot_mensual")
+      .select("item_id, periodo, visitas, cvr, ads_activo, ads_cost, ads_roas, quality_score")
+      .in("periodo", [periodoActual, periodoAnterior]);
+    const snapBy: Record<string, Map<string, Record<string, unknown>>> = {
+      [periodoActual]: new Map(), [periodoAnterior]: new Map(),
+    };
+    for (const s of snapRows || []) {
+      snapBy[s.periodo as string]?.set(s.item_id as string, s);
+    }
+
     const semana = getMonday(now);
 
-    // 7. Build semaforo rows (stock from LIVE sources, velocity from intelligence)
+    // 8. Build rows: UNA FILA POR PUBLICACION ML ACTIVA
     const rows: Array<Record<string, unknown>> = [];
-    for (const si of intelRows) {
-      const ml = mlMap.get(si.sku_origen);
-      const costo = costoMap.get(si.sku_origen) || 0;
-      const lastSale = lastSaleMap.get(si.sku_origen);
-      const diasSinVenta = lastSale
-        ? Math.floor((now.getTime() - new Date(lastSale).getTime()) / 86400000)
-        : 999;
+    for (const m of mlItems || []) {
+      const itemId = m.item_id as string;
+      if (!itemId) continue;
+      const skuVenta = (m.sku_venta || m.sku) as string;
+      if (!skuVenta) continue;
 
-      // LIVE stock (not intelligence snapshot)
-      const liveBodega = stockBodegaMap.get(si.sku_origen) || 0;
-      const liveFull = stockFullMap.get(si.sku_origen) || 0;
-      const liveTotal = liveBodega + liveFull;
-      // Recalculate cobertura with live stock
-      const velSemanal = si.vel_ponderada || 0;
-      const liveCobTotal = velSemanal > 0 ? Math.round((liveTotal / (velSemanal / 7)) * 100) / 100 : 999;
-      const liveCobFull = (si.vel_ponderada || 0) > 0 && (si.pct_full || 0) > 0
-        ? Math.round((liveFull / ((si.vel_ponderada * (si.pct_full || 1)) / 7)) * 100) / 100
+      const comp = compBySkuVenta.get(skuVenta);
+      const skuOrigen = comp?.sku_origen || (m.sku_origen as string) || skuVenta;
+      const unidadesPack = comp?.unidades || 1;
+
+      const si = intelBySkuOrigen.get(skuOrigen);
+      const costo = costoMap.get(skuOrigen) || 0;
+
+      // Velocidad propia del item (basada en sus ventas por sku_venta × pack)
+      const v = ventasPorSkuVenta.get(skuVenta);
+      const udsFis7 = (v?.uds7 || 0) * unidadesPack;
+      const udsFis30 = (v?.uds30 || 0) * unidadesPack;
+      const udsFis60 = (v?.uds60 || 0) * unidadesPack;
+      const vel7d = udsFis7;
+      const vel30d = udsFis30 / 4.285;
+      const vel60d = udsFis60 / 8.57;
+      const velPonderada = vel7d * 0.5 + vel30d * 0.3 + vel60d * 0.2;
+      const precioProm30 = v && v.ventas30 > 0 ? Math.round(v.revenue30 / v.ventas30) : null;
+
+      // Stock propio del item: Full + Flex de la pub; bodega es compartido
+      const stockFull = (m.stock_full_cache as number) || 0;
+      const stockFlex = (m.stock_flex_cache as number) || 0;
+      const bodegaCompartido = stockBodegaMap.get(skuOrigen) || 0;
+      // stock_total para cubeta: stock visible del item + bodega compartido (en uds fisicas)
+      const stockVisibleItem = stockFull + stockFlex;
+      const stockTotalItem = stockVisibleItem + bodegaCompartido;
+      const cobTotal = velPonderada > 0 ? Math.round((stockTotalItem / (velPonderada / 7)) * 100) / 100 : 999;
+      const cobFull = velPonderada > 0 ? Math.round((stockFull / (velPonderada / 7)) * 100) / 100 : 999;
+
+      const diasSinVenta = v?.ultFecha
+        ? Math.floor((now.getTime() - v.ultFecha) / 86400000)
         : 999;
 
       const cubeta = calcularCubeta({
-        vel_7d: si.vel_7d || 0,
-        vel_30d: si.vel_30d || 0,
-        stock_total: liveTotal,
-        cob_total: liveCobTotal,
+        vel_7d: vel7d,
+        vel_30d: vel30d,
+        stock_total: stockTotalItem,
+        cob_total: cobTotal,
         dias_sin_venta: diasSinVenta,
-        es_holdout: si.es_holdout || false,
+        es_holdout: (si?.es_holdout as boolean) || false,
       }, cfg);
 
+      const margenFull30 = (si?.margen_full_30d as number) || 0;
       const impacto = calcularImpacto(cubeta, {
-        vel_7d: si.vel_7d || 0,
-        vel_30d: si.vel_30d || 0,
-        margen_full_30d: si.margen_full_30d || 0,
-        stock_total: liveTotal,
+        vel_7d: vel7d,
+        vel_30d: vel30d,
+        margen_full_30d: margenFull30,
+        stock_total: stockTotalItem,
         costo_promedio: costo,
       });
 
       const markdown = calcularMarkdown(cubeta, {
         dias_sin_venta: diasSinVenta,
-        precio_actual: ml?.price || 0,
+        precio_actual: (m.price as number) || 0,
         costo_promedio: costo,
       });
 
+      // Marketing del periodo actual
+      const snapCur = snapBy[periodoActual]?.get(itemId);
+      const snapPrev = snapBy[periodoAnterior]?.get(itemId);
+      const visitas30 = (snapCur?.visitas as number) || (snapPrev?.visitas as number) || 0;
+      const cvr30 = (snapCur?.cvr as number) || (snapPrev?.cvr as number) || 0;
+      const adsActivo = (snapCur?.ads_activo as boolean) || false;
+      const adsCost = (snapCur?.ads_cost as number) || 0;
+      const adsRoas = (snapCur?.ads_roas as number) || 0;
+      const qs = (snapCur?.quality_score as number) ?? null;
+
       rows.push({
-        sku_origen: si.sku_origen,
-        nombre: si.nombre,
-        item_id: ml?.item_id || null,
-        thumbnail: ml?.thumbnail || null,
-        permalink: ml?.permalink || null,
-        vel_7d: si.vel_7d || 0,
-        vel_30d: si.vel_30d || 0,
-        vel_60d: si.vel_60d || 0,
-        vel_ponderada: si.vel_ponderada || 0,
-        stock_total: liveTotal,
-        stock_full: liveFull,
-        stock_bodega: liveBodega,
-        cob_total: liveCobTotal,
-        cob_full: liveCobFull,
+        item_id: itemId,
+        sku_venta: skuVenta,
+        sku_origen: skuOrigen,
+        nombre: (si?.nombre as string) || null,
+        titulo: (m.titulo as string) || null,
+        thumbnail: (m.thumbnail as string) || null,
+        permalink: (m.permalink as string) || null,
+        vel_7d: Math.round(vel7d * 100) / 100,
+        vel_30d: Math.round(vel30d * 100) / 100,
+        vel_60d: Math.round(vel60d * 100) / 100,
+        vel_ponderada: Math.round(velPonderada * 100) / 100,
+        unidades_pack: unidadesPack,
+        stock_full: stockFull,
+        stock_flex: stockFlex,
+        stock_bodega_compartido: bodegaCompartido,
+        stock_total: stockTotalItem,
+        cob_total: cobTotal,
+        cob_full: cobFull,
         dias_sin_venta: diasSinVenta,
-        margen_full_30d: si.margen_full_30d || 0,
-        margen_flex_30d: si.margen_flex_30d || 0,
-        cuadrante: si.cuadrante,
-        precio_actual: ml?.price || 0,
+        margen_full_30d: margenFull30,
+        margen_flex_30d: (si?.margen_flex_30d as number) || 0,
+        precio_actual: (m.price as number) || 0,
+        precio_promedio_30d: precioProm30,
         costo_promedio: costo,
-        cantidad_publicaciones_ml: mlCounts.get(si.sku_origen) || 0,
+        cuadrante: (si?.cuadrante as string) || null,
+        abc_ingreso: (si?.abc_ingreso as string) || null,
         cubeta,
         antiguedad_muerto_bucket: cubeta === "muerto" ? calcularAntiguedadMuerto(diasSinVenta) : null,
+        es_holdout: (si?.es_holdout as boolean) || false,
         impacto_clp: Math.round(impacto),
-        es_holdout: si.es_holdout || false,
         precio_markdown_sugerido: markdown.precio,
         markdown_motivo: markdown.motivo,
-        // Bridge con sku_intelligence (v65) — expone campos ya calculados
-        accion: si.accion ?? null,
-        alertas: si.alertas ?? [],
-        dias_sin_stock_full: si.dias_sin_stock_full ?? null,
-        venta_perdida_pesos: si.venta_perdida_pesos ?? 0,
-        ingreso_perdido: si.ingreso_perdido ?? 0,
-        liquidacion_accion: si.liquidacion_accion ?? null,
-        liquidacion_descuento_sugerido: si.liquidacion_descuento_sugerido ?? null,
-        factor_rampup_aplicado: si.factor_rampup_aplicado ?? 1,
-        rampup_motivo: si.rampup_motivo ?? null,
-        vel_pre_quiebre: si.vel_pre_quiebre ?? 0,
-        dias_en_quiebre: si.dias_en_quiebre ?? 0,
-        abc_ingreso: si.abc_ingreso ?? null,
-        tendencia_vel: si.tendencia_vel ?? null,
-        tendencia_vel_pct: si.tendencia_vel_pct ?? 0,
+        // Bridge sku_intelligence (compartido entre pubs del mismo sku_origen)
+        accion: (si?.accion as string) || null,
+        alertas: (si?.alertas as unknown[]) || [],
+        dias_sin_stock_full: (si?.dias_sin_stock_full as number) ?? null,
+        venta_perdida_pesos: (si?.venta_perdida_pesos as number) || 0,
+        ingreso_perdido: (si?.ingreso_perdido as number) || 0,
+        liquidacion_accion: (si?.liquidacion_accion as string) || null,
+        liquidacion_descuento_sugerido: (si?.liquidacion_descuento_sugerido as number) ?? null,
+        factor_rampup_aplicado: (si?.factor_rampup_aplicado as number) ?? 1,
+        rampup_motivo: (si?.rampup_motivo as string) || null,
+        vel_pre_quiebre: (si?.vel_pre_quiebre as number) || 0,
+        dias_en_quiebre: (si?.dias_en_quiebre as number) || 0,
+        tendencia_vel: (si?.tendencia_vel as string) || null,
+        tendencia_vel_pct: (si?.tendencia_vel_pct as number) || 0,
+        // Marketing / performance propio de la publicacion
+        visitas_30d: visitas30,
+        cvr_30d: cvr30,
+        ads_activo: adsActivo,
+        ads_cost_30d: adsCost,
+        ads_roas_30d: adsRoas,
+        quality_score: qs,
+        status_ml: (m.status_ml as string) || null,
+        cantidad_publicaciones_ml: mlCountsPorOrigen.get(skuOrigen) || 1,
         semana_calculo: semana,
       });
     }

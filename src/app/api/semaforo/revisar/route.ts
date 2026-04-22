@@ -10,7 +10,7 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
   if (!body) return NextResponse.json({ error: "invalid body" }, { status: 400 });
 
-  const { sku_origen, causa_identificada, causa_detalle, accion_tomada, accion_detalle, revisado_por } = body;
+  const { item_id, sku_origen, causa_identificada, causa_detalle, accion_tomada, accion_detalle, revisado_por } = body;
 
   if (!sku_origen || !causa_identificada || !accion_tomada) {
     return NextResponse.json({ error: "sku_origen, causa_identificada, accion_tomada requeridos" }, { status: 400 });
@@ -26,18 +26,16 @@ export async function POST(req: NextRequest) {
   if (!latest?.[0]) return NextResponse.json({ error: "no semaforo data" }, { status: 404 });
   const semana = latest[0].semana_calculo;
 
-  // Get SKU snapshot from semaforo
-  const { data: snap } = await sb
-    .from("semaforo_semanal")
-    .select("*")
-    .eq("sku_origen", sku_origen)
-    .eq("semana_calculo", semana)
-    .limit(1);
+  // Get snapshot: prefer by item_id (pub especifica), fallback a primera pub del sku_origen
+  let snapQuery = sb.from("semaforo_semanal").select("*").eq("semana_calculo", semana);
+  if (item_id) snapQuery = snapQuery.eq("item_id", item_id);
+  else snapQuery = snapQuery.eq("sku_origen", sku_origen);
+  const { data: snap } = await snapQuery.limit(1);
 
   if (!snap?.[0]) return NextResponse.json({ error: `SKU ${sku_origen} not found in semaforo` }, { status: 404 });
   const s = snap[0];
 
-  // Calculate dias_desde_aparicion: check previous weeks where this SKU was in same cubeta without review
+  // Calculate dias_desde_aparicion (por sku_origen agrupado — una revision aplica a todas las pubs)
   let diasDesde = 0;
   const { data: prevWeeks } = await sb
     .from("semaforo_semanal")

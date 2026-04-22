@@ -5,34 +5,45 @@ import { getSupabase } from "@/lib/supabase";
 // ============ TYPES ============
 
 interface SemaforoRow {
+  // Identidad — ahora la fila es por publicacion ML
+  item_id: string;
+  sku_venta: string;
   sku_origen: string;
   nombre: string | null;
-  item_id: string | null;
+  titulo: string | null;
   thumbnail: string | null;
   permalink: string | null;
+  // Velocidades (uds fisicas, multiplicadas por pack)
   vel_7d: number;
   vel_30d: number;
   vel_60d: number;
   vel_ponderada: number;
-  stock_total: number;
+  unidades_pack: number;
+  // Stock
   stock_full: number;
-  stock_bodega: number;
+  stock_flex: number;
+  stock_bodega_compartido: number;
+  stock_total: number;
   cob_total: number;
   cob_full: number;
   dias_sin_venta: number;
+  // Margen y precio
   margen_full_30d: number;
   margen_flex_30d: number;
-  cuadrante: string | null;
   precio_actual: number;
+  precio_promedio_30d: number | null;
   costo_promedio: number;
-  cantidad_publicaciones_ml: number;
+  // Clasificacion
+  cuadrante: string | null;
+  abc_ingreso: string | null;
   cubeta: string;
   antiguedad_muerto_bucket: string | null;
-  impacto_clp: number;
   es_holdout: boolean;
+  impacto_clp: number;
+  // Markdown
   precio_markdown_sugerido: number | null;
   markdown_motivo: string | null;
-  // Bridge intelligence (v65)
+  // Intelligence bridge (sku_origen-level, compartido)
   accion: string | null;
   alertas: string[] | null;
   dias_sin_stock_full: number | null;
@@ -44,9 +55,17 @@ interface SemaforoRow {
   rampup_motivo: string | null;
   vel_pre_quiebre: number;
   dias_en_quiebre: number;
-  abc_ingreso: string | null;
   tendencia_vel: string | null;
   tendencia_vel_pct: number;
+  // Marketing / performance (por publicacion)
+  visitas_30d: number;
+  cvr_30d: number;
+  ads_activo: boolean;
+  ads_cost_30d: number;
+  ads_roas_30d: number;
+  quality_score: number | null;
+  status_ml: string | null;
+  cantidad_publicaciones_ml: number;
   semana_calculo: string;
   ya_revisado?: boolean;
   persistente?: boolean;
@@ -221,6 +240,7 @@ export default function AdminSemaforo() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          item_id: reviewModal.item_id,
           sku_origen: reviewModal.sku_origen,
           causa_identificada: causa,
           causa_detalle: causaDetalle || null,
@@ -399,12 +419,17 @@ export default function AdminSemaforo() {
                       const delta = row.vel_30d > 0 ? ((row.vel_7d / row.vel_30d - 1) * 100) : 0;
                       const deltaColor = delta > 0 ? "var(--green)" : delta < -20 ? "var(--red)" : "var(--txt2)";
                       return (
-                        <tr key={row.sku_origen} style={{ opacity: row.ya_revisado ? 0.5 : 1 }}>
+                        <tr key={row.item_id} style={{ opacity: row.ya_revisado ? 0.5 : 1 }}>
                           <td>
                             {row.thumbnail && <img src={row.thumbnail} alt="" style={{ width: 28, height: 28, borderRadius: 4, objectFit: "cover" }} />}
                           </td>
                           <td className="mono" style={{ fontSize: 11, fontWeight: 700 }}>
-                            {row.permalink ? <a href={row.permalink} target="_blank" rel="noopener noreferrer" style={{ color: "var(--cyan)", textDecoration: "none" }}>{row.sku_origen}</a> : row.sku_origen}
+                            {row.permalink ? <a href={row.permalink} target="_blank" rel="noopener noreferrer" style={{ color: "var(--cyan)", textDecoration: "none" }}>{row.sku_venta}</a> : row.sku_venta}
+                            {row.unidades_pack > 1 && (
+                              <span title={`Pack de ${row.unidades_pack} unidades fisicas`} style={{ marginLeft: 4, fontSize: 9, padding: "1px 4px", borderRadius: 3, background: "var(--cyan)20", color: "var(--cyan)", fontWeight: 700 }}>
+                                ×{row.unidades_pack}
+                              </span>
+                            )}
                             {(row.dias_sin_stock_full ?? 0) > 14 && (
                               <span title={`Full con bajo stock ${row.dias_sin_stock_full}d — velocidad contaminada`} style={{ marginLeft: 4, fontSize: 9, padding: "1px 4px", borderRadius: 3, background: "var(--red)20", color: "var(--red)", fontWeight: 700 }}>
                                 ⚠ {row.dias_sin_stock_full}d s/Full
@@ -416,12 +441,20 @@ export default function AdminSemaforo() {
                               </span>
                             )}
                             {row.cantidad_publicaciones_ml > 1 && (
-                              <span style={{ marginLeft: 4, fontSize: 9, padding: "1px 4px", borderRadius: 3, background: "var(--amber)20", color: "var(--amber)", fontWeight: 700 }}>{row.cantidad_publicaciones_ml} pub</span>
+                              <span title={`Origen ${row.sku_origen} tiene ${row.cantidad_publicaciones_ml} publicaciones activas`} style={{ marginLeft: 4, fontSize: 9, padding: "1px 4px", borderRadius: 3, background: "var(--amber)20", color: "var(--amber)", fontWeight: 700 }}>{row.cantidad_publicaciones_ml} pub</span>
+                            )}
+                            {row.ads_activo && (
+                              <span title={`Ads activos ${fmt(row.ads_cost_30d)}/30d`} style={{ marginLeft: 4, fontSize: 9, padding: "1px 4px", borderRadius: 3, background: "var(--green)20", color: "var(--green)", fontWeight: 700 }}>📣</span>
                             )}
                             {row.persistente && (
                               <span style={{ marginLeft: 4, fontSize: 9, padding: "1px 4px", borderRadius: 3, background: "var(--red)20", color: "var(--red)", fontWeight: 700 }}>persistente</span>
                             )}
                             {row.ya_revisado && <span style={{ marginLeft: 4 }}>✅</span>}
+                            {row.sku_venta !== row.sku_origen && (
+                              <div style={{ fontSize: 9, color: "var(--txt3)", fontWeight: 400, marginTop: 1 }}>
+                                origen: {row.sku_origen}
+                              </div>
+                            )}
                           </td>
                           <td style={{ textAlign: "center", fontSize: 14 }} title={CUADRANTE_CONFIG[row.cuadrante || "REVISAR"]?.label || "—"}>
                             {CUADRANTE_CONFIG[row.cuadrante || "REVISAR"]?.icon || "·"}
@@ -432,7 +465,7 @@ export default function AdminSemaforo() {
                           <td className="mono" style={{ textAlign: "right", fontSize: 11, color: deltaColor, fontWeight: 600 }}>
                             {row.vel_30d > 0 ? `${delta > 0 ? "+" : ""}${delta.toFixed(0)}%` : "—"}
                           </td>
-                          <td className="mono" style={{ textAlign: "right", fontSize: 11 }} title={`Full: ${row.stock_full} | Bodega: ${row.stock_bodega}`}>
+                          <td className="mono" style={{ textAlign: "right", fontSize: 11 }} title={`Full: ${row.stock_full} | Flex: ${row.stock_flex} | Bodega compartida: ${row.stock_bodega_compartido}`}>
                             {row.stock_total}
                           </td>
                           <td className="mono" style={{ textAlign: "right", fontSize: 11, color: row.cob_total < 14 ? "var(--red)" : row.cob_total > 60 ? "var(--amber)" : "var(--txt)" }}>
@@ -486,7 +519,14 @@ export default function AdminSemaforo() {
           <div style={{ background: "var(--bg2)", borderRadius: 16, padding: 24, width: 520, maxHeight: "90vh", overflow: "auto", border: "1px solid var(--bg4)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
               <div style={{ fontSize: 16, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
-                <span>Revisar: {reviewModal.sku_origen}</span>
+                <div>
+                  <span>Revisar: {reviewModal.sku_venta}</span>
+                  {reviewModal.sku_venta !== reviewModal.sku_origen && (
+                    <span style={{ fontSize: 10, color: "var(--txt3)", marginLeft: 6 }}>
+                      (origen: {reviewModal.sku_origen}{reviewModal.unidades_pack > 1 ? ` ×${reviewModal.unidades_pack}` : ""})
+                    </span>
+                  )}
+                </div>
                 <span style={{
                   fontSize: 10,
                   padding: "2px 8px",
@@ -521,6 +561,11 @@ export default function AdminSemaforo() {
               <div><div style={{ fontSize: 9, color: "var(--txt3)" }}>Margen Full</div><div className="mono" style={{ fontWeight: 700 }}>${Math.round(reviewModal.margen_full_30d).toLocaleString()}</div></div>
               <div><div style={{ fontSize: 9, color: "var(--txt3)" }}>Dias sin venta</div><div className="mono" style={{ fontWeight: 700 }}>{reviewModal.dias_sin_venta === 999 ? "—" : reviewModal.dias_sin_venta}</div></div>
               <div><div style={{ fontSize: 9, color: "var(--txt3)" }}>Impacto</div><div className="mono" style={{ fontWeight: 700, color: "var(--amber)" }}>{fmt(reviewModal.impacto_clp)}</div></div>
+              <div><div style={{ fontSize: 9, color: "var(--txt3)" }}>Visitas 30d</div><div className="mono" style={{ fontWeight: 700 }}>{reviewModal.visitas_30d ? reviewModal.visitas_30d.toLocaleString() : "—"}</div></div>
+              <div><div style={{ fontSize: 9, color: "var(--txt3)" }}>CVR</div><div className="mono" style={{ fontWeight: 700, color: reviewModal.cvr_30d < 1.5 ? "var(--red)" : reviewModal.cvr_30d > 4 ? "var(--green)" : "var(--txt)" }}>{reviewModal.cvr_30d ? reviewModal.cvr_30d.toFixed(2) + "%" : "—"}</div></div>
+              <div><div style={{ fontSize: 9, color: "var(--txt3)" }}>Ads 30d</div><div className="mono" style={{ fontWeight: 700, color: reviewModal.ads_activo ? "var(--cyan)" : "var(--txt3)" }}>{reviewModal.ads_cost_30d > 0 ? fmt(reviewModal.ads_cost_30d) : reviewModal.ads_activo ? "activo" : "—"}</div></div>
+              <div><div style={{ fontSize: 9, color: "var(--txt3)" }}>ROAS</div><div className="mono" style={{ fontWeight: 700 }}>{reviewModal.ads_roas_30d ? reviewModal.ads_roas_30d.toFixed(1) + "x" : "—"}</div></div>
+              <div><div style={{ fontSize: 9, color: "var(--txt3)" }}>Precio prom. real</div><div className="mono" style={{ fontWeight: 700 }}>{reviewModal.precio_promedio_30d ? "$" + reviewModal.precio_promedio_30d.toLocaleString() : "—"}</div></div>
             </div>
 
             {/* Diagnóstico automatico del motor de inteligencia */}
