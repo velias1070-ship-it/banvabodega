@@ -604,17 +604,9 @@ export function calcularEstadoFlexFull(ctx: FlexFullContext): FlexFullState {
 3. `src/app/api/ml/stock-sync/route.ts:125-145` (publicación ML)
 4. `src/lib/reposicion.ts:156-157` (tercer site detectado en grep, revisar si aplica)
 
-## A2. Nueva alerta `flex_bloqueado_por_stock` (en PR3)
+## A2. [ROLLBACK 2026-04-22] Alerta `flex_bloqueado_por_stock` eliminada
 
-Agregar al union `AlertaIntel` en `intelligence.ts:69-101` y al PASO 19:
-
-```ts
-if (r.flex_bloqueado_por_stock) {
-  alertas.push("flex_bloqueado_por_stock");
-}
-```
-
-Urgencia: 🟡 Advertencia. Render en UI: "SKU con flex_objetivo pero stock_bodega insuficiente — reponer para habilitar publicación Flex".
+Propuesta original era una alerta 🟡 que dispara cuando `flex_objetivo=true` y `0 < stock_bodega < buffer_ml`. Se implementó en PR3 y se eliminó en rollback (v59) junto con el flag `flex_objetivo`. La política actual es "todo SKU activo vive en Flex si stock_bodega > buffer" — sin flag, la alerta no tenía semántica.
 
 ## A3. Nueva alerta `reponer_proactivo` (en PR1)
 
@@ -628,53 +620,22 @@ if (r.pedir_proveedor > 0 && !r.necesita_pedir) {
 
 Urgencia: 🟡 Info. Cubre los 43 SKUs del P7 que post-fix van a tener `pedir_proveedor>0` pero `necesita_pedir=false` (porque `necesita_pedir` sigue usando ROP clásico).
 
-## A4. Decisiones comerciales cerradas
+## A4. [ROLLBACK 2026-04-22] Flag `flex_objetivo` eliminado — política actual
 
-### Flag `flex_objetivo` — schema (PR2)
+El flag `productos.flex_objetivo` (agregado en v57, migración inicial 125 SKUs) se eliminó en v59. No aportaba valor operativo:
 
-```sql
-ALTER TABLE productos
-  ADD COLUMN flex_objetivo BOOL DEFAULT false,
-  ADD COLUMN flex_objetivo_auto BOOL DEFAULT false,
-  ADD COLUMN flex_objetivo_motivo TEXT;
+1. La publicación ML nunca dependió del flag (revert parcial commit `9030d98`).
+2. El motor usaba el flag solo para decidir `para_flex = 0` si `flex_objetivo=false`, pero la política real es "todo SKU con stock > buffer publica Flex" → el flag era metadato dormido.
+3. La alerta `flex_bloqueado_por_stock` (PR3) perdía semántica sin el flag — eliminada junto al rollback.
+
+**Política canónica actual (post v59):**
+
+```
+para_flex = max(0, stock_bodega − buffer_ml)
+para_full = stock_bodega − para_flex
 ```
 
-### Migración inicial (Opción 3+4 con cutoff por ABC)
-
-```sql
-UPDATE productos p
-SET flex_objetivo = true,
-    flex_objetivo_auto = true,
-    flex_objetivo_motivo = 'migracion_inicial_ventas_flex'
-WHERE EXISTS (
-  SELECT 1 FROM sku_intelligence si
-  LEFT JOIN (
-    SELECT cv.sku_origen, COUNT(*) AS ventas_flex_90d
-    FROM ventas_ml_cache v
-    JOIN composicion_venta cv ON cv.sku_venta = v.sku_venta
-    WHERE v.canal = 'Flex'
-      AND v.fecha_date > (NOW() - INTERVAL '90 days')::date
-    GROUP BY cv.sku_origen
-  ) vf ON vf.sku_origen = si.sku_origen
-  WHERE si.sku_origen = p.sku
-    AND (
-      (si.abc = 'A' AND COALESCE(vf.ventas_flex_90d, 0) >= 2) OR
-      (si.abc = 'B' AND COALESCE(vf.ventas_flex_90d, 0) >= 3) OR
-      (si.abc = 'C' AND COALESCE(vf.ventas_flex_90d, 0) >= 5) OR
-      si.pct_flex = 0.30
-    )
-);
-```
-
-Cutoff diferenciado por ABC: A más permisivo (basta 2 ventas), C más estricto (requiere 5). SKUs con `pct_flex=0.30` actual se preservan por compatibilidad.
-
-### Default post-deploy
-
-Productos nuevos creados post-deploy: `flex_objetivo = false`. Hay que ganarse la condición de Flex con histórico, no asumir.
-
-### Timing PR3
-
-**Merge sábado en horario bodega vacío.** Primer recálculo post-deploy inflará `mandar_full` en ~50-80 SKUs. Vicente/Joaquín recibe diff por Slack/WhatsApp antes del lunes.
+Sin opt-in por SKU. Los SKUs con `stock_bodega ≤ buffer` simplemente no llegan a publicar en Flex (caso borde de la aritmética, no un bloqueo de política).
 
 ## A5. Query diff pre/post PR3
 

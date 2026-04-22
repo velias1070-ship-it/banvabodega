@@ -21,8 +21,6 @@ export interface ProductoRow {
   moq: number;
   estado_sku: string;
   updated_at: string | null;
-  /** PR3: política de canal Flex por SKU */
-  flex_objetivo?: boolean;
 }
 
 export interface ComposicionRow {
@@ -152,7 +150,7 @@ export async function queryProductos(): Promise<ProductoRow[]> {
   const sb = getServerSupabase();
   if (!sb) return [];
   const data = await paginatedSelect(() =>
-    sb.from("productos").select("sku, sku_venta, nombre, categoria, proveedor, costo, costo_promedio, precio, inner_pack, lead_time_dias, moq, estado_sku, updated_at, flex_objetivo")
+    sb.from("productos").select("sku, sku_venta, nombre, categoria, proveedor, costo, costo_promedio, precio, inner_pack, lead_time_dias, moq, estado_sku, updated_at")
   );
   return data.map((p) => ({
     sku: p.sku as string,
@@ -168,7 +166,6 @@ export async function queryProductos(): Promise<ProductoRow[]> {
     moq: (p.moq as number) || 1,
     estado_sku: (p.estado_sku as string) || "activo",
     updated_at: (p.updated_at as string) || null,
-    flex_objetivo: Boolean(p.flex_objetivo),
   }));
 }
 

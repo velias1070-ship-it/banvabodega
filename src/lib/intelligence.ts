@@ -99,8 +99,7 @@ export type AlertaIntel =
   | "costo_posiblemente_obsoleto"
   | "pedido_bajo_moq"
   | "necesita_pedir"
-  | "reponer_proactivo"
-  | "flex_bloqueado_por_stock";
+  | "reponer_proactivo";
 
 export interface SkuIntelRow {
   sku_origen: string;
@@ -215,8 +214,6 @@ export interface SkuIntelRow {
   factor_rampup_aplicado: number;
   rampup_motivo: string;
   requiere_ajuste_precio: boolean;
-  /** PR3: SKU con flex_objetivo=true pero stock_bodega < buffer_ml. No se persiste en DB. */
-  flex_bloqueado_por_stock?: boolean;
 
   liquidacion_accion: string | null;
   liquidacion_dias_extra: number;
@@ -301,8 +298,6 @@ export interface ProductoInput {
   moq: number;                 // mínimo de compra al proveedor
   estado_sku: string;
   updated_at: string | null;
-  /** PR3: política de canal. true = este SKU debe sostener stock para Flex. */
-  flex_objetivo?: boolean;
 }
 
 export interface ComposicionInput {
@@ -1493,10 +1488,6 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       rampup_motivo: "no_aplica",
       requiere_ajuste_precio: requiereAjustePrecio,
 
-      // PR3: se setea en el Recalc Fase B (función canon). Default false
-      // mientras no corra el Recalc (SKUs "NUEVO" sin Pareto).
-      flex_bloqueado_por_stock: false,
-
       // Liquidación se asigna después (paso 17 global, requiere ABC)
       liquidacion_accion: null,
       liquidacion_dias_extra: 0,
@@ -1757,12 +1748,11 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     const enQP = esQuiebreProlongadoProtegido(r);
     const velParaPedir = enQP ? r.vel_pre_quiebre : velCalcR;
 
-    // PR3: mandar_full + flag flex_bloqueado via función canon.
-    // La función unifica Regla 2 (split mandar_full) y Regla 3 (publicación
-    // ML buffer) sobre la partición REAL del bodega — antes Regla 2 reservaba
-    // matemáticamente para Flex y Regla 3 publicaba aparte, produciendo
-    // stock fantasma (ver doc problema-stock-flex-2026-04-21 §P9).
-    const flexObjetivo = Boolean(prod?.flex_objetivo);
+    // mandar_full via función canon calcularEstadoFlexFull.
+    // Política: todo SKU activo vive en Flex si stock_bodega > buffer.
+    // La función hace la partición: para_flex = max(0, stock_bodega − buffer_ml),
+    // para_full = stock_bodega − para_flex. mandar_full queda limitado por
+    // para_full (no stock_bodega completo), evitando el stock fantasma P9.
     const bufferMl = sharedOrigins.has(r.sku_origen) ? 4 : 2;
     const abcCanon: "A" | "B" | "C" = (r.abc === "A" || r.abc === "B" || r.abc === "C") ? r.abc : "C";
     const flexState = calcularEstadoFlexFull({
@@ -1773,13 +1763,11 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       vel_ponderada: velParaPedir,
       pct_full: r.pct_full,
       target_dias_full: r.target_dias_full,
-      flex_objetivo: flexObjetivo,
       buffer_ml: bufferMl,
       inner_pack: innerPack,
       abc: abcCanon,
     });
     r.mandar_full = flexState.mandar_full;
-    r.flex_bloqueado_por_stock = flexState.flex_bloqueado_por_stock;
     // Lote inicial para SKU nuevo sin historia (preservado del cálculo pre-PR3)
     if (r.vel_ponderada === 0 && r.vel_pre_quiebre === 0 && r.stock_full === 0 && r.stock_en_transito === 0 && r.stock_bodega > 0) {
       const loteInicial = Math.max(innerPack, 2);
@@ -1900,10 +1888,6 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     }
     // Fase B: alertas de reposición
     if (r.necesita_pedir) alertas.push("necesita_pedir");
-    // PR3: flex_bloqueado_por_stock — SKU con política Flex pero stock_bodega
-    // insuficiente para publicar (0 < stock_bodega < buffer_ml). Acción:
-    // reponer bodega. Urgencia 🟡 advertencia.
-    if (r.flex_bloqueado_por_stock) alertas.push("flex_bloqueado_por_stock");
     // PR1: reponer_proactivo cubre el gap semántico entre `necesita_pedir`
     // (usa ROP clásico D×LT+SS) y `pedir_proveedor` (usa cantidad_objetivo
     // D×target_dias_full+SS). Un SKU puede tener pedir>0 sin que
