@@ -306,13 +306,13 @@ async function runRefresh(force = false) {
       const velPonderada = vel7d * 0.5 + vel30d * 0.3 + vel60d * 0.2;
       const precioProm30 = v && v.ventas30 > 0 ? Math.round(v.revenue30 / v.ventas30) : null;
 
-      // Stock propio del item: Full + Flex de la pub; bodega es compartido
+      // Stock PROPIO del item: Full + Flex de la pub (lo que se vende YA).
+      // Bodega compartida es contexto — no se suma al total (no se dobla entre pubs).
+      // El stock_total para la cubeta y cobertura es el vendible directo.
       const stockFull = (m.stock_full_cache as number) || 0;
       const stockFlex = (m.stock_flex_cache as number) || 0;
       const bodegaCompartido = stockBodegaMap.get(skuOrigen) || 0;
-      // stock_total para cubeta: stock visible del item + bodega compartido (en uds fisicas)
-      const stockVisibleItem = stockFull + stockFlex;
-      const stockTotalItem = stockVisibleItem + bodegaCompartido;
+      const stockTotalItem = stockFull + stockFlex;
       const cobTotal = velPonderada > 0 ? Math.round((stockTotalItem / (velPonderada / 7)) * 100) / 100 : 999;
       const cobFull = velPonderada > 0 ? Math.round((stockFull / (velPonderada / 7)) * 100) / 100 : 999;
 
