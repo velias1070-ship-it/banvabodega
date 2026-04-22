@@ -32,6 +32,21 @@ interface SemaforoRow {
   es_holdout: boolean;
   precio_markdown_sugerido: number | null;
   markdown_motivo: string | null;
+  // Bridge intelligence (v65)
+  accion: string | null;
+  alertas: string[] | null;
+  dias_sin_stock_full: number | null;
+  venta_perdida_pesos: number;
+  ingreso_perdido: number;
+  liquidacion_accion: string | null;
+  liquidacion_descuento_sugerido: number | null;
+  factor_rampup_aplicado: number;
+  rampup_motivo: string | null;
+  vel_pre_quiebre: number;
+  dias_en_quiebre: number;
+  abc_ingreso: string | null;
+  tendencia_vel: string | null;
+  tendencia_vel_pct: number;
   semana_calculo: string;
   ya_revisado?: boolean;
   persistente?: boolean;
@@ -390,6 +405,16 @@ export default function AdminSemaforo() {
                           </td>
                           <td className="mono" style={{ fontSize: 11, fontWeight: 700 }}>
                             {row.permalink ? <a href={row.permalink} target="_blank" rel="noopener noreferrer" style={{ color: "var(--cyan)", textDecoration: "none" }}>{row.sku_origen}</a> : row.sku_origen}
+                            {(row.dias_sin_stock_full ?? 0) > 14 && (
+                              <span title={`Full con bajo stock ${row.dias_sin_stock_full}d — velocidad contaminada`} style={{ marginLeft: 4, fontSize: 9, padding: "1px 4px", borderRadius: 3, background: "var(--red)20", color: "var(--red)", fontWeight: 700 }}>
+                                ⚠ {row.dias_sin_stock_full}d s/Full
+                              </span>
+                            )}
+                            {row.factor_rampup_aplicado < 1 && (
+                              <span title={`Ramp-up post-quiebre (${row.rampup_motivo || ""})`} style={{ marginLeft: 4, fontSize: 9, padding: "1px 4px", borderRadius: 3, background: "var(--cyan)20", color: "var(--cyan)", fontWeight: 700 }}>
+                                ⏳ ramp-up
+                              </span>
+                            )}
                             {row.cantidad_publicaciones_ml > 1 && (
                               <span style={{ marginLeft: 4, fontSize: 9, padding: "1px 4px", borderRadius: 3, background: "var(--amber)20", color: "var(--amber)", fontWeight: 700 }}>{row.cantidad_publicaciones_ml} pub</span>
                             )}
@@ -426,6 +451,11 @@ export default function AdminSemaforo() {
                           </td>
                           <td className="mono" style={{ textAlign: "right", fontSize: 11, fontWeight: 700, color: CUBETA_CONFIG[selectedCubeta]?.color }}>
                             {fmt(row.impacto_clp)}
+                            {(row.venta_perdida_pesos ?? 0) > 10000 && (
+                              <div title="Lost sales acumulado por falta de stock" style={{ fontSize: 9, color: "var(--red)", marginTop: 2 }}>
+                                + perdido {fmt(row.venta_perdida_pesos)}
+                              </div>
+                            )}
                           </td>
                           <td>
                             {!row.ya_revisado && (
@@ -492,6 +522,48 @@ export default function AdminSemaforo() {
               <div><div style={{ fontSize: 9, color: "var(--txt3)" }}>Dias sin venta</div><div className="mono" style={{ fontWeight: 700 }}>{reviewModal.dias_sin_venta === 999 ? "—" : reviewModal.dias_sin_venta}</div></div>
               <div><div style={{ fontSize: 9, color: "var(--txt3)" }}>Impacto</div><div className="mono" style={{ fontWeight: 700, color: "var(--amber)" }}>{fmt(reviewModal.impacto_clp)}</div></div>
             </div>
+
+            {/* Diagnóstico automatico del motor de inteligencia */}
+            {(reviewModal.accion || (reviewModal.alertas && reviewModal.alertas.length > 0) || (reviewModal.dias_sin_stock_full ?? 0) > 14) && (
+              <div style={{ marginBottom: 16, padding: 10, borderRadius: 8, background: "var(--bg3)", border: "1px solid var(--bg4)" }}>
+                <div style={{ fontSize: 10, color: "var(--txt3)", fontWeight: 600, marginBottom: 6 }}>
+                  DIAGNOSTICO AUTOMATICO (motor de inteligencia)
+                </div>
+                {reviewModal.accion && (
+                  <div style={{ fontSize: 12, marginBottom: 6 }}>
+                    <span style={{ color: "var(--txt3)" }}>Accion recomendada: </span>
+                    <span style={{ fontWeight: 700, color: "var(--cyan)" }}>{reviewModal.accion}</span>
+                  </div>
+                )}
+                {(reviewModal.dias_sin_stock_full ?? 0) > 14 && (
+                  <div style={{ fontSize: 11, color: "var(--red)", marginBottom: 6 }}>
+                    ⚠️ Velocidad contaminada: Full con bajo stock {reviewModal.dias_sin_stock_full} días. Esperar 2-4 sem. antes de decidir.
+                  </div>
+                )}
+                {reviewModal.factor_rampup_aplicado < 1 && (
+                  <div style={{ fontSize: 11, color: "var(--cyan)", marginBottom: 6 }}>
+                    ⏳ Ramp-up post-quiebre activo (factor {reviewModal.factor_rampup_aplicado.toFixed(2)}). Motivo: {reviewModal.rampup_motivo || "—"}
+                  </div>
+                )}
+                {(reviewModal.venta_perdida_pesos ?? 0) > 0 && (
+                  <div style={{ fontSize: 11, color: "var(--red)", marginBottom: 6 }}>
+                    💸 Lost sales estimado: <span className="mono" style={{ fontWeight: 700 }}>{fmt(reviewModal.venta_perdida_pesos)}</span>
+                    {(reviewModal.ingreso_perdido ?? 0) > 0 && (
+                      <span style={{ color: "var(--txt3)" }}> (ingreso perdido {fmt(reviewModal.ingreso_perdido)})</span>
+                    )}
+                  </div>
+                )}
+                {reviewModal.alertas && reviewModal.alertas.length > 0 && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 6 }}>
+                    {reviewModal.alertas.map(a => (
+                      <span key={a} style={{ fontSize: 9, padding: "2px 6px", borderRadius: 3, background: "var(--amber)20", color: "var(--amber)", fontWeight: 600 }}>
+                        {a}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Markdown sugerido */}
             {reviewModal.precio_markdown_sugerido != null && reviewModal.precio_actual > 0 && (

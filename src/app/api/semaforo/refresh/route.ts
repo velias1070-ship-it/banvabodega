@@ -171,9 +171,11 @@ async function runRefresh(force = false) {
     }
 
     // 3. Load sku_intelligence (active SKUs)
+    // Incluye campos del motor de inteligencia que el semaforo expone sin recalcular:
+    // accion, alertas, venta_perdida, rampup_*, liquidacion_*, tendencia, abc_ingreso.
     const { data: intelRows, error: intelErr } = await sb
       .from("sku_intelligence")
-      .select("sku_origen, nombre, vel_7d, vel_30d, vel_60d, vel_ponderada, stock_total, stock_full, stock_bodega, cob_total, cob_full, pct_full, margen_full_30d, margen_flex_30d, cuadrante, es_holdout")
+      .select("sku_origen, nombre, vel_7d, vel_30d, vel_60d, vel_ponderada, stock_total, stock_full, stock_bodega, cob_total, cob_full, pct_full, margen_full_30d, margen_flex_30d, cuadrante, es_holdout, accion, alertas, dias_sin_stock_full, venta_perdida_pesos, ingreso_perdido, liquidacion_accion, liquidacion_descuento_sugerido, factor_rampup_aplicado, rampup_motivo, vel_pre_quiebre, dias_en_quiebre, abc_ingreso, tendencia_vel, tendencia_vel_pct")
       .or("vel_ponderada.gt.0,stock_total.gt.0");
 
     if (intelErr) throw new Error(`Intel query error: ${intelErr.message}`);
@@ -334,6 +336,21 @@ async function runRefresh(force = false) {
         es_holdout: si.es_holdout || false,
         precio_markdown_sugerido: markdown.precio,
         markdown_motivo: markdown.motivo,
+        // Bridge con sku_intelligence (v65) — expone campos ya calculados
+        accion: si.accion ?? null,
+        alertas: si.alertas ?? [],
+        dias_sin_stock_full: si.dias_sin_stock_full ?? null,
+        venta_perdida_pesos: si.venta_perdida_pesos ?? 0,
+        ingreso_perdido: si.ingreso_perdido ?? 0,
+        liquidacion_accion: si.liquidacion_accion ?? null,
+        liquidacion_descuento_sugerido: si.liquidacion_descuento_sugerido ?? null,
+        factor_rampup_aplicado: si.factor_rampup_aplicado ?? 1,
+        rampup_motivo: si.rampup_motivo ?? null,
+        vel_pre_quiebre: si.vel_pre_quiebre ?? 0,
+        dias_en_quiebre: si.dias_en_quiebre ?? 0,
+        abc_ingreso: si.abc_ingreso ?? null,
+        tendencia_vel: si.tendencia_vel ?? null,
+        tendencia_vel_pct: si.tendencia_vel_pct ?? 0,
         semana_calculo: semana,
       });
     }
