@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { fmtCLP } from "@/lib/ml-shipping";
 import MarginSimulatorModal, { type SimulatorItem } from "@/components/MarginSimulatorModal";
 
@@ -240,14 +240,14 @@ export default function AdminMargenes() {
         byCosto.get(r.costo_bruto)!.push(r);
       }
       const badCostos = new Set<number>();
-      for (const [costo, items] of byCosto) {
-        if (items.length < 2) continue;
-        const precios = items.map(x => x.precio_venta).filter(p => p > 0);
-        if (precios.length < 2) continue;
+      Array.from(byCosto.entries()).forEach(([costo, items]) => {
+        if (items.length < 2) return;
+        const precios = items.map((x: MarginRow) => x.precio_venta).filter((p: number) => p > 0);
+        if (precios.length < 2) return;
         const mn = Math.min(...precios);
         const mx = Math.max(...precios);
         if (mn > 0 && (mx / mn - 1) > 0.20) badCostos.add(costo);
-      }
+      });
       list = list.filter(r => badCostos.has(r.costo_bruto));
     }
 
@@ -814,11 +814,34 @@ export default function AdminMargenes() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map(r => {
+              {filtered.map((r, idx) => {
                 const negColor = r.margen_clp < 0 ? "var(--red)" : r.margen_pct < 15 ? "var(--amber)" : "var(--green)";
                 const isSelected = selected.has(r.item_id);
+                const prev = idx > 0 ? filtered[idx - 1] : null;
+                const showGroupHeader = agruparPorCosto && (!prev || prev.costo_bruto !== r.costo_bruto);
+                const grp = showGroupHeader ? grupoPorCosto.get(r.costo_bruto) : null;
+                const spanPct = grp && grp.precioMin > 0 ? (grp.precioMax / grp.precioMin - 1) * 100 : 0;
+                const spanColor = spanPct > 20 ? "var(--amber)" : "var(--txt3)";
                 return (
-                  <tr key={r.item_id} style={{ borderBottom: "1px solid var(--bg4)", background: isSelected ? "var(--cyanBg)" : "transparent" }}>
+                  <Fragment key={r.item_id}>
+                  {showGroupHeader && grp && (
+                    <tr style={{ background: "var(--bg3)" }}>
+                      <td colSpan={12} style={{ padding: "6px 10px", fontSize: 10, color: "var(--txt2)" }}>
+                        <span style={{ color: "var(--cyan)", fontWeight: 700 }}>Costo+IVA {fmtCLP(r.costo_bruto)}</span>
+                        <span style={{ marginLeft: 10, color: "var(--txt3)" }}>· {grp.count} {grp.count === 1 ? "item" : "items"}</span>
+                        {grp.count > 1 && (
+                          <>
+                            <span style={{ marginLeft: 10 }}>precio {fmtCLP(grp.precioMin)} – {fmtCLP(grp.precioMax)}</span>
+                            <span style={{ marginLeft: 6, color: spanColor, fontWeight: spanPct > 20 ? 700 : 400 }}>
+                              (span {spanPct.toFixed(0)}%)
+                            </span>
+                            <span style={{ marginLeft: 10, color: "var(--txt3)" }}>margen {grp.margenMin.toFixed(1)}% – {grp.margenMax.toFixed(1)}%</span>
+                          </>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                  <tr style={{ borderBottom: "1px solid var(--bg4)", background: isSelected ? "var(--cyanBg)" : "transparent" }}>
                     <td style={{ padding: "9px 6px", textAlign: "center" }}>
                       <input type="checkbox" checked={isSelected} onChange={() => toggleSelect(r.item_id)} />
                     </td>
@@ -873,6 +896,7 @@ export default function AdminMargenes() {
                     <td className="mono" style={{ padding: "9px 8px", textAlign: "right", color: negColor, fontSize: 10 }}>{Number(r.margen_pct).toFixed(1)}%</td>
                     <td style={{ padding: "9px 8px", textAlign: "center", fontSize: 9, textTransform: "uppercase", color: "var(--txt3)" }}>{r.zona || "—"}</td>
                   </tr>
+                  </Fragment>
                 );
               })}
             </tbody>
