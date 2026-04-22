@@ -80,6 +80,15 @@ const CUBETA_CONFIG: Record<string, { label: string; icon: string; color: string
   muerto: { label: "Muerto", icon: "💀", color: "#666", order: 6 },
 };
 
+// Cuadrante ABC-XYZ — prioridad operativa segun los manuales (BANVA P2 §2.4)
+// Dentro de una cubeta los ESTRELLA se revisan primero, REVISAR al ultimo.
+const CUADRANTE_CONFIG: Record<string, { label: string; icon: string; color: string; priority: number }> = {
+  ESTRELLA:  { label: "Estrella",  icon: "⭐", color: "var(--amber)", priority: 1 },
+  VOLUMEN:   { label: "Volumen",   icon: "📦", color: "var(--cyan)",  priority: 2 },
+  CASHCOW:   { label: "Cash Cow",  icon: "🐮", color: "var(--green)", priority: 3 },
+  REVISAR:   { label: "Revisar",   icon: "🔍", color: "var(--txt3)",  priority: 4 },
+};
+
 const CAUSAS: Record<string, string> = {
   precio_propio_alto: "Precio propio alto",
   precio_competencia_bajo: "Competencia bajo precio",
@@ -126,6 +135,7 @@ export default function AdminSemaforo() {
   const [historial, setHistorial] = useState<HistorialEntry[]>([]);
   const [muertoExpanded, setMuertoExpanded] = useState(false);
   const [muertoFilter, setMuertoFilter] = useState<string | null>(null);
+  const [cuadranteFilter, setCuadranteFilter] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
   // Review form state
@@ -229,13 +239,24 @@ export default function AdminSemaforo() {
   const cubetaOrder = ["cayo", "quiebre_inminente", "ya_quebrado", "despegando", "estancado", "muerto"];
   const semanaNum = getISOWeek(current.semana);
 
-  // Items to show for muerto cubeta
+  // Items to show for muerto cubeta (filter by antiguedad + cuadrante)
+  const baseFiltered = items.filter(i => {
+    if (cuadranteFilter && i.cuadrante !== cuadranteFilter) return false;
+    return true;
+  });
   const muertoItems = selectedCubeta === "muerto"
-    ? items.filter(i => !muertoFilter || i.antiguedad_muerto_bucket === muertoFilter)
-    : items;
+    ? baseFiltered.filter(i => !muertoFilter || i.antiguedad_muerto_bucket === muertoFilter)
+    : baseFiltered;
+  // Ordenar: primero por prioridad de cuadrante (ESTRELLA arriba), luego por impacto desc
+  const sortedItems = [...muertoItems].sort((a, b) => {
+    const pa = CUADRANTE_CONFIG[a.cuadrante || "REVISAR"]?.priority ?? 99;
+    const pb = CUADRANTE_CONFIG[b.cuadrante || "REVISAR"]?.priority ?? 99;
+    if (pa !== pb) return pa - pb;
+    return (b.impacto_clp || 0) - (a.impacto_clp || 0);
+  });
   const displayItems = selectedCubeta === "muerto" && !muertoExpanded
-    ? muertoItems.slice(0, 20)
-    : muertoItems;
+    ? sortedItems.slice(0, 20)
+    : sortedItems;
 
   return (
     <div>
@@ -289,10 +310,37 @@ export default function AdminSemaforo() {
       {selectedCubeta && (
         <div className="card" style={{ marginTop: 8 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-            <div style={{ fontSize: 14, fontWeight: 700 }}>
-              {CUBETA_CONFIG[selectedCubeta]?.icon} {CUBETA_CONFIG[selectedCubeta]?.label} ({current.cubetas[selectedCubeta]?.count || 0})
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 700 }}>
+                {CUBETA_CONFIG[selectedCubeta]?.icon} {CUBETA_CONFIG[selectedCubeta]?.label} ({current.cubetas[selectedCubeta]?.count || 0})
+              </div>
+              {/* Breakdown por cuadrante — muestra urgencia diferenciada */}
+              {items.length > 0 && (
+                <div style={{ display: "flex", gap: 10, marginTop: 4, fontSize: 10, color: "var(--txt3)" }}>
+                  {Object.entries(CUADRANTE_CONFIG).map(([k, cfg]) => {
+                    const cnt = items.filter(i => (i.cuadrante || "REVISAR") === k).length;
+                    if (cnt === 0) return null;
+                    return (
+                      <span key={k} style={{ color: cfg.color, fontWeight: 600 }}>
+                        {cfg.icon} {cnt}
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
             </div>
-            <div style={{ display: "flex", gap: 8 }}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {/* Filtro por cuadrante ABC-XYZ */}
+              <div style={{ display: "flex", gap: 4 }}>
+                <button onClick={() => setCuadranteFilter(null)} style={{ padding: "4px 10px", borderRadius: 6, fontSize: 10, fontWeight: 600, background: cuadranteFilter === null ? "var(--cyan)" : "var(--bg3)", color: cuadranteFilter === null ? "#fff" : "var(--txt2)", border: "1px solid var(--bg4)" }}>
+                  Todos
+                </button>
+                {Object.entries(CUADRANTE_CONFIG).map(([k, cfg]) => (
+                  <button key={k} onClick={() => setCuadranteFilter(cuadranteFilter === k ? null : k)} style={{ padding: "4px 10px", borderRadius: 6, fontSize: 10, fontWeight: 600, background: cuadranteFilter === k ? cfg.color : "var(--bg3)", color: cuadranteFilter === k ? "#0a0e17" : "var(--txt2)", border: "1px solid var(--bg4)" }}>
+                    {cfg.icon} {cfg.label}
+                  </button>
+                ))}
+              </div>
               {selectedCubeta === "muerto" && (
                 <div style={{ display: "flex", gap: 4 }}>
                   {[null, "reciente", "cronico", "fosil"].map(f => (
@@ -319,6 +367,7 @@ export default function AdminSemaforo() {
                     <tr>
                       <th style={{ width: 30 }}></th>
                       <th>SKU</th>
+                      <th style={{ width: 30 }} title="Cuadrante ABC-XYZ"></th>
                       <th>Nombre</th>
                       <th style={{ textAlign: "right" }}>Vel 7d</th>
                       <th style={{ textAlign: "right" }}>Vel 30d</th>
@@ -348,6 +397,9 @@ export default function AdminSemaforo() {
                               <span style={{ marginLeft: 4, fontSize: 9, padding: "1px 4px", borderRadius: 3, background: "var(--red)20", color: "var(--red)", fontWeight: 700 }}>persistente</span>
                             )}
                             {row.ya_revisado && <span style={{ marginLeft: 4 }}>✅</span>}
+                          </td>
+                          <td style={{ textAlign: "center", fontSize: 14 }} title={CUADRANTE_CONFIG[row.cuadrante || "REVISAR"]?.label || "—"}>
+                            {CUADRANTE_CONFIG[row.cuadrante || "REVISAR"]?.icon || "·"}
                           </td>
                           <td style={{ fontSize: 11, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.nombre || "—"}</td>
                           <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{row.vel_7d.toFixed(1)}</td>
@@ -403,7 +455,19 @@ export default function AdminSemaforo() {
         <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.7)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <div style={{ background: "var(--bg2)", borderRadius: 16, padding: 24, width: 520, maxHeight: "90vh", overflow: "auto", border: "1px solid var(--bg4)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-              <div style={{ fontSize: 16, fontWeight: 700 }}>Revisar: {reviewModal.sku_origen}</div>
+              <div style={{ fontSize: 16, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
+                <span>Revisar: {reviewModal.sku_origen}</span>
+                <span style={{
+                  fontSize: 10,
+                  padding: "2px 8px",
+                  borderRadius: 10,
+                  background: CUADRANTE_CONFIG[reviewModal.cuadrante || "REVISAR"]?.color || "var(--bg3)",
+                  color: "#0a0e17",
+                  fontWeight: 700,
+                }}>
+                  {CUADRANTE_CONFIG[reviewModal.cuadrante || "REVISAR"]?.icon} {CUADRANTE_CONFIG[reviewModal.cuadrante || "REVISAR"]?.label || "—"}
+                </span>
+              </div>
               <button onClick={() => setReviewModal(null)} style={{ background: "none", border: "none", color: "var(--txt3)", fontSize: 20, cursor: "pointer" }}>✕</button>
             </div>
 
