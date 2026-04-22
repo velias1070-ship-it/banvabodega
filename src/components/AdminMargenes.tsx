@@ -65,6 +65,7 @@ export default function AdminMargenes() {
   const [soloPromo, setSoloPromo] = useState(false);
   const [sinPromo, setSinPromo] = useState(false);
   const [statusF, setStatusF] = useState<StatusFilter>("active");
+  const [promoFilter, setPromoFilter] = useState<string>("all");
   const [soloDead, setSoloDead] = useState(false);
   const [costoMin, setCostoMin] = useState<string>("");
   const [costoMax, setCostoMax] = useState<string>("");
@@ -299,6 +300,11 @@ export default function AdminMargenes() {
       if (zona !== "all" && r.zona !== zona) return false;
       if (soloPromo && !r.tiene_promo) return false;
       if (sinPromo && r.tiene_promo) return false;
+      if (promoFilter !== "all") {
+        if (!r.tiene_promo) return false;
+        const nombre = (r.promo_name || r.promo_type || "").trim();
+        if (nombre !== promoFilter) return false;
+      }
       if (statusF !== "all") {
         const s = r.status_ml || "";
         if (statusF === "active" && s !== "active") return false;
@@ -358,7 +364,19 @@ export default function AdminMargenes() {
       });
     }
     return list;
-  }, [rows, q, zona, marginF, soloPromo, sinPromo, statusF, soloDead, cMin, cMax, soloInconsistentes, agruparPorCosto, sortKey, sortDir]);
+  }, [rows, q, zona, marginF, soloPromo, sinPromo, statusF, promoFilter, soloDead, cMin, cMax, soloInconsistentes, agruparPorCosto, sortKey, sortDir]);
+
+  // Lista unica de promos activas presentes en rows, con conteo
+  const promosDisponibles = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of rows) {
+      if (!r.tiene_promo) continue;
+      const nombre = (r.promo_name || r.promo_type || "").trim();
+      if (!nombre) continue;
+      m.set(nombre, (m.get(nombre) || 0) + 1);
+    }
+    return Array.from(m.entries()).sort((a, b) => b[1] - a[1]);
+  }, [rows]);
 
   // Stats por grupo de costo — usado en header de grupo y chip "inconsistentes"
   const grupoPorCosto = useMemo(() => {
@@ -891,6 +909,12 @@ export default function AdminMargenes() {
           <option value="paused">Solo pausados</option>
           <option value="other">Otros (closed/review)</option>
           <option value="all">Todos los estados</option>
+        </select>
+        <select value={promoFilter} onChange={e => setPromoFilter(e.target.value)} className="form-input" style={{ flex: "0 0 auto", maxWidth: 220 }} title="Filtrar por promoción activa en la que participan los items">
+          <option value="all">Todas las promos</option>
+          {promosDisponibles.map(([nombre, count]) => (
+            <option key={nombre} value={nombre}>{nombre} ({count})</option>
+          ))}
         </select>
         <select value={zona} onChange={e => setZona(e.target.value as ZonaFilter)} className="form-input" style={{ flex: "0 0 auto" }}>
           <option value="all">Todas las zonas</option>
