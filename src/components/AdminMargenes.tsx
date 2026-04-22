@@ -485,8 +485,20 @@ export default function AdminMargenes() {
     const promo = commonPromos.find(p => (p.id ? `${p.type}::${p.id}` : `${p.type}::_`) === selectedPromoKey);
     if (!promo) return;
 
-    const todosAplicables = [...promo.itemsPostulables, ...promo.itemsActivos];
-    if (todosAplicables.length === 0) { alert("Ningún ítem puede participar de esta promo"); return; }
+    // Solo postular los que todavia NO estan en la promo. Los itemsActivos ya
+    // estan dentro (started/pending) — incluirlos haria que ML devuelva
+    // OFFER_ALREADY_EXISTS para cada uno. Si el precio ya postulado es distinto
+    // al deseado, hay que actualizar via la ruta de update o salir y re-entrar.
+    const todosAplicables = [...promo.itemsPostulables];
+    const yaActivos = promo.itemsActivos.length;
+    if (todosAplicables.length === 0) {
+      alert(
+        yaActivos > 0
+          ? `Todos los items (${yaActivos}) ya estan en esta promo. Si querés cambiar el precio, usá "Salir de promo" y volvé a postular.`
+          : "Ningún ítem puede participar de esta promo"
+      );
+      return;
+    }
 
     // Pre-validar por-item: el min/max de cada item puede ser distinto dentro de
     // la misma campaña. Separar en válidos/inválidos ANTES de mandar a ML.
@@ -543,8 +555,18 @@ export default function AdminMargenes() {
           }),
         });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-        ok++;
+        if (!res.ok) {
+          const msg = String(data.error || `HTTP ${res.status}`);
+          // OFFER_ALREADY_EXISTS = el item ya esta postulado a esta promo.
+          // No es error real, lo contamos como ok silencioso.
+          if (/offer_already_exists/i.test(msg)) {
+            ok++;
+          } else {
+            throw new Error(msg);
+          }
+        } else {
+          ok++;
+        }
       } catch (e) {
         errors.push({ sku: row?.sku || itemId, error: e instanceof Error ? e.message : "Error" });
       }
