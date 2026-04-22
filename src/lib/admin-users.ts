@@ -30,7 +30,6 @@ export const ADMIN_TAB_CATALOG: Array<{ key: string; label: string; group: strin
   { key: "timeline", label: "Timeline", group: "Inventario" },
   { key: "prod", label: "Productos", group: "Inventario" },
   { key: "costoauditoria", label: "Auditoria Costos", group: "Inventario" },
-  { key: "stockml", label: "Stock ML", group: "Inventario" },
   { key: "intel", label: "Inteligencia", group: "Inteligencia" },
   { key: "semaforo", label: "Semaforo", group: "Inteligencia" },
   { key: "compras", label: "Compras", group: "Inteligencia" },

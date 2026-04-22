@@ -199,21 +199,33 @@ async function runRefresh(force = false) {
       costoMap.set(p.sku, p.costo_promedio || 0);
     }
 
-    // 6. Calculate dias_sin_venta from orders_history
-    const { data: lastSales } = await sb
-      .from("orders_history")
-      .select("sku_venta, fecha")
-      .order("fecha", { ascending: false });
-
-    // Map sku_venta -> sku_origen via composicion_venta
+    // 6. Calculate dias_sin_venta from orders_history.
+    // Paginar: Supabase retorna max 1000 rows por default; truncar silenciosamente
+    // clasifica como "nunca vendió" (999) SKUs que vendieron hace >14 días.
     const { data: compRows } = await sb.from("composicion_venta").select("sku_venta, sku_origen");
     const svToSo = new Map<string, string>();
     for (const c of compRows || []) svToSo.set(c.sku_venta, c.sku_origen);
 
     const lastSaleMap = new Map<string, string>();
-    for (const o of lastSales || []) {
-      const so = svToSo.get(o.sku_venta) || o.sku_venta;
-      if (!lastSaleMap.has(so)) lastSaleMap.set(so, o.fecha);
+    const LAST_SALES_PAGE = 1000;
+    let lsOffset = 0;
+    while (true) {
+      const { data: lastSales, error: lsErr } = await sb
+        .from("orders_history")
+        .select("sku_venta, fecha")
+        .order("fecha", { ascending: false })
+        .range(lsOffset, lsOffset + LAST_SALES_PAGE - 1);
+      if (lsErr) {
+        console.error("[semaforo] lastSales query error:", lsErr.message);
+        break;
+      }
+      if (!lastSales || lastSales.length === 0) break;
+      for (const o of lastSales) {
+        const so = svToSo.get(o.sku_venta) || o.sku_venta;
+        if (!lastSaleMap.has(so)) lastSaleMap.set(so, o.fecha);
+      }
+      if (lastSales.length < LAST_SALES_PAGE) break;
+      lsOffset += LAST_SALES_PAGE;
     }
 
     const now = new Date();
