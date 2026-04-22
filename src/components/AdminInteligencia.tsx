@@ -449,6 +449,21 @@ export default function AdminInteligencia() {
   const [creandoPicking, setCreandoPicking] = useState(false);
   const [pickingCreado, setPickingCreado] = useState<string | null>(null);
   const [envioExcluidosOpen, setEnvioExcluidosOpen] = useState(false);
+  // Historial de envios a Full
+  const [historialEnvios, setHistorialEnvios] = useState<Array<{
+    id: string; picking_session_id: string | null; fecha: string;
+    total_skus: number; total_uds_venta: number; total_uds_fisicas: number;
+    total_bultos: number; evento_activo: string | null; multiplicador_evento: number;
+    created_at: string;
+  }>>([]);
+  const [historialLineasOpen, setHistorialLineasOpen] = useState<string | null>(null);
+  const [historialLineas, setHistorialLineas] = useState<Array<{
+    sku_venta: string; sku_origen: string; cantidad_sugerida: number; cantidad_enviada: number;
+    fue_editada: boolean; abc: string | null; vel_ponderada: number | null;
+    stock_full_antes: number | null; stock_bodega_antes: number | null;
+    cob_full_antes: number | null; inner_pack: number | null; alertas: string[] | null;
+  }>>([]);
+  const [historialOpen, setHistorialOpen] = useState(false);
 
   // Filtros
   const [filtroAccion, setFiltroAccion] = useState<string>("todos");
@@ -543,6 +558,42 @@ export default function AdminInteligencia() {
     }
     setCatalogoPorSku(map);
   }, []);
+
+  // Historial de envios: carga al entrar al tab "Envio a Full"
+  useEffect(() => {
+    if (vistaEnvio && historialEnvios.length === 0) {
+      cargarHistorialEnvios();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vistaEnvio]);
+
+  const cargarHistorialEnvios = useCallback(async () => {
+    try {
+      const res = await fetch("/api/intelligence/envio-full-historial");
+      if (!res.ok) return;
+      const j = await res.json();
+      setHistorialEnvios(j.cabeceras || []);
+    } catch (err) {
+      console.error("[envio-full-historial] cargar:", err);
+    }
+  }, []);
+
+  const toggleLineasEnvio = useCallback(async (envioId: string) => {
+    if (historialLineasOpen === envioId) {
+      setHistorialLineasOpen(null);
+      setHistorialLineas([]);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/intelligence/envio-full-historial?id=${envioId}`);
+      if (!res.ok) return;
+      const j = await res.json();
+      setHistorialLineas(j.lineas || []);
+      setHistorialLineasOpen(envioId);
+    } catch (err) {
+      console.error("[envio-full-historial] detalle:", err);
+    }
+  }, [historialLineasOpen]);
 
   const cargarUltimasRecepciones = useCallback(async () => {
     const sb = getSupabase();
@@ -2307,6 +2358,105 @@ export default function AdminInteligencia() {
               </div>
             </>
           })()}
+
+          {/* ═══ HISTORIAL DE ENVIOS A FULL ═══ */}
+          <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid var(--bg4)" }}>
+            <button
+              onClick={() => { setHistorialOpen(!historialOpen); if (!historialOpen) cargarHistorialEnvios(); }}
+              style={{
+                background: "transparent", border: "none", color: "var(--txt2)",
+                fontSize: 12, fontWeight: 600, cursor: "pointer", padding: "4px 0",
+                display: "flex", alignItems: "center", gap: 6,
+              }}
+            >
+              <span style={{ fontSize: 10 }}>{historialOpen ? "▼" : "▶"}</span>
+              📜 Historial de envíos ({historialEnvios.length})
+            </button>
+            {historialOpen && (
+              <div style={{ marginTop: 12 }}>
+                {historialEnvios.length === 0 ? (
+                  <div style={{ color: "var(--txt3)", fontSize: 11, padding: 12 }}>Sin envíos registrados.</div>
+                ) : (
+                  <div style={{ overflowX: "auto" }}>
+                    <table className="tbl" style={{ fontSize: 11, width: "100%" }}>
+                      <thead>
+                        <tr>
+                          <th style={{ textAlign: "left" }}>Fecha</th>
+                          <th style={{ textAlign: "right" }}>SKUs</th>
+                          <th style={{ textAlign: "right" }}>Uds venta</th>
+                          <th style={{ textAlign: "right" }}>Uds físicas</th>
+                          <th style={{ textAlign: "right" }}>Bultos</th>
+                          <th style={{ textAlign: "left" }}>Evento</th>
+                          <th style={{ textAlign: "center" }}></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {historialEnvios.map(e => {
+                          const abierto = historialLineasOpen === e.id;
+                          const fechaStr = new Date(e.created_at).toLocaleString("es-CL", { dateStyle: "short", timeStyle: "short" });
+                          return (
+                            <>
+                              <tr key={e.id} onClick={() => toggleLineasEnvio(e.id)} style={{ cursor: "pointer", background: abierto ? "var(--bg3)" : undefined }}>
+                                <td>{fechaStr}</td>
+                                <td className="mono" style={{ textAlign: "right" }}>{e.total_skus}</td>
+                                <td className="mono" style={{ textAlign: "right" }}>{fmtInt(e.total_uds_venta)}</td>
+                                <td className="mono" style={{ textAlign: "right" }}>{fmtInt(e.total_uds_fisicas)}</td>
+                                <td className="mono" style={{ textAlign: "right" }}>{fmtInt(e.total_bultos)}</td>
+                                <td style={{ color: e.evento_activo ? "var(--amber)" : "var(--txt3)" }}>{e.evento_activo || "—"}</td>
+                                <td style={{ textAlign: "center", color: "var(--txt3)", fontSize: 10 }}>{abierto ? "▼" : "▶"}</td>
+                              </tr>
+                              {abierto && (
+                                <tr key={`${e.id}-det`}>
+                                  <td colSpan={7} style={{ padding: 0, background: "var(--bg2)" }}>
+                                    <div style={{ padding: 10 }}>
+                                      {historialLineas.length === 0 ? (
+                                        <div style={{ color: "var(--txt3)", fontSize: 10 }}>Cargando...</div>
+                                      ) : (
+                                        <table className="tbl" style={{ fontSize: 10, width: "100%" }}>
+                                          <thead>
+                                            <tr>
+                                              <th style={{ textAlign: "left" }}>SKU Venta</th>
+                                              <th style={{ textAlign: "left" }}>SKU Origen</th>
+                                              <th style={{ textAlign: "right" }}>Sugerido</th>
+                                              <th style={{ textAlign: "right" }}>Enviado</th>
+                                              <th style={{ textAlign: "center" }}>ABC</th>
+                                              <th style={{ textAlign: "right" }}>Vel.pond</th>
+                                              <th style={{ textAlign: "right" }}>Stock Full antes</th>
+                                              <th style={{ textAlign: "right" }}>Bodega antes</th>
+                                              <th style={{ textAlign: "center" }}>Editado</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {historialLineas.map((l, i) => (
+                                              <tr key={i}>
+                                                <td className="mono">{l.sku_venta}</td>
+                                                <td className="mono" style={{ color: "var(--txt3)" }}>{l.sku_origen}</td>
+                                                <td className="mono" style={{ textAlign: "right", color: "var(--txt3)" }}>{fmtInt(l.cantidad_sugerida)}</td>
+                                                <td className="mono" style={{ textAlign: "right", fontWeight: 700 }}>{fmtInt(l.cantidad_enviada)}</td>
+                                                <td style={{ textAlign: "center" }}>{l.abc || "—"}</td>
+                                                <td className="mono" style={{ textAlign: "right" }}>{l.vel_ponderada != null ? fmtN(l.vel_ponderada, 1) : "—"}</td>
+                                                <td className="mono" style={{ textAlign: "right" }}>{l.stock_full_antes ?? "—"}</td>
+                                                <td className="mono" style={{ textAlign: "right" }}>{l.stock_bodega_antes ?? "—"}</td>
+                                                <td style={{ textAlign: "center", color: l.fue_editada ? "var(--amber)" : "var(--txt3)" }}>{l.fue_editada ? "✏" : "—"}</td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      )}
+                                    </div>
+                                  </td>
+                                </tr>
+                              )}
+                            </>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
