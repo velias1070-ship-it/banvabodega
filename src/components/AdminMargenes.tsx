@@ -15,6 +15,7 @@ type MarginRow = {
   promo_type: string | null;
   promo_name: string | null;
   promo_pct: number | null;
+  status_ml: string | null;
   costo_neto: number;
   costo_bruto: number;
   peso_facturable: number;
@@ -42,6 +43,7 @@ type SortKey =
 
 type ZonaFilter = "all" | "barato" | "medio" | "caro";
 type MarginFilter = "all" | "neg" | "low" | "mid" | "high";
+type StatusFilter = "all" | "active" | "paused" | "other";
 
 type TicketData = { sku_venta: string; unidades_30d: number; ticket_30d: number; unidades_7d: number; ticket_7d: number };
 
@@ -62,6 +64,7 @@ export default function AdminMargenes() {
   const [marginF, setMarginF] = useState<MarginFilter>("all");
   const [soloPromo, setSoloPromo] = useState(false);
   const [sinPromo, setSinPromo] = useState(false);
+  const [statusF, setStatusF] = useState<StatusFilter>("active");
   const [soloDead, setSoloDead] = useState(false);
   const [costoMin, setCostoMin] = useState<string>("");
   const [costoMax, setCostoMax] = useState<string>("");
@@ -296,6 +299,12 @@ export default function AdminMargenes() {
       if (zona !== "all" && r.zona !== zona) return false;
       if (soloPromo && !r.tiene_promo) return false;
       if (sinPromo && r.tiene_promo) return false;
+      if (statusF !== "all") {
+        const s = r.status_ml || "";
+        if (statusF === "active" && s !== "active") return false;
+        if (statusF === "paused" && s !== "paused") return false;
+        if (statusF === "other" && (s === "active" || s === "paused")) return false;
+      }
       // Dead zone: precio_venta en [19990, 28250] (aprox) donde margen < sweet spot bajo threshold
       if (soloDead) {
         if (r.precio_venta < 19990) return false;
@@ -349,7 +358,7 @@ export default function AdminMargenes() {
       });
     }
     return list;
-  }, [rows, q, zona, marginF, soloPromo, sinPromo, soloDead, cMin, cMax, soloInconsistentes, agruparPorCosto, sortKey, sortDir]);
+  }, [rows, q, zona, marginF, soloPromo, sinPromo, statusF, soloDead, cMin, cMax, soloInconsistentes, agruparPorCosto, sortKey, sortDir]);
 
   // Stats por grupo de costo — usado en header de grupo y chip "inconsistentes"
   const grupoPorCosto = useMemo(() => {
@@ -877,6 +886,12 @@ export default function AdminMargenes() {
           style={{ flex: "1 1 240px", minWidth: 200 }}
           title={'Busqueda flexible:\n- Palabras sueltas: "sabana 144" matchea "Sabanas Cannon 144 Hilos" (sin acentos, tolera plurales)\n- Operadores numericos: precio<30000, precio>=20000, costo<15000, margen<10, margen>=20, comision>5000, envio>0\n- Flags: sin-costo, con-promo, sin-promo, en-perdida\n- Combinable: "cannon 144 precio>40000 margen<15"'}
         />
+        <select value={statusF} onChange={e => setStatusF(e.target.value as StatusFilter)} className="form-input" style={{ flex: "0 0 auto" }} title="Filtrar por estado de la publicación en ML">
+          <option value="active">Solo activos en ML</option>
+          <option value="paused">Solo pausados</option>
+          <option value="other">Otros (closed/review)</option>
+          <option value="all">Todos los estados</option>
+        </select>
         <select value={zona} onChange={e => setZona(e.target.value as ZonaFilter)} className="form-input" style={{ flex: "0 0 auto" }}>
           <option value="all">Todas las zonas</option>
           <option value="barato">Barato (&lt;$9.990)</option>

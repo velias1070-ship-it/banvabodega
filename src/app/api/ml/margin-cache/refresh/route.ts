@@ -307,6 +307,7 @@ async function handleRefresh(req: NextRequest) {
       promo_type: promoType,
       promo_name: promoName,
       promo_pct: promoPct,
+      status_ml: row.status_ml || null,
       costo_neto: costoNeto,
       costo_bruto: costoBruto,
       peso_facturable: Math.round(pesoFacturable),
