@@ -111,7 +111,7 @@ function LoginGate({ onLogin }: { onLogin: (pin: string, remember: boolean) => P
   );
 }
 
-type AdminTab = "dash"|"rec"|"discrepancias"|"flex"|"enviosfull"|"ops"|"inv"|"mov"|"prod"|"costoauditoria"|"reposicion"|"intel"|"semaforo"|"compras"|"eventos"|"ventasdash"|"ventasord"|"comercial"|"margenes"|"agentes"|"stockml"|"timeline"|"config";
+type AdminTab = "dash"|"rec"|"discrepancias"|"flex"|"enviosfull"|"ops"|"inv"|"mov"|"prod"|"costoauditoria"|"reposicion"|"intel"|"semaforo"|"compras"|"eventos"|"ventasdash"|"ventasord"|"comercial"|"margenes"|"agentes"|"timeline"|"config";
 
 const MOBILE_MENU_SECTIONS = [
   { section: "Principal", items: [

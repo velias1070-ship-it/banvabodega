@@ -58,6 +58,10 @@ export default function AdminMargenes() {
   const [marginF, setMarginF] = useState<MarginFilter>("all");
   const [soloPromo, setSoloPromo] = useState(false);
   const [soloDead, setSoloDead] = useState(false);
+  const [costoMin, setCostoMin] = useState<string>("");
+  const [costoMax, setCostoMax] = useState<string>("");
+  const [agruparPorCosto, setAgruparPorCosto] = useState(false);
+  const [soloInconsistentes, setSoloInconsistentes] = useState(false);
 
   // Sort
   const [sortKey, setSortKey] = useState<SortKey>("margen_pct");
@@ -203,6 +207,9 @@ export default function AdminMargenes() {
     }
   };
 
+  const cMin = costoMin ? Number(costoMin.replace(/\D/g, "")) : null;
+  const cMax = costoMax ? Number(costoMax.replace(/\D/g, "")) : null;
+
   const filtered = useMemo(() => {
     const qLower = q.trim().toLowerCase();
     let list = rows.filter(r => {
@@ -214,24 +221,74 @@ export default function AdminMargenes() {
         if (r.precio_venta < 19990) return false;
         if (r.margen_pct >= 22) return false;
       }
+      if (cMin !== null && r.costo_bruto < cMin) return false;
+      if (cMax !== null && r.costo_bruto > cMax) return false;
       if (marginF === "neg" && r.margen_pct >= 0) return false;
       if (marginF === "low" && (r.margen_pct < 0 || r.margen_pct >= 15)) return false;
       if (marginF === "mid" && (r.margen_pct < 15 || r.margen_pct >= 30)) return false;
       if (marginF === "high" && r.margen_pct < 30) return false;
       return true;
     });
-    list = [...list].sort((a, b) => {
-      const av = a[sortKey] as number | string;
-      const bv = b[sortKey] as number | string;
-      if (typeof av === "number" && typeof bv === "number") {
-        return sortDir === "asc" ? av - bv : bv - av;
+
+    // "Precios inconsistentes": filas cuyo costo_bruto es compartido por >=2 items
+    // y el rango de precios dentro de ese grupo excede 20% (max/min - 1 > 0.20).
+    if (soloInconsistentes) {
+      const byCosto = new Map<number, MarginRow[]>();
+      for (const r of list) {
+        if (r.costo_bruto <= 0) continue;
+        if (!byCosto.has(r.costo_bruto)) byCosto.set(r.costo_bruto, []);
+        byCosto.get(r.costo_bruto)!.push(r);
       }
-      return sortDir === "asc"
-        ? String(av).localeCompare(String(bv))
-        : String(bv).localeCompare(String(av));
-    });
+      const badCostos = new Set<number>();
+      for (const [costo, items] of byCosto) {
+        if (items.length < 2) continue;
+        const precios = items.map(x => x.precio_venta).filter(p => p > 0);
+        if (precios.length < 2) continue;
+        const mn = Math.min(...precios);
+        const mx = Math.max(...precios);
+        if (mn > 0 && (mx / mn - 1) > 0.20) badCostos.add(costo);
+      }
+      list = list.filter(r => badCostos.has(r.costo_bruto));
+    }
+
+    if (agruparPorCosto) {
+      list = [...list].sort((a, b) => {
+        if (a.costo_bruto !== b.costo_bruto) return b.costo_bruto - a.costo_bruto;
+        return b.precio_venta - a.precio_venta;
+      });
+    } else {
+      list = [...list].sort((a, b) => {
+        const av = a[sortKey] as number | string;
+        const bv = b[sortKey] as number | string;
+        if (typeof av === "number" && typeof bv === "number") {
+          return sortDir === "asc" ? av - bv : bv - av;
+        }
+        return sortDir === "asc"
+          ? String(av).localeCompare(String(bv))
+          : String(bv).localeCompare(String(av));
+      });
+    }
     return list;
-  }, [rows, q, zona, marginF, soloPromo, soloDead, sortKey, sortDir]);
+  }, [rows, q, zona, marginF, soloPromo, soloDead, cMin, cMax, soloInconsistentes, agruparPorCosto, sortKey, sortDir]);
+
+  // Stats por grupo de costo — usado en header de grupo y chip "inconsistentes"
+  const grupoPorCosto = useMemo(() => {
+    const m = new Map<number, { count: number; precioMin: number; precioMax: number; margenMin: number; margenMax: number }>();
+    for (const r of filtered) {
+      if (r.costo_bruto <= 0) continue;
+      const ex = m.get(r.costo_bruto);
+      if (!ex) {
+        m.set(r.costo_bruto, { count: 1, precioMin: r.precio_venta, precioMax: r.precio_venta, margenMin: Number(r.margen_pct), margenMax: Number(r.margen_pct) });
+      } else {
+        ex.count++;
+        ex.precioMin = Math.min(ex.precioMin, r.precio_venta);
+        ex.precioMax = Math.max(ex.precioMax, r.precio_venta);
+        ex.margenMin = Math.min(ex.margenMin, Number(r.margen_pct));
+        ex.margenMax = Math.max(ex.margenMax, Number(r.margen_pct));
+      }
+    }
+    return m;
+  }, [filtered]);
 
   const toggleSort = (k: SortKey) => {
     if (k === sortKey) setSortDir(d => (d === "asc" ? "desc" : "asc"));
@@ -690,6 +747,34 @@ export default function AdminMargenes() {
         </label>
         <label style={{ fontSize: 11, color: "var(--txt2)", display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
           <input type="checkbox" checked={soloDead} onChange={e => setSoloDead(e.target.checked)} /> Solo dead zone
+        </label>
+        <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "var(--txt2)" }}>
+          <span style={{ color: "var(--txt3)" }}>Costo+IVA</span>
+          <input
+            type="text"
+            inputMode="numeric"
+            placeholder="min"
+            value={costoMin}
+            onChange={e => setCostoMin(e.target.value)}
+            className="form-input"
+            style={{ width: 80, padding: "4px 6px", fontSize: 11 }}
+          />
+          <span style={{ color: "var(--txt3)" }}>–</span>
+          <input
+            type="text"
+            inputMode="numeric"
+            placeholder="max"
+            value={costoMax}
+            onChange={e => setCostoMax(e.target.value)}
+            className="form-input"
+            style={{ width: 80, padding: "4px 6px", fontSize: 11 }}
+          />
+        </div>
+        <label style={{ fontSize: 11, color: "var(--txt2)", display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+          <input type="checkbox" checked={agruparPorCosto} onChange={e => setAgruparPorCosto(e.target.checked)} /> Agrupar por costo
+        </label>
+        <label style={{ fontSize: 11, color: soloInconsistentes ? "var(--amber)" : "var(--txt2)", display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+          <input type="checkbox" checked={soloInconsistentes} onChange={e => setSoloInconsistentes(e.target.checked)} /> Precios inconsistentes
         </label>
       </div>
 
