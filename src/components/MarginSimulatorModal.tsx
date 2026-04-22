@@ -52,6 +52,10 @@ export type SimulatorItem = {
   tiene_promo?: boolean;
   promo_pct?: number | null;
   promo_type?: string | null;
+  ticket_30d?: number;           // ticket promedio real (revenue/uds, 30d)
+  unidades_30d?: number;
+  ticket_7d?: number;
+  unidades_7d?: number;
 };
 
 type Props = {
@@ -522,6 +526,38 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
             )}
           </div>
         </div>
+        {(item.unidades_30d && item.unidades_30d > 0) ? (() => {
+          const t30 = item.ticket_30d || 0;
+          const u30 = item.unidades_30d || 0;
+          const t7 = item.ticket_7d || 0;
+          const u7 = item.unidades_7d || 0;
+          const diff = precioVenta > 0 ? ((t30 - precioVenta) / precioVenta) * 100 : 0;
+          const diffColor = Math.abs(diff) < 3 ? "var(--txt3)" : diff < -5 ? "var(--amber)" : "var(--cyan)";
+          return (
+            <div style={{ padding: "10px 20px", borderBottom: "1px solid var(--bg4)", display: "flex", gap: 20, fontSize: 10, color: "var(--txt2)", flexWrap: "wrap" }}>
+              <div>
+                <div style={{ color: "var(--txt3)", fontSize: 9, textTransform: "uppercase", marginBottom: 2 }}>Ticket 30d</div>
+                <div className="mono" style={{ fontSize: 12, fontWeight: 700 }}>{fmtCLP(t30)}</div>
+                <div style={{ fontSize: 9, color: diffColor }}>
+                  {u30} uds · {diff >= 0 ? "+" : ""}{diff.toFixed(1)}% vs precio actual
+                </div>
+              </div>
+              {u7 > 0 && (
+                <div>
+                  <div style={{ color: "var(--txt3)", fontSize: 9, textTransform: "uppercase", marginBottom: 2 }}>Ticket 7d</div>
+                  <div className="mono" style={{ fontSize: 12, fontWeight: 700 }}>{fmtCLP(t7)}</div>
+                  <div style={{ fontSize: 9, color: "var(--txt3)" }}>{u7} uds</div>
+                </div>
+              )}
+              <div style={{ flex: 1, alignSelf: "center", fontSize: 9, color: "var(--txt3)", fontStyle: "italic" }}>
+                {Math.abs(diff) < 3 ? "El precio actual refleja lo que realmente se vende."
+                  : diff < -5 ? "Vende más barato de lo listado — descuentos crónicos o promos."
+                  : diff > 3 ? "Vende más caro de lo listado — precio reciente, pocas ventas al nuevo."
+                  : ""}
+              </div>
+            </div>
+          );
+        })() : null}
         {cacheStale && (
           <div style={{ padding: "8px 20px", fontSize: 10, color: "var(--amber)", background: "var(--amberBg)", borderBottom: "1px solid var(--amberBd)", borderTop: "1px solid var(--amberBd)" }}>
             ⚠ Cache de Márgenes desactualizado: {cacheStaleMsg} Se va a auto-sincronizar cuando apliques una acción.

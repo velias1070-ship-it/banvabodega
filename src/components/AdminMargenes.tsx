@@ -173,6 +173,7 @@ export default function AdminMargenes() {
         if (params.get("sim") === "1") {
           const row = items.find(r => r.sku.toUpperCase() === skuParam.toUpperCase());
           if (row) {
+            const tk = ticketMap.get(row.sku);
             setSimItem({
               item_id: row.item_id,
               sku: row.sku,
@@ -185,6 +186,10 @@ export default function AdminMargenes() {
               tiene_promo: row.tiene_promo,
               promo_pct: row.promo_pct,
               promo_type: row.promo_type,
+              ticket_30d: tk?.ticket_30d,
+              unidades_30d: tk?.unidades_30d,
+              ticket_7d: tk?.ticket_7d,
+              unidades_7d: tk?.unidades_7d,
             });
           }
         }
@@ -945,7 +950,6 @@ export default function AdminMargenes() {
                 <SortHeader k="titulo" label="Título" align="left" />
                 <SortHeader k="peso_facturable" label="Peso" />
                 <SortHeader k="precio_venta" label="Precio venta" />
-                <th style={{ padding: "10px 8px", textAlign: "right", fontSize: 10, color: "var(--txt3)" }} title="Ticket promedio = revenue / unidades en ventas_ml_cache (últimos 30d, no anuladas)">Ticket 30d</th>
                 <SortHeader k="costo_bruto" label="Costo+IVA" />
                 <SortHeader k="comision_clp" label="Comisión" />
                 <SortHeader k="envio_clp" label="Envío" />
@@ -982,7 +986,7 @@ export default function AdminMargenes() {
                             style={{ cursor: "pointer" }}
                           />
                         </td>
-                        <td colSpan={12} style={{ padding: "6px 10px", fontSize: 10, color: "var(--txt2)" }}>
+                        <td colSpan={11} style={{ padding: "6px 10px", fontSize: 10, color: "var(--txt2)" }}>
                           <span style={{ color: "var(--cyan)", fontWeight: 700 }}>Costo+IVA {fmtCLP(r.costo_bruto)}</span>
                           <span style={{ marginLeft: 10, color: "var(--txt3)" }}>· {grp.count} {grp.count === 1 ? "item" : "items"}</span>
                           {grp.count > 1 && (
@@ -1007,19 +1011,26 @@ export default function AdminMargenes() {
                     </td>
                     <td style={{ padding: "9px 4px", textAlign: "center" }}>
                       <button
-                        onClick={() => setSimItem({
-                          item_id: r.item_id,
-                          sku: r.sku,
-                          titulo: r.titulo,
-                          price_ml: r.price_ml,
-                          precio_venta: r.precio_venta,
-                          costo_bruto: r.costo_bruto,
-                          peso_facturable: r.peso_facturable,
-                          comision_pct: Number(r.comision_pct),
-                          tiene_promo: r.tiene_promo,
-                          promo_pct: r.promo_pct,
-                          promo_type: r.promo_type,
-                        })}
+                        onClick={() => {
+                          const tk = ticketMap.get(r.sku);
+                          setSimItem({
+                            item_id: r.item_id,
+                            sku: r.sku,
+                            titulo: r.titulo,
+                            price_ml: r.price_ml,
+                            precio_venta: r.precio_venta,
+                            costo_bruto: r.costo_bruto,
+                            peso_facturable: r.peso_facturable,
+                            comision_pct: Number(r.comision_pct),
+                            tiene_promo: r.tiene_promo,
+                            promo_pct: r.promo_pct,
+                            promo_type: r.promo_type,
+                            ticket_30d: tk?.ticket_30d,
+                            unidades_30d: tk?.unidades_30d,
+                            ticket_7d: tk?.ticket_7d,
+                            unidades_7d: tk?.unidades_7d,
+                          });
+                        }}
                         title="Simulador de margen"
                         style={{ padding: "2px 6px", borderRadius: 4, fontSize: 11, background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)", cursor: "pointer" }}
                       >📊</button>
@@ -1049,22 +1060,6 @@ export default function AdminMargenes() {
                         </div>
                       )}
                     </td>
-                    {(() => {
-                      const t = ticketMap.get(r.sku);
-                      if (!t || t.unidades_30d === 0) {
-                        return <td className="mono" style={{ padding: "9px 8px", textAlign: "right", fontSize: 10, color: "var(--txt3)" }}>—</td>;
-                      }
-                      const diff = r.precio_venta > 0 ? ((t.ticket_30d - r.precio_venta) / r.precio_venta) * 100 : 0;
-                      const diffColor = Math.abs(diff) < 3 ? "var(--txt3)" : diff < -5 ? "var(--amber)" : "var(--cyan)";
-                      return (
-                        <td className="mono" style={{ padding: "9px 8px", textAlign: "right", fontSize: 10 }} title={`${t.unidades_30d} uds vendidas en 30d\nTicket 7d: ${fmtCLP(t.ticket_7d)} (${t.unidades_7d} uds)`}>
-                          <div style={{ color: "var(--txt2)" }}>{fmtCLP(t.ticket_30d)}</div>
-                          <div style={{ fontSize: 9, color: diffColor }}>
-                            {t.unidades_30d} uds · {diff >= 0 ? "+" : ""}{diff.toFixed(0)}%
-                          </div>
-                        </td>
-                      );
-                    })()}
                     <td className="mono" style={{ padding: "9px 8px", textAlign: "right", color: "var(--txt2)", fontSize: 10 }}>{fmtCLP(r.costo_bruto)}</td>
                     <td className="mono" style={{ padding: "9px 8px", textAlign: "right", color: "var(--txt2)", fontSize: 10 }}>{fmtCLP(r.comision_clp)}</td>
                     <td className="mono" style={{ padding: "9px 8px", textAlign: "right", color: "var(--txt2)", fontSize: 10 }}>{fmtCLP(r.envio_clp)}</td>
