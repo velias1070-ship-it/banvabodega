@@ -2461,10 +2461,42 @@ function AdminUltimaMilla({ refresh }: { refresh: () => void }) {
 }
 
 // ==================== ADMIN PICKING FLEX ====================
+interface EnvioHistorialCabecera {
+  id: string;
+  picking_session_id: string | null;
+  fecha: string;
+  total_skus: number;
+  total_uds_venta: number;
+  total_uds_fisicas: number;
+  total_bultos: number;
+  evento_activo: string | null;
+  multiplicador_evento: number;
+  created_at: string;
+}
+
+interface EnvioHistorialLinea {
+  sku_venta: string;
+  sku_origen: string;
+  cantidad_sugerida: number;
+  cantidad_enviada: number;
+  fue_editada: boolean;
+  abc: string | null;
+  vel_ponderada: number | null;
+  stock_full_antes: number | null;
+  stock_bodega_antes: number | null;
+  cob_full_antes: number | null;
+  inner_pack: number | null;
+  alertas: string[] | null;
+}
+
 function AdminEnviosFull({ refresh }: { refresh: () => void }) {
   const [sessions, setSessions] = useState<DBPickingSession[]>([]);
   const [loading, setLoading] = useState(false);
   const [selSession, setSelSession] = useState<DBPickingSession | null>(null);
+  const [historial, setHistorial] = useState<EnvioHistorialCabecera[]>([]);
+  const [historialOpen, setHistorialOpen] = useState(false);
+  const [lineasAbiertoId, setLineasAbiertoId] = useState<string | null>(null);
+  const [lineas, setLineas] = useState<EnvioHistorialLinea[]>([]);
 
   const loadSessions = async () => {
     setLoading(true);
@@ -2477,7 +2509,35 @@ function AdminEnviosFull({ refresh }: { refresh: () => void }) {
     setLoading(false);
   };
 
-  useEffect(() => { loadSessions(); }, []);
+  const loadHistorial = async () => {
+    try {
+      const res = await fetch("/api/intelligence/envio-full-historial");
+      if (!res.ok) return;
+      const j = await res.json();
+      setHistorial(j.cabeceras || []);
+    } catch (err) {
+      console.error("[envio-full-historial] cargar:", err);
+    }
+  };
+
+  const toggleLineas = async (envioId: string) => {
+    if (lineasAbiertoId === envioId) {
+      setLineasAbiertoId(null);
+      setLineas([]);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/intelligence/envio-full-historial?id=${envioId}`);
+      if (!res.ok) return;
+      const j = await res.json();
+      setLineas(j.lineas || []);
+      setLineasAbiertoId(envioId);
+    } catch (err) {
+      console.error("[envio-full-historial] detalle:", err);
+    }
+  };
+
+  useEffect(() => { loadSessions(); loadHistorial(); }, []);
 
   if (selSession) {
     return <PickingSessionDetail session={selSession} onBack={() => { setSelSession(null); loadSessions(); }}/>;
@@ -2528,6 +2588,105 @@ function AdminEnviosFull({ refresh }: { refresh: () => void }) {
           </div>
         );
       })}
+
+      {/* ═══ HISTORIAL DE ENVIOS COMPLETADOS ═══ */}
+      <div style={{marginTop:32,paddingTop:16,borderTop:"1px solid var(--bg4)"}}>
+        <button
+          onClick={() => { setHistorialOpen(!historialOpen); if (!historialOpen && historial.length === 0) loadHistorial(); }}
+          style={{
+            background:"transparent",border:"none",color:"var(--txt2)",
+            fontSize:13,fontWeight:600,cursor:"pointer",padding:"4px 0",
+            display:"flex",alignItems:"center",gap:8,
+          }}
+        >
+          <span style={{fontSize:10}}>{historialOpen ? "▼" : "▶"}</span>
+          📜 Historial de envíos ({historial.length})
+        </button>
+        {historialOpen && (
+          <div style={{marginTop:12}}>
+            {historial.length === 0 ? (
+              <div style={{color:"var(--txt3)",fontSize:12,padding:12,textAlign:"center"}}>Sin envíos registrados en historial.</div>
+            ) : (
+              <div style={{overflowX:"auto"}}>
+                <table className="tbl" style={{fontSize:12,width:"100%"}}>
+                  <thead>
+                    <tr>
+                      <th style={{textAlign:"left"}}>Fecha</th>
+                      <th style={{textAlign:"right"}}>SKUs</th>
+                      <th style={{textAlign:"right"}}>Uds venta</th>
+                      <th style={{textAlign:"right"}}>Uds físicas</th>
+                      <th style={{textAlign:"right"}}>Bultos</th>
+                      <th style={{textAlign:"left"}}>Evento</th>
+                      <th style={{textAlign:"center",width:30}}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {historial.map(e => {
+                      const abierto = lineasAbiertoId === e.id;
+                      const fechaStr = new Date(e.created_at).toLocaleString("es-CL", { dateStyle: "short", timeStyle: "short" });
+                      return (
+                        <React.Fragment key={e.id}>
+                          <tr onClick={() => toggleLineas(e.id)} style={{cursor:"pointer",background:abierto?"var(--bg3)":undefined}}>
+                            <td>{fechaStr}</td>
+                            <td className="mono" style={{textAlign:"right"}}>{e.total_skus}</td>
+                            <td className="mono" style={{textAlign:"right"}}>{e.total_uds_venta.toLocaleString("es-CL")}</td>
+                            <td className="mono" style={{textAlign:"right"}}>{e.total_uds_fisicas.toLocaleString("es-CL")}</td>
+                            <td className="mono" style={{textAlign:"right"}}>{e.total_bultos.toLocaleString("es-CL")}</td>
+                            <td style={{color:e.evento_activo?"var(--amber)":"var(--txt3)"}}>{e.evento_activo || "—"}</td>
+                            <td style={{textAlign:"center",color:"var(--txt3)",fontSize:10}}>{abierto ? "▼" : "▶"}</td>
+                          </tr>
+                          {abierto && (
+                            <tr>
+                              <td colSpan={7} style={{padding:0,background:"var(--bg2)"}}>
+                                <div style={{padding:12}}>
+                                  {lineas.length === 0 ? (
+                                    <div style={{color:"var(--txt3)",fontSize:11}}>Cargando...</div>
+                                  ) : (
+                                    <table className="tbl" style={{fontSize:11,width:"100%"}}>
+                                      <thead>
+                                        <tr>
+                                          <th style={{textAlign:"left"}}>SKU Venta</th>
+                                          <th style={{textAlign:"left"}}>SKU Origen</th>
+                                          <th style={{textAlign:"right"}}>Sugerido</th>
+                                          <th style={{textAlign:"right"}}>Enviado</th>
+                                          <th style={{textAlign:"center"}}>ABC</th>
+                                          <th style={{textAlign:"right"}}>Vel.pond</th>
+                                          <th style={{textAlign:"right"}}>Stock Full antes</th>
+                                          <th style={{textAlign:"right"}}>Bodega antes</th>
+                                          <th style={{textAlign:"center"}}>Editado</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {lineas.map((l, i) => (
+                                          <tr key={i}>
+                                            <td className="mono">{l.sku_venta}</td>
+                                            <td className="mono" style={{color:"var(--txt3)"}}>{l.sku_origen}</td>
+                                            <td className="mono" style={{textAlign:"right",color:"var(--txt3)"}}>{l.cantidad_sugerida}</td>
+                                            <td className="mono" style={{textAlign:"right",fontWeight:700}}>{l.cantidad_enviada}</td>
+                                            <td style={{textAlign:"center"}}>{l.abc || "—"}</td>
+                                            <td className="mono" style={{textAlign:"right"}}>{l.vel_ponderada != null ? l.vel_ponderada.toFixed(1) : "—"}</td>
+                                            <td className="mono" style={{textAlign:"right"}}>{l.stock_full_antes ?? "—"}</td>
+                                            <td className="mono" style={{textAlign:"right"}}>{l.stock_bodega_antes ?? "—"}</td>
+                                            <td style={{textAlign:"center",color:l.fue_editada?"var(--amber)":"var(--txt3)"}}>{l.fue_editada ? "✏" : "—"}</td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
