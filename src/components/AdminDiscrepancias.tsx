@@ -149,15 +149,34 @@ export default function AdminDiscrepancias() {
   }, [rows]);
 
   const doAprobar = async (row: Row) => {
+    const prod = productos.get(row.sku);
+    const wacActual = prod?.costo_promedio || 0;
+    const costoCatalogo = prod?.costo || 0;
+    // Default: WAC actual si refleja una corrección previa (congelar/marcarNC), sino el facturado
+    const sugerido = wacActual > 0 && wacActual !== row.costo_factura ? wacActual : row.costo_factura;
     const nuevo = prompt(
-      `Aprobar nuevo costo para ${row.sku}\n\nCosto diccionario (catálogo): ${fmtMoney(row.costo_diccionario)}\nCosto factura (lo tipeado): ${fmtMoney(row.costo_factura)}\n\nIngrese el costo a aprobar (normalmente el de factura):`,
-      String(row.costo_factura),
+      `Aprobar costo final para ${row.sku}\n\n`
+      + `Diccionario original: ${fmtMoney(row.costo_diccionario)}\n`
+      + `Facturado (en duda):  ${fmtMoney(row.costo_factura)}\n`
+      + `Catálogo actual:      ${fmtMoney(costoCatalogo)}\n`
+      + `WAC actual:           ${fmtMoney(wacActual)}\n\n`
+      + `Ingrese el costo final aprobado (sugerido: el WAC actual si ya congelaste; si no, el facturado):`,
+      String(sugerido),
     );
     if (nuevo === null) return;
     const n = Number(nuevo);
     if (!Number.isFinite(n) || n <= 0) {
       alert("Costo inválido");
       return;
+    }
+    // Si el costo aprobado difiere del WAC actual, advertir que conviene congelar antes
+    if (wacActual > 0 && Math.abs(n - wacActual) > 1) {
+      const ok = window.confirm(
+        `El costo aprobado ($${fmtInt(n)}) es distinto al WAC actual ($${fmtInt(wacActual)}).\n\n`
+        + `Aprobar NO recomputa WAC ni ventas pasadas. Si querés que las ventas reflejen este costo, primero cerrá este diálogo y usá 🔒 Congelar con ${fmtMoney(n)}.\n\n`
+        + `¿Continuar y solo actualizar el catálogo?`
+      );
+      if (!ok) return;
     }
     setActioning(row.id!);
     try {
