@@ -13,6 +13,7 @@ type MarginRow = {
   precio_venta: number;
   tiene_promo: boolean;
   promo_type: string | null;
+  promo_name: string | null;
   promo_pct: number | null;
   costo_neto: number;
   costo_bruto: number;
@@ -1013,8 +1014,8 @@ export default function AdminMargenes() {
                     <td style={{ padding: "9px 8px", maxWidth: 260 }}>
                       <div style={{ fontSize: 11, color: "var(--txt)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.titulo}</div>
                       {r.tiene_promo && (
-                        <div style={{ fontSize: 9, color: "var(--amber)" }}>
-                          {r.promo_type} −{r.promo_pct}% (lista {fmtCLP(r.price_ml)})
+                        <div style={{ fontSize: 9, color: "var(--amber)" }} title={r.promo_type || undefined}>
+                          {r.promo_name || r.promo_type} −{r.promo_pct}% (lista {fmtCLP(r.price_ml)})
                         </div>
                       )}
                     </td>

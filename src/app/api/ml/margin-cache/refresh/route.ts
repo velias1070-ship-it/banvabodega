@@ -241,6 +241,7 @@ async function handleRefresh(req: NextRequest) {
     let precioVenta = priceList;
     let tienePromo = false;
     let promoType: string | null = null;
+    let promoName: string | null = null;
     let promoPct: number | null = null;
     let syncError: string | null = null;
 
@@ -272,6 +273,7 @@ async function handleRefresh(req: NextRequest) {
             tienePromo = true;
             precioVenta = activa.price;
             promoType = activa.type;
+            promoName = activa.name || null;
             // Usar el precio original real (no row.price que puede estar contaminado)
             const listaReal = activa.original_price > 0 ? activa.original_price : priceList;
             if (listaReal > 0) {
@@ -303,6 +305,7 @@ async function handleRefresh(req: NextRequest) {
       precio_venta: Math.round(precioVenta),
       tiene_promo: tienePromo,
       promo_type: promoType,
+      promo_name: promoName,
       promo_pct: promoPct,
       costo_neto: costoNeto,
       costo_bruto: costoBruto,
