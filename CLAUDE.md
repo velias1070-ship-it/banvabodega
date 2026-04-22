@@ -99,3 +99,11 @@ Ver `.claude/rules/` para reglas por dominio:
 ## Git
 
 Siempre trabaja directamente en la branch main. No crees branches separadas. Haz commit y push directo a main.
+
+## Reuse-first workflow
+
+Antes de crear un recurso nuevo (función en `src/lib/*`, API route en `src/app/api/*`, interface `DB*`, RPC/migración SQL, hook, componente admin/operador, query Supabase recurrente), **invocar el subagente `reuse-scout`** con una descripción corta de lo que se va a crear. Si el scout devuelve `REUSE` o `EXTEND`, seguir esa pista antes de escribir código nuevo.
+
+Aplica cuando el cambio agrega ≥20 LOC de lógica nueva. Para fixes pequeños o ajustes puntuales no hace falta.
+
+Para barrido periódico de duplicación/código muerto: `/hygiene`.

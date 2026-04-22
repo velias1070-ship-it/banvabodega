@@ -23,7 +23,7 @@ import AdminVentasML from "@/components/AdminVentasML";
 import AdminComercial from "@/components/AdminComercial";
 import AdminMargenes from "@/components/AdminMargenes";
 import AdminUsuarios from "@/components/AdminUsuarios";
-import { loginAdminUser, canAccessTab, canManageUsers, type AdminUser } from "@/lib/admin-users";
+import { loginAdminUser, canAccessTab, canAccessSubtab, canManageUsers, type AdminUser } from "@/lib/admin-users";
 
 const AUTH_KEY = "banva_admin_auth_user";
 
@@ -11231,6 +11231,22 @@ function PorAtender({ refresh }: { refresh: () => void }) {
 // ==================== CONFIGURACIÓN ====================
 function Configuracion({ refresh, initialSubTab, currentUser }: { refresh: () => void; initialSubTab?: string; currentUser?: AdminUser | null }) {
   const [configTab, setConfigTab] = useState<"general"|"posiciones"|"mapa"|"etiquetas"|"carga_stock"|"conteos"|"conciliador"|"diccionario"|"ml"|"por_atender"|"usuarios">(initialSubTab === "ml" ? "ml" : "general");
+
+  // Guard subtab: si el user no tiene permiso para el subtab actual, saltar al primero accesible.
+  const CONFIG_SUBTAB_ORDER = ["por_atender","general","ml","diccionario","posiciones","mapa","etiquetas","carga_stock","conteos","conciliador"] as const;
+  useEffect(() => {
+    if (!currentUser) return;
+    if (configTab === "usuarios" && !canManageUsers(currentUser)) {
+      const first = CONFIG_SUBTAB_ORDER.find(k => canAccessSubtab(currentUser, "config", k));
+      if (first) setConfigTab(first);
+      return;
+    }
+    if (configTab !== "usuarios" && !canAccessSubtab(currentUser, "config", configTab)) {
+      const first = CONFIG_SUBTAB_ORDER.find(k => canAccessSubtab(currentUser, "config", k));
+      if (first) setConfigTab(first);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser, configTab]);
   const [conciliadorPin, setConciliadorPin] = useState("");
   const [conciliadorAuth, setConciliadorAuth] = useState(false);
   const CONCILIADOR_PIN = "9461";
@@ -11360,8 +11376,10 @@ function Configuracion({ refresh, initialSubTab, currentUser }: { refresh: () =>
             ["etiquetas","Etiquetas","🖨️"],["carga_stock","Carga Stock","📥"],["conteos","Conteo Cíclico","📋"],
             ["conciliador","Conciliador","🏦"],
           ];
-          if (canManageUsers(currentUser || null)) baseTabs.push(["usuarios","Usuarios","👥"]);
-          return baseTabs.map(([key,label,icon])=>(
+          // Filtrado granular por subtab (solo para rol custom con subtabs especificados).
+          const visibles = baseTabs.filter(([key]) => canAccessSubtab(currentUser || null, "config", key));
+          if (canManageUsers(currentUser || null)) visibles.push(["usuarios","Usuarios","👥"]);
+          return visibles.map(([key,label,icon])=>(
             <button key={key} onClick={()=>setConfigTab(key as typeof configTab)} style={{padding:"8px 16px",borderRadius:8,background:configTab===key?"var(--cyan)":"var(--bg3)",color:configTab===key?"#fff":"var(--txt2)",fontWeight:configTab===key?700:500,fontSize:13,border:configTab===key?"none":"1px solid var(--bg4)",cursor:"pointer"}}>{icon} {label}</button>
           ));
         })()}

@@ -17,7 +17,7 @@ export interface AdminUser {
 // Catalogo canonico de tabs del admin (fuente unica de verdad para permisos).
 // Al agregar tabs nuevos al panel hay que sumarlos aca para que aparezcan en
 // el editor de permisos custom.
-export const ADMIN_TAB_CATALOG: Array<{ key: string; label: string; group: string }> = [
+export const ADMIN_TAB_CATALOG: Array<{ key: string; label: string; group: string; parent?: string }> = [
   { key: "dash", label: "Dashboard", group: "Principal" },
   { key: "rec", label: "Recepciones", group: "Operaciones" },
   { key: "discrepancias", label: "Discrepancias", group: "Operaciones" },
@@ -41,6 +41,17 @@ export const ADMIN_TAB_CATALOG: Array<{ key: string; label: string; group: strin
   { key: "margenes", label: "Margenes", group: "Comercial" },
   { key: "agentes", label: "Agentes IA", group: "Sistema" },
   { key: "config", label: "Configuracion", group: "Sistema" },
+  // Sub-tabs de Configuracion (granularidad fina para rol custom).
+  { key: "config.por_atender", label: "Por Atender", group: "Sistema", parent: "config" },
+  { key: "config.general", label: "General (categorias/proveedores)", group: "Sistema", parent: "config" },
+  { key: "config.ml", label: "MercadoLibre (OAuth)", group: "Sistema", parent: "config" },
+  { key: "config.diccionario", label: "Diccionario", group: "Sistema", parent: "config" },
+  { key: "config.posiciones", label: "Posiciones", group: "Sistema", parent: "config" },
+  { key: "config.mapa", label: "Mapa Bodega", group: "Sistema", parent: "config" },
+  { key: "config.etiquetas", label: "Etiquetas", group: "Sistema", parent: "config" },
+  { key: "config.carga_stock", label: "Carga Stock", group: "Sistema", parent: "config" },
+  { key: "config.conteos", label: "Conteo Ciclico", group: "Sistema", parent: "config" },
+  { key: "config.conciliador", label: "Conciliador", group: "Sistema", parent: "config" },
 ];
 
 // Permisos por rol (super_admin = "*" = todo, incluyendo gestion de usuarios).
@@ -53,13 +64,42 @@ const ROL_PERMISOS: Record<Exclude<AdminRol, "custom">, string[]> = {
   viewer: ["dash", "inv", "mov", "timeline"],
 };
 
-/** Verifica si un usuario puede acceder a un tab. */
+/** Verifica si un usuario puede acceder a un tab (top-level o con dot-notation). */
 export function canAccessTab(user: AdminUser | null, tabKey: string): boolean {
   if (!user) return false;
   if (user.rol === "super_admin") return true;
-  if (user.rol === "custom") return (user.permisos || []).includes(tabKey);
+  if (user.rol === "admin") return true;
+  if (user.rol === "custom") {
+    const perms = user.permisos || [];
+    return perms.includes(tabKey);
+  }
   const allowed = ROL_PERMISOS[user.rol] || [];
   return allowed.includes(tabKey);
+}
+
+/**
+ * Verifica si un usuario puede ver un subtab dentro de un tab padre.
+ *
+ * Reglas:
+ *  - super_admin / admin → todos los subtabs.
+ *  - Roles predefinidos (operaciones / viewer) → todos los subtabs de los tabs
+ *    que tienen permiso en el tab padre (no hay granularidad para estos).
+ *  - Custom: si el user tiene al menos UN subtab especifico del padre en sus
+ *    permisos (p.ej. "config.carga_stock"), solo esos son visibles. Si tiene
+ *    solo "config" sin subtabs especificos, ve TODOS los subtabs (compat).
+ */
+export function canAccessSubtab(user: AdminUser | null, parentKey: string, subKey: string): boolean {
+  if (!user) return false;
+  if (user.rol === "super_admin" || user.rol === "admin") return true;
+  if (user.rol === "custom") {
+    const perms = user.permisos || [];
+    if (!perms.includes(parentKey)) return false;
+    const specificSubs = perms.filter(p => p.startsWith(`${parentKey}.`));
+    if (specificSubs.length === 0) return true; // sin granularidad = todos
+    return perms.includes(`${parentKey}.${subKey}`);
+  }
+  // Roles predefinidos: si pueden entrar al padre, ven todos los subtabs.
+  return canAccessTab(user, parentKey);
 }
 
 /** Verifica si un usuario puede gestionar otros usuarios (solo super_admin). */

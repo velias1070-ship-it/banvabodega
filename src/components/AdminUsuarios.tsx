@@ -234,32 +234,63 @@ function UsuarioForm({
               <div style={{ fontSize: 11, color: "var(--txt3)", marginBottom: 8 }}>
                 Permisos por seccion ({permisos.size} seleccionadas)
               </div>
+              <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 10, fontStyle: "italic" }}>
+                Tip: si un tab tiene subsecciones (ej. Configuracion), marcar solo algunas limita el acceso a esas. Marcar solo el parent = acceso a TODAS sus subsecciones.
+              </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {grupos.map(g => (
-                  <div key={g}>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: "var(--cyan)", marginBottom: 4, letterSpacing: "0.05em", textTransform: "uppercase" }}>{g}</div>
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                      {ADMIN_TAB_CATALOG.filter(t => t.group === g).map(t => {
-                        const active = permisos.has(t.key);
-                        return (
-                          <button
-                            key={t.key}
-                            type="button"
-                            onClick={() => togglePermiso(t.key)}
-                            style={{
-                              padding: "4px 10px", borderRadius: 6,
-                              background: active ? "var(--cyan)" : "var(--bg3)",
-                              color: active ? "#000" : "var(--txt2)",
-                              fontSize: 11, fontWeight: 600, border: "1px solid " + (active ? "var(--cyan)" : "var(--bg4)"), cursor: "pointer",
-                            }}
-                          >
-                            {active ? "✓ " : ""}{t.label}
-                          </button>
-                        );
-                      })}
+                {grupos.map(g => {
+                  const tabsGrupo = ADMIN_TAB_CATALOG.filter(t => t.group === g);
+                  const parents = tabsGrupo.filter(t => !t.parent);
+                  return (
+                    <div key={g}>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: "var(--cyan)", marginBottom: 4, letterSpacing: "0.05em", textTransform: "uppercase" }}>{g}</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        {parents.map(t => {
+                          const active = permisos.has(t.key);
+                          const children = tabsGrupo.filter(c => c.parent === t.key);
+                          return (
+                            <div key={t.key}>
+                              <button
+                                type="button"
+                                onClick={() => togglePermiso(t.key)}
+                                style={{
+                                  padding: "4px 10px", borderRadius: 6,
+                                  background: active ? "var(--cyan)" : "var(--bg3)",
+                                  color: active ? "#000" : "var(--txt2)",
+                                  fontSize: 11, fontWeight: 600, border: "1px solid " + (active ? "var(--cyan)" : "var(--bg4)"), cursor: "pointer",
+                                }}
+                              >
+                                {active ? "✓ " : ""}{t.label}
+                              </button>
+                              {children.length > 0 && active && (
+                                <div style={{ marginTop: 4, marginLeft: 16, display: "flex", flexWrap: "wrap", gap: 4, paddingLeft: 8, borderLeft: "2px solid var(--bg4)" }}>
+                                  {children.map(c => {
+                                    const cActive = permisos.has(c.key);
+                                    return (
+                                      <button
+                                        key={c.key}
+                                        type="button"
+                                        onClick={() => togglePermiso(c.key)}
+                                        style={{
+                                          padding: "3px 8px", borderRadius: 4,
+                                          background: cActive ? "var(--cyanBg)" : "var(--bg3)",
+                                          color: cActive ? "var(--cyan)" : "var(--txt3)",
+                                          fontSize: 10, fontWeight: 600, border: "1px solid " + (cActive ? "var(--cyanBd)" : "var(--bg4)"), cursor: "pointer",
+                                        }}
+                                      >
+                                        {cActive ? "✓ " : "· "}{c.label}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
