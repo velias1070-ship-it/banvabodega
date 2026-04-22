@@ -15,6 +15,7 @@ type MarginRow = {
   promo_type: string | null;
   promo_name: string | null;
   promo_pct: number | null;
+  promos_postulables: Array<{ name: string; type: string; id: string | null }> | null;
   status_ml: string | null;
   costo_neto: number;
   costo_bruto: number;
@@ -301,9 +302,19 @@ export default function AdminMargenes() {
       if (soloPromo && !r.tiene_promo) return false;
       if (sinPromo && r.tiene_promo) return false;
       if (promoFilter !== "all") {
-        if (!r.tiene_promo) return false;
-        const nombre = (r.promo_name || r.promo_type || "").trim();
-        if (nombre !== promoFilter) return false;
+        // Prefijo "en:<nombre>" o "pos:<nombre>" (postulable pero sin postular)
+        const [modo, ...rest] = promoFilter.split(":");
+        const nombreTarget = rest.join(":");
+        if (modo === "en") {
+          if (!r.tiene_promo) return false;
+          const nombre = (r.promo_name || r.promo_type || "").trim();
+          if (nombre !== nombreTarget) return false;
+        } else if (modo === "pos") {
+          const dispo = r.promos_postulables || [];
+          const yaEn = r.tiene_promo && (r.promo_name || r.promo_type || "").trim() === nombreTarget;
+          if (yaEn) return false; // ya esta dentro, no lo muestro
+          if (!dispo.some(p => (p.name || p.type || "").trim() === nombreTarget)) return false;
+        }
       }
       if (statusF !== "all") {
         const s = r.status_ml || "";
@@ -366,14 +377,31 @@ export default function AdminMargenes() {
     return list;
   }, [rows, q, zona, marginF, soloPromo, sinPromo, statusF, promoFilter, soloDead, cMin, cMax, soloInconsistentes, agruparPorCosto, sortKey, sortDir]);
 
-  // Lista unica de promos activas presentes en rows, con conteo
-  const promosDisponibles = useMemo(() => {
+  // Grupo "Ya postulados": conteo por promo activa
+  const promosActivas = useMemo(() => {
     const m = new Map<string, number>();
     for (const r of rows) {
       if (!r.tiene_promo) continue;
       const nombre = (r.promo_name || r.promo_type || "").trim();
       if (!nombre) continue;
       m.set(nombre, (m.get(nombre) || 0) + 1);
+    }
+    return Array.from(m.entries()).sort((a, b) => b[1] - a[1]);
+  }, [rows]);
+
+  // Grupo "Postulables sin postular": conteo por promo candidate (excluyendo
+  // los items que ya estan dentro de esa misma promo).
+  const promosCandidate = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of rows) {
+      const dispo = r.promos_postulables || [];
+      if (dispo.length === 0) continue;
+      const nombreActiva = r.tiene_promo ? (r.promo_name || r.promo_type || "").trim() : "";
+      for (const p of dispo) {
+        const nombre = (p.name || p.type || "").trim();
+        if (!nombre || nombre === nombreActiva) continue;
+        m.set(nombre, (m.get(nombre) || 0) + 1);
+      }
     }
     return Array.from(m.entries()).sort((a, b) => b[1] - a[1]);
   }, [rows]);
@@ -910,11 +938,22 @@ export default function AdminMargenes() {
           <option value="other">Otros (closed/review)</option>
           <option value="all">Todos los estados</option>
         </select>
-        <select value={promoFilter} onChange={e => setPromoFilter(e.target.value)} className="form-input" style={{ flex: "0 0 auto", maxWidth: 220 }} title="Filtrar por promoción activa en la que participan los items">
+        <select value={promoFilter} onChange={e => setPromoFilter(e.target.value)} className="form-input" style={{ flex: "0 0 auto", maxWidth: 260 }} title="Filtrar por promoción — 'En' = ya postulados · 'Postulable a' = pueden postular pero aún no lo hicieron">
           <option value="all">Todas las promos</option>
-          {promosDisponibles.map(([nombre, count]) => (
-            <option key={nombre} value={nombre}>{nombre} ({count})</option>
-          ))}
+          {promosActivas.length > 0 && (
+            <optgroup label="En promoción (ya postulados)">
+              {promosActivas.map(([nombre, count]) => (
+                <option key={`en-${nombre}`} value={`en:${nombre}`}>✓ {nombre} ({count})</option>
+              ))}
+            </optgroup>
+          )}
+          {promosCandidate.length > 0 && (
+            <optgroup label="Postulable a (sin postular)">
+              {promosCandidate.map(([nombre, count]) => (
+                <option key={`pos-${nombre}`} value={`pos:${nombre}`}>⚠ {nombre} ({count})</option>
+              ))}
+            </optgroup>
+          )}
         </select>
         <select value={zona} onChange={e => setZona(e.target.value as ZonaFilter)} className="form-input" style={{ flex: "0 0 auto" }}>
           <option value="all">Todas las zonas</option>

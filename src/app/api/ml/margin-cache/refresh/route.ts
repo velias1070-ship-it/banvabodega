@@ -243,6 +243,7 @@ async function handleRefresh(req: NextRequest) {
     let promoType: string | null = null;
     let promoName: string | null = null;
     let promoPct: number | null = null;
+    let promosPostulables: Array<{ name: string; type: string; id: string | null }> = [];
     let syncError: string | null = null;
 
     try {
@@ -281,6 +282,21 @@ async function handleRefresh(req: NextRequest) {
             }
             priceList = listaReal;
           }
+
+          // Promos disponibles pero NO postuladas (candidate) — sirven para filtrar
+          // "items que aun no estan en X pero podrian postular".
+          const seen = new Set<string>();
+          for (const p of promos) {
+            if (p.status !== "candidate") continue;
+            const key = (p.id || "") + "::" + (p.type || "");
+            if (seen.has(key)) continue;
+            seen.add(key);
+            promosPostulables.push({
+              name: p.name || p.type || "Promoción",
+              type: p.type || "",
+              id: p.id || null,
+            });
+          }
         }
       }
     } catch (e) {
@@ -307,6 +323,7 @@ async function handleRefresh(req: NextRequest) {
       promo_type: promoType,
       promo_name: promoName,
       promo_pct: promoPct,
+      promos_postulables: promosPostulables,
       status_ml: row.status_ml || null,
       costo_neto: costoNeto,
       costo_bruto: costoBruto,
