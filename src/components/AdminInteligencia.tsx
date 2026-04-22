@@ -1590,7 +1590,10 @@ export default function AdminInteligencia() {
         const sinLt = activeRows.filter((r: AnyRow) => "lead_time_fuente" in r && r.lead_time_fuente === "fallback_default" && (r.vel_ponderada || 0) > 0);
         const bajoMoq = activeRows.filter((r: AnyRow) => (r.alertas || []).includes("pedido_bajo_moq"));
         const necesitaPedir = activeRows.filter((r: AnyRow) => "necesita_pedir" in r && r.necesita_pedir);
-        if (sinCosto.length + costoStale.length + sinLt.length + bajoMoq.length + necesitaPedir.length === 0) return null;
+        // v60 — chips Flex
+        const flexParado = activeRows.filter((r: AnyRow) => (r.alertas || []).includes("flex_no_publicado"));
+        const flexProlongado = activeRows.filter((r: AnyRow) => (r.alertas || []).includes("quiebre_flex_prolongado"));
+        if (sinCosto.length + costoStale.length + sinLt.length + bajoMoq.length + necesitaPedir.length + flexParado.length + flexProlongado.length === 0) return null;
         const chip = (label: string, count: number, alertaKey: string, color: string, title: string) => (
           <button
             key={label}
@@ -1609,6 +1612,8 @@ export default function AdminInteligencia() {
         return (
           <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
             {necesitaPedir.length > 0 && chip("📦 Pedir ya", necesitaPedir.length, "necesita_pedir", "var(--cyan)", "SKUs cuyo stock total ≤ ROP. Pedir ahora.")}
+            {flexParado.length > 0 && chip("📡 Flex parado", flexParado.length, "flex_no_publicado", "var(--amber)", "publicar_flex=0 con ventas históricas Flex. Buffer o inner_pack mata la publicación.")}
+            {flexProlongado.length > 0 && chip("🔴 Flex >14d", flexProlongado.length, "quiebre_flex_prolongado", "var(--red)", "SKU con vel_flex histórica > 2 u/sem lleva ≥14 días sin publicar Flex.")}
             {sinCosto.length > 0 && chip("⚠ Sin costo", sinCosto.length, "sin_costo", "var(--red)", "SKUs activos sin costo cargado.")}
             {costoStale.length > 0 && chip("⚠ Costo >90d", costoStale.length, "costo_posiblemente_obsoleto", "var(--amber)", "Costo manual sin actualizar en >90 días.")}
             {bajoMoq.length > 0 && chip("⚠ < MOQ", bajoMoq.length, "pedido_bajo_moq", "var(--amber)", "Sugerencia de pedido < mínimo del proveedor.")}
