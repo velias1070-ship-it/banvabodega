@@ -6059,6 +6059,52 @@ function Inventario() {
   return (
     <div>
       <div className="card">
+        {/* ═══ FILA 1: BUSQUEDA HERO + MENU ACCIONES ═══ */}
+        <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:10}}>
+          <div style={{position:"relative",flex:1}}>
+            <span style={{position:"absolute",left:14,top:"50%",transform:"translateY(-50%)",fontSize:18,color:"var(--txt3)",pointerEvents:"none"}}>🔍</span>
+            <input
+              className="form-input mono"
+              value={q}
+              onChange={e=>setQ(e.target.value)}
+              placeholder={viewMode==="fisico"?"Buscar por SKU, nombre, proveedor, categoria, SKU venta...":"Buscar por codigo ML, SKU venta, nombre, componentes..."}
+              style={{fontSize:15,padding:"12px 14px 12px 44px",width:"100%",fontWeight:500}}
+            />
+            {q && (
+              <button onClick={()=>setQ("")} style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",background:"var(--bg3)",border:"1px solid var(--bg4)",borderRadius:4,padding:"2px 8px",fontSize:11,color:"var(--txt3)",cursor:"pointer"}}>
+                ✕
+              </button>
+            )}
+          </div>
+          <div ref={accionesRef} style={{position:"relative"}}>
+            <button onClick={()=>setAccionesOpen(!accionesOpen)} style={{padding:"12px 16px",borderRadius:8,fontSize:12,fontWeight:700,
+              background:accionesOpen?"var(--bg4)":"var(--bg3)",color:"var(--txt)",border:"1px solid var(--bg4)",cursor:"pointer",whiteSpace:"nowrap"}}>
+              ⋯ Acciones
+            </button>
+            {accionesOpen && (
+              <div style={{position:"absolute",top:"100%",right:0,marginTop:4,background:"var(--bg2)",border:"1px solid var(--bg4)",borderRadius:8,minWidth:260,zIndex:50,boxShadow:"0 6px 24px rgba(0,0,0,0.4)",overflow:"hidden"}}>
+                <button onClick={()=>{setAccionesOpen(false);doExportInventario();}} disabled={exporting}
+                  style={{display:"block",width:"100%",textAlign:"left",padding:"10px 14px",background:"transparent",color:"var(--green)",border:"none",borderBottom:"1px solid var(--bg4)",fontSize:12,fontWeight:600,cursor:exporting?"wait":"pointer"}}>
+                  📥 {exporting ? "Exportando..." : "Exportar Inventario (CSV detallado)"}
+                </button>
+                <button onClick={()=>{setAccionesOpen(false);doExportFull();}}
+                  style={{display:"block",width:"100%",textAlign:"left",padding:"10px 14px",background:"transparent",color:"var(--cyan)",border:"none",borderBottom:"1px solid var(--bg4)",fontSize:12,fontWeight:600,cursor:"pointer"}}>
+                  📥 Exportar Full (CSV resumido por SKU venta)
+                </button>
+                <button onClick={()=>{setAccionesOpen(false);doReclasificar();}} disabled={reclasificando}
+                  style={{display:"block",width:"100%",textAlign:"left",padding:"10px 14px",background:"transparent",color:"var(--amber)",border:"none",borderBottom:"1px solid var(--bg4)",fontSize:12,fontWeight:600,cursor:reclasificando?"wait":"pointer"}}>
+                  🔄 {reclasificando ? "Reclasificando..." : "Reclasificar formatos"}
+                </button>
+                <button onClick={()=>{setAccionesOpen(false);setReconOpen(true);window.scrollTo({top:document.body.scrollHeight,behavior:"smooth"});}}
+                  style={{display:"block",width:"100%",textAlign:"left",padding:"10px 14px",background:"transparent",color:"var(--red)",border:"none",fontSize:12,fontWeight:600,cursor:"pointer"}}>
+                  🔍 Reconciliar stock vs movimientos
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ═══ FILA 2: MODE + FILTROS (izquierda) · KPI (derecha) ═══ */}
         <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
           <div style={{display:"flex",gap:4}}>
             <button onClick={()=>setViewMode("fisico")} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
@@ -6080,34 +6126,7 @@ function Inventario() {
               Comprometidos ({skusComprometidos.length})
             </button>
           </>)}
-          <input className="form-input mono" value={q} onChange={e=>setQ(e.target.value)} placeholder={viewMode==="fisico"?"Filtrar SKU, nombre, proveedor...":"Filtrar codigo ML, SKU venta, nombre..."} style={{fontSize:13,flex:1,minWidth:200}}/>
-          {/* Menu de acciones agrupadas — limpia la toolbar y separa acciones "peligrosas" de filtros */}
-          <div ref={accionesRef} style={{position:"relative"}}>
-            <button onClick={()=>setAccionesOpen(!accionesOpen)} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
-              background:accionesOpen?"var(--bg4)":"var(--bg3)",color:"var(--txt)",border:"1px solid var(--bg4)",cursor:"pointer",whiteSpace:"nowrap"}}>
-              ⋯ Acciones
-            </button>
-            {accionesOpen && (
-              <div style={{position:"absolute",top:"100%",right:0,marginTop:4,background:"var(--bg2)",border:"1px solid var(--bg4)",borderRadius:8,minWidth:220,zIndex:50,boxShadow:"0 6px 24px rgba(0,0,0,0.4)",overflow:"hidden"}}>
-                <button onClick={()=>{setAccionesOpen(false);doExportInventario();}} disabled={exporting}
-                  style={{display:"block",width:"100%",textAlign:"left",padding:"10px 14px",background:"transparent",color:"var(--green)",border:"none",borderBottom:"1px solid var(--bg4)",fontSize:12,fontWeight:600,cursor:exporting?"wait":"pointer"}}>
-                  📥 {exporting ? "Exportando..." : "Exportar Inventario (CSV detallado)"}
-                </button>
-                <button onClick={()=>{setAccionesOpen(false);doExportFull();}}
-                  style={{display:"block",width:"100%",textAlign:"left",padding:"10px 14px",background:"transparent",color:"var(--cyan)",border:"none",borderBottom:"1px solid var(--bg4)",fontSize:12,fontWeight:600,cursor:"pointer"}}>
-                  📥 Exportar Full (CSV resumido por SKU venta)
-                </button>
-                <button onClick={()=>{setAccionesOpen(false);doReclasificar();}} disabled={reclasificando}
-                  style={{display:"block",width:"100%",textAlign:"left",padding:"10px 14px",background:"transparent",color:"var(--amber)",border:"none",borderBottom:"1px solid var(--bg4)",fontSize:12,fontWeight:600,cursor:reclasificando?"wait":"pointer"}}>
-                  🔄 {reclasificando ? "Reclasificando..." : "Reclasificar formatos"}
-                </button>
-                <button onClick={()=>{setAccionesOpen(false);setReconOpen(true);window.scrollTo({top:document.body.scrollHeight,behavior:"smooth"});}}
-                  style={{display:"block",width:"100%",textAlign:"left",padding:"10px 14px",background:"transparent",color:"var(--red)",border:"none",fontSize:12,fontWeight:600,cursor:"pointer"}}>
-                  🔍 Reconciliar stock vs movimientos
-                </button>
-              </div>
-            )}
-          </div>
+          <div style={{flex:1}}/>
           {viewMode === "fisico" && etiqGlobal.total > 0 && (
             <div style={{display:"flex",alignItems:"center",gap:6,padding:"4px 10px",borderRadius:6,background:"var(--bg3)",border:"1px solid var(--bg4)"}}>
               <div style={{width:40,height:40,borderRadius:"50%",background:`conic-gradient(var(--green) ${etiqGlobal.pct*3.6}deg, var(--amber) ${etiqGlobal.pct*3.6}deg)`,display:"flex",alignItems:"center",justifyContent:"center"}}>
