@@ -313,17 +313,36 @@ async function runRefresh(force = false) {
       .eq("semana", prevStr)
       .limit(1);
 
-    // Weekly KPIs from ml_velocidad_semanal
+    // Weekly KPIs — agregan directo desde orders_history (fuente canónica).
+    // Ventana: última semana completa [semana-7, semana).
     const weekStart = new Date(semana);
     weekStart.setDate(weekStart.getDate() - 7);
-    const { data: velRows } = await sb
-      .from("ml_velocidad_semanal")
-      .select("unidades, ingreso")
-      .gte("semana_inicio", weekStart.toISOString().slice(0, 10))
-      .lt("semana_inicio", semana);
+    const weekStartISO = weekStart.toISOString().slice(0, 10);
 
-    const unidadesSemana = (velRows || []).reduce((s, r) => s + (r.unidades || 0), 0);
-    const revenueSemana = (velRows || []).reduce((s, r) => s + (r.ingreso || 0), 0);
+    let unidadesSemana = 0;
+    let revenueSemana = 0;
+    const KPI_PAGE = 1000;
+    let kpiOffset = 0;
+    while (true) {
+      const { data: ordRows, error: ordErr } = await sb
+        .from("orders_history")
+        .select("cantidad, subtotal")
+        .eq("estado", "Pagada")
+        .gte("fecha", weekStartISO)
+        .lt("fecha", semana)
+        .range(kpiOffset, kpiOffset + KPI_PAGE - 1);
+      if (ordErr) {
+        console.error("[semaforo] orders_history KPI query error:", ordErr.message);
+        break;
+      }
+      if (!ordRows || ordRows.length === 0) break;
+      for (const o of ordRows) {
+        unidadesSemana += (o.cantidad as number) || 0;
+        revenueSemana += (o.subtotal as number) || 0;
+      }
+      if (ordRows.length < KPI_PAGE) break;
+      kpiOffset += KPI_PAGE;
+    }
 
     const prev = prevSnap?.[0];
     const deltaUnidades = prev?.unidades_semana && prev.unidades_semana > 0
