@@ -90,6 +90,8 @@ export type AlertaIntel =
   | "forecast_descalibrado"
   | "forecast_sesgo_sostenido"
   | "estrella_quiebre_prolongado"
+  | "quiebre_flex_prolongado"
+  | "flex_no_publicado"
   | "proveedor_volvio_stock"
   | "catch_up_post_quiebre"
   | "stock_danado_full"
@@ -244,6 +246,16 @@ export interface SkuIntelRow {
   gmroi_potencial: number;
   es_catch_up: boolean;
 
+  // v60 — Quiebre Flex (paridad con Full)
+  /** Uds publicables en ML Flex (floor((stock_bodega - buffer) / inner_pack)). */
+  publicar_flex: number;
+  /** Dias desde fecha_entrada_quiebre_flex. NULL si publicar_flex > 0. */
+  dias_en_quiebre_flex: number | null;
+  /** Ancla temporal del quiebre Flex. ISO YYYY-MM-DD UTC. NULL si no esta en quiebre Flex. */
+  fecha_entrada_quiebre_flex: string | null;
+  /** Snapshot de vel_flex al entrar en quiebre Flex. Se preserva entre recalculos. */
+  vel_flex_pre_quiebre: number;
+
   vel_objetivo: number;
   gap_vel_pct: number | null;
 
@@ -317,6 +329,8 @@ export interface QuiebreSnapshot {
   fecha: string;
   sku_origen: string;
   en_quiebre_full: boolean;
+  /** v60 — snapshot de quiebre Flex (publicar_flex === 0 con historial de vel_flex). */
+  en_quiebre_flex?: boolean;
   /** true = viene de stock_snapshots (dato real). false/undefined = inferido */
   explicito?: boolean;
 }
@@ -362,6 +376,11 @@ export interface PrevIntelRow {
   abc: string;
   stock_full: number;
   tiene_stock_prov: boolean;
+  // v60 — estado previo de quiebre Flex
+  dias_en_quiebre_flex: number | null;
+  fecha_entrada_quiebre_flex: string | null;
+  vel_flex_pre_quiebre: number;
+  vel_flex: number;
 }
 
 export interface StockFullDetailRow {
@@ -1513,6 +1532,12 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       gmroi_potencial: gmroiPotencial,
       es_catch_up: esCatchUp,
 
+      // v60 — Quiebre Flex (se resuelve en pass post-Fase B una vez que publicar_flex existe)
+      publicar_flex: 0,
+      dias_en_quiebre_flex: null,
+      fecha_entrada_quiebre_flex: null,
+      vel_flex_pre_quiebre: round2(prev?.vel_flex_pre_quiebre || 0),
+
       vel_objetivo: velObj,
       gap_vel_pct: gapVelPct,
 
@@ -1768,6 +1793,7 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       abc: abcCanon,
     });
     r.mandar_full = flexState.mandar_full;
+    r.publicar_flex = flexState.publicar_flex;
     // Lote inicial para SKU nuevo sin historia (preservado del cálculo pre-PR3)
     if (r.vel_ponderada === 0 && r.vel_pre_quiebre === 0 && r.stock_full === 0 && r.stock_en_transito === 0 && r.stock_bodega > 0) {
       const loteInicial = Math.max(innerPack, 2);
@@ -1845,6 +1871,54 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     }
   }
 
+  // ── v60: Tracking de quiebre Flex (paridad con Full) ──
+  // Detección: publicar_flex === 0 && (vel_flex > 0 || vel_flex_pre_quiebre > 0).
+  // Se corre post Fase B porque publicar_flex se setea alli. La velocidad
+  // pre-quiebre se captura al entrar y se preserva mientras sigue en quiebre;
+  // se resetea al volver a publicar con venta en la ventana de 30d.
+  // Ancla temporal: se deriva con resolverDiasEnQuiebre (reutilizando la misma
+  // funcion que Full) — misma semantica, limpia fosiles al salir de quiebre.
+  const primerQuiebreFlexPorSku = new Map<string, Date>();
+  for (const q of quiebres) {
+    if (!q.en_quiebre_flex || !q.fecha) continue;
+    const d = new Date(q.fecha);
+    if (Number.isNaN(d.getTime()) || d.getFullYear() < 2020) continue;
+    const prev = primerQuiebreFlexPorSku.get(q.sku_origen);
+    if (!prev || d < prev) primerQuiebreFlexPorSku.set(q.sku_origen, d);
+  }
+  for (const r of rows) {
+    const enQuiebreFlexAhora = r.publicar_flex === 0 && (r.vel_flex > 0 || r.vel_flex_pre_quiebre > 0);
+    const prev = prevIntelligence.get(r.sku_origen);
+    const primerQuiebreFlex = primerQuiebreFlexPorSku.get(r.sku_origen) || null;
+
+    const quiebreFlexInfo = resolverDiasEnQuiebre({
+      enQuiebreAhora: enQuiebreFlexAhora,
+      prevFechaEntradaQuiebre: prev?.fecha_entrada_quiebre_flex ?? null,
+      primerQuiebre: primerQuiebreFlex,
+      hoy,
+    });
+    r.dias_en_quiebre_flex = enQuiebreFlexAhora ? quiebreFlexInfo.dias_en_quiebre : null;
+    r.fecha_entrada_quiebre_flex = quiebreFlexInfo.fecha_entrada_quiebre;
+
+    if (enQuiebreFlexAhora) {
+      if (prev?.fecha_entrada_quiebre_flex) {
+        // Continua en quiebre — preservar vel_flex_pre_quiebre del ciclo.
+        r.vel_flex_pre_quiebre = round2(Math.max(r.vel_flex, prev.vel_flex_pre_quiebre || 0));
+      } else {
+        // Acaba de entrar — snapshot inicial: max entre vel_flex actual y
+        // vel_flex del ciclo anterior (antes de que se dañara por no publicar).
+        r.vel_flex_pre_quiebre = round2(Math.max(r.vel_flex, prev?.vel_flex || 0));
+      }
+    } else if (prev && (prev.dias_en_quiebre_flex ?? 0) > 0 && r.publicar_flex > 0) {
+      // Salio de quiebre — reset si ya retomo ventas.
+      if (r.vel_flex > 0 && r.vel_30d > 0) {
+        r.vel_flex_pre_quiebre = 0;
+      } else {
+        r.vel_flex_pre_quiebre = round2(prev.vel_flex_pre_quiebre || 0);
+      }
+    }
+  }
+
   // ── Ajustar prioridad por ABC ──
   for (const r of rows) {
     if (r.abc === "A") r.prioridad = Math.max(0, r.prioridad - 5);
@@ -1904,6 +1978,13 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     if (r.cob_full < r.punto_reorden && r.cob_full < 999) alertas.push("urgente");
     if (r.margen_full_30d < 0 && r.vel_full > 0) alertas.push("margen_negativo_full");
     if (r.margen_flex_30d < 0 && r.vel_flex > 0) alertas.push("margen_negativo_flex");
+    // v60 — Alertas de quiebre Flex (paridad con agotado_full + estrella_quiebre_prolongado)
+    if (r.publicar_flex === 0 && (r.vel_flex > 0 || r.vel_flex_pre_quiebre > 0)) {
+      alertas.push("flex_no_publicado");
+    }
+    if ((r.dias_en_quiebre_flex ?? 0) >= 14 && r.vel_flex_pre_quiebre > 2) {
+      alertas.push("quiebre_flex_prolongado");
+    }
     if (r.es_pico) alertas.push("pico_demanda");
     if (r.tendencia_vel === "bajando" && Math.abs(r.tendencia_vel_pct) > 30) alertas.push("caida_demanda");
     if (!r.tiene_stock_prov) alertas.push("sin_stock_proveedor");
@@ -2078,5 +2159,8 @@ export function generarStockSnapshots(
       stock_total: r.stock_total,
       en_quiebre_full: r.stock_full === 0 && r.vel_full > 0,
       en_quiebre_bodega: r.stock_bodega === 0 && r.vel_flex > 0,
+      // v60 — quiebre Flex: no hay publicacion aunque historicamente vendio por Flex.
+      en_quiebre_flex: r.publicar_flex === 0 && (r.vel_flex > 0 || r.vel_flex_pre_quiebre > 0),
+      publicar_flex: r.publicar_flex,
     }));
 }

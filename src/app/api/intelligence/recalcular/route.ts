@@ -204,6 +204,7 @@ async function ejecutarRecalculo(params: { skus?: string[]; full: boolean; snaps
         fecha: s.fecha,
         sku_origen: s.sku_origen,
         en_quiebre_full: s.en_quiebre_full,
+        en_quiebre_flex: s.en_quiebre_flex ?? false,
         explicito: true as const,
       })),
       ...quiebresInferidos.map(q => ({

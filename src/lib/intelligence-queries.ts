@@ -84,6 +84,8 @@ export interface StockSnapshotRow {
   fecha: string;
   sku_origen: string;
   en_quiebre_full: boolean;
+  /** v60 — paridad con Full. NULL en rows previas a la migracion. */
+  en_quiebre_flex?: boolean;
 }
 
 export interface OrdenCompraLineaRow {
@@ -278,7 +280,7 @@ export async function queryStockSnapshots(desdeDias: number = 60): Promise<Stock
   const desde = new Date(Date.now() - desdeDias * 86400000).toISOString().slice(0, 10);
   const data = await paginatedSelect(() =>
     sb.from("stock_snapshots")
-      .select("fecha, sku_origen, en_quiebre_full")
+      .select("fecha, sku_origen, en_quiebre_full, en_quiebre_flex")
       .gte("fecha", desde)
       .order("fecha", { ascending: true })
   );
@@ -349,23 +351,31 @@ export async function queryPrevIntelligence(): Promise<Map<string, {
   abc: string;
   stock_full: number;
   tiene_stock_prov: boolean;
+  // v60 — estado previo de quiebre Flex (paridad con Full)
+  dias_en_quiebre_flex: number | null;
+  fecha_entrada_quiebre_flex: string | null;
+  vel_flex_pre_quiebre: number;
+  vel_flex: number;
 }>> {
   const sb = getServerSupabase();
   if (!sb) return new Map();
-  // Incluir dias_en_quiebre IS NULL + fecha_entrada_quiebre (PR5) para idempotencia.
+  // Incluir dias_en_quiebre IS NULL + fecha_entrada_quiebre (PR5) + campos v60.
   const rows = await paginatedSelect(() =>
     sb.from("sku_intelligence")
-      .select("sku_origen, vel_pre_quiebre, margen_unitario_pre_quiebre, dias_en_quiebre, fecha_entrada_quiebre, es_quiebre_proveedor, abc_pre_quiebre, vel_ponderada, abc, stock_full, tiene_stock_prov")
-      .or("dias_en_quiebre.gt.0,vel_pre_quiebre.gt.0,dias_en_quiebre.is.null,fecha_entrada_quiebre.not.is.null")
+      .select("sku_origen, vel_pre_quiebre, margen_unitario_pre_quiebre, dias_en_quiebre, fecha_entrada_quiebre, es_quiebre_proveedor, abc_pre_quiebre, vel_ponderada, abc, stock_full, tiene_stock_prov, dias_en_quiebre_flex, fecha_entrada_quiebre_flex, vel_flex_pre_quiebre, vel_flex")
+      .or("dias_en_quiebre.gt.0,vel_pre_quiebre.gt.0,dias_en_quiebre.is.null,fecha_entrada_quiebre.not.is.null,dias_en_quiebre_flex.gt.0,vel_flex_pre_quiebre.gt.0,fecha_entrada_quiebre_flex.not.is.null")
   );
   const map = new Map<string, {
     sku_origen: string; vel_pre_quiebre: number; margen_unitario_pre_quiebre: number;
     dias_en_quiebre: number | null; fecha_entrada_quiebre: string | null;
     es_quiebre_proveedor: boolean; abc_pre_quiebre: string | null;
     vel_ponderada: number; abc: string; stock_full: number; tiene_stock_prov: boolean;
+    dias_en_quiebre_flex: number | null; fecha_entrada_quiebre_flex: string | null;
+    vel_flex_pre_quiebre: number; vel_flex: number;
   }>();
   for (const row of rows) {
     const diasRaw = row.dias_en_quiebre;
+    const diasFlexRaw = row.dias_en_quiebre_flex;
     map.set(row.sku_origen as string, {
       sku_origen: row.sku_origen as string,
       vel_pre_quiebre: (row.vel_pre_quiebre as number) || 0,
@@ -378,6 +388,10 @@ export async function queryPrevIntelligence(): Promise<Map<string, {
       abc: (row.abc as string) || "C",
       stock_full: (row.stock_full as number) || 0,
       tiene_stock_prov: (row.tiene_stock_prov as boolean) ?? true,
+      dias_en_quiebre_flex: diasFlexRaw === null || diasFlexRaw === undefined ? null : (diasFlexRaw as number),
+      fecha_entrada_quiebre_flex: (row.fecha_entrada_quiebre_flex as string | null) ?? null,
+      vel_flex_pre_quiebre: (row.vel_flex_pre_quiebre as number) || 0,
+      vel_flex: (row.vel_flex as number) || 0,
     });
   }
   return map;
