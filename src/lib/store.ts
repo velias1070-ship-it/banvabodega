@@ -1,6 +1,8 @@
 "use client";
 import * as db from "./db";
 import { isConfigured, getSupabase } from "./supabase";
+import { preloadCostos, resolverCostoVenta, calcularMargenVenta } from "./costos";
+import { calcularMargenNeto } from "./ads";
 export { isConfigured as isSupabaseConfigured } from "./supabase";
 
 // ==================== TYPES (backward compatible) ====================
@@ -1092,6 +1094,161 @@ export async function sincronizarCostoMovimientosRecepcion(
     params: { sku: skuUp, nuevoCostoUnitario },
     resultado: { movs_actualizados: true },
   });
+}
+
+export interface CongelarCostoPreview {
+  discrepanciaId: string;
+  sku: string;
+  recepcionId: string;
+  costoAplicar: number;
+  costoFacturaActual: number;
+  wacAnterior: number;
+  wacSimulado: number;
+  cutoff: string;
+  ventasAfectadas: number;
+  margenDelta: number;
+  detalles: Array<{
+    order_id: string;
+    sku_venta: string;
+    fecha: string;
+    costo_anterior: number;
+    costo_nuevo: number;
+    margen_anterior: number;
+    margen_nuevo: number;
+    margen_neto_anterior: number;
+    margen_neto_nuevo: number;
+  }>;
+}
+
+/**
+ * Congela el costo de una discrepancia PENDIENTE al valor `costoAplicar`
+ * (default = costo_diccionario). Reescribe el costo_unitario de movimientos
+ * de esa recepción, recalcula WAC desde movimientos, y recomputa los
+ * snapshots de ventas_ml_cache posteriores a la recepción que quedaron
+ * contaminados con el costo facturado.
+ *
+ * La discrepancia QUEDA en PENDIENTE. Este flujo es para el caso:
+ * "proveedor facturó mal, esperamos NC, mientras tanto no dejemos que el
+ * costo facturado contamine WAC ni márgenes de ventas ya hechas".
+ *
+ * Idempotente: ejecutar dos veces con el mismo costoAplicar produce el
+ * mismo resultado.
+ */
+export async function congelarCostoDiscrepancia(
+  discrepanciaId: string,
+  costoAplicar: number | null,
+  dryRun: boolean,
+): Promise<CongelarCostoPreview> {
+  const sb = getSupabase();
+  if (!sb) throw new Error("Sin conexión a Supabase");
+
+  const { data: discRow, error: discErr } = await sb.from("discrepancias_costo")
+    .select("id, recepcion_id, linea_id, sku, costo_diccionario, costo_factura, estado")
+    .eq("id", discrepanciaId).single();
+  if (discErr || !discRow) throw new Error(`Discrepancia no encontrada: ${discErr?.message || discrepanciaId}`);
+  const disc = discRow as { id: string; recepcion_id: string; sku: string; costo_diccionario: number; costo_factura: number; estado: string };
+
+  const skuUp = (disc.sku || "").toUpperCase();
+  const aplicar = costoAplicar != null ? costoAplicar : disc.costo_diccionario;
+  if (!aplicar || aplicar <= 0) throw new Error("No se puede congelar: costo diccionario = 0 y no se entregó costo manual");
+
+  const { data: recRow } = await sb.from("recepciones").select("id, created_at").eq("id", disc.recepcion_id).single();
+  const cutoff = (recRow as { created_at: string } | null)?.created_at || new Date().toISOString();
+
+  // 1. Calcular WAC simulado: recomputar promedio sobre movimientos con override para los de esta recepción
+  const { data: movs } = await sb.from("movimientos")
+    .select("cantidad, costo_unitario, recepcion_id")
+    .eq("sku", skuUp).eq("tipo", "entrada")
+    .not("costo_unitario", "is", null).gt("costo_unitario", 0);
+  let sumQty = 0, sumQtyCost = 0;
+  for (const m of (movs || []) as Array<{ cantidad: number; costo_unitario: number; recepcion_id: string | null }>) {
+    const cu = m.recepcion_id === disc.recepcion_id ? aplicar : m.costo_unitario;
+    sumQty += m.cantidad;
+    sumQtyCost += m.cantidad * cu;
+  }
+  const wacSimulado = sumQty > 0 ? Math.round((sumQtyCost / sumQty) * 100) / 100 : aplicar;
+
+  const { data: prodRow } = await sb.from("productos").select("costo_promedio").eq("sku", skuUp).single();
+  const wacAnterior = (prodRow as { costo_promedio: number } | null)?.costo_promedio || 0;
+
+  // 2. Cargar preload y sobreescribir WAC del SKU con el simulado
+  const preload = await preloadCostos(sb);
+  const prodSim = preload.productos.get(skuUp) || { costo_promedio: 0, costo: 0 };
+  preload.productos.set(skuUp, { costo_promedio: wacSimulado, costo: prodSim.costo });
+
+  // 3. sku_ventas que contienen este sku_origen
+  const { data: compRows } = await sb.from("composicion_venta").select("sku_venta").eq("sku_origen", skuUp);
+  const skuVentas = new Set<string>([skuUp, ...((compRows || []) as Array<{ sku_venta: string }>).map(c => (c.sku_venta || "").toUpperCase())]);
+
+  // 4. Ventas afectadas post-recepción
+  const { data: ventasRaw } = await sb.from("ventas_ml_cache")
+    .select("order_id, sku_venta, cantidad, fecha, subtotal, total_neto, costo_producto, margen, ads_cost_asignado")
+    .in("sku_venta", Array.from(skuVentas))
+    .gte("fecha", cutoff)
+    .neq("anulada", true);
+  const ventas = (ventasRaw || []) as Array<{ order_id: string; sku_venta: string; cantidad: number; fecha: string; subtotal: number; total_neto: number; costo_producto: number; margen: number; ads_cost_asignado: number }>;
+
+  const detalles: CongelarCostoPreview["detalles"] = [];
+  let margenDeltaTotal = 0;
+  const updatesParaEjecutar: Array<{ order_id: string; sku_venta: string; costo_nuevo: number; margen: number; margen_pct: number; margen_neto: number; margen_neto_pct: number; detalle: unknown }> = [];
+
+  for (const v of ventas) {
+    const resolved = resolverCostoVenta(v.sku_venta, v.cantidad, preload);
+    const mBruto = calcularMargenVenta(v.total_neto, resolved.costo_producto, v.subtotal);
+    const mn = calcularMargenNeto(mBruto.margen, v.ads_cost_asignado || 0, v.subtotal);
+    const margenAnt = v.margen || 0;
+    const margenNetoAnt = margenAnt - (v.ads_cost_asignado || 0);
+    const delta = mBruto.margen - margenAnt;
+    margenDeltaTotal += delta;
+    detalles.push({
+      order_id: v.order_id, sku_venta: v.sku_venta, fecha: v.fecha,
+      costo_anterior: v.costo_producto || 0, costo_nuevo: resolved.costo_producto,
+      margen_anterior: margenAnt, margen_nuevo: mBruto.margen,
+      margen_neto_anterior: margenNetoAnt, margen_neto_nuevo: mn.margen_neto,
+    });
+    updatesParaEjecutar.push({
+      order_id: v.order_id, sku_venta: v.sku_venta,
+      costo_nuevo: resolved.costo_producto,
+      margen: mBruto.margen, margen_pct: mBruto.margen_pct,
+      margen_neto: mn.margen_neto, margen_neto_pct: mn.margen_neto_pct,
+      detalle: resolved.detalle,
+    });
+  }
+
+  const preview: CongelarCostoPreview = {
+    discrepanciaId, sku: skuUp, recepcionId: disc.recepcion_id,
+    costoAplicar: aplicar, costoFacturaActual: disc.costo_factura,
+    wacAnterior, wacSimulado, cutoff,
+    ventasAfectadas: ventas.length, margenDelta: margenDeltaTotal, detalles,
+  };
+
+  if (dryRun) return preview;
+
+  // 5. Ejecutar: sincronizar movimientos+WAC
+  await sincronizarCostoMovimientosRecepcion(skuUp, disc.recepcion_id, aplicar);
+
+  // 6. Update ventas_ml_cache
+  const snapshotAt = new Date().toISOString();
+  for (const u of updatesParaEjecutar) {
+    const { error: upErr } = await sb.from("ventas_ml_cache").update({
+      costo_producto: u.costo_nuevo,
+      costo_fuente: "congelado_pre_nc",
+      costo_snapshot_at: snapshotAt,
+      costo_detalle: u.detalle,
+      margen: u.margen, margen_pct: u.margen_pct,
+      margen_neto: u.margen_neto, margen_neto_pct: u.margen_neto_pct,
+      updated_at: snapshotAt,
+    }).eq("order_id", u.order_id).eq("sku_venta", u.sku_venta);
+    if (upErr) console.error(`[congelarCosto] update venta_ml_cache ${u.order_id}/${u.sku_venta}: ${upErr.message}`);
+  }
+
+  await db.auditLog("congelarCostoDiscrepancia", {
+    entidad: "discrepancias_costo", entidad_id: discrepanciaId, operario: "admin",
+    params: { sku: skuUp, recepcion_id: disc.recepcion_id, costoAplicar: aplicar, wacAnterior, wacSimulado, cutoff, ventasAfectadas: ventas.length, margenDelta: margenDeltaTotal },
+    resultado: { ok: true, updates: updatesParaEjecutar.length },
+  });
+
+  return preview;
 }
 
 // Reset línea a PENDIENTE — revierte stock si ya fue ubicada
