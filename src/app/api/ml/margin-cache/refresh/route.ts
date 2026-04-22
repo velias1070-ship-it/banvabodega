@@ -3,7 +3,7 @@ import { mlGet } from "@/lib/ml";
 import { getServerSupabase } from "@/lib/supabase-server";
 import { calcularCostoEnvioML, columnaPorPrecio, tramoPorPeso } from "@/lib/ml-shipping";
 
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 type MapRow = {
   sku: string;
