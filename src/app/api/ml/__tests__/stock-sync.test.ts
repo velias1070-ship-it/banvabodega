@@ -51,12 +51,6 @@ vi.mock("@/lib/supabase-server", () => ({
 vi.mock("@/lib/ml", () => ({
   syncStockToML: vi.fn().mockResolvedValue(0),
 }));
-vi.mock("@/lib/flex-full", () => ({
-  calcularEstadoFlexFull: () => ({
-    para_flex: 0, para_full: 0, publicar_flex: 0, mandar_full: 0,
-    flex_activo: false, flex_bloqueado_por_stock: false, gap_fantasma: 0, reserva_ignorada: false,
-  }),
-}));
 
 beforeEach(() => {
   upsertCalls.length = 0;
