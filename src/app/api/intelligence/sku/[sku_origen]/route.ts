@@ -2,6 +2,42 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
 
 /**
+ * GET /api/intelligence/sku/{sku_origen}
+ * Devuelve todos los campos de sku_intelligence para un SKU + snapshots de stock
+ * recientes (para diagnosticar si la caida de velocidad es por quiebre previo).
+ */
+export async function GET(
+  _req: NextRequest,
+  { params }: { params: Promise<{ sku_origen: string }> },
+) {
+  const { sku_origen } = await params;
+  const sb = getServerSupabase();
+  if (!sb) return NextResponse.json({ error: "Sin conexion a Supabase" }, { status: 500 });
+
+  const { data: intel, error: intelErr } = await sb
+    .from("sku_intelligence")
+    .select("*")
+    .eq("sku_origen", sku_origen)
+    .maybeSingle();
+  if (intelErr) return NextResponse.json({ error: intelErr.message }, { status: 500 });
+
+  // Traer snapshots de stock ultimos 60 dias para ver historial de quiebres
+  const fechaDesde = new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
+  const { data: snaps } = await sb
+    .from("stock_snapshots")
+    .select("fecha, stock_full, stock_bodega, stock_total, en_quiebre_full")
+    .eq("sku_origen", sku_origen)
+    .gte("fecha", fechaDesde)
+    .order("fecha", { ascending: true });
+
+  return NextResponse.json({
+    sku_origen,
+    intelligence: intel,
+    snapshots: snaps || [],
+  });
+}
+
+/**
  * PATCH /api/intelligence/sku/{sku_origen}
  * Actualiza vel_objetivo y recalcula gap_vel_pct.
  * Body: { vel_objetivo: number, motivo?: string }
