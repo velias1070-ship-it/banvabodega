@@ -3754,11 +3754,55 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
     const movidas = Array.from(selectedForSplit);
     setSaving(true);
     const newId = await dividirEnvioFull(session.id!, movidas, titulo, session.fecha);
-    setSaving(false);
     if (!newId) {
+      setSaving(false);
       showToast("Error dividiendo envío");
       return;
     }
+
+    // Fix 2026-04-22: dividirEnvioFull NO generaba registro en envios_full_historial.
+    // La sesion nueva quedaba fuera del panel de historial. Backfill acá desde
+    // las lineas movidas: arma el log con la misma firma que crear_picking_full.
+    try {
+      const movedLineas = session.lineas.filter(l => l.id && movidas.includes(l.id));
+      const totalSkus = new Set(movedLineas.map(l => l.skuVenta)).size;
+      const totalUdsVenta = movedLineas.reduce((s, l) => s + (l.qtyVenta || 0), 0);
+      const totalUdsFisicas = movedLineas.reduce((s, l) => s + (l.qtyFisica || 0), 0);
+      const totalBultos = movedLineas.length;
+      const logLineas = movedLineas.map(l => ({
+        skuVenta: l.skuVenta,
+        skuOrigen: l.componentes?.[0]?.skuOrigen || l.skuVenta,
+        cantidadSugerida: 0,
+        cantidadEnviada: l.qtyVenta || 0,
+        fueEditada: true,
+        abc: null,
+        velPonderada: null,
+        velObjetivo: null,
+        stockFullAntes: null,
+        stockBodegaAntes: null,
+        cobFullAntes: null,
+        targetDias: null,
+        margenFull: null,
+        innerPack: l.unidadesPorPack || 1,
+        redondeo: null,
+        alertas: [],
+        nota: `Dividido desde ${session.titulo || session.id}`,
+      }));
+      await fetch("/api/intelligence/envio-full-log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pickingSessionId: newId,
+          totals: { skus: totalSkus, udsVenta: totalUdsVenta, udsFisicas: totalUdsFisicas, bultos: totalBultos },
+          lineas: logLineas,
+          skusEditados: [],
+        }),
+      });
+    } catch (err) {
+      console.error("[split-envio] log historial fallo (no critico):", err);
+    }
+
+    setSaving(false);
     exitSplitMode();
     showToast(`${movidas.length} líneas movidas a "${titulo}"`);
     onBack();
