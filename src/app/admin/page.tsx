@@ -26,35 +26,58 @@ import AdminUsuarios from "@/components/AdminUsuarios";
 import { loginAdminUser, canAccessTab, canAccessSubtab, canManageUsers, type AdminUser } from "@/lib/admin-users";
 
 const AUTH_KEY = "banva_admin_auth_user";
+const REMEMBER_KEY = "banva_admin_auth_remember";
+const REMEMBER_TTL_DAYS = 30;
 
 function useAuth() {
   const [user, setUser] = useState<AdminUser | null>(null);
   useEffect(() => {
+    // 1. Intentar localStorage (recordame) con TTL
+    try {
+      const remembered = localStorage.getItem(REMEMBER_KEY);
+      if (remembered) {
+        const parsed = JSON.parse(remembered) as { user: AdminUser; ts: number };
+        const ageDays = (Date.now() - parsed.ts) / 86400000;
+        if (ageDays < REMEMBER_TTL_DAYS) { setUser(parsed.user); return; }
+        localStorage.removeItem(REMEMBER_KEY); // expirado
+      }
+    } catch { /* ignore */ }
+    // 2. Fallback a sessionStorage (sesion actual)
     const saved = sessionStorage.getItem(AUTH_KEY);
     if (saved) {
       try { setUser(JSON.parse(saved) as AdminUser); } catch { /* ignore */ }
     }
   }, []);
-  const login = async (pin: string): Promise<boolean> => {
+  const login = async (pin: string, remember = false): Promise<boolean> => {
     const u = await loginAdminUser(pin);
     if (u) {
       sessionStorage.setItem(AUTH_KEY, JSON.stringify(u));
+      if (remember) {
+        localStorage.setItem(REMEMBER_KEY, JSON.stringify({ user: u, ts: Date.now() }));
+      } else {
+        localStorage.removeItem(REMEMBER_KEY);
+      }
       setUser(u);
       return true;
     }
     return false;
   };
-  const logout = () => { sessionStorage.removeItem(AUTH_KEY); setUser(null); };
+  const logout = () => {
+    sessionStorage.removeItem(AUTH_KEY);
+    localStorage.removeItem(REMEMBER_KEY);
+    setUser(null);
+  };
   return { user, ok: !!user, login, logout };
 }
 
-function LoginGate({ onLogin }: { onLogin: (pin: string) => Promise<boolean> }) {
+function LoginGate({ onLogin }: { onLogin: (pin: string, remember: boolean) => Promise<boolean> }) {
   const [pin, setPin] = useState("");
   const [err, setErr] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [remember, setRemember] = useState(true); // default on — UX: querer persistir es lo usual
   const submit = async () => {
     setLoading(true);
-    const ok = await onLogin(pin);
+    const ok = await onLogin(pin, remember);
     setLoading(false);
     if (!ok) { setErr(true); setPin(""); setTimeout(() => setErr(false), 1500); }
   };
@@ -72,6 +95,11 @@ function LoginGate({ onLogin }: { onLogin: (pin: string) => Promise<boolean> }) 
             autoComplete="one-time-code" name="banva-pin" data-lpignore="true" data-1p-ignore="true"
             style={{fontSize:24,textAlign:"center",letterSpacing:8,padding:16,flex:1}}/>
         </div>
+        <label style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,marginBottom:12,cursor:"pointer",fontSize:12,color:"var(--txt2)"}}>
+          <input type="checkbox" checked={remember} onChange={e=>setRemember(e.target.checked)}
+            style={{width:16,height:16,cursor:"pointer",accentColor:"var(--cyan)"}}/>
+          Recordarme en este dispositivo (30 días)
+        </label>
         <button onClick={submit} disabled={pin.length<4 || loading}
           style={{width:"100%",padding:14,borderRadius:10,background:pin.length>=4?"var(--cyan)":"var(--bg3)",color:pin.length>=4?"#000":"var(--txt3)",fontWeight:700,fontSize:14,opacity:(pin.length>=4 && !loading)?1:0.5}}>
           {loading ? "..." : "Entrar"}
