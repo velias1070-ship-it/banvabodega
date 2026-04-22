@@ -275,13 +275,18 @@ async function runRefresh(force = false) {
 
     const semana = getMonday(now);
 
-    // 8. Build rows: UNA FILA POR PUBLICACION ML ACTIVA
+    // 8. Build rows: UNA FILA POR sku_venta ACTIVO
+    // Dedupe por sku_venta — puede haber multiples variation_id con mismo sku_venta,
+    // nos quedamos con la de mayor sold_quantity (viene ordenado desc).
+    const skuVentasProcesados = new Set<string>();
     const rows: Array<Record<string, unknown>> = [];
     for (const m of mlItems || []) {
       const itemId = m.item_id as string;
       if (!itemId) continue;
       const skuVenta = (m.sku_venta || m.sku) as string;
       if (!skuVenta) continue;
+      if (skuVentasProcesados.has(skuVenta)) continue;
+      skuVentasProcesados.add(skuVenta);
 
       const comp = compBySkuVenta.get(skuVenta);
       const skuOrigen = comp?.sku_origen || (m.sku_origen as string) || skuVenta;
@@ -411,9 +416,20 @@ async function runRefresh(force = false) {
 
     // 8. Write to semaforo_semanal (delete current week + insert)
     await sb.from("semaforo_semanal").delete().eq("semana_calculo", semana);
+    let insertedOK = 0;
+    let insertErrors: string[] = [];
     for (let i = 0; i < rows.length; i += 500) {
-      const { error } = await sb.from("semaforo_semanal").insert(rows.slice(i, i + 500));
-      if (error) console.error("[semaforo] Insert error:", error.message);
+      const batch = rows.slice(i, i + 500);
+      const { error } = await sb.from("semaforo_semanal").insert(batch);
+      if (error) {
+        console.error("[semaforo] Insert error batch", i, ":", error.message);
+        insertErrors.push(`batch@${i}: ${error.message}`);
+      } else {
+        insertedOK += batch.length;
+      }
+    }
+    if (insertErrors.length > 0) {
+      console.error("[semaforo] Insert errors summary:", insertErrors.join(" | "));
     }
 
     // 9. Build and save snapshot
@@ -499,6 +515,8 @@ async function runRefresh(force = false) {
       status: "ok",
       semana,
       total_skus: rows.length,
+      inserted_ok: insertedOK,
+      insert_errors: insertErrors.length > 0 ? insertErrors : undefined,
       cubetas: counts,
       impactos: impacts,
       kpis: { unidades_semana: unidadesSemana, revenue_semana: revenueSemana },
