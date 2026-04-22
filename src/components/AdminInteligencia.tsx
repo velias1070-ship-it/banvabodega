@@ -443,7 +443,41 @@ export default function AdminInteligencia() {
   const [ocCreada, setOcCreada] = useState<string | null>(null);
 
   // Envío a Full
-  const [envioEdits, setEnvioEdits] = useState<Map<string, number>>(new Map());
+  const ENVIO_EDITS_LS_KEY = "banva_admin_envio_full_edits";
+  const ENVIO_EDITS_TTL_MS = 24 * 3600_000; // 24h
+  const [envioEdits, setEnvioEditsRaw] = useState<Map<string, number>>(() => {
+    // Persistir ediciones manuales en localStorage para que sobrevivan F5,
+    // navegacion o remount. Antes era solo useState → un refresh borraba
+    // cambios manuales registrados. TTL 24h (el envio se crea mismo dia).
+    if (typeof window === "undefined") return new Map();
+    try {
+      const raw = window.localStorage.getItem(ENVIO_EDITS_LS_KEY);
+      if (!raw) return new Map();
+      const parsed = JSON.parse(raw) as { ts?: number; edits?: Record<string, number> };
+      if (!parsed.ts || Date.now() - parsed.ts > ENVIO_EDITS_TTL_MS) {
+        window.localStorage.removeItem(ENVIO_EDITS_LS_KEY);
+        return new Map();
+      }
+      return new Map(Object.entries(parsed.edits || {}));
+    } catch { return new Map(); }
+  });
+  const setEnvioEdits = useCallback((updater: React.SetStateAction<Map<string, number>>) => {
+    setEnvioEditsRaw(prev => {
+      const next = typeof updater === "function" ? (updater as (p: Map<string, number>) => Map<string, number>)(prev) : updater;
+      try {
+        if (typeof window !== "undefined") {
+          if (next.size === 0) {
+            window.localStorage.removeItem(ENVIO_EDITS_LS_KEY);
+          } else {
+            const obj: Record<string, number> = {};
+            next.forEach((v, k) => { obj[k] = v; });
+            window.localStorage.setItem(ENVIO_EDITS_LS_KEY, JSON.stringify({ ts: Date.now(), edits: obj }));
+          }
+        }
+      } catch { /* quota/no-op */ }
+      return next;
+    });
+  }, []);
   const [envioSelection, setEnvioSelection] = useState<Set<string>>(new Set());
   const [envioSelAllInit, setEnvioSelAllInit] = useState(false);
   const [creandoPicking, setCreandoPicking] = useState(false);
@@ -1172,8 +1206,61 @@ export default function AdminInteligencia() {
           if (skusEnvio.length > 0) enqueueAndSync(skusEnvio);
         } catch { /* no bloquear */ }
 
-        // Log historial
+        // Log historial — incluir envioSelected + envioManualItems.
+        // Bug 2026-04-16: los SKUs agregados a mano entraban al picking (armador los
+        // preparaba y el stock se descontaba) pero el log solo iteraba envioSelected,
+        // asi que en envios_full_lineas no quedaba registro. El operario enviaba al
+        // Full pero el panel mostraba que nunca se hizo. Ejemplo: TXV25QLBRVD20
+        // pickeado con qty 8, estado PICKEADO, pero ausente de envios_full_lineas.
         const skusEditados = envioSelected.filter(i => envioEdits.has(i.skuVenta)).map(i => i.skuVenta);
+        const lineasSeleccion = envioSelected.map(i => ({
+          skuVenta: i.skuVenta,
+          skuOrigen: i.skuOrigen,
+          cantidadSugerida: i.mandarSugerido,
+          cantidadEnviada: i.mandarEditado,
+          fueEditada: envioEdits.has(i.skuVenta),
+          abc: i.abc,
+          velPonderada: i.velPonderada,
+          velObjetivo: i.velObjetivo,
+          stockFullAntes: i.stockFull,
+          stockBodegaAntes: i.stockBodega,
+          cobFullAntes: i.cobFull,
+          targetDias: i.targetDias,
+          margenFull: i.margenFull,
+          innerPack: i.innerPack,
+          redondeo: i.redondeo,
+          alertas: i.alertas,
+          nota: i.notas.join("; "),
+        }));
+        const lineasManuales = manualesActuales.map(m => {
+          const comps = getComponentesPorSkuVenta(m.skuVenta).filter(c => c.tipoRelacion !== "alternativo");
+          const skuOrigen = comps.length > 0 ? comps[0].skuOrigen : m.skuVenta;
+          const innerPack = comps.length > 0 ? comps[0].unidades : 1;
+          return {
+            skuVenta: m.skuVenta,
+            skuOrigen,
+            cantidadSugerida: 0,
+            cantidadEnviada: m.qty,
+            fueEditada: true, // item manual = siempre editado
+            abc: null,
+            velPonderada: null,
+            velObjetivo: null,
+            stockFullAntes: null,
+            stockBodegaAntes: null,
+            cobFullAntes: null,
+            targetDias: null,
+            margenFull: null,
+            innerPack,
+            redondeo: null,
+            alertas: [],
+            nota: "Agregado manualmente",
+          };
+        });
+        const lineasLog = [...lineasSeleccion, ...lineasManuales];
+        const totalSkus = lineasLog.length;
+        const totalUdsVenta = lineasLog.reduce((s, l) => s + (l.cantidadEnviada || 0), 0);
+        const totalUdsFisicas = envioSummary.totalUdsFisicas + manualesActuales.reduce((s, m) => s + m.qty, 0);
+        const totalBultos = envioSummary.totalBultos + manualesActuales.length;
         try {
           await fetch("/api/intelligence/envio-full-log", {
             method: "POST",
@@ -1181,33 +1268,15 @@ export default function AdminInteligencia() {
             body: JSON.stringify({
               pickingSessionId: id,
               totals: {
-                skus: envioSelected.length,
-                udsVenta: envioSummary.totalUdsVenta,
-                udsFisicas: envioSummary.totalUdsFisicas,
-                bultos: envioSummary.totalBultos,
+                skus: totalSkus,
+                udsVenta: totalUdsVenta,
+                udsFisicas: totalUdsFisicas,
+                bultos: totalBultos,
                 eventoActivo: envioSelected.find(i => i.eventoActivo)?.eventoActivo || null,
                 multiplicadorEvento: envioSelected.find(i => i.multiplicadorEvento > 1)?.multiplicadorEvento || 1,
               },
-              lineas: envioSelected.map(i => ({
-                skuVenta: i.skuVenta,
-                skuOrigen: i.skuOrigen,
-                cantidadSugerida: i.mandarSugerido,
-                cantidadEnviada: i.mandarEditado,
-                fueEditada: envioEdits.has(i.skuVenta),
-                abc: i.abc,
-                velPonderada: i.velPonderada,
-                velObjetivo: i.velObjetivo,
-                stockFullAntes: i.stockFull,
-                stockBodegaAntes: i.stockBodega,
-                cobFullAntes: i.cobFull,
-                targetDias: i.targetDias,
-                margenFull: i.margenFull,
-                innerPack: i.innerPack,
-                redondeo: i.redondeo,
-                alertas: i.alertas,
-                nota: i.notas.join("; "),
-              })),
-              skusEditados,
+              lineas: lineasLog,
+              skusEditados: [...skusEditados, ...manualesActuales.map(m => m.skuVenta)],
             }),
           });
         } catch { /* no bloquear */ }
