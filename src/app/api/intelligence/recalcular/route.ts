@@ -522,6 +522,10 @@ function rowToUpsert(r: SkuIntelRow): SkuIntelligenceUpsert {
     abc_pre_quiebre: r.abc_pre_quiebre,
     gmroi_potencial: r.gmroi_potencial,
     es_catch_up: r.es_catch_up,
+    // v60 — Quiebre Flex
+    dias_en_quiebre_flex: r.dias_en_quiebre_flex,
+    fecha_entrada_quiebre_flex: r.fecha_entrada_quiebre_flex,
+    vel_flex_pre_quiebre: r.vel_flex_pre_quiebre,
     vel_objetivo: r.vel_objetivo,
     gap_vel_pct: r.gap_vel_pct,
     // PR2/3 — forecast accuracy (8s)
