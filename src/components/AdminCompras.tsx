@@ -4,10 +4,10 @@ import {
   fetchOrdenesCompra, fetchOrdenCompra, fetchOrdenCompraLineas,
   updateOrdenCompra, updateOrdenCompraLinea, deleteOrdenCompra,
   fetchRecepcionesDeOC, fetchRecepcionesSinOC, vincularRecepcionOC,
-  fetchRecepcionLineas, insertAdminActionLog,
+  fetchRecepcionLineas, fetchLineasDeRecepciones, insertAdminActionLog,
   insertOrdenCompra, insertOrdenCompraLineas, nextOCNumero,
 } from "@/lib/db";
-import type { DBOrdenCompra, DBOrdenCompraLinea, DBRecepcion, OCEstado } from "@/lib/db";
+import type { DBOrdenCompra, DBOrdenCompraLinea, DBRecepcion, DBRecepcionLinea, OCEstado } from "@/lib/db";
 import { getSupabase } from "@/lib/supabase";
 import { exportarOCExcel } from "@/lib/oc-export";
 
@@ -179,12 +179,16 @@ export default function AdminCompras() {
   const [ocLineas, setOcLineas] = useState<DBOrdenCompraLinea[]>([]);
   const [ocRecepciones, setOcRecepciones] = useState<DBRecepcion[]>([]);
   const [recibidoPorSku, setRecibidoPorSku] = useState<Map<string, number>>(new Map());
+  const [lineasPorOcRec, setLineasPorOcRec] = useState<Map<string, DBRecepcionLinea[]>>(new Map());
+  const [expandidoOcRec, setExpandidoOcRec] = useState<Set<string>>(new Set());
 
   // Modals
   const [modalEnviar, setModalEnviar] = useState(false);
   const [fechaEsperada, setFechaEsperada] = useState("");
   const [modalVincular, setModalVincular] = useState(false);
   const [recepcionesSinOC, setRecepcionesSinOC] = useState<DBRecepcion[]>([]);
+  const [lineasPorRecepcion, setLineasPorRecepcion] = useState<Map<string, DBRecepcionLinea[]>>(new Map());
+  const [expandidoRec, setExpandidoRec] = useState<Set<string>>(new Set());
   const [procesando, setProcesando] = useState(false);
 
   // Modal Nueva OC
@@ -339,18 +343,23 @@ export default function AdminCompras() {
     setOcLineas(lineas);
     setOcRecepciones(recepciones);
 
-    // Calcular recibido por SKU desde recepciones vinculadas
+    // Calcular recibido por SKU desde recepciones vinculadas (batch)
     const recMap = new Map<string, number>();
+    const byRec = new Map<string, DBRecepcionLinea[]>();
     if (recepciones.length > 0) {
-      for (const rec of recepciones) {
-        const recLineas = await fetchRecepcionLineas(rec.id!);
-        for (const rl of recLineas) {
-          const sku = (rl.sku || "").toUpperCase();
-          recMap.set(sku, (recMap.get(sku) || 0) + (rl.qty_recibida || 0));
-        }
+      const ids = recepciones.map(r => r.id!).filter(Boolean);
+      const allLineas = await fetchLineasDeRecepciones(ids);
+      for (const rl of allLineas) {
+        const sku = (rl.sku || "").toUpperCase();
+        recMap.set(sku, (recMap.get(sku) || 0) + (rl.qty_recibida || 0));
+        const arr = byRec.get(rl.recepcion_id) || [];
+        arr.push(rl);
+        byRec.set(rl.recepcion_id, arr);
       }
     }
     setRecibidoPorSku(recMap);
+    setLineasPorOcRec(byRec);
+    setExpandidoOcRec(new Set());
   }, []);
 
   // Back to list
@@ -359,8 +368,21 @@ export default function AdminCompras() {
     setOcLineas([]);
     setOcRecepciones([]);
     setRecibidoPorSku(new Map());
+    setLineasPorOcRec(new Map());
+    setExpandidoOcRec(new Set());
     cargar();
   }, [cargar]);
+
+  const desvincularRec = useCallback(async (recId: string) => {
+    if (!selectedOC) return;
+    if (!window.confirm("¿Desvincular esta recepción de la OC? Los SKUs recibidos dejarán de contarse en el cumplimiento.")) return;
+    const sb = getSupabase(); if (!sb) return;
+    setProcesando(true);
+    await sb.from("recepciones").update({ orden_compra_id: null }).eq("id", recId);
+    await insertAdminActionLog("desvincular_recepcion_oc", "ordenes_compra", selectedOC.id!, { oc_id: selectedOC.id, recepcion_id: recId });
+    setProcesando(false);
+    openDetail(selectedOC);
+  }, [selectedOC, openDetail]);
 
   // ── Actions ──
 
@@ -434,6 +456,16 @@ export default function AdminCompras() {
     if (!selectedOC) return;
     const recs = await fetchRecepcionesSinOC(selectedOC.proveedor);
     setRecepcionesSinOC(recs);
+    const ids = recs.map(r => r.id!).filter(Boolean);
+    const lineas = await fetchLineasDeRecepciones(ids);
+    const m = new Map<string, DBRecepcionLinea[]>();
+    for (const l of lineas) {
+      const arr = m.get(l.recepcion_id) || [];
+      arr.push(l);
+      m.set(l.recepcion_id, arr);
+    }
+    setLineasPorRecepcion(m);
+    setExpandidoRec(new Set());
     setModalVincular(true);
   }, [selectedOC]);
 
@@ -668,20 +700,98 @@ export default function AdminCompras() {
         </div>
 
         {/* Recepciones vinculadas */}
-        {ocRecepciones.length > 0 && (
+        {ocRecepciones.length > 0 && (() => {
+          const skusOC = new Map<string, DBOrdenCompraLinea>();
+          for (const l of ocLineas) skusOC.set(l.sku_origen.toUpperCase(), l);
+          const toggleExp = (id: string) => {
+            const next = new Set(expandidoOcRec);
+            if (next.has(id)) next.delete(id); else next.add(id);
+            setExpandidoOcRec(next);
+          };
+          return (
           <div style={{ marginBottom: 16 }}>
             <h4 style={{ margin: "0 0 8px", fontSize: 13, fontWeight: 700, color: "var(--txt2)" }}>Recepciones vinculadas</h4>
-            {ocRecepciones.map(r => (
-              <div key={r.id} style={{ padding: "8px 12px", borderRadius: 6, background: "var(--bg3)", border: "1px solid var(--bg4)", marginBottom: 4, fontSize: 11, display: "flex", gap: 12, alignItems: "center" }}>
-                <span className="mono" style={{ fontWeight: 600 }}>{r.folio}</span>
-                <span style={{ color: "var(--txt3)" }}>{fmtDate(r.created_at)}</span>
-                <span style={{ padding: "2px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, color: r.estado === "CERRADA" || r.estado === "COMPLETADA" ? "var(--green)" : "var(--amber)" }}>
-                  {r.estado}
-                </span>
+            {ocRecepciones.map(r => {
+              const lineas = lineasPorOcRec.get(r.id!) || [];
+              const matches: { sku: string; rl: DBRecepcionLinea; pedida: number }[] = [];
+              const extras: DBRecepcionLinea[] = [];
+              for (const rl of lineas) {
+                const sku = (rl.sku || "").toUpperCase();
+                const ocl = skusOC.get(sku);
+                if (ocl) matches.push({ sku, rl, pedida: ocl.cantidad_pedida });
+                else extras.push(rl);
+              }
+              const qtyMatch = matches.reduce((s, m) => s + (m.rl.qty_recibida || 0), 0);
+              const qtyExtra = extras.reduce((s, e) => s + (e.qty_recibida || 0), 0);
+              const expandido = expandidoOcRec.has(r.id!);
+              const puedeDesvincular = selectedOC.estado !== "CERRADA";
+              return (
+              <div key={r.id} style={{ padding: "8px 12px", borderRadius: 6, background: "var(--bg3)", border: "1px solid var(--bg4)", marginBottom: 6 }}>
+                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                  <span className="mono" style={{ fontWeight: 600, fontSize: 12 }}>{r.folio}</span>
+                  <span style={{ color: "var(--txt3)", fontSize: 11 }}>{fmtDate(r.created_at)}</span>
+                  <span style={{ padding: "2px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, color: r.estado === "CERRADA" || r.estado === "COMPLETADA" ? "var(--green)" : "var(--amber)" }}>
+                    {r.estado}
+                  </span>
+                  <span style={{ flex: 1, fontSize: 11, color: "var(--txt2)" }}>
+                    <span style={{ color: "var(--green)", fontWeight: 600 }}>{matches.length} match</span>
+                    <span style={{ color: "var(--txt3)" }}> · {fmtInt(qtyMatch)}u</span>
+                    {extras.length > 0 && <>
+                      <span style={{ marginLeft: 10, color: "var(--amber)" }}>{extras.length} extra</span>
+                      <span style={{ color: "var(--txt3)" }}> · {fmtInt(qtyExtra)}u</span>
+                    </>}
+                  </span>
+                  <button onClick={() => toggleExp(r.id!)}
+                    style={{ padding: "4px 10px", borderRadius: 6, background: "var(--bg4)", color: "var(--txt2)", fontWeight: 600, fontSize: 10, border: "1px solid var(--bg4)", cursor: "pointer" }}>
+                    {expandido ? "Ocultar" : "Ver detalle"}
+                  </button>
+                  {puedeDesvincular && (
+                    <button onClick={() => desvincularRec(r.id!)} disabled={procesando}
+                      style={{ padding: "4px 10px", borderRadius: 6, background: "var(--redBg)", color: "var(--red)", fontWeight: 600, fontSize: 10, border: "1px solid var(--redBd)", cursor: "pointer" }}>
+                      Desvincular
+                    </button>
+                  )}
+                </div>
+                {expandido && (
+                  <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--bg4)", fontSize: 11 }}>
+                    {matches.length > 0 && (
+                      <div style={{ marginBottom: 8 }}>
+                        <div style={{ color: "var(--green)", fontWeight: 600, marginBottom: 4 }}>Coinciden ({matches.length})</div>
+                        {matches.map(m => (
+                          <div key={m.sku} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: "var(--txt2)" }}>
+                            <span className="mono" style={{ fontSize: 11 }}>{m.sku}</span>
+                            <span style={{ fontSize: 11 }}>
+                              <span style={{ color: m.rl.qty_recibida < m.pedida ? "var(--amber)" : m.rl.qty_recibida > m.pedida ? "var(--blue)" : "var(--green)" }}>
+                                {fmtInt(m.rl.qty_recibida)}
+                              </span>
+                              <span style={{ color: "var(--txt3)" }}> / {fmtInt(m.pedida)} OC</span>
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {extras.length > 0 && (
+                      <div>
+                        <div style={{ color: "var(--amber)", fontWeight: 600, marginBottom: 4 }}>Extras no en la OC ({extras.length})</div>
+                        {extras.map(rl => (
+                          <div key={rl.id} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: "var(--txt3)" }}>
+                            <span className="mono" style={{ fontSize: 11 }}>{rl.sku}</span>
+                            <span style={{ fontSize: 11 }}>{fmtInt(rl.qty_recibida)}u</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {matches.length === 0 && extras.length === 0 && (
+                      <div style={{ color: "var(--txt3)", fontSize: 11 }}>Recepción sin líneas.</div>
+                    )}
+                  </div>
+                )}
               </div>
-            ))}
+              );
+            })}
           </div>
-        )}
+          );
+        })()}
 
         {selectedOC.notas && (
           <div style={{ padding: "8px 12px", borderRadius: 6, background: "var(--bg3)", border: "1px solid var(--bg4)", fontSize: 11, color: "var(--txt3)", whiteSpace: "pre-wrap" }}>
@@ -718,29 +828,117 @@ export default function AdminCompras() {
         )}
 
         {/* Modal Vincular Recepción */}
-        {modalVincular && (
+        {modalVincular && (() => {
+          const skusOC = new Map<string, DBOrdenCompraLinea>();
+          for (const l of ocLineas) skusOC.set(l.sku_origen.toUpperCase(), l);
+          const toggleExp = (id: string) => {
+            const next = new Set(expandidoRec);
+            if (next.has(id)) next.delete(id); else next.add(id);
+            setExpandidoRec(next);
+          };
+          return (
           <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
             onClick={() => !procesando && setModalVincular(false)}>
-            <div style={{ background: "var(--bg2)", borderRadius: 12, border: "1px solid var(--bg4)", padding: 24, maxWidth: 500, width: "100%", maxHeight: "70vh", overflow: "auto" }}
+            <div style={{ background: "var(--bg2)", borderRadius: 12, border: "1px solid var(--bg4)", padding: 24, maxWidth: 640, width: "100%", maxHeight: "80vh", overflow: "auto" }}
               onClick={e => e.stopPropagation()}>
-              <h3 style={{ margin: "0 0 12px", fontSize: 16, fontWeight: 700 }}>Vincular recepción</h3>
-              <p style={{ fontSize: 12, color: "var(--txt3)", marginBottom: 12 }}>Recepciones de {selectedOC.proveedor} sin OC vinculada:</p>
+              <h3 style={{ margin: "0 0 4px", fontSize: 16, fontWeight: 700 }}>Vincular recepción a {selectedOC.numero}</h3>
+              <p style={{ fontSize: 12, color: "var(--txt3)", marginBottom: 12 }}>
+                Recepciones de {selectedOC.proveedor} sin OC vinculada. El vínculo es a nivel cabecera:
+                los SKUs que no están en la OC igual quedan asociados a la recepción pero no se suman al cumplimiento.
+              </p>
               {recepcionesSinOC.length === 0 ? (
                 <div style={{ textAlign: "center", padding: 20, color: "var(--txt3)", fontSize: 12 }}>No hay recepciones disponibles para vincular.</div>
               ) : (
-                recepcionesSinOC.map(rec => (
-                  <div key={rec.id} style={{ padding: "10px 12px", borderRadius: 6, background: "var(--bg3)", border: "1px solid var(--bg4)", marginBottom: 6, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <div>
-                      <span className="mono" style={{ fontWeight: 600, fontSize: 12 }}>{rec.folio}</span>
-                      <span style={{ fontSize: 11, color: "var(--txt3)", marginLeft: 8 }}>{fmtDate(rec.created_at)}</span>
-                      <span style={{ fontSize: 10, marginLeft: 8, padding: "2px 6px", borderRadius: 4, background: "var(--bg4)", color: "var(--txt3)" }}>{rec.estado}</span>
+                recepcionesSinOC.map(rec => {
+                  const lineas = lineasPorRecepcion.get(rec.id!) || [];
+                  const matches: { sku: string; rl: DBRecepcionLinea; pedida: number }[] = [];
+                  const extras: DBRecepcionLinea[] = [];
+                  const skusMatched = new Set<string>();
+                  for (const rl of lineas) {
+                    const sku = (rl.sku || "").toUpperCase();
+                    const ocl = skusOC.get(sku);
+                    if (ocl) { matches.push({ sku, rl, pedida: ocl.cantidad_pedida }); skusMatched.add(sku); }
+                    else extras.push(rl);
+                  }
+                  const faltantes = ocLineas.filter(l => !skusMatched.has(l.sku_origen.toUpperCase()));
+                  const qtyMatch = matches.reduce((s, m) => s + (m.rl.qty_recibida || 0), 0);
+                  const qtyExtra = extras.reduce((s, e) => s + (e.qty_recibida || 0), 0);
+                  const expandido = expandidoRec.has(rec.id!);
+                  return (
+                  <div key={rec.id} style={{ padding: "10px 12px", borderRadius: 8, background: "var(--bg3)", border: "1px solid var(--bg4)", marginBottom: 8 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div>
+                          <span className="mono" style={{ fontWeight: 600, fontSize: 12 }}>{rec.folio}</span>
+                          <span style={{ fontSize: 11, color: "var(--txt3)", marginLeft: 8 }}>{fmtDate(rec.created_at)}</span>
+                          <span style={{ fontSize: 10, marginLeft: 8, padding: "2px 6px", borderRadius: 4, background: "var(--bg4)", color: "var(--txt3)" }}>{rec.estado}</span>
+                        </div>
+                        <div style={{ fontSize: 11, marginTop: 4, color: "var(--txt2)" }}>
+                          <span style={{ color: "var(--green)", fontWeight: 600 }}>{matches.length} match</span>
+                          <span style={{ color: "var(--txt3)" }}> · {fmtInt(qtyMatch)}u</span>
+                          {extras.length > 0 && <>
+                            <span style={{ marginLeft: 10, color: "var(--amber)" }}>{extras.length} extra</span>
+                            <span style={{ color: "var(--txt3)" }}> · {fmtInt(qtyExtra)}u</span>
+                          </>}
+                          {faltantes.length > 0 && <span style={{ marginLeft: 10, color: "var(--red)" }}>{faltantes.length} faltante</span>}
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button onClick={() => toggleExp(rec.id!)}
+                          style={{ padding: "6px 10px", borderRadius: 6, background: "var(--bg4)", color: "var(--txt2)", fontWeight: 600, fontSize: 11, border: "1px solid var(--bg4)", cursor: "pointer" }}>
+                          {expandido ? "Ocultar" : "Ver detalle"}
+                        </button>
+                        <button onClick={() => vincular(rec.id!)} disabled={procesando}
+                          style={{ padding: "6px 12px", borderRadius: 6, background: "var(--blueBg)", color: "var(--blue)", fontWeight: 600, fontSize: 11, border: "1px solid var(--blueBd)", cursor: "pointer" }}>
+                          Vincular
+                        </button>
+                      </div>
                     </div>
-                    <button onClick={() => vincular(rec.id!)} disabled={procesando}
-                      style={{ padding: "6px 12px", borderRadius: 6, background: "var(--blueBg)", color: "var(--blue)", fontWeight: 600, fontSize: 11, border: "1px solid var(--blueBd)", cursor: "pointer" }}>
-                      Vincular
-                    </button>
+                    {expandido && (
+                      <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--bg4)", fontSize: 11 }}>
+                        {matches.length > 0 && (
+                          <div style={{ marginBottom: 8 }}>
+                            <div style={{ color: "var(--green)", fontWeight: 600, marginBottom: 4 }}>Coinciden ({matches.length})</div>
+                            {matches.map(m => (
+                              <div key={m.sku} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: "var(--txt2)" }}>
+                                <span className="mono" style={{ fontSize: 11 }}>{m.sku}</span>
+                                <span style={{ fontSize: 11 }}>
+                                  <span style={{ color: m.rl.qty_recibida < m.pedida ? "var(--amber)" : m.rl.qty_recibida > m.pedida ? "var(--blue)" : "var(--green)" }}>
+                                    {fmtInt(m.rl.qty_recibida)}
+                                  </span>
+                                  <span style={{ color: "var(--txt3)" }}> / {fmtInt(m.pedida)} OC</span>
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {extras.length > 0 && (
+                          <div style={{ marginBottom: 8 }}>
+                            <div style={{ color: "var(--amber)", fontWeight: 600, marginBottom: 4 }}>Extras no en la OC ({extras.length})</div>
+                            {extras.map(rl => (
+                              <div key={rl.id} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: "var(--txt3)" }}>
+                                <span className="mono" style={{ fontSize: 11 }}>{rl.sku}</span>
+                                <span style={{ fontSize: 11 }}>{fmtInt(rl.qty_recibida)}u</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {faltantes.length > 0 && (
+                          <div>
+                            <div style={{ color: "var(--red)", fontWeight: 600, marginBottom: 4 }}>Faltan en esta recepción ({faltantes.length})</div>
+                            {faltantes.map(l => (
+                              <div key={l.id} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: "var(--txt3)" }}>
+                                <span className="mono" style={{ fontSize: 11 }}>{l.sku_origen}</span>
+                                <span style={{ fontSize: 11 }}>{fmtInt(l.cantidad_pedida)} pedidas</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
-                ))
+                  );
+                })
               )}
               <div style={{ marginTop: 12, textAlign: "right" }}>
                 <button onClick={() => setModalVincular(false)}
@@ -750,7 +948,8 @@ export default function AdminCompras() {
               </div>
             </div>
           </div>
-        )}
+          );
+        })()}
       </div>
     );
   }
