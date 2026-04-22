@@ -87,6 +87,37 @@ function calcularAntiguedadMuerto(diasSinVenta: number): string | null {
 }
 
 /**
+ * Markdown sugerido segun Regla 60/90/120/180 dias de los manuales.
+ * Piso: nunca sugerir precio menor al costo salvo en liquidacion (>180d).
+ * Precio 0 o costo invalido => no sugiere nada.
+ */
+function calcularMarkdown(
+  cubeta: Cubeta,
+  row: { dias_sin_venta: number; precio_actual: number; costo_promedio: number }
+): { precio: number | null; motivo: string | null } {
+  const { dias_sin_venta: d, precio_actual: precio, costo_promedio: costo } = row;
+  if (!precio || precio <= 0) return { precio: null, motivo: null };
+  if (cubeta !== "muerto" && cubeta !== "estancado") return { precio: null, motivo: null };
+  if (d >= 999) return { precio: null, motivo: null }; // centinela: no confiable
+
+  const piso = costo > 0 ? costo : 0;
+  if (d > 180) {
+    // Liquidacion: llevar a costo (puede quedar a costo exacto si precio*0.50 < costo)
+    return { precio: Math.max(Math.round(precio * 0.50), piso), motivo: `liquidar_${d}d` };
+  }
+  if (d > 120) {
+    return { precio: Math.max(Math.round(precio * 0.60), piso), motivo: `markdown_40_${d}d` };
+  }
+  if (d > 90) {
+    return { precio: Math.max(Math.round(precio * 0.80), piso), motivo: `markdown_20_${d}d` };
+  }
+  if (d > 60) {
+    return { precio: Math.max(Math.round(precio * 0.90), piso), motivo: `markdown_10_${d}d` };
+  }
+  return { precio: null, motivo: null };
+}
+
+/**
  * GET — Vercel Cron (lunes 6AM Chile)
  * POST — Manual trigger
  */
@@ -269,6 +300,12 @@ async function runRefresh(force = false) {
         costo_promedio: costo,
       });
 
+      const markdown = calcularMarkdown(cubeta, {
+        dias_sin_venta: diasSinVenta,
+        precio_actual: ml?.price || 0,
+        costo_promedio: costo,
+      });
+
       rows.push({
         sku_origen: si.sku_origen,
         nombre: si.nombre,
@@ -295,6 +332,8 @@ async function runRefresh(force = false) {
         antiguedad_muerto_bucket: cubeta === "muerto" ? calcularAntiguedadMuerto(diasSinVenta) : null,
         impacto_clp: Math.round(impacto),
         es_holdout: si.es_holdout || false,
+        precio_markdown_sugerido: markdown.precio,
+        markdown_motivo: markdown.motivo,
         semana_calculo: semana,
       });
     }

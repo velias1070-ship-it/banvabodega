@@ -30,6 +30,8 @@ interface SemaforoRow {
   antiguedad_muerto_bucket: string | null;
   impacto_clp: number;
   es_holdout: boolean;
+  precio_markdown_sugerido: number | null;
+  markdown_motivo: string | null;
   semana_calculo: string;
   ya_revisado?: boolean;
   persistente?: boolean;
@@ -359,7 +361,17 @@ export default function AdminSemaforo() {
                           <td className="mono" style={{ textAlign: "right", fontSize: 11, color: row.cob_total < 14 ? "var(--red)" : row.cob_total > 60 ? "var(--amber)" : "var(--txt)" }}>
                             {row.cob_total > 900 ? "999+" : Math.round(row.cob_total)}
                           </td>
-                          <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{row.precio_actual > 0 ? `$${row.precio_actual.toLocaleString()}` : "—"}</td>
+                          <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>
+                            {row.precio_actual > 0 ? `$${row.precio_actual.toLocaleString()}` : "—"}
+                            {row.precio_markdown_sugerido != null && row.precio_actual > 0 && (
+                              <div style={{ fontSize: 10, marginTop: 2, color: "var(--amber)" }} title={row.markdown_motivo || ""}>
+                                → ${row.precio_markdown_sugerido.toLocaleString()}
+                                <span style={{ marginLeft: 4, fontSize: 9, fontWeight: 700 }}>
+                                  {Math.round(((row.precio_markdown_sugerido - row.precio_actual) / row.precio_actual) * 100)}%
+                                </span>
+                              </div>
+                            )}
+                          </td>
                           <td className="mono" style={{ textAlign: "right", fontSize: 11, fontWeight: 700, color: CUBETA_CONFIG[selectedCubeta]?.color }}>
                             {fmt(row.impacto_clp)}
                           </td>
@@ -417,6 +429,27 @@ export default function AdminSemaforo() {
               <div><div style={{ fontSize: 9, color: "var(--txt3)" }}>Impacto</div><div className="mono" style={{ fontWeight: 700, color: "var(--amber)" }}>{fmt(reviewModal.impacto_clp)}</div></div>
             </div>
 
+            {/* Markdown sugerido */}
+            {reviewModal.precio_markdown_sugerido != null && reviewModal.precio_actual > 0 && (
+              <div style={{ marginBottom: 16, padding: 10, borderRadius: 8, background: "var(--amber)20", border: "1px solid var(--amber)50" }}>
+                <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 4, fontWeight: 600 }}>
+                  SUGERENCIA AUTOMATICA — {describirMotivoMarkdown(reviewModal.markdown_motivo)}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span className="mono" style={{ fontSize: 12, color: "var(--txt3)", textDecoration: "line-through" }}>
+                    ${reviewModal.precio_actual.toLocaleString()}
+                  </span>
+                  <span style={{ fontSize: 14, color: "var(--amber)" }}>→</span>
+                  <span className="mono" style={{ fontSize: 14, fontWeight: 800, color: "var(--amber)" }}>
+                    ${reviewModal.precio_markdown_sugerido.toLocaleString()}
+                  </span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: "var(--amber)" }}>
+                    {Math.round(((reviewModal.precio_markdown_sugerido - reviewModal.precio_actual) / reviewModal.precio_actual) * 100)}%
+                  </span>
+                </div>
+              </div>
+            )}
+
             {/* Causa */}
             <div style={{ marginBottom: 12 }}>
               <label style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, display: "block" }}>Cual es la causa?</label>
@@ -465,6 +498,16 @@ export default function AdminSemaforo() {
       )}
     </div>
   );
+}
+
+function describirMotivoMarkdown(motivo: string | null): string {
+  if (!motivo) return "";
+  const m = motivo.match(/^(liquidar|markdown_\d+)_(\d+)d$/);
+  if (!m) return motivo;
+  const [, tipo, dias] = m;
+  if (tipo === "liquidar") return `Liquidar (${dias} dias sin venta, >180d)`;
+  const pct = tipo.replace("markdown_", "");
+  return `Markdown -${pct}% (${dias} dias sin venta)`;
 }
 
 function getISOWeek(dateStr: string): number {
