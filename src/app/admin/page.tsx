@@ -65,8 +65,11 @@ function LoginGate({ onLogin }: { onLogin: (pin: string) => Promise<boolean> }) 
         <div style={{fontSize:24,fontWeight:800,marginBottom:4}}>Administrador</div>
         <div style={{fontSize:13,color:"var(--txt3)",marginBottom:32}}>Ingresa el PIN de acceso</div>
         <div style={{display:"flex",gap:8,marginBottom:16}}>
+          {/* autoComplete="one-time-code" + name unico = evita que el navegador
+              inyecte credenciales guardadas al cargar la pagina */}
           <input type="password" className="form-input mono" value={pin} onChange={e=>setPin(e.target.value)}
             onKeyDown={e=>e.key==="Enter"&&submit()} placeholder="PIN" maxLength={20} autoFocus
+            autoComplete="one-time-code" name="banva-pin" data-lpignore="true" data-1p-ignore="true"
             style={{fontSize:24,textAlign:"center",letterSpacing:8,padding:16,flex:1}}/>
         </div>
         <button onClick={submit} disabled={pin.length<4 || loading}
