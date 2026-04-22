@@ -485,18 +485,14 @@ export default function AdminMargenes() {
     const promo = commonPromos.find(p => (p.id ? `${p.type}::${p.id}` : `${p.type}::_`) === selectedPromoKey);
     if (!promo) return;
 
-    // Solo postular los que todavia NO estan en la promo. Los itemsActivos ya
-    // estan dentro (started/pending) — incluirlos haria que ML devuelva
-    // OFFER_ALREADY_EXISTS para cada uno. Si el precio ya postulado es distinto
-    // al deseado, hay que actualizar via la ruta de update o salir y re-entrar.
-    const todosAplicables = [...promo.itemsPostulables];
-    const yaActivos = promo.itemsActivos.length;
+    // Dos poblaciones:
+    // - postulables: nunca estuvieron en la promo → directo JOIN
+    // - activos: ya estan dentro → LEAVE + JOIN con el precio nuevo
+    //   (ML no expone "update price in place", hay que salir y re-entrar)
+    const setActivos = new Set(promo.itemsActivos);
+    const todosAplicables = [...promo.itemsPostulables, ...promo.itemsActivos];
     if (todosAplicables.length === 0) {
-      alert(
-        yaActivos > 0
-          ? `Todos los items (${yaActivos}) ya estan en esta promo. Si querés cambiar el precio, usá "Salir de promo" y volvé a postular.`
-          : "Ningún ítem puede participar de esta promo"
-      );
+      alert("Ningún ítem puede participar de esta promo");
       return;
     }
 
@@ -538,35 +534,68 @@ export default function AdminMargenes() {
     setBulkErrors(errors);
     let ok = 0;
 
+    const joinItem = async (itemId: string) => {
+      const res = await fetch("/api/ml/promotions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          item_id: itemId,
+          action: "join",
+          promotion_id: promo.id,
+          promotion_type: promo.type,
+          deal_price: target,
+          offer_type: promo.offer_type,
+        }),
+      });
+      const data = await res.json();
+      return { ok: res.ok, msg: String(data.error || (res.ok ? "" : `HTTP ${res.status}`)) };
+    };
+
+    const leaveItem = async (itemId: string) => {
+      const res = await fetch("/api/ml/promotions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          item_id: itemId,
+          action: "delete",
+          promotion_id: promo.id,
+          promotion_type: promo.type,
+        }),
+      });
+      const data = await res.json();
+      return { ok: res.ok, msg: String(data.error || (res.ok ? "" : `HTTP ${res.status}`)) };
+    };
+
     for (let i = 0; i < validos.length; i++) {
       const itemId = validos[i];
       const row = rows.find(r => r.item_id === itemId);
       try {
-        const res = await fetch("/api/ml/promotions", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            item_id: itemId,
-            action: "join",
-            promotion_id: promo.id,
-            promotion_type: promo.type,
-            deal_price: target,
-            offer_type: promo.offer_type,
-          }),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          const msg = String(data.error || `HTTP ${res.status}`);
-          // OFFER_ALREADY_EXISTS = el item ya esta postulado a esta promo.
-          // No es error real, lo contamos como ok silencioso.
-          if (/offer_already_exists/i.test(msg)) {
-            ok++;
-          } else {
-            throw new Error(msg);
+        // Si el item ya esta activo en la promo, primero salir para cambiar precio.
+        // Si esta en itemsPostulables, ir directo al JOIN.
+        if (setActivos.has(itemId)) {
+          const leave = await leaveItem(itemId);
+          if (!leave.ok && !/not.*found|does not|no existe/i.test(leave.msg)) {
+            throw new Error(`leave: ${leave.msg}`);
           }
-        } else {
-          ok++;
+          // Pequeño delay: ML a veces tarda en liberar el slot tras el DELETE
+          await new Promise(r => setTimeout(r, 400));
         }
+
+        const join = await joinItem(itemId);
+        if (!join.ok) {
+          // Si seguimos teniendo OFFER_ALREADY_EXISTS despues del leave, reintentar
+          // una vez mas con un delay mayor (eventual consistency de ML)
+          if (/offer_already_exists/i.test(join.msg)) {
+            await new Promise(r => setTimeout(r, 1200));
+            await leaveItem(itemId).catch(() => null);
+            await new Promise(r => setTimeout(r, 600));
+            const retry = await joinItem(itemId);
+            if (!retry.ok) throw new Error(retry.msg || "retry fallo");
+          } else {
+            throw new Error(join.msg);
+          }
+        }
+        ok++;
       } catch (e) {
         errors.push({ sku: row?.sku || itemId, error: e instanceof Error ? e.message : "Error" });
       }
@@ -1343,6 +1372,16 @@ export default function AdminMargenes() {
                   })}
                 </div>
 
+                {campaignMode === "join" && selectedPromoKey && (() => {
+                  const p = commonPromos.find(x => (x.id ? `${x.type}::${x.id}` : `${x.type}::_`) === selectedPromoKey);
+                  if (!p || p.itemsActivos.length === 0) return null;
+                  return (
+                    <div style={{ padding: "8px 20px", background: "var(--amberBg)", borderTop: "1px solid var(--amberBd)", fontSize: 11, color: "var(--amber)" }}>
+                      ⚠ {p.itemsActivos.length} ítem{p.itemsActivos.length !== 1 ? "s" : ""} ya estaban en esta promo.
+                      Para cambiarles el precio se hace leave + rejoin automático.
+                    </div>
+                  );
+                })()}
                 <div style={{ padding: "12px 20px 16px", borderTop: "1px solid var(--bg4)", display: "flex", alignItems: "center", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
                   {bulkApplying === "campaign" && bulkProgress.total > 0 && (
                     <div style={{ fontSize: 11, color: "var(--txt2)", marginRight: "auto" }}>
