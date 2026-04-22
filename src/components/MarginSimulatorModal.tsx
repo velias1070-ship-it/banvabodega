@@ -711,7 +711,9 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
                          : pending ? { bg: "var(--cyanBg)", color: "var(--cyan)", text: "POSTULADO" }
                          : candidate ? { bg: "var(--amberBg)", color: "var(--amber)", text: "DISPONIBLE" }
                          : { bg: "var(--bg4)", color: "var(--txt3)", text: p.status.toUpperCase() };
-              const label = PROMO_LABELS[p.type] || p.type;
+              const tipoLabel = PROMO_LABELS[p.type] || p.type;
+              const tituloPrincipal = p.name && p.name.trim() && p.name.toUpperCase() !== p.type ? p.name : tipoLabel;
+              const subTipo = tituloPrincipal !== tipoLabel ? tipoLabel : null;
               const acting = promoAction === (p.id || p.type);
               const targetFueraRango = p.min_price > 0 && p.max_price > 0 && (target < p.min_price || target > p.max_price);
 
@@ -732,7 +734,7 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 6 }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                        <span style={{ fontSize: 12, fontWeight: 700, color: "var(--txt)" }}>{label}</span>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: "var(--txt)" }}>{tituloPrincipal}</span>
                         <span style={{ padding: "1px 6px", borderRadius: 3, fontSize: 8, fontWeight: 700, background: badge.bg, color: badge.color, border: `1px solid ${badge.color}` }}>{badge.text}</span>
                         {fechas && (
                           <span
@@ -753,9 +755,11 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
                           </span>
                         )}
                       </div>
-                      <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {p.name}
-                      </div>
+                      {subTipo && (
+                        <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {subTipo}
+                        </div>
+                      )}
                     </div>
                     <div style={{ display: "flex", gap: 4, alignItems: "flex-start" }}>
                       {(p.activa || pending) && (
