@@ -112,6 +112,14 @@ export default function AdminMargenes() {
   };
   const [commonPromos, setCommonPromos] = useState<CommonPromo[]>([]);
   const [selectedPromoKey, setSelectedPromoKey] = useState<string | null>(null);
+  const [selectedPromoKeys, setSelectedPromoKeys] = useState<Set<string>>(new Set());
+  const togglePromoKey = (key: string) => {
+    setSelectedPromoKeys(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
   const [showErrorsModal, setShowErrorsModal] = useState(false);
   const [campaignMode, setCampaignMode] = useState<"join" | "leave">("join");
 
@@ -467,6 +475,7 @@ export default function AdminMargenes() {
     setCampaignLoading(true);
     setCommonPromos([]);
     setSelectedPromoKey(null);
+    setSelectedPromoKeys(new Set());
 
     // Fetch promos para todos en batches de 5 para no saturar ML API
     type FetchResult = { item_id: string; promos: Array<{ id: string | null; type: string; name: string; status: string; min_price: number; max_price: number; suggested_price: number; start_date: string | null; finish_date: string | null; offer_type: string | null; permite_custom_price: boolean }> };
@@ -561,60 +570,66 @@ export default function AdminMargenes() {
   const runBulkCampaign = async () => {
     const target = parseInt(bulkPrice) || 0;
     if (target <= 0) { alert("Ingresa un precio válido"); return; }
-    if (!selectedPromoKey) return;
-    const promo = commonPromos.find(p => (p.id ? `${p.type}::${p.id}` : `${p.type}::_`) === selectedPromoKey);
-    if (!promo) return;
 
-    // Dos poblaciones:
-    // - postulables: nunca estuvieron en la promo → directo JOIN
-    // - activos: ya estan dentro → LEAVE + JOIN con el precio nuevo
-    //   (ML no expone "update price in place", hay que salir y re-entrar)
-    const setActivos = new Set(promo.itemsActivos);
-    const todosAplicables = [...promo.itemsPostulables, ...promo.itemsActivos];
-    if (todosAplicables.length === 0) {
-      alert("Ningún ítem puede participar de esta promo");
+    // Multi-promo: el user puede haber seleccionado N promos. Se postula a cada
+    // una con el mismo precio target. Para cada promo, la logica interna es
+    // la de antes: validar rango por-item, leave+rejoin en ya activos, join
+    // directo en postulables.
+    const keys = Array.from(selectedPromoKeys);
+    if (keys.length === 0) return;
+    const promos = keys
+      .map(k => commonPromos.find(p => (p.id ? `${p.type}::${p.id}` : `${p.type}::_`) === k))
+      .filter((x): x is CommonPromo => !!x);
+    if (promos.length === 0) return;
+
+    // Calcular total de unidades a tocar (suma cross-promo) para barra de progreso.
+    // No deduplicamos items: el mismo SKU postulado a 2 promos son 2 operaciones.
+    let totalOps = 0;
+    const plan: Array<{ promo: CommonPromo; validos: string[]; invalidos: Array<{ itemId: string; sku: string; rango: RangoItem; motivo: string }> }> = [];
+    for (const promo of promos) {
+      const todosAplicables = [...promo.itemsPostulables, ...promo.itemsActivos];
+      const invalidos: Array<{ itemId: string; sku: string; rango: RangoItem; motivo: string }> = [];
+      const validos: string[] = [];
+      for (const itemId of todosAplicables) {
+        const rango = promo.rangosPorItem.get(itemId);
+        const row = rows.find(r => r.item_id === itemId);
+        const sku = row?.sku || itemId;
+        if (!rango) { validos.push(itemId); continue; }
+        if (rango.min > 0 && target < rango.min) {
+          invalidos.push({ itemId, sku, rango, motivo: `[${promo.name}] ${fmtCLP(target)} < min ${fmtCLP(rango.min)}` });
+        } else if (rango.max > 0 && target > rango.max) {
+          invalidos.push({ itemId, sku, rango, motivo: `[${promo.name}] ${fmtCLP(target)} > max ${fmtCLP(rango.max)}` });
+        } else {
+          validos.push(itemId);
+        }
+      }
+      totalOps += validos.length;
+      plan.push({ promo, validos, invalidos });
+    }
+
+    const totalInvalidos = plan.reduce((s, p) => s + p.invalidos.length, 0);
+    if (totalOps === 0) {
+      const lista = plan.flatMap(p => p.invalidos).slice(0, 10).map(i => `• ${i.motivo}`).join("\n");
+      alert(`Ningún ítem acepta ${fmtCLP(target)} en las ${promos.length} promo${promos.length !== 1 ? "s" : ""} seleccionadas:\n\n${lista}`);
       return;
     }
-
-    // Pre-validar por-item: el min/max de cada item puede ser distinto dentro de
-    // la misma campaña. Separar en válidos/inválidos ANTES de mandar a ML.
-    const invalidos: Array<{ itemId: string; sku: string; rango: RangoItem; motivo: string }> = [];
-    const validos: string[] = [];
-    for (const itemId of todosAplicables) {
-      const rango = promo.rangosPorItem.get(itemId);
-      const row = rows.find(r => r.item_id === itemId);
-      const sku = row?.sku || itemId;
-      if (!rango) { validos.push(itemId); continue; }
-      if (rango.min > 0 && target < rango.min) {
-        invalidos.push({ itemId, sku, rango, motivo: `Precio ${fmtCLP(target)} < mínimo ${fmtCLP(rango.min)}` });
-      } else if (rango.max > 0 && target > rango.max) {
-        invalidos.push({ itemId, sku, rango, motivo: `Precio ${fmtCLP(target)} > máximo ${fmtCLP(rango.max)}` });
-      } else {
-        validos.push(itemId);
-      }
-    }
-
-    if (invalidos.length > 0) {
-      const lista = invalidos.slice(0, 10).map(i => `• ${i.sku}: ${i.motivo}`).join("\n");
-      const extra = invalidos.length > 10 ? `\n… y ${invalidos.length - 10} más` : "";
-      if (validos.length === 0) {
-        alert(`Ningún ítem acepta ${fmtCLP(target)} en esta campaña:\n\n${lista}${extra}`);
-        return;
-      }
+    if (totalInvalidos > 0) {
+      const preview = plan.flatMap(p => p.invalidos).slice(0, 10).map(i => `• ${i.sku}: ${i.motivo}`).join("\n");
+      const extra = totalInvalidos > 10 ? `\n… y ${totalInvalidos - 10} más` : "";
       const ok = confirm(
-        `${invalidos.length} ítem${invalidos.length !== 1 ? "s" : ""} fuera de rango (se van a skipear):\n\n${lista}${extra}\n\n¿Aplicar solo a los ${validos.length} válidos?`
+        `${totalInvalidos} combinación${totalInvalidos !== 1 ? "es" : ""} item×promo fuera de rango (se skipean):\n\n${preview}${extra}\n\n¿Aplicar a las ${totalOps} operaciones válidas en ${promos.length} promo${promos.length !== 1 ? "s" : ""}?`
       );
       if (!ok) return;
     }
 
     setBulkApplying("campaign");
-    setBulkProgress({ done: 0, total: validos.length, ok: 0, err: invalidos.length });
-    // Los inválidos ya van con error desde el arranque — el usuario los ve en el modal
-    const errors: Array<{ sku: string; error: string }> = invalidos.map(i => ({ sku: i.sku, error: i.motivo }));
+    setBulkProgress({ done: 0, total: totalOps, ok: 0, err: totalInvalidos });
+    const errors: Array<{ sku: string; error: string }> = plan.flatMap(p => p.invalidos.map(i => ({ sku: i.sku, error: i.motivo })));
     setBulkErrors(errors);
     let ok = 0;
+    let done = 0;
 
-    const joinItem = async (itemId: string) => {
+    const joinItem = async (itemId: string, promo: CommonPromo) => {
       const res = await fetch("/api/ml/promotions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -631,7 +646,7 @@ export default function AdminMargenes() {
       return { ok: res.ok, msg: String(data.error || (res.ok ? "" : `HTTP ${res.status}`)) };
     };
 
-    const leaveItem = async (itemId: string) => {
+    const leaveItem = async (itemId: string, promo: CommonPromo) => {
       const res = await fetch("/api/ml/promotions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -646,45 +661,43 @@ export default function AdminMargenes() {
       return { ok: res.ok, msg: String(data.error || (res.ok ? "" : `HTTP ${res.status}`)) };
     };
 
-    for (let i = 0; i < validos.length; i++) {
-      const itemId = validos[i];
-      const row = rows.find(r => r.item_id === itemId);
-      try {
-        // Si el item ya esta activo en la promo, primero salir para cambiar precio.
-        // Si esta en itemsPostulables, ir directo al JOIN.
-        if (setActivos.has(itemId)) {
-          const leave = await leaveItem(itemId);
-          if (!leave.ok && !/not.*found|does not|no existe/i.test(leave.msg)) {
-            throw new Error(`leave: ${leave.msg}`);
+    const itemsAfectadosGlobal = new Set<string>();
+    for (const { promo, validos } of plan) {
+      const setActivos = new Set(promo.itemsActivos);
+      for (const itemId of validos) {
+        const row = rows.find(r => r.item_id === itemId);
+        try {
+          if (setActivos.has(itemId)) {
+            const leave = await leaveItem(itemId, promo);
+            if (!leave.ok && !/not.*found|does not|no existe/i.test(leave.msg)) {
+              throw new Error(`leave: ${leave.msg}`);
+            }
+            await new Promise(r => setTimeout(r, 400));
           }
-          // Pequeño delay: ML a veces tarda en liberar el slot tras el DELETE
-          await new Promise(r => setTimeout(r, 400));
-        }
-
-        const join = await joinItem(itemId);
-        if (!join.ok) {
-          // Si seguimos teniendo OFFER_ALREADY_EXISTS despues del leave, reintentar
-          // una vez mas con un delay mayor (eventual consistency de ML)
-          if (/offer_already_exists/i.test(join.msg)) {
-            await new Promise(r => setTimeout(r, 1200));
-            await leaveItem(itemId).catch(() => null);
-            await new Promise(r => setTimeout(r, 600));
-            const retry = await joinItem(itemId);
-            if (!retry.ok) throw new Error(retry.msg || "retry fallo");
-          } else {
-            throw new Error(join.msg);
+          const join = await joinItem(itemId, promo);
+          if (!join.ok) {
+            if (/offer_already_exists/i.test(join.msg)) {
+              await new Promise(r => setTimeout(r, 1200));
+              await leaveItem(itemId, promo).catch(() => null);
+              await new Promise(r => setTimeout(r, 600));
+              const retry = await joinItem(itemId, promo);
+              if (!retry.ok) throw new Error(retry.msg || "retry fallo");
+            } else {
+              throw new Error(join.msg);
+            }
           }
+          ok++;
+          itemsAfectadosGlobal.add(itemId);
+        } catch (e) {
+          errors.push({ sku: `${row?.sku || itemId} [${promo.name}]`, error: e instanceof Error ? e.message : "Error" });
         }
-        ok++;
-      } catch (e) {
-        errors.push({ sku: row?.sku || itemId, error: e instanceof Error ? e.message : "Error" });
+        done++;
+        setBulkProgress({ done, total: totalOps, ok, err: errors.length });
       }
-      setBulkProgress({ done: i + 1, total: validos.length, ok, err: errors.length });
     }
     setBulkErrors(errors);
     setBulkApplying("none");
-    // Refresh focalizado de la cache para ver los nuevos valores reales
-    await refrescarItemsAfectados(validos);
+    await refrescarItemsAfectados(Array.from(itemsAfectadosGlobal));
   };
 
   const runBulkLeave = async () => {
@@ -1305,12 +1318,12 @@ export default function AdminMargenes() {
                 <div style={{ fontSize: 14, fontWeight: 700, color: campaignMode === "leave" ? "var(--red)" : "var(--cyan)" }}>
                   {campaignMode === "leave"
                     ? `Salir masivo de una promo (${selected.size} ítems)`
-                    : `Postular ${selected.size} ítems a una campaña ML`}
+                    : `Postular ${selected.size} ítem${selected.size !== 1 ? "s" : ""} — marca una o más campañas`}
                 </div>
                 <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 2 }}>
                   {campaignMode === "leave"
                     ? "Promos donde hay ítems actualmente participando. Elige una y los ítems serán retirados."
-                    : "Promos comunes detectadas. Elige una y todos los ítems que puedan participar irán con el mismo precio."}
+                    : "Podés postular al mismo precio a varias campañas en un solo click. Los ítems fuera de rango por-campaña se skipean."}
                 </div>
               </div>
               <button onClick={() => bulkApplying === "none" && setCampaignModalOpen(false)} style={{ background: "transparent", border: "none", color: "var(--txt2)", fontSize: 20, cursor: "pointer", padding: "0 4px" }}>✕</button>
@@ -1355,11 +1368,9 @@ export default function AdminMargenes() {
                 <div style={{ padding: "0 20px 14px", display: "flex", flexDirection: "column", gap: 8 }}>
                   {visiblePromos.map(p => {
                     const key = p.id ? `${p.type}::${p.id}` : `${p.type}::_`;
-                    const isSelected = selectedPromoKey === key;
+                    const isMultiSelected = campaignMode === "join" ? selectedPromoKeys.has(key) : selectedPromoKey === key;
                     const totalAplicables = p.itemsPostulables.length + p.itemsActivos.length;
                     const target = parseInt(bulkPrice) || 0;
-                    // Breakdown por-item: cada item de la promo tiene su propio rango.
-                    // Contar cuántos aceptan el target actual vs cuántos quedan afuera.
                     let validosCount = 0;
                     const invalidosItems: Array<{ itemId: string; sku: string; rango: RangoItem }> = [];
                     if (target > 0 && totalAplicables > 0) {
@@ -1376,6 +1387,22 @@ export default function AdminMargenes() {
                       }
                     }
                     const fueraRango = invalidosItems.length > 0;
+                    const tipoLabel = (() => {
+                      const map: Record<string, string> = {
+                        SELLER_CAMPAIGN: "Campaña vendedor",
+                        MARKETPLACE_CAMPAIGN: "Campaña ML",
+                        DEAL: "Oferta ML",
+                        PRICE_DISCOUNT: "Descuento propio",
+                        SMART: "Smart (precio óptimo)",
+                        UNHEALTHY_STOCK: "Stock estancado",
+                        LIGHTNING: "Oferta relámpago",
+                        LIGHTNING_DEAL: "Oferta relámpago",
+                        DOD: "Oferta del día",
+                      };
+                      return map[p.type] || p.type;
+                    })();
+                    const tituloPrincipal = p.name && p.name.trim() && p.name.toUpperCase() !== p.type ? p.name : tipoLabel;
+                    const subTipo = tituloPrincipal !== tipoLabel ? tipoLabel : null;
                     return (
                       <label
                         key={key}
@@ -1383,23 +1410,38 @@ export default function AdminMargenes() {
                           display: "block",
                           padding: 12,
                           borderRadius: 8,
-                          background: isSelected ? "var(--cyanBg)" : "var(--bg3)",
-                          border: `1px solid ${isSelected ? "var(--cyan)" : "var(--bg4)"}`,
+                          background: isMultiSelected ? "var(--cyanBg)" : "var(--bg3)",
+                          border: `1px solid ${isMultiSelected ? "var(--cyan)" : "var(--bg4)"}`,
                           cursor: bulkApplying !== "none" ? "wait" : "pointer",
                         }}
                       >
                         <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-                          <input
-                            type="radio"
-                            name="bulk-campaign"
-                            checked={isSelected}
-                            onChange={() => setSelectedPromoKey(key)}
-                            disabled={bulkApplying !== "none"}
-                          />
+                          {campaignMode === "join" ? (
+                            <input
+                              type="checkbox"
+                              checked={isMultiSelected}
+                              onChange={() => togglePromoKey(key)}
+                              disabled={bulkApplying !== "none"}
+                              style={{ marginTop: 2 }}
+                            />
+                          ) : (
+                            <input
+                              type="radio"
+                              name="bulk-campaign"
+                              checked={selectedPromoKey === key}
+                              onChange={() => setSelectedPromoKey(key)}
+                              disabled={bulkApplying !== "none"}
+                            />
+                          )}
                           <div style={{ flex: 1 }}>
                             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                              <span style={{ fontSize: 13, fontWeight: 700, color: "var(--txt)" }}>{p.type}</span>
-                              <span style={{ fontSize: 11, color: "var(--txt2)" }}>{p.name}</span>
+                              <span style={{ fontSize: 13, fontWeight: 700, color: "var(--txt)" }}>{tituloPrincipal}</span>
+                              {subTipo && <span style={{ fontSize: 10, color: "var(--txt3)" }}>{subTipo}</span>}
+                              {p.finish_date && (
+                                <span style={{ padding: "1px 6px", borderRadius: 3, fontSize: 9, background: "var(--bg4)", color: "var(--txt3)" }}>
+                                  hasta {new Date(p.finish_date).toLocaleDateString("es-CL", { day: "2-digit", month: "short" })}
+                                </span>
+                              )}
                             </div>
                             <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginTop: 6, fontSize: 10 }}>
                               <div>
@@ -1437,12 +1479,6 @@ export default function AdminMargenes() {
                                   >${p.suggested_price.toLocaleString("es-CL")} ↵</button>
                                 </div>
                               )}
-                              {p.finish_date && (
-                                <div>
-                                  <div style={{ color: "var(--txt3)", fontSize: 8, textTransform: "uppercase" }}>Hasta</div>
-                                  <div className="mono" style={{ color: "var(--txt2)" }}>{new Date(p.finish_date).toLocaleDateString("es-CL", { day: "2-digit", month: "short" })}</div>
-                                </div>
-                              )}
                             </div>
                             {target > 0 && totalAplicables > 0 && (
                               <div style={{ marginTop: 6, fontSize: 10, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -1456,7 +1492,7 @@ export default function AdminMargenes() {
                                 )}
                               </div>
                             )}
-                            {isSelected && fueraRango && target > 0 && (
+                            {isMultiSelected && fueraRango && target > 0 && (
                               <details style={{ marginTop: 6 }}>
                                 <summary style={{ fontSize: 10, color: "var(--red)", cursor: "pointer", fontWeight: 600 }}>
                                   Ver {invalidosItems.length} ítem{invalidosItems.length !== 1 ? "s" : ""} fuera de rango
@@ -1485,13 +1521,16 @@ export default function AdminMargenes() {
                   })}
                 </div>
 
-                {campaignMode === "join" && selectedPromoKey && (() => {
-                  const p = commonPromos.find(x => (x.id ? `${x.type}::${x.id}` : `${x.type}::_`) === selectedPromoKey);
-                  if (!p || p.itemsActivos.length === 0) return null;
+                {campaignMode === "join" && selectedPromoKeys.size > 0 && (() => {
+                  const promosSel = Array.from(selectedPromoKeys)
+                    .map(k => commonPromos.find(x => (x.id ? `${x.type}::${x.id}` : `${x.type}::_`) === k))
+                    .filter((x): x is CommonPromo => !!x);
+                  const totalActivos = promosSel.reduce((s, p) => s + p.itemsActivos.length, 0);
+                  if (totalActivos === 0) return null;
                   return (
                     <div style={{ padding: "8px 20px", background: "var(--amberBg)", borderTop: "1px solid var(--amberBd)", fontSize: 11, color: "var(--amber)" }}>
-                      ⚠ {p.itemsActivos.length} ítem{p.itemsActivos.length !== 1 ? "s" : ""} ya estaban en esta promo.
-                      Para cambiarles el precio se hace leave + rejoin automático.
+                      ⚠ {totalActivos} combinación{totalActivos !== 1 ? "es" : ""} item×promo ya estaban dentro.
+                      Para cambiar el precio se hace leave + rejoin automático.
                     </div>
                   );
                 })()}
@@ -1510,15 +1549,21 @@ export default function AdminMargenes() {
                   {campaignMode === "join" ? (
                     <button
                       onClick={runBulkCampaign}
-                      disabled={!selectedPromoKey || !bulkPrice || bulkApplying === "campaign"}
+                      disabled={selectedPromoKeys.size === 0 || !bulkPrice || bulkApplying === "campaign"}
                       style={{
                         padding: "8px 16px", borderRadius: 6, fontSize: 12, fontWeight: 700,
                         background: "var(--greenBg)", color: "var(--green)", border: "1px solid var(--green)",
                         cursor: bulkApplying === "campaign" ? "wait" : "pointer",
-                        opacity: (!selectedPromoKey || !bulkPrice || bulkApplying === "campaign") ? 0.5 : 1,
+                        opacity: (selectedPromoKeys.size === 0 || !bulkPrice || bulkApplying === "campaign") ? 0.5 : 1,
                       }}
                     >
-                      {bulkApplying === "campaign" ? "Procesando..." : "Aplicar a todos"}
+                      {bulkApplying === "campaign"
+                        ? "Procesando..."
+                        : selectedPromoKeys.size === 0
+                          ? "Selecciona una campaña"
+                          : selectedPromoKeys.size === 1
+                            ? "Postular a 1 campaña"
+                            : `Postular a ${selectedPromoKeys.size} campañas`}
                     </button>
                   ) : (
                     <button
