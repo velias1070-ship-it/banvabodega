@@ -43,8 +43,11 @@ type SortKey =
 type ZonaFilter = "all" | "barato" | "medio" | "caro";
 type MarginFilter = "all" | "neg" | "low" | "mid" | "high";
 
+type TicketData = { sku_venta: string; unidades_30d: number; ticket_30d: number; unidades_7d: number; ticket_7d: number };
+
 export default function AdminMargenes() {
   const [rows, setRows] = useState<MarginRow[]>([]);
+  const [ticketMap, setTicketMap] = useState<Map<string, TicketData>>(new Map());
   const [lastSync, setLastSync] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -120,11 +123,24 @@ export default function AdminMargenes() {
   const loadCache = useCallback(async (): Promise<MarginRow[]> => {
     setLoading(true);
     try {
-      const res = await fetch("/api/ml/margin-cache");
-      const data = await res.json();
+      const [resCache, resTicket] = await Promise.all([
+        fetch("/api/ml/margin-cache"),
+        fetch("/api/ml/ticket-promedio").catch(() => null),
+      ]);
+      const data = await resCache.json();
       const items: MarginRow[] = data.items || [];
       setRows(items);
       setLastSync(data.last_sync || null);
+      if (resTicket) {
+        try {
+          const td = await resTicket.json();
+          const map = new Map<string, TicketData>();
+          for (const t of (td.items || []) as TicketData[]) {
+            if (t.sku_venta) map.set(t.sku_venta, t);
+          }
+          setTicketMap(map);
+        } catch { /* ignore ticket fetch errors */ }
+      }
       return items;
     } finally {
       setLoading(false);
@@ -929,6 +945,7 @@ export default function AdminMargenes() {
                 <SortHeader k="titulo" label="Título" align="left" />
                 <SortHeader k="peso_facturable" label="Peso" />
                 <SortHeader k="precio_venta" label="Precio venta" />
+                <th style={{ padding: "10px 8px", textAlign: "right", fontSize: 10, color: "var(--txt3)" }} title="Ticket promedio = revenue / unidades en ventas_ml_cache (últimos 30d, no anuladas)">Ticket 30d</th>
                 <SortHeader k="costo_bruto" label="Costo+IVA" />
                 <SortHeader k="comision_clp" label="Comisión" />
                 <SortHeader k="envio_clp" label="Envío" />
@@ -965,7 +982,7 @@ export default function AdminMargenes() {
                             style={{ cursor: "pointer" }}
                           />
                         </td>
-                        <td colSpan={11} style={{ padding: "6px 10px", fontSize: 10, color: "var(--txt2)" }}>
+                        <td colSpan={12} style={{ padding: "6px 10px", fontSize: 10, color: "var(--txt2)" }}>
                           <span style={{ color: "var(--cyan)", fontWeight: 700 }}>Costo+IVA {fmtCLP(r.costo_bruto)}</span>
                           <span style={{ marginLeft: 10, color: "var(--txt3)" }}>· {grp.count} {grp.count === 1 ? "item" : "items"}</span>
                           {grp.count > 1 && (
@@ -1032,6 +1049,22 @@ export default function AdminMargenes() {
                         </div>
                       )}
                     </td>
+                    {(() => {
+                      const t = ticketMap.get(r.sku);
+                      if (!t || t.unidades_30d === 0) {
+                        return <td className="mono" style={{ padding: "9px 8px", textAlign: "right", fontSize: 10, color: "var(--txt3)" }}>—</td>;
+                      }
+                      const diff = r.precio_venta > 0 ? ((t.ticket_30d - r.precio_venta) / r.precio_venta) * 100 : 0;
+                      const diffColor = Math.abs(diff) < 3 ? "var(--txt3)" : diff < -5 ? "var(--amber)" : "var(--cyan)";
+                      return (
+                        <td className="mono" style={{ padding: "9px 8px", textAlign: "right", fontSize: 10 }} title={`${t.unidades_30d} uds vendidas en 30d\nTicket 7d: ${fmtCLP(t.ticket_7d)} (${t.unidades_7d} uds)`}>
+                          <div style={{ color: "var(--txt2)" }}>{fmtCLP(t.ticket_30d)}</div>
+                          <div style={{ fontSize: 9, color: diffColor }}>
+                            {t.unidades_30d} uds · {diff >= 0 ? "+" : ""}{diff.toFixed(0)}%
+                          </div>
+                        </td>
+                      );
+                    })()}
                     <td className="mono" style={{ padding: "9px 8px", textAlign: "right", color: "var(--txt2)", fontSize: 10 }}>{fmtCLP(r.costo_bruto)}</td>
                     <td className="mono" style={{ padding: "9px 8px", textAlign: "right", color: "var(--txt2)", fontSize: 10 }}>{fmtCLP(r.comision_clp)}</td>
                     <td className="mono" style={{ padding: "9px 8px", textAlign: "right", color: "var(--txt2)", fontSize: 10 }}>{fmtCLP(r.envio_clp)}</td>
