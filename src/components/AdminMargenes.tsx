@@ -61,6 +61,7 @@ export default function AdminMargenes() {
   const [zona, setZona] = useState<ZonaFilter>("all");
   const [marginF, setMarginF] = useState<MarginFilter>("all");
   const [soloPromo, setSoloPromo] = useState(false);
+  const [sinPromo, setSinPromo] = useState(false);
   const [soloDead, setSoloDead] = useState(false);
   const [costoMin, setCostoMin] = useState<string>("");
   const [costoMax, setCostoMax] = useState<string>("");
@@ -294,6 +295,7 @@ export default function AdminMargenes() {
       if (!matchRow(r)) return false;
       if (zona !== "all" && r.zona !== zona) return false;
       if (soloPromo && !r.tiene_promo) return false;
+      if (sinPromo && r.tiene_promo) return false;
       // Dead zone: precio_venta en [19990, 28250] (aprox) donde margen < sweet spot bajo threshold
       if (soloDead) {
         if (r.precio_venta < 19990) return false;
@@ -347,7 +349,7 @@ export default function AdminMargenes() {
       });
     }
     return list;
-  }, [rows, q, zona, marginF, soloPromo, soloDead, cMin, cMax, soloInconsistentes, agruparPorCosto, sortKey, sortDir]);
+  }, [rows, q, zona, marginF, soloPromo, sinPromo, soloDead, cMin, cMax, soloInconsistentes, agruparPorCosto, sortKey, sortDir]);
 
   // Stats por grupo de costo — usado en header de grupo y chip "inconsistentes"
   const grupoPorCosto = useMemo(() => {
@@ -889,7 +891,10 @@ export default function AdminMargenes() {
           <option value="high">Alto (≥30%)</option>
         </select>
         <label style={{ fontSize: 11, color: "var(--txt2)", display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
-          <input type="checkbox" checked={soloPromo} onChange={e => setSoloPromo(e.target.checked)} /> Con promo activa
+          <input type="checkbox" checked={soloPromo} onChange={e => { setSoloPromo(e.target.checked); if (e.target.checked) setSinPromo(false); }} /> Con promo activa
+        </label>
+        <label style={{ fontSize: 11, color: "var(--txt2)", display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+          <input type="checkbox" checked={sinPromo} onChange={e => { setSinPromo(e.target.checked); if (e.target.checked) setSoloPromo(false); }} /> Sin promo activa
         </label>
         <label style={{ fontSize: 11, color: "var(--txt2)", display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
           <input type="checkbox" checked={soloDead} onChange={e => setSoloDead(e.target.checked)} /> Solo dead zone
