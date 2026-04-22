@@ -22,29 +22,41 @@ import AdminEventos from "@/components/AdminEventos";
 import AdminVentasML from "@/components/AdminVentasML";
 import AdminComercial from "@/components/AdminComercial";
 import AdminMargenes from "@/components/AdminMargenes";
+import AdminUsuarios from "@/components/AdminUsuarios";
+import { loginAdminUser, canAccessTab, canManageUsers, type AdminUser } from "@/lib/admin-users";
 
-const ADMIN_PIN = "1234"; // Change this
-const AUTH_KEY = "banva_admin_auth";
+const AUTH_KEY = "banva_admin_auth_user";
 
 function useAuth() {
-  const [ok, setOk] = useState(false);
+  const [user, setUser] = useState<AdminUser | null>(null);
   useEffect(() => {
     const saved = sessionStorage.getItem(AUTH_KEY);
-    if (saved === "1") setOk(true);
+    if (saved) {
+      try { setUser(JSON.parse(saved) as AdminUser); } catch { /* ignore */ }
+    }
   }, []);
-  const login = (pin: string) => {
-    if (pin === ADMIN_PIN) { sessionStorage.setItem(AUTH_KEY, "1"); setOk(true); return true; }
+  const login = async (pin: string): Promise<boolean> => {
+    const u = await loginAdminUser(pin);
+    if (u) {
+      sessionStorage.setItem(AUTH_KEY, JSON.stringify(u));
+      setUser(u);
+      return true;
+    }
     return false;
   };
-  const logout = () => { sessionStorage.removeItem(AUTH_KEY); setOk(false); };
-  return { ok, login, logout };
+  const logout = () => { sessionStorage.removeItem(AUTH_KEY); setUser(null); };
+  return { user, ok: !!user, login, logout };
 }
 
-function LoginGate({ onLogin }: { onLogin: (pin: string) => boolean }) {
+function LoginGate({ onLogin }: { onLogin: (pin: string) => Promise<boolean> }) {
   const [pin, setPin] = useState("");
   const [err, setErr] = useState(false);
-  const submit = () => {
-    if (!onLogin(pin)) { setErr(true); setPin(""); setTimeout(() => setErr(false), 1500); }
+  const [loading, setLoading] = useState(false);
+  const submit = async () => {
+    setLoading(true);
+    const ok = await onLogin(pin);
+    setLoading(false);
+    if (!ok) { setErr(true); setPin(""); setTimeout(() => setErr(false), 1500); }
   };
   return (
     <div style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100dvh",background:"var(--bg)",padding:24}}>
@@ -53,13 +65,13 @@ function LoginGate({ onLogin }: { onLogin: (pin: string) => boolean }) {
         <div style={{fontSize:24,fontWeight:800,marginBottom:4}}>Administrador</div>
         <div style={{fontSize:13,color:"var(--txt3)",marginBottom:32}}>Ingresa el PIN de acceso</div>
         <div style={{display:"flex",gap:8,marginBottom:16}}>
-          <input type="password" inputMode="numeric" className="form-input mono" value={pin} onChange={e=>setPin(e.target.value.replace(/\D/g,""))}
-            onKeyDown={e=>e.key==="Enter"&&submit()} placeholder="PIN" maxLength={6} autoFocus
+          <input type="password" className="form-input mono" value={pin} onChange={e=>setPin(e.target.value)}
+            onKeyDown={e=>e.key==="Enter"&&submit()} placeholder="PIN" maxLength={20} autoFocus
             style={{fontSize:24,textAlign:"center",letterSpacing:8,padding:16,flex:1}}/>
         </div>
-        <button onClick={submit} disabled={pin.length<4}
-          style={{width:"100%",padding:14,borderRadius:10,background:pin.length>=4?"var(--cyan)":"var(--bg3)",color:pin.length>=4?"#000":"var(--txt3)",fontWeight:700,fontSize:14,opacity:pin.length>=4?1:0.5}}>
-          Entrar
+        <button onClick={submit} disabled={pin.length<4 || loading}
+          style={{width:"100%",padding:14,borderRadius:10,background:pin.length>=4?"var(--cyan)":"var(--bg3)",color:pin.length>=4?"#000":"var(--txt3)",fontWeight:700,fontSize:14,opacity:(pin.length>=4 && !loading)?1:0.5}}>
+          {loading ? "..." : "Entrar"}
         </button>
         {err && <div style={{marginTop:12,color:"var(--red)",fontWeight:600,fontSize:13}}>PIN incorrecto</div>}
         <Link href="/" style={{display:"inline-block",marginTop:24,color:"var(--txt3)",fontSize:12}}>&#8592; Volver al inicio</Link>
@@ -102,7 +114,7 @@ const MOBILE_MENU_SECTIONS = [
   ] as const },
 ];
 
-function MobileMenu({ tab, setTab }: { tab: AdminTab; setTab: (t: AdminTab) => void }) {
+function MobileMenu({ tab, setTab, user }: { tab: AdminTab; setTab: (t: AdminTab) => void; user: AdminUser | null }) {
   const [open, setOpen] = useState(false);
   const allItems = MOBILE_MENU_SECTIONS.flatMap(s => [...s.items]);
   const found = allItems.find(([k]) => k === tab);
@@ -125,23 +137,27 @@ function MobileMenu({ tab, setTab }: { tab: AdminTab; setTab: (t: AdminTab) => v
               <span style={{ fontWeight: 700, fontSize: 15 }}>Navegación</span>
               <button onClick={() => setOpen(false)} style={{ padding: "4px 12px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt3)", fontSize: 12 }}>Cerrar</button>
             </div>
-            {MOBILE_MENU_SECTIONS.map(section => (
-              <div key={section.section}>
-                <div className="menu-section">{section.section}</div>
-                <div className="menu-grid">
-                  {section.items.map(([key, label, icon]) => (
-                    <button
-                      key={key}
-                      className={`menu-item ${tab === key ? "active" : ""}`}
-                      onClick={() => { setTab(key as AdminTab); setOpen(false); }}
-                    >
-                      <span className="menu-icon">{icon}</span>
-                      {label}
-                    </button>
-                  ))}
+            {MOBILE_MENU_SECTIONS.map(section => {
+              const visibles = section.items.filter(([k]) => canAccessTab(user, k));
+              if (visibles.length === 0) return null;
+              return (
+                <div key={section.section}>
+                  <div className="menu-section">{section.section}</div>
+                  <div className="menu-grid">
+                    {visibles.map(([key, label, icon]) => (
+                      <button
+                        key={key}
+                        className={`menu-item ${tab === key ? "active" : ""}`}
+                        onClick={() => { setTab(key as AdminTab); setOpen(false); }}
+                      >
+                        <span className="menu-icon">{icon}</span>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -161,6 +177,10 @@ export default function AdminPage() {
     return "dash";
   });
   useEffect(() => { sessionStorage.setItem("banva_admin_tab", tab); }, [tab]);
+
+  // Guard: si el user cambia y el tab actual no esta permitido, navegar al primer accesible.
+  // Previene deep-link a un tab bloqueado o que un ex-super_admin degradado siga viendo tabs.
+  // Definido arriba del useAuth() — se usa dentro del componente principal via useEffect.
 
   const SIDEBAR_GROUPS = [
     {section:"OPERACIONES",icon:"⚡",items:[["rec","Recepciones","📦"],["discrepancias","Discrepancias","💰"],["flex","Ultima Milla","🚚"],["enviosfull","Envios Full","📦"],["ops","Operaciones","⚡"],["reposicion","Reposición","🔄"]] as const},
@@ -194,6 +214,16 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(true);
   const [mlAuthReturn, setMlAuthReturn] = useState(false);
   const auth = useAuth();
+  // Guard de tab: si el user no tiene permiso para la tab actual, caer a la primera accesible.
+  useEffect(() => {
+    if (!auth.user) return;
+    if (!canAccessTab(auth.user, tab)) {
+      const ordered: string[] = ["dash", ...SIDEBAR_GROUPS.flatMap(g => g.items.map(([k]) => k as string))];
+      const firstAllowed = ordered.find(k => canAccessTab(auth.user, k));
+      if (firstAllowed) setTab(firstAllowed as AdminTab);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auth.user, tab]);
   useEffect(()=>{
     setMounted(true);
     initStore().then(()=>setLoading(false));
@@ -226,22 +256,27 @@ export default function AdminPage() {
         </div>
         <div style={{display:"flex",alignItems:"center",gap:12}}>
           <span className="admin-topbar-date" style={{fontSize:11,color:"var(--txt3)"}}>{new Date().toLocaleDateString("es-CL",{weekday:"long",day:"numeric",month:"long",year:"numeric"})}</span>
+          {auth.user && <span style={{fontSize:11,color:"var(--txt2)",fontWeight:600}}>{auth.user.nombre}</span>}
           <button onClick={auth.logout} style={{padding:"6px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--red)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>Cerrar sesión</button>
         </div>
       </div>
       <SheetSync onSynced={r}/>
       <div className="admin-layout">
         <nav className="admin-sidebar">
-          {/* Dashboard — always visible */}
-          <button className={`sidebar-btn ${tab==="dash"?"active":""}`} onClick={()=>setTab("dash")}>
-            <span className="sidebar-icon">📊</span>
-            <span className="sidebar-label">Dashboard</span>
-          </button>
+          {/* Dashboard — always visible si tiene permiso */}
+          {canAccessTab(auth.user, "dash") && (
+            <button className={`sidebar-btn ${tab==="dash"?"active":""}`} onClick={()=>setTab("dash")}>
+              <span className="sidebar-icon">📊</span>
+              <span className="sidebar-label">Dashboard</span>
+            </button>
+          )}
 
-          {/* Collapsible groups */}
+          {/* Collapsible groups — filtrados por permisos del usuario */}
           {SIDEBAR_GROUPS.map((group)=>{
+            const itemsVisibles = group.items.filter(([k])=>canAccessTab(auth.user, k));
+            if (itemsVisibles.length === 0) return null;
             const isOpen = openSections[group.section];
-            const hasActive = group.items.some(([k])=>k===tab);
+            const hasActive = itemsVisibles.some(([k])=>k===tab);
             return (
               <div key={group.section} className="sidebar-group">
                 <button className={`sidebar-section-btn${hasActive?" has-active":""}`} onClick={()=>toggleSection(group.section)}>
@@ -249,7 +284,7 @@ export default function AdminPage() {
                   <span className="sidebar-section-label">{group.section}</span>
                   <span className={`sidebar-chevron${isOpen?" open":""}`}>&#9206;</span>
                 </button>
-                {isOpen && group.items.map(([key,label,icon])=>(
+                {isOpen && itemsVisibles.map(([key,label,icon])=>(
                   <button key={key} className={`sidebar-btn sidebar-child ${tab===key?"active":""}`} onClick={()=>setTab(key as any)}>
                     <span className="sidebar-icon">{icon}</span>
                     <span className="sidebar-label">{label}</span>
@@ -266,7 +301,7 @@ export default function AdminPage() {
 
         <main className="admin-main">
           {/* Mobile menu */}
-          <MobileMenu tab={tab} setTab={setTab}/>
+          <MobileMenu tab={tab} setTab={setTab} user={auth.user}/>
           <div className="admin-content">
             {tab==="dash"&&<Dashboard/>}
             {tab==="rec"&&<AdminRecepciones refresh={r}/>}
@@ -290,7 +325,7 @@ export default function AdminPage() {
             {tab==="agentes"&&<AdminAgentes/>}
             {tab==="stockml"&&<AdminStockML/>}
             {tab==="timeline"&&<AdminTimeline/>}
-            {tab==="config"&&<Configuracion refresh={r} initialSubTab={mlAuthReturn ? "ml" : undefined}/>}
+            {tab==="config"&&<Configuracion refresh={r} initialSubTab={mlAuthReturn ? "ml" : undefined} currentUser={auth.user}/>}
           </div>
         </main>
       </div>
@@ -11194,8 +11229,8 @@ function PorAtender({ refresh }: { refresh: () => void }) {
 }
 
 // ==================== CONFIGURACIÓN ====================
-function Configuracion({ refresh, initialSubTab }: { refresh: () => void; initialSubTab?: string }) {
-  const [configTab, setConfigTab] = useState<"general"|"posiciones"|"mapa"|"etiquetas"|"carga_stock"|"conteos"|"conciliador"|"diccionario"|"ml"|"por_atender">(initialSubTab === "ml" ? "ml" : "general");
+function Configuracion({ refresh, initialSubTab, currentUser }: { refresh: () => void; initialSubTab?: string; currentUser?: AdminUser | null }) {
+  const [configTab, setConfigTab] = useState<"general"|"posiciones"|"mapa"|"etiquetas"|"carga_stock"|"conteos"|"conciliador"|"diccionario"|"ml"|"por_atender"|"usuarios">(initialSubTab === "ml" ? "ml" : "general");
   const [conciliadorPin, setConciliadorPin] = useState("");
   const [conciliadorAuth, setConciliadorAuth] = useState(false);
   const CONCILIADOR_PIN = "9461";
@@ -11318,12 +11353,22 @@ function Configuracion({ refresh, initialSubTab }: { refresh: () => void; initia
   return (
     <div>
       <div style={{display:"flex",gap:8,marginBottom:16}}>
-        {([["por_atender","Por Atender","🔔"],["general","General","⚙️"],["ml","MercadoLibre","🛒"],["diccionario","Diccionario","📖"],["posiciones","Posiciones","📍"],["mapa","Mapa Bodega","🗺️"],["etiquetas","Etiquetas","🖨️"],["carga_stock","Carga Stock","📥"],["conteos","Conteo Cíclico","📋"],["conciliador","Conciliador","🏦"]] as const).map(([key,label,icon])=>(
-          <button key={key} onClick={()=>setConfigTab(key)} style={{padding:"8px 16px",borderRadius:8,background:configTab===key?"var(--cyan)":"var(--bg3)",color:configTab===key?"#fff":"var(--txt2)",fontWeight:configTab===key?700:500,fontSize:13,border:configTab===key?"none":"1px solid var(--bg4)",cursor:"pointer"}}>{icon} {label}</button>
-        ))}
+        {(() => {
+          const baseTabs: Array<[string, string, string]> = [
+            ["por_atender","Por Atender","🔔"],["general","General","⚙️"],["ml","MercadoLibre","🛒"],
+            ["diccionario","Diccionario","📖"],["posiciones","Posiciones","📍"],["mapa","Mapa Bodega","🗺️"],
+            ["etiquetas","Etiquetas","🖨️"],["carga_stock","Carga Stock","📥"],["conteos","Conteo Cíclico","📋"],
+            ["conciliador","Conciliador","🏦"],
+          ];
+          if (canManageUsers(currentUser || null)) baseTabs.push(["usuarios","Usuarios","👥"]);
+          return baseTabs.map(([key,label,icon])=>(
+            <button key={key} onClick={()=>setConfigTab(key as typeof configTab)} style={{padding:"8px 16px",borderRadius:8,background:configTab===key?"var(--cyan)":"var(--bg3)",color:configTab===key?"#fff":"var(--txt2)",fontWeight:configTab===key?700:500,fontSize:13,border:configTab===key?"none":"1px solid var(--bg4)",cursor:"pointer"}}>{icon} {label}</button>
+          ));
+        })()}
       </div>
 
       {configTab==="por_atender"&&<PorAtender refresh={refresh}/>}
+      {configTab==="usuarios"&&currentUser&&canManageUsers(currentUser)&&<AdminUsuarios currentUserId={currentUser.id}/>}
       {configTab==="ml"&&<ConfigML/>}
       {configTab==="diccionario"&&<DiccionarioConfig/>}
       {configTab==="posiciones"&&<Posiciones refresh={refresh}/>}
