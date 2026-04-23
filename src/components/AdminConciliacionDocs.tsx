@@ -104,11 +104,10 @@ export default function AdminConciliacionDocs() {
   };
   const facturasEnriched: FacturaRow[] = useMemo(() => {
     const onlyFacturas = rcvPeriodo.filter(r => r.tipo_doc === 33 || r.tipo_doc === 34 || r.tipo_doc === 46);
-    return onlyFacturas.map(rc => {
+    const enriched = onlyFacturas.map(rc => {
       const key = `${rc.nro_doc}|${normProv(rc.razon_social || "")}`;
       const recs = recByFolio.get(key) || [];
       const ncs = ncByFacturaRef.get(key) || [];
-      // OC match: via primera recepción vinculada
       const oc = recs[0]?.orden_compra_id
         ? ocs.find(o => o.id === recs[0].orden_compra_id) : undefined;
       const recIds = recs.map(r => r.id).filter(Boolean) as string[];
@@ -119,12 +118,15 @@ export default function AdminConciliacionDocs() {
         discrepancias: ds,
       };
     });
+    // Solo mostrar las que matchean con al menos una recepción (inventario).
+    // Facturas de servicios/honorarios/otros gastos se excluyen.
+    return enriched.filter(f => f.recepciones.length > 0);
   }, [rcvPeriodo, recByFolio, ncByFacturaRef, ocs, discs]);
 
-  // NCs del período
+  // NCs del período — solo las que linkean a una recepción (inventario)
   const ncsRows: FacturaRow[] = useMemo(() => {
     const ncs = rcvPeriodo.filter(r => r.tipo_doc === 61);
-    return ncs.map(nc => {
+    const enriched = ncs.map(nc => {
       const key = nc.factura_ref_folio
         ? `${nc.factura_ref_folio}|${normProv(nc.razon_social || "")}` : "";
       const recs = key ? (recByFolio.get(key) || []) : [];
@@ -132,6 +134,7 @@ export default function AdminConciliacionDocs() {
       const ds = discs.filter(d => recIds.includes(d.recepcion_id) && d.estado === "PENDIENTE");
       return { rcv: nc, recepciones: recs, ncs: [], ocNumero: null, discrepancias: ds };
     });
+    return enriched.filter(n => n.recepciones.length > 0);
   }, [rcvPeriodo, recByFolio, discs]);
 
   // Recepciones sin factura en RCV
@@ -146,18 +149,21 @@ export default function AdminConciliacionDocs() {
     });
   }, [recPeriodo, rcvPeriodo]);
 
-  // KPIs
+  // KPIs — solo inventario (facturas/NCs ya filtradas)
   const kpis = useMemo(() => {
-    const facs = facturasEnriched;
-    const matched = facs.filter(f => f.recepciones.length > 0).length;
-    const unmatched = facs.length - matched;
+    const facs = facturasEnriched; // ya filtrado a las con recepción
     const totalFacturado = facs.reduce((s, f) => s + (Number(f.rcv.monto_total) || 0), 0);
+    const conDiscrepancia = facs.filter(f => f.discrepancias.length > 0).length;
     const ncsTotal = ncsRows.length;
-    const ncsHuerfanas = ncsRows.filter(n => n.recepciones.length === 0).length;
+    const ncsConPend = ncsRows.filter(n => n.discrepancias.length > 0).length;
     return {
-      facturas: facs.length, matched, unmatched,
-      totalFacturado, ncs: ncsTotal, ncsHuerfanas,
-      recepciones: recPeriodo.length, recSinFactura: recSinFactura.length,
+      facturas: facs.length,
+      conDiscrepancia,
+      totalFacturado,
+      ncs: ncsTotal,
+      ncsConPend,
+      recepciones: recPeriodo.length,
+      recSinFactura: recSinFactura.length,
     };
   }, [facturasEnriched, ncsRows, recPeriodo, recSinFactura]);
 
@@ -185,31 +191,27 @@ export default function AdminConciliacionDocs() {
         </button>
       </div>
 
-      {/* KPIs */}
-      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 8, marginBottom: 12 }}>
+      {/* KPIs — solo documentos de inventario (match con recepción) */}
+      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 8, marginBottom: 12 }}>
         <div className="kpi" style={{ borderLeft: "3px solid var(--cyan)" }}>
-          <div style={{ fontSize: 10, color: "var(--txt3)", textTransform: "uppercase" }}>Facturas RCV</div>
+          <div style={{ fontSize: 10, color: "var(--txt3)", textTransform: "uppercase" }}>Facturas inventario</div>
           <div style={{ fontSize: 22, fontWeight: 700 }}>{kpis.facturas}</div>
           <div style={{ fontSize: 10, color: "var(--txt3)" }}>{fmtMoney(kpis.totalFacturado)}</div>
         </div>
-        <div className="kpi" style={{ borderLeft: "3px solid var(--green)" }}>
-          <div style={{ fontSize: 10, color: "var(--txt3)", textTransform: "uppercase" }}>Matcheadas</div>
-          <div style={{ fontSize: 22, fontWeight: 700, color: "var(--green)" }}>{kpis.matched}</div>
-          <div style={{ fontSize: 10, color: "var(--txt3)" }}>con recepción</div>
-        </div>
         <div className="kpi" style={{ borderLeft: "3px solid var(--amber)" }}>
-          <div style={{ fontSize: 10, color: "var(--txt3)", textTransform: "uppercase" }}>Sin recepción</div>
-          <div style={{ fontSize: 22, fontWeight: 700, color: "var(--amber)" }}>{kpis.unmatched}</div>
-          <div style={{ fontSize: 10, color: "var(--txt3)" }}>falta recepcionar o servicio</div>
+          <div style={{ fontSize: 10, color: "var(--txt3)", textTransform: "uppercase" }}>Con discrepancias</div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: "var(--amber)" }}>{kpis.conDiscrepancia}</div>
+          <div style={{ fontSize: 10, color: "var(--txt3)" }}>pendientes de resolver</div>
         </div>
         <div className="kpi" style={{ borderLeft: "3px solid var(--cyan)" }}>
-          <div style={{ fontSize: 10, color: "var(--txt3)", textTransform: "uppercase" }}>NCs</div>
+          <div style={{ fontSize: 10, color: "var(--txt3)", textTransform: "uppercase" }}>NCs inventario</div>
           <div style={{ fontSize: 22, fontWeight: 700, color: "var(--cyan)" }}>{kpis.ncs}</div>
-          <div style={{ fontSize: 10, color: "var(--txt3)" }}>{kpis.ncsHuerfanas > 0 ? `${kpis.ncsHuerfanas} huérfanas` : "todas linked"}</div>
+          <div style={{ fontSize: 10, color: "var(--txt3)" }}>{kpis.ncsConPend > 0 ? `${kpis.ncsConPend} con pendientes` : "sin pendientes"}</div>
         </div>
         <div className="kpi" style={{ borderLeft: "3px solid var(--blue)" }}>
           <div style={{ fontSize: 10, color: "var(--txt3)", textTransform: "uppercase" }}>Recepciones</div>
           <div style={{ fontSize: 22, fontWeight: 700 }}>{kpis.recepciones}</div>
+          <div style={{ fontSize: 10, color: "var(--txt3)" }}>del período</div>
         </div>
         <div className="kpi" style={{ borderLeft: "3px solid var(--red)" }}>
           <div style={{ fontSize: 10, color: "var(--txt3)", textTransform: "uppercase" }}>Sin factura RCV</div>
@@ -425,8 +427,8 @@ export default function AdminConciliacionDocs() {
 
       {/* Mini leyenda */}
       <div style={{ marginTop: 10, padding: 10, background: "var(--bg3)", borderRadius: 6, fontSize: 10, color: "var(--txt3)" }}>
-        <strong>Cómo funciona:</strong> match folio factura ↔ recepción.folio + proveedor normalizado (ignora SA/SPA/LTDA/puntuación).
-        Para NCs, match vía <code>factura_ref_folio</code>. Si los montos difieren &gt; $100, se muestra el delta.
+        <strong>Cómo funciona:</strong> solo se muestran facturas y NCs que matchean con una recepción en bodega (inventario). Se excluyen servicios/honorarios/gastos que no tienen recepción.
+        Match: folio factura ↔ recepción.folio + proveedor normalizado (ignora SA/SPA/LTDA/puntuación). Para NCs vía <code>factura_ref_folio</code>. Delta de montos mostrado si &gt; $100.
       </div>
     </div>
   );
