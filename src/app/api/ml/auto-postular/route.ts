@@ -102,7 +102,22 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // 3. Cargar ads fraccion por SKU (promedio ads_cost_asignado / unidades en 30d)
+  // 3a. Cargar cobertura (y cuadrante) desde sku_intelligence
+  const coberturaMap = new Map<string, { cob_total: number | null; cuadrante: string | null }>();
+  if (skus.length > 0) {
+    for (let i = 0; i < skus.length; i += 500) {
+      const chunk = skus.slice(i, i + 500);
+      const { data: intel } = await sb
+        .from("sku_intelligence")
+        .select("sku_origen, cob_total, cuadrante")
+        .in("sku_origen", chunk);
+      for (const r of (intel || []) as Array<{ sku_origen: string; cob_total: number | null; cuadrante: string | null }>) {
+        coberturaMap.set(r.sku_origen, { cob_total: r.cob_total, cuadrante: r.cuadrante });
+      }
+    }
+  }
+
+  // 3b. Cargar ads fraccion por SKU (promedio ads_cost_asignado / unidades en 30d)
   const sinceIso = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
   const adsFraccionBySku = new Map<string, number>();
   const { data: adsRows } = await sb
@@ -153,6 +168,7 @@ export async function POST(req: NextRequest) {
       const costoNeto = policy?.costo_promedio || policy?.costo || row.costo_neto || 0;
       const margenMinFrac = (policy?.margen_minimo_pct ?? 15) / 100;
 
+      const intel = coberturaMap.get(row.sku);
       const gateInputs = {
         costoNeto,
         precioReferencia: precioObjetivo,
@@ -167,6 +183,7 @@ export async function POST(req: NextRequest) {
         esKvi: policy?.es_kvi || false,
         precioLista: row.price_ml,
         politica: policy?.politica_pricing || "seguir",
+        coberturaDias: intel?.cob_total ?? null,
       };
 
       // Gates adicionales fuera del lib/pricing.ts: stock LIGHTNING + sin costo
@@ -214,6 +231,8 @@ export async function POST(req: NextRequest) {
         contexto: {
           canal,
           stock_total: row.stock_total,
+          cobertura_dias: intel?.cob_total ?? null,
+          cuadrante: intel?.cuadrante || null,
           es_kvi: policy?.es_kvi,
           politica: policy?.politica_pricing,
           ads_fraccion: adsFraccionBySku.get(row.sku) || 0,

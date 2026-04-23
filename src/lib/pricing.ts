@@ -30,6 +30,21 @@ export const VALLE_MUERTE_MAX = 23000;
  */
 export const DIAS_CONGELAMIENTO_EVENTO = 45;
 
+/**
+ * Cobertura mínima para postular a descuentos.
+ * Fuente: Compass artifact — "Excluir SKUs con stock <28 días cobertura
+ * (subir precio defensivo, no postular)".
+ * Razonamiento: descuento acelera ventas → quiebre → pérdida de Buy Box por
+ * semanas. El costo del stockout supera el ingreso del descuento.
+ */
+export const COBERTURA_MIN_POSTULAR_DIAS = 28;
+
+/**
+ * Cobertura que activa flag "sobrestock" — soft signal para priorizar
+ * postulación agresiva (liquidar rotación lenta).
+ */
+export const COBERTURA_SOBRESTOCK_DIAS = 90;
+
 export type CanalLogistico = "flex" | "full" | "unknown";
 
 export type FloorInputs = {
@@ -142,8 +157,10 @@ export type GateInputs = FloorInputs & {
   esKvi?: boolean;
   /** Precio de lista actual (para calcular % descuento propuesto). */
   precioLista?: number;
-  /** Política del SKU. 'liquidar' puede ir bajo margen_min. */
+  /** Política del SKU. 'liquidar' puede ir bajo margen_min y sin cobertura mínima. */
   politica?: "defender" | "seguir" | "exprimir" | "liquidar";
+  /** Cobertura en días del SKU (stock_total / velocidad_diaria). Default: sin gate si no viene. */
+  coberturaDias?: number | null;
 };
 
 export type GateResult = {
@@ -193,12 +210,29 @@ export function evaluarGates(inputs: GateInputs): GateResult {
     }
   }
 
-  // 5. Warning si margen proyectado queda muy cerca del mínimo
+  // 5. Gate de cobertura — no postular a descuento si stock insuficiente
+  //    (las 3 fuentes coinciden: stockout por descuento destruye Buy Box
+  //    por semanas; el costo supera el ingreso del descuento). Excepción:
+  //    política 'liquidar' puede postular con cobertura baja (objetivo explícito).
+  if (typeof inputs.coberturaDias === "number" && inputs.coberturaDias !== null && inputs.politica !== "liquidar") {
+    if (inputs.coberturaDias < COBERTURA_MIN_POSTULAR_DIAS) {
+      motivosBloqueo.push(
+        `cobertura_baja: ${inputs.coberturaDias.toFixed(0)}d < ${COBERTURA_MIN_POSTULAR_DIAS}d mínimo (descuento con poco stock acelera quiebre y destruye Buy Box)`
+      );
+    }
+  }
+
+  // 6. Warning si margen proyectado queda muy cerca del mínimo
   const margenProyectado = margenPostAds(inputs.precioObjetivo, inputs);
   if (margenProyectado !== null && margenProyectado < inputs.margenMinimoFrac + 0.03 && margenProyectado >= inputs.margenMinimoFrac) {
     warnings.push(
       `margen_ajustado: ${(margenProyectado * 100).toFixed(1)}% (mínimo ${(inputs.margenMinimoFrac * 100).toFixed(0)}%, colchón <3pp)`
     );
+  }
+
+  // 7. Señal informativa: sobrestock (oportunidad de liquidación)
+  if (typeof inputs.coberturaDias === "number" && inputs.coberturaDias !== null && inputs.coberturaDias > COBERTURA_SOBRESTOCK_DIAS) {
+    warnings.push(`sobrestock: cobertura ${inputs.coberturaDias.toFixed(0)}d > ${COBERTURA_SOBRESTOCK_DIAS}d — candidato prioritario para liquidar`);
   }
 
   return { pasa: motivosBloqueo.length === 0, floor: floorEfectivo, motivosBloqueo, warnings };
