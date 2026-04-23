@@ -6271,6 +6271,14 @@ function Inventario() {
           </div>
         </div>
 
+        {mlSkuData.flexItems.length === 0 && !mlSkuData.loading && total > 0 && (
+          <SinMappingMLBlock sku={sku} onLinked={() => {
+            // Recargar ml_items_map de la vista + del listado global
+            setMlSkuData(prev => ({...prev, loading:true}));
+            setTimeout(() => setSelectedSku(sku), 100);
+          }} />
+        )}
+
         {mlSkuData.flexItems.length > 0 && (
           <div className="card">
             <div className="card-title">Publicaciones ML — {sku}</div>
@@ -7003,6 +7011,106 @@ function EditableStockRowMobile({ sku, skuVenta, pos, label, qty, onDone }: { sk
 }
 
 // ==================== REASIGNAR FORMATO INLINE ====================
+// ==================== SIN MAPPING ML — Buscar + Vincular ====================
+function SinMappingMLBlock({ sku, onLinked }: { sku: string; onLinked: () => void }) {
+  const [results, setResults] = useState<Array<{item_id:string;title:string;status:string;available_quantity:number;last_updated:string;permalink:string;seller_custom_field:string|null;ya_mapeado:boolean}>>([]);
+  const [loading, setLoading] = useState(false);
+  const [searched, setSearched] = useState(false);
+  const [linking, setLinking] = useState<string|null>(null);
+  const [error, setError] = useState<string|null>(null);
+
+  const buscar = async () => {
+    setLoading(true); setError(null); setSearched(true);
+    try {
+      const res = await fetch(`/api/ml/search-by-sku?sku=${encodeURIComponent(sku)}`);
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "search failed");
+      setResults(json.items || []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally { setLoading(false); }
+  };
+
+  const vincular = async (itemId: string) => {
+    if (!confirm(`Vincular ${sku} ← ${itemId}?\n\nSe creara el mapping en ml_items_map y se encolara para sync.`)) return;
+    setLinking(itemId);
+    try {
+      const res = await fetch("/api/ml/search-by-sku", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sku, item_id: itemId }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "link failed");
+      alert(`Vinculado OK: ${json.title} [${json.status}]. Se publicara en el proximo sync (~1 min).`);
+      onLinked();
+    } catch (e) {
+      alert("Error vinculando: " + (e instanceof Error ? e.message : String(e)));
+    } finally { setLinking(null); }
+  };
+
+  return (
+    <div className="card" style={{borderLeft:"4px solid var(--red)",background:"var(--redBg)"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+        <div>
+          <div style={{fontSize:14,fontWeight:700,color:"var(--red)"}}>🚨 Sin publicación ML vinculada</div>
+          <div style={{fontSize:11,color:"var(--txt2)",marginTop:4,lineHeight:1.4}}>
+            Este SKU tiene stock pero no está en <code>ml_items_map</code>. El sync regular solo captura items <code>active/paused</code> — si la publicación está <code>closed</code> o similar, queda invisible.
+            El botón busca en ML <strong>sin filtro de status</strong> por <code>seller_sku={sku}</code>.
+          </div>
+        </div>
+        <button onClick={buscar} disabled={loading}
+          style={{padding:"10px 18px",borderRadius:8,background:"var(--red)",color:"#fff",fontWeight:700,fontSize:12,border:"none",cursor:"pointer",whiteSpace:"nowrap",opacity:loading?0.6:1}}>
+          {loading ? "Buscando..." : "🔍 Buscar en ML"}
+        </button>
+      </div>
+      {error && <div style={{padding:8,background:"var(--bg3)",borderRadius:6,color:"var(--red)",fontSize:11}}>Error: {error}</div>}
+      {searched && !loading && results.length === 0 && !error && (
+        <div style={{padding:10,background:"var(--bg3)",borderRadius:6,fontSize:11,color:"var(--txt2)"}}>
+          No se encontraron items en ML con <code>seller_sku={sku}</code> en ningún status.
+          Opciones:
+          <ul style={{marginTop:6,paddingLeft:18}}>
+            <li>Crear una publicación nueva en ML (web panel vendedor)</li>
+            <li>Marcar este SKU como <strong>agotar</strong> o <strong>descontinuado</strong></li>
+            <li>Verificar si <code>seller_sku</code> en ML es distinto al SKU interno</li>
+          </ul>
+        </div>
+      )}
+      {results.length > 0 && (
+        <div style={{marginTop:6}}>
+          <div style={{fontSize:11,color:"var(--txt3)",marginBottom:6}}>{results.length} item{results.length!==1?"s":""} encontrado{results.length!==1?"s":""} en ML</div>
+          <table className="tbl">
+            <thead><tr><th>Item ID</th><th>Título</th><th>Status</th><th>Seller SKU</th><th style={{textAlign:"right"}}>Qty</th><th>Última act.</th><th></th></tr></thead>
+            <tbody>{results.map(r => (
+              <tr key={r.item_id}>
+                <td className="mono" style={{fontSize:11}}>
+                  <a href={r.permalink} target="_blank" rel="noreferrer" style={{color:"var(--cyan)"}}>{r.item_id}</a>
+                </td>
+                <td style={{fontSize:11}}>{r.title}</td>
+                <td><span style={{padding:"2px 6px",borderRadius:4,fontSize:9,fontWeight:700,
+                  background:r.status==="active"?"var(--greenBg)":r.status==="paused"?"var(--amberBg)":"var(--redBg)",
+                  color:r.status==="active"?"var(--green)":r.status==="paused"?"var(--amber)":"var(--red)"}}>{r.status}</span></td>
+                <td className="mono" style={{fontSize:10,color:"var(--txt3)"}}>{r.seller_custom_field || "—"}</td>
+                <td className="mono" style={{textAlign:"right",fontWeight:700}}>{r.available_quantity}</td>
+                <td style={{fontSize:10,color:"var(--txt3)"}}>{r.last_updated?.slice(0,10)}</td>
+                <td>
+                  {r.ya_mapeado ? (
+                    <span style={{fontSize:10,color:"var(--txt3)"}}>ya mapeado</span>
+                  ) : (
+                    <button onClick={()=>vincular(r.item_id)} disabled={linking===r.item_id}
+                      style={{padding:"4px 10px",borderRadius:4,background:"var(--green)",color:"#fff",fontSize:10,fontWeight:700,border:"none",cursor:"pointer",opacity:linking===r.item_id?0.6:1}}>
+                      {linking===r.item_id ? "..." : "Vincular"}
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ReasignarFormatoPanel({ sku, onDone }: { sku: string; onDone: () => void }) {
   const formatos = getVentasPorSkuOrigen(sku);
   const detalle = skuStockDetalle(sku);
