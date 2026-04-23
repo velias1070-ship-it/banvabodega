@@ -1357,11 +1357,13 @@ export async function syncStockToML(sku: string, availableQty: number): Promise<
 
   await sb.from("audit_log").insert({ accion: "stock_sync:entry", params: { sku, availableQty } });
 
-  // Buscar por SKU: incluir items con sku_venta aunque estén marcados como inactivos
-  // (activo=false solo debería ignorar items sin vincular, no los mapeados)
+  // Buscar por SKU en sku o sku_origen: 13 filas históricas tienen ml_items_map.sku
+  // = sku_venta (p.ej. LA-BIB-29 para producto fisico 9788481693263). Cuando el
+  // caller pasa el sku fisico, matchear tambien por sku_origen para no perder el
+  // mapping. Regla 5 de inventory-policy: fuente canonica es sku_origen.
   const { data: mappings } = await sb.from("ml_items_map")
     .select("*")
-    .eq("sku", sku)
+    .or(`sku.eq.${sku},sku_origen.eq.${sku}`)
     .or("activo.eq.true,sku_venta.not.is.null");
 
   if (!mappings || mappings.length === 0) {
