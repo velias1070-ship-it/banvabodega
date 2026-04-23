@@ -71,6 +71,10 @@
     {
       "path": "/api/ml/billing-cfwa-sync",
       "schedule": "0 13 * * *"
+    },
+    {
+      "path": "/api/ml/activate-warehouse-all",
+      "schedule": "15 * * * *"
     }
   ]
 }
