@@ -1292,9 +1292,21 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
         abcPreQuiebre = prev?.abc_pre_quiebre ?? null;
       } else {
         // Acaba de entrar — snapshot inicial (fecha ya resuelta arriba).
+        // Regla 1 (Inventory Policy): preservar la clasificacion previa. Al
+        // entrar en quiebre, abc_pre_quiebre = abc del snapshot anterior (no
+        // null), porque si se deja null el loop global asigna abc=C despues
+        // de la imputacion con margen bajo → degradacion permanente a C.
+        // Caso historico: 4 SKUs (TXTPBL105200S, JSAFAB426P20S, TXV23QLAT15BE,
+        // TXV24QLBRMR25) quedaron atrapados en C con abc_ingreso=A.
         velPreQuiebre = velHistorica;
-        margenUnitarioPreQuiebre = margenProm;
-        abcPreQuiebre = null;
+        // Si margenProm=0 al entrar (por lag de datos ese dia), preservar
+        // el margen unitario pre-quiebre previo en vez de hardcodear 0.
+        margenUnitarioPreQuiebre = margenProm > 0
+          ? margenProm
+          : (prev?.margen_unitario_pre_quiebre || 0);
+        abcPreQuiebre = (prev?.abc === "A" || prev?.abc === "B" || prev?.abc === "C")
+          ? prev.abc
+          : null;
       }
     } else if (prev && (prev.dias_en_quiebre ?? 0) > 0 && stFull > 0) {
       // SKU se repuso — verificar catch-up

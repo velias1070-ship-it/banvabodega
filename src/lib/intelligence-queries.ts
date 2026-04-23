@@ -171,21 +171,31 @@ export async function queryProductos(): Promise<ProductoRow[]> {
   }));
 }
 
-/** Órdenes de orders_history (últimos N días, estado Pagada) — paginado */
+/** Órdenes de ventas_ml_cache (últimos N días, estado Pagada, no anuladas) — paginado.
+ *  Migrado desde orders_history a ventas_ml_cache como fuente canónica: ventas_ml_cache
+ *  se alimenta en vivo desde webhook ML (vs orders_history que depende del cron
+ *  de ProfitGuard cada 5min con lag de consolidacion 1-2 dias). El sesgo medido
+ *  en 7d era -22% (570 vs 728 ordenes) lo cual subestimaba vel_7d y distorsionaba
+ *  reposicion y pct_full/pct_flex. */
 export async function queryOrdenes(desdeDias: number = 60): Promise<OrdenHistoryRow[]> {
   const sb = getServerSupabase();
   if (!sb) return [];
-  const desde = new Date(Date.now() - desdeDias * 86400000).toISOString();
+  const desde = new Date(Date.now() - desdeDias * 86400000).toISOString().slice(0, 10);
   const result: OrdenHistoryRow[] = [];
   const PAGE = 1000;
   let offset = 0;
   while (true) {
-    const { data } = await sb.from("orders_history")
+    const { data, error } = await sb.from("ventas_ml_cache")
       .select("sku_venta, cantidad, canal, fecha, subtotal, comision_total, costo_envio, ingreso_envio, total")
       .eq("estado", "Pagada")
-      .gte("fecha", desde)
-      .order("fecha", { ascending: false })
+      .eq("anulada", false)
+      .gte("fecha_date", desde)
+      .order("fecha_date", { ascending: false })
       .range(offset, offset + PAGE - 1);
+    if (error) {
+      console.error(`[queryOrdenes] ventas_ml_cache query failed: ${error.message}`);
+      break;
+    }
     if (!data || data.length === 0) break;
     result.push(...(data as OrdenHistoryRow[]));
     if (data.length < PAGE) break;
