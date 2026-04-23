@@ -5636,6 +5636,7 @@ function Dashboard() {
 function Inventario() {
   const [q, setQ] = useState("");
   const [expanded, setExpanded] = useState<string|null>(null);
+  const [selectedSku, setSelectedSku] = useState<string|null>(null);
   const [viewMode, setViewMode] = useState<"fisico"|"ml">("fisico");
   const [soloSinEtiquetar, setSoloSinEtiquetar] = useState(false);
   const [soloComprometidos, setSoloComprometidos] = useState(false);
@@ -5658,10 +5659,11 @@ function Inventario() {
   }, []);
 
   useEffect(() => {
-    if (!expanded) { setSkuMovs([]); return; }
+    const target = selectedSku || expanded;
+    if (!target) { setSkuMovs([]); return; }
     let cancelled = false;
     setSkuMovsLoading(true);
-    fetchMovimientosBySku(expanded).then(rows => {
+    fetchMovimientosBySku(target).then(rows => {
       if (cancelled) return;
       setSkuMovs(rows.map(r => ({
         id: r.id || crypto.randomUUID(), sku: r.sku, pos: r.posicion_id, qty: r.cantidad,
@@ -5672,7 +5674,7 @@ function Inventario() {
       setSkuMovsLoading(false);
     }).catch(() => { if (!cancelled) setSkuMovsLoading(false); });
     return () => { cancelled = true; };
-  }, [expanded]);
+  }, [expanded, selectedSku]);
 
   // Physical stock view (also search by sku_venta via composicion)
   // Include all products (even with 0 stock) + any SKUs in stock not in products
@@ -6054,6 +6056,129 @@ function Inventario() {
     URL.revokeObjectURL(url);
   };
 
+  // Vista detalle SKU full-width (pantalla del SKU)
+  if (selectedSku) {
+    const sku = selectedSku;
+    const prod = s.products[sku];
+    const total = skuTotal(sku);
+    const positions = skuPositions(sku);
+    const detalle = skuStockDetalle(sku);
+    const sp = stockProy.get(sku);
+    const reserved = sp?.reserved || 0;
+    const disponible = sp?.disponible ?? total;
+    const enCamino = sp?.en_camino || 0;
+    const etiqQty = detalle.filter(d=>d.skuVenta!==SIN_ETIQUETAR).reduce((s,d)=>s+d.qty,0);
+    const sinEtQty = detalle.filter(d=>d.skuVenta===SIN_ETIQUETAR).reduce((s,d)=>s+d.qty,0);
+    const etiqFormatos = Array.from(new Set(detalle.filter(d=>d.skuVenta!==SIN_ETIQUETAR).map(d=>d.skuVenta)));
+    return (
+      <div>
+        <div className="card">
+          <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12}}>
+            <button onClick={()=>setSelectedSku(null)} style={{padding:"8px 14px",borderRadius:8,background:"var(--bg3)",color:"var(--cyan)",fontWeight:700,fontSize:13,border:"1px solid var(--bg4)",cursor:"pointer"}}>← Inventario</button>
+            <div style={{flex:1}}>
+              <div className="mono" style={{fontSize:20,fontWeight:700}}>{sku}</div>
+              <div style={{fontSize:13,color:"var(--txt2)"}}>{prod?.name || sku}</div>
+            </div>
+            <div style={{textAlign:"right"}}>
+              <div className="mono" style={{fontSize:28,fontWeight:700,color:"var(--blue)"}}>{total}</div>
+              <div style={{fontSize:10,color:"var(--txt3)"}}>uds totales</div>
+            </div>
+          </div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>
+            {prod?.cat && <span className="tag">{prod.cat}</span>}
+            {prod?.prov && <span className="tag">{prod.prov}</span>}
+            {prod?.estadoSku==="agotar" && <span style={{padding:"2px 8px",borderRadius:4,fontSize:10,fontWeight:700,background:"var(--amberBg)",color:"var(--amber)",border:"1px solid var(--amberBd)"}}>🏁 AGOTAR</span>}
+            {prod?.estadoSku==="descontinuado" && <span style={{padding:"2px 8px",borderRadius:4,fontSize:10,fontWeight:700,background:"var(--redBg)",color:"var(--red)",border:"1px solid var(--redBd)"}}>✕ DESCONTINUADO</span>}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8}}>
+            <div style={{padding:10,background:"var(--bg3)",borderRadius:8}}>
+              <div style={{fontSize:10,color:"var(--txt3)"}}>DISPONIBLE</div>
+              <div className="mono" style={{fontSize:18,fontWeight:700,color:disponible>10?"var(--green)":disponible>0?"var(--amber)":"var(--red)"}}>{disponible}</div>
+            </div>
+            <div style={{padding:10,background:"var(--bg3)",borderRadius:8}}>
+              <div style={{fontSize:10,color:"var(--txt3)"}}>COMPROMETIDO</div>
+              <div className="mono" style={{fontSize:18,fontWeight:700,color:reserved>0?"var(--amber)":"var(--txt3)"}}>{reserved||"—"}</div>
+            </div>
+            <div style={{padding:10,background:"var(--bg3)",borderRadius:8}}>
+              <div style={{fontSize:10,color:"var(--txt3)"}}>EN CAMINO (OC)</div>
+              <div className="mono" style={{fontSize:18,fontWeight:700,color:enCamino>0?"var(--blue)":"var(--txt3)"}}>{enCamino||"—"}</div>
+            </div>
+            <div style={{padding:10,background:"var(--bg3)",borderRadius:8}}>
+              <div style={{fontSize:10,color:"var(--txt3)"}}>ETIQUETADO</div>
+              <div style={{fontSize:13,fontWeight:700,color:"var(--txt)"}}>
+                {total===0?"—":sinEtQty===0?"100%":etiqQty===0?"0%":`${etiqQty}/${total}`}
+                {etiqFormatos.length>0 && <span style={{fontSize:9,color:"var(--cyan)",marginLeft:6}}>{etiqFormatos.length===1?etiqFormatos[0]:`${etiqFormatos.length} fmt`}</span>}
+              </div>
+            </div>
+            <div style={{padding:10,background:"var(--bg3)",borderRadius:8}}>
+              <div style={{fontSize:10,color:"var(--txt3)"}}>UBICACIONES</div>
+              <div style={{fontSize:11,fontWeight:700}}>
+                {positions.map(p=><span key={p.pos} className="mono" style={{marginRight:6}}>{p.pos}:{p.qty}</span>)}
+                {positions.length===0 && <span style={{color:"var(--txt3)"}}>—</span>}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {detalle.length > 0 && (
+          <div className="card">
+            <div className="card-title">Detalle por formato de venta — {sku}</div>
+            <div className="desktop-only">
+              <table className="tbl">
+                <thead><tr><th>Formato</th><th>Posicion</th><th style={{textAlign:"right"}}>Cantidad</th><th style={{width:60}}></th></tr></thead>
+                <tbody>{detalle.map((d,i)=>(
+                  <EditableStockRow key={`${d.skuVenta}-${d.pos}-${i}`} sku={sku} skuVenta={d.skuVenta} pos={d.pos} label={d.label} qty={d.qty} onDone={refresh} />
+                ))}</tbody>
+              </table>
+            </div>
+            <div className="mobile-only">
+              {detalle.map((d,i)=>(
+                <EditableStockRowMobile key={`${d.skuVenta}-${d.pos}-${i}`} sku={sku} skuVenta={d.skuVenta} pos={d.pos} label={d.label} qty={d.qty} onDone={refresh} />
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="card">
+          <ReasignarFormatoPanel sku={sku} onDone={refresh} />
+        </div>
+
+        <div className="card">
+          <div className="card-title">
+            Historial de movimientos — {sku}{" "}
+            {skuMovsLoading ? <span style={{fontWeight:400,color:"var(--txt3)",fontSize:11}}>(cargando...)</span> : <span style={{fontWeight:400,color:"var(--txt3)",fontSize:11}}>({skuMovs.length} movimientos)</span>}
+          </div>
+          <div className="desktop-only">
+            <table className="tbl">
+              <thead><tr><th>Fecha</th><th>Tipo</th><th>Motivo</th><th>Pos</th><th>Quien</th><th>Nota</th><th style={{textAlign:"right"}}>Qty</th></tr></thead>
+              <tbody>{skuMovs.map(m=>(
+                <tr key={m.id}>
+                  <td style={{fontSize:11}}>{fmtDate(m.ts)} {fmtTime(m.ts)}</td>
+                  <td><span className="mov-badge" style={{background:m.type==="in"?"var(--greenBg)":"var(--redBg)",color:m.type==="in"?"var(--green)":"var(--red)"}}>{m.type==="in"?"IN":"OUT"}</span></td>
+                  <td style={{fontSize:10}}>{(IN_REASONS as any)[m.reason]||(OUT_REASONS as any)[m.reason]}</td>
+                  <td className="mono">{m.pos}</td><td style={{fontSize:11}}>{m.who}</td><td style={{fontSize:10,color:"var(--cyan)"}}>{m.note}</td>
+                  <td className="mono" style={{textAlign:"right",fontWeight:700,color:m.type==="in"?"var(--green)":"var(--red)"}}>{m.type==="in"?"+":"-"}{m.qty}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+          <div className="mobile-only">
+            {skuMovs.map(m=>(
+              <div key={m.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",fontSize:11,borderBottom:"1px solid var(--bg4)"}}>
+                <div>
+                  <div><span className="mov-badge" style={{background:m.type==="in"?"var(--greenBg)":"var(--redBg)",color:m.type==="in"?"var(--green)":"var(--red)",marginRight:6}}>{m.type==="in"?"IN":"OUT"}</span><span style={{color:"var(--txt3)"}}>{fmtDate(m.ts)} {fmtTime(m.ts)}</span></div>
+                  <div style={{fontSize:10,color:"var(--txt3)",marginTop:2}}>Pos {m.pos} · {(IN_REASONS as any)[m.reason]||(OUT_REASONS as any)[m.reason]}</div>
+                  {m.note && <div style={{fontSize:10,color:"var(--cyan)",marginTop:2}}>{m.note}</div>}
+                </div>
+                <span className="mono" style={{fontWeight:700,color:m.type==="in"?"var(--green)":"var(--red)"}}>{m.type==="in"?"+":"-"}{m.qty}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div>
       <div className="card">
@@ -6367,7 +6492,7 @@ function Inventario() {
                     const etiqStatus=total===0?"—":sinEtQty===0?"full":etiqQty===0?"none":"partial";
                     const etiqFormatos=Array.from(new Set(det.filter(d=>d.skuVenta!==SIN_ETIQUETAR).map(d=>d.skuVenta)));
                     return([
-                      <tr key={sku} onClick={()=>setExpanded(isOpen?null:sku)} style={{cursor:"pointer",background:isOpen?"var(--bg3)":"transparent"}}>
+                      <tr key={sku} onClick={()=>setSelectedSku(sku)} style={{cursor:"pointer",background:"transparent"}}>
                         <td className="mono" style={{fontWeight:700,fontSize:12}}>{sku}</td>
                         <td style={{fontSize:12}}>{prod?.name||sku}</td>
                         <td><span className="tag">{prod?.cat}</span></td>
@@ -6521,7 +6646,7 @@ function Inventario() {
               const sinEtQty=det.filter(d=>d.skuVenta===SIN_ETIQUETAR).reduce((s,d)=>s+d.qty,0);
               const etiqFormatos=Array.from(new Set(det.filter(d=>d.skuVenta!==SIN_ETIQUETAR).map(d=>d.skuVenta)));
               return(
-                <div key={sku} className="card" style={{marginTop:6,cursor:"pointer"}} onClick={()=>setExpanded(isOpen?null:sku)}>
+                <div key={sku} className="card" style={{marginTop:6,cursor:"pointer"}} onClick={()=>setSelectedSku(sku)}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                     <div>
                       <div className="mono" style={{fontSize:14,fontWeight:700}}>{sku}</div>
