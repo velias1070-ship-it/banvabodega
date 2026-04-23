@@ -1390,23 +1390,27 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     const pedirTotal = 0;
     const pedirProvBultos = 0;
 
-    // Productos nuevos: si no tiene ventas, tiene stock en bodega y no tiene stock en Full,
-    // sugerir enviar un lote inicial (inner pack o mínimo 2 unidades)
-    const esNuevo = velPonderada === 0 && velPreQuiebre === 0 && stTotal > 0;
-    if (esNuevo && stFull === 0 && stBodega > 0) {
-      const loteInicial = Math.max(innerPack, 2);
-      mandarFull = Math.min(loteInicial, stBodega);
-    }
-
     // PR6a: `NUEVO` ahora también dispara cuando `diasSinMov` es NULL (movimiento
     // desconocido = no tenemos evidencia de que sea viejo). Antes la condición
     // `<= 30` fallaba siempre con el centinela 999 y la rama estaba muerta.
     const movimientoReciente = diasSinMov === null || diasSinMov <= 30;
 
+    // Productos nuevos: si no tiene ventas, tiene stock en bodega, no tiene
+    // stock en Full Y tiene movimiento reciente (o sin dato), sugerir enviar
+    // un lote inicial (inner pack o mínimo 2 unidades).
+    // El guard `movimientoReciente` discrimina SKU genuinamente nuevo del
+    // dead stock fisico (stock viejo sin ventas ni movimiento >30d): a ese
+    // ultimo NO se le manda lote inicial a Full — cae en DEAD_STOCK.
+    const esNuevo = velPonderada === 0 && velPreQuiebre === 0 && stTotal > 0;
+    if (esNuevo && movimientoReciente && stFull === 0 && stBodega > 0) {
+      const loteInicial = Math.max(innerPack, 2);
+      mandarFull = Math.min(loteInicial, stBodega);
+    }
+
     let accion: AccionIntel;
     let prioridad: number;
     if (velPonderada === 0 && velPreQuiebre === 0 && stTotal === 0) { accion = "INACTIVO"; prioridad = 99; }
-    else if (esNuevo && stFull === 0 && stBodega > 0) { accion = "MANDAR_FULL"; prioridad = 10; }
+    else if (esNuevo && movimientoReciente && stFull === 0 && stBodega > 0) { accion = "MANDAR_FULL"; prioridad = 10; }
     else if (esNuevo && movimientoReciente) { accion = "NUEVO"; prioridad = 50; }
     else if (velPonderada === 0 && velPreQuiebre === 0 && stTotal > 0) { accion = "DEAD_STOCK"; prioridad = 80; }
     else if (stFull === 0 && (velFull > 0 || enQuiebreProlongado) && stBodega > 0) { accion = "MANDAR_FULL"; prioridad = 10; }
