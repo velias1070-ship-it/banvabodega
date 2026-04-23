@@ -591,25 +591,23 @@ export default function AdminMargenes() {
       const todosAplicables = [...promo.itemsPostulables, ...promo.itemsActivos];
       const invalidos: Array<{ itemId: string; sku: string; rango: RangoItem; motivo: string }> = [];
       const validos: string[] = [];
-      // LIGHTNING_DEAL exige stock entre 5 y 15. ML rechaza si esta fuera.
+      // LIGHTNING_DEAL exige stock entre 5 y 15 ademas del rango de precio.
       const esLightning = /LIGHTNING/i.test(promo.type || "");
       for (const itemId of todosAplicables) {
         const rango = promo.rangosPorItem.get(itemId);
         const row = rows.find(r => r.item_id === itemId);
         const sku = row?.sku || itemId;
-        // Chequeo de stock para LIGHTNING antes del rango de precio
+        const motivos: string[] = [];
         if (esLightning && row) {
           const st = row.stock_total ?? 0;
-          if (st < 5 || st > 15) {
-            invalidos.push({ itemId, sku, rango: rango || { min: 0, max: 0, suggested: 0 }, motivo: `[${promo.name}] stock ${st} fuera de 5–15` });
-            continue;
-          }
+          if (st < 5 || st > 15) motivos.push(`stock ${st} fuera de 5–15`);
         }
-        if (!rango) { validos.push(itemId); continue; }
-        if (rango.min > 0 && target < rango.min) {
-          invalidos.push({ itemId, sku, rango, motivo: `[${promo.name}] ${fmtCLP(target)} < min ${fmtCLP(rango.min)}` });
-        } else if (rango.max > 0 && target > rango.max) {
-          invalidos.push({ itemId, sku, rango, motivo: `[${promo.name}] ${fmtCLP(target)} > max ${fmtCLP(rango.max)}` });
+        if (rango) {
+          if (rango.min > 0 && target < rango.min) motivos.push(`${fmtCLP(target)} < min ${fmtCLP(rango.min)}`);
+          else if (rango.max > 0 && target > rango.max) motivos.push(`${fmtCLP(target)} > max ${fmtCLP(rango.max)}`);
+        }
+        if (motivos.length > 0) {
+          invalidos.push({ itemId, sku, rango: rango || { min: 0, max: 0, suggested: 0 }, motivo: `[${promo.name}] ${motivos.join(" · ")}` });
         } else {
           validos.push(itemId);
         }
@@ -1390,20 +1388,17 @@ export default function AdminMargenes() {
                       for (const id of aplicablesIds) {
                         const rango = p.rangosPorItem.get(id);
                         const row = rows.find(r => r.item_id === id);
-                        // LIGHTNING: stock 5-15 es requisito
+                        const motivosCard: string[] = [];
                         if (esLightning && row) {
                           const st = row.stock_total ?? 0;
-                          if (st < 5 || st > 15) {
-                            invalidosItems.push({ itemId: id, sku: row.sku, rango: rango || { min: 0, max: 0, suggested: 0 }, motivoExtra: `stock ${st}` });
-                            continue;
-                          }
+                          if (st < 5 || st > 15) motivosCard.push(`stock ${st}`);
                         }
-                        if (!rango) { validosCount++; continue; }
-                        const ok = (rango.min === 0 || target >= rango.min) && (rango.max === 0 || target <= rango.max);
-                        if (ok) validosCount++;
-                        else {
-                          invalidosItems.push({ itemId: id, sku: row?.sku || id, rango });
+                        if (rango) {
+                          const ok = (rango.min === 0 || target >= rango.min) && (rango.max === 0 || target <= rango.max);
+                          if (!ok) motivosCard.push(rango.min > 0 && target < rango.min ? `< ${fmtCLP(rango.min)}` : `> ${fmtCLP(rango.max)}`);
                         }
+                        if (motivosCard.length === 0) validosCount++;
+                        else invalidosItems.push({ itemId: id, sku: row?.sku || id, rango: rango || { min: 0, max: 0, suggested: 0 }, motivoExtra: motivosCard.join(" · ") });
                       }
                     }
                     const fueraRango = invalidosItems.length > 0;
@@ -1526,8 +1521,8 @@ export default function AdminMargenes() {
                                   {invalidosItems.slice(0, 50).map(inv => (
                                     <div key={inv.itemId} style={{ fontSize: 10, display: "flex", justifyContent: "space-between", gap: 8, padding: "2px 0", color: "var(--txt2)" }}>
                                       <span className="mono" style={{ color: "var(--txt)" }}>{inv.sku}</span>
-                                      <span className="mono" style={{ color: "var(--txt3)" }}>
-                                        {fmtCLP(inv.rango.min)}–{fmtCLP(inv.rango.max)}
+                                      <span className="mono" style={{ color: "var(--red)" }}>
+                                        {inv.motivoExtra || `${fmtCLP(inv.rango.min)}–${fmtCLP(inv.rango.max)}`}
                                       </span>
                                     </div>
                                   ))}
