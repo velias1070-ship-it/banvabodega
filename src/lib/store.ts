@@ -1013,18 +1013,15 @@ export async function crearRecepcion(folio: string, proveedor: string, imagenUrl
 }
 
 // Resuelve automáticamente el formato de venta para un SKU origen.
-// Si tiene exactamente 1 composicion individual (unidades=1), retorna ese sku_venta.
-// Si tiene exactamente 1 composicion (cualquier tipo), retorna ese sku_venta.
-// Si tiene múltiples, retorna null (el admin debe elegir).
+// Solo auto-etiqueta cuando hay exactamente 1 sku_venta único.
+// Si hay múltiples (p.ej. X1 + X2), retorna null para que el admin decida
+// al momento de picking — un SKU físico con formato individual + pack no
+// debe pre-comprometerse a uno u otro hasta saber qué se está vendiendo.
 function _resolverFormatoVenta(sku: string): string | null {
   const ventas = getVentasPorSkuOrigen(sku);
   if (ventas.length === 0) return null;
-  // Si hay exactamente 1 composicion, asignar directamente
   const uniqueVentas = ventas.filter((v, i, a) => a.findIndex(x => x.skuVenta === v.skuVenta) === i);
   if (uniqueVentas.length === 1) return uniqueVentas[0].skuVenta;
-  // Si hay múltiples, buscar la individual (unidades=1) como default
-  const individual = uniqueVentas.find(v => v.unidades === 1);
-  if (individual) return individual.skuVenta;
   return null;
 }
 
