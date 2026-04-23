@@ -5676,6 +5676,45 @@ function Inventario() {
     return () => { cancelled = true; };
   }, [expanded, selectedSku]);
 
+  // ML canal data para vista SKU (publicado Flex + stock Full)
+  const [mlSkuData, setMlSkuData] = useState<{
+    flexItems: {sku:string;sku_venta:string|null;stock_flex_cache:number|null;cache_updated_at:string|null;status_ml:string|null;item_id:string}[];
+    fullRows: {sku_venta:string;cantidad:number;updated_at:string|null}[];
+    loading: boolean;
+  }>({flexItems:[],fullRows:[],loading:false});
+
+  useEffect(() => {
+    if (!selectedSku) { setMlSkuData({flexItems:[],fullRows:[],loading:false}); return; }
+    let cancelled = false;
+    setMlSkuData(prev => ({...prev, loading:true}));
+    (async () => {
+      try {
+        const sb = (await import("@/lib/supabase")).getSupabase();
+        if (!sb) return;
+        const { data: items } = await sb.from("ml_items_map")
+          .select("sku, sku_venta, sku_origen, stock_flex_cache, cache_updated_at, status_ml, item_id")
+          .or(`sku_origen.eq.${selectedSku},sku.eq.${selectedSku}`)
+          .eq("activo", true);
+        const flexItems = (items || []) as {sku:string;sku_venta:string|null;sku_origen:string|null;stock_flex_cache:number|null;cache_updated_at:string|null;status_ml:string|null;item_id:string}[];
+        const skuVentas = Array.from(new Set([
+          ...flexItems.map(i => i.sku_venta).filter(Boolean) as string[],
+          ...flexItems.map(i => i.sku),
+        ]));
+        let fullRows: {sku_venta:string;cantidad:number;updated_at:string|null}[] = [];
+        if (skuVentas.length > 0) {
+          const { data: fc } = await sb.from("stock_full_cache")
+            .select("sku_venta, cantidad, updated_at")
+            .in("sku_venta", skuVentas);
+          fullRows = (fc || []) as typeof fullRows;
+        }
+        if (!cancelled) setMlSkuData({flexItems, fullRows, loading:false});
+      } catch {
+        if (!cancelled) setMlSkuData({flexItems:[],fullRows:[],loading:false});
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedSku]);
+
   // Physical stock view (also search by sku_venta via composicion)
   // Include all products (even with 0 stock) + any SKUs in stock not in products
   const allProductSkus = new Set([...Object.keys(s.products), ...Object.keys(s.stock)]);
@@ -6092,7 +6131,7 @@ function Inventario() {
           </div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8}}>
             <div style={{padding:10,background:"var(--bg3)",borderRadius:8}}>
-              <div style={{fontSize:10,color:"var(--txt3)"}}>DISPONIBLE</div>
+              <div style={{fontSize:10,color:"var(--txt3)"}}>DISPONIBLE (BODEGA)</div>
               <div className="mono" style={{fontSize:18,fontWeight:700,color:disponible>10?"var(--green)":disponible>0?"var(--amber)":"var(--red)"}}>{disponible}</div>
             </div>
             <div style={{padding:10,background:"var(--bg3)",borderRadius:8}}>
@@ -6103,6 +6142,29 @@ function Inventario() {
               <div style={{fontSize:10,color:"var(--txt3)"}}>EN CAMINO (OC)</div>
               <div className="mono" style={{fontSize:18,fontWeight:700,color:enCamino>0?"var(--blue)":"var(--txt3)"}}>{enCamino||"—"}</div>
             </div>
+            {(() => {
+              const flexTotal = mlSkuData.flexItems.reduce((s,i)=>s+(i.stock_flex_cache||0),0);
+              const fullTotal = mlSkuData.fullRows.reduce((s,r)=>s+(r.cantidad||0),0);
+              const flexUpdated = mlSkuData.flexItems.map(i=>i.cache_updated_at).filter(Boolean).sort().pop();
+              const fullUpdated = mlSkuData.fullRows.map(r=>r.updated_at).filter(Boolean).sort().pop();
+              return <>
+                <div style={{padding:10,background:"var(--bg3)",borderRadius:8,border:"1px solid var(--cyanBd)"}}>
+                  <div style={{fontSize:10,color:"var(--cyan)",fontWeight:700}}>🛰️ PUBLICADO EN FLEX</div>
+                  <div className="mono" style={{fontSize:18,fontWeight:700,color:flexTotal>0?"var(--cyan)":"var(--txt3)"}}>
+                    {mlSkuData.loading ? "..." : flexTotal}
+                  </div>
+                  {flexUpdated && <div style={{fontSize:9,color:"var(--txt3)"}}>sync: {fmtDate(flexUpdated)} {fmtTime(flexUpdated)}</div>}
+                  {mlSkuData.flexItems.length > 1 && <div style={{fontSize:9,color:"var(--txt3)"}}>{mlSkuData.flexItems.length} publicaciones</div>}
+                </div>
+                <div style={{padding:10,background:"var(--bg3)",borderRadius:8,border:"1px solid var(--blueBd)"}}>
+                  <div style={{fontSize:10,color:"var(--blue)",fontWeight:700}}>📦 STOCK FULL</div>
+                  <div className="mono" style={{fontSize:18,fontWeight:700,color:fullTotal>0?"var(--blue)":"var(--txt3)"}}>
+                    {mlSkuData.loading ? "..." : fullTotal}
+                  </div>
+                  {fullUpdated && <div style={{fontSize:9,color:"var(--txt3)"}}>sync: {fmtDate(fullUpdated)} {fmtTime(fullUpdated)}</div>}
+                </div>
+              </>;
+            })()}
             <div style={{padding:10,background:"var(--bg3)",borderRadius:8}}>
               <div style={{fontSize:10,color:"var(--txt3)"}}>ETIQUETADO</div>
               <div style={{fontSize:13,fontWeight:700,color:"var(--txt)"}}>
@@ -6119,6 +6181,28 @@ function Inventario() {
             </div>
           </div>
         </div>
+
+        {mlSkuData.flexItems.length > 0 && (
+          <div className="card">
+            <div className="card-title">Publicaciones ML — {sku}</div>
+            <table className="tbl">
+              <thead><tr><th>Item ID</th><th>SKU Venta</th><th>Status</th><th style={{textAlign:"right"}}>Flex (publicado)</th><th style={{textAlign:"right"}}>Full</th><th>Ultimo sync</th></tr></thead>
+              <tbody>{mlSkuData.flexItems.map(i => {
+                const fullRow = mlSkuData.fullRows.find(r => r.sku_venta === (i.sku_venta || i.sku));
+                return (
+                  <tr key={i.item_id}>
+                    <td className="mono" style={{fontSize:11}}>{i.item_id}</td>
+                    <td className="mono" style={{fontSize:11,color:"var(--cyan)"}}>{i.sku_venta || i.sku}</td>
+                    <td><span style={{padding:"2px 6px",borderRadius:4,fontSize:9,fontWeight:700,background:i.status_ml==="active"?"var(--greenBg)":"var(--bg3)",color:i.status_ml==="active"?"var(--green)":"var(--txt3)"}}>{i.status_ml||"—"}</span></td>
+                    <td className="mono" style={{textAlign:"right",fontWeight:700,color:(i.stock_flex_cache||0)>0?"var(--cyan)":"var(--txt3)"}}>{i.stock_flex_cache ?? "—"}</td>
+                    <td className="mono" style={{textAlign:"right",fontWeight:700,color:(fullRow?.cantidad||0)>0?"var(--blue)":"var(--txt3)"}}>{fullRow?.cantidad ?? "—"}</td>
+                    <td style={{fontSize:10,color:"var(--txt3)"}}>{i.cache_updated_at ? `${fmtDate(i.cache_updated_at)} ${fmtTime(i.cache_updated_at)}` : "—"}</td>
+                  </tr>
+                );
+              })}</tbody>
+            </table>
+          </div>
+        )}
 
         {detalle.length > 0 && (
           <div className="card">
