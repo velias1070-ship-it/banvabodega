@@ -67,7 +67,7 @@ export async function POST(req: NextRequest) {
         stock_actual: stockBefore?.locations,
         version_actual: stockBefore?.version,
         body_que_se_enviaria: body,
-        x_version_que_se_enviaria: hasSellerWarehouse ? (stockBefore?.version || 1) : 1,
+        x_version_que_se_enviaria: String(stockBefore?.version ?? 1),
         dry_run: true,
       });
       continue;
