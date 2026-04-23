@@ -219,25 +219,91 @@ export default function AdminConciliacionDocs() {
     return Array.from(set).sort();
   }, [rcvPeriodo]);
 
-  // Para un proveedor dado, folios de facturas del período sin recepción ya asignada
+  // Inferir proveedor probable desde los SKUs de la recepción (el más común entre productos con proveedor)
+  const sugerencias = useMemo(() => {
+    if (!asignarModal?.recepcion.id) return { proveedorInferido: "", montoTeoricoNeto: 0, montoTeoricoBruto: 0 };
+    const lineas = lineasPorRec.get(asignarModal.recepcion.id) || [];
+    const conteoProv: Map<string, number> = new Map();
+    let montoTeorico = 0;
+    for (const l of lineas) {
+      const prod = productos.get((l.sku || "").toUpperCase().trim());
+      if (prod?.proveedor && prod.proveedor !== "Otro" && prod.proveedor !== "Desconocido") {
+        conteoProv.set(prod.proveedor, (conteoProv.get(prod.proveedor) || 0) + 1);
+      }
+      const costo = (prod?.costo as number) || 0;
+      montoTeorico += (l.qty_recibida || 0) * costo;
+    }
+    let proveedorInferido = "";
+    let maxCount = 0;
+    for (const [prov, cnt] of Array.from(conteoProv.entries())) {
+      if (cnt > maxCount) { maxCount = cnt; proveedorInferido = prov; }
+    }
+    return {
+      proveedorInferido,
+      montoTeoricoNeto: Math.round(montoTeorico),
+      montoTeoricoBruto: Math.round(montoTeorico * 1.19),
+    };
+  }, [asignarModal, lineasPorRec, productos]);
+
+  // Proveedores rankeados: el inferido primero
+  const proveedoresRanked = useMemo(() => {
+    const lista = [...proveedoresRcvPeriodo];
+    const inferNorm = normProv(sugerencias.proveedorInferido);
+    if (inferNorm) {
+      lista.sort((a, b) => {
+        const aMatch = normProv(a) === inferNorm ? -1 : 0;
+        const bMatch = normProv(b) === inferNorm ? -1 : 0;
+        return aMatch - bMatch || a.localeCompare(b);
+      });
+    }
+    return lista;
+  }, [proveedoresRcvPeriodo, sugerencias.proveedorInferido]);
+
+  // Folios del proveedor, rankeados por match de monto (el más cercano al teórico primero)
   const foliosDelProveedor = useMemo(() => {
-    if (!asignarModal?.proveedor) return [] as Array<{ folio: string; monto: number; fecha: string }>;
+    if (!asignarModal?.proveedor) return [] as Array<{ folio: string; monto: number; fecha: string; scoreMatch: number; pctDiff: number }>;
     const provNorm = normProv(asignarModal.proveedor);
-    // Folios ya usados en recepciones (de cualquier período) con mismo proveedor
     const foliosUsados = new Set<string>();
     for (const rec of recepciones) {
       if (!rec.folio || rec.estado === "ANULADA") continue;
-      if (rec.id === asignarModal.recepcion.id) continue; // permitir el actual si ya estaba asignado
+      if (rec.id === asignarModal.recepcion.id) continue;
       if (normProv(rec.proveedor || "") === provNorm) foliosUsados.add(rec.folio);
     }
-    // Facturas RCV del proveedor no usadas
+    const teorico = sugerencias.montoTeoricoBruto;
     return rcvPeriodo
       .filter(r => (r.tipo_doc === 33 || r.tipo_doc === 34 || r.tipo_doc === 46))
       .filter(r => normProv(r.razon_social || "") === provNorm)
       .filter(r => r.nro_doc && !foliosUsados.has(r.nro_doc))
-      .map(r => ({ folio: r.nro_doc || "", monto: Number(r.monto_total) || 0, fecha: r.fecha_docto || "" }))
-      .sort((a, b) => b.fecha.localeCompare(a.fecha));
-  }, [asignarModal, rcvPeriodo, recepciones]);
+      .map(r => {
+        const monto = Number(r.monto_total) || 0;
+        const pctDiff = teorico > 0 ? Math.abs(monto - teorico) / teorico : 1;
+        let scoreMatch = 0;
+        if (teorico > 0) {
+          if (pctDiff <= 0.02) scoreMatch = 3; // match casi exacto
+          else if (pctDiff <= 0.05) scoreMatch = 2; // match cercano
+          else if (pctDiff <= 0.15) scoreMatch = 1; // match lejano
+        }
+        return { folio: r.nro_doc || "", monto, fecha: r.fecha_docto || "", scoreMatch, pctDiff };
+      })
+      .sort((a, b) => b.scoreMatch - a.scoreMatch || b.fecha.localeCompare(a.fecha));
+  }, [asignarModal, rcvPeriodo, recepciones, sugerencias.montoTeoricoBruto]);
+
+  // Auto-seleccionar al abrir el modal: proveedor inferido + folio con mejor score
+  useEffect(() => {
+    if (!asignarModal) return;
+    if (!asignarModal.proveedor && sugerencias.proveedorInferido) {
+      const match = proveedoresRcvPeriodo.find(p => normProv(p) === normProv(sugerencias.proveedorInferido));
+      if (match) setAsignarModal({ ...asignarModal, proveedor: match });
+    }
+  }, [asignarModal, proveedoresRcvPeriodo, sugerencias.proveedorInferido]);
+
+  useEffect(() => {
+    if (!asignarModal?.proveedor || asignarModal.folio) return;
+    const top = foliosDelProveedor[0];
+    if (top && top.scoreMatch >= 3) {
+      setAsignarModal(prev => prev ? { ...prev, folio: top.folio } : null);
+    }
+  }, [asignarModal?.proveedor, foliosDelProveedor, asignarModal?.folio, asignarModal]);
 
   const ejecutarAsignacion = async () => {
     if (!asignarModal || !asignarModal.proveedor || !asignarModal.folio || !asignarModal.recepcion.id) return;
@@ -653,36 +719,62 @@ export default function AdminConciliacionDocs() {
               <div className="mono" style={{ marginTop: 2 }}>
                 {asignarModal.recepcion.folio || "(sin folio)"} · {asignarModal.recepcion.proveedor || "(sin proveedor)"} · {fmtDate(asignarModal.recepcion.created_at)}
               </div>
+              {sugerencias.montoTeoricoNeto > 0 && (
+                <div style={{ marginTop: 6, fontSize: 10, color: "var(--txt3)" }}>
+                  💡 Monto teórico (sum qty × productos.costo): <strong style={{ color: "var(--cyan)" }}>{fmtMoney(sugerencias.montoTeoricoBruto)}</strong> bruto ({fmtMoney(sugerencias.montoTeoricoNeto)} neto)
+                  {sugerencias.proveedorInferido && (
+                    <span> · Proveedor inferido por SKUs: <strong style={{ color: "var(--cyan)" }}>{sugerencias.proveedorInferido}</strong></span>
+                  )}
+                </div>
+              )}
             </div>
 
             <div style={{ marginBottom: 12 }}>
-              <label style={{ fontSize: 11, color: "var(--txt2)", display: "block", marginBottom: 4, fontWeight: 600 }}>1. Proveedor (según RCV del período)</label>
+              <label style={{ fontSize: 11, color: "var(--txt2)", display: "block", marginBottom: 4, fontWeight: 600 }}>
+                1. Proveedor (según RCV del período)
+                {sugerencias.proveedorInferido && proveedoresRcvPeriodo.some(p => normProv(p) === normProv(sugerencias.proveedorInferido)) &&
+                  <span style={{ marginLeft: 6, fontSize: 10, color: "var(--cyan)" }}>· 💡 sugerido: {sugerencias.proveedorInferido}</span>}
+              </label>
               <select value={asignarModal.proveedor}
                 onChange={e => setAsignarModal({ ...asignarModal, proveedor: e.target.value, folio: "" })}
                 style={{ width: "100%", padding: "8px 12px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 13 }}>
                 <option value="">— elegir proveedor —</option>
-                {proveedoresRcvPeriodo.map(p => <option key={p} value={p}>{p}</option>)}
+                {proveedoresRanked.map(p => {
+                  const esInferido = normProv(p) === normProv(sugerencias.proveedorInferido);
+                  return <option key={p} value={p}>{esInferido ? "💡 " : ""}{p}</option>;
+                })}
               </select>
               <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 3 }}>
-                {proveedoresRcvPeriodo.length} proveedores con facturas en {periodoFiltro}
+                {proveedoresRanked.length} proveedores con facturas en {periodoFiltro}
               </div>
             </div>
 
             <div style={{ marginBottom: 14 }}>
-              <label style={{ fontSize: 11, color: "var(--txt2)", display: "block", marginBottom: 4, fontWeight: 600 }}>2. Folio de factura (del proveedor, sin recepción asignada)</label>
+              <label style={{ fontSize: 11, color: "var(--txt2)", display: "block", marginBottom: 4, fontWeight: 600 }}>
+                2. Folio de factura (del proveedor, sin recepción asignada)
+                {foliosDelProveedor[0]?.scoreMatch >= 3 && asignarModal.proveedor &&
+                  <span style={{ marginLeft: 6, fontSize: 10, color: "var(--green)" }}>· ✓ match exacto: {foliosDelProveedor[0].folio}</span>}
+              </label>
               <select value={asignarModal.folio} disabled={!asignarModal.proveedor}
                 onChange={e => setAsignarModal({ ...asignarModal, folio: e.target.value })}
                 style={{ width: "100%", padding: "8px 12px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 13, opacity: asignarModal.proveedor ? 1 : 0.5 }}>
                 <option value="">— elegir folio —</option>
-                {foliosDelProveedor.map(f => (
-                  <option key={f.folio} value={f.folio}>
-                    {f.folio} · {fmtDate(f.fecha)} · {fmtMoney(f.monto)}
-                  </option>
-                ))}
+                {foliosDelProveedor.map(f => {
+                  const marker = f.scoreMatch === 3 ? "✓" : f.scoreMatch === 2 ? "~" : f.scoreMatch === 1 ? "?" : "";
+                  const pct = f.scoreMatch > 0 ? ` (${(f.pctDiff * 100).toFixed(1)}% diff)` : "";
+                  return (
+                    <option key={f.folio} value={f.folio}>
+                      {marker ? marker + " " : ""}{f.folio} · {fmtDate(f.fecha)} · {fmtMoney(f.monto)}{pct}
+                    </option>
+                  );
+                })}
               </select>
               <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 3 }}>
                 {asignarModal.proveedor
-                  ? `${foliosDelProveedor.length} facturas disponibles (sin recepción asignada)`
+                  ? <>
+                      {foliosDelProveedor.length} facturas disponibles.
+                      {sugerencias.montoTeoricoBruto > 0 && <span> Match ranking por monto vs teórico ({fmtMoney(sugerencias.montoTeoricoBruto)}).</span>}
+                    </>
                   : "Elegí un proveedor primero"}
               </div>
             </div>
