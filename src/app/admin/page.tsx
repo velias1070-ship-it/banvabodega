@@ -6123,12 +6123,53 @@ function Inventario() {
               <div style={{fontSize:10,color:"var(--txt3)"}}>uds totales</div>
             </div>
           </div>
-          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10,alignItems:"center"}}>
             {prod?.cat && <span className="tag">{prod.cat}</span>}
             {prod?.prov && <span className="tag">{prod.prov}</span>}
-            {prod?.estadoSku==="agotar" && <span style={{padding:"2px 8px",borderRadius:4,fontSize:10,fontWeight:700,background:"var(--amberBg)",color:"var(--amber)",border:"1px solid var(--amberBd)"}}>🏁 AGOTAR</span>}
-            {prod?.estadoSku==="descontinuado" && <span style={{padding:"2px 8px",borderRadius:4,fontSize:10,fontWeight:700,background:"var(--redBg)",color:"var(--red)",border:"1px solid var(--redBd)"}}>✕ DESCONTINUADO</span>}
           </div>
+          {prod && (
+            <div style={{marginBottom:10,padding:10,background:"var(--bg3)",borderRadius:8,border:"1px solid var(--bg4)"}}>
+              <div style={{fontSize:10,color:"var(--txt3)",fontWeight:700,marginBottom:6}}>ESTADO SKU</div>
+              <div style={{display:"flex",gap:6}}>
+                {([["activo","✓ Activo","var(--green)"],["agotar","🏁 Agotar","var(--amber)"],["descontinuado","✕ Descontinuado","var(--red)"]] as const).map(([val,label,color])=>{
+                  const active = (prod.estadoSku||"activo") === val;
+                  return (
+                    <button key={val} type="button"
+                      onClick={async ()=>{
+                        const nuevo = val === "activo" ? null : val;
+                        if ((prod.estadoSku || null) === nuevo) return;
+                        const confirmMsg = val === "descontinuado"
+                          ? `Marcar ${sku} como DESCONTINUADO? Saldra del motor de inteligencia.`
+                          : val === "agotar"
+                          ? `Marcar ${sku} como AGOTAR? Se publicara toda unidad en bodega en Flex ignorando el buffer (2/4).`
+                          : null;
+                        if (confirmMsg && !confirm(confirmMsg)) return;
+                        s.products[sku] = { ...prod, estadoSku: nuevo };
+                        saveStore();
+                        const dbMod = await import("@/lib/db");
+                        dbMod.enqueueAndSync([sku]);
+                        const ventas = getVentasPorSkuOrigen(sku);
+                        if (ventas.length > 0) dbMod.enqueueAndSync(ventas.map(v=>v.skuVenta));
+                        refresh();
+                      }}
+                      style={{flex:1,padding:"8px 10px",borderRadius:6,fontSize:11,fontWeight:700,cursor:"pointer",
+                        background:active?color:"var(--bg2)",color:active?"#000":"var(--txt2)",
+                        border:`1px solid ${active?color:"var(--bg4)"}`}}>{label}</button>
+                  );
+                })}
+              </div>
+              {prod.estadoSku==="agotar" && (
+                <div style={{fontSize:10,color:"var(--amber)",marginTop:6,lineHeight:1.4}}>
+                  🏁 Sin buffer Flex — publicara toda unidad en bodega en ML.
+                </div>
+              )}
+              {prod.estadoSku==="descontinuado" && (
+                <div style={{fontSize:10,color:"var(--red)",marginTop:6,lineHeight:1.4}}>
+                  ✕ Fuera del motor de inteligencia. No se calcula reposicion ni alertas.
+                </div>
+              )}
+            </div>
+          )}
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8}}>
             <div style={{padding:10,background:"var(--bg3)",borderRadius:8}}>
               <div style={{fontSize:10,color:"var(--txt3)"}}>DISPONIBLE (BODEGA)</div>
