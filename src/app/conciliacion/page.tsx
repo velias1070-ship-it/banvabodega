@@ -124,6 +124,34 @@ const TIPO_DOC_ABREV: Record<number | string, string> = {
   52: "GDE", 56: "NDB", 61: "NOT", 71: "BHE",
 };
 
+// Header de columna ordenable. Click alterna asc/desc y un tercer click limpia.
+type SortDir = "asc" | "desc";
+function SortableHeader({ label, col, sortKey, sortDir, onSort, align, primary, style }: {
+  label: string;
+  col: string;
+  sortKey: string | null;
+  sortDir: SortDir;
+  onSort: (col: string) => void;
+  align?: "left" | "right";
+  primary?: boolean;
+  style?: React.CSSProperties;
+}) {
+  const active = sortKey === col;
+  const arrow = active ? (sortDir === "asc" ? "▲" : "▼") : "⇅";
+  return (
+    <th onClick={() => onSort(col)}
+      style={{
+        padding: "12px 14px", textAlign: align || "left", fontWeight: 600, fontSize: 12,
+        color: active ? "var(--cyan)" : primary ? "var(--cyan)" : "var(--txt3)",
+        cursor: "pointer", userSelect: "none", whiteSpace: "nowrap",
+        ...style,
+      }}>
+      {label}
+      <span style={{ marginLeft: 4, fontSize: 9, opacity: active ? 1 : 0.35 }}>{arrow}</span>
+    </th>
+  );
+}
+
 // Periodo actual (YYYYMM)
 function currentPeriodo(): string {
   const d = new Date();
@@ -410,6 +438,14 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const [showProveedores, setShowProveedores] = useState(false);
   const [editingNota, setEditingNota] = useState<string | null>(null);
   const [notaText, setNotaText] = useState("");
+  const [sortKey, setSortKey] = useState<string | null>(null);
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const handleSort = (col: string) => {
+    if (sortKey === col) {
+      if (sortDir === "desc") setSortDir("asc");
+      else { setSortKey(null); setSortDir("desc"); }
+    } else { setSortKey(col); setSortDir("desc"); }
+  };
   const [detalleConc, setDetalleConc] = useState<string | null>(null);
   const [movsBancoAll, setMovsBancoAll] = useState<DBMovimientoBanco[]>([]);
   const [editingProv, setEditingProv] = useState<string | null>(null);
@@ -675,8 +711,25 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
     });
   }
 
-  // Ordenar: por pagar y vencidas → vencimiento más urgente primero
-  if (concFilter === "por_pagar" || concFilter === "vencidas") {
+  // Ordenar: sortKey explícito del header tiene prioridad; sino, por_pagar/vencidas → venc
+  if (sortKey) {
+    filtered = [...filtered].sort((a, b) => {
+      let va: string | number = "", vb: string | number = "";
+      switch (sortKey) {
+        case "folio": va = a.nro_doc || ""; vb = b.nro_doc || ""; break;
+        case "razon": va = (a.razon_social || "").toLowerCase(); vb = (b.razon_social || "").toLowerCase(); break;
+        case "fecha": va = a.fecha_docto || ""; vb = b.fecha_docto || ""; break;
+        case "venc": {
+          const ra = getVencimiento(a); const rb = getVencimiento(b);
+          va = ra ? ra.diasRestantes : 99999; vb = rb ? rb.diasRestantes : 99999; break;
+        }
+        case "periodo": va = a.periodo || ""; vb = b.periodo || ""; break;
+        case "monto": va = a.monto_total || 0; vb = b.monto_total || 0; break;
+      }
+      const cmp = typeof va === "number" && typeof vb === "number" ? va - vb : String(va).localeCompare(String(vb));
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+  } else if (concFilter === "por_pagar" || concFilter === "vencidas") {
     filtered = [...filtered].sort((a, b) => {
       const va = getVencimiento(a);
       const vb = getVencimiento(b);
@@ -918,13 +971,13 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
               <thead>
                 <tr style={{ borderBottom: "2px solid var(--bg4)" }}>
-                  <th style={{ padding: "12px 14px", textAlign: "left", fontWeight: 600, fontSize: 12, color: "var(--cyan)" }}>Folio</th>
+                  <SortableHeader label="Folio" col="folio" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} primary />
                   <th style={{ padding: "12px 14px", textAlign: "left", fontWeight: 600, fontSize: 12, color: "var(--txt3)" }}>Clasificaci&oacute;n</th>
-                  <th style={{ padding: "12px 14px", textAlign: "left", fontWeight: 600, fontSize: 12, color: "var(--cyan)" }}>Raz&oacute;n Social</th>
-                  <th style={{ padding: "12px 14px", textAlign: "left", fontWeight: 600, fontSize: 12, color: "var(--txt3)" }}>Fecha Emisi&oacute;n</th>
-                  <th style={{ padding: "12px 14px", textAlign: "left", fontWeight: 600, fontSize: 12, color: "var(--cyan)" }}>Pago Est.</th>
-                  <th style={{ padding: "12px 14px", textAlign: "left", fontWeight: 600, fontSize: 12, color: "var(--txt3)" }}>Per&iacute;odo SII</th>
-                  <th style={{ padding: "12px 14px", textAlign: "right", fontWeight: 600, fontSize: 12, color: "var(--cyan)" }}>Monto Total</th>
+                  <SortableHeader label="Razón Social" col="razon" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} primary />
+                  <SortableHeader label="Fecha Emisión" col="fecha" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                  <SortableHeader label="Pago Est." col="venc" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} primary />
+                  <SortableHeader label="Período SII" col="periodo" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                  <SortableHeader label="Monto Total" col="monto" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} align="right" primary />
                   <th style={{ padding: "12px 14px", textAlign: "right", fontWeight: 600, fontSize: 12, color: "var(--txt3)" }}></th>
                 </tr>
               </thead>
@@ -1596,6 +1649,14 @@ function TabRcvVentas({ empresa, periodo }: { empresa: DBEmpresa; periodo: strin
   const [tipoFilter, setTipoFilter] = useState<string>("todos");
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
+  const [sortKey, setSortKey] = useState<string | null>(null);
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const handleSort = (col: string) => {
+    if (sortKey === col) {
+      if (sortDir === "desc") setSortDir("asc");
+      else { setSortKey(null); setSortDir("desc"); }
+    } else { setSortKey(col); setSortDir("desc"); }
+  };
 
   const load = useCallback(() => {
     if (!empresa.id) return;
@@ -1644,6 +1705,23 @@ function TabRcvVentas({ empresa, periodo }: { empresa: DBEmpresa; periodo: strin
     (v.folio || "").includes(filter) ||
     (v.nro || "").includes(filter)
   );
+
+  if (sortKey) {
+    filtered = [...filtered].sort((a, b) => {
+      let va: string | number = "", vb: string | number = "";
+      switch (sortKey) {
+        case "tipo": va = Number(a.tipo_doc) || 0; vb = Number(b.tipo_doc) || 0; break;
+        case "folio": va = a.folio || a.nro || ""; vb = b.folio || b.nro || ""; break;
+        case "razon": va = (a.razon_social || "").toLowerCase(); vb = (b.razon_social || "").toLowerCase(); break;
+        case "fecha": va = a.fecha_docto || ""; vb = b.fecha_docto || ""; break;
+        case "neto": va = a.monto_neto || 0; vb = b.monto_neto || 0; break;
+        case "iva": va = a.monto_iva || 0; vb = b.monto_iva || 0; break;
+        case "total": va = a.monto_total || 0; vb = b.monto_total || 0; break;
+      }
+      const cmp = typeof va === "number" && typeof vb === "number" ? va - vb : String(va).localeCompare(String(vb));
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+  }
 
   const totalNeto = filtered.reduce((s, v) => s + (v.monto_neto || 0), 0);
   const totalExento = filtered.reduce((s, v) => s + (v.monto_exento || 0), 0);
@@ -1724,8 +1802,13 @@ function TabRcvVentas({ empresa, periodo }: { empresa: DBEmpresa; periodo: strin
           <table className="tbl" style={{ fontSize: 11 }}>
             <thead>
               <tr>
-                <th>Tipo</th><th>Folio</th><th>Receptor</th><th>Fecha</th>
-                <th style={{ textAlign: "right" }}>Neto</th><th style={{ textAlign: "right" }}>IVA</th><th style={{ textAlign: "right" }}>Total</th>
+                <SortableHeader label="Tipo" col="tipo" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortableHeader label="Folio" col="folio" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortableHeader label="Receptor" col="razon" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortableHeader label="Fecha" col="fecha" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortableHeader label="Neto" col="neto" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} align="right" />
+                <SortableHeader label="IVA" col="iva" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} align="right" />
+                <SortableHeader label="Total" col="total" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} align="right" />
               </tr>
             </thead>
             <tbody>
@@ -1789,6 +1872,14 @@ function TabBanco({ empresa, periodo }: { empresa: DBEmpresa; periodo: string })
   const [page, setPage] = useState(0);
   const [syncingMP, setSyncingMP] = useState(false);
   const [syncMPMsg, setSyncMPMsg] = useState<string | null>(null);
+  const [sortKey, setSortKey] = useState<string | null>("fecha");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const handleSort = (col: string) => {
+    if (sortKey === col) {
+      if (sortDir === "desc") setSortDir("asc");
+      else { setSortKey(null); setSortDir("desc"); }
+    } else { setSortKey(col); setSortDir("desc"); }
+  };
 
   // Convertir periodo YYYYMM → rango de fechas para filtrar
   const periodoToRange = useCallback((p: string) => {
@@ -1892,7 +1983,7 @@ function TabBanco({ empresa, periodo }: { empresa: DBEmpresa; periodo: string })
   }, [data]);
 
   // Filtrado: por banco + tipo + descripcion + fecha + texto
-  const filtered = data.filter(m => {
+  let filtered = data.filter(m => {
     if (ocultarInternos && !isMovReal(m)) return false;
     if (bancoFilter !== "todos" && m.banco !== bancoFilter) return false;
     if (tipoFilter === "ingresos" && m.monto < 0) return false;
@@ -1913,6 +2004,21 @@ function TabBanco({ empresa, periodo }: { empresa: DBEmpresa; periodo: string })
     }
     return true;
   });
+
+  if (sortKey) {
+    filtered = [...filtered].sort((a, b) => {
+      let va: string | number = "", vb: string | number = "";
+      switch (sortKey) {
+        case "fecha": va = a.fecha || ""; vb = b.fecha || ""; break;
+        case "descripcion": va = (a.descripcion || "").toLowerCase(); vb = (b.descripcion || "").toLowerCase(); break;
+        case "banco": va = (a.banco || "").toLowerCase(); vb = (b.banco || "").toLowerCase(); break;
+        case "monto": va = a.monto; vb = b.monto; break;
+        case "saldo": va = a.saldo ?? -Infinity; vb = b.saldo ?? -Infinity; break;
+      }
+      const cmp = typeof va === "number" && typeof vb === "number" ? va - vb : String(va).localeCompare(String(vb));
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+  }
 
   // KPIs sobre TODOS los datos filtrados (no solo la página)
   const ingresos = filtered.filter(m => m.monto > 0).reduce((s, m) => s + m.monto, 0);
@@ -2073,8 +2179,12 @@ function TabBanco({ empresa, periodo }: { empresa: DBEmpresa; periodo: string })
             <table className="tbl" style={{ fontSize: 11 }}>
               <thead>
                 <tr>
-                  <th>Fecha</th><th>Descripción</th><th>Banco</th>
-                  <th style={{ textAlign: "right" }}>Monto</th><th style={{ textAlign: "right" }}>Saldo</th><th>Ref.</th>
+                  <SortableHeader label="Fecha" col="fecha" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                  <SortableHeader label="Descripción" col="descripcion" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                  <SortableHeader label="Banco" col="banco" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                  <SortableHeader label="Monto" col="monto" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} align="right" />
+                  <SortableHeader label="Saldo" col="saldo" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} align="right" />
+                  <th>Ref.</th>
                 </tr>
               </thead>
               <tbody>
@@ -2144,6 +2254,14 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const [detalleMovs, setDetalleMovs] = useState<{ conc: DBConciliacion; mov: DBMovimientoBanco | null }[]>([]);
   const [detalleLoading, setDetalleLoading] = useState(false);
   const [detallePos, setDetallePos] = useState({ top: 0, left: 0 });
+  const [sortKey, setSortKey] = useState<string | null>(null);
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const handleSort = (col: string) => {
+    if (sortKey === col) {
+      if (sortDir === "desc") setSortDir("asc");
+      else { setSortKey(null); setSortDir("desc"); }
+    } else { setSortKey(col); setSortDir("desc"); }
+  };
 
   const openDetalle = async (compraId: string, e: React.MouseEvent) => {
     if (detalleConc === compraId) { setDetalleConc(null); return; }
@@ -2233,12 +2351,29 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const filteredByConc = concFilter === "pendiente" ? data.filter(c => !isConciliada(c))
     : concFilter === "conciliada" ? data.filter(c => isConciliada(c))
     : data;
-  const filtered = searchBhe
+  let filtered = searchBhe
     ? filteredByConc.filter(c => {
         const q = searchBhe.toLowerCase();
         return (c.razon_social || "").toLowerCase().includes(q) || (c.rut_proveedor || "").toLowerCase().includes(q) || String(c.nro_doc || "").includes(q);
       })
     : filteredByConc;
+
+  if (sortKey) {
+    filtered = [...filtered].sort((a, b) => {
+      let va: string | number = "", vb: string | number = "";
+      switch (sortKey) {
+        case "nro": va = a.nro_doc || ""; vb = b.nro_doc || ""; break;
+        case "fecha": va = a.fecha_docto || ""; vb = b.fecha_docto || ""; break;
+        case "rut": va = a.rut_proveedor || ""; vb = b.rut_proveedor || ""; break;
+        case "razon": va = (a.razon_social || "").toLowerCase(); vb = (b.razon_social || "").toLowerCase(); break;
+        case "bruto": va = a.monto_neto || 0; vb = b.monto_neto || 0; break;
+        case "ret": va = a.monto_iva || 0; vb = b.monto_iva || 0; break;
+        case "liq": va = a.monto_total || 0; vb = b.monto_total || 0; break;
+      }
+      const cmp = typeof va === "number" && typeof vb === "number" ? va - vb : String(va).localeCompare(String(vb));
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+  }
 
   const total = filtered.reduce((s, c) => s + (c.monto_neto || 0), 0);
   const totalRet = filtered.reduce((s, c) => s + (c.monto_iva || 0), 0);
@@ -2357,10 +2492,13 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
           <table className="tbl" style={{ fontSize: 11 }}>
             <thead>
               <tr>
-                <th>N°</th><th>Fecha</th><th>RUT Emisor</th><th>Nombre</th>
-                <th style={{ textAlign: "right" }}>Bruto</th>
-                <th style={{ textAlign: "right" }}>Retención</th>
-                <th style={{ textAlign: "right" }}>Líquido</th>
+                <SortableHeader label="N°" col="nro" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortableHeader label="Fecha" col="fecha" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortableHeader label="RUT Emisor" col="rut" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortableHeader label="Nombre" col="razon" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortableHeader label="Bruto" col="bruto" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} align="right" />
+                <SortableHeader label="Retención" col="ret" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} align="right" />
+                <SortableHeader label="Líquido" col="liq" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} align="right" />
                 <th>Pago</th>
               </tr>
             </thead>
