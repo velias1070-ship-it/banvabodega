@@ -1227,6 +1227,9 @@ export async function congelarCostoDiscrepancia(
   // 5. Ejecutar: sincronizar movimientos+WAC
   await sincronizarCostoMovimientosRecepcion(skuUp, disc.recepcion_id, aplicar);
 
+  // 5b. Alimentar proveedor_catalogo con el costo congelado
+  await alimentarCatalogoProveedor(discrepanciaId, skuUp, aplicar);
+
   // 6. Update ventas_ml_cache
   const snapshotAt = new Date().toISOString();
   for (const u of updatesParaEjecutar) {
@@ -3219,6 +3222,35 @@ export async function recalcularDiscrepancias(recepcionId: string, lineas: db.DB
   return detectarDiscrepancias(recepcionId, lineas);
 }
 
+/**
+ * Alimenta proveedor_catalogo con el costo resuelto de una discrepancia.
+ * Lee el proveedor de la recepción asociada y hace upsert de (proveedor, sku_origen, precio_neto).
+ * Así el próximo OC para ese SKU usa el precio correcto via fuente = "catalogo".
+ * No-op si no hay proveedor o si nuevoCosto <= 0.
+ */
+async function alimentarCatalogoProveedor(discId: string, sku: string, nuevoCosto: number): Promise<void> {
+  if (!nuevoCosto || nuevoCosto <= 0) return;
+  const sb = getSupabase();
+  if (!sb) return;
+  try {
+    const { data: disc } = await sb.from("discrepancias_costo")
+      .select("recepcion_id").eq("id", discId).single();
+    const recepcionId = (disc as { recepcion_id: string } | null)?.recepcion_id;
+    if (!recepcionId) return;
+    const { data: rec } = await sb.from("recepciones")
+      .select("proveedor").eq("id", recepcionId).single();
+    const proveedor = (rec as { proveedor: string } | null)?.proveedor;
+    if (!proveedor) return;
+    const { error } = await sb.from("proveedor_catalogo").upsert({
+      proveedor, sku_origen: sku, precio_neto: nuevoCosto,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "proveedor,sku_origen" });
+    if (error) console.error(`[alimentarCatalogoProveedor] upsert ${proveedor}/${sku}: ${error.message}`);
+  } catch (e) {
+    console.error("[alimentarCatalogoProveedor] error:", e);
+  }
+}
+
 export async function aprobarNuevoCosto(discId: string, sku: string, nuevoCosto: number): Promise<{ dbOk: boolean; sheetResult?: Record<string, unknown> }> {
   await db.updateDiscrepancia(discId, {
     estado: "APROBADO", resuelto_por: "admin", resuelto_at: new Date().toISOString(),
@@ -3227,6 +3259,8 @@ export async function aprobarNuevoCosto(discId: string, sku: string, nuevoCosto:
   const costoAnterior = _cache.products[sku]?.cost || 0;
   await db.updateProductoCosto(sku, nuevoCosto);
   if (_cache.products[sku]) _cache.products[sku].cost = nuevoCosto;
+  // Alimentar proveedor_catalogo para que futuras OCs usen este precio
+  await alimentarCatalogoProveedor(discId, sku, nuevoCosto);
   // Trigger: costo aprobado
   import("./agents-triggers").then(m => m.dispararTrigger("costo_aprobado", { sku, costo_anterior: costoAnterior, costo_nuevo: nuevoCosto })).catch(() => {});
 
@@ -3308,6 +3342,9 @@ export async function marcarPendienteNC(
     .update({ costo: costoEsperado, costo_promedio: costoEsperado, updated_at: new Date().toISOString() })
     .eq("sku", sku);
   if (_cache.products[sku]) _cache.products[sku].cost = costoEsperado;
+
+  // 3b. Alimentar proveedor_catalogo con el costo esperado post-NC
+  await alimentarCatalogoProveedor(discId, sku, costoEsperado);
 
   // 4. Audit log
   await sb.from("audit_log").insert({
