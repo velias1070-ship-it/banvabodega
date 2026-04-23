@@ -549,7 +549,8 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
       const items = conciliacionItems.filter(i => i.conciliacion_id === conc.id && i.documento_tipo === "rcv_compra");
       if (items.length < 2) continue;
       // La factura "anulada" es la de tipo_doc != 61; las demás son NCs
-      const itemDocs = items.map(i => data.find(c => c.id === i.documento_id)).filter(Boolean) as DBRcvCompra[];
+      // Usa comprasGlobal para detectar anulaciones cross-periodo (NC en un mes, factura en otro)
+      const itemDocs = items.map(i => comprasGlobal.find(c => c.id === i.documento_id)).filter(Boolean) as DBRcvCompra[];
       const factura = itemDocs.find(d => d.tipo_doc !== 61);
       const ncs = itemDocs.filter(d => d.tipo_doc === 61);
       if (factura) {
@@ -559,7 +560,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
       }
     }
     return map;
-  }, [conciliaciones, conciliacionItems, data]);
+  }, [conciliaciones, conciliacionItems, comprasGlobal]);
 
   // Mapa de NCs vinculadas a cada factura (via factura_ref_id) y viceversa
   // Usa comprasGlobal (todas las compras de la empresa) para resolver referencias
@@ -1134,7 +1135,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
       {pagoItem && (() => {
         const montoYaAplicado = montoAplicadoPorCompra.get(pagoItem.id!) || 0;
         const totalFacBruto = (pagoItem.monto_total || 0) - montoYaAplicado;
-        const ncsDisponibles = data.filter(c =>
+        const ncsDisponibles = comprasGlobal.filter(c =>
           c.tipo_doc === 61 &&
           c.rut_proveedor === pagoItem.rut_proveedor &&
           !usedDocIds.has(c.id!)
