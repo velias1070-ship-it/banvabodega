@@ -215,6 +215,17 @@ async function runRefresh(force = false) {
     const costoMap = new Map<string, number>();
     for (const p of prodRows || []) costoMap.set(p.sku, p.costo_promedio || 0);
 
+    // 5b. Proveedor + stock del proveedor (detectar quiebre real vs falta de OC nuestra)
+    const { data: provRows } = await sb.from("proveedor_catalogo")
+      .select("sku_origen, proveedor, stock_disponible");
+    const provMap = new Map<string, { proveedor: string; stock: number }>();
+    for (const p of provRows || []) {
+      provMap.set(p.sku_origen, {
+        proveedor: (p.proveedor as string) || "—",
+        stock: (p.stock_disponible as number) || 0,
+      });
+    }
+
     // 6. Traer todas las ordenes de los ultimos 60 dias paginadas — granularidad item_id
     // Agregaremos vel_7d/30d/60d y precio_promedio_30d por sku_venta (-> item_id)
     const now = new Date();
@@ -271,6 +282,44 @@ async function runRefresh(force = false) {
     };
     for (const s of snapRows || []) {
       snapBy[s.periodo as string]?.set(s.item_id as string, s);
+    }
+
+    // 7b. Ads REAL desde ml_ads_daily_cache (ultimos 30d). Fuente fresh vs
+    // ml_snapshot_mensual que se actualiza solo dias 1-5 (cron a arreglar).
+    const adsPorItem = new Map<string, { cost30: number; uds30: number; revenue30: number; diasActivos: number; ultActivo: number }>();
+    const desdeAds30 = new Date(now.getTime() - 30 * 86400000).toISOString().slice(0, 10);
+    const ADS_PAGE = 1000;
+    let adsOffset = 0;
+    while (true) {
+      const { data: adsRows, error: adsErr } = await sb
+        .from("ml_ads_daily_cache")
+        .select("item_id, date, cost_neto, direct_units, indirect_units, direct_amount, indirect_amount")
+        .gte("date", desdeAds30)
+        .range(adsOffset, adsOffset + ADS_PAGE - 1);
+      if (adsErr) {
+        console.error("[semaforo] ads query error:", adsErr.message);
+        break;
+      }
+      if (!adsRows || adsRows.length === 0) break;
+      for (const a of adsRows) {
+        const it = a.item_id as string;
+        if (!it) continue;
+        const cost = (a.cost_neto as number) || 0;
+        const uds = ((a.direct_units as number) || 0) + ((a.indirect_units as number) || 0);
+        const rev = ((a.direct_amount as number) || 0) + ((a.indirect_amount as number) || 0);
+        const dateTs = new Date(a.date as string).getTime();
+        const agg = adsPorItem.get(it) || { cost30: 0, uds30: 0, revenue30: 0, diasActivos: 0, ultActivo: 0 };
+        agg.cost30 += cost;
+        agg.uds30 += uds;
+        agg.revenue30 += rev;
+        if (cost > 0) {
+          agg.diasActivos += 1;
+          if (dateTs > agg.ultActivo) agg.ultActivo = dateTs;
+        }
+        adsPorItem.set(it, agg);
+      }
+      if (adsRows.length < ADS_PAGE) break;
+      adsOffset += ADS_PAGE;
     }
 
     const semana = getMonday(now);
@@ -349,9 +398,15 @@ async function runRefresh(force = false) {
       const snapPrev = snapBy[periodoAnterior]?.get(itemId);
       const visitas30 = (snapCur?.visitas as number) || (snapPrev?.visitas as number) || 0;
       const cvr30 = (snapCur?.cvr as number) || (snapPrev?.cvr as number) || 0;
-      const adsActivo = (snapCur?.ads_activo as boolean) || false;
-      const adsCost = (snapCur?.ads_cost as number) || 0;
-      const adsRoas = (snapCur?.ads_roas as number) || 0;
+      // Ads desde ml_ads_daily_cache (fresh). ads_activo = gasto en ultimos 7d.
+      const adsData = adsPorItem.get(itemId);
+      const adsCost = adsData?.cost30 || 0;
+      const hace7d = now.getTime() - 7 * 86400000;
+      const adsActivo = adsData ? adsData.ultActivo >= hace7d : false;
+      // ROAS = revenue ads / cost ads
+      const adsRoas = adsData && adsData.cost30 > 0
+        ? Math.round((adsData.revenue30 / adsData.cost30) * 100) / 100
+        : 0;
       const qs = (snapCur?.quality_score as number) ?? null;
 
       rows.push({
@@ -410,6 +465,12 @@ async function runRefresh(force = false) {
         quality_score: qs,
         status_ml: (m.status_ml as string) || null,
         cantidad_publicaciones_ml: mlCountsPorOrigen.get(skuOrigen) || 1,
+        // Proveedor (del proveedor_catalogo)
+        proveedor: provMap.get(skuOrigen)?.proveedor ?? null,
+        stock_proveedor: provMap.get(skuOrigen)?.stock ?? null,
+        es_quiebre_proveedor: provMap.get(skuOrigen)
+          ? provMap.get(skuOrigen)!.stock === 0
+          : false,
         semana_calculo: semana,
       });
     }

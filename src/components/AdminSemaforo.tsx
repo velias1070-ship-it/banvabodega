@@ -66,6 +66,9 @@ interface SemaforoRow {
   quality_score: number | null;
   status_ml: string | null;
   cantidad_publicaciones_ml: number;
+  proveedor: string | null;
+  stock_proveedor: number | null;
+  es_quiebre_proveedor: boolean;
   semana_calculo: string;
   ya_revisado?: boolean;
   persistente?: boolean;
@@ -445,6 +448,12 @@ export default function AdminSemaforo() {
                             )}
                             {row.ads_activo && (
                               <span title={`Ads activos ${fmt(row.ads_cost_30d)}/30d`} style={{ marginLeft: 4, fontSize: 9, padding: "1px 4px", borderRadius: 3, background: "var(--green)20", color: "var(--green)", fontWeight: 700 }}>📣</span>
+                            )}
+                            {row.es_quiebre_proveedor && (
+                              <span title={`Proveedor ${row.proveedor || ""} AGOTADO — no se puede reponer`} style={{ marginLeft: 4, fontSize: 9, padding: "1px 4px", borderRadius: 3, background: "var(--red)20", color: "var(--red)", fontWeight: 700 }}>🚫 prov</span>
+                            )}
+                            {!row.es_quiebre_proveedor && (row.stock_proveedor ?? 0) > 0 && row.cubeta !== "normal" && row.cubeta !== "muerto" && row.cubeta !== "estancado" && row.cubeta !== "holdout" && (
+                              <span title={`${row.proveedor}: ${row.stock_proveedor} uds disponibles — pedir OC`} style={{ marginLeft: 4, fontSize: 9, padding: "1px 4px", borderRadius: 3, background: "var(--green)20", color: "var(--green)", fontWeight: 700 }}>✓ prov {row.stock_proveedor}</span>
                             )}
                             {row.persistente && (
                               <span style={{ marginLeft: 4, fontSize: 9, padding: "1px 4px", borderRadius: 3, background: "var(--red)20", color: "var(--red)", fontWeight: 700 }}>persistente</span>
