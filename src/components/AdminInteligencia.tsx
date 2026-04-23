@@ -912,6 +912,10 @@ export default function AdminInteligencia() {
     }> = [];
 
     for (const r of ventaRows) {
+      // Si el usuario ya forzo el SKU (tiene override en envioEdits), no
+      // mostrarlo como excluido — ya esta incluido en la tabla principal.
+      if (envioEdits.has(r.sku_venta)) continue;
+
       const skuOrigenUp = (r.sku_origen || r.sku_venta || "").toUpperCase();
       const intelOrigen = rows.find(o => o.sku_origen === skuOrigenUp || o.sku_origen === r.sku_origen);
       const ip = intelOrigen?.inner_pack || 1;
@@ -987,7 +991,7 @@ export default function AdminInteligencia() {
     });
 
     return excluidos;
-  }, [vistaEnvio, ventaRows, rows]);
+  }, [vistaEnvio, ventaRows, rows, envioEdits]);
 
   // Initialize selection when envioItems changes
   useEffect(() => {
