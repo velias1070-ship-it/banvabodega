@@ -45,7 +45,77 @@ Las migraciones están en archivos `supabase-v*.sql` en la raíz. Se ejecutan ma
 - `recepcion_lineas` tiene `bloqueado_por` / `bloqueado_hasta` (concurrency locks)
 - RPCs: `bloquear_linea(p_linea_id, p_operario, p_minutos)` y `desbloquear_linea(p_linea_id)` con `SELECT FOR UPDATE`
 
-## Proveedor: dos tablas, usos distintos
+## Proveedor: esquema canónico (v72+)
+
+Plan de migración gradual hacia FK `proveedor_id`. El estado hoy es **transicional**: coexisten `proveedor` (text) y `proveedor_id` (uuid FK nullable) en 5 tablas (`recepciones`, `ordenes_compra`, `productos`, `proveedor_catalogo`, `rcv_compras`).
+
+### Fuente de verdad
+
+Tabla `proveedores`:
+- `id uuid PK`
+- `nombre_canonico text` ← nombre que se muestra en UI (fuente de verdad)
+- `nombre text` ← legacy, mantener sincronizado con nombre_canonico
+- `rut text` con UNIQUE index parcial (ignora NULL) ← match canónico, viene del DTE
+- `razon_social text` ← razón social completa según SII
+- `aliases text[]` ← aliases aprendidos automáticamente
+
+### Cómo resolver un proveedor (desde cualquier flujo)
+
+Llamar `POST /api/proveedores/resolve` con `{ rut?, razon_social?, nombre? }`:
+1. Match por RUT (prioridad — es único e invariable entre apps del SII).
+2. Match por alias (razón social vista antes).
+3. Match por `nombre_canonico` / `nombre` case-insensitive (normaliza sufijos SA/SPA/LTDA).
+4. Si nada matchea → crea el proveedor y aprende el alias.
+
+Devuelve `{ id, nombre_canonico, created }`. Idempotente. Race-safe (UNIQUE en rut).
+
+### Regla para escrituras nuevas
+
+Cuando insertás en `recepciones`, `ordenes_compra`, `productos`, `proveedor_catalogo`, `rcv_compras`:
+
+1. **Llamar resolve ANTES** del insert (si venís de un flujo externo como App Etiquetas o SII sync).
+2. **Escribir AMBOS**: `proveedor_id` (FK) + `proveedor` (nombre_canonico legible como cache).
+3. Nunca escribir solo el string sin el FK.
+
+Para apps externas que no pueden/deben llamar el endpoint: insertan solo el string → el cron/backfill completa `proveedor_id` después (ver siguiente sección).
+
+### Backfill histórico
+
+`POST /api/proveedores/backfill?dry_run=1` recorre las 5 tablas, por cada fila con `proveedor_id=NULL` llama resolve y escribe el FK.
+
+- Idempotente (solo toca NULLs).
+- Usa `proveedor` (o `rut_proveedor` en rcv_compras) como input del resolve.
+- Dry-run primero, ver estadísticas, después correr sin dry_run.
+
+### Reglas para agentes
+
+- **Preferir `proveedor_id`** para joins/filtros. El FK es la fuente de verdad.
+- **`proveedor` (text) queda como cache legible** — no borrar, pero no confiar en él para lógica crítica.
+- **Nunca comparar strings** de proveedor directamente. Si tenés dos rows y querés saber si son el mismo proveedor → comparar `proveedor_id`. Si todavía NULL, llamar resolve.
+- **Apps externas (App Etiquetas)** deben migrar a llamar el endpoint de resolve antes de insertar. Mientras tanto, el backfill cierra el gap periódicamente.
+
+### Distinción `productos.proveedor` vs `proveedor_catalogo`
+
+Dos conceptos distintos (ambos con FK a proveedores(id) vía `proveedor_id`):
+
+- **`productos.proveedor_id`** (1:1): el proveedor **habitual/principal** del SKU. Responde "¿a quién le compro normalmente este producto?".
+- **`proveedor_catalogo(proveedor_id, sku_origen)`** (N:N, unique): **lista de precios pactados**. Permite el mismo SKU con múltiples proveedores, cada uno con su `precio_neto`.
+
+### Cuándo usar cuál (matriz de decisión)
+
+| Necesito… | Uso |
+|---|---|
+| "¿De quién es este SKU?" (filtro UI, reporte simple) | `productos.proveedor_id` |
+| "Al generar OC a proveedor X, ¿qué precio?" | `proveedor_catalogo` WHERE proveedor_id=X |
+| "¿Qué proveedores venden este SKU y a cuánto?" | `proveedor_catalogo` WHERE sku_origen=X |
+| "NC esperada del proveedor por discrepancia" | `proveedor_catalogo` (precio pactado), fallback WAC |
+| "Inferir proveedor desde SKUs de una recepción" | Score `proveedor_catalogo` por cuántos SKUs matchean, fallback `productos.proveedor_id` |
+
+Dos tablas, dos roles distintos. No borrar una por la otra.
+
+---
+
+## Proveedor: dos tablas, usos distintos (legacy — v71 y anteriores)
 
 Dos fuentes de "proveedor de un SKU" que NO son redundantes. Confundirlas produce inferencias y OCs incorrectas.
 
