@@ -2184,10 +2184,11 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
       const skuVenta = (r.sku_venta || "").trim();
       if (!skuOrigen || !skuVenta) continue;
       const nombre = r.titulo || skuOrigen;
+      // Solo auto-crear productos con sku=sku_origen (fisico). Crear tambien con
+      // sku=sku_venta cuando son distintos duplica el producto en inventario:
+      // admin puede hacer ajustes manuales con el sku_venta y terminar con stock
+      // fantasma (caso LA-BIB-29, 7 biblias y packs X1/X2 el 2026-04-17).
       if (!productosACrear.has(skuOrigen)) productosACrear.set(skuOrigen, { sku: skuOrigen, nombre });
-      if (skuVenta !== skuOrigen && !productosACrear.has(skuVenta)) {
-        productosACrear.set(skuVenta, { sku: skuVenta, nombre });
-      }
       if (skuVenta === skuOrigen) composicionesACrear.push({ sku_venta: skuVenta, sku_origen: skuOrigen });
     }
 
