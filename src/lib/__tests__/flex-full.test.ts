@@ -4,7 +4,7 @@ import { calcularEstadoFlexFull, type FlexFullContext } from "../flex-full";
 // Función canon de partición Full/Flex. Política: todo SKU activo vive en
 // Flex si stock_bodega > buffer_ml (sin flag de opt-in). Tests verifican:
 // - partición correcta para_flex/para_full según buffer
-// - publicar_flex respeta inner_pack (+ gap_fantasma)
+// - publicar_flex respeta unidades_pack_venta (composicion_venta.unidades) (+ gap_fantasma)
 // - mandar_full limitado por para_full, no stock_bodega completo
 
 function ctx(overrides: Partial<FlexFullContext> = {}): FlexFullContext {
@@ -17,7 +17,7 @@ function ctx(overrides: Partial<FlexFullContext> = {}): FlexFullContext {
     pct_full: 0.8,
     target_dias_full: 28,
     buffer_ml: 2,
-    inner_pack: 1,
+    unidades_pack_venta: 1,
     abc: "B",
     ...overrides,
   };
@@ -65,18 +65,18 @@ describe("calcularEstadoFlexFull — partición Full/Flex", () => {
     expect(s.flex_activo).toBe(true);
   });
 
-  it("inner_pack=3: stock_bodega=5 buffer=2 → para_flex=3 publica=1 gap=0", () => {
+  it("unidades_pack_venta=3: stock_bodega=5 buffer=2 → para_flex=3 publica=1 gap=0", () => {
     const s = calcularEstadoFlexFull(ctx({
-      stock_bodega: 5, inner_pack: 3,
+      stock_bodega: 5, unidades_pack_venta: 3,
     }));
     expect(s.para_flex).toBe(3);
     expect(s.publicar_flex).toBe(1);
     expect(s.gap_fantasma).toBe(0);
   });
 
-  it("inner_pack=2: stock_bodega=5 buffer=2 → para_flex=3 publica=1 gap=1", () => {
+  it("unidades_pack_venta=2: stock_bodega=5 buffer=2 → para_flex=3 publica=1 gap=1", () => {
     const s = calcularEstadoFlexFull(ctx({
-      stock_bodega: 5, inner_pack: 2,
+      stock_bodega: 5, unidades_pack_venta: 2,
     }));
     expect(s.para_flex).toBe(3);
     expect(s.publicar_flex).toBe(1);
@@ -148,7 +148,7 @@ describe("calcularEstadoFlexFull — testigos reales", () => {
       pct_full: 0.8,
       target_dias_full: 28,
       buffer_ml: 2,
-      inner_pack: 1,
+      unidades_pack_venta: 1,
       abc: "B",
     });
     expect(s.para_flex).toBe(0);
@@ -168,7 +168,7 @@ describe("calcularEstadoFlexFull — testigos reales", () => {
       pct_full: 0.8,
       target_dias_full: 42,
       buffer_ml: 2,
-      inner_pack: 1,
+      unidades_pack_venta: 1,
       abc: "A",
     });
     expect(s.para_flex).toBe(12);

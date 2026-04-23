@@ -31,7 +31,14 @@ export interface FlexFullContext {
   pct_full: number; // 0..1 — fracción asignada a Full
   target_dias_full: number; // por ABC: A=42, B=28, C=14
   buffer_ml: number; // 2 si no compartido, 4 si sku_origen compartido
-  inner_pack: number; // 1 default — unidades que ML espera por "unidad publicable"
+  /**
+   * Uds fisicas por pack de venta ML. Viene de composicion_venta.unidades
+   * (cuantas uds fisicas forman "1 pack" que se publica en ML). Default 1.
+   *
+   * NO confundir con productos.inner_pack (uds por bulto del proveedor,
+   * usado para redondeo de OCs de compra, no para venta).
+   */
+  unidades_pack_venta: number;
   abc: "A" | "B" | "C"; // reservado para políticas futuras
 }
 
@@ -50,10 +57,11 @@ export interface FlexFullState {
 export function calcularEstadoFlexFull(ctx: FlexFullContext): FlexFullState {
   const para_flex = Math.max(0, ctx.stock_bodega - ctx.buffer_ml);
   const para_full = ctx.stock_bodega - para_flex;
-  const publicar_flex = ctx.inner_pack > 0
-    ? Math.floor(para_flex / ctx.inner_pack)
-    : 0;
-  const gap_fantasma = para_flex - (publicar_flex * Math.max(1, ctx.inner_pack));
+  // uds_pack_venta es cuantas uds fisicas forman 1 pack publicable en ML.
+  // NO es el bulto del proveedor (productos.inner_pack).
+  const udsPackVenta = ctx.unidades_pack_venta > 0 ? ctx.unidades_pack_venta : 1;
+  const publicar_flex = Math.floor(para_flex / udsPackVenta);
+  const gap_fantasma = para_flex - (publicar_flex * udsPackVenta);
 
   const targetFullUds = ctx.vel_ponderada * ctx.pct_full * ctx.target_dias_full / 7;
   const deficit_full = targetFullUds - ctx.stock_full - ctx.stock_en_transito;

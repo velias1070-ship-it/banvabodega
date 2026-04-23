@@ -905,7 +905,13 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     }
     const costoBruto = costoNeto > 0 ? Math.round(costoNeto * 1.19) : 0;
     const leadTimeDias = prod?.lead_time_dias || 7;
+    // inner_pack = uds por bulto del PROVEEDOR (para redondeo de OC al proveedor).
+    // NO se usa para decisiones de venta ML (eso es composicion_venta.unidades).
     const innerPack = provCat?.inner_pack || prod?.inner_pack || 1;
+    // unidades_pack_venta = uds fisicas que forman 1 pack de venta ML.
+    // Viene de composicion_venta (el componente principal, no alternativos).
+    const ventasDelOrigen = ventasPorOrigen.get(skuOrigen.toUpperCase()) || [];
+    const udsPackVenta = ventasDelOrigen[0]?.unidades ?? 1;
     // null = desconocido (nunca importado) → optimista por default.
     // 0 = explícitamente agotado por el proveedor (dispara alertas).
     // >0 = disponible.
@@ -1796,7 +1802,11 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
   for (const r of rows) {
     const prod = prodMap.get(r.sku_origen);
     const provCatR = proveedorCatalogo?.get(r.sku_origen);
+    // inner_pack = bulto del proveedor (compra). Distinto a pack de venta ML.
     const innerPack = provCatR?.inner_pack || prod?.inner_pack || 1;
+    // uds por pack de venta ML (viene de composicion_venta.unidades).
+    const ventasR = ventasPorOrigen.get(r.sku_origen.toUpperCase()) || [];
+    const udsPackVentaR = ventasR[0]?.unidades ?? 1;
     const velCalcR = r.multiplicador_evento > 1 ? r.vel_ajustada_evento : r.vel_ponderada;
     const enQP = esQuiebreProlongadoProtegido(r);
     const enQP_flex = esQuiebreFlexProlongadoProtegido(r);
@@ -1829,7 +1839,7 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       pct_full: r.pct_full,
       target_dias_full: r.target_dias_full,
       buffer_ml: bufferMl,
-      inner_pack: innerPack,
+      unidades_pack_venta: udsPackVentaR,
       abc: abcCanon,
     });
     r.mandar_full = flexState.mandar_full;
