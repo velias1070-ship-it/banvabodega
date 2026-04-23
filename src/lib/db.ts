@@ -3065,16 +3065,24 @@ export async function fetchRecepcionesDeOC(ordenCompraId: string): Promise<DBRec
   return (data || []) as DBRecepcion[];
 }
 
-/** Fetch recepciones recientes de un proveedor sin OC vinculada */
+/** Fetch recepciones recientes de un proveedor sin OC vinculada.
+ * Match de proveedor normalizado (case-insensitive, ignora sufijos SA/SPA/LTDA/puntuación).
+ * Robusto a variaciones de nombre entre OC ("Idetex") y recepción via App Etiquetas ("IDETEX S.A.").
+ */
 export async function fetchRecepcionesSinOC(proveedor: string): Promise<DBRecepcion[]> {
   const sb = getSupabase(); if (!sb) return [];
   const { data } = await sb.from("recepciones").select("*")
-    .eq("proveedor", proveedor)
     .is("orden_compra_id", null)
     .in("estado", ["CREADA", "EN_PROCESO", "COMPLETADA", "CERRADA"])
     .order("created_at", { ascending: false })
-    .limit(20);
-  return (data || []) as DBRecepcion[];
+    .limit(50);
+  const norm = (s: string) => (s || "").toUpperCase().trim()
+    .replace(/\s+(S\.?A\.?|SPA|LTDA\.?|LIMITADA|SRL|EIRL)\.?$/i, "")
+    .replace(/[.,]/g, "").replace(/\s+/g, " ").trim();
+  const target = norm(proveedor);
+  return ((data || []) as DBRecepcion[])
+    .filter(r => norm(r.proveedor || "") === target)
+    .slice(0, 20);
 }
 
 /** Insertar log de acción admin */
