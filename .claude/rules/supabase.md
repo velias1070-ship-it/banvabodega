@@ -45,6 +45,41 @@ Las migraciones están en archivos `supabase-v*.sql` en la raíz. Se ejecutan ma
 - `recepcion_lineas` tiene `bloqueado_por` / `bloqueado_hasta` (concurrency locks)
 - RPCs: `bloquear_linea(p_linea_id, p_operario, p_minutos)` y `desbloquear_linea(p_linea_id)` con `SELECT FOR UPDATE`
 
+## Proveedor: dos tablas, usos distintos
+
+Dos fuentes de "proveedor de un SKU" que NO son redundantes. Confundirlas produce inferencias y OCs incorrectas.
+
+### `productos.proveedor` (campo escalar 1:1)
+
+- Tipo: `text`, un proveedor por SKU.
+- Rol: **el proveedor habitual/principal** de ese producto ("¿a quién le compro normalmente?").
+- Se completa al crear el SKU (desde Sheet, App Etiquetas, o manual). Puede quedar en `"Otro"` o `"Desconocido"` si no se sabe.
+- Es el único campo de proveedor que leen: reportes simples, filtros de inventario, el campo `proveedor` mostrado en productos.
+
+### `proveedor_catalogo` (tabla relacional N:N)
+
+- Unique: `(proveedor, sku_origen)`. Permite el mismo SKU con **múltiples proveedores**, cada uno con su `precio_neto` pactado.
+- Rol: **lista de precios acordados por proveedor** ("¿qué proveedores me venden esto y a cuánto cada uno?").
+- Se alimenta desde: carga masiva (Excel/bulk), flujo `aprobarNuevoCosto`/`marcarPendienteNC`/`congelarCostoDiscrepancia` (ver `alimentarCatalogoProveedor` en `store.ts`), y la UI de "Cargar Catálogo" en Admin → Compras.
+- Es la fuente de verdad para: precio sugerido al crear OC (`AdminInteligencia.tsx#pedidoItems`), cálculo de NC esperada en Conciliación, inferencia de proveedor cuando un SKU es multi-proveedor.
+
+### Cuándo usar cuál
+
+| Necesito… | Uso |
+|---|---|
+| "¿De quién es este SKU?" (info general, filtro de UI) | `productos.proveedor` |
+| "Al generar OC a Idetex, ¿qué precio?" | `proveedor_catalogo WHERE proveedor='Idetex'` |
+| "¿Qué proveedores venden X y a cuánto?" | `proveedor_catalogo WHERE sku_origen=X` |
+| "NC esperada del proveedor por discrepancia" | `proveedor_catalogo` (precio pactado), fallback `productos.costo_promedio` |
+| "Inferir proveedor de una recepción RAPIDO" | `proveedor_catalogo` (scorear proveedores por cuántos SKUs matchean), fallback `productos.proveedor` |
+
+### Reglas
+
+- **No borrar `productos.proveedor`** al poblar catálogo — son roles distintos, ambos conviven.
+- **Al resolver una discrepancia**, alimentar `proveedor_catalogo` con el costo resuelto (el loop lo hace automático en `store.ts`). Eso mantiene el precio pactado actualizado para futuras OCs.
+- **Para inferir** proveedor probable a partir de una lista de SKUs: preferir `proveedor_catalogo` (más robusto) con fallback a `productos.proveedor`.
+- **Productos con `productos.proveedor = "Otro"` o `"Desconocido"`** son los candidatos #1 a actualizarse cuando llega una recepción con factura real del SII.
+
 ## Patrones de queries
 
 ```typescript
