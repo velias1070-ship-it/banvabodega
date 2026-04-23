@@ -117,7 +117,11 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
   // Detalle conciliación
   const [editingConcId, setEditingConcId] = useState<string | null>(null);
   const [detalleConcMov, setDetalleConcMov] = useState<string | null>(null);
-  const [detalleConcData, setDetalleConcData] = useState<{ conc: DBConciliacion; docs: { doc: DBRcvCompra | DBRcvVenta; monto_aplicado: number }[]; tipo: string } | null>(null);
+  const [detalleConcData, setDetalleConcData] = useState<{
+    concs: DBConciliacion[];
+    docs: { doc: DBRcvCompra | DBRcvVenta; monto_aplicado: number; conc: DBConciliacion }[];
+    totalAplicado: number;
+  } | null>(null);
   const [detalleConcLoading, setDetalleConcLoading] = useState(false);
   // Notas / comentarios por movimiento
   const [editingNota, setEditingNota] = useState<string | null>(null);
@@ -626,147 +630,43 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
                     </td>
                     <td style={{ padding: "10px 12px", textAlign: "right", whiteSpace: "nowrap", position: "relative" }}>
                       {isConciliado ? (
-                        <div style={{ display: "inline-block", position: "relative" }}>
-                          <span onClick={async () => {
-                            if (detalleConcMov === m.id) { setDetalleConcMov(null); return; }
-                            setDetalleConcMov(m.id!); setDetalleConcLoading(true); setDetalleConcData(null);
-                            const conc = conciliaciones.find(x => x.estado === "confirmado" && x.movimiento_banco_id === m.id);
-                            if (conc) {
-                              const tipo = conc.tipo_partida || "";
-                              const docs: { doc: DBRcvCompra | DBRcvVenta; monto_aplicado: number }[] = [];
-                              // Intentar cargar conciliacion_items (multi_doc)
-                              const { getSupabase } = await import("@/lib/supabase");
-                              const sb = getSupabase();
-                              if (sb && conc.id) {
-                                const { data: items } = await sb.from("conciliacion_items").select("*").eq("conciliacion_id", conc.id);
-                                if (items && items.length > 0) {
-                                  for (const it of items) {
-                                    let doc: DBRcvCompra | DBRcvVenta | undefined;
-                                    if (it.documento_tipo === "rcv_compra") doc = compras.find(c => c.id === it.documento_id);
-                                    else if (it.documento_tipo === "rcv_venta") doc = ventas.find(v => v.id === it.documento_id);
-                                    if (doc) docs.push({ doc, monto_aplicado: it.monto_aplicado || 0 });
-                                  }
-                                }
+                        <span onClick={async () => {
+                          setDetalleConcMov(m.id!); setDetalleConcLoading(true); setDetalleConcData(null);
+                          const concs = conciliaciones.filter(x => x.estado === "confirmado" && x.movimiento_banco_id === m.id);
+                          const docs: { doc: DBRcvCompra | DBRcvVenta; monto_aplicado: number; conc: DBConciliacion }[] = [];
+                          const { getSupabase } = await import("@/lib/supabase");
+                          const sb = getSupabase();
+                          const concIds = concs.map(c => c.id!).filter(Boolean) as string[];
+                          let allItems: { conciliacion_id: string; documento_tipo: string; documento_id: string; monto_aplicado: number }[] = [];
+                          if (sb && concIds.length > 0) {
+                            const { data } = await sb.from("conciliacion_items").select("*").in("conciliacion_id", concIds);
+                            allItems = data || [];
+                          }
+                          for (const conc of concs) {
+                            const thisItems = allItems.filter(it => it.conciliacion_id === conc.id);
+                            if (thisItems.length > 0) {
+                              for (const it of thisItems) {
+                                let doc: DBRcvCompra | DBRcvVenta | undefined;
+                                if (it.documento_tipo === "rcv_compra") doc = compras.find(c => c.id === it.documento_id);
+                                else if (it.documento_tipo === "rcv_venta") doc = ventas.find(v => v.id === it.documento_id);
+                                if (doc) docs.push({ doc, monto_aplicado: it.monto_aplicado || 0, conc });
                               }
-                              // Si no hay items, usar rcv_compra_id/rcv_venta_id directo (match simple)
-                              if (docs.length === 0) {
-                                if (conc.rcv_compra_id) {
-                                  const doc = compras.find(c => c.id === conc.rcv_compra_id);
-                                  if (doc) docs.push({ doc, monto_aplicado: conc.monto_aplicado || doc.monto_total || 0 });
-                                } else if (conc.rcv_venta_id) {
-                                  const doc = ventas.find(v => v.id === conc.rcv_venta_id);
-                                  if (doc) docs.push({ doc, monto_aplicado: conc.monto_aplicado || doc.monto_total || 0 });
-                                }
-                              }
-                              setDetalleConcData({ conc, docs, tipo });
+                            } else if (conc.rcv_compra_id) {
+                              const doc = compras.find(c => c.id === conc.rcv_compra_id);
+                              if (doc) docs.push({ doc, monto_aplicado: conc.monto_aplicado || doc.monto_total || 0, conc });
+                            } else if (conc.rcv_venta_id) {
+                              const doc = ventas.find(v => v.id === conc.rcv_venta_id);
+                              if (doc) docs.push({ doc, monto_aplicado: conc.monto_aplicado || doc.monto_total || 0, conc });
                             }
-                            setDetalleConcLoading(false);
-                          }}
-                            style={{ fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 4, background: "var(--greenBg)", color: "var(--green)", cursor: "pointer" }}
-                            title="Ver detalle">
-                            Conciliado
-                          </span>
-                          {detalleConcMov === m.id && (
-                            <div style={{ position: "absolute", right: 0, top: "100%", marginTop: 4, zIndex: 50, background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 10, padding: 16, boxShadow: "0 8px 24px rgba(0,0,0,0.4)", width: 340, textAlign: "left" }}
-                              onClick={e => e.stopPropagation()}>
-                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                                <span style={{ fontSize: 13, fontWeight: 600 }}>Detalle conciliación</span>
-                                <button onClick={() => setDetalleConcMov(null)} style={{ background: "none", border: "none", fontSize: 16, cursor: "pointer", color: "var(--txt3)" }}>&times;</button>
-                              </div>
-                              {detalleConcLoading ? (
-                                <div style={{ padding: 16, textAlign: "center", color: "var(--txt3)", fontSize: 12 }}>Cargando...</div>
-                              ) : detalleConcData ? (
-                                <div>
-                                  <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 8, textTransform: "uppercase", fontWeight: 600 }}>
-                                    {detalleConcData.tipo === "egreso" ? "Egreso" : detalleConcData.tipo === "clasificacion_directa" ? "Clasificación directa" : detalleConcData.tipo === "multi_doc" ? "Multi-documento" : "Match"}
-                                    {detalleConcData.conc.metodo && <span> · {detalleConcData.conc.metodo}</span>}
-                                  </div>
-                                  {detalleConcData.docs.length > 0 && (
-                                    <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 8, maxHeight: 280, overflowY: "auto" }}>
-                                      {detalleConcData.docs.map((d, idx) => (
-                                        <div key={idx} style={{ padding: 10, background: "var(--bg3)", borderRadius: 6, fontSize: 11 }}>
-                                          <div style={{ fontWeight: 600 }}>
-                                            {"tipo_doc" in d.doc && <span className="mono" style={{ fontSize: 10, padding: "1px 4px", borderRadius: 3, background: "var(--cyanBg)", color: "var(--cyan)", marginRight: 4 }}>{typeof d.doc.tipo_doc === "number" ? (({33:"FAC-EL",34:"FAC-EX",46:"FC",52:"GUIA",56:"ND",61:"NC",71:"BHE"} as Record<number,string>)[d.doc.tipo_doc] || d.doc.tipo_doc) : d.doc.tipo_doc}</span>}
-                                            {"nro_doc" in d.doc ? d.doc.nro_doc : ("nro" in d.doc ? d.doc.nro : "")}
-                                          </div>
-                                          <div style={{ color: "var(--txt2)", marginTop: 2 }}>{"razon_social" in d.doc ? d.doc.razon_social : ""}</div>
-                                          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
-                                            <span className="mono" style={{ color: "var(--txt3)" }}>{fmtDate("fecha_docto" in d.doc ? d.doc.fecha_docto : null)}</span>
-                                            <span className="mono" style={{ fontWeight: 700 }}>{fmtMoney(d.monto_aplicado)}{d.monto_aplicado !== d.doc.monto_total && <span style={{ fontSize: 9, color: "var(--txt3)", fontWeight: 400 }}> de {fmtMoney(d.doc.monto_total || 0)}</span>}</span>
-                                          </div>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  )}
-                                  {detalleConcData.tipo === "egreso" && detalleConcData.conc.metadata && (() => {
-                                    const md = detalleConcData.conc.metadata as Record<string, string>;
-                                    return (
-                                      <div style={{ padding: 10, background: "var(--bg3)", borderRadius: 6, marginBottom: 8, fontSize: 11 }}>
-                                        <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4, flexWrap: "wrap" }}>
-                                          <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 3, background: "var(--amberBg)", color: "var(--amber)", fontWeight: 600 }}>{md.tipo}</span>
-                                          {md.periodo && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 3, background: "var(--cyanBg)", color: "var(--cyan)", fontWeight: 600 }}>{md.periodo}</span>}
-                                          {md.num_documento && <span className="mono" style={{ color: "var(--txt3)" }}>#{md.num_documento}</span>}
-                                        </div>
-                                        {md.proveedor && <div style={{ fontWeight: 600 }}>{md.proveedor}</div>}
-                                        {md.descripcion && <div style={{ color: "var(--txt2)", marginTop: 2 }}>{md.descripcion}</div>}
-                                      </div>
-                                    );
-                                  })()}
-                                  {detalleConcData.conc.archivo_url && (
-                                    <a href={detalleConcData.conc.archivo_url} target="_blank" rel="noopener noreferrer"
-                                      style={{ display: "block", padding: "6px 10px", background: "var(--bg3)", borderRadius: 6, marginBottom: 8, fontSize: 11, color: "var(--cyan)", textDecoration: "none", fontWeight: 600 }}>
-                                      Ver documento adjunto
-                                    </a>
-                                  )}
-                                  {detalleConcData.docs.length === 0 && detalleConcData.tipo === "clasificacion_directa" && (
-                                    <div style={{ padding: 10, background: "var(--bg3)", borderRadius: 6, marginBottom: 8, fontSize: 11, color: "var(--txt3)" }}>
-                                      Sin documento — clasificación por cuenta contable
-                                    </div>
-                                  )}
-                                  {detalleConcData.conc.notas && (
-                                    <div style={{ fontSize: 11, color: "var(--cyan)", marginBottom: 8 }}>{detalleConcData.conc.notas}</div>
-                                  )}
-                                  <div style={{ display: "flex", gap: 6 }}>
-                                    <button onClick={() => {
-                                      setDetalleConcMov(null);
-                                      const conc = detalleConcData.conc;
-                                      if (conc.tipo_partida === "egreso") {
-                                        const md = (conc.metadata || {}) as Record<string, string>;
-                                        setEditingConcId(conc.id!);
-                                        setEgresoTipo(md.tipo || "");
-                                        setEgresoProveedor(md.proveedor || "");
-                                        setEgresoDescripcion(md.descripcion || "");
-                                        setEgresoNumDoc(md.num_documento || "");
-                                        setEgresoPeriodo(md.periodo || "");
-                                        setClasificarCuenta(m.categoria_cuenta_id || "");
-                                        setEgresoArchivo(null);
-                                        setClasificarMov(m);
-                                      } else {
-                                        setEditingConcId(conc.id!);
-                                        setConciliarMov(m);
-                                      }
-                                    }}
-                                      style={{ flex: 1, padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 600, background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)", cursor: "pointer" }}>
-                                      Editar
-                                    </button>
-                                    <button onClick={async () => {
-                                      if (!confirm("¿Deshacer esta conciliación? El movimiento volverá a estado pendiente.")) return;
-                                      await updateConciliacion(detalleConcData.conc.id!, { estado: "rechazado" });
-                                      await syncEstadoConciliacion(m.id!, m.monto);
-                                      setDetalleConcMov(null);
-                                      load();
-                                    }}
-                                      style={{ flex: 1, padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 600, background: "var(--redBg)", color: "var(--red)", border: "1px solid var(--redBd)", cursor: "pointer" }}>
-                                      Deshacer
-                                    </button>
-                                  </div>
-                                </div>
-                              ) : (
-                                <div style={{ padding: 12, textAlign: "center", color: "var(--txt3)", fontSize: 12 }}>Sin datos</div>
-                              )}
-                            </div>
-                          )}
-                        </div>
+                          }
+                          const totalAplicado = concs.reduce((s, c) => s + (c.monto_aplicado || 0), 0);
+                          setDetalleConcData({ concs, docs, totalAplicado });
+                          setDetalleConcLoading(false);
+                        }}
+                          style={{ fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 4, background: "var(--greenBg)", color: "var(--green)", cursor: "pointer" }}
+                          title="Ver detalle">
+                          Conciliado
+                        </span>
                       ) : isIgnorado ? (
                         <span style={{ fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 4, background: "var(--bg3)", color: "var(--txt3)" }}>Ignorado</span>
                       ) : (
@@ -1122,6 +1022,196 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
           </div>
         </div>
       )}
+
+      {/* Modal detalle conciliación del movimiento */}
+      {detalleConcMov && (() => {
+        const mov = movBanco.find(x => x.id === detalleConcMov);
+        if (!mov) return null;
+        const movTotal = Math.abs(mov.monto);
+        const aplicado = detalleConcData?.totalAplicado ?? 0;
+        const saldo = movTotal - aplicado;
+        const concs = detalleConcData?.concs || [];
+        const docs = detalleConcData?.docs || [];
+        const primary = concs[0];
+        const allSameTipo = concs.length > 0 && concs.every(c => c.tipo_partida === primary?.tipo_partida);
+        const tipoLabel = !allSameTipo ? "Mixto"
+          : primary?.tipo_partida === "egreso" ? "Egreso"
+          : primary?.tipo_partida === "clasificacion_directa" ? "Clasificación"
+          : primary?.tipo_partida === "multi_pago" ? "Multi-pago"
+          : primary?.tipo_partida === "multi_doc" ? "Multi-documento"
+          : primary?.tipo_partida === "anulacion" ? "Anulación"
+          : "Match";
+        const metodo = primary?.metodo || "manual";
+        const tipoDocLabel = (t: number | string) => typeof t === "number"
+          ? (({ 33: "FAC-EL", 34: "FAC-EX", 46: "FC", 52: "GUIA", 56: "ND", 61: "NC", 71: "BHE" } as Record<number, string>)[t] || String(t))
+          : String(t);
+        const notasUniq = Array.from(new Set(concs.map(c => c.notas).filter(Boolean)));
+        const adjuntos = concs.map(c => c.archivo_url).filter(Boolean) as string[];
+        const handleDeshacerTodo = async () => {
+          if (!confirm(`¿Deshacer ${concs.length > 1 ? `las ${concs.length} conciliaciones` : "esta conciliación"} del movimiento? El movimiento vuelve a pendiente.`)) return;
+          for (const c of concs) {
+            await updateConciliacion(c.id!, { estado: "rechazado" });
+          }
+          await syncEstadoConciliacion(mov.id!, mov.monto);
+          setDetalleConcMov(null);
+          load();
+        };
+        const handleEditar = () => {
+          if (concs.length !== 1) return;
+          const conc = concs[0];
+          setDetalleConcMov(null);
+          if (conc.tipo_partida === "egreso") {
+            const md = (conc.metadata || {}) as Record<string, string>;
+            setEditingConcId(conc.id!);
+            setEgresoTipo(md.tipo || "");
+            setEgresoProveedor(md.proveedor || "");
+            setEgresoDescripcion(md.descripcion || "");
+            setEgresoNumDoc(md.num_documento || "");
+            setEgresoPeriodo(md.periodo || "");
+            setClasificarCuenta(mov.categoria_cuenta_id || "");
+            setEgresoArchivo(null);
+            setClasificarMov(mov);
+          } else {
+            setEditingConcId(conc.id!);
+            setConciliarMov(mov);
+          }
+        };
+        return (
+          <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+            onClick={() => setDetalleConcMov(null)}>
+            <div onClick={e => e.stopPropagation()}
+              style={{ background: "var(--bg2)", borderRadius: 12, width: "100%", maxWidth: 680, maxHeight: "90vh", display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+              <div style={{ padding: "16px 24px", borderBottom: "1px solid var(--bg4)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 700 }}>Detalle de conciliación</div>
+                  <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 2 }}>
+                    {mov.descripcion || "Movimiento"} &mdash; {fmtDate(mov.fecha)} · {mov.banco || "Banco"}
+                  </div>
+                </div>
+                <button onClick={() => setDetalleConcMov(null)} style={{ background: "none", border: "none", fontSize: 20, cursor: "pointer", color: "var(--txt3)" }}>&times;</button>
+              </div>
+              <div style={{ flex: 1, overflow: "auto", padding: "16px 24px" }}>
+                {detalleConcLoading ? (
+                  <div style={{ padding: 40, textAlign: "center", color: "var(--txt3)", fontSize: 12 }}>Cargando...</div>
+                ) : (
+                  <>
+                    {/* KPI cards */}
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 16 }}>
+                      <div className="card" style={{ padding: 12 }}>
+                        <div style={{ fontSize: 9, color: "var(--txt3)", textTransform: "uppercase", fontWeight: 600, marginBottom: 4 }}>Movimiento</div>
+                        <div className="mono" style={{ fontSize: 14, fontWeight: 800, color: mov.monto < 0 ? "var(--red)" : "var(--green)" }}>{fmtMoney(movTotal)}</div>
+                      </div>
+                      <div className="card" style={{ padding: 12 }}>
+                        <div style={{ fontSize: 9, color: "var(--txt3)", textTransform: "uppercase", fontWeight: 600, marginBottom: 4 }}>Aplicado</div>
+                        <div className="mono" style={{ fontSize: 14, fontWeight: 800, color: "var(--cyan)" }}>{fmtMoney(aplicado)}</div>
+                      </div>
+                      <div className="card" style={{ padding: 12 }}>
+                        <div style={{ fontSize: 9, color: "var(--txt3)", textTransform: "uppercase", fontWeight: 600, marginBottom: 4 }}>Saldo</div>
+                        <div className="mono" style={{ fontSize: 14, fontWeight: 800, color: Math.abs(saldo) < 1 ? "var(--green)" : "var(--amber)" }}>{fmtMoney(Math.max(0, saldo))}</div>
+                      </div>
+                      <div className="card" style={{ padding: 12 }}>
+                        <div style={{ fontSize: 9, color: "var(--txt3)", textTransform: "uppercase", fontWeight: 600, marginBottom: 4 }}>Tipo</div>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: "var(--txt)" }}>{tipoLabel}</div>
+                        <div style={{ fontSize: 9, color: "var(--txt3)", textTransform: "uppercase", marginTop: 2 }}>{metodo}</div>
+                      </div>
+                    </div>
+
+                    {/* Egreso metadata (solo si hay 1 conc de tipo egreso) */}
+                    {concs.length === 1 && primary?.tipo_partida === "egreso" && primary.metadata && (() => {
+                      const md = primary.metadata as Record<string, string>;
+                      return (
+                        <div className="card" style={{ padding: 12, marginBottom: 16 }}>
+                          <div style={{ fontSize: 10, fontWeight: 700, color: "var(--txt3)", textTransform: "uppercase", marginBottom: 8 }}>Egreso</div>
+                          <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4, flexWrap: "wrap" }}>
+                            {md.tipo && <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 4, background: "var(--amberBg)", color: "var(--amber)", fontWeight: 600 }}>{md.tipo}</span>}
+                            {md.periodo && <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 4, background: "var(--cyanBg)", color: "var(--cyan)", fontWeight: 600 }}>{md.periodo}</span>}
+                            {md.num_documento && <span className="mono" style={{ fontSize: 11, color: "var(--txt3)" }}>#{md.num_documento}</span>}
+                          </div>
+                          {md.proveedor && <div style={{ fontSize: 12, fontWeight: 600 }}>{md.proveedor}</div>}
+                          {md.descripcion && <div style={{ fontSize: 11, color: "var(--txt2)", marginTop: 2 }}>{md.descripcion}</div>}
+                        </div>
+                      );
+                    })()}
+
+                    {/* Documentos aplicados */}
+                    {docs.length > 0 && (
+                      <div style={{ marginBottom: 16 }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: "var(--txt3)", textTransform: "uppercase", marginBottom: 8 }}>Documentos aplicados ({docs.length})</div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                          {docs.map((d, idx) => {
+                            const tipoDoc = "tipo_doc" in d.doc ? d.doc.tipo_doc : "";
+                            const nroDoc = "nro_doc" in d.doc ? d.doc.nro_doc : ("nro" in d.doc ? d.doc.nro : "");
+                            const razon = "razon_social" in d.doc ? d.doc.razon_social : "";
+                            const fecha = "fecha_docto" in d.doc ? d.doc.fecha_docto : null;
+                            const total = d.doc.monto_total || 0;
+                            const isPartial = Math.abs(d.monto_aplicado - total) > 1;
+                            return (
+                              <div key={idx} className="card" style={{ padding: 10, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ fontSize: 12, fontWeight: 600 }}>
+                                    {tipoDoc !== "" && <span className="mono" style={{ fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 3, background: "var(--cyanBg)", color: "var(--cyan)", marginRight: 6 }}>{tipoDocLabel(tipoDoc)}</span>}
+                                    Nº {nroDoc}
+                                  </div>
+                                  <div style={{ fontSize: 11, color: "var(--txt2)", marginTop: 2 }}>{razon}</div>
+                                  <div className="mono" style={{ fontSize: 10, color: "var(--txt3)", marginTop: 2 }}>{fmtDate(fecha)}</div>
+                                </div>
+                                <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                                  <div className="mono" style={{ fontSize: 13, fontWeight: 700, color: "var(--green)" }}>{fmtMoney(d.monto_aplicado)}</div>
+                                  {isPartial && <div className="mono" style={{ fontSize: 9, color: "var(--txt3)", fontWeight: 400 }}>de {fmtMoney(total)}</div>}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {docs.length === 0 && primary?.tipo_partida === "clasificacion_directa" && (
+                      <div className="card" style={{ padding: 12, marginBottom: 16, fontSize: 11, color: "var(--txt3)" }}>
+                        Sin documento — clasificación por cuenta contable.
+                      </div>
+                    )}
+
+                    {/* Notas */}
+                    {notasUniq.length > 0 && (
+                      <div style={{ marginBottom: 12 }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: "var(--txt3)", textTransform: "uppercase", marginBottom: 6 }}>Notas</div>
+                        {notasUniq.map((n, i) => (
+                          <div key={i} style={{ fontSize: 11, color: "var(--cyan)", marginBottom: 4 }}>{n}</div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Adjuntos */}
+                    {adjuntos.map((url, i) => (
+                      <a key={i} href={url} target="_blank" rel="noopener noreferrer"
+                        style={{ display: "block", padding: "8px 12px", background: "var(--bg3)", borderRadius: 6, marginBottom: 6, fontSize: 11, color: "var(--cyan)", textDecoration: "none", fontWeight: 600 }}>
+                        Ver documento adjunto {adjuntos.length > 1 ? `(${i + 1})` : ""}
+                      </a>
+                    ))}
+                  </>
+                )}
+              </div>
+              <div style={{ padding: "12px 24px", borderTop: "1px solid var(--bg4)", display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                {concs.length === 1 && (
+                  <button onClick={handleEditar}
+                    style={{ padding: "8px 18px", borderRadius: 8, fontSize: 12, fontWeight: 600, background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)", cursor: "pointer" }}>
+                    Editar
+                  </button>
+                )}
+                <button onClick={() => setDetalleConcMov(null)}
+                  style={{ padding: "8px 18px", borderRadius: 8, fontSize: 12, fontWeight: 600, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
+                  Cerrar
+                </button>
+                <button onClick={handleDeshacerTodo}
+                  style={{ padding: "8px 18px", borderRadius: 8, fontSize: 12, fontWeight: 600, background: "var(--redBg)", color: "var(--red)", border: "1px solid var(--redBd)", cursor: "pointer" }}>
+                  {concs.length > 1 ? `Deshacer todo (${concs.length})` : "Deshacer conciliación"}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
