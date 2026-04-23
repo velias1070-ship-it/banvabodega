@@ -91,11 +91,14 @@ export async function POST(req: NextRequest) {
 
       const stockAfter = await getDistributedStock(upId);
 
+      const { error: queueErr } = await sb.from("stock_sync_queue")
+        .upsert({ sku, created_at: new Date().toISOString() }, { onConflict: "sku" });
+
       void sb.from("audit_log").insert({
         accion: "warehouse_activate:ok",
         entidad: "ml_items_map",
         entidad_id: upId,
-        params: { sku, item_id: map.item_id, body, x_version: xVersion, locations_after: stockAfter?.locations },
+        params: { sku, item_id: map.item_id, body, x_version: xVersion, locations_after: stockAfter?.locations, queued: !queueErr },
       });
 
       results.push({
@@ -104,6 +107,7 @@ export async function POST(req: NextRequest) {
         x_version_enviado: xVersion,
         ml_response: resp,
         stock_after: stockAfter?.locations,
+        encolado_para_sync: !queueErr,
       });
     } catch (err) {
       const msg = String(err);
