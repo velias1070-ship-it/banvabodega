@@ -1,0 +1,276 @@
+import { NextRequest, NextResponse } from "next/server";
+import { getServerSupabase } from "@/lib/supabase-server";
+import { evaluarGates, margenPostAds, type CanalLogistico } from "@/lib/pricing";
+
+export const maxDuration = 300;
+
+/**
+ * POST /api/ml/auto-postular
+ *
+ * Motor de postulacion automatica — dry-run por default. Para cada par
+ * (item activo en ML × promo candidate), evalua los gates economicos +
+ * regulatorios y decide postular/skipear. Loguea cada decision en
+ * auto_postulacion_log para auditoria.
+ *
+ * Body JSON:
+ * {
+ *   "modo": "dry_run" | "apply"                (default dry_run)
+ *   "scope": "all" | "auto_postular_only"       (default all para dry_run,
+ *                                                auto_postular_only para apply)
+ *   "promo_name": string?                        (filtra a una sola promo)
+ *   "sku": string?                               (filtra a un solo SKU)
+ *   "limit": number?                             (cap de items procesados,
+ *                                                default 100 dry, 50 apply)
+ * }
+ *
+ * Respuesta:
+ * {
+ *   total_items_evaluados: number
+ *   decisiones: { postular: N, skipear: N, error: N }
+ *   muestra: [{sku, promo, decision, motivo, precio_objetivo, margen}]
+ *   log_ids: string[]
+ * }
+ */
+
+type PromoPostulable = { name: string; type: string; id: string | null; min: number; max: number; suggested: number };
+
+type MarginCacheRow = {
+  item_id: string;
+  sku: string;
+  titulo: string;
+  status_ml: string | null;
+  price_ml: number;
+  precio_venta: number;
+  costo_neto: number;
+  costo_bruto: number;
+  peso_facturable: number;
+  comision_pct: number;
+  envio_clp: number;
+  logistic_type: string | null;
+  tiene_promo: boolean;
+  promo_name: string | null;
+  stock_total: number | null;
+  promos_postulables: PromoPostulable[] | null;
+};
+
+type ProductoPolicy = {
+  sku: string;
+  costo: number;
+  costo_promedio: number;
+  es_kvi: boolean;
+  margen_minimo_pct: number;
+  politica_pricing: "defender" | "seguir" | "exprimir" | "liquidar";
+  precio_piso: number | null;
+  auto_postular: boolean;
+};
+
+export async function POST(req: NextRequest) {
+  const sb = getServerSupabase();
+  if (!sb) return NextResponse.json({ error: "no_db" }, { status: 500 });
+
+  const body = await req.json().catch(() => ({}));
+  const modo: "dry_run" | "apply" = body.modo === "apply" ? "apply" : "dry_run";
+  const scope: "all" | "auto_postular_only" = body.scope === "all"
+    ? "all"
+    : modo === "dry_run" ? "all" : "auto_postular_only";
+  const promoNameFilter: string | undefined = body.promo_name;
+  const skuFilter: string | undefined = body.sku;
+  const limit = Math.min(parseInt(body.limit || "0", 10) || (modo === "apply" ? 50 : 100), 500);
+
+  // 1. Cargar margin cache — solo activos en ML con promos candidate disponibles
+  let query = sb
+    .from("ml_margin_cache")
+    .select("item_id, sku, titulo, status_ml, price_ml, precio_venta, costo_neto, costo_bruto, peso_facturable, comision_pct, envio_clp, logistic_type, tiene_promo, promo_name, stock_total, promos_postulables")
+    .eq("status_ml", "active");
+  if (skuFilter) query = query.eq("sku", skuFilter);
+  const { data: cacheData, error: eCache } = await query;
+  if (eCache) return NextResponse.json({ error: eCache.message }, { status: 500 });
+
+  const cache: MarginCacheRow[] = (cacheData || []) as unknown as MarginCacheRow[];
+
+  // 2. Cargar policy de productos
+  const skus = Array.from(new Set(cache.map(r => r.sku)));
+  const policyMap = new Map<string, ProductoPolicy>();
+  if (skus.length > 0) {
+    for (let i = 0; i < skus.length; i += 500) {
+      const chunk = skus.slice(i, i + 500);
+      const { data: prods } = await sb
+        .from("productos")
+        .select("sku, costo, costo_promedio, es_kvi, margen_minimo_pct, politica_pricing, precio_piso, auto_postular")
+        .in("sku", chunk);
+      for (const p of (prods || []) as ProductoPolicy[]) policyMap.set(p.sku, p);
+    }
+  }
+
+  // 3. Cargar ads fraccion por SKU (promedio ads_cost_asignado / unidades en 30d)
+  const sinceIso = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  const adsFraccionBySku = new Map<string, number>();
+  const { data: adsRows } = await sb
+    .from("ventas_ml_cache")
+    .select("sku_venta, cantidad, ads_cost_asignado, anulada")
+    .gte("fecha_date", sinceIso);
+  const acc = new Map<string, { uds: number; ads: number }>();
+  for (const r of (adsRows || []) as Array<{ sku_venta: string; cantidad: number; ads_cost_asignado: number | null; anulada: boolean | null }>) {
+    if (r.anulada) continue;
+    if (!r.sku_venta) continue;
+    const cur = acc.get(r.sku_venta) || { uds: 0, ads: 0 };
+    cur.uds += r.cantidad || 0;
+    cur.ads += r.ads_cost_asignado || 0;
+    acc.set(r.sku_venta, cur);
+  }
+  Array.from(acc.entries()).forEach(([sku, v]) => {
+    if (v.uds > 0) adsFraccionBySku.set(sku, Math.round(v.ads / v.uds));
+  });
+
+  // 4. Evaluar cada par (item × promo candidate)
+  const decisiones = { postular: 0, skipear: 0, error: 0 };
+  const muestra: Array<{ sku: string; promo: string; decision: string; motivo: string; precio_objetivo: number; margen_pct: number | null }> = [];
+  const logRows: Array<Record<string, unknown>> = [];
+
+  let procesados = 0;
+  for (const row of cache) {
+    if (procesados >= limit) break;
+    const policy = policyMap.get(row.sku);
+    // Gate pre-motor: scope apply exige flag explicito
+    if (scope === "auto_postular_only" && !policy?.auto_postular) continue;
+
+    const promos = row.promos_postulables || [];
+    if (promos.length === 0) continue;
+
+    for (const promo of promos) {
+      if (promoNameFilter && promo.name !== promoNameFilter && promo.type !== promoNameFilter) continue;
+      procesados++;
+      if (procesados > limit) break;
+
+      // Precio objetivo: default = suggested de ML, fallback = max del rango
+      const precioObjetivo = promo.suggested > 0
+        ? promo.suggested
+        : promo.max > 0 ? promo.max : row.precio_venta;
+
+      const canal: CanalLogistico = row.logistic_type === "fulfillment" ? "full"
+        : row.logistic_type === "self_service" ? "flex"
+        : "unknown";
+      const costoNeto = policy?.costo_promedio || policy?.costo || row.costo_neto || 0;
+      const margenMinFrac = (policy?.margen_minimo_pct ?? 15) / 100;
+
+      const gateInputs = {
+        costoNeto,
+        precioReferencia: precioObjetivo,
+        pesoGr: row.peso_facturable || 0,
+        comisionPct: Number(row.comision_pct) || 0,
+        canal,
+        costoEnvioFullUnit: canal === "full" ? (row.envio_clp || 0) : 0,
+        adsFraccionUnit: adsFraccionBySku.get(row.sku) || 0,
+        margenMinimoFrac: margenMinFrac,
+        precioObjetivo,
+        precioPisoManual: policy?.precio_piso || null,
+        esKvi: policy?.es_kvi || false,
+        precioLista: row.price_ml,
+        politica: policy?.politica_pricing || "seguir",
+      };
+
+      // Gates adicionales fuera del lib/pricing.ts: stock LIGHTNING + sin costo
+      const hardExtras: string[] = [];
+      if (costoNeto <= 0) hardExtras.push("sin_costo: productos.costo=0 y productos.costo_promedio=0");
+      if (/LIGHTNING/i.test(promo.type)) {
+        const st = row.stock_total ?? 0;
+        if (st < 5 || st > 15) hardExtras.push(`lightning_stock: ${st} fuera de 5-15`);
+      }
+      // Rango de la propia promo
+      if (promo.min > 0 && precioObjetivo < promo.min) hardExtras.push(`promo_rango: ${precioObjetivo} < min ${promo.min}`);
+      if (promo.max > 0 && precioObjetivo > promo.max) hardExtras.push(`promo_rango: ${precioObjetivo} > max ${promo.max}`);
+
+      const gate = evaluarGates(gateInputs);
+      const bloquea = [...hardExtras, ...gate.motivosBloqueo];
+      const pasa = bloquea.length === 0;
+
+      const margenProyFrac = margenPostAds(precioObjetivo, gateInputs);
+      const margenProyPct = margenProyFrac !== null ? Math.round(margenProyFrac * 10000) / 100 : null;
+
+      const decision = modo === "apply"
+        ? (pasa ? "postular" : "skipear")
+        : (pasa ? "dry_run_postular" : "dry_run_skipear");
+
+      if (pasa) decisiones.postular++;
+      else decisiones.skipear++;
+
+      const motivo = pasa
+        ? `ok · floor ${gate.floor} · margen ${margenProyPct}%${gate.warnings.length ? " · " + gate.warnings.join(" · ") : ""}`
+        : bloquea.join(" | ");
+
+      logRows.push({
+        sku: row.sku,
+        item_id: row.item_id,
+        promo_id: promo.id,
+        promo_type: promo.type,
+        promo_name: promo.name,
+        decision,
+        motivo,
+        precio_objetivo: precioObjetivo,
+        precio_actual: row.precio_venta,
+        floor_calculado: gate.floor,
+        margen_proyectado_pct: margenProyPct,
+        modo,
+        contexto: {
+          canal,
+          stock_total: row.stock_total,
+          es_kvi: policy?.es_kvi,
+          politica: policy?.politica_pricing,
+          ads_fraccion: adsFraccionBySku.get(row.sku) || 0,
+          comision_pct: Number(row.comision_pct),
+          titulo: row.titulo,
+        },
+      });
+
+      if (muestra.length < 50) {
+        muestra.push({
+          sku: row.sku,
+          promo: promo.name || promo.type,
+          decision,
+          motivo,
+          precio_objetivo: precioObjetivo,
+          margen_pct: margenProyPct,
+        });
+      }
+    }
+  }
+
+  // 5. Bulk insert en log
+  const logIds: string[] = [];
+  if (logRows.length > 0) {
+    for (let i = 0; i < logRows.length; i += 200) {
+      const batch = logRows.slice(i, i + 200);
+      const { data: inserted, error: eIns } = await sb
+        .from("auto_postulacion_log")
+        .insert(batch)
+        .select("id");
+      if (eIns) {
+        return NextResponse.json({
+          error: `log insert failed: ${eIns.message}`,
+          parcial: { decisiones, muestra, logIds },
+        }, { status: 500 });
+      }
+      for (const r of (inserted || []) as Array<{ id: string }>) logIds.push(r.id);
+    }
+  }
+
+  // 6. En modo apply, ejecutar las postulaciones realmente
+  // (POR AHORA: solo loguear, no ejecutar. El apply real se habilita en una
+  // iteracion siguiente cuando el dry-run valide que las decisiones son correctas.)
+  if (modo === "apply") {
+    // TODO: ejecutar join a ML para filas con decision=postular.
+    // Mantenemos seguro por ahora: el modo apply loguea pero no actualiza ML.
+  }
+
+  return NextResponse.json({
+    modo,
+    scope,
+    total_items_evaluados: procesados,
+    decisiones,
+    muestra,
+    log_insertadas: logIds.length,
+    nota: modo === "apply"
+      ? "APPLY en modo seguro: se loguearon decisiones pero NO se ejecutaron postulaciones en ML. Habilitar tras validar dry-run."
+      : "Dry-run completado. Revisa auto_postulacion_log para ver todas las decisiones.",
+  });
+}

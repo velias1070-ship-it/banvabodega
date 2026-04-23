@@ -22,6 +22,9 @@ type PromoInfo = {
   status: string;
   price: number;
   original_price: number;
+  min_discounted_price?: number;
+  max_discounted_price?: number;
+  suggested_discounted_price?: number;
 };
 
 type ShipFree = { coverage?: { all_country?: { list_cost: number; billable_weight: number } } };
@@ -268,7 +271,7 @@ async function handleRefresh(req: NextRequest) {
     let promoType: string | null = null;
     let promoName: string | null = null;
     let promoPct: number | null = null;
-    let promosPostulables: Array<{ name: string; type: string; id: string | null }> = [];
+    let promosPostulables: Array<{ name: string; type: string; id: string | null; min: number; max: number; suggested: number }> = [];
     let syncError: string | null = null;
 
     try {
@@ -310,6 +313,8 @@ async function handleRefresh(req: NextRequest) {
 
           // Promos disponibles pero NO postuladas (candidate) — sirven para filtrar
           // "items que aun no estan en X pero podrian postular".
+          // Ademas del nombre/tipo, se guarda el rango y el sugerido para que el
+          // motor de auto-postulacion pueda evaluar sin llamar ML de nuevo.
           const seen = new Set<string>();
           for (const p of promos) {
             if (p.status !== "candidate") continue;
@@ -320,6 +325,9 @@ async function handleRefresh(req: NextRequest) {
               name: p.name || p.type || "Promoción",
               type: p.type || "",
               id: p.id || null,
+              min: Math.round(p.min_discounted_price || 0),
+              max: Math.round(p.max_discounted_price || 0),
+              suggested: Math.round(p.suggested_discounted_price || 0),
             });
           }
         }
