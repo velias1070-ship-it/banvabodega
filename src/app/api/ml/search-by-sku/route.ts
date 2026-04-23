@@ -37,6 +37,7 @@ interface MLSearchResult {
 
 export async function GET(req: NextRequest) {
   const sku = (req.nextUrl.searchParams.get("sku") || "").trim().toUpperCase();
+  const inventoryId = (req.nextUrl.searchParams.get("inventory_id") || "").trim().toUpperCase();
   if (!sku) return NextResponse.json({ error: "sku required" }, { status: 400 });
 
   try {
@@ -54,8 +55,23 @@ export async function GET(req: NextRequest) {
       for (const id of res?.results || []) {
         if (seen.has(id)) continue;
         seen.add(id);
-        const item = await mlGet<MLSearchResult>(`/items/${id}?attributes=id,title,status,available_quantity,last_updated,permalink,seller_custom_field,attributes,variations`);
+        const item = await mlGet<MLSearchResult>(`/items/${id}?attributes=id,title,status,available_quantity,last_updated,permalink,seller_custom_field,attributes,variations,inventory_id`);
         if (item) found.push(item);
+      }
+    }
+
+    // Busqueda adicional por inventory_id si fue pasado (productos.codigo_ml)
+    if (inventoryId) {
+      for (const status of allStatuses) {
+        const res = await mlGet<{ results: string[] }>(
+          `/users/${me.id}/items/search?inventory_id=${encodeURIComponent(inventoryId)}&status=${status}&limit=50`
+        );
+        for (const id of res?.results || []) {
+          if (seen.has(id)) continue;
+          seen.add(id);
+          const item = await mlGet<MLSearchResult>(`/items/${id}?attributes=id,title,status,available_quantity,last_updated,permalink,seller_custom_field,attributes,variations,inventory_id`);
+          if (item) found.push(item);
+        }
       }
     }
 

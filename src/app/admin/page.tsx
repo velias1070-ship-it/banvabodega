@@ -7021,11 +7021,14 @@ function SinMappingMLBlock({ sku, onLinked }: { sku: string; onLinked: () => voi
   const [searched, setSearched] = useState(false);
   const [linking, setLinking] = useState<string|null>(null);
   const [error, setError] = useState<string|null>(null);
+  const codigoMl = (getStore().products[sku]?.mlCode || "").trim();
 
   const buscar = async () => {
     setLoading(true); setError(null); setSearched(true);
     try {
-      const res = await fetch(`/api/ml/search-by-sku?sku=${encodeURIComponent(sku)}`);
+      const params = new URLSearchParams({ sku });
+      if (codigoMl) params.set("inventory_id", codigoMl);
+      const res = await fetch(`/api/ml/search-by-sku?${params.toString()}`);
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "search failed");
       setResults(json.items || []);
@@ -7060,7 +7063,7 @@ function SinMappingMLBlock({ sku, onLinked }: { sku: string; onLinked: () => voi
           <div style={{fontSize:14,fontWeight:700,color:"var(--red)"}}>🚨 Sin publicación ML vinculada</div>
           <div style={{fontSize:11,color:"var(--txt2)",marginTop:4,lineHeight:1.4}}>
             Este SKU tiene stock pero no está en <code>ml_items_map</code>. El sync regular solo captura items <code>active/paused</code> — si la publicación está <code>closed</code> o similar, queda invisible.
-            El botón busca en ML <strong>sin filtro de status</strong> por <code>seller_sku={sku}</code>.
+            El botón busca en ML <strong>sin filtro de status</strong> por <code>seller_sku={sku}</code>{codigoMl ? <> + <code>inventory_id={codigoMl}</code></> : null}.
           </div>
         </div>
         <button onClick={buscar} disabled={loading}
