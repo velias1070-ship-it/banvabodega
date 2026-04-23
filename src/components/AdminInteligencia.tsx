@@ -722,8 +722,13 @@ export default function AdminInteligencia() {
 
       // mandar_full ya considera stock disponible en bodega — no descontar tránsito
       // (tránsito es OC al proveedor que llega a bodega, no envíos a Full)
-      const mandarBase = r.mandar_full;
-      if (mandarBase <= 0) continue;
+      // Leer override manual (boton "Forzar") antes del early exit: si el
+      // usuario forzo incluir este SKU, no saltar aunque el motor diga 0.
+      const editedQtyForce = envioEdits.get(r.sku_venta);
+      const mandarBase = editedQtyForce !== undefined && editedQtyForce > 0
+        ? editedQtyForce
+        : r.mandar_full;
+      if (mandarBase <= 0 && editedQtyForce === undefined) continue;
 
       // Inner pack del componente principal
       const compPrincipal = efectivos[0];
