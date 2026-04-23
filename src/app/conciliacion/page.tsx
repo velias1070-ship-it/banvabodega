@@ -1118,9 +1118,17 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
               {filtered.length > 0 && (
                 <tfoot>
                   <tr style={{ borderTop: "2px solid var(--bg4)", fontWeight: 700 }}>
-                    <td colSpan={6} style={{ padding: "12px 14px", fontSize: 13 }}>Total CLP</td>
+                    <td colSpan={6} style={{ padding: "12px 14px", fontSize: 13 }}>
+                      Total CLP
+                      <span style={{ fontSize: 11, color: "var(--txt3)", marginLeft: 10, fontWeight: 500 }}>
+                        Neto <span className="mono" style={{ color: "var(--txt2)" }}>{fmtMoney(totalNeto)}</span>
+                        {" · "}IVA <span className="mono" style={{ color: "var(--txt2)" }}>{fmtMoney(totalIva)}</span>
+                        {totalExento > 0 && <> {" · "}Exento <span className="mono" style={{ color: "var(--txt2)" }}>{fmtMoney(totalExento)}</span></>}
+                      </span>
+                    </td>
                     <td className="mono" style={{ padding: "12px 14px", textAlign: "right", fontSize: 14 }}>
                       {fmtMoney(total)}
+                      <div style={{ fontSize: 9, color: "var(--txt3)", fontWeight: 400, marginTop: 2 }}>c/IVA</div>
                     </td>
                     <td></td>
                   </tr>
