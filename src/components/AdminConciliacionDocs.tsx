@@ -293,7 +293,19 @@ export default function AdminConciliacionDocs() {
                 const isExp = expanded.has(id);
                 const matchRec = f.recepciones.length > 0;
                 const montoRec = f.recepciones.reduce((s, r) => s + (r.costo_neto || 0), 0);
-                const delta = matchRec ? Math.abs((Number(f.rcv.monto_neto) || 0) - montoRec) : 0;
+                const netoFac = Number(f.rcv.monto_neto) || 0;
+                const deltaSign = netoFac - montoRec; // positivo = factura > recepción (falta mercadería)
+                const delta = Math.abs(deltaSign);
+                // Clasificar el estado del match:
+                // - "completa": delta neto <= 1% o <= $500
+                // - "parcial": factura > recepción (falta mercadería por llegar) o discrepancias pendientes
+                // - "excedente": recepción > factura (raro, revisar)
+                const umbralDelta = Math.max(500, netoFac * 0.01);
+                let estadoMatch: "completa" | "parcial" | "excedente" = "completa";
+                if (matchRec) {
+                  if (deltaSign > umbralDelta) estadoMatch = "parcial";
+                  else if (deltaSign < -umbralDelta) estadoMatch = "excedente";
+                }
                 // NC esperada: por cada discrepancia PENDIENTE, delta = (fac - precio real) × qty
                 // Precio real: 1º catálogo del proveedor (pactado), 2º WAC (fallback)
                 const provNorm = normProv(f.rcv.razon_social || "");
@@ -330,10 +342,25 @@ export default function AdminConciliacionDocs() {
                       <td className="mono" style={{ padding: "7px 10px", textAlign: "right", fontWeight: 600 }}>{fmtMoney(f.rcv.monto_total)}</td>
                       <td style={{ padding: "7px 10px" }}>
                         {matchRec ? (
-                          <span style={{ color: "var(--green)", fontSize: 10, fontWeight: 600 }}>
-                            ✓ {f.recepciones.map(r => r.folio).join(", ")}
-                            {delta > 100 && <span style={{ color: "var(--amber)", marginLeft: 6 }}>Δ {fmtMoney(delta)}</span>}
-                          </span>
+                          estadoMatch === "completa" ? (
+                            <span style={{ color: "var(--green)", fontSize: 10, fontWeight: 600 }}>
+                              ✓ {f.recepciones.map(r => r.folio).join(", ")}
+                            </span>
+                          ) : estadoMatch === "parcial" ? (
+                            <span style={{ fontSize: 10, fontWeight: 600 }}>
+                              <span style={{ color: "var(--amber)" }}>🟡 Parcial</span>
+                              <span style={{ color: "var(--txt3)", marginLeft: 4 }}>{f.recepciones.map(r => r.folio).join(", ")}</span>
+                              <br />
+                              <span style={{ color: "var(--amber)", fontSize: 9 }}>Falta {fmtMoney(delta)}</span>
+                            </span>
+                          ) : (
+                            <span style={{ fontSize: 10, fontWeight: 600 }}>
+                              <span style={{ color: "var(--red)" }}>🔴 Excedente</span>
+                              <span style={{ color: "var(--txt3)", marginLeft: 4 }}>{f.recepciones.map(r => r.folio).join(", ")}</span>
+                              <br />
+                              <span style={{ color: "var(--red)", fontSize: 9 }}>Sobra {fmtMoney(delta)}</span>
+                            </span>
+                          )
                         ) : (
                           <span style={{ color: "var(--amber)", fontSize: 10 }}>⚠ sin recepción</span>
                         )}
@@ -373,6 +400,19 @@ export default function AdminConciliacionDocs() {
                                 {f.recepciones.map(r => (
                                   <div key={r.id}><span className="mono">{r.folio}</span> · {r.estado} · {fmtDate(r.created_at)} · {fmtMoney(r.costo_neto)}</div>
                                 ))}
+                                {estadoMatch === "parcial" && (
+                                  <div style={{ marginTop: 6, padding: 8, borderRadius: 4, background: "var(--amberBg)", border: "1px solid var(--amberBd)", fontSize: 10, color: "var(--amber)" }}>
+                                    🟡 <strong>Recepción parcial.</strong> Factura: {fmtMoney(netoFac)} · Recibido: {fmtMoney(montoRec)} · <strong>Falta: {fmtMoney(delta)}</strong> neto
+                                    <div style={{ color: "var(--txt3)", marginTop: 3 }}>
+                                      Cuando llegue el resto de la mercadería, ingresá otra recepción con el mismo folio {f.rcv.nro_doc} y proveedor {f.rcv.razon_social}.
+                                    </div>
+                                  </div>
+                                )}
+                                {estadoMatch === "excedente" && (
+                                  <div style={{ marginTop: 6, padding: 8, borderRadius: 4, background: "var(--redBg)", border: "1px solid var(--redBd)", fontSize: 10, color: "var(--red)" }}>
+                                    🔴 <strong>Recepción excede factura.</strong> Factura: {fmtMoney(netoFac)} · Recibido: {fmtMoney(montoRec)} · <strong>Sobra: {fmtMoney(delta)}</strong> — revisar duplicados o doble ingreso.
+                                  </div>
+                                )}
                               </div>
                             )}
                             {f.ncs.length > 0 && (
