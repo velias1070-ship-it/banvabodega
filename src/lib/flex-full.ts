@@ -11,9 +11,14 @@
  *   - v4 (2026-04-21, 21f68f8): "funcion canon" colapsa v3 a
  *     para_full = stock_bodega - para_flex = buffer_ml. Regresion: el motor
  *     nunca propone mandar mas que buffer al Full. Sesgo pro-Flex absoluto.
- *   - v5 (este codigo, 2026-04-23): restaura logica v3 dentro de la funcion
- *     canon. Reserva Flex = max(buffer_ml, vel × pct_flex × target/7).
- *     mandar_full = min(deficit_full, disponibleParaFull).
+ *   - v5 (2026-04-23 primera iteracion): restaura logica v3 dentro de la
+ *     funcion canon. Reserva Flex = max(buffer_ml, vel × pct_flex × target/7).
+ *   - v6 (2026-04-23 final): stock_en_transito NO entra en deficit_full.
+ *     Regla de Vicente: "mandar a Full solo debe ver lo que hay realmente
+ *     en bodega". stock_en_transito solo sirve para pedir_proveedor (evitar
+ *     sobrepedir al proveedor). Esto evita el sesgo pro-espera: antes, si
+ *     OC por 60 uds estaba en camino, el motor frenaba cualquier envio a
+ *     Full aunque el Full se estuviera vaciando ahora.
  *
  * Contrato:
  *   - `para_full` = lo que efectivamente se manda a Full en este ciclo
@@ -77,9 +82,14 @@ export function calcularEstadoFlexFull(ctx: FlexFullContext): FlexFullState {
   const reservaFlex = Math.max(ctx.buffer_ml, Math.ceil(targetFlexUds));
   const disponibleParaFull = Math.max(0, ctx.stock_bodega - reservaFlex);
 
-  // Deficit Full = cuanto falta en Full para alcanzar targetFullUds,
-  // contando stock_en_transito como futuro disponible para Full.
-  const deficit_full = targetFullUds - ctx.stock_full - ctx.stock_en_transito;
+  // Deficit Full: solo considera lo que hay FISICAMENTE hoy (stock_full).
+  // stock_en_transito NO se usa aca: esas uds estan en camino del proveedor,
+  // no en bodega, y desde bodega es de donde se puede despachar a Full ahora.
+  // stock_en_transito solo se usa en pedir_proveedor (evitar pedir de mas).
+  // Regla de negocio (Vicente, 2026-04-23): "el mandar a Full solo deberia
+  // ver lo que hay realmente en bodega". Evita el sesgo de confiar en
+  // promesas de OC que pueden demorar o llegar parciales.
+  const deficit_full = targetFullUds - ctx.stock_full;
   const mandar_full = Math.max(0, Math.min(Math.ceil(deficit_full), disponibleParaFull));
 
   // Particion derivada: lo que va al Full + lo que queda en bodega = stock_bodega

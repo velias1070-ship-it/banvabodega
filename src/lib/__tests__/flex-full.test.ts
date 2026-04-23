@@ -134,7 +134,10 @@ describe("calcularEstadoFlexFull — mandar_full con reserva Flex (v3 restaurada
     expect(s.mandar_full).toBe(0);
   });
 
-  it("stock_en_transito cubre el deficit: mandar_full=0", () => {
+  it("stock_en_transito NO cubre deficit (regla v6): transito no es bodega", () => {
+    // targetFull = 10 × 1.0 × 6 = 60 → deficit_full = 60 - 5 = 55 (transito 100 NO resta)
+    // targetFlex = 0 → reservaFlex = max(2, 0) = 2 → disponibleParaFull = 10 - 2 = 8
+    // mandar_full = min(55, 8) = 8 (manda todo lo que puede desde bodega).
     const s = calcularEstadoFlexFull(ctx({
       stock_bodega: 10,
       stock_full: 5,
@@ -143,7 +146,7 @@ describe("calcularEstadoFlexFull — mandar_full con reserva Flex (v3 restaurada
       pct_full: 1.0,
       target_dias_full: 42,
     }));
-    expect(s.mandar_full).toBe(0);
+    expect(s.mandar_full).toBe(8);
   });
 
   it("vel=0 (SKU sin historia): reservaFlex cae al piso buffer_ml, deficit=0 → mandar_full=0", () => {
@@ -233,5 +236,28 @@ describe("calcularEstadoFlexFull — testigos reales", () => {
     expect(s.mandar_full).toBe(56);
     expect(s.para_flex).toBe(45);
     expect(s.publicar_flex).toBe(43);
+  });
+
+  it("TXTPBL20200SK (pre-recepcion, OC 60 en transito): mandar lo que se pueda YA desde bodega", () => {
+    // Hoy: stock_bodega=41, stock_full=10, transito=60
+    // targetFull = 65 → deficit = 65 - 10 = 55 (transito NO resta, regla v6)
+    // targetFlex = 28 → reservaFlex = 28
+    // disponibleParaFull = 41 - 28 = 13
+    // mandar_full = min(55, 13) = 13 ← manda YA lo que puede, no espera OC
+    const s = calcularEstadoFlexFull({
+      sku_origen: "TXTPBL20200SK",
+      stock_bodega: 41,
+      stock_full: 10,
+      stock_en_transito: 60,
+      vel_ponderada: 15.48,
+      pct_full: 0.7,
+      target_dias_full: 42,
+      buffer_ml: 2,
+      unidades_pack_venta: 1,
+      abc: "A",
+    });
+    expect(s.mandar_full).toBe(13);
+    expect(s.para_flex).toBe(28);
+    expect(s.publicar_flex).toBe(26);
   });
 });
