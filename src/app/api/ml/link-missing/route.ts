@@ -45,55 +45,65 @@ export async function POST() {
     let offset = 0;
     let total = 0;
 
-    while (true) {
-      const searchRes = await fetch(
-        `https://api.mercadolibre.com/users/${cfg.seller_id}/items/search?limit=50&offset=${offset}&status=active,paused`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      const searchData = await searchRes.json();
-      if (!searchData.results || searchData.results.length === 0) break;
-      total = searchData.paging?.total || 0;
+    // Iterar por cada status incluyendo closed/inactive/under_review. Antes
+    // solo traia active+paused, dejando items con status cerrado invisibles
+    // aunque tuvieran inventory_id valido (caso JSAFAB437P15W, 2026-04-23).
+    // Solo linkea si inventory_id matchea productos.codigo_ml (invariante),
+    // asi ampliar a mas status no mete items basura, solo recupera huerfanos.
+    const statuses = ["active", "paused", "closed", "under_review", "inactive"];
+    outer: for (const status of statuses) {
+      offset = 0;
+      while (true) {
+        const searchRes = await fetch(
+          `https://api.mercadolibre.com/users/${cfg.seller_id}/items/search?limit=50&offset=${offset}&status=${status}`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        const searchData = await searchRes.json();
+        if (!searchData.results || searchData.results.length === 0) break;
+        total = searchData.paging?.total || 0;
 
-      // Fetch each item to get inventory_id
-      for (const itemId of searchData.results) {
-        // Skip if we already found all missing
-        if (itemInvMap.size >= missingInvIds.size) break;
+        // Fetch each item to get inventory_id
+        for (const itemId of searchData.results) {
+          // Skip if we already found all missing
+          if (itemInvMap.size >= missingInvIds.size) break outer;
 
-        const itemRes = await fetch(`https://api.mercadolibre.com/items/${itemId}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        const item = await itemRes.json();
-        if (!item.id) continue;
-
-        // Check main inventory_id
-        if (item.inventory_id && missingInvIds.has(item.inventory_id.toUpperCase())) {
-          itemInvMap.set(item.inventory_id.toUpperCase(), {
-            item_id: item.id,
-            user_product_id: item.user_product_id || null,
-            title: (item.title || "").substring(0, 100),
-            available_quantity: item.available_quantity || 0,
-            variation_id: null,
+          const itemRes = await fetch(`https://api.mercadolibre.com/items/${itemId}`, {
+            headers: { Authorization: `Bearer ${token}` },
           });
-        }
-        // Check variations
-        if (item.variations) {
-          for (const v of item.variations) {
-            if (v.inventory_id && missingInvIds.has(v.inventory_id.toUpperCase())) {
-              itemInvMap.set(v.inventory_id.toUpperCase(), {
-                item_id: item.id,
-                user_product_id: item.user_product_id || null,
-                title: (item.title || "").substring(0, 100),
-                available_quantity: v.available_quantity || 0,
-                variation_id: v.id || null,
-              });
+          const item = await itemRes.json();
+          if (!item.id) continue;
+
+          // Check main inventory_id
+          if (item.inventory_id && missingInvIds.has(item.inventory_id.toUpperCase())) {
+            itemInvMap.set(item.inventory_id.toUpperCase(), {
+              item_id: item.id,
+              user_product_id: item.user_product_id || null,
+              title: (item.title || "").substring(0, 100),
+              available_quantity: item.available_quantity || 0,
+              variation_id: null,
+            });
+          }
+          // Check variations
+          if (item.variations) {
+            for (const v of item.variations) {
+              if (v.inventory_id && missingInvIds.has(v.inventory_id.toUpperCase())) {
+                itemInvMap.set(v.inventory_id.toUpperCase(), {
+                  item_id: item.id,
+                  user_product_id: item.user_product_id || null,
+                  title: (item.title || "").substring(0, 100),
+                  available_quantity: v.available_quantity || 0,
+                  variation_id: v.id || null,
+                });
+              }
             }
           }
         }
-      }
 
-      offset += 50;
-      if (offset >= total || itemInvMap.size >= missingInvIds.size) break;
-      await new Promise(r => setTimeout(r, 100));
+        offset += 50;
+        if (offset >= total) break;
+        await new Promise(r => setTimeout(r, 100));
+      }
+      if (itemInvMap.size >= missingInvIds.size) break;
     }
 
     // 6. Insert found items into ml_items_map
