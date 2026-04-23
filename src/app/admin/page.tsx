@@ -5642,8 +5642,10 @@ function Inventario() {
   const [soloComprometidos, setSoloComprometidos] = useState(false);
   const [soloSinFlex, setSoloSinFlex] = useState(false);
   const [soloSinFull, setSoloSinFull] = useState(false);
+  const [soloSinMapping, setSoloSinMapping] = useState(false);
   const [skusConFlex, setSkusConFlex] = useState<Set<string>>(new Set());
   const [skusConFull, setSkusConFull] = useState<Set<string>>(new Set());
+  const [skusConMapping, setSkusConMapping] = useState<Set<string>>(new Set());
   const [,setTick] = useState(0);
   const refresh = useCallback(() => setTick(t => t + 1), []);
   const s = getStore();
@@ -5677,11 +5679,11 @@ function Inventario() {
         svToOrigen[c.sku_venta] = c.sku_origen;
       }
       const flexSet = new Set<string>();
+      const mappingSet = new Set<string>();
       for (const i of ((itemsRes.data || []) as {sku:string;sku_origen:string|null;stock_flex_cache:number|null}[])) {
-        if ((i.stock_flex_cache || 0) > 0) {
-          const origen = i.sku_origen || svToOrigen[i.sku] || i.sku;
-          flexSet.add(origen);
-        }
+        const origen = i.sku_origen || svToOrigen[i.sku] || i.sku;
+        mappingSet.add(origen);
+        if ((i.stock_flex_cache || 0) > 0) flexSet.add(origen);
       }
       const fullSet = new Set<string>();
       for (const r of ((fullRes.data || []) as {sku_venta:string;cantidad:number}[])) {
@@ -5692,6 +5694,7 @@ function Inventario() {
       }
       setSkusConFlex(flexSet);
       setSkusConFull(fullSet);
+      setSkusConMapping(mappingSet);
     })();
   }, []);
 
@@ -5777,10 +5780,12 @@ function Inventario() {
   const skusComprometidos = allSkus.filter(sku => (stockProy.get(sku)?.reserved || 0) > 0);
   const skusSinFlex = allSkus.filter(sku => skuTotal(sku) > 0 && !skusConFlex.has(sku));
   const skusSinFull = allSkus.filter(sku => skuTotal(sku) > 0 && !skusConFull.has(sku));
+  const skusSinMapping = allSkus.filter(sku => skuTotal(sku) > 0 && !skusConMapping.has(sku) && (s.products[sku]?.estadoSku || "activo") !== "descontinuado");
   const filteredSkus = soloComprometidos ? skusComprometidos
     : soloSinEtiquetar ? skusSinEtiquetar
     : soloSinFlex ? skusSinFlex
     : soloSinFull ? skusSinFull
+    : soloSinMapping ? skusSinMapping
     : allSkus;
   const grandTotal = filteredSkus.reduce((s,sku)=>s+skuTotal(sku),0);
 
@@ -6349,6 +6354,27 @@ function Inventario() {
 
   return (
     <div>
+      {skusSinMapping.length > 0 && !soloSinMapping && (
+        <div className="card" style={{borderLeft:"4px solid var(--red)",background:"var(--redBg)",marginBottom:8}}>
+          <div style={{display:"flex",alignItems:"center",gap:12,justifyContent:"space-between"}}>
+            <div style={{display:"flex",alignItems:"center",gap:10}}>
+              <div style={{fontSize:28}}>🚨</div>
+              <div>
+                <div style={{fontSize:14,fontWeight:700,color:"var(--red)"}}>
+                  {skusSinMapping.length} SKU{skusSinMapping.length!==1?"s":""} con stock pero SIN publicación ML
+                </div>
+                <div style={{fontSize:11,color:"var(--txt2)",marginTop:2}}>
+                  El sistema intenta sincronizar pero no encuentra mapping en ml_items_map → no se hace PUT a ML. Stock invisible para ventas.
+                </div>
+              </div>
+            </div>
+            <button onClick={()=>{setSoloSinMapping(true);setSoloSinEtiquetar(false);setSoloComprometidos(false);setSoloSinFlex(false);setSoloSinFull(false);}}
+              style={{padding:"10px 18px",borderRadius:8,background:"var(--red)",color:"#fff",fontWeight:700,fontSize:12,border:"none",cursor:"pointer",whiteSpace:"nowrap"}}>
+              Ver los {skusSinMapping.length} SKUs →
+            </button>
+          </div>
+        </div>
+      )}
       <div className="card">
         {/* ═══ FILA 1: BUSQUEDA HERO + MENU ACCIONES ═══ */}
         <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:10}}>
@@ -6406,27 +6432,33 @@ function Inventario() {
               border:viewMode==="ml"?"1px solid var(--amber)":"1px solid var(--bg4)"}}>🛒 Publicaciones ML</button>
           </div>
           {viewMode === "fisico" && (<>
-            <button onClick={()=>{setSoloSinEtiquetar(!soloSinEtiquetar);setSoloComprometidos(false);setSoloSinFlex(false);setSoloSinFull(false);}} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
+            <button onClick={()=>{setSoloSinEtiquetar(!soloSinEtiquetar);setSoloComprometidos(false);setSoloSinFlex(false);setSoloSinFull(false);setSoloSinMapping(false);}} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
               background:soloSinEtiquetar?"var(--amberBg)":"var(--bg3)",color:soloSinEtiquetar?"var(--amber)":"var(--txt3)",
               border:soloSinEtiquetar?"1px solid var(--amber)":"1px solid var(--bg4)"}}>
               Sin etiquetar ({skusSinEtiquetar.length})
             </button>
-            <button onClick={()=>{setSoloComprometidos(!soloComprometidos);setSoloSinEtiquetar(false);setSoloSinFlex(false);setSoloSinFull(false);}} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
+            <button onClick={()=>{setSoloComprometidos(!soloComprometidos);setSoloSinEtiquetar(false);setSoloSinFlex(false);setSoloSinFull(false);setSoloSinMapping(false);}} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
               background:soloComprometidos?"var(--amberBg)":"var(--bg3)",color:soloComprometidos?"var(--amber)":"var(--txt3)",
               border:soloComprometidos?"1px solid var(--amber)":"1px solid var(--bg4)"}}>
               Comprometidos ({skusComprometidos.length})
             </button>
-            <button onClick={()=>{setSoloSinFlex(!soloSinFlex);setSoloSinEtiquetar(false);setSoloComprometidos(false);setSoloSinFull(false);}} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
+            <button onClick={()=>{setSoloSinFlex(!soloSinFlex);setSoloSinEtiquetar(false);setSoloComprometidos(false);setSoloSinFull(false);setSoloSinMapping(false);}} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
               background:soloSinFlex?"var(--cyanBg)":"var(--bg3)",color:soloSinFlex?"var(--cyan)":"var(--txt3)",
               border:soloSinFlex?"1px solid var(--cyan)":"1px solid var(--bg4)"}}
               title="Con stock en bodega pero 0 publicado en Flex (posiblemente bloqueados por buffer)">
               Sin Flex ({skusSinFlex.length})
             </button>
-            <button onClick={()=>{setSoloSinFull(!soloSinFull);setSoloSinEtiquetar(false);setSoloComprometidos(false);setSoloSinFlex(false);}} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
+            <button onClick={()=>{setSoloSinFull(!soloSinFull);setSoloSinEtiquetar(false);setSoloComprometidos(false);setSoloSinFlex(false);setSoloSinMapping(false);}} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
               background:soloSinFull?"var(--blueBg)":"var(--bg3)",color:soloSinFull?"var(--blue)":"var(--txt3)",
               border:soloSinFull?"1px solid var(--blue)":"1px solid var(--bg4)"}}
               title="Con stock en bodega pero 0 en Full">
               Sin Full ({skusSinFull.length})
+            </button>
+            <button onClick={()=>{setSoloSinMapping(!soloSinMapping);setSoloSinEtiquetar(false);setSoloComprometidos(false);setSoloSinFlex(false);setSoloSinFull(false);}} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
+              background:soloSinMapping?"var(--redBg)":"var(--bg3)",color:soloSinMapping?"var(--red)":"var(--txt3)",
+              border:soloSinMapping?"1px solid var(--red)":"1px solid var(--bg4)"}}
+              title="Con stock en bodega pero sin registro en ml_items_map (stock invisible para ventas)">
+              🚨 Sin mapping ML ({skusSinMapping.length})
             </button>
           </>)}
           <div style={{flex:1}}/>
