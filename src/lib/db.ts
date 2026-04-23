@@ -18,6 +18,7 @@ export interface DBProduct {
   tamano: string;
   color: string;
   inner_pack?: number | null;
+  estado_sku?: string | null;
 }
 
 export interface DBComposicionVenta {
@@ -211,6 +212,7 @@ function cleanProduct(p: DBProduct): DBProduct {
     costo: p.costo, precio: p.precio, reorder: p.reorder,
     requiere_etiqueta: p.requiere_etiqueta, tamano: p.tamano, color: p.color,
     inner_pack: p.inner_pack,
+    estado_sku: p.estado_sku ?? null,
   };
 }
 

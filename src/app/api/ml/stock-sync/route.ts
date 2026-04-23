@@ -128,6 +128,19 @@ export async function POST(req: NextRequest) {
     // decidir el split de mandar_full, pero no debe gatear la publicación.
     // calcularEstadoFlexFull sigue siendo consumida por intelligence.ts.
 
+    // 5b. Cargar estado_sku por sku_origen. Si estado_sku='agotar' → buffer=0
+    // para publicar toda unidad en bodega (caso: SKU descontinuado con 1 uds).
+    const { data: prodEstados, error: prodEstErr } = await sb.from("productos")
+      .select("sku, estado_sku");
+    if (prodEstErr) {
+      console.error(`[ML Stock Sync] productos.estado_sku query failed: ${prodEstErr.message}`);
+    }
+    const estadoBySkuOrigen: Record<string, string | null> = {};
+    for (const p of (prodEstados || []) as { sku: string; estado_sku: string | null }[]) {
+      estadoBySkuOrigen[p.sku] = p.estado_sku;
+    }
+    let agotarCount = 0;
+
     console.log(`[ML Stock Sync] Processing ${expandedSkus.size} SKUs (${skus.length} queued + siblings)`);
     const uniqueSkus = Array.from(expandedSkus);
     let synced = 0;
@@ -149,7 +162,9 @@ export async function POST(req: NextRequest) {
         const comp = compMap[sku];
         const skuOrigen = comp?.sku_origen || mlSkuOrigen[sku] || sku;
         const unidadesPack = comp?.unidades || 1;
-        const buffer = sharedOrigins.has(skuOrigen) ? 4 : 2;
+        const esAgotar = estadoBySkuOrigen[skuOrigen] === "agotar";
+        const buffer = esAgotar ? 0 : (sharedOrigins.has(skuOrigen) ? 4 : 2);
+        if (esAgotar) agotarCount++;
 
         // 7. Get disponible from v_stock_disponible by sku_origen
         const { data: stockRow } = await sb.from("v_stock_disponible")
@@ -182,6 +197,7 @@ export async function POST(req: NextRequest) {
       synced,
       total: processed.length,
       remaining,
+      agotar_bypassed: agotarCount,
       errors: errors.length > 0 ? errors : undefined,
       enqueue_all_ran: enqueueAllRan,
       enqueue_all_inserted: enqueueAllInserted,

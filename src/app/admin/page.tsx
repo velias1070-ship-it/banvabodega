@@ -6937,7 +6937,7 @@ function Productos({ refresh }: { refresh: () => void }) {
   const save=()=>{
     if(!form.sku||!form.name)return;
     const sku=form.sku.toUpperCase();
-    s.products[sku]={sku,skuVenta:"",name:form.name!,mlCode:form.mlCode||"",cat:form.cat||"Otros",prov:form.prov||"Otro",cost:form.cost||0,costAvg:s.products[sku]?.costAvg||form.cost||0,price:form.price||0,reorder:form.reorder||20};
+    s.products[sku]={sku,skuVenta:"",name:form.name!,mlCode:form.mlCode||"",cat:form.cat||"Otros",prov:form.prov||"Otro",cost:form.cost||0,costAvg:s.products[sku]?.costAvg||form.cost||0,price:form.price||0,reorder:form.reorder||20,estadoSku:form.estadoSku||null};
     saveStore();setShowAdd(false);setEditSku(null);refresh();
   };
   const remove=(sku:string)=>{
@@ -6989,6 +6989,25 @@ function Productos({ refresh }: { refresh: () => void }) {
             <div className="form-group"><label className="form-label">Proveedor</label><select className="form-select" value={form.prov} onChange={e=>setForm({...form,prov:e.target.value})}>{getProveedores().map(p=><option key={p}>{p}</option>)}</select></div>
             <div className="form-group"><label className="form-label">Costo</label><input type="number" className="form-input mono" value={form.cost||""} onChange={e=>setForm({...form,cost:parseInt(e.target.value)||0})}/></div>
             <div className="form-group"><label className="form-label">Precio ML</label><input type="number" className="form-input mono" value={form.price||""} onChange={e=>setForm({...form,price:parseInt(e.target.value)||0})}/></div>
+            <div className="form-group" style={{gridColumn:"span 2"}}>
+              <label className="form-label">Estado SKU</label>
+              <div style={{display:"flex",gap:6}}>
+                {([["activo","✓ Activo","var(--green)"],["agotar","🏁 Agotar","var(--amber)"],["descontinuado","✕ Descontinuado","var(--red)"]] as const).map(([val,label,color])=>{
+                  const active = (form.estadoSku||"activo") === val;
+                  return (
+                    <button key={val} type="button" onClick={()=>setForm({...form,estadoSku:val==="activo"?null:val})}
+                      style={{flex:1,padding:"8px 10px",borderRadius:6,fontSize:11,fontWeight:700,cursor:"pointer",
+                        background:active?color:"var(--bg3)",color:active?"#000":"var(--txt2)",
+                        border:`1px solid ${active?color:"var(--bg4)"}`}}>{label}</button>
+                  );
+                })}
+              </div>
+              {form.estadoSku==="agotar" && (
+                <div style={{fontSize:10,color:"var(--amber)",marginTop:4,lineHeight:1.4}}>
+                  Publica toda unidad en bodega ignorando buffer (2/4). Útil para SKUs que no repondrás.
+                </div>
+              )}
+            </div>
           </div>
           <div style={{display:"flex",gap:8,marginTop:12}}>
             <button onClick={()=>{setShowAdd(false);setEditSku(null);}} style={{flex:1,padding:10,borderRadius:8,background:"var(--bg3)",color:"var(--txt3)",fontWeight:600,border:"1px solid var(--bg4)"}}>Cancelar</button>
@@ -7007,7 +7026,11 @@ function Productos({ refresh }: { refresh: () => void }) {
               const stock = skuTotal(p.sku);
               return (
               <tr key={p.sku}>
-                <td className="mono" style={{fontWeight:700,fontSize:12}}>{p.sku}</td>
+                <td className="mono" style={{fontWeight:700,fontSize:12}}>
+                  {p.sku}
+                  {p.estadoSku==="agotar" && <div style={{fontSize:9,fontWeight:700,color:"var(--amber)",marginTop:2}}>🏁 AGOTAR</div>}
+                  {p.estadoSku==="descontinuado" && <div style={{fontSize:9,fontWeight:700,color:"var(--red)",marginTop:2}}>✕ DESCONTINUADO</div>}
+                </td>
                 <td style={{fontSize:12}}>{p.name}</td>
                 <td style={{fontSize:11}}>
                   {ventas.length > 0 ? ventas.map((v, i) => {

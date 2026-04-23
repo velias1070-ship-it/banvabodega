@@ -21,6 +21,7 @@ export interface Product {
   tamano?: string;
   color?: string;
   innerPack?: number | null;
+  estadoSku?: string | null;
 }
 
 export interface ComposicionVenta {
@@ -148,6 +149,7 @@ export async function initStore(): Promise<void> {
         requiresLabel: p.requiere_etiqueta,
         tamano: p.tamano || "", color: p.color || "",
         innerPack: p.inner_pack,
+        estadoSku: p.estado_sku ?? null,
       };
     }
 
@@ -267,6 +269,7 @@ async function flushToSupabase() {
       reorder: p.reorder, requiere_etiqueta: p.requiresLabel !== false,
       tamano: p.tamano || "", color: p.color || "",
       inner_pack: p.innerPack ?? null,
+      estado_sku: p.estadoSku ?? null,
     }));
     if (dbProds.length > 0) await db.upsertProductos(dbProds);
 

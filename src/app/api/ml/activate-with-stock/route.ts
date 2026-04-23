@@ -46,7 +46,12 @@ export async function POST(req: NextRequest) {
     const { data: siblings } = await sb.from("composicion_venta")
       .select("sku_venta").eq("sku_origen", skuOrigen);
     const isShared = (siblings || []).length > 1;
-    const buffer = isShared ? 4 : 2;
+
+    // estado_sku='agotar' → buffer=0 para publicar toda unidad en bodega.
+    const { data: prodEstado } = await sb.from("productos")
+      .select("estado_sku").eq("sku", skuOrigen).maybeSingle();
+    const esAgotar = (prodEstado as { estado_sku: string | null } | null)?.estado_sku === "agotar";
+    const buffer = esAgotar ? 0 : (isShared ? 4 : 2);
 
     // Get disponible from v_stock_disponible
     const { data: stockRow } = await sb.from("v_stock_disponible")
@@ -54,7 +59,7 @@ export async function POST(req: NextRequest) {
     const disponibleOrigen = Math.max(0, (stockRow as { disponible: number } | null)?.disponible ?? 0);
     const available = Math.max(0, Math.floor((disponibleOrigen - buffer) / unidadesPack));
 
-    steps.push(`sku_origen=${skuOrigen}, disponible=${disponibleOrigen}, buffer=${buffer}, pack=${unidadesPack} → publicar=${available}`);
+    steps.push(`sku_origen=${skuOrigen}, disponible=${disponibleOrigen}, buffer=${buffer}${esAgotar ? " (AGOTAR)" : ""}, pack=${unidadesPack} → publicar=${available}`);
 
     if (available <= 0) {
       return NextResponse.json({
