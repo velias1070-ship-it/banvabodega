@@ -837,7 +837,9 @@ export default function AdminVentasML({ modo }: { modo?: VentasMlModo } = {}) {
           comision: s.comision + (o.comision_total || 0),
           neto: s.neto + (o.total_neto ?? (o.subtotal - o.comision_total - o.costo_envio + (o.ingreso_envio || 0))),
           margen: s.margen + (o.margen || 0),
-        }), { subtotal: 0, comision: 0, neto: 0, margen: 0 });
+          margen_neto: s.margen_neto + (o.margen_neto ?? ((o.margen || 0) - (o.ads_cost_asignado || 0))),
+        }), { subtotal: 0, comision: 0, neto: 0, margen: 0, margen_neto: 0 });
+        const margenNetoPct = totales.subtotal > 0 ? (totales.margen_neto / totales.subtotal) * 100 : 0;
         return (
         <div className="card" style={{ padding: 0, overflow: "hidden" }}>
           <div style={{ padding: 12, borderBottom: "1px solid var(--bg3)", display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
@@ -863,7 +865,8 @@ export default function AdminVentasML({ modo }: { modo?: VentasMlModo } = {}) {
                 <span style={{ marginLeft: 10, color: "var(--txt3)" }}>
                   | Subtotal <span className="mono" style={{ color: "var(--txt)" }}>{fmt(totales.subtotal)}</span>
                   {" · "}Neto <span className="mono" style={{ color: "var(--green)" }}>{fmt(totales.neto)}</span>
-                  {" · "}Margen <span className="mono" style={{ color: totales.margen >= 0 ? "var(--green)" : "var(--red)" }}>{fmt(totales.margen)}</span>
+                  {" · "}Margen neto <span className="mono" style={{ color: totales.margen_neto >= 0 ? "var(--green)" : "var(--red)" }}>{fmt(totales.margen_neto)}</span>
+                  <span className="mono" style={{ color: margenNetoPct >= 15 ? "var(--green)" : margenNetoPct >= 0 ? "var(--amber)" : "var(--red)", marginLeft: 4 }}>({margenNetoPct.toFixed(1)}%)</span>
                 </span>
               )}
             </div>

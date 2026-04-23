@@ -97,6 +97,7 @@ export interface DBRecepcion {
   iva?: number;
   costo_bruto?: number;
   factura_original?: FacturaOriginal | null;
+  orden_compra_id?: string | null;
 }
 
 export interface FacturaOriginal {

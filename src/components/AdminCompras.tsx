@@ -10,6 +10,9 @@ import {
 import type { DBOrdenCompra, DBOrdenCompraLinea, DBRecepcion, DBRecepcionLinea, OCEstado } from "@/lib/db";
 import { getSupabase } from "@/lib/supabase";
 import { exportarOCExcel } from "@/lib/oc-export";
+import dynamic from "next/dynamic";
+
+const AdminConciliacionDocs = dynamic(() => import("./AdminConciliacionDocs"), { ssr: false });
 
 // ============================================
 // Helpers
@@ -68,7 +71,7 @@ interface FaltanteCatalogo {
 }
 
 export default function AdminCompras() {
-  const [tab, setTab] = useState<"ocs" | "proveedores" | "catalogo">("ocs");
+  const [tab, setTab] = useState<"ocs" | "proveedores" | "catalogo" | "conciliacion">("ocs");
   const [ocs, setOcs] = useState<DBOrdenCompra[]>([]);
   const [loading, setLoading] = useState(true);
   const [filtroEstado, setFiltroEstado] = useState<string>("todos");
@@ -961,7 +964,7 @@ export default function AdminCompras() {
     <div style={{ padding: "0 4px" }}>
       {/* Tabs */}
       <div style={{ display: "flex", gap: 4, marginBottom: 12, borderBottom: "1px solid var(--bg4)" }}>
-        {(["ocs", "proveedores", "catalogo"] as const).map(t => (
+        {(["ocs", "proveedores", "catalogo", "conciliacion"] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
             style={{
               padding: "8px 14px", border: "none", background: "none",
@@ -969,7 +972,10 @@ export default function AdminCompras() {
               borderBottom: tab === t ? "2px solid var(--cyan)" : "2px solid transparent",
               fontSize: 12, fontWeight: 700, cursor: "pointer",
             }}>
-            {t === "ocs" ? "Órdenes de Compra" : t === "proveedores" ? "Proveedores" : "Cargar Catálogo"}
+            {t === "ocs" ? "Órdenes de Compra"
+              : t === "proveedores" ? "Proveedores"
+              : t === "catalogo" ? "Cargar Catálogo"
+              : "🧾 Conciliación"}
           </button>
         ))}
       </div>
@@ -1165,6 +1171,8 @@ export default function AdminCompras() {
             </>
           )}
         </div>
+      ) : tab === "conciliacion" ? (
+        <AdminConciliacionDocs />
       ) : (<>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
         <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Compras — Órdenes de Compra</h2>
