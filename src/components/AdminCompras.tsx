@@ -89,17 +89,22 @@ export default function AdminCompras() {
   const [faltSelected, setFaltSelected] = useState<Set<string>>(new Set());
   const [faltSaving, setFaltSaving] = useState(false);
   const [faltResult, setFaltResult] = useState<string | null>(null);
+  const [faltProveedor, setFaltProveedor] = useState<string>("");
+  const [faltIncluirTodos, setFaltIncluirTodos] = useState<boolean>(false);
 
   const cargarFaltantes = useCallback(async () => {
     setFaltLoading(true);
     setFaltResult(null);
     try {
-      const res = await fetch("/api/proveedor-catalogo/faltantes");
+      const params = new URLSearchParams();
+      if (faltProveedor) params.set("proveedor", faltProveedor);
+      if (faltIncluirTodos) params.set("incluir_todos", "1");
+      const qs = params.toString();
+      const res = await fetch(`/api/proveedor-catalogo/faltantes${qs ? "?" + qs : ""}`);
       if (res.ok) {
         const data = await res.json();
         const list = (data.faltantes || []) as FaltanteCatalogo[];
         setFaltantes(list);
-        // Pre-rellenar precios con WAC actual
         const precios = new Map<string, number>();
         for (const f of list) precios.set(f.sku, f.wac_actual);
         setFaltPrecios(precios);
@@ -108,7 +113,7 @@ export default function AdminCompras() {
     } finally {
       setFaltLoading(false);
     }
-  }, []);
+  }, [faltProveedor, faltIncluirTodos]);
 
   const aplicarFaltantes = useCallback(async () => {
     if (faltSelected.size === 0) return;
@@ -152,7 +157,7 @@ export default function AdminCompras() {
   }, []);
 
   useEffect(() => { if (tab === "proveedores") cargarProveedores(); }, [tab, cargarProveedores]);
-  useEffect(() => { if (tab === "catalogo") cargarFaltantes(); }, [tab, cargarFaltantes]);
+  useEffect(() => { if (tab === "catalogo") { cargarFaltantes(); cargarProveedores(); } }, [tab, cargarFaltantes, cargarProveedores]);
 
   const guardarProveedor = useCallback(async (p: ProveedorRow) => {
     const edits = provEdits.get(p.id);
@@ -1071,13 +1076,32 @@ export default function AdminCompras() {
             <div>
               <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Cargar precios al catálogo</h2>
               <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 4 }}>
-                SKUs A/B sin precio en proveedor_catalogo (excl. Idetex). El precio se pre-rellena con el WAC actual — ajustá donde corresponda.
+                SKUs sin precio en proveedor_catalogo. El precio se pre-rellena con el WAC actual — ajustá donde corresponda.
               </div>
             </div>
             <button onClick={cargarFaltantes} disabled={faltLoading}
               style={{ padding: "6px 12px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt2)", border: "1px solid var(--bg4)", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
               {faltLoading ? "Cargando..." : "Refrescar"}
             </button>
+          </div>
+
+          {/* Filtros */}
+          <div className="card" style={{ padding: 10, marginBottom: 12, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+            <div>
+              <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 3, textTransform: "uppercase" }}>Proveedor</div>
+              <select value={faltProveedor} onChange={e => setFaltProveedor(e.target.value)}
+                style={{ padding: "6px 10px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 12, minWidth: 180 }}>
+                <option value="">Todos (A/B)</option>
+                {proveedoresList.map(p => <option key={p.id} value={p.nombre}>{p.nombre}</option>)}
+              </select>
+            </div>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 11, color: "var(--txt2)", paddingTop: 14 }}>
+              <input type="checkbox" checked={faltIncluirTodos} onChange={e => setFaltIncluirTodos(e.target.checked)} />
+              Incluir todos los SKUs activos (ignorar filtro ABC)
+            </label>
+            <div style={{ fontSize: 10, color: "var(--txt3)", paddingTop: 14, flex: 1, textAlign: "right" }}>
+              {faltantes.length} SKU{faltantes.length === 1 ? "" : "s"} sin catálogo
+            </div>
           </div>
 
           {faltResult && (
@@ -1088,7 +1112,9 @@ export default function AdminCompras() {
 
           {faltantes.length === 0 ? (
             <div style={{ padding: 24, textAlign: "center", color: "var(--txt3)", fontSize: 13 }}>
-              {faltLoading ? "Cargando..." : "🎉 No hay SKUs A/B sin catálogo. Todos los críticos cubiertos."}
+              {faltLoading ? "Cargando..." : faltProveedor
+                ? `🎉 No hay SKUs de ${faltProveedor} sin catálogo con el filtro actual.`
+                : "🎉 No hay SKUs A/B sin catálogo. Todos los críticos cubiertos."}
             </div>
           ) : (
             <>

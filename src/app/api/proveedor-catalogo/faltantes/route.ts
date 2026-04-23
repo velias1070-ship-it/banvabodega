@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
 
 export const dynamic = "force-dynamic";
@@ -6,21 +6,30 @@ export const dynamic = "force-dynamic";
 /**
  * GET /api/proveedor-catalogo/faltantes
  *
- * Devuelve la lista de SKUs A/B (por margen O ingreso) que NO tienen
- * precio en proveedor_catalogo. Ordenados por margen_neto_30d desc.
+ * Devuelve la lista de SKUs que NO tienen precio en proveedor_catalogo.
+ * Ordenados por margen_neto_30d desc.
  *
- * Filtros: excluye Idetex (que ya tiene catálogo cargado en bulk).
- * Incluye TODOS los SKUs de Verbo Divino (no solo A/B) porque son pocos
- * y vale la pena cubrir el catálogo completo de ese proveedor.
+ * Query params:
+ *   - proveedor (string, opcional): filtrar por un proveedor específico.
+ *   - incluir_todos (=1): incluir TODOS los SKUs activos sin catálogo
+ *     del proveedor filtrado (sin filtrar por ABC). Útil para rellenar
+ *     catálogo de un proveedor completo.
+ *
+ * Por default (sin filtros): incluye SKUs A/B por margen o ingreso +
+ * Verbo Divino completo. Idetex se incluye también (antes se excluía).
  */
-export async function GET() {
+export async function GET(req: NextRequest) {
   const sb = getServerSupabase();
   if (!sb) return NextResponse.json({ error: "no_db" }, { status: 500 });
 
-  // 1. Productos con su WAC y proveedor (excluyendo Idetex)
-  const { data: prodData } = await sb.from("productos")
-    .select("sku, nombre, proveedor, costo_promedio, inner_pack")
-    .neq("proveedor", "Idetex");
+  const proveedorFiltro = req.nextUrl.searchParams.get("proveedor") || "";
+  const incluirTodos = req.nextUrl.searchParams.get("incluir_todos") === "1";
+
+  // 1. Productos con su WAC y proveedor
+  let prodQuery = sb.from("productos")
+    .select("sku, nombre, proveedor, costo_promedio, inner_pack, estado_sku");
+  if (proveedorFiltro) prodQuery = prodQuery.eq("proveedor", proveedorFiltro);
+  const { data: prodData } = await prodQuery;
 
   // 2. SKUs ya en catálogo con precio > 0
   const { data: catData } = await sb.from("proveedor_catalogo")
@@ -65,15 +74,21 @@ export async function GET() {
 
     const intel = intelMap.get(sku);
     const proveedor = (p.proveedor as string) || "Sin proveedor";
+    const activo = (p.estado_sku as string) !== "descontinuado";
 
-    // Verbo Divino: incluir TODOS sin importar ABC
-    // Otros: solo A o B (margen o ingreso)
-    const esVerboDivino = proveedor === "Verbo Divino";
-    const esAoB = intel && (
-      intel.abc_margen === "A" || intel.abc_margen === "B" ||
-      intel.abc_ingreso === "A" || intel.abc_ingreso === "B"
-    );
-    if (!esVerboDivino && !esAoB) continue;
+    // Modo "incluir_todos": trae todos los SKUs activos del proveedor filtrado
+    if (incluirTodos) {
+      if (!activo) continue;
+      // sigue adelante (sin filtro ABC)
+    } else {
+      // Default: Verbo Divino completo, resto solo A/B
+      const esVerboDivino = proveedor === "Verbo Divino";
+      const esAoB = intel && (
+        intel.abc_margen === "A" || intel.abc_margen === "B" ||
+        intel.abc_ingreso === "A" || intel.abc_ingreso === "B"
+      );
+      if (!esVerboDivino && !esAoB) continue;
+    }
 
     faltantes.push({
       sku,
