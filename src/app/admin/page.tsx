@@ -7080,6 +7080,19 @@ function SinMappingMLBlock({ sku, onLinked }: { sku: string; onLinked: () => voi
           </ul>
         </div>
       )}
+      {searched && !loading && results.length > 0 && results.every(r => r.ya_mapeado && !r.has_variations) && (
+        <div style={{padding:10,marginTop:6,background:"var(--amberBg)",border:"1px solid var(--amberBd)",borderRadius:6,fontSize:11,color:"var(--txt)"}}>
+          <strong style={{color:"var(--amber)"}}>⚠️ Todos los items devueltos ya están mapeados a OTROS SKUs.</strong>
+          <div style={{marginTop:4,lineHeight:1.4}}>
+            ML devolvió {results.length} match{results.length>1?"es":""} pero todos pertenecen a otras publicaciones. Probable causa: match heurístico de ML (familia de SKU similar). <strong>{sku}</strong> aparenta no tener publicación ML propia.
+          </div>
+          <div style={{marginTop:6,fontSize:11}}>Acciones sugeridas:</div>
+          <ul style={{marginTop:2,paddingLeft:18,lineHeight:1.5}}>
+            <li>Crear publicación nueva en ML y esperar el próximo sync</li>
+            <li>O marcar el SKU como <strong>🏁 agotar</strong> (si tenés poco stock y no querés crear pub) o <strong>✕ descontinuado</strong> (si ya no lo vendés) — botones arriba en el header del SKU</li>
+          </ul>
+        </div>
+      )}
       {results.length > 0 && (
         <div style={{marginTop:6}}>
           <div style={{fontSize:11,color:"var(--txt3)",marginBottom:6}}>{results.length} item{results.length!==1?"s":""} encontrado{results.length!==1?"s":""} en ML</div>
