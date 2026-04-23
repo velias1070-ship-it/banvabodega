@@ -2,9 +2,9 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   fetchEmpresaDefault, fetchRcvCompras, fetchRecepciones, fetchOrdenesCompra,
-  fetchDiscrepanciasGlobal,
+  fetchDiscrepanciasGlobal, fetchLineasDeRecepciones, fetchProductos,
 } from "@/lib/db";
-import type { DBRcvCompra, DBRecepcion, DBOrdenCompra, DBDiscrepanciaCosto } from "@/lib/db";
+import type { DBRcvCompra, DBRecepcion, DBOrdenCompra, DBDiscrepanciaCosto, DBRecepcionLinea, DBProduct } from "@/lib/db";
 
 const fmtInt = (n: number | null | undefined) => n == null ? "—" : Math.round(Number(n)).toLocaleString("es-CL");
 const fmtMoney = (n: number | null | undefined) => n == null ? "—" : "$" + Math.round(Number(n)).toLocaleString("es-CL");
@@ -28,6 +28,9 @@ export default function AdminConciliacionDocs() {
   const [recepciones, setRecepciones] = useState<DBRecepcion[]>([]);
   const [ocs, setOcs] = useState<DBOrdenCompra[]>([]);
   const [discs, setDiscs] = useState<DBDiscrepanciaCosto[]>([]);
+  const [lineasPorRec, setLineasPorRec] = useState<Map<string, DBRecepcionLinea[]>>(new Map());
+  const [lineasPorLineaId, setLineasPorLineaId] = useState<Map<string, DBRecepcionLinea>>(new Map());
+  const [productos, setProductos] = useState<Map<string, DBProduct>>(new Map());
   const [periodoFiltro, setPeriodoFiltro] = useState<string>(new Date().toISOString().slice(0, 7));
   const [subTab, setSubTab] = useState<SubTab>("facturas");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -36,16 +39,33 @@ export default function AdminConciliacionDocs() {
     setLoading(true);
     try {
       const empresa = await fetchEmpresaDefault();
-      const [rcvData, recData, ocData, dData] = await Promise.all([
+      const [rcvData, recData, ocData, dData, pData] = await Promise.all([
         empresa?.id ? fetchRcvCompras(empresa.id) : Promise.resolve([]),
         fetchRecepciones(),
         fetchOrdenesCompra(),
         fetchDiscrepanciasGlobal(),
+        fetchProductos(),
       ]);
       setRcv(rcvData);
       setRecepciones(recData);
       setOcs(ocData);
       setDiscs(dData);
+      setProductos(new Map(pData.map(p => [p.sku.toUpperCase().trim(), p])));
+      // Cargar líneas de recepción (para calcular qty y NC esperada)
+      const recIds = recData.map(r => r.id!).filter(Boolean);
+      if (recIds.length > 0) {
+        const lineas = await fetchLineasDeRecepciones(recIds);
+        const byRec = new Map<string, DBRecepcionLinea[]>();
+        const byLinea = new Map<string, DBRecepcionLinea>();
+        for (const l of lineas) {
+          if (l.id) byLinea.set(l.id, l);
+          const arr = byRec.get(l.recepcion_id) || [];
+          arr.push(l);
+          byRec.set(l.recepcion_id, arr);
+        }
+        setLineasPorRec(byRec);
+        setLineasPorLineaId(byLinea);
+      }
     } finally { setLoading(false); }
   }, []);
 
@@ -251,11 +271,12 @@ export default function AdminConciliacionDocs() {
                 <th style={{ padding: "8px 10px" }}>OC</th>
                 <th style={{ padding: "8px 10px" }}>NC</th>
                 <th style={{ padding: "8px 10px" }}>Discrep.</th>
+                <th style={{ padding: "8px 10px", textAlign: "right" }}>NC esperada</th>
               </tr>
             </thead>
             <tbody>
               {facturasEnriched.length === 0 && (
-                <tr><td colSpan={9} style={{ padding: 16, textAlign: "center", color: "var(--txt3)" }}>Sin facturas en este período.</td></tr>
+                <tr><td colSpan={10} style={{ padding: 16, textAlign: "center", color: "var(--txt3)" }}>Sin facturas en este período.</td></tr>
               )}
               {facturasEnriched.map(f => {
                 const id = f.rcv.id || `${f.rcv.nro_doc}-${f.rcv.rut_proveedor}`;
@@ -263,6 +284,19 @@ export default function AdminConciliacionDocs() {
                 const matchRec = f.recepciones.length > 0;
                 const montoRec = f.recepciones.reduce((s, r) => s + (r.costo_neto || 0), 0);
                 const delta = matchRec ? Math.abs((Number(f.rcv.monto_neto) || 0) - montoRec) : 0;
+                // NC esperada: por cada discrepancia PENDIENTE, delta = (fac - WAC actual) × qty
+                const ncItems = f.discrepancias.map(d => {
+                  const linea = d.linea_id ? lineasPorLineaId.get(d.linea_id) : undefined;
+                  const qty = linea?.qty_recibida || 0;
+                  const prod = productos.get((d.sku || "").toUpperCase().trim());
+                  const wac = (prod?.costo_promedio as number) || 0;
+                  const deltaUd = (Number(d.costo_factura) || 0) - wac;
+                  return { sku: d.sku, qty, deltaUd, subtotal: deltaUd * qty };
+                }).filter(x => x.deltaUd > 0 && x.qty > 0);
+                const ncNeto = Math.round(ncItems.reduce((s, x) => s + x.subtotal, 0));
+                const ncIva = Math.round(ncNeto * 0.19);
+                const ncTotal = ncNeto + ncIva;
+                const ncCovered = f.ncs.reduce((s, nc) => s + (Number(nc.monto_total) || 0), 0);
                 return (
                   <React.Fragment key={id}>
                     <tr style={{ borderTop: "1px solid var(--bg4)", cursor: "pointer" }} onClick={() => toggleExp(id)}>
@@ -294,10 +328,17 @@ export default function AdminConciliacionDocs() {
                           ? <span style={{ color: "var(--amber)", fontSize: 10, fontWeight: 600 }}>⚠ {f.discrepancias.length}</span>
                           : <span style={{ color: "var(--txt3)", fontSize: 10 }}>—</span>}
                       </td>
+                      <td className="mono" style={{ padding: "7px 10px", textAlign: "right" }}>
+                        {ncTotal > 0 ? (
+                          <span style={{ color: ncCovered >= ncTotal - 100 ? "var(--green)" : "var(--cyan)", fontSize: 11, fontWeight: 700 }}>
+                            {fmtMoney(ncTotal)}
+                          </span>
+                        ) : <span style={{ color: "var(--txt3)", fontSize: 10 }}>—</span>}
+                      </td>
                     </tr>
                     {isExp && (
                       <tr>
-                        <td colSpan={9} style={{ padding: "10px 12px", background: "var(--bg3)", borderTop: "1px solid var(--bg4)" }}>
+                        <td colSpan={10} style={{ padding: "10px 12px", background: "var(--bg3)", borderTop: "1px solid var(--bg4)" }}>
                           <div style={{ display: "flex", gap: 20, flexWrap: "wrap", fontSize: 11 }}>
                             <div>
                               <div style={{ fontWeight: 700, marginBottom: 4 }}>Factura</div>
@@ -328,6 +369,33 @@ export default function AdminConciliacionDocs() {
                                   <div key={d.id}><span className="mono">{d.sku}</span> · dic {fmtMoney(d.costo_diccionario)} vs fac {fmtMoney(d.costo_factura)}</div>
                                 ))}
                                 {f.discrepancias.length > 6 && <div style={{ color: "var(--txt3)" }}>+{f.discrepancias.length - 6} más…</div>}
+                              </div>
+                            )}
+                            {ncTotal > 0 && (
+                              <div style={{ minWidth: 220, padding: 10, background: "var(--bg2)", borderRadius: 6, borderLeft: "3px solid var(--cyan)" }}>
+                                <div style={{ fontWeight: 700, color: "var(--cyan)", marginBottom: 6 }}>📋 NC esperada del proveedor</div>
+                                <div style={{ fontSize: 11 }}>Neto: <strong>{fmtMoney(ncNeto)}</strong></div>
+                                <div style={{ fontSize: 11 }}>IVA: <strong>{fmtMoney(ncIva)}</strong></div>
+                                <div style={{ fontSize: 13, fontWeight: 700, marginTop: 4, color: "var(--cyan)" }}>
+                                  Total: {fmtMoney(ncTotal)}
+                                </div>
+                                {ncCovered > 0 && (
+                                  <div style={{ fontSize: 10, marginTop: 4, color: ncCovered >= ncTotal - 100 ? "var(--green)" : "var(--amber)" }}>
+                                    {ncCovered >= ncTotal - 100 ? "✓ " : "⚠ "}
+                                    NCs emitidas: {fmtMoney(ncCovered)} ({Math.round(ncCovered / ncTotal * 100)}%)
+                                  </div>
+                                )}
+                                <details style={{ marginTop: 6 }}>
+                                  <summary style={{ cursor: "pointer", fontSize: 10, color: "var(--txt3)" }}>Ver desglose por SKU</summary>
+                                  <div style={{ marginTop: 6, maxHeight: 180, overflow: "auto", fontSize: 10 }}>
+                                    {ncItems.map(x => (
+                                      <div key={x.sku} style={{ display: "flex", justifyContent: "space-between", padding: "2px 0", color: "var(--txt2)" }}>
+                                        <span className="mono">{x.sku}</span>
+                                        <span>{x.qty} × {fmtMoney(x.deltaUd)} = <strong>{fmtMoney(x.subtotal)}</strong></span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </details>
                               </div>
                             )}
                           </div>
