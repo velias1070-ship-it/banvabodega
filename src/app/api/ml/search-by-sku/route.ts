@@ -16,6 +16,13 @@ import { getServerSupabase } from "@/lib/supabase-server";
  *      siguiente completa el resto de los campos (titulo, price, etc).
  */
 
+interface MLVariation {
+  id: number;
+  seller_custom_field?: string | null;
+  available_quantity?: number;
+  attribute_combinations?: Array<{ name: string; value_name: string }>;
+}
+
 interface MLSearchResult {
   id: string;
   title: string;
@@ -24,6 +31,7 @@ interface MLSearchResult {
   last_updated: string;
   permalink: string;
   seller_custom_field?: string | null;
+  variations?: MLVariation[];
   attributes?: Array<{ id: string; value_name: string }>;
 }
 
@@ -46,23 +54,40 @@ export async function GET(req: NextRequest) {
       for (const id of res?.results || []) {
         if (seen.has(id)) continue;
         seen.add(id);
-        const item = await mlGet<MLSearchResult>(`/items/${id}?attributes=id,title,status,available_quantity,last_updated,permalink,seller_custom_field,attributes`);
+        const item = await mlGet<MLSearchResult>(`/items/${id}?attributes=id,title,status,available_quantity,last_updated,permalink,seller_custom_field,attributes,variations`);
         if (item) found.push(item);
       }
     }
 
     const sb = getServerSupabase();
-    let yaMapeados: string[] = [];
-    if (sb && found.length > 0) {
-      const { data } = await sb.from("ml_items_map")
-        .select("item_id")
-        .in("item_id", found.map(f => f.id));
-      yaMapeados = (data || []).map((r: {item_id:string}) => r.item_id);
-    }
+    const allItemIds = found.map(f => f.id);
+    const allVarIds: number[] = [];
+    for (const f of found) for (const v of f.variations || []) if (v.id) allVarIds.push(v.id);
 
-    return NextResponse.json({
-      sku,
-      items: found.map(i => ({
+    let mappings: Array<{item_id:string;variation_id:number|null;sku:string}> = [];
+    if (sb && allItemIds.length > 0) {
+      const { data } = await sb.from("ml_items_map")
+        .select("item_id, variation_id, sku")
+        .in("item_id", allItemIds);
+      mappings = (data || []) as typeof mappings;
+    }
+    const mappedItemNoVar = new Set(mappings.filter(m => m.variation_id === null).map(m => m.item_id));
+    const mappedVarKey = new Set(mappings.filter(m => m.variation_id !== null).map(m => `${m.item_id}:${m.variation_id}`));
+
+    const enriched = found.map(i => {
+      const hasVariations = (i.variations || []).length > 0;
+      const variationsOut = (i.variations || []).map(v => {
+        const variationSku = (v.seller_custom_field || "").toUpperCase();
+        return {
+          variation_id: v.id,
+          seller_custom_field: v.seller_custom_field,
+          available_quantity: v.available_quantity ?? 0,
+          attributes: (v.attribute_combinations || []).map(a => `${a.name}: ${a.value_name}`).join(" · "),
+          matches_sku: variationSku === sku,
+          ya_mapeado: mappedVarKey.has(`${i.id}:${v.id}`),
+        };
+      });
+      return {
         item_id: i.id,
         title: i.title,
         status: i.status,
@@ -70,10 +95,13 @@ export async function GET(req: NextRequest) {
         last_updated: i.last_updated,
         permalink: i.permalink,
         seller_custom_field: i.seller_custom_field,
-        ya_mapeado: yaMapeados.includes(i.id),
-      })),
-      total: found.length,
+        has_variations: hasVariations,
+        variations: variationsOut,
+        ya_mapeado: !hasVariations && mappedItemNoVar.has(i.id),
+      };
     });
+
+    return NextResponse.json({ sku, items: enriched, total: found.length });
   } catch (err) {
     console.error("[search-by-sku] error:", err);
     return NextResponse.json({ error: String(err) }, { status: 500 });
@@ -82,30 +110,41 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json() as { sku?: string; item_id?: string; sku_venta?: string };
+    const body = await req.json() as { sku?: string; item_id?: string; variation_id?: number | null; sku_venta?: string };
     const sku = (body.sku || "").trim().toUpperCase();
     const itemId = (body.item_id || "").trim();
+    const variationId = body.variation_id ?? null;
     if (!sku || !itemId) return NextResponse.json({ error: "sku and item_id required" }, { status: 400 });
 
     const sb = getServerSupabase();
     if (!sb) return NextResponse.json({ error: "no_db" }, { status: 500 });
 
-    const item = await mlGet<{ id: string; title: string; status: string; available_quantity: number; seller_custom_field: string | null }>(
-      `/items/${itemId}?attributes=id,title,status,available_quantity,seller_custom_field`
+    const item = await mlGet<{ id: string; title: string; status: string; available_quantity: number; seller_custom_field: string | null; variations?: MLVariation[] }>(
+      `/items/${itemId}?attributes=id,title,status,available_quantity,seller_custom_field,variations`
     );
     if (!item) return NextResponse.json({ error: `item ${itemId} no existe en ML` }, { status: 404 });
 
-    const skuVenta = (body.sku_venta || item.seller_custom_field || sku).toUpperCase();
+    let variationSellerSku: string | null = null;
+    let variationAvailable = 0;
+    if (variationId) {
+      const v = (item.variations || []).find(vv => vv.id === variationId);
+      if (!v) return NextResponse.json({ error: `variation ${variationId} no existe en item ${itemId}` }, { status: 404 });
+      variationSellerSku = v.seller_custom_field || null;
+      variationAvailable = v.available_quantity ?? 0;
+    }
+
+    const skuVenta = (body.sku_venta || variationSellerSku || item.seller_custom_field || sku).toUpperCase();
 
     const { error } = await sb.from("ml_items_map").upsert({
       sku: skuVenta,
       item_id: itemId,
+      variation_id: variationId,
       sku_origen: sku,
       sku_venta: skuVenta,
       titulo: item.title,
       status_ml: item.status,
       activo: true,
-      available_quantity: item.available_quantity,
+      available_quantity: variationId ? variationAvailable : item.available_quantity,
       updated_at: new Date().toISOString(),
     }, { onConflict: "sku,item_id" });
 
@@ -120,11 +159,11 @@ export async function POST(req: NextRequest) {
       accion: "ml_items_map:manual_link",
       entidad: "ml_items_map",
       entidad_id: itemId,
-      params: { sku, item_id: itemId, sku_venta: skuVenta, title: item.title, status: item.status },
+      params: { sku, item_id: itemId, variation_id: variationId, sku_venta: skuVenta, title: item.title, status: item.status },
       operario: "admin",
     });
 
-    return NextResponse.json({ ok: true, sku, sku_venta: skuVenta, item_id: itemId, status: item.status, title: item.title });
+    return NextResponse.json({ ok: true, sku, sku_venta: skuVenta, item_id: itemId, variation_id: variationId, status: item.status, title: item.title });
   } catch (err) {
     console.error("[search-by-sku POST] error:", err);
     return NextResponse.json({ error: String(err) }, { status: 500 });

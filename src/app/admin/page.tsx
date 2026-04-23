@@ -7012,8 +7012,11 @@ function EditableStockRowMobile({ sku, skuVenta, pos, label, qty, onDone }: { sk
 
 // ==================== REASIGNAR FORMATO INLINE ====================
 // ==================== SIN MAPPING ML — Buscar + Vincular ====================
+type MLSearchVariation = {variation_id:number;seller_custom_field:string|null;available_quantity:number;attributes:string;matches_sku:boolean;ya_mapeado:boolean};
+type MLSearchItem = {item_id:string;title:string;status:string;available_quantity:number;last_updated:string;permalink:string;seller_custom_field:string|null;has_variations:boolean;variations:MLSearchVariation[];ya_mapeado:boolean};
+
 function SinMappingMLBlock({ sku, onLinked }: { sku: string; onLinked: () => void }) {
-  const [results, setResults] = useState<Array<{item_id:string;title:string;status:string;available_quantity:number;last_updated:string;permalink:string;seller_custom_field:string|null;ya_mapeado:boolean}>>([]);
+  const [results, setResults] = useState<MLSearchItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
   const [linking, setLinking] = useState<string|null>(null);
@@ -7031,13 +7034,15 @@ function SinMappingMLBlock({ sku, onLinked }: { sku: string; onLinked: () => voi
     } finally { setLoading(false); }
   };
 
-  const vincular = async (itemId: string) => {
-    if (!confirm(`Vincular ${sku} ← ${itemId}?\n\nSe creara el mapping en ml_items_map y se encolara para sync.`)) return;
-    setLinking(itemId);
+  const vincular = async (itemId: string, variationId: number | null) => {
+    const key = variationId ? `${itemId}:${variationId}` : itemId;
+    const label = variationId ? `${itemId} (variation ${variationId})` : itemId;
+    if (!confirm(`Vincular ${sku} ← ${label}?\n\nSe creara el mapping en ml_items_map y se encolara para sync.`)) return;
+    setLinking(key);
     try {
       const res = await fetch("/api/ml/search-by-sku", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sku, item_id: itemId }),
+        body: JSON.stringify({ sku, item_id: itemId, variation_id: variationId }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "link failed");
@@ -7078,33 +7083,60 @@ function SinMappingMLBlock({ sku, onLinked }: { sku: string; onLinked: () => voi
       {results.length > 0 && (
         <div style={{marginTop:6}}>
           <div style={{fontSize:11,color:"var(--txt3)",marginBottom:6}}>{results.length} item{results.length!==1?"s":""} encontrado{results.length!==1?"s":""} en ML</div>
-          <table className="tbl">
-            <thead><tr><th>Item ID</th><th>Título</th><th>Status</th><th>Seller SKU</th><th style={{textAlign:"right"}}>Qty</th><th>Última act.</th><th></th></tr></thead>
-            <tbody>{results.map(r => (
-              <tr key={r.item_id}>
-                <td className="mono" style={{fontSize:11}}>
-                  <a href={r.permalink} target="_blank" rel="noreferrer" style={{color:"var(--cyan)"}}>{r.item_id}</a>
-                </td>
-                <td style={{fontSize:11}}>{r.title}</td>
-                <td><span style={{padding:"2px 6px",borderRadius:4,fontSize:9,fontWeight:700,
+          {results.map(r => (
+            <div key={r.item_id} style={{marginBottom:12,padding:10,background:"var(--bg3)",borderRadius:8,border:"1px solid var(--bg4)"}}>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6,flexWrap:"wrap"}}>
+                <a href={r.permalink} target="_blank" rel="noreferrer" className="mono" style={{fontSize:12,fontWeight:700,color:"var(--cyan)"}}>{r.item_id}</a>
+                <span style={{padding:"2px 6px",borderRadius:4,fontSize:9,fontWeight:700,
                   background:r.status==="active"?"var(--greenBg)":r.status==="paused"?"var(--amberBg)":"var(--redBg)",
-                  color:r.status==="active"?"var(--green)":r.status==="paused"?"var(--amber)":"var(--red)"}}>{r.status}</span></td>
-                <td className="mono" style={{fontSize:10,color:"var(--txt3)"}}>{r.seller_custom_field || "—"}</td>
-                <td className="mono" style={{textAlign:"right",fontWeight:700}}>{r.available_quantity}</td>
-                <td style={{fontSize:10,color:"var(--txt3)"}}>{r.last_updated?.slice(0,10)}</td>
-                <td>
+                  color:r.status==="active"?"var(--green)":r.status==="paused"?"var(--amber)":"var(--red)"}}>{r.status}</span>
+                {r.has_variations && <span style={{padding:"2px 6px",borderRadius:4,fontSize:9,fontWeight:700,background:"var(--cyanBg)",color:"var(--cyan)"}}>{r.variations.length} variaciones</span>}
+                <span style={{fontSize:10,color:"var(--txt3)"}}>act. {r.last_updated?.slice(0,10)}</span>
+              </div>
+              <div style={{fontSize:12,marginBottom:6}}>{r.title}</div>
+              {!r.has_variations ? (
+                <div style={{display:"flex",alignItems:"center",gap:8,fontSize:11}}>
+                  <span style={{color:"var(--txt3)"}}>Seller SKU: <span className="mono">{r.seller_custom_field || "—"}</span></span>
+                  <span style={{color:"var(--txt3)"}}>Qty: <strong>{r.available_quantity}</strong></span>
+                  <div style={{flex:1}}/>
                   {r.ya_mapeado ? (
                     <span style={{fontSize:10,color:"var(--txt3)"}}>ya mapeado</span>
                   ) : (
-                    <button onClick={()=>vincular(r.item_id)} disabled={linking===r.item_id}
-                      style={{padding:"4px 10px",borderRadius:4,background:"var(--green)",color:"#fff",fontSize:10,fontWeight:700,border:"none",cursor:"pointer",opacity:linking===r.item_id?0.6:1}}>
-                      {linking===r.item_id ? "..." : "Vincular"}
+                    <button onClick={()=>vincular(r.item_id, null)} disabled={linking===r.item_id}
+                      style={{padding:"4px 12px",borderRadius:4,background:"var(--green)",color:"#fff",fontSize:10,fontWeight:700,border:"none",cursor:"pointer",opacity:linking===r.item_id?0.6:1}}>
+                      {linking===r.item_id ? "..." : "Vincular item"}
                     </button>
                   )}
-                </td>
-              </tr>
-            ))}</tbody>
-          </table>
+                </div>
+              ) : (
+                <table className="tbl" style={{marginTop:4}}>
+                  <thead><tr><th>Variation ID</th><th>Atributos</th><th>Seller SKU</th><th style={{textAlign:"right"}}>Qty</th><th></th></tr></thead>
+                  <tbody>{r.variations.map(v => {
+                    const key = `${r.item_id}:${v.variation_id}`;
+                    const skuMatches = v.matches_sku;
+                    return (
+                      <tr key={v.variation_id} style={{background:skuMatches?"var(--greenBg)":undefined}}>
+                        <td className="mono" style={{fontSize:11}}>{v.variation_id}</td>
+                        <td style={{fontSize:11}}>{v.attributes || "—"}</td>
+                        <td className="mono" style={{fontSize:11,fontWeight:skuMatches?700:400,color:skuMatches?"var(--green)":"var(--txt3)"}}>{v.seller_custom_field || "—"} {skuMatches && "← match"}</td>
+                        <td className="mono" style={{textAlign:"right",fontWeight:700}}>{v.available_quantity}</td>
+                        <td>
+                          {v.ya_mapeado ? (
+                            <span style={{fontSize:10,color:"var(--txt3)"}}>ya mapeado</span>
+                          ) : (
+                            <button onClick={()=>vincular(r.item_id, v.variation_id)} disabled={linking===key}
+                              style={{padding:"4px 10px",borderRadius:4,background:skuMatches?"var(--green)":"var(--bg4)",color:skuMatches?"#fff":"var(--txt2)",fontSize:10,fontWeight:700,border:"none",cursor:"pointer",opacity:linking===key?0.6:1}}>
+                              {linking===key ? "..." : "Vincular"}
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}</tbody>
+                </table>
+              )}
+            </div>
+          ))}
         </div>
       )}
     </div>
