@@ -1,9 +1,14 @@
 "use client";
 import React, { useState, useEffect, useCallback, useMemo } from "react";
-import { fetchDiscrepanciasGlobal, fetchProductos, fetchRecepciones } from "@/lib/db";
-import type { DBDiscrepanciaCosto, DBProduct, DBRecepcion } from "@/lib/db";
+import { fetchDiscrepanciasGlobal, fetchProductos, fetchRecepciones, fetchRcvCompras, fetchEmpresaDefault } from "@/lib/db";
+import type { DBDiscrepanciaCosto, DBProduct, DBRecepcion, DBRcvCompra } from "@/lib/db";
 import { aprobarNuevoCosto, rechazarNuevoCosto, marcarPendienteNC, congelarCostoDiscrepancia } from "@/lib/store";
 import type { CongelarCostoPreview } from "@/lib/store";
+
+// Normaliza nombre de proveedor/razon social para match flexible
+const normProv = (s: string): string => (s || "").toUpperCase().trim()
+  .replace(/\s+(S\.?A\.?|SPA|LTDA\.?|LIMITADA|SRL|EIRL)\.?$/i, "")
+  .replace(/[.,]/g, "").replace(/\s+/g, " ").trim();
 
 // ============================================
 // Helpers
@@ -56,6 +61,8 @@ export default function AdminDiscrepancias() {
   const [loading, setLoading] = useState(true);
   const [actioning, setActioning] = useState<string | null>(null);
   const [congelarModal, setCongelarModal] = useState<{ row: Row; preview: CongelarCostoPreview | null; costoInput: string } | null>(null);
+  const [ncs, setNcs] = useState<DBRcvCompra[]>([]);
+  const [ncBulkOpen, setNcBulkOpen] = useState<string | null>(null); // nc.id abierto para confirmar cierre
 
   // Filtros
   const [filtroEstado, setFiltroEstado] = useState<EstadoFiltro>("PENDIENTE");
@@ -66,14 +73,19 @@ export default function AdminDiscrepancias() {
   const cargar = useCallback(async () => {
     setLoading(true);
     try {
-      const [d, p, r] = await Promise.all([
+      const [d, p, r, empresa] = await Promise.all([
         fetchDiscrepanciasGlobal(),
         fetchProductos(),
         fetchRecepciones(),
+        fetchEmpresaDefault(),
       ]);
       setDiscs(d);
       setProductos(new Map(p.map(x => [x.sku.toUpperCase().trim(), x])));
       setRecepciones(new Map(r.map(x => [x.id!, x])));
+      if (empresa?.id) {
+        const rcv = await fetchRcvCompras(empresa.id);
+        setNcs(rcv.filter(x => x.tipo_doc === 61));
+      }
     } finally {
       setLoading(false);
     }
@@ -290,6 +302,60 @@ export default function AdminDiscrepancias() {
     }
   };
 
+  // Cross-match NCs ↔ recepciones con discrepancias PENDIENTES
+  const ncsLinkables = useMemo(() => {
+    type NcMatch = {
+      nc: DBRcvCompra;
+      recepcionId: string;
+      folioFactura: string;
+      proveedorRec: string;
+      discrepancias: Row[];
+    };
+    const out: NcMatch[] = [];
+    for (const nc of ncs) {
+      if (!nc.factura_ref_folio) continue;
+      const provNc = normProv(nc.razon_social || "");
+      // Buscar recepcion con folio=factura_ref_folio y proveedor matcheando razon_social
+      const entries = Array.from(recepciones.entries());
+      for (const [recId, rec] of entries) {
+        if (rec.folio !== nc.factura_ref_folio) continue;
+        if (normProv(rec.proveedor || "") !== provNc) continue;
+        const pend = rows.filter(r => r.recepcion_id === recId && r.estado === "PENDIENTE");
+        if (pend.length === 0) continue;
+        out.push({ nc, recepcionId: recId, folioFactura: rec.folio, proveedorRec: rec.proveedor || "", discrepancias: pend });
+      }
+    }
+    return out;
+  }, [ncs, recepciones, rows]);
+
+  const cerrarConNC = async (match: typeof ncsLinkables[number]) => {
+    if (!match.discrepancias.length) return;
+    const notas = `NC ${match.nc.nro_doc} del ${match.nc.fecha_docto?.slice(0,10) || ""} por ${fmtMoney(match.nc.monto_total)}`;
+    setActioning(match.nc.id || match.recepcionId);
+    try {
+      for (const d of match.discrepancias) {
+        const prod = productos.get(d.sku);
+        const wac = prod?.costo_promedio || 0;
+        const costoFinal = wac > 0 ? wac : d.costo_diccionario || d.costo_factura;
+        await aprobarNuevoCosto(d.id!, d.sku, Number(costoFinal));
+      }
+      // Marcar notas de las que se cerraron con esta NC (post-approve)
+      const sb = (await import("@/lib/supabase")).getSupabase();
+      if (sb) {
+        await sb.from("discrepancias_costo")
+          .update({ notas })
+          .in("id", match.discrepancias.map(d => d.id!));
+      }
+      setNcBulkOpen(null);
+      await cargar();
+      alert(`Cerradas ${match.discrepancias.length} discrepancias con NC ${match.nc.nro_doc}`);
+    } catch (e) {
+      alert("Error: " + (e instanceof Error ? e.message : e));
+    } finally {
+      setActioning(null);
+    }
+  };
+
   if (loading) return <div className="card" style={{ padding: 16 }}>Cargando discrepancias…</div>;
 
   return (
@@ -331,6 +397,61 @@ export default function AdminDiscrepancias() {
           <div style={{ fontSize: 22, fontWeight: 700, color: "var(--txt2)" }}>{kpis.rechazadas}</div>
         </div>
       </div>
+
+      {/* NCs Recibidas con match a discrepancias pendientes */}
+      {ncsLinkables.length > 0 && (
+        <div className="card" style={{ padding: 12, marginBottom: 12, borderLeft: "3px solid var(--cyan)" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>📋 NCs recibidas con discrepancias pendientes ({ncsLinkables.length})</h3>
+            <span style={{ fontSize: 10, color: "var(--txt3)" }}>Match automático rcv_compras ↔ recepciones</span>
+          </div>
+          {ncsLinkables.map(m => {
+            const deltaEsperado = m.discrepancias.reduce((s, d) => s + Math.abs(d.diferencia || 0), 0);
+            const ncMonto = Number(m.nc.monto_total) || 0;
+            const coincide = Math.abs(deltaEsperado - ncMonto) < 100;
+            const isWorking = actioning === (m.nc.id || m.recepcionId);
+            return (
+              <div key={(m.nc.id || "") + "-" + m.recepcionId} style={{ padding: 10, borderRadius: 6, background: "var(--bg3)", border: "1px solid var(--bg4)", marginBottom: 6 }}>
+                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                  <div style={{ flex: 1, minWidth: 240 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700 }}>
+                      <span className="mono">NC #{m.nc.nro_doc}</span>
+                      <span style={{ color: "var(--txt3)", marginLeft: 8, fontSize: 11 }}>{fmtDate(m.nc.fecha_docto)}</span>
+                      <span style={{ marginLeft: 8, color: "var(--cyan)" }}>{fmtMoney(ncMonto)}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 2 }}>
+                      {m.proveedorRec} · ref factura <span className="mono">{m.folioFactura}</span>
+                    </div>
+                    <div style={{ fontSize: 11, marginTop: 4 }}>
+                      <span style={{ color: "var(--amber)", fontWeight: 600 }}>{m.discrepancias.length} discrepancias PENDIENTES</span>
+                      <span style={{ color: "var(--txt3)", marginLeft: 8 }}>· Δ esperado: {fmtMoney(deltaEsperado)}</span>
+                      <span style={{ marginLeft: 8, fontSize: 10, color: coincide ? "var(--green)" : "var(--amber)" }}>
+                        {coincide ? "✓ coincide con NC" : "⚠ no coincide con NC"}
+                      </span>
+                    </div>
+                  </div>
+                  <button
+                    disabled={isWorking}
+                    onClick={() => {
+                      const skus = m.discrepancias.map(d => d.sku).join(", ");
+                      if (!window.confirm(
+                        `Cerrar ${m.discrepancias.length} discrepancias con NC ${m.nc.nro_doc}?\n\n`
+                        + `SKUs: ${skus.slice(0, 150)}${skus.length > 150 ? "..." : ""}\n\n`
+                        + `Cada una se aprobará con el WAC actual (lo que ya congelaste).\n`
+                        + `Notas: "NC ${m.nc.nro_doc}..."`
+                      )) return;
+                      cerrarConNC(m);
+                    }}
+                    style={{ padding: "6px 14px", borderRadius: 6, background: "var(--cyan)", color: "#0a0e17", fontWeight: 700, fontSize: 11, border: "none", cursor: isWorking ? "wait" : "pointer", opacity: isWorking ? 0.5 : 1 }}
+                  >
+                    {isWorking ? "Cerrando..." : "Cerrar con NC"}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Filtros */}
       <div className="card" style={{ padding: 12, marginBottom: 12 }}>
