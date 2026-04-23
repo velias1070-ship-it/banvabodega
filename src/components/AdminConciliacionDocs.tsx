@@ -3,6 +3,7 @@ import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   fetchEmpresaDefault, fetchRcvCompras, fetchRecepciones, fetchOrdenesCompra,
   fetchDiscrepanciasGlobal, fetchLineasDeRecepciones, fetchProductos, fetchProveedorCatalogo,
+  updateRecepcion,
 } from "@/lib/db";
 import type { DBRcvCompra, DBRecepcion, DBOrdenCompra, DBDiscrepanciaCosto, DBRecepcionLinea, DBProduct, DBProveedorCatalogo } from "@/lib/db";
 
@@ -35,6 +36,8 @@ export default function AdminConciliacionDocs() {
   const [periodoFiltro, setPeriodoFiltro] = useState<string>(new Date().toISOString().slice(0, 7));
   const [subTab, setSubTab] = useState<SubTab>("facturas");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [asignarModal, setAsignarModal] = useState<{ recepcion: DBRecepcion; proveedor: string; folio: string } | null>(null);
+  const [asignando, setAsignando] = useState(false);
 
   const cargar = useCallback(async () => {
     setLoading(true);
@@ -204,6 +207,61 @@ export default function AdminConciliacionDocs() {
     for (const r of recepciones) if (r.created_at) set.add(r.created_at.slice(0, 7));
     return Array.from(set).sort().reverse();
   }, [rcv, recepciones]);
+
+  // Proveedores únicos en RCV del período (para el select al asignar)
+  const proveedoresRcvPeriodo = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of rcvPeriodo) {
+      if ((r.tipo_doc === 33 || r.tipo_doc === 34 || r.tipo_doc === 46) && r.razon_social) {
+        set.add(r.razon_social);
+      }
+    }
+    return Array.from(set).sort();
+  }, [rcvPeriodo]);
+
+  // Para un proveedor dado, folios de facturas del período sin recepción ya asignada
+  const foliosDelProveedor = useMemo(() => {
+    if (!asignarModal?.proveedor) return [] as Array<{ folio: string; monto: number; fecha: string }>;
+    const provNorm = normProv(asignarModal.proveedor);
+    // Folios ya usados en recepciones (de cualquier período) con mismo proveedor
+    const foliosUsados = new Set<string>();
+    for (const rec of recepciones) {
+      if (!rec.folio || rec.estado === "ANULADA") continue;
+      if (rec.id === asignarModal.recepcion.id) continue; // permitir el actual si ya estaba asignado
+      if (normProv(rec.proveedor || "") === provNorm) foliosUsados.add(rec.folio);
+    }
+    // Facturas RCV del proveedor no usadas
+    return rcvPeriodo
+      .filter(r => (r.tipo_doc === 33 || r.tipo_doc === 34 || r.tipo_doc === 46))
+      .filter(r => normProv(r.razon_social || "") === provNorm)
+      .filter(r => r.nro_doc && !foliosUsados.has(r.nro_doc))
+      .map(r => ({ folio: r.nro_doc || "", monto: Number(r.monto_total) || 0, fecha: r.fecha_docto || "" }))
+      .sort((a, b) => b.fecha.localeCompare(a.fecha));
+  }, [asignarModal, rcvPeriodo, recepciones]);
+
+  const ejecutarAsignacion = async () => {
+    if (!asignarModal || !asignarModal.proveedor || !asignarModal.folio || !asignarModal.recepcion.id) return;
+    if (!window.confirm(
+      `Asignar recepción ${asignarModal.recepcion.folio || "(sin folio)"} a:\n\n`
+      + `Proveedor: ${asignarModal.proveedor}\n`
+      + `Factura: ${asignarModal.folio}\n\n`
+      + `Esto cambia folio y proveedor de la recepción.`
+    )) return;
+    setAsignando(true);
+    try {
+      await updateRecepcion(asignarModal.recepcion.id, {
+        folio: asignarModal.folio,
+        proveedor: asignarModal.proveedor,
+      });
+      setAsignarModal(null);
+      await cargar();
+      alert("Recepción asignada a factura.");
+    } catch (e) {
+      alert("Error: " + (e instanceof Error ? e.message : e));
+    } finally {
+      setAsignando(false);
+    }
+  };
 
   if (loading) return <div className="card" style={{ padding: 16 }}>Cargando conciliación…</div>;
 
@@ -540,11 +598,12 @@ export default function AdminConciliacionDocs() {
                 <th style={{ padding: "8px 10px" }}>Estado</th>
                 <th style={{ padding: "8px 10px", textAlign: "right" }}>Neto</th>
                 <th style={{ padding: "8px 10px", textAlign: "right" }}>Bruto</th>
+                <th style={{ padding: "8px 10px" }}></th>
               </tr>
             </thead>
             <tbody>
               {recSinFactura.length === 0 && (
-                <tr><td colSpan={6} style={{ padding: 16, textAlign: "center", color: "var(--txt3)" }}>Todas las recepciones tienen factura RCV.</td></tr>
+                <tr><td colSpan={7} style={{ padding: 16, textAlign: "center", color: "var(--txt3)" }}>Todas las recepciones tienen factura RCV.</td></tr>
               )}
               {recSinFactura.map(r => (
                 <tr key={r.id} style={{ borderTop: "1px solid var(--bg4)" }}>
@@ -556,6 +615,12 @@ export default function AdminConciliacionDocs() {
                   </td>
                   <td className="mono" style={{ padding: "7px 10px", textAlign: "right" }}>{fmtMoney(r.costo_neto)}</td>
                   <td className="mono" style={{ padding: "7px 10px", textAlign: "right" }}>{fmtMoney(r.costo_bruto)}</td>
+                  <td style={{ padding: "7px 10px" }}>
+                    <button onClick={() => setAsignarModal({ recepcion: r, proveedor: "", folio: "" })}
+                      style={{ padding: "4px 10px", borderRadius: 4, background: "var(--blueBg)", color: "var(--blue)", fontSize: 10, fontWeight: 700, border: "1px solid var(--blueBd)", cursor: "pointer" }}>
+                      Asignar factura
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -572,6 +637,69 @@ export default function AdminConciliacionDocs() {
         Precio referencia: 1º <code>proveedor_catalogo.precio_neto</code> (pactado), 2º <code>productos.costo_promedio</code> (WAC, fallback).
         Si la base muestra &quot;WAC&quot; o &quot;mixto&quot;, falta cargar precios en catálogo para que el cálculo sea más preciso.
       </div>
+
+      {/* Modal Asignar factura */}
+      {asignarModal && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+          onClick={() => !asignando && setAsignarModal(null)}>
+          <div style={{ background: "var(--bg2)", borderRadius: 12, border: "1px solid var(--bg4)", padding: 24, maxWidth: 600, width: "100%", maxHeight: "85vh", overflow: "auto" }}
+            onClick={e => e.stopPropagation()}>
+            <h3 style={{ margin: "0 0 4px", fontSize: 16, fontWeight: 700 }}>Asignar factura a recepción</h3>
+            <p style={{ fontSize: 11, color: "var(--txt3)", marginBottom: 14 }}>
+              Vincular la recepción a una factura real del RCV. Esto cambia el folio y proveedor de la recepción.
+            </p>
+            <div style={{ padding: 10, background: "var(--bg3)", borderRadius: 6, marginBottom: 14, fontSize: 11 }}>
+              <div><strong>Recepción actual:</strong></div>
+              <div className="mono" style={{ marginTop: 2 }}>
+                {asignarModal.recepcion.folio || "(sin folio)"} · {asignarModal.recepcion.proveedor || "(sin proveedor)"} · {fmtDate(asignarModal.recepcion.created_at)}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ fontSize: 11, color: "var(--txt2)", display: "block", marginBottom: 4, fontWeight: 600 }}>1. Proveedor (según RCV del período)</label>
+              <select value={asignarModal.proveedor}
+                onChange={e => setAsignarModal({ ...asignarModal, proveedor: e.target.value, folio: "" })}
+                style={{ width: "100%", padding: "8px 12px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 13 }}>
+                <option value="">— elegir proveedor —</option>
+                {proveedoresRcvPeriodo.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+              <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 3 }}>
+                {proveedoresRcvPeriodo.length} proveedores con facturas en {periodoFiltro}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ fontSize: 11, color: "var(--txt2)", display: "block", marginBottom: 4, fontWeight: 600 }}>2. Folio de factura (del proveedor, sin recepción asignada)</label>
+              <select value={asignarModal.folio} disabled={!asignarModal.proveedor}
+                onChange={e => setAsignarModal({ ...asignarModal, folio: e.target.value })}
+                style={{ width: "100%", padding: "8px 12px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 13, opacity: asignarModal.proveedor ? 1 : 0.5 }}>
+                <option value="">— elegir folio —</option>
+                {foliosDelProveedor.map(f => (
+                  <option key={f.folio} value={f.folio}>
+                    {f.folio} · {fmtDate(f.fecha)} · {fmtMoney(f.monto)}
+                  </option>
+                ))}
+              </select>
+              <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 3 }}>
+                {asignarModal.proveedor
+                  ? `${foliosDelProveedor.length} facturas disponibles (sin recepción asignada)`
+                  : "Elegí un proveedor primero"}
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={() => setAsignarModal(null)} disabled={asignando}
+                style={{ padding: "8px 14px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt3)", fontSize: 11, fontWeight: 600, border: "1px solid var(--bg4)", cursor: "pointer" }}>
+                Cancelar
+              </button>
+              <button onClick={ejecutarAsignacion} disabled={asignando || !asignarModal.proveedor || !asignarModal.folio}
+                style={{ padding: "8px 14px", borderRadius: 6, background: "var(--blue)", color: "#0a0e17", fontSize: 11, fontWeight: 700, border: "none", cursor: "pointer", opacity: (asignando || !asignarModal.proveedor || !asignarModal.folio) ? 0.5 : 1 }}>
+                {asignando ? "Asignando..." : "Asignar"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
