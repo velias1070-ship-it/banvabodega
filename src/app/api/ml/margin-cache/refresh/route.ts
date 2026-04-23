@@ -144,6 +144,8 @@ async function handleRefresh(req: NextRequest) {
     else allOrigenes.add(sku);
   }
   const stockBySku: Record<string, number> = {};
+  // Stock en ML Full (meli_facility) — ML usa este para el check LIGHTNING
+  const stockFullBySku: Record<string, number> = {};
   if (allOrigenes.size > 0) {
     const origList = Array.from(allOrigenes);
     for (let i = 0; i < origList.length; i += 200) {
@@ -151,6 +153,18 @@ async function handleRefresh(req: NextRequest) {
       const { data: sts } = await sb.from("stock").select("sku, cantidad").in("sku", chunk);
       for (const s of (sts || []) as Array<{ sku: string; cantidad: number }>) {
         stockBySku[s.sku] = (stockBySku[s.sku] || 0) + (s.cantidad || 0);
+      }
+    }
+  }
+  // Traer stock full por sku_venta (se mapea a sku_origen via composicion)
+  if (skuList.length > 0) {
+    for (let i = 0; i < skuList.length; i += 200) {
+      const chunk = skuList.slice(i, i + 200);
+      const { data: fs } = await sb.from("stock_full_cache").select("sku_venta, cantidad").in("sku_venta", chunk);
+      for (const r of (fs || []) as Array<{ sku_venta: string; cantidad: number }>) {
+        const comps = compBySku[r.sku_venta];
+        const target = comps && comps.length === 1 ? comps[0].sku_origen : r.sku_venta;
+        stockFullBySku[target] = (stockFullBySku[target] || 0) + (r.cantidad || 0);
       }
     }
   }
@@ -234,6 +248,17 @@ async function handleRefresh(req: NextRequest) {
     }
     costoNeto = Math.round(costoNeto);
     const costoBruto = Math.round(costoNeto * 1.19);
+
+    // Stock total (bodega + ML Full). Para packs, usa el stock del sku_origen
+    // unico si existe; de lo contrario asume stock por sku_venta directo.
+    const stockOrig = (() => {
+      const comps = compBySku[row.sku];
+      if (comps && comps.length === 1) {
+        const so = comps[0].sku_origen;
+        return (stockBySku[so] || 0) + (stockFullBySku[so] || 0);
+      }
+      return (stockBySku[row.sku] || 0) + (stockFullBySku[row.sku] || 0);
+    })();
 
     let pesoFacturable = 0;
     let logisticType: string | null = null;
@@ -325,6 +350,7 @@ async function handleRefresh(req: NextRequest) {
       promo_pct: promoPct,
       promos_postulables: promosPostulables,
       status_ml: row.status_ml || null,
+      stock_total: stockOrig,
       costo_neto: costoNeto,
       costo_bruto: costoBruto,
       peso_facturable: Math.round(pesoFacturable),
