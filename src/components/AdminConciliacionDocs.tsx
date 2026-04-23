@@ -2,9 +2,9 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   fetchEmpresaDefault, fetchRcvCompras, fetchRecepciones, fetchOrdenesCompra,
-  fetchDiscrepanciasGlobal, fetchLineasDeRecepciones, fetchProductos,
+  fetchDiscrepanciasGlobal, fetchLineasDeRecepciones, fetchProductos, fetchProveedorCatalogo,
 } from "@/lib/db";
-import type { DBRcvCompra, DBRecepcion, DBOrdenCompra, DBDiscrepanciaCosto, DBRecepcionLinea, DBProduct } from "@/lib/db";
+import type { DBRcvCompra, DBRecepcion, DBOrdenCompra, DBDiscrepanciaCosto, DBRecepcionLinea, DBProduct, DBProveedorCatalogo } from "@/lib/db";
 
 const fmtInt = (n: number | null | undefined) => n == null ? "—" : Math.round(Number(n)).toLocaleString("es-CL");
 const fmtMoney = (n: number | null | undefined) => n == null ? "—" : "$" + Math.round(Number(n)).toLocaleString("es-CL");
@@ -31,6 +31,7 @@ export default function AdminConciliacionDocs() {
   const [lineasPorRec, setLineasPorRec] = useState<Map<string, DBRecepcionLinea[]>>(new Map());
   const [lineasPorLineaId, setLineasPorLineaId] = useState<Map<string, DBRecepcionLinea>>(new Map());
   const [productos, setProductos] = useState<Map<string, DBProduct>>(new Map());
+  const [catalogo, setCatalogo] = useState<Map<string, number>>(new Map()); // key = proveedor_norm|sku
   const [periodoFiltro, setPeriodoFiltro] = useState<string>(new Date().toISOString().slice(0, 7));
   const [subTab, setSubTab] = useState<SubTab>("facturas");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -39,18 +40,27 @@ export default function AdminConciliacionDocs() {
     setLoading(true);
     try {
       const empresa = await fetchEmpresaDefault();
-      const [rcvData, recData, ocData, dData, pData] = await Promise.all([
+      const [rcvData, recData, ocData, dData, pData, catData] = await Promise.all([
         empresa?.id ? fetchRcvCompras(empresa.id) : Promise.resolve([]),
         fetchRecepciones(),
         fetchOrdenesCompra(),
         fetchDiscrepanciasGlobal(),
         fetchProductos(),
+        fetchProveedorCatalogo(),
       ]);
       setRcv(rcvData);
       setRecepciones(recData);
       setOcs(ocData);
       setDiscs(dData);
       setProductos(new Map(pData.map(p => [p.sku.toUpperCase().trim(), p])));
+      const catMap = new Map<string, number>();
+      for (const c of catData as DBProveedorCatalogo[]) {
+        const precio = (c.precio_neto as number) || 0;
+        if (precio > 0) {
+          catMap.set(`${normProv(c.proveedor || "")}|${(c.sku_origen || "").toUpperCase().trim()}`, precio);
+        }
+      }
+      setCatalogo(catMap);
       // Cargar líneas de recepción (para calcular qty y NC esperada)
       const recIds = recData.map(r => r.id!).filter(Boolean);
       if (recIds.length > 0) {
@@ -284,15 +294,26 @@ export default function AdminConciliacionDocs() {
                 const matchRec = f.recepciones.length > 0;
                 const montoRec = f.recepciones.reduce((s, r) => s + (r.costo_neto || 0), 0);
                 const delta = matchRec ? Math.abs((Number(f.rcv.monto_neto) || 0) - montoRec) : 0;
-                // NC esperada: por cada discrepancia PENDIENTE, delta = (fac - WAC actual) × qty
+                // NC esperada: por cada discrepancia PENDIENTE, delta = (fac - precio real) × qty
+                // Precio real: 1º catálogo del proveedor (pactado), 2º WAC (fallback)
+                const provNorm = normProv(f.rcv.razon_social || "");
                 const ncItems = f.discrepancias.map(d => {
                   const linea = d.linea_id ? lineasPorLineaId.get(d.linea_id) : undefined;
                   const qty = linea?.qty_recibida || 0;
-                  const prod = productos.get((d.sku || "").toUpperCase().trim());
+                  const skuUp = (d.sku || "").toUpperCase().trim();
+                  const precioCat = catalogo.get(`${provNorm}|${skuUp}`) || 0;
+                  const prod = productos.get(skuUp);
                   const wac = (prod?.costo_promedio as number) || 0;
-                  const deltaUd = (Number(d.costo_factura) || 0) - wac;
-                  return { sku: d.sku, qty, deltaUd, subtotal: deltaUd * qty };
+                  const precioRef = precioCat > 0 ? precioCat : wac;
+                  const fuente: "catalogo" | "wac" = precioCat > 0 ? "catalogo" : "wac";
+                  const deltaUd = (Number(d.costo_factura) || 0) - precioRef;
+                  return { sku: d.sku, qty, deltaUd, subtotal: deltaUd * qty, precioRef, fuente };
                 }).filter(x => x.deltaUd > 0 && x.qty > 0);
+                const fuenteMix = ncItems.length > 0
+                  ? (ncItems.every(x => x.fuente === "catalogo") ? "catálogo"
+                    : ncItems.every(x => x.fuente === "wac") ? "WAC (sin catálogo)"
+                    : "mixto")
+                  : "—";
                 const ncNeto = Math.round(ncItems.reduce((s, x) => s + x.subtotal, 0));
                 const ncIva = Math.round(ncNeto * 0.19);
                 const ncTotal = ncNeto + ncIva;
@@ -372,12 +393,16 @@ export default function AdminConciliacionDocs() {
                               </div>
                             )}
                             {ncTotal > 0 && (
-                              <div style={{ minWidth: 220, padding: 10, background: "var(--bg2)", borderRadius: 6, borderLeft: "3px solid var(--cyan)" }}>
+                              <div style={{ minWidth: 240, padding: 10, background: "var(--bg2)", borderRadius: 6, borderLeft: "3px solid var(--cyan)" }}>
                                 <div style={{ fontWeight: 700, color: "var(--cyan)", marginBottom: 6 }}>📋 NC esperada del proveedor</div>
                                 <div style={{ fontSize: 11 }}>Neto: <strong>{fmtMoney(ncNeto)}</strong></div>
                                 <div style={{ fontSize: 11 }}>IVA: <strong>{fmtMoney(ncIva)}</strong></div>
                                 <div style={{ fontSize: 13, fontWeight: 700, marginTop: 4, color: "var(--cyan)" }}>
                                   Total: {fmtMoney(ncTotal)}
+                                </div>
+                                <div style={{ fontSize: 10, marginTop: 4, color: fuenteMix === "catálogo" ? "var(--green)" : fuenteMix === "mixto" ? "var(--amber)" : "var(--amber)" }}>
+                                  Base: {fuenteMix}
+                                  {fuenteMix !== "catálogo" && fuenteMix !== "—" && <span style={{ color: "var(--txt3)" }}> — cargar en proveedor_catalogo para mayor precisión</span>}
                                 </div>
                                 {ncCovered > 0 && (
                                   <div style={{ fontSize: 10, marginTop: 4, color: ncCovered >= ncTotal - 100 ? "var(--green)" : "var(--amber)" }}>
@@ -387,11 +412,16 @@ export default function AdminConciliacionDocs() {
                                 )}
                                 <details style={{ marginTop: 6 }}>
                                   <summary style={{ cursor: "pointer", fontSize: 10, color: "var(--txt3)" }}>Ver desglose por SKU</summary>
-                                  <div style={{ marginTop: 6, maxHeight: 180, overflow: "auto", fontSize: 10 }}>
+                                  <div style={{ marginTop: 6, maxHeight: 200, overflow: "auto", fontSize: 10 }}>
                                     {ncItems.map(x => (
-                                      <div key={x.sku} style={{ display: "flex", justifyContent: "space-between", padding: "2px 0", color: "var(--txt2)" }}>
-                                        <span className="mono">{x.sku}</span>
-                                        <span>{x.qty} × {fmtMoney(x.deltaUd)} = <strong>{fmtMoney(x.subtotal)}</strong></span>
+                                      <div key={x.sku} style={{ display: "flex", justifyContent: "space-between", padding: "2px 0", color: "var(--txt2)", gap: 6 }}>
+                                        <span className="mono" style={{ minWidth: 100 }}>{x.sku}</span>
+                                        <span title={`Precio ${x.fuente}: ${fmtMoney(x.precioRef)}`}>
+                                          {x.qty} × {fmtMoney(x.deltaUd)} = <strong>{fmtMoney(x.subtotal)}</strong>
+                                          <span style={{ marginLeft: 4, color: x.fuente === "catalogo" ? "var(--green)" : "var(--amber)", fontSize: 9 }}>
+                                            {x.fuente === "catalogo" ? "cat" : "wac"}
+                                          </span>
+                                        </span>
                                       </div>
                                     ))}
                                   </div>
@@ -497,6 +527,10 @@ export default function AdminConciliacionDocs() {
       <div style={{ marginTop: 10, padding: 10, background: "var(--bg3)", borderRadius: 6, fontSize: 10, color: "var(--txt3)" }}>
         <strong>Cómo funciona:</strong> solo se muestran facturas y NCs que matchean con una recepción en bodega (inventario). Se excluyen servicios/honorarios/gastos que no tienen recepción.
         Match: folio factura ↔ recepción.folio + proveedor normalizado (ignora SA/SPA/LTDA/puntuación). Para NCs vía <code>factura_ref_folio</code>. Delta de montos mostrado si &gt; $100.
+        <br />
+        <strong>NC esperada:</strong> <code>(costo_factura − precio_referencia) × qty_recibida</code> por cada discrepancia PENDIENTE + IVA 19%.
+        Precio referencia: 1º <code>proveedor_catalogo.precio_neto</code> (pactado), 2º <code>productos.costo_promedio</code> (WAC, fallback).
+        Si la base muestra &quot;WAC&quot; o &quot;mixto&quot;, falta cargar precios en catálogo para que el cálculo sea más preciso.
       </div>
     </div>
   );
