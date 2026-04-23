@@ -5640,6 +5640,10 @@ function Inventario() {
   const [viewMode, setViewMode] = useState<"fisico"|"ml">("fisico");
   const [soloSinEtiquetar, setSoloSinEtiquetar] = useState(false);
   const [soloComprometidos, setSoloComprometidos] = useState(false);
+  const [soloSinFlex, setSoloSinFlex] = useState(false);
+  const [soloSinFull, setSoloSinFull] = useState(false);
+  const [skusConFlex, setSkusConFlex] = useState<Set<string>>(new Set());
+  const [skusConFull, setSkusConFull] = useState<Set<string>>(new Set());
   const [,setTick] = useState(0);
   const refresh = useCallback(() => setTick(t => t + 1), []);
   const s = getStore();
@@ -5656,6 +5660,39 @@ function Inventario() {
       for (const r of rows) m.set(r.sku, r);
       setStockProy(m);
     });
+  }, []);
+
+  // Global: qué sku_origen tienen Flex publicado (>0) y cuáles tienen Full
+  useEffect(() => {
+    (async () => {
+      const sb = (await import("@/lib/supabase")).getSupabase();
+      if (!sb) return;
+      const [itemsRes, fullRes, compRes] = await Promise.all([
+        sb.from("ml_items_map").select("sku, sku_origen, stock_flex_cache").eq("activo", true),
+        sb.from("stock_full_cache").select("sku_venta, cantidad"),
+        sb.from("composicion_venta").select("sku_venta, sku_origen"),
+      ]);
+      const svToOrigen: Record<string, string> = {};
+      for (const c of ((compRes.data || []) as {sku_venta:string;sku_origen:string}[])) {
+        svToOrigen[c.sku_venta] = c.sku_origen;
+      }
+      const flexSet = new Set<string>();
+      for (const i of ((itemsRes.data || []) as {sku:string;sku_origen:string|null;stock_flex_cache:number|null}[])) {
+        if ((i.stock_flex_cache || 0) > 0) {
+          const origen = i.sku_origen || svToOrigen[i.sku] || i.sku;
+          flexSet.add(origen);
+        }
+      }
+      const fullSet = new Set<string>();
+      for (const r of ((fullRes.data || []) as {sku_venta:string;cantidad:number}[])) {
+        if ((r.cantidad || 0) > 0) {
+          const origen = svToOrigen[r.sku_venta] || r.sku_venta;
+          fullSet.add(origen);
+        }
+      }
+      setSkusConFlex(flexSet);
+      setSkusConFull(fullSet);
+    })();
   }, []);
 
   useEffect(() => {
@@ -5738,7 +5775,13 @@ function Inventario() {
     return detalle.some(d => d.skuVenta === SIN_ETIQUETAR && d.qty > 0);
   });
   const skusComprometidos = allSkus.filter(sku => (stockProy.get(sku)?.reserved || 0) > 0);
-  const filteredSkus = soloComprometidos ? skusComprometidos : soloSinEtiquetar ? skusSinEtiquetar : allSkus;
+  const skusSinFlex = allSkus.filter(sku => skuTotal(sku) > 0 && !skusConFlex.has(sku));
+  const skusSinFull = allSkus.filter(sku => skuTotal(sku) > 0 && !skusConFull.has(sku));
+  const filteredSkus = soloComprometidos ? skusComprometidos
+    : soloSinEtiquetar ? skusSinEtiquetar
+    : soloSinFlex ? skusSinFlex
+    : soloSinFull ? skusSinFull
+    : allSkus;
   const grandTotal = filteredSkus.reduce((s,sku)=>s+skuTotal(sku),0);
 
   // KPIs de etiquetado global
@@ -6363,15 +6406,27 @@ function Inventario() {
               border:viewMode==="ml"?"1px solid var(--amber)":"1px solid var(--bg4)"}}>🛒 Publicaciones ML</button>
           </div>
           {viewMode === "fisico" && (<>
-            <button onClick={()=>{setSoloSinEtiquetar(!soloSinEtiquetar);setSoloComprometidos(false);}} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
+            <button onClick={()=>{setSoloSinEtiquetar(!soloSinEtiquetar);setSoloComprometidos(false);setSoloSinFlex(false);setSoloSinFull(false);}} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
               background:soloSinEtiquetar?"var(--amberBg)":"var(--bg3)",color:soloSinEtiquetar?"var(--amber)":"var(--txt3)",
               border:soloSinEtiquetar?"1px solid var(--amber)":"1px solid var(--bg4)"}}>
               Sin etiquetar ({skusSinEtiquetar.length})
             </button>
-            <button onClick={()=>{setSoloComprometidos(!soloComprometidos);setSoloSinEtiquetar(false);}} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
+            <button onClick={()=>{setSoloComprometidos(!soloComprometidos);setSoloSinEtiquetar(false);setSoloSinFlex(false);setSoloSinFull(false);}} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
               background:soloComprometidos?"var(--amberBg)":"var(--bg3)",color:soloComprometidos?"var(--amber)":"var(--txt3)",
               border:soloComprometidos?"1px solid var(--amber)":"1px solid var(--bg4)"}}>
               Comprometidos ({skusComprometidos.length})
+            </button>
+            <button onClick={()=>{setSoloSinFlex(!soloSinFlex);setSoloSinEtiquetar(false);setSoloComprometidos(false);setSoloSinFull(false);}} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
+              background:soloSinFlex?"var(--cyanBg)":"var(--bg3)",color:soloSinFlex?"var(--cyan)":"var(--txt3)",
+              border:soloSinFlex?"1px solid var(--cyan)":"1px solid var(--bg4)"}}
+              title="Con stock en bodega pero 0 publicado en Flex (posiblemente bloqueados por buffer)">
+              Sin Flex ({skusSinFlex.length})
+            </button>
+            <button onClick={()=>{setSoloSinFull(!soloSinFull);setSoloSinEtiquetar(false);setSoloComprometidos(false);setSoloSinFlex(false);}} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
+              background:soloSinFull?"var(--blueBg)":"var(--bg3)",color:soloSinFull?"var(--blue)":"var(--txt3)",
+              border:soloSinFull?"1px solid var(--blue)":"1px solid var(--bg4)"}}
+              title="Con stock en bodega pero 0 en Full">
+              Sin Full ({skusSinFull.length})
             </button>
           </>)}
           <div style={{flex:1}}/>
