@@ -95,6 +95,7 @@ Ver `.claude/rules/` para reglas por dominio:
 - [meli-api.md](.claude/rules/meli-api.md) — integración MercadoLibre
 - [security.md](.claude/rules/security.md) — autenticación, roles, permisos
 - [testing.md](.claude/rules/testing.md) — estrategia de testing
+- [agents.md](.claude/rules/agents.md) — setup multi-máquina, cómo contactar al agente Viki en el droplet
 
 ## Git
 
