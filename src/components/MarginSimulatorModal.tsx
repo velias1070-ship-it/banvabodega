@@ -89,6 +89,24 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
   const [promosLoading, setPromosLoading] = useState(false);
   const [promoAction, setPromoAction] = useState<string | null>(null); // id de la promo en acción
 
+  // Historial de acciones (postulaciones, salidas, cambios de precio)
+  type AuditAction = { id: string; accion: string; entidad_id: string; detalle: Record<string, unknown>; created_at: string };
+  const [historial, setHistorial] = useState<AuditAction[]>([]);
+  const [historialOpen, setHistorialOpen] = useState(false);
+  const [historialLoading, setHistorialLoading] = useState(false);
+
+  const loadHistorial = useCallback(async () => {
+    setHistorialLoading(true);
+    try {
+      const res = await fetch(`/api/ml/item-history?item_id=${item.item_id}`);
+      if (res.ok) {
+        const j = await res.json();
+        setHistorial(j.actions || []);
+      }
+    } catch { /* silent */ }
+    setHistorialLoading(false);
+  }, [item.item_id]);
+
   // Precio venta efectivo: si ya se cargaron las promos live, usa la promo activa
   // del feed. Si aún no, usa el snapshot del cache (item.precio_venta) como fallback.
   const { precioVenta, tienePromo, descPromoPct, cacheStale, cacheStaleMsg } = useMemo(() => {
@@ -208,6 +226,7 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
     } finally {
       setApplying("none");
       await loadPromosConDelay(target);
+      if (historialOpen) void loadHistorial();
     }
   }
 
@@ -261,6 +280,7 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
     } finally {
       setApplying("none");
       await loadPromosConDelay(target);
+      if (historialOpen) void loadHistorial();
     }
   }
 
@@ -414,6 +434,7 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
       // Siempre re-fetchear con target: a veces el error es un falso positivo
       // y queremos ver el estado real. Con retries hasta ver target aplicado.
       await loadPromosConDelay(target);
+      if (historialOpen) void loadHistorial();
     }
   }
 
@@ -878,6 +899,83 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
               );
             })}
           </div>
+        </div>
+
+        {/* Historial de acciones sobre el item (postulaciones, salidas, cambios precio) */}
+        <div style={{ padding: "14px 20px", borderBottom: "1px solid var(--bg4)" }}>
+          <button
+            onClick={() => { setHistorialOpen(!historialOpen); if (!historialOpen && historial.length === 0) loadHistorial(); }}
+            style={{ background: "transparent", border: "none", color: "var(--txt2)", fontSize: 11, fontWeight: 600, cursor: "pointer", padding: 0, display: "flex", alignItems: "center", gap: 8, textTransform: "uppercase" }}
+          >
+            <span style={{ fontSize: 9 }}>{historialOpen ? "▼" : "▶"}</span>
+            📜 Historial de cambios{historial.length > 0 ? ` (${historial.length})` : ""}
+          </button>
+          {historialOpen && (
+            <div style={{ marginTop: 10 }}>
+              {historialLoading && <div style={{ fontSize: 10, color: "var(--txt3)" }}>Cargando...</div>}
+              {!historialLoading && historial.length === 0 && (
+                <div style={{ fontSize: 10, color: "var(--txt3)", fontStyle: "italic" }}>Sin acciones registradas para este item.</div>
+              )}
+              {!historialLoading && historial.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 260, overflowY: "auto" }}>
+                  {historial.map(h => {
+                    const fecha = new Date(h.created_at).toLocaleString("es-CL", { dateStyle: "short", timeStyle: "short" });
+                    const d = h.detalle || {};
+                    const iconMap: Record<string, string> = {
+                      "ml_promo:join": "✅",
+                      "ml_promo:delete": "🚫",
+                      "ml_promo:create_discount": "🏷️",
+                      "ml_promo:join_error": "⚠️",
+                      "ml_promo:delete_error": "⚠️",
+                      "ml_promo:create_discount_error": "⚠️",
+                      "ml_item_update": "✏️",
+                    };
+                    const colorMap: Record<string, string> = {
+                      "ml_promo:join": "var(--green)",
+                      "ml_promo:delete": "var(--amber)",
+                      "ml_promo:create_discount": "var(--cyan)",
+                      "ml_promo:join_error": "var(--red)",
+                      "ml_promo:delete_error": "var(--red)",
+                      "ml_promo:create_discount_error": "var(--red)",
+                      "ml_item_update": "var(--blue)",
+                    };
+                    const labelMap: Record<string, string> = {
+                      "ml_promo:join": "Postulación",
+                      "ml_promo:delete": "Salida de promo",
+                      "ml_promo:create_discount": "Descuento propio",
+                      "ml_promo:join_error": "Error postular",
+                      "ml_promo:delete_error": "Error salir",
+                      "ml_promo:create_discount_error": "Error descuento",
+                      "ml_item_update": "Cambio precio lista",
+                    };
+                    const icon = iconMap[h.accion] || "•";
+                    const color = colorMap[h.accion] || "var(--txt2)";
+                    const label = labelMap[h.accion] || h.accion;
+                    const promoType = d.promotion_type as string | undefined;
+                    const dealPrice = (d.deal_price ?? d.deal_price_applied) as number | undefined;
+                    const prevPrice = d.prev_price as number | undefined;
+                    const updates = d.updates as { price?: number } | undefined;
+                    const err = d.error as string | undefined;
+                    return (
+                      <div key={h.id} style={{ padding: "6px 10px", background: "var(--bg3)", borderRadius: 6, borderLeft: `3px solid ${color}`, fontSize: 11 }}>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                          <span style={{ fontWeight: 700, color }}>{icon} {label}</span>
+                          <span style={{ fontSize: 9, color: "var(--txt3)" }}>{fecha}</span>
+                        </div>
+                        <div style={{ fontSize: 10, color: "var(--txt2)", marginTop: 3, lineHeight: 1.5 }}>
+                          {promoType && <span style={{ marginRight: 8 }}>Tipo: <span className="mono" style={{ color: "var(--txt)" }}>{promoType}</span></span>}
+                          {dealPrice && <span style={{ marginRight: 8 }}>Precio: <span className="mono" style={{ color: "var(--cyan)", fontWeight: 700 }}>{fmtCLP(dealPrice)}</span></span>}
+                          {updates?.price && <span style={{ marginRight: 8 }}>Lista: <span className="mono" style={{ color: "var(--blue)", fontWeight: 700 }}>{fmtCLP(updates.price)}</span>{prevPrice && <span style={{ color: "var(--txt3)" }}> (antes {fmtCLP(prevPrice)})</span>}</span>}
+                          {(d.overridden as boolean) && <span style={{ color: "var(--amber)", marginRight: 8 }}>⚠ ML overrideó precio</span>}
+                          {err && <div style={{ color: "var(--red)", marginTop: 2 }}>{err}</div>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <div style={{ padding: "10px 20px 4px", fontSize: 9, color: "var(--txt3)", display: "flex", gap: 14, flexWrap: "wrap" }}>
