@@ -5837,6 +5837,26 @@ function Inventario() {
     return () => { cancelled = true; };
   }, [selectedSku, mlRefresh]);
 
+  // Re-hidratar estado_sku desde DB al abrir el SKU (local cache puede estar stale tras navegaciones)
+  useEffect(() => {
+    if (!selectedSku) return;
+    let cancelled = false;
+    (async () => {
+      const sb = (await import("@/lib/supabase")).getSupabase();
+      if (!sb) return;
+      const { data } = await sb.from("productos").select("estado_sku").eq("sku", selectedSku).maybeSingle();
+      if (cancelled || !data) return;
+      const fresh = (data as { estado_sku: string | null }).estado_sku ?? null;
+      const store = getStore();
+      const prod = store.products[selectedSku];
+      if (prod && (prod.estadoSku ?? null) !== fresh) {
+        prod.estadoSku = fresh;
+        setTick(t => t + 1);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedSku, mlRefresh]);
+
   // Physical stock view (also search by sku_venta via composicion)
   // Include all products (even with 0 stock) + any SKUs in stock not in products
   const allProductSkus = new Set([...Object.keys(s.products), ...Object.keys(s.stock)]);
