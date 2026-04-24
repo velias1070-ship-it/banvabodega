@@ -96,6 +96,7 @@ Ver `.claude/rules/` para reglas por dominio:
 - [security.md](.claude/rules/security.md) — autenticación, roles, permisos
 - [testing.md](.claude/rules/testing.md) — estrategia de testing
 - [agents.md](.claude/rules/agents.md) — setup multi-máquina, cómo contactar al agente Viki en el droplet
+- [app-etiquetas.md](.claude/rules/app-etiquetas.md) — repo hermano `~/banva1/` (App Etiquetas) y cómo coordinar cambios cross-repo
 
 ## Git
 
