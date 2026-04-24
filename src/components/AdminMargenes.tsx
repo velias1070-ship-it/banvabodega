@@ -177,6 +177,18 @@ export default function AdminMargenes() {
     setBgSyncing(false);
   }, [loadCache]);
 
+  // Auto-refresh periodico mientras el panel esta abierto.
+  // Cada 60s: re-lee de Supabase (ve cambios del cron cada 2 min).
+  // Cada 3 min: ademas dispara refresh stale background (acelera el ciclo).
+  useEffect(() => {
+    const reloadInterval = setInterval(() => { void loadCache(); }, 60_000);
+    const bgRefreshInterval = setInterval(() => { void backgroundRefreshStale(); }, 180_000);
+    return () => {
+      clearInterval(reloadInterval);
+      clearInterval(bgRefreshInterval);
+    };
+  }, [loadCache, backgroundRefreshStale]);
+
   useEffect(() => {
     loadCache().then((items) => {
       // Disparar el refresh silencioso despues de cargar la cache existente,

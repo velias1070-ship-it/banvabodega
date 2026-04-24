@@ -45,8 +45,8 @@
       "schedule": "30 */6 * * *"
     },
     {
-      "path": "/api/ml/margin-cache/refresh?stale=true&limit=10",
-      "schedule": "*/5 * * * *"
+      "path": "/api/ml/margin-cache/refresh?stale=true&limit=50",
+      "schedule": "*/2 * * * *"
     },
     {
       "path": "/api/intelligence/recalcular?full=true&snapshot=true",
