@@ -7625,6 +7625,7 @@ function Productos({ refresh }: { refresh: () => void }) {
   const [editSku, setEditSku] = useState<string|null>(null);
   const [q, setQ] = useState("");
   const [filtroSinCosto, setFiltroSinCosto] = useState(false);
+  const [filtroDescubiertos, setFiltroDescubiertos] = useState(false);
   const [mlItems, setMlItems] = useState<DBMLItemMap[]>([]);
   const s = getStore();
 
@@ -7642,8 +7643,19 @@ function Productos({ refresh }: { refresh: () => void }) {
     }
     return map;
   }, [mlItems]);
+  // Un producto es "descubierto sin validar" si fue creado automaticamente
+  // por syncStockFull y aun tiene defaults "Otro/Otros" o sin costo/categoria real.
+  // Senales: proveedor='Otro' O categoria='Otros' O cost=0 (y sin WAC).
+  const esDescubierto = (p:Product) => {
+    const sinProveedor = !p.prov || p.prov === "Otro" || p.prov === "";
+    const sinCategoria = !p.cat || p.cat === "Otros" || p.cat === "";
+    const sinCosto = (p.cost || 0) === 0 && (p.costAvg || 0) === 0;
+    return sinProveedor || sinCategoria || sinCosto;
+  };
+  const descubiertosCount = Object.values(s.products).filter(esDescubierto).length;
   const prods = Object.values(s.products).filter(p=>{
     if(filtroSinCosto && (p.cost > 0 || (p.costAvg ?? 0) > 0)) return false;
+    if(filtroDescubiertos && !esDescubierto(p)) return false;
     if(!q)return true;const ql=q.toLowerCase();
     return p.sku.toLowerCase().includes(ql)||p.name.toLowerCase().includes(ql)||p.mlCode.toLowerCase().includes(ql)||p.cat.toLowerCase().includes(ql)||p.prov.toLowerCase().includes(ql);
   }).sort((a,b)=>a.sku.localeCompare(b.sku));
@@ -7673,8 +7685,17 @@ function Productos({ refresh }: { refresh: () => void }) {
   return(
     <div>
       <div className="card">
-        <div style={{display:"flex",gap:8}}>
-          <input className="form-input mono" value={q} onChange={e=>setQ(e.target.value)} placeholder="Buscar SKU, nombre, código ML..." style={{flex:1,fontSize:12}}/>
+        {descubiertosCount > 0 && !filtroDescubiertos && (
+          <div style={{padding:"10px 14px",background:"var(--amberBg)",border:"1px solid var(--amberBd)",borderRadius:8,marginBottom:10,display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+            <div style={{fontSize:12,color:"var(--amber)"}}>
+              <strong>⚠️ {descubiertosCount} productos descubiertos sin validar</strong> — SKUs creados automáticamente por el sync ML con proveedor/categoría/costo por default. Requieren completar info.
+            </div>
+            <button onClick={()=>setFiltroDescubiertos(true)} style={{padding:"6px 12px",borderRadius:6,background:"var(--amber)",color:"#000",fontWeight:700,fontSize:11,border:"none",cursor:"pointer",whiteSpace:"nowrap"}}>Ver lista</button>
+          </div>
+        )}
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          <input className="form-input mono" value={q} onChange={e=>setQ(e.target.value)} placeholder="Buscar SKU, nombre, código ML..." style={{flex:1,fontSize:12,minWidth:200}}/>
+          <button onClick={()=>{setFiltroDescubiertos(!filtroDescubiertos);if(!filtroDescubiertos)setFiltroSinCosto(false);}} style={{padding:"10px 16px",borderRadius:8,background:filtroDescubiertos?"var(--amber)":"var(--bg3)",color:filtroDescubiertos?"#000":"var(--txt2)",fontWeight:600,fontSize:12,border:filtroDescubiertos?"none":"1px solid var(--bg4)",whiteSpace:"nowrap"}}>⚠️ Descubiertos ({descubiertosCount})</button>
           <button onClick={()=>setFiltroSinCosto(!filtroSinCosto)} style={{padding:"10px 16px",borderRadius:8,background:filtroSinCosto?"var(--red)":"var(--bg3)",color:filtroSinCosto?"#fff":"var(--txt2)",fontWeight:600,fontSize:12,border:filtroSinCosto?"none":"1px solid var(--bg4)",whiteSpace:"nowrap"}}>Sin Costo</button>
           <button onClick={()=>{
             const sinCosto = Object.values(s.products).filter(p=>!p.cost && !(p.costAvg??0));
