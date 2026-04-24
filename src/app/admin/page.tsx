@@ -10288,6 +10288,208 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
 }
 
 // ==================== DICCIONARIO CONFIG ====================
+// ==================== COMPOSICION EDITOR (CRUD de composicion_venta) ====================
+interface SkuVentaGrouped {
+  skuVenta: string; codigoMl: string;
+  componentes: Array<{ skuOrigen: string; unidades: number; tipoRelacion?: "componente"|"alternativo"; notaOperativa?: string|null }>;
+}
+
+function ComposicionEditor({ allProducts, filteredComposicion, search, setSearch }: {
+  allProducts: Product[];
+  filteredComposicion: SkuVentaGrouped[];
+  search: string;
+  setSearch: (v: string) => void;
+}) {
+  const [editing, setEditing] = useState<SkuVentaGrouped | null>(null);
+  const [isNew, setIsNew] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const startNew = () => {
+    setIsNew(true);
+    setEditing({
+      skuVenta: "",
+      codigoMl: "",
+      componentes: [{ skuOrigen: "", unidades: 1, tipoRelacion: "componente", notaOperativa: null }],
+    });
+  };
+  const startEditRow = (sv: SkuVentaGrouped) => {
+    setIsNew(false);
+    setEditing({ ...sv, componentes: sv.componentes.map(c => ({ ...c, tipoRelacion: c.tipoRelacion || "componente" })) });
+  };
+  const cancel = () => { setEditing(null); setIsNew(false); setMsg(null); };
+
+  const addComponente = () => {
+    if (!editing) return;
+    setEditing({ ...editing, componentes: [...editing.componentes, { skuOrigen: "", unidades: 1, tipoRelacion: "componente", notaOperativa: null }] });
+  };
+  const removeComponente = (idx: number) => {
+    if (!editing) return;
+    const next = editing.componentes.filter((_, i) => i !== idx);
+    setEditing({ ...editing, componentes: next.length > 0 ? next : [{ skuOrigen: "", unidades: 1, tipoRelacion: "componente", notaOperativa: null }] });
+  };
+  const updateComponente = (idx: number, patch: Partial<SkuVentaGrouped["componentes"][0]>) => {
+    if (!editing) return;
+    const next = editing.componentes.map((c, i) => i === idx ? { ...c, ...patch } : c);
+    setEditing({ ...editing, componentes: next });
+  };
+
+  const save = async () => {
+    if (!editing) return;
+    const skuVenta = (editing.skuVenta || "").toUpperCase().trim();
+    if (!skuVenta) { setMsg("SKU Venta obligatorio"); return; }
+    const comps = editing.componentes.filter(c => (c.skuOrigen || "").trim().length > 0);
+    if (comps.length === 0) { setMsg("Agregar al menos un componente"); return; }
+
+    const skusValidos = new Set(allProducts.map(p => p.sku.toUpperCase()));
+    const invalidos = comps.filter(c => !skusValidos.has(c.skuOrigen.toUpperCase().trim()));
+    if (invalidos.length > 0) {
+      setMsg(`Componentes no existen en productos: ${invalidos.map(c => c.skuOrigen).join(", ")}`);
+      return;
+    }
+
+    setSaving(true);
+    setMsg(null);
+    try {
+      const sb = getSupabase();
+      if (!sb) throw new Error("Sin conexion Supabase");
+
+      if (!isNew) {
+        // Borrar las composiciones viejas del SKU venta para evitar huerfanos
+        await sb.from("composicion_venta").delete().eq("sku_venta", skuVenta);
+      }
+
+      const rows = comps.map(c => ({
+        sku_venta: skuVenta,
+        sku_origen: c.skuOrigen.toUpperCase().trim(),
+        unidades: Math.max(1, c.unidades || 1),
+        codigo_ml: editing.codigoMl || "",
+        tipo_relacion: c.tipoRelacion || "componente",
+        nota_operativa: c.notaOperativa || null,
+      }));
+      const { error } = await sb.from("composicion_venta").upsert(rows, { onConflict: "sku_venta,sku_origen" });
+      if (error) throw new Error(error.message);
+
+      setMsg(isNew ? "Composición creada" : "Composición actualizada");
+      setTimeout(() => { setEditing(null); setIsNew(false); setMsg(null); location.reload(); }, 800);
+    } catch (e) {
+      setMsg(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const remove = async (skuVenta: string) => {
+    if (!confirm(`Eliminar composición de ${skuVenta}? Esta acción borra todas las filas de este SKU Venta en composicion_venta.`)) return;
+    const sb = getSupabase();
+    if (!sb) return;
+    const { error } = await sb.from("composicion_venta").delete().eq("sku_venta", skuVenta);
+    if (error) alert(`Error: ${error.message}`);
+    else location.reload();
+  };
+
+  return (
+    <div className="card">
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,flexWrap:"wrap",gap:8}}>
+        <div className="card-title">Composición de venta ({filteredComposicion.length} SKUs venta)</div>
+        <button onClick={startNew} style={{padding:"8px 14px",borderRadius:8,background:"var(--green)",color:"#fff",fontWeight:700,fontSize:12,border:"none",cursor:"pointer"}}>+ Nueva Composición</button>
+      </div>
+      <div style={{fontSize:11,color:"var(--txt3)",marginBottom:8}}>
+        Mapeo SKU Venta → SKU Origen con unidades. Define packs/combos. Por ejemplo, un pack de 4 toallas es 1 SKU Venta
+        compuesto por 1 SKU Origen × 4 unidades.
+      </div>
+      <input className="form-input" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Buscar por SKU venta, SKU origen, codigo ML..." style={{marginBottom:12,fontSize:12}}/>
+
+      {editing && (
+        <div className="card" style={{border:"2px solid var(--cyan)",marginBottom:12}}>
+          <div className="card-title">{isNew ? "Nueva Composición" : `Editar ${editing.skuVenta}`}</div>
+          <div className="admin-form-grid">
+            <div className="form-group" style={{gridColumn:"span 2"}}>
+              <label className="form-label">SKU Venta *</label>
+              <input className="form-input mono" value={editing.skuVenta} disabled={!isNew}
+                onChange={e=>setEditing({...editing, skuVenta: e.target.value.toUpperCase()})} placeholder="PACK4TLL, PROMO..."/>
+            </div>
+            <div className="form-group" style={{gridColumn:"span 2"}}>
+              <label className="form-label">Código ML (opcional)</label>
+              <input className="form-input mono" value={editing.codigoMl}
+                onChange={e=>setEditing({...editing, codigoMl: e.target.value})} placeholder="MLC123456789"/>
+            </div>
+          </div>
+
+          <div style={{marginTop:12,fontSize:12,fontWeight:600,color:"var(--txt2)",marginBottom:6}}>Componentes</div>
+          {editing.componentes.map((c, i) => (
+            <div key={i} style={{display:"flex",gap:6,marginBottom:6,alignItems:"flex-start"}}>
+              <input list={`skus-prod-${i}`} className="form-input mono" value={c.skuOrigen}
+                onChange={e=>updateComponente(i,{skuOrigen:e.target.value.toUpperCase()})}
+                placeholder="SKU Origen" style={{flex:2,fontSize:12}}/>
+              <datalist id={`skus-prod-${i}`}>
+                {allProducts.slice(0, 500).map(p => <option key={p.sku} value={p.sku}>{p.name}</option>)}
+              </datalist>
+              <input type="number" min={1} className="form-input mono" value={c.unidades}
+                onChange={e=>updateComponente(i,{unidades:parseInt(e.target.value)||1})}
+                style={{flex:"0 0 70px",fontSize:12}} title="Unidades"/>
+              <select className="form-select" value={c.tipoRelacion||"componente"}
+                onChange={e=>updateComponente(i,{tipoRelacion:e.target.value as "componente"|"alternativo"})}
+                style={{flex:"0 0 130px",fontSize:11}}>
+                <option value="componente">Componente</option>
+                <option value="alternativo">Alternativo</option>
+              </select>
+              <input className="form-input" value={c.notaOperativa||""}
+                onChange={e=>updateComponente(i,{notaOperativa:e.target.value||null})}
+                placeholder="Nota (opcional)" style={{flex:2,fontSize:11}}/>
+              <button onClick={()=>removeComponente(i)} style={{padding:"8px 10px",borderRadius:6,background:"var(--redBg)",color:"var(--red)",border:"1px solid var(--redBd)",cursor:"pointer",fontSize:11}}>✕</button>
+            </div>
+          ))}
+          <button onClick={addComponente} style={{marginTop:4,padding:"6px 12px",borderRadius:6,background:"var(--bg3)",color:"var(--cyan)",border:"1px solid var(--bg4)",fontSize:11,cursor:"pointer",fontWeight:600}}>+ Agregar componente</button>
+
+          {msg && <div style={{marginTop:10,padding:8,borderRadius:6,background:msg.startsWith("Error")||msg.startsWith("SKU")||msg.startsWith("Agregar")||msg.startsWith("Componentes")?"var(--redBg)":"var(--greenBg)",color:msg.startsWith("Error")||msg.startsWith("SKU")||msg.startsWith("Agregar")||msg.startsWith("Componentes")?"var(--red)":"var(--green)",fontSize:12,fontWeight:600}}>{msg}</div>}
+
+          <div style={{display:"flex",gap:8,marginTop:12}}>
+            <button onClick={cancel} disabled={saving} style={{flex:1,padding:10,borderRadius:8,background:"var(--bg3)",color:"var(--txt3)",fontWeight:600,border:"1px solid var(--bg4)"}}>Cancelar</button>
+            <button onClick={save} disabled={saving} style={{flex:2,padding:10,borderRadius:8,background:"var(--green)",color:"#fff",fontWeight:700,opacity:saving?0.6:1}}>{saving?"Guardando...":"Guardar"}</button>
+          </div>
+        </div>
+      )}
+
+      <div style={{maxHeight:500,overflowY:"auto"}}>
+        <table className="tbl" style={{width:"100%"}}>
+          <thead>
+            <tr>
+              <th>SKU Venta</th>
+              <th>Cod ML</th>
+              <th>Componentes</th>
+              <th style={{textAlign:"right"}}>Acciones</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredComposicion.slice(0, 200).map(sv => (
+              <tr key={sv.skuVenta}>
+                <td className="mono" style={{fontWeight:700,fontSize:11}}>{sv.skuVenta}</td>
+                <td className="mono" style={{fontSize:10,color:"var(--txt3)"}}>{sv.codigoMl||"—"}</td>
+                <td style={{fontSize:11}}>
+                  {sv.componentes.map((c, i) => (
+                    <span key={i}>
+                      {i > 0 && <span style={{color:"var(--txt3)"}}> + </span>}
+                      <span className="mono" style={{color:"var(--cyan)"}}>{c.skuOrigen}</span>
+                      <span style={{color:"var(--amber)"}}> ×{c.unidades}</span>
+                      {c.tipoRelacion === "alternativo" && <span style={{fontSize:9,marginLeft:4,padding:"1px 4px",borderRadius:3,background:"var(--amberBg)",color:"var(--amber)"}}>ALT</span>}
+                    </span>
+                  ))}
+                </td>
+                <td style={{textAlign:"right",whiteSpace:"nowrap"}}>
+                  <button onClick={()=>startEditRow(sv)} style={{padding:"4px 10px",borderRadius:4,background:"var(--bg3)",color:"var(--cyan)",fontSize:10,fontWeight:600,border:"1px solid var(--bg4)",marginRight:4,cursor:"pointer"}}>Editar</button>
+                  <button onClick={()=>remove(sv.skuVenta)} style={{padding:"4px 10px",borderRadius:4,background:"var(--redBg)",color:"var(--red)",fontSize:10,fontWeight:600,border:"1px solid var(--redBd)",cursor:"pointer"}}>Eliminar</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {filteredComposicion.length > 200 && <div style={{padding:8,textAlign:"center",fontSize:11,color:"var(--txt3)"}}>Mostrando 200 de {filteredComposicion.length}</div>}
+      </div>
+    </div>
+  );
+}
+
 function DiccionarioConfig() {
   const s = getStore();
   const skusVenta = getSkusVenta();
@@ -10447,42 +10649,7 @@ function DiccionarioConfig() {
       )}
 
       {/* Composicion tab */}
-      {viewTab==="composicion"&&(
-        <div className="card">
-          <div className="card-title">Composicion de venta ({filteredComposicion.length} SKUs venta)</div>
-          <div style={{fontSize:11,color:"var(--txt3)",marginBottom:8}}>Mapeo SKU Venta → SKU Origen con unidades. Muestra como se descomponen los packs/combos en productos fisicos.</div>
-          <input className="form-input" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Buscar por SKU venta, SKU origen, codigo ML..." style={{marginBottom:12,fontSize:12}}/>
-          <div style={{maxHeight:500,overflowY:"auto"}}>
-            <table className="tbl" style={{width:"100%"}}>
-              <thead>
-                <tr>
-                  <th>SKU Venta</th>
-                  <th>Codigo ML</th>
-                  <th>Componentes (SKU Origen × Unidades)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredComposicion.slice(0, 200).map(sv => (
-                  <tr key={sv.skuVenta}>
-                    <td className="mono" style={{fontWeight:700,fontSize:11}}>{sv.skuVenta}</td>
-                    <td className="mono" style={{fontSize:10,color:"var(--txt3)"}}>{sv.codigoMl||"—"}</td>
-                    <td style={{fontSize:11}}>
-                      {sv.componentes.map((c, i) => (
-                        <span key={i}>
-                          {i > 0 && <span style={{color:"var(--txt3)"}}> + </span>}
-                          <span className="mono" style={{color:"var(--cyan)"}}>{c.skuOrigen}</span>
-                          <span style={{color:"var(--amber)"}}> ×{c.unidades}</span>
-                        </span>
-                      ))}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {filteredComposicion.length > 200 && <div style={{padding:8,textAlign:"center",fontSize:11,color:"var(--txt3)"}}>Mostrando 200 de {filteredComposicion.length}</div>}
-          </div>
-        </div>
-      )}
+      {viewTab==="composicion"&&<ComposicionEditor allProducts={allProducts} filteredComposicion={filteredComposicion} search={search} setSearch={setSearch}/>}
     </div>
   );
 }
