@@ -122,7 +122,7 @@ export default function AdminMargenes() {
     });
   };
   const [showErrorsModal, setShowErrorsModal] = useState(false);
-  const [campaignMode, setCampaignMode] = useState<"join" | "leave">("join");
+  const [campaignMode, setCampaignMode] = useState<"join" | "leave" | "switch">("join");
 
   const [switchMenu, setSwitchMenu] = useState<{ itemId: string; top: number; left: number } | null>(null);
   const [switchingItem, setSwitchingItem] = useState<string | null>(null);
@@ -471,7 +471,7 @@ export default function AdminMargenes() {
     });
   };
 
-  const abrirCampaignModal = async (mode: "join" | "leave" = "join") => {
+  const abrirCampaignModal = async (mode: "join" | "leave" | "switch" = "join") => {
     const items = rows.filter(r => selected.has(r.item_id));
     if (items.length === 0) return;
     setCampaignMode(mode);
@@ -860,6 +860,115 @@ export default function AdminMargenes() {
     setBulkErrors(errors);
     setBulkApplying("none");
     await refrescarItemsAfectados(afectados);
+  };
+
+  const runBulkSwitch = async () => {
+    const target = parseInt(bulkPrice) || 0;
+    if (target <= 0) { alert("Ingresa un precio válido"); return; }
+    if (!selectedPromoKey) { alert("Elegí la promo destino"); return; }
+    const promo = commonPromos.find(p => (p.id ? `${p.type}::${p.id}` : `${p.type}::_`) === selectedPromoKey);
+    if (!promo) return;
+
+    const itemsSel = rows.filter(r => selected.has(r.item_id));
+    const plan: { ok: MarginRow[]; skip: Array<{ r: MarginRow; motivo: string }> } = { ok: [], skip: [] };
+    for (const r of itemsSel) {
+      const rango = promo.rangosPorItem.get(r.item_id);
+      if (!rango) {
+        plan.skip.push({ r, motivo: "promo destino no disponible" });
+        continue;
+      }
+      if (rango.min > 0 && target < rango.min) {
+        plan.skip.push({ r, motivo: `${fmtCLP(target)} < min ${fmtCLP(rango.min)}` });
+        continue;
+      }
+      if (rango.max > 0 && target > rango.max) {
+        plan.skip.push({ r, motivo: `${fmtCLP(target)} > max ${fmtCLP(rango.max)}` });
+        continue;
+      }
+      plan.ok.push(r);
+    }
+
+    if (plan.ok.length === 0) {
+      alert(`Ningún ítem acepta ${fmtCLP(target)} en "${promo.name}":\n\n${plan.skip.slice(0, 10).map(s => `• ${s.r.sku}: ${s.motivo}`).join("\n")}`);
+      return;
+    }
+    const resumen = `Cambiar ${plan.ok.length} ítem${plan.ok.length !== 1 ? "s" : ""} a "${promo.name}" a ${fmtCLP(target)}` +
+      (plan.skip.length > 0 ? `\n(${plan.skip.length} se skipean por fuera de rango o no aplicables)` : "") +
+      `\n\nEste flujo saca cada ítem de cualquier promo activa y lo postula a la destino. ¿Continuar?`;
+    if (!confirm(resumen)) return;
+
+    setBulkApplying("campaign");
+    setBulkProgress({ done: 0, total: plan.ok.length, ok: 0, err: plan.skip.length });
+    const errors: Array<{ sku: string; error: string }> = plan.skip.map(s => ({ sku: s.r.sku, error: s.motivo }));
+    setBulkErrors(errors);
+    let ok = 0, done = 0;
+    const itemsAfectadosGlobal = new Set<string>();
+
+    for (const r of plan.ok) {
+      try {
+        if (r.tiene_promo) {
+          const del = await fetch("/api/ml/promotions", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ item_id: r.item_id, action: "delete" }),
+          });
+          const delData = await del.json();
+          if (!del.ok && !/not.*found|does not|no existe/i.test(String(delData?.error || ""))) {
+            throw new Error(`leave: ${delData?.error || `HTTP ${del.status}`}`);
+          }
+          await new Promise(res => setTimeout(res, 2500));
+        }
+        const join = await fetch("/api/ml/promotions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            item_id: r.item_id,
+            action: "join",
+            promotion_id: promo.id,
+            promotion_type: promo.type,
+            deal_price: target,
+            offer_type: promo.offer_type,
+          }),
+        });
+        const joinData = await join.json();
+        if (!join.ok) {
+          if (/offer_already_exists/i.test(String(joinData?.error || ""))) {
+            await new Promise(res => setTimeout(res, 1200));
+            await fetch("/api/ml/promotions", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ item_id: r.item_id, action: "delete", promotion_id: promo.id, promotion_type: promo.type }),
+            }).catch(() => null);
+            await new Promise(res => setTimeout(res, 600));
+            const retry = await fetch("/api/ml/promotions", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                item_id: r.item_id,
+                action: "join",
+                promotion_id: promo.id,
+                promotion_type: promo.type,
+                deal_price: target,
+                offer_type: promo.offer_type,
+              }),
+            });
+            const retryData = await retry.json();
+            if (!retry.ok) throw new Error(retryData?.error || `HTTP ${retry.status}`);
+          } else {
+            throw new Error(String(joinData?.error || `HTTP ${join.status}`));
+          }
+        }
+        ok++;
+        itemsAfectadosGlobal.add(r.item_id);
+      } catch (e) {
+        errors.push({ sku: r.sku, error: e instanceof Error ? e.message : "Error" });
+      }
+      done++;
+      setBulkProgress({ done, total: plan.ok.length, ok, err: errors.length });
+    }
+    setBulkErrors(errors);
+    setBulkApplying("none");
+    await refrescarItemsAfectados(Array.from(itemsAfectadosGlobal));
   };
 
   const runBulk = async (mode: "lista" | "promo") => {
@@ -1439,6 +1548,17 @@ export default function AdminMargenes() {
             }}
           >Postular a campaña ML →</button>
           <button
+            onClick={() => abrirCampaignModal("switch")}
+            disabled={bulkApplying !== "none"}
+            style={{
+              padding: "8px 14px", borderRadius: 6, fontSize: 12, fontWeight: 700,
+              background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)",
+              cursor: bulkApplying !== "none" ? "wait" : "pointer",
+              opacity: bulkApplying !== "none" ? 0.5 : 1,
+              whiteSpace: "nowrap",
+            }}
+          >⇄ Cambiar promo</button>
+          <button
             onClick={() => abrirCampaignModal("leave")}
             disabled={bulkApplying !== "none"}
             style={{
@@ -1512,12 +1632,16 @@ export default function AdminMargenes() {
                 <div style={{ fontSize: 14, fontWeight: 700, color: campaignMode === "leave" ? "var(--red)" : "var(--cyan)" }}>
                   {campaignMode === "leave"
                     ? `Salir masivo de una promo (${selected.size} ítems)`
-                    : `Postular ${selected.size} ítem${selected.size !== 1 ? "s" : ""} — marca una o más campañas`}
+                    : campaignMode === "switch"
+                      ? `Cambiar promo de ${selected.size} ítem${selected.size !== 1 ? "s" : ""} — elegí la destino`
+                      : `Postular ${selected.size} ítem${selected.size !== 1 ? "s" : ""} — marca una o más campañas`}
                 </div>
                 <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 2 }}>
                   {campaignMode === "leave"
                     ? "Promos donde hay ítems actualmente participando. Elige una y los ítems serán retirados."
-                    : "Podés postular al mismo precio a varias campañas en un solo click. Los ítems fuera de rango por-campaña se skipean."}
+                    : campaignMode === "switch"
+                      ? "Elegí UNA promo destino. Saca a cada ítem de su promo activa actual y lo postula a la destino al precio objetivo."
+                      : "Podés postular al mismo precio a varias campañas en un solo click. Los ítems fuera de rango por-campaña se skipean."}
                 </div>
               </div>
               <button onClick={() => bulkApplying === "none" && setCampaignModalOpen(false)} style={{ background: "transparent", border: "none", color: "var(--txt2)", fontSize: 20, cursor: "pointer", padding: "0 4px" }}>✕</button>
@@ -1543,7 +1667,7 @@ export default function AdminMargenes() {
               }
               return (
               <>
-                {campaignMode === "join" && (
+                {campaignMode !== "leave" && (
                 <div style={{ padding: "14px 20px 10px" }}>
                   <div style={{ fontSize: 9, color: "var(--txt3)", marginBottom: 4 }}>Precio objetivo</div>
                   <input
@@ -1769,6 +1893,25 @@ export default function AdminMargenes() {
                           : selectedPromoKeys.size === 1
                             ? "Postular a 1 campaña"
                             : `Postular a ${selectedPromoKeys.size} campañas`}
+                    </button>
+                  ) : campaignMode === "switch" ? (
+                    <button
+                      onClick={runBulkSwitch}
+                      disabled={!selectedPromoKey || !bulkPrice || bulkApplying === "campaign"}
+                      style={{
+                        padding: "8px 16px", borderRadius: 6, fontSize: 12, fontWeight: 700,
+                        background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)",
+                        cursor: bulkApplying === "campaign" ? "wait" : "pointer",
+                        opacity: (!selectedPromoKey || !bulkPrice || bulkApplying === "campaign") ? 0.5 : 1,
+                      }}
+                    >
+                      {bulkApplying === "campaign"
+                        ? "Procesando..."
+                        : !selectedPromoKey
+                          ? "Selecciona la promo destino"
+                          : !bulkPrice
+                            ? "Ingresa precio objetivo"
+                            : `Cambiar ${selected.size} ítem${selected.size !== 1 ? "s" : ""}`}
                     </button>
                   ) : (
                     <button
