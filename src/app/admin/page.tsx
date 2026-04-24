@@ -9,6 +9,7 @@ import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFle
 import type { DBStockProyectado, DBReconciliacion } from "@/lib/db";
 import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap, ShipmentWithItems } from "@/lib/db";
 import { getOAuthUrl } from "@/lib/ml";
+import { getSupabase } from "@/lib/supabase";
 import Link from "next/link";
 import SheetSync from "@/components/SheetSync";
 import AdminReposicion from "@/components/AdminReposicion";
@@ -7552,6 +7553,73 @@ function Movimientos() {
 }
 
 // ==================== PRODUCTOS ====================
+function ProductoBadges({ sku }: { sku: string }) {
+  const [data, setData] = useState<{
+    stock_full: number; stock_bodega: number;
+    ml_status: string | null; ml_activo: boolean | null;
+    date_created_ml: string | null;
+    vel_30d: number | null; dias_sin_venta: number | null;
+    abc: string | null; accion: string | null;
+    costo_promedio: number | null;
+    created_at: string | null;
+  } | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      const sb = getSupabase(); if (!sb) return;
+      const [p, m, i, v] = await Promise.all([
+        sb.from("productos").select("costo_promedio, created_at").eq("sku", sku).maybeSingle(),
+        sb.from("ml_items_map").select("status_ml, activo, date_created_ml").eq("sku", sku).eq("activo", true).order("updated_at",{ascending:false}).limit(1).maybeSingle(),
+        sb.from("sku_intelligence").select("vel_30d, dias_sin_movimiento, abc, accion, stock_full, stock_bodega").eq("sku_origen", sku).maybeSingle(),
+        sb.from("ventas_ml_cache").select("fecha_date").eq("sku_venta", sku).order("fecha_date",{ascending:false}).limit(1).maybeSingle(),
+      ]);
+      const ultimaVenta = v.data?.fecha_date as string | null;
+      const dsv = ultimaVenta ? Math.floor((Date.now() - new Date(ultimaVenta+"T00:00:00Z").getTime()) / 86400000) : null;
+      setData({
+        stock_full: i.data?.stock_full || 0,
+        stock_bodega: i.data?.stock_bodega || 0,
+        ml_status: m.data?.status_ml ?? null,
+        ml_activo: m.data?.activo ?? null,
+        date_created_ml: m.data?.date_created_ml ?? null,
+        vel_30d: i.data?.vel_30d ?? null,
+        dias_sin_venta: dsv,
+        abc: i.data?.abc ?? null,
+        accion: i.data?.accion ?? null,
+        costo_promedio: p.data?.costo_promedio ?? null,
+        created_at: p.data?.created_at ?? null,
+      });
+    })();
+  }, [sku]);
+
+  if (!data) return <div style={{fontSize:11,color:"var(--txt3)",marginBottom:10}}>Cargando badges...</div>;
+
+  const mlBadge = data.ml_status === "active" ? ["🟢","Activo ML","var(--green)"]
+    : data.ml_status === "paused" ? ["🟡","Pausado","var(--amber)"]
+    : data.ml_status === "closed" ? ["🔴","Cerrado","var(--red)"]
+    : data.ml_status === "under_review" ? ["🔎","Revisión","var(--cyan)"]
+    : ["⚪","Sin ML","var(--txt3)"];
+  const diasEnMl = data.date_created_ml ? Math.floor((Date.now() - new Date(data.date_created_ml).getTime()) / 86400000) : null;
+  const diasDesdeCreado = data.created_at ? Math.floor((Date.now() - new Date(data.created_at).getTime()) / 86400000) : null;
+
+  const Badge = ({bg,fg,children,title}:{bg:string;fg:string;children:React.ReactNode;title?:string}) => (
+    <span title={title} style={{padding:"3px 8px",borderRadius:12,background:bg,color:fg,fontSize:10,fontWeight:600,whiteSpace:"nowrap",border:`1px solid ${bg==='transparent'?'var(--bg4)':bg}`}}>{children}</span>
+  );
+
+  return (
+    <div style={{display:"flex",gap:6,flexWrap:"wrap",padding:"8px 0 12px",borderBottom:"1px solid var(--bg4)",marginBottom:10}}>
+      <Badge bg={`${mlBadge[2]}33`} fg={mlBadge[2]} title={`Status ML: ${data.ml_status}`}>{mlBadge[0]} {mlBadge[1]}</Badge>
+      {diasEnMl !== null && <Badge bg="var(--bg3)" fg="var(--txt2)" title="Días desde publicación ML">📅 {diasEnMl}d en ML</Badge>}
+      {diasDesdeCreado !== null && diasEnMl === null && <Badge bg="var(--bg3)" fg="var(--txt2)" title="Días desde creación en BANVA">📅 {diasDesdeCreado}d creado</Badge>}
+      <Badge bg="var(--cyanBg)" fg="var(--cyan)" title="Stock Full + Bodega">📦 {data.stock_full}F + {data.stock_bodega}B</Badge>
+      {data.vel_30d !== null && data.vel_30d > 0 && <Badge bg="var(--greenBg)" fg="var(--green)" title="Velocidad 30d (uds/sem)">📈 {data.vel_30d.toFixed(1)}/sem</Badge>}
+      {data.dias_sin_venta !== null && <Badge bg={data.dias_sin_venta > 90 ? "var(--redBg)" : data.dias_sin_venta > 30 ? "var(--amberBg)" : "var(--greenBg)"} fg={data.dias_sin_venta > 90 ? "var(--red)" : data.dias_sin_venta > 30 ? "var(--amber)" : "var(--green)"} title="Días desde última venta ML">🕐 {data.dias_sin_venta}d sin venta</Badge>}
+      {data.abc && <Badge bg={data.abc==="A"?"var(--greenBg)":data.abc==="B"?"var(--amberBg)":"var(--bg3)"} fg={data.abc==="A"?"var(--green)":data.abc==="B"?"var(--amber)":"var(--txt3)"} title="Clasificación ABC">🏷️ {data.abc}</Badge>}
+      {data.accion && <Badge bg="var(--bg3)" fg="var(--txt2)" title="Acción motor inteligencia">⚙️ {data.accion}</Badge>}
+      {data.costo_promedio !== null && data.costo_promedio > 0 && <Badge bg="var(--bg3)" fg="var(--txt2)" title="Costo WAC calculado desde movimientos">💰 WAC ${data.costo_promedio.toLocaleString("es-CL")}</Badge>}
+    </div>
+  );
+}
+
 function Productos({ refresh }: { refresh: () => void }) {
   const [showAdd, setShowAdd] = useState(false);
   const [editSku, setEditSku] = useState<string|null>(null);
@@ -7580,13 +7648,13 @@ function Productos({ refresh }: { refresh: () => void }) {
     return p.sku.toLowerCase().includes(ql)||p.name.toLowerCase().includes(ql)||p.mlCode.toLowerCase().includes(ql)||p.cat.toLowerCase().includes(ql)||p.prov.toLowerCase().includes(ql);
   }).sort((a,b)=>a.sku.localeCompare(b.sku));
 
-  const [form, setForm] = useState<Partial<Product>>({sku:"",name:"",mlCode:"",cat:getCategorias()[0],prov:getProveedores()[0],cost:0,price:0,reorder:20});
+  const [form, setForm] = useState<Partial<Product>>({sku:"",name:"",mlCode:"",cat:getCategorias()[0],prov:getProveedores()[0],cost:0,price:0,reorder:20,tamano:"",color:"",innerPack:1});
   const startEdit=(p:Product)=>{setForm({...p});setEditSku(p.sku);setShowAdd(true);};
-  const startAdd=()=>{setForm({sku:"",name:"",mlCode:"",cat:getCategorias()[0],prov:getProveedores()[0],cost:0,price:0,reorder:20});setEditSku(null);setShowAdd(true);};
+  const startAdd=()=>{setForm({sku:"",name:"",mlCode:"",cat:getCategorias()[0],prov:getProveedores()[0],cost:0,price:0,reorder:20,tamano:"",color:"",innerPack:1});setEditSku(null);setShowAdd(true);};
   const save=()=>{
     if(!form.sku||!form.name)return;
     const sku=form.sku.toUpperCase();
-    s.products[sku]={sku,skuVenta:"",name:form.name!,mlCode:form.mlCode||"",cat:form.cat||"Otros",prov:form.prov||"Otro",cost:form.cost||0,costAvg:s.products[sku]?.costAvg||form.cost||0,price:form.price||0,reorder:form.reorder||20,estadoSku:form.estadoSku||null};
+    s.products[sku]={sku,skuVenta:"",name:form.name!,mlCode:form.mlCode||"",cat:form.cat||"Otros",prov:form.prov||"Otro",cost:form.cost||0,costAvg:s.products[sku]?.costAvg||form.cost||0,price:form.price||0,reorder:form.reorder||20,estadoSku:form.estadoSku||null,tamano:form.tamano||"",color:form.color||"",innerPack:form.innerPack??1};
     saveStore();setShowAdd(false);setEditSku(null);refresh();
   };
   const remove=(sku:string)=>{
@@ -7630,6 +7698,7 @@ function Productos({ refresh }: { refresh: () => void }) {
       {showAdd&&(
         <div className="card" style={{border:"2px solid var(--cyan)"}}>
           <div className="card-title">{editSku?"Editar "+editSku:"Nuevo Producto"}</div>
+          {editSku && <ProductoBadges sku={editSku}/>}
           <div className="admin-form-grid">
             <div className="form-group"><label className="form-label">SKU *</label><input className="form-input mono" value={form.sku||""} onChange={e=>setForm({...form,sku:e.target.value.toUpperCase()})} disabled={!!editSku}/></div>
             <div className="form-group"><label className="form-label">Código ML</label><input className="form-input mono" value={form.mlCode||""} onChange={e=>setForm({...form,mlCode:e.target.value})}/></div>
@@ -7638,6 +7707,10 @@ function Productos({ refresh }: { refresh: () => void }) {
             <div className="form-group"><label className="form-label">Proveedor</label><select className="form-select" value={form.prov} onChange={e=>setForm({...form,prov:e.target.value})}>{getProveedores().map(p=><option key={p}>{p}</option>)}</select></div>
             <div className="form-group"><label className="form-label">Costo</label><input type="number" className="form-input mono" value={form.cost||""} onChange={e=>setForm({...form,cost:parseInt(e.target.value)||0})}/></div>
             <div className="form-group"><label className="form-label">Precio ML</label><input type="number" className="form-input mono" value={form.price||""} onChange={e=>setForm({...form,price:parseInt(e.target.value)||0})}/></div>
+            <div className="form-group"><label className="form-label">Tamaño</label><input className="form-input" value={form.tamano||""} onChange={e=>setForm({...form,tamano:e.target.value})} placeholder="1.5P, 2P, 2.5P, King..."/></div>
+            <div className="form-group"><label className="form-label">Color</label><input className="form-input" value={form.color||""} onChange={e=>setForm({...form,color:e.target.value})} placeholder="Blanco, Celeste..."/></div>
+            <div className="form-group"><label className="form-label">Inner Pack <span style={{fontSize:9,color:"var(--txt3)"}}>(uds por bulto proveedor)</span></label><input type="number" min={1} className="form-input mono" value={form.innerPack??1} onChange={e=>setForm({...form,innerPack:parseInt(e.target.value)||1})}/></div>
+            <div className="form-group"><label className="form-label">Reorder <span style={{fontSize:9,color:"var(--txt3)"}}>(umbral manual)</span></label><input type="number" className="form-input mono" value={form.reorder||0} onChange={e=>setForm({...form,reorder:parseInt(e.target.value)||0})}/></div>
             <div className="form-group" style={{gridColumn:"span 2"}}>
               <label className="form-label">Estado SKU</label>
               <div style={{display:"flex",gap:6}}>
