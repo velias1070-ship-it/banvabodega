@@ -1224,17 +1224,17 @@ export default function AdminMargenes() {
           <option value="other">Otros (closed/review)</option>
           <option value="all">Todos los estados</option>
         </select>
-        <select value={promoFilter} onChange={e => setPromoFilter(e.target.value)} className="form-input" style={{ flex: "0 0 auto", maxWidth: 260 }} title="Filtrar por promoción — 'En' = ya postulados · 'Postulable a' = pueden postular pero aún no lo hicieron">
+        <select value={promoFilter} onChange={e => setPromoFilter(e.target.value)} className="form-input" style={{ flex: "0 0 auto", maxWidth: 280 }} title="Filtra por la promo que se esta mostrando al comprador (cuando un item esta postulado a varias, ML aplica la de menor precio). 'Postulable a' = promos donde el item podria entrar pero aun no lo hizo.">
           <option value="all">Todas las promos</option>
           {promosActivas.length > 0 && (
-            <optgroup label="En promoción (ya postulados)">
+            <optgroup label="Mostrandose ahora (la que ve el comprador)">
               {promosActivas.map(([nombre, count]) => (
                 <option key={`en-${nombre}`} value={`en:${nombre}`}>✓ {nombre} ({count})</option>
               ))}
             </optgroup>
           )}
           {promosCandidate.length > 0 && (
-            <optgroup label="Postulable a (sin postular)">
+            <optgroup label="Disponibles para postular">
               {promosCandidate.map(([nombre, count]) => (
                 <option key={`pos-${nombre}`} value={`pos:${nombre}`}>⚠ {nombre} ({count})</option>
               ))}
@@ -1473,6 +1473,7 @@ export default function AdminMargenes() {
           item={simItem}
           onClose={() => setSimItem(null)}
           onApplied={(info) => { refrescarItemsAfectados([simItem.item_id], info?.appliedPrice); }}
+          onCacheResynced={() => { void loadCache(); }}
         />
       )}
 

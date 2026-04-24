@@ -62,9 +62,10 @@ type Props = {
   item: SimulatorItem;
   onClose: () => void;
   onApplied?: (info?: { appliedPrice?: number }) => void;  // callback para refrescar el parent tras aplicar precio
+  onCacheResynced?: () => void;  // callback tras auto-sync del cache (sin delay, solo reload de la lista)
 };
 
-export default function MarginSimulatorModal({ item, onClose, onApplied }: Props) {
+export default function MarginSimulatorModal({ item, onClose, onApplied, onCacheResynced }: Props) {
   const pesoGr = item.peso_facturable || 0;
   const tramo = tramoPorPeso(pesoGr);
   const comisionPct = item.comision_pct || 14;
@@ -136,6 +137,10 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
   const [historial, setHistorial] = useState<AuditAction[]>([]);
   const [historialOpen, setHistorialOpen] = useState(false);
   const [historialLoading, setHistorialLoading] = useState(false);
+
+  // Auto-sync del cache cuando detectamos mismatch con ML live.
+  // 'pending'=aun no corrio, 'syncing'=fetch en vuelo, 'done'=ok, 'failed'=error
+  const [cacheSyncStatus, setCacheSyncStatus] = useState<"pending" | "syncing" | "done" | "failed">("pending");
 
   const loadHistorial = useCallback(async () => {
     setHistorialLoading(true);
@@ -233,6 +238,29 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
   }, [item.item_id, enrichWithCachedRanges]);
 
   useEffect(() => { loadPromos(); }, [loadPromos]);
+
+  // Auto-sync del cache del row cuando detectamos que esta stale.
+  // Dispara UN refresh targeted para este item_id y avisa al padre
+  // via onApplied() (sin appliedPrice) para que re-cargue la lista.
+  useEffect(() => {
+    if (!cacheStale) return;
+    if (cacheSyncStatus !== "pending") return;
+    setCacheSyncStatus("syncing");
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/ml/margin-cache/refresh?item_ids=${encodeURIComponent(item.item_id)}`,
+          { method: "POST" },
+        );
+        if (!res.ok) throw new Error(`refresh failed ${res.status}`);
+        setCacheSyncStatus("done");
+        if (onCacheResynced) onCacheResynced();
+      } catch (e) {
+        console.error("[MarginSimulator] auto cache sync failed:", e);
+        setCacheSyncStatus("failed");
+      }
+    })();
+  }, [cacheStale, cacheSyncStatus, item.item_id, onCacheResynced]);
 
   const targetMargin = useMemo(() => {
     if (target <= 0) return null;
@@ -639,7 +667,10 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
         })() : null}
         {cacheStale && (
           <div style={{ padding: "8px 20px", fontSize: 10, color: "var(--amber)", background: "var(--amberBg)", borderBottom: "1px solid var(--amberBd)", borderTop: "1px solid var(--amberBd)" }}>
-            ⚠ Cache de Márgenes desactualizado: {cacheStaleMsg} Se va a auto-sincronizar cuando apliques una acción.
+            {cacheSyncStatus === "syncing" && <>🔄 Cache de Márgenes desactualizado: {cacheStaleMsg} Sincronizando en segundo plano...</>}
+            {cacheSyncStatus === "done" && <>✓ Cache re-sincronizado con ML live. {cacheStaleMsg}</>}
+            {cacheSyncStatus === "failed" && <>⚠ Cache de Márgenes desactualizado: {cacheStaleMsg} Falló el auto-sync, se va a resincronizar cuando apliques una acción.</>}
+            {cacheSyncStatus === "pending" && <>⚠ Cache de Márgenes desactualizado: {cacheStaleMsg}</>}
           </div>
         )}
 
