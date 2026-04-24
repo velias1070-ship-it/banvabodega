@@ -120,14 +120,29 @@ export async function GET(req: NextRequest) {
   const diffs: {
     productos_nuevos: string[];
     productos_con_cambios: Array<{ sku: string; cambios: string[] }>;
+    productos_en_db_no_en_sheet: Array<{ sku: string; nombre: string; proveedor: string; costo: number }>;
     composiciones_nuevas: string[];
     composiciones_huerfanas_en_db: string[]; // en DB pero no en Sheet (serian borradas)
   } = {
     productos_nuevos: [],
     productos_con_cambios: [],
+    productos_en_db_no_en_sheet: [],
     composiciones_nuevas: [],
     composiciones_huerfanas_en_db: [],
   };
+
+  // Productos en DB que NO estan en Sheet (los "extras" auto-creados por syncStockFull
+  // o manuales que nunca pasaron por el Sheet)
+  prodMapDB.forEach((dbRow, skuOrigen) => {
+    if (!productMap.has(skuOrigen)) {
+      diffs.productos_en_db_no_en_sheet.push({
+        sku: skuOrigen,
+        nombre: dbRow.nombre || "(sin nombre)",
+        proveedor: dbRow.proveedor || "(sin proveedor)",
+        costo: dbRow.costo || 0,
+      });
+    }
+  });
 
   const toUpsertProds: Record<string, unknown>[] = [];
   productMap.forEach((sheet, skuOrigen) => {
@@ -239,10 +254,12 @@ export async function GET(req: NextRequest) {
     diffs: {
       productos_nuevos_count: diffs.productos_nuevos.length,
       productos_con_cambios_count: diffs.productos_con_cambios.length,
+      productos_en_db_no_en_sheet_count: diffs.productos_en_db_no_en_sheet.length,
       composiciones_nuevas_count: diffs.composiciones_nuevas.length,
       composiciones_huerfanas_en_db_count: diffs.composiciones_huerfanas_en_db.length,
       productos_nuevos_sample: diffs.productos_nuevos.slice(0, 20),
       productos_con_cambios_sample: diffs.productos_con_cambios.slice(0, 20),
+      productos_en_db_no_en_sheet: diffs.productos_en_db_no_en_sheet,
       composiciones_nuevas_sample: diffs.composiciones_nuevas.slice(0, 20),
       composiciones_huerfanas_sample: diffs.composiciones_huerfanas_en_db.slice(0, 20),
     },
