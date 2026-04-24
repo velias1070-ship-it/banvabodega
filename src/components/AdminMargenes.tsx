@@ -863,8 +863,6 @@ export default function AdminMargenes() {
   };
 
   const runBulkSwitch = async () => {
-    const target = parseInt(bulkPrice) || 0;
-    if (target <= 0) { alert("Ingresa un precio válido"); return; }
     if (!selectedPromoKey) { alert("Elegí la promo destino"); return; }
     const promo = commonPromos.find(p => (p.id ? `${p.type}::${p.id}` : `${p.type}::_`) === selectedPromoKey);
     if (!promo) return;
@@ -877,23 +875,24 @@ export default function AdminMargenes() {
         plan.skip.push({ r, motivo: "promo destino no disponible" });
         continue;
       }
-      if (rango.min > 0 && target < rango.min) {
-        plan.skip.push({ r, motivo: `${fmtCLP(target)} < min ${fmtCLP(rango.min)}` });
+      const pv = r.precio_venta;
+      if (rango.min > 0 && pv < rango.min) {
+        plan.skip.push({ r, motivo: `precio ${fmtCLP(pv)} < min ${fmtCLP(rango.min)}` });
         continue;
       }
-      if (rango.max > 0 && target > rango.max) {
-        plan.skip.push({ r, motivo: `${fmtCLP(target)} > max ${fmtCLP(rango.max)}` });
+      if (rango.max > 0 && pv > rango.max) {
+        plan.skip.push({ r, motivo: `precio ${fmtCLP(pv)} > max ${fmtCLP(rango.max)}` });
         continue;
       }
       plan.ok.push(r);
     }
 
     if (plan.ok.length === 0) {
-      alert(`Ningún ítem acepta ${fmtCLP(target)} en "${promo.name}":\n\n${plan.skip.slice(0, 10).map(s => `• ${s.r.sku}: ${s.motivo}`).join("\n")}`);
+      alert(`Ningún ítem encaja en "${promo.name}" manteniendo su precio actual:\n\n${plan.skip.slice(0, 10).map(s => `• ${s.r.sku}: ${s.motivo}`).join("\n")}`);
       return;
     }
-    const resumen = `Cambiar ${plan.ok.length} ítem${plan.ok.length !== 1 ? "s" : ""} a "${promo.name}" a ${fmtCLP(target)}` +
-      (plan.skip.length > 0 ? `\n(${plan.skip.length} se skipean por fuera de rango o no aplicables)` : "") +
+    const resumen = `Cambiar ${plan.ok.length} ítem${plan.ok.length !== 1 ? "s" : ""} a "${promo.name}" manteniendo el precio actual de cada uno` +
+      (plan.skip.length > 0 ? `\n(${plan.skip.length} se skipean por precio fuera de rango o no aplicables)` : "") +
       `\n\nEste flujo saca cada ítem de cualquier promo activa y lo postula a la destino. ¿Continuar?`;
     if (!confirm(resumen)) return;
 
@@ -926,7 +925,7 @@ export default function AdminMargenes() {
             action: "join",
             promotion_id: promo.id,
             promotion_type: promo.type,
-            deal_price: target,
+            deal_price: r.precio_venta,
             offer_type: promo.offer_type,
           }),
         });
@@ -948,7 +947,7 @@ export default function AdminMargenes() {
                 action: "join",
                 promotion_id: promo.id,
                 promotion_type: promo.type,
-                deal_price: target,
+                deal_price: r.precio_venta,
                 offer_type: promo.offer_type,
               }),
             });
@@ -1667,7 +1666,7 @@ export default function AdminMargenes() {
               }
               return (
               <>
-                {campaignMode !== "leave" && (
+                {campaignMode === "join" && (
                 <div style={{ padding: "14px 20px 10px" }}>
                   <div style={{ fontSize: 9, color: "var(--txt3)", marginBottom: 4 }}>Precio objetivo</div>
                   <input
@@ -1680,6 +1679,11 @@ export default function AdminMargenes() {
                     inputMode="numeric"
                     disabled={bulkApplying !== "none"}
                   />
+                </div>
+                )}
+                {campaignMode === "switch" && (
+                <div style={{ padding: "12px 20px 6px", fontSize: 11, color: "var(--txt2)" }}>
+                  Cada ítem conserva su precio actual. Los que no encajen en el rango de la promo destino se skipean.
                 </div>
                 )}
 
@@ -1897,21 +1901,19 @@ export default function AdminMargenes() {
                   ) : campaignMode === "switch" ? (
                     <button
                       onClick={runBulkSwitch}
-                      disabled={!selectedPromoKey || !bulkPrice || bulkApplying === "campaign"}
+                      disabled={!selectedPromoKey || bulkApplying === "campaign"}
                       style={{
                         padding: "8px 16px", borderRadius: 6, fontSize: 12, fontWeight: 700,
                         background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)",
                         cursor: bulkApplying === "campaign" ? "wait" : "pointer",
-                        opacity: (!selectedPromoKey || !bulkPrice || bulkApplying === "campaign") ? 0.5 : 1,
+                        opacity: (!selectedPromoKey || bulkApplying === "campaign") ? 0.5 : 1,
                       }}
                     >
                       {bulkApplying === "campaign"
                         ? "Procesando..."
                         : !selectedPromoKey
                           ? "Selecciona la promo destino"
-                          : !bulkPrice
-                            ? "Ingresa precio objetivo"
-                            : `Cambiar ${selected.size} ítem${selected.size !== 1 ? "s" : ""}`}
+                          : `Cambiar ${selected.size} ítem${selected.size !== 1 ? "s" : ""} (mismo precio)`}
                     </button>
                   ) : (
                     <button
