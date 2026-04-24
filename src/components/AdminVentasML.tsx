@@ -588,8 +588,15 @@ export default function AdminVentasML({ modo }: { modo?: VentasMlModo } = {}) {
     })
     .sort((a, b) => {
       const k = productosSort.key;
-      const va = a[k] as string | number;
-      const vb = b[k] as string | number;
+      let va: string | number;
+      let vb: string | number;
+      if (k === "margen" || k === "margen_neto") {
+        va = a.ingresos > 0 ? (a[k] / a.ingresos) * 100 : -Infinity;
+        vb = b.ingresos > 0 ? (b[k] / b.ingresos) * 100 : -Infinity;
+      } else {
+        va = a[k] as string | number;
+        vb = b[k] as string | number;
+      }
       let cmp = 0;
       if (typeof va === "number" && typeof vb === "number") cmp = va - vb;
       else cmp = String(va).localeCompare(String(vb));
@@ -825,8 +832,19 @@ export default function AdminVentasML({ modo }: { modo?: VentasMlModo } = {}) {
         );
         const filtered = [...filteredRaw].sort((a, b) => {
           const k = ordenesSort.key;
-          const va = (a[k] ?? 0) as string | number | null;
-          const vb = (b[k] ?? 0) as string | number | null;
+          let va: string | number | null;
+          let vb: string | number | null;
+          if (k === "margen" || k === "margen_neto") {
+            const ma = a.margen_neto ?? ((a.margen || 0) - (a.ads_cost_asignado || 0));
+            const mb = b.margen_neto ?? ((b.margen || 0) - (b.ads_cost_asignado || 0));
+            const numA = k === "margen" ? (a.margen || 0) : ma;
+            const numB = k === "margen" ? (b.margen || 0) : mb;
+            va = a.subtotal > 0 ? (numA / a.subtotal) * 100 : -Infinity;
+            vb = b.subtotal > 0 ? (numB / b.subtotal) * 100 : -Infinity;
+          } else {
+            va = (a[k] ?? 0) as string | number | null;
+            vb = (b[k] ?? 0) as string | number | null;
+          }
           let cmp = 0;
           if (typeof va === "number" && typeof vb === "number") cmp = va - vb;
           else cmp = String(va ?? "").localeCompare(String(vb ?? ""));
