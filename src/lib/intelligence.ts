@@ -1639,20 +1639,30 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     }
     // Margen real desde ventas_ml_cache (input externo)
     const margenReal = margenPorSku.get(r.sku_origen) || 0;
-    if (margenReal > 0) {
+    // Imputacion pre-quiebre: vel × margen_unitario × 4.3 sem.
+    // Fix: tomar max(real, imputado) cuando esta en quiebre prolongado,
+    // no solo cuando margenReal=0. Casos observados (JSAFAB426P20S, TXV23QLAT15BE,
+    // TXV24QLBRMR25) tenian 1 venta residual → margenReal pequeño (~4k) →
+    // condicion margenReal > 0 era true → omitia imputacion → abc=C permanente.
+    const enQuiebreImputable = (r.dias_en_quiebre ?? 0) >= 14
+      && r.vel_pre_quiebre > 2
+      && r.margen_unitario_pre_quiebre > 0;
+    if (enQuiebreImputable) {
+      const imputado = r.vel_pre_quiebre * r.margen_unitario_pre_quiebre * 4.3;
+      r.margen_neto_30d = round2(Math.max(margenReal, imputado));
+    } else if (margenReal > 0) {
       r.margen_neto_30d = round2(margenReal);
-    } else if ((r.dias_en_quiebre ?? 0) >= 14 && r.vel_pre_quiebre > 2 && r.margen_unitario_pre_quiebre > 0) {
-      // Imputación pre-quiebre: vel × margen_unitario × 4.3 sem
-      r.margen_neto_30d = round2(r.vel_pre_quiebre * r.margen_unitario_pre_quiebre * 4.3);
     } else {
       r.margen_neto_30d = round2(margenReal); // 0 o negativo
     }
-    // Unidades reales desde ventas_ml_cache, con fallback imputado
+    // Unidades reales desde ventas_ml_cache, con fallback imputado.
+    // Mismo fix que margen: en quiebre prolongado tomar max(real, imputado)
+    // para que ventas residuales no tapen la imputacion del volumen historico.
     const udsReal = unidadesPorSku.get(r.sku_origen) || 0;
-    if (udsReal > 0) {
-      r.uds_30d = udsReal;
-    } else if ((r.dias_en_quiebre ?? 0) >= 14 && r.vel_pre_quiebre > 2) {
-      r.uds_30d = Math.round(r.vel_pre_quiebre * 4.3);
+    const enQuiebreImputableUds = (r.dias_en_quiebre ?? 0) >= 14 && r.vel_pre_quiebre > 2;
+    if (enQuiebreImputableUds) {
+      const udsImputado = Math.round(r.vel_pre_quiebre * 4.3);
+      r.uds_30d = Math.max(udsReal, udsImputado);
     } else {
       r.uds_30d = udsReal;
     }
