@@ -2575,7 +2575,12 @@ function AdminEnviosFull({ refresh }: { refresh: () => void }) {
     const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
     const [active, todaySessions, yesterdaySessions] = await Promise.all([getActivePickings(), getPickingsByDate(today), getPickingsByDate(yesterday)]);
     const map = new Map<string, DBPickingSession>();
-    [...active, ...todaySessions, ...yesterdaySessions].forEach(s => { if (s.id && s.tipo === "envio_full") map.set(s.id, s); });
+    // Solo activas (ABIERTA/EN_PROCESO). ANULADA/COMPLETADA/CERRADA van al
+    // historial aparte. getPickingsByDate no filtra por estado, por eso
+    // hay que filtrar aca explicitamente.
+    [...active, ...todaySessions, ...yesterdaySessions]
+      .filter(s => s.estado === "ABIERTA" || s.estado === "EN_PROCESO")
+      .forEach(s => { if (s.id && s.tipo === "envio_full") map.set(s.id, s); });
     setSessions(Array.from(map.values()).sort((a, b) => (b.created_at || "").localeCompare(a.created_at || "")));
     setLoading(false);
   };
@@ -2778,7 +2783,9 @@ function AdminPicking({ refresh }: { refresh: () => void }) {
       fetchActiveFlexShipments(),
     ]);
     const map = new Map<string, DBPickingSession>();
-    [...active, ...todaySessions].forEach(s => { if (s.id) map.set(s.id, s); });
+    [...active, ...todaySessions]
+      .filter(s => s.estado === "ABIERTA" || s.estado === "EN_PROCESO")
+      .forEach(s => { if (s.id) map.set(s.id, s); });
     setSessions(Array.from(map.values()).sort((a, b) => (b.created_at || "").localeCompare(a.created_at || "")));
     setShipments(ships);
     setLoading(false);
