@@ -124,7 +124,7 @@ export default function AdminMargenes() {
   const [showErrorsModal, setShowErrorsModal] = useState(false);
   const [campaignMode, setCampaignMode] = useState<"join" | "leave">("join");
 
-  const [switchMenuFor, setSwitchMenuFor] = useState<string | null>(null);
+  const [switchMenu, setSwitchMenu] = useState<{ itemId: string; top: number; left: number } | null>(null);
   const [switchingItem, setSwitchingItem] = useState<string | null>(null);
 
   const toggleSelect = (itemId: string) => {
@@ -736,7 +736,6 @@ export default function AdminMargenes() {
         body: JSON.stringify({
           item_id: r.item_id,
           action: "delete",
-          promotion_type: r.promo_type,
         }),
       });
       const delData = await delRes.json();
@@ -790,7 +789,7 @@ export default function AdminMargenes() {
           throw new Error(String(joinData?.error || `HTTP ${joinRes.status}`));
         }
       }
-      setSwitchMenuFor(null);
+      setSwitchMenu(null);
       await refrescarItemsAfectados([r.item_id]);
       if (joinData?.warning?.type === "price_overridden") {
         alert(`⚠️ ${joinData.warning.message}`);
@@ -1248,61 +1247,22 @@ export default function AdminMargenes() {
                           if (nombre === "PRICE_DISCOUNT" && r.promo_type === "PRICE_DISCOUNT") return false;
                           return true;
                         });
-                        const abierto = switchMenuFor === r.item_id;
                         const busy = switchingItem === r.item_id;
                         return (
-                          <div style={{ fontSize: 9, color: "var(--amber)", position: "relative", display: "flex", alignItems: "center", gap: 4 }} title={r.promo_type || undefined}>
+                          <div style={{ fontSize: 9, color: "var(--amber)", display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }} title={r.promo_type || undefined}>
                             <span>{r.promo_name || r.promo_type} −{r.promo_pct}% (lista {fmtCLP(r.price_ml)})</span>
                             {alt.length > 0 && (
                               <button
-                                onClick={(e) => { e.stopPropagation(); setSwitchMenuFor(abierto ? null : r.item_id); }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const btn = e.currentTarget.getBoundingClientRect();
+                                  if (switchMenu?.itemId === r.item_id) { setSwitchMenu(null); }
+                                  else { setSwitchMenu({ itemId: r.item_id, top: btn.bottom + 4, left: btn.left }); }
+                                }}
                                 disabled={busy}
                                 title="Cambiar a otra promo (mismo precio)"
                                 style={{ padding: "1px 5px", borderRadius: 3, fontSize: 9, background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)", cursor: busy ? "wait" : "pointer", lineHeight: 1 }}
                               >{busy ? "…" : "⇄"}</button>
-                            )}
-                            {abierto && !busy && (
-                              <>
-                                <div
-                                  onClick={() => setSwitchMenuFor(null)}
-                                  style={{ position: "fixed", inset: 0, zIndex: 50 }}
-                                />
-                                <div style={{ position: "absolute", top: "100%", left: 0, marginTop: 4, background: "var(--bg3)", border: "1px solid var(--bg4)", borderRadius: 6, padding: 6, minWidth: 260, zIndex: 51, boxShadow: "0 4px 16px rgba(0,0,0,0.5)" }}>
-                                  <div style={{ fontSize: 10, color: "var(--txt2)", marginBottom: 6, fontWeight: 600 }}>
-                                    Cambiar a (manteniendo {fmtCLP(r.precio_venta)}):
-                                  </div>
-                                  {alt.map((p, i) => {
-                                    const outOfRange =
-                                      (p.min && r.precio_venta < p.min) ||
-                                      (p.max && r.precio_venta > p.max);
-                                    return (
-                                      <button
-                                        key={`${p.type}::${p.id || "_"}::${i}`}
-                                        onClick={(e) => { e.stopPropagation(); switchPromo(r, p); }}
-                                        disabled={!!outOfRange}
-                                        style={{
-                                          display: "block", width: "100%", textAlign: "left",
-                                          padding: "5px 7px", marginBottom: 3, borderRadius: 4,
-                                          fontSize: 10,
-                                          background: outOfRange ? "var(--bg2)" : "var(--bg4)",
-                                          color: outOfRange ? "var(--txt3)" : "var(--txt)",
-                                          border: "1px solid var(--bg4)",
-                                          cursor: outOfRange ? "not-allowed" : "pointer",
-                                        }}
-                                        title={outOfRange ? `Fuera de rango ${p.min ? fmtCLP(p.min) : "?"}–${p.max ? fmtCLP(p.max) : "?"}` : undefined}
-                                      >
-                                        <div style={{ fontWeight: 600 }}>{p.name}</div>
-                                        <div style={{ fontSize: 9, color: "var(--txt3)" }}>
-                                          {p.type}
-                                          {p.min ? ` · min ${fmtCLP(p.min)}` : ""}
-                                          {p.max ? ` · max ${fmtCLP(p.max)}` : ""}
-                                          {outOfRange && <span style={{ color: "var(--red)" }}> · precio fuera de rango</span>}
-                                        </div>
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              </>
                             )}
                           </div>
                         );
@@ -1343,6 +1303,57 @@ export default function AdminMargenes() {
           onApplied={() => { refrescarItemsAfectados([simItem.item_id]); }}
         />
       )}
+
+      {switchMenu && (() => {
+        const row = rows.find(r => r.item_id === switchMenu.itemId);
+        if (!row) return null;
+        const activaNombre = (row.promo_name || row.promo_type || "").trim();
+        const alt = (row.promos_postulables || []).filter(p => {
+          const nombre = (p.name || "").trim();
+          if (nombre === activaNombre) return false;
+          if (nombre === "PRICE_DISCOUNT" && row.promo_type === "PRICE_DISCOUNT") return false;
+          return true;
+        });
+        const maxLeft = typeof window !== "undefined" ? window.innerWidth - 280 : switchMenu.left;
+        const left = Math.min(switchMenu.left, Math.max(8, maxLeft));
+        return (
+          <>
+            <div onClick={() => setSwitchMenu(null)} style={{ position: "fixed", inset: 0, zIndex: 998 }} />
+            <div style={{ position: "fixed", top: switchMenu.top, left, background: "var(--bg3)", border: "1px solid var(--bg4)", borderRadius: 6, padding: 8, minWidth: 280, maxWidth: 320, zIndex: 999, boxShadow: "0 6px 24px rgba(0,0,0,0.6)" }}>
+              <div style={{ fontSize: 10, color: "var(--txt2)", marginBottom: 6, fontWeight: 600 }}>
+                {row.sku}: cambiar a (manteniendo {fmtCLP(row.precio_venta)}):
+              </div>
+              {alt.map((p, i) => {
+                const outOfRange = (p.min && row.precio_venta < p.min) || (p.max && row.precio_venta > p.max);
+                return (
+                  <button
+                    key={`${p.type}::${p.id || "_"}::${i}`}
+                    onClick={(e) => { e.stopPropagation(); switchPromo(row, p); }}
+                    disabled={!!outOfRange}
+                    style={{
+                      display: "block", width: "100%", textAlign: "left",
+                      padding: "6px 8px", marginBottom: 4, borderRadius: 4, fontSize: 11,
+                      background: outOfRange ? "var(--bg2)" : "var(--bg4)",
+                      color: outOfRange ? "var(--txt3)" : "var(--txt)",
+                      border: "1px solid var(--bg4)",
+                      cursor: outOfRange ? "not-allowed" : "pointer",
+                    }}
+                    title={outOfRange ? `Fuera de rango ${p.min ? fmtCLP(p.min) : "?"}–${p.max ? fmtCLP(p.max) : "?"}` : undefined}
+                  >
+                    <div style={{ fontWeight: 600 }}>{p.name}</div>
+                    <div style={{ fontSize: 9, color: "var(--txt3)" }}>
+                      {p.type}
+                      {p.min ? ` · min ${fmtCLP(p.min)}` : ""}
+                      {p.max ? ` · max ${fmtCLP(p.max)}` : ""}
+                      {outOfRange && <span style={{ color: "var(--red)" }}> · precio fuera de rango</span>}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        );
+      })()}
 
       {/* Barra flotante de acción masiva */}
       {selected.size > 0 && (
