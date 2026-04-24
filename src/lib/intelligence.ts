@@ -1700,6 +1700,29 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     r.abc = r.abc_margen;
   }
 
+  // ── Override ABC post-reactivación (ramp-up BANVA_Parte3.md:67) ──
+  // Cuando un SKU sale del quiebre, el margen_30d queda contaminado por las
+  // semanas sin ventas → el Pareto lo deja en C aunque era A/B. Durante la
+  // ventana de ramp-up (4-6 semanas segun manual), la velocidad crece
+  // linealmente y NO alcanza la historica. Si esperamos a margen_30d, el SKU
+  // vive 2-4 semanas mal clasificado con target_dias bajo → re-quiebre.
+  //
+  // Fix: si vel_30d aun no alcanzo 80% del ritmo pre-quiebre Y el SKU ya esta
+  // vendiendo algo (vel_7d > 0), restaurar abc = abc_pre_quiebre. El Pareto
+  // real retoma control en cuanto vel_30d se recupera → auto-apaga.
+  for (const r of rows) {
+    const abcPre = r.abc_pre_quiebre;
+    const enVentanaRampup = r.dias_en_quiebre === 0
+      && r.vel_pre_quiebre > 0
+      && r.vel_7d > 0
+      && r.vel_30d < r.vel_pre_quiebre * 0.8;
+    const perderiaClase = (abcPre === "A" && r.abc !== "A")
+      || (abcPre === "B" && r.abc === "C");
+    if (enVentanaRampup && perderiaClase && (abcPre === "A" || abcPre === "B")) {
+      r.abc = abcPre;
+    }
+  }
+
   // Asignar abc_pre_quiebre para SKUs que acaban de entrar en quiebre
   for (const r of rows) {
     if ((r.dias_en_quiebre ?? 0) > 0 && !r.abc_pre_quiebre) {
