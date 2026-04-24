@@ -2561,6 +2561,7 @@ interface EnvioHistorialLinea {
   cob_full_antes: number | null;
   inner_pack: number | null;
   alertas: string[] | null;
+  bultos: number | null;
 }
 
 function AdminEnviosFull({ refresh }: { refresh: () => void }) {
@@ -2728,6 +2729,7 @@ function AdminEnviosFull({ refresh }: { refresh: () => void }) {
                                           <th style={{textAlign:"left"}}>SKU Origen</th>
                                           <th style={{textAlign:"right"}}>Sugerido</th>
                                           <th style={{textAlign:"right"}}>Enviado</th>
+                                          <th style={{textAlign:"right"}}>Bultos</th>
                                           <th style={{textAlign:"center"}}>ABC</th>
                                           <th style={{textAlign:"right"}}>Vel.pond</th>
                                           <th style={{textAlign:"right"}}>Stock Full antes</th>
@@ -2742,6 +2744,7 @@ function AdminEnviosFull({ refresh }: { refresh: () => void }) {
                                             <td className="mono" style={{color:"var(--txt3)"}}>{l.sku_origen}</td>
                                             <td className="mono" style={{textAlign:"right",color:"var(--txt3)"}}>{l.cantidad_sugerida}</td>
                                             <td className="mono" style={{textAlign:"right",fontWeight:700}}>{l.cantidad_enviada}</td>
+                                            <td className="mono" style={{textAlign:"right",color:l.bultos!=null&&l.bultos>0?"var(--cyan)":"var(--txt3)",fontWeight:l.bultos!=null&&l.bultos>0?700:400}}>{l.bultos ?? 0}</td>
                                             <td style={{textAlign:"center"}}>{l.abc || "—"}</td>
                                             <td className="mono" style={{textAlign:"right"}}>{l.vel_ponderada != null ? l.vel_ponderada.toFixed(1) : "—"}</td>
                                             <td className="mono" style={{textAlign:"right"}}>{l.stock_full_antes ?? "—"}</td>

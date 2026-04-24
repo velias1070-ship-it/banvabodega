@@ -27,7 +27,7 @@ export async function GET(req: NextRequest) {
 
     const { data: lineas, error: errLin } = await sb
       .from("envios_full_lineas")
-      .select("sku_venta, sku_origen, cantidad_sugerida, cantidad_enviada, fue_editada, abc, vel_ponderada, stock_full_antes, stock_bodega_antes, cob_full_antes, inner_pack, alertas")
+      .select("sku_venta, sku_origen, cantidad_sugerida, cantidad_enviada, fue_editada, abc, vel_ponderada, stock_full_antes, stock_bodega_antes, cob_full_antes, inner_pack, alertas, bultos")
       .eq("envio_id", id)
       .order("cantidad_enviada", { ascending: false });
     if (errLin) return NextResponse.json({ error: errLin.message }, { status: 500 });
