@@ -932,13 +932,12 @@ export default function AdminMargenes() {
         const joinData = await join.json();
         if (!join.ok) {
           if (/offer_already_exists/i.test(String(joinData?.error || ""))) {
-            await new Promise(res => setTimeout(res, 1200));
             await fetch("/api/ml/promotions", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ item_id: r.item_id, action: "delete", promotion_id: promo.id, promotion_type: promo.type }),
+              body: JSON.stringify({ item_id: r.item_id, action: "delete" }),
             }).catch(() => null);
-            await new Promise(res => setTimeout(res, 600));
+            await new Promise(res => setTimeout(res, 5000));
             const retry = await fetch("/api/ml/promotions", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
