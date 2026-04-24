@@ -462,7 +462,7 @@ export default function AdminCompras() {
 
   const abrirVincular = useCallback(async () => {
     if (!selectedOC) return;
-    const recs = await fetchRecepcionesSinOC(selectedOC.proveedor);
+    const recs = await fetchRecepcionesSinOC(selectedOC.proveedor, selectedOC.proveedor_id);
     setRecepcionesSinOC(recs);
     const ids = recs.map(r => r.id!).filter(Boolean);
     const lineas = await fetchLineasDeRecepciones(ids);

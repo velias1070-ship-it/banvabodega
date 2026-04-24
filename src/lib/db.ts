@@ -99,6 +99,7 @@ export interface DBRecepcion {
   costo_bruto?: number;
   factura_original?: FacturaOriginal | null;
   orden_compra_id?: string | null;
+  proveedor_id?: string | null;
 }
 
 export interface FacturaOriginal {
@@ -2951,6 +2952,7 @@ export interface DBOrdenCompra {
   id?: string;
   numero: string;
   proveedor: string;
+  proveedor_id?: string | null;
   fecha_emision?: string;
   fecha_esperada?: string | null;
   fecha_recepcion?: string | null;
@@ -3066,10 +3068,16 @@ export async function fetchRecepcionesDeOC(ordenCompraId: string): Promise<DBRec
 }
 
 /** Fetch recepciones recientes de un proveedor sin OC vinculada.
- * Match de proveedor normalizado (case-insensitive, ignora sufijos SA/SPA/LTDA/puntuación).
- * Robusto a variaciones de nombre entre OC ("Idetex") y recepción via App Etiquetas ("IDETEX S.A.").
+ *
+ * Estrategia (v72+):
+ *   1. Preferir match por proveedor_id (FK) cuando el proveedor de la OC lo tenga.
+ *   2. Fallback a match normalizado por string para rows que aún no tienen FK
+ *      (ej. recepciones viejas, o inserts de App Etiquetas antes de adoptar el
+ *      endpoint /api/proveedores/resolve).
+ *
+ * Ver .claude/rules/supabase.md — sección "Proveedor: esquema canónico".
  */
-export async function fetchRecepcionesSinOC(proveedor: string): Promise<DBRecepcion[]> {
+export async function fetchRecepcionesSinOC(proveedor: string, proveedorId?: string | null): Promise<DBRecepcion[]> {
   const sb = getSupabase(); if (!sb) return [];
   const { data } = await sb.from("recepciones").select("*")
     .is("orden_compra_id", null)
@@ -3081,7 +3089,12 @@ export async function fetchRecepcionesSinOC(proveedor: string): Promise<DBRecepc
     .replace(/[.,]/g, "").replace(/\s+/g, " ").trim();
   const target = norm(proveedor);
   return ((data || []) as DBRecepcion[])
-    .filter(r => norm(r.proveedor || "") === target)
+    .filter(r => {
+      // 1. Match canónico por FK si ambos lo tienen
+      if (proveedorId && r.proveedor_id) return r.proveedor_id === proveedorId;
+      // 2. Fallback: match por string normalizado (transición)
+      return norm(r.proveedor || "") === target;
+    })
     .slice(0, 20);
 }
 
