@@ -7726,9 +7726,18 @@ function Productos({ refresh }: { refresh: () => void }) {
       try {
         const sb = getSupabase();
         if (sb) {
+          // composicion_venta.codigo_ml debe ser el inventory_id de ML
+          // (formato corto tipo "ONME84334"), NO el item_id (MLC...). Es el
+          // codigo que va al barcode CODE128 de la etiqueta y que ML escanea
+          // al recibir bultos en Full. Lo buscamos en ml_items_map.
+          let inventoryId = "";
+          const { data: mlRow } = await sb.from("ml_items_map")
+            .select("inventory_id").eq("sku", sku).eq("activo", true)
+            .order("updated_at", { ascending: false }).limit(1).maybeSingle();
+          if (mlRow?.inventory_id) inventoryId = mlRow.inventory_id;
           await sb.from("composicion_venta").upsert({
             sku_venta: sku, sku_origen: sku, unidades: 1,
-            codigo_ml: form.mlCode || "", tipo_relacion: "componente",
+            codigo_ml: inventoryId, tipo_relacion: "componente",
           }, { onConflict: "sku_venta,sku_origen" });
         }
       } catch (e) { console.error("[productos] auto-comp trivial:", e); }
@@ -10532,9 +10541,13 @@ function ComposicionEditor({ allProducts, filteredComposicion, search, setSearch
                 onChange={e=>setEditing({...editing, skuVenta: e.target.value.toUpperCase()})} placeholder="PACK4TLL, PROMO..."/>
             </div>
             <div className="form-group" style={{gridColumn:"span 2"}}>
-              <label className="form-label">Código ML (opcional)</label>
+              <label className="form-label">Código ML Full / Inventory ID <span style={{fontSize:9,color:"var(--txt3)",fontWeight:400}}>(opcional)</span></label>
               <input className="form-input mono" value={editing.codigoMl}
-                onChange={e=>setEditing({...editing, codigoMl: e.target.value})} placeholder="MLC123456789"/>
+                onChange={e=>setEditing({...editing, codigoMl: e.target.value.toUpperCase()})} placeholder="ONME84334 (4 letras + 5 dígitos)"/>
+              <div style={{fontSize:9,color:"var(--txt3)",marginTop:3,lineHeight:1.4}}>
+                Es el código corto del inventario Full ML (formato &quot;ONME84334&quot;), NO el item_id largo &quot;MLC...&quot;.
+                Va al barcode CODE128 de la etiqueta. Lo encontrás en MercadoLibre → Mi cuenta → Mercado Envíos Full → tu producto.
+              </div>
             </div>
           </div>
 
