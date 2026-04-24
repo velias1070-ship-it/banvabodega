@@ -85,6 +85,8 @@ export async function GET(req: NextRequest) {
       mlGet<RawPromo[]>(`/seller-promotions/items/${itemId}?app_version=v2`),
       mlGet<{ id: string; price: number; original_price?: number }>(`/items/${itemId}?attributes=id,price,original_price`),
     ]);
+    // Nota: este endpoint es para 1 item (desde simulador), fetch individual
+    // es OK. El refresh masivo usa batch multi-get (/items?ids=).
     if (!Array.isArray(raw)) {
       return NextResponse.json({ promotions: [] });
     }

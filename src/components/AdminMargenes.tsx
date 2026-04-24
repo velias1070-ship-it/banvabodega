@@ -221,23 +221,50 @@ export default function AdminMargenes() {
     setRefreshMsg("Iniciando...");
     setProgress({ processed: 0, total: 0 });
     try {
-      let offset = 0;
-      const limit = 15;
-      while (true) {
-        const res = await fetch(`/api/ml/margin-cache/refresh?offset=${offset}&limit=${limit}`, { method: "POST" });
-        const data = await res.json();
-        if (!res.ok) {
-          setRefreshMsg(`Error: ${data.error || res.statusText}`);
-          break;
-        }
-        setProgress({ processed: data.processed, total: data.total });
-        setRefreshMsg(`Procesando ${data.processed}/${data.total}...`);
-        offset = data.processed;
-        if (data.done || data.chunk === 0) {
-          setRefreshMsg(`Refresh completo: ${data.processed} items`);
-          break;
-        }
+      // Primer chunk para descubrir el total. Chunks de 25 (cap endpoint=30).
+      const limit = 25;
+      const firstRes = await fetch(`/api/ml/margin-cache/refresh?offset=0&limit=${limit}`, { method: "POST" });
+      const firstData = await firstRes.json();
+      if (!firstRes.ok) {
+        setRefreshMsg(`Error: ${firstData.error || firstRes.statusText}`);
+        return;
       }
+      const total = firstData.total || 0;
+      let procesados = firstData.processed || 0;
+      setProgress({ processed: procesados, total });
+      setRefreshMsg(`Procesando ${procesados}/${total}...`);
+
+      if (firstData.done || procesados >= total) {
+        setRefreshMsg(`Refresh completo: ${procesados} items`);
+        await loadCache();
+        return;
+      }
+
+      // Chunks restantes en paralelo de 3 para acelerar (antes era secuencial).
+      // Cada chunk tarda ~30-45s; con 3 en paralelo procesamos 75 items/ciclo.
+      const PARALELO = 3;
+      const chunksRestantes: number[] = [];
+      for (let off = procesados; off < total; off += limit) {
+        chunksRestantes.push(off);
+      }
+
+      for (let i = 0; i < chunksRestantes.length; i += PARALELO) {
+        const grupo = chunksRestantes.slice(i, i + PARALELO);
+        const resultados = await Promise.all(
+          grupo.map(off =>
+            fetch(`/api/ml/margin-cache/refresh?offset=${off}&limit=${limit}`, { method: "POST" })
+              .then(r => r.json())
+              .catch(() => ({ processed: 0, error: true }))
+          )
+        );
+        for (const d of resultados) {
+          procesados += (d.chunk || 0);
+        }
+        setProgress({ processed: Math.min(procesados, total), total });
+        setRefreshMsg(`Procesando ${Math.min(procesados, total)}/${total}...`);
+      }
+
+      setRefreshMsg(`Refresh completo: ${total} items`);
       await loadCache();
     } catch (e) {
       setRefreshMsg(`Error: ${e instanceof Error ? e.message : "?"}`);

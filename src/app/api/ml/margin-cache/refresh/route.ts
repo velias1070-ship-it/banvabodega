@@ -189,6 +189,27 @@ async function handleRefresh(req: NextRequest) {
     }
   }
 
+  // Pre-fetch BATCH de precios reales del item en ML.
+  // Evita N llamadas individuales a /items/{id} — una sola llamada con multi-get
+  // trae todos los precios en un round-trip. ML acepta hasta 20 ids por request.
+  const priceByItemId = new Map<string, number>();
+  const itemIds = rows.map(r => r.item_id).filter(Boolean);
+  for (let i = 0; i < itemIds.length; i += 20) {
+    const batch = itemIds.slice(i, i + 20);
+    try {
+      const multiRes = await mlGet<Array<{ code: number; body: { id: string; price: number } }>>(
+        `/items?ids=${batch.join(",")}&attributes=id,price`
+      );
+      if (Array.isArray(multiRes)) {
+        for (const r of multiRes) {
+          if (r.code === 200 && r.body?.id) {
+            priceByItemId.set(r.body.id, r.body.price || 0);
+          }
+        }
+      }
+    } catch { /* silent, fallback a row.price en cada iteracion */ }
+  }
+
   // Procesar cada item (2 llamadas ML: shipping + promos, con commission cacheada)
   const cacheRows: Array<Record<string, unknown>> = [];
 
@@ -277,18 +298,18 @@ async function handleRefresh(req: NextRequest) {
     try {
       const sellerId = (await sb.from("ml_config").select("seller_id").eq("id", "main").limit(1)).data?.[0]?.seller_id;
       if (sellerId) {
-        const [shipFree, promos, feePct, itemDetail] = await Promise.all([
+        const [shipFree, promos, feePct] = await Promise.all([
           mlGet<ShipFree>(`/users/${sellerId}/shipping_options/free?item_id=${row.item_id}`),
           mlGet<PromoInfo[]>(`/seller-promotions/items/${row.item_id}?app_version=v2`),
           categoryId ? getFeePct(categoryId, listingType, priceList || 20000) : Promise.resolve(0),
-          mlGet<{ id: string; price: number }>(`/items/${row.item_id}?attributes=id,price`),
         ]);
         if (shipFree?.coverage?.all_country) {
           pesoFacturable = shipFree.coverage.all_country.billable_weight || 0;
         }
         comisionPct = feePct;
-        // Precio actual del item en ML (incluye promo aplicada si hay)
-        const priceEnML = itemDetail?.price || 0;
+        // Precio actual del item en ML (del batch multi-get precargado).
+        // Incluye promo aplicada si hay. Fallback a row.price si el batch fallo.
+        const priceEnML = priceByItemId.get(row.item_id) || row.price || 0;
         if (Array.isArray(promos)) {
           // Antes de buscar la promo activa, corregir priceList usando el
           // original_price que ML reporta. Si el valor guardado en ml_items_map
