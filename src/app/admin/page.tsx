@@ -6317,6 +6317,13 @@ function Inventario() {
                         if (confirmMsg && !confirm(confirmMsg)) return;
                         s.products[sku] = { ...prod, estadoSku: nuevo };
                         saveStore();
+                        // Forzar escritura de estado_sku a DB antes del sync para evitar race con el flush debounced (500ms).
+                        // Sin esto, /api/ml/stock-sync lee el estado_sku viejo y publica con buffer incorrecto.
+                        const sb = getSupabase();
+                        if (sb) {
+                          const { error: estErr } = await sb.from("productos").update({ estado_sku: nuevo }).eq("sku", sku);
+                          if (estErr) console.error(`[estadoSku update] ${sku}: ${estErr.message}`);
+                        }
                         const dbMod = await import("@/lib/db");
                         dbMod.enqueueAndSync([sku]);
                         const ventas = getVentasPorSkuOrigen(sku);
