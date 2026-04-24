@@ -559,15 +559,22 @@ export default function AdminMargenes() {
   // IMPORTANTE: ML tarda 3-5s en propagar cambios de promociones tras un POST/DELETE. Si el
   // refresh se ejecuta inmediatamente, el endpoint va a leer el estado VIEJO de ML y guardar
   // en cache datos desactualizados. Por eso esperamos antes de gatillar el refresh.
-  const refrescarItemsAfectados = async (itemIds: string[]) => {
+  const refrescarItemsAfectados = async (itemIds: string[], expectedPrice?: number) => {
     if (itemIds.length === 0) return;
     try {
-      // Delay de propagación ML: esperar a que /seller-promotions/items/{id} refleje
-      // los cambios hechos por el bulk antes de re-leerlo.
-      await new Promise(r => setTimeout(r, 4000));
       const q = itemIds.join(",");
-      await fetch(`/api/ml/margin-cache/refresh?item_ids=${encodeURIComponent(q)}`, { method: "POST" });
-      await loadCache();
+      // ML tarda 3-10s en propagar cambios en seller-promotions. Reintentar
+      // hasta 3 veces validando contra expectedPrice (si se paso).
+      const delays = [4000, 3500, 4000]; // ~11.5s peor caso
+      for (let i = 0; i < delays.length; i++) {
+        await new Promise(r => setTimeout(r, delays[i]));
+        await fetch(`/api/ml/margin-cache/refresh?item_ids=${encodeURIComponent(q)}`, { method: "POST" });
+        const res = await loadCache();
+        if (!expectedPrice || itemIds.length !== 1) return; // sin target o multi-item: un solo intento
+        // Validar que el cache ya refleje el precio esperado
+        const row = res?.find?.((r: { item_id: string; precio_venta?: number }) => r.item_id === itemIds[0]);
+        if (row && row.precio_venta != null && Math.abs(row.precio_venta - expectedPrice) < 1) return;
+      }
     } catch { /* silent */ }
   };
 
@@ -1426,7 +1433,7 @@ export default function AdminMargenes() {
         <MarginSimulatorModal
           item={simItem}
           onClose={() => setSimItem(null)}
-          onApplied={() => { refrescarItemsAfectados([simItem.item_id]); }}
+          onApplied={(info) => { refrescarItemsAfectados([simItem.item_id], info?.appliedPrice); }}
         />
       )}
 

@@ -61,7 +61,7 @@ export type SimulatorItem = {
 type Props = {
   item: SimulatorItem;
   onClose: () => void;
-  onApplied?: () => void;  // callback para refrescar el parent tras aplicar precio
+  onApplied?: (info?: { appliedPrice?: number }) => void;  // callback para refrescar el parent tras aplicar precio
 };
 
 export default function MarginSimulatorModal({ item, onClose, onApplied }: Props) {
@@ -201,7 +201,7 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Error");
       setMsg({ type: "ok", text: `Precio lista actualizado a ${fmtCLP(target)}` });
-      if (onApplied) onApplied();
+      if (onApplied) onApplied({ appliedPrice: target });
     } catch (e) {
       const raw = e instanceof Error ? e.message : "Error";
       setMsg({ type: "err", text: traducirErrorML(raw) });
@@ -241,7 +241,7 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
         throw err;
       }
       setMsg({ type: "ok", text: `Descuento creado/actualizado a ${fmtCLP(target)} por 30 días` });
-      if (onApplied) onApplied();
+      if (onApplied) onApplied({ appliedPrice: target });
     } catch (e) {
       const raw = e instanceof Error ? e.message : "Error";
       const detail = (e as { detail?: unknown })?.detail;
@@ -332,7 +332,7 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Error");
       setMsg({ type: "warn", text: `Lista actualizada a ${fmtCLP(hint.newLista)}. Esperando propagación ML y reintentando…` });
-      if (onApplied) onApplied();
+      if (onApplied) onApplied({ appliedPrice: hint.newLista });
       await new Promise(r => setTimeout(r, 3500));
       setApplying("none");
       await hint.onRetry();
@@ -392,7 +392,7 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
       } else {
         setMsg({ type: "ok", text: `${verb} a "${promo.name}" con precio ${fmtCLP(target)}` });
       }
-      if (onApplied) onApplied();
+      if (onApplied) onApplied({ appliedPrice: target });
     } catch (e) {
       const raw = e instanceof Error ? e.message : "Error";
       const detail = (e as { detail?: unknown })?.detail;
