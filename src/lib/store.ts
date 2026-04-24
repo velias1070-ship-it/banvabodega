@@ -2391,7 +2391,7 @@ export async function duplicarPicking(id: string): Promise<{ newId: string | nul
     }
   }
   // Recalcular unidadesPorPack: ratio real con las uds totales acumuladas
-  for (const envio of envioMap.values()) {
+  for (const envio of Array.from(envioMap.values())) {
     for (const c of envio.componentes) {
       c.unidadesPorPack = envio.mandarFull > 0
         ? Math.round(c.unidadesFisicas / envio.mandarFull)
