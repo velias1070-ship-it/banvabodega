@@ -790,9 +790,28 @@ export default function AdminMargenes() {
         }
       }
       setSwitchMenu(null);
-      await refrescarItemsAfectados([r.item_id]);
+
+      // Polling: ML puede tardar hasta 15s en reflejar el cambio en GET
+      // /seller-promotions. Reintentamos el refresh comparando contra el
+      // promo_name previo hasta ver que cambio o agotar intentos.
+      const previoNombre = (r.promo_name || r.promo_type || "").trim();
+      let cambioVisto = false;
+      for (let intento = 0; intento < 4; intento++) {
+        const wait = intento === 0 ? 4000 : 3500;
+        await new Promise(res => setTimeout(res, wait));
+        try {
+          await fetch(`/api/ml/margin-cache/refresh?item_ids=${encodeURIComponent(r.item_id)}`, { method: "POST" });
+          const nuevos = await fetch("/api/ml/margin-cache").then(x => x.json()).catch(() => null);
+          const row = (nuevos?.items as MarginRow[] | undefined)?.find(x => x.item_id === r.item_id);
+          const nuevoNombre = row ? (row.promo_name || row.promo_type || "").trim() : "";
+          if (nuevoNombre && nuevoNombre !== previoNombre) { cambioVisto = true; break; }
+        } catch { /* retry */ }
+      }
+      await loadCache();
       if (joinData?.warning?.type === "price_overridden") {
         alert(`⚠️ ${joinData.warning.message}`);
+      } else if (!cambioVisto) {
+        alert(`Switch aplicado en ML pero el cache tarda en reflejar. Tocá "Refrescar" en 10–15s.`);
       }
     } catch (e) {
       alert(`Error al cambiar promo: ${e instanceof Error ? e.message : "desconocido"}`);
