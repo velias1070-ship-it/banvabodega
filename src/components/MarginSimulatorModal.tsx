@@ -150,12 +150,27 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
     setPromosLoading(false);
   }, [item.item_id]);
 
-  // Re-fetch con delay para dar tiempo a ML de propagar. ML tarda ~3-5s en
-  // reflejar cambios en seller-promotions tras un POST/DELETE.
-  const loadPromosConDelay = useCallback(async () => {
-    await new Promise(r => setTimeout(r, 3500));
-    await loadPromos();
-  }, [loadPromos]);
+  // Re-fetch con retries porque ML tarda 3-10s en propagar cambios en
+  // seller-promotions tras POST/DELETE. Si pasamos expectedPrice, reintenta
+  // hasta que el precio del feed coincida con el target (o agotar 3 intentos).
+  // Sin expectedPrice: un solo fetch tras 3.5s (comportamiento viejo).
+  const loadPromosConDelay = useCallback(async (expectedPrice?: number) => {
+    const delays = [3500, 3500, 4000]; // ~11s total peor caso
+    for (let i = 0; i < delays.length; i++) {
+      await new Promise(r => setTimeout(r, delays[i]));
+      try {
+        const res = await fetch(`/api/ml/item-promotions?item_id=${item.item_id}&_=${Date.now()}`, { cache: "no-store" });
+        const data = await res.json();
+        if (res.ok && Array.isArray(data.promotions)) {
+          setPromos(data.promotions);
+          setPromosLoaded(true);
+          if (!expectedPrice) return;
+          const activa = (data.promotions as NormalizedPromo[]).find(p => p.activa && p.price_actual > 0);
+          if (activa && Math.abs(activa.price_actual - expectedPrice) < 1) return; // ML ya propago
+        }
+      } catch { /* silent, sigue al siguiente intento */ }
+    }
+  }, [item.item_id]);
 
   useEffect(() => { loadPromos(); }, [loadPromos]);
 
@@ -192,7 +207,7 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
       setMsg({ type: "err", text: traducirErrorML(raw) });
     } finally {
       setApplying("none");
-      await loadPromosConDelay();
+      await loadPromosConDelay(target);
     }
   }
 
@@ -245,7 +260,7 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
       }
     } finally {
       setApplying("none");
-      await loadPromosConDelay();
+      await loadPromosConDelay(target);
     }
   }
 
@@ -396,8 +411,9 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
       }
     } finally {
       setPromoAction(null);
-      // Siempre re-fetchear: a veces el error es un falso positivo y queremos ver el estado real
-      await loadPromosConDelay();
+      // Siempre re-fetchear con target: a veces el error es un falso positivo
+      // y queremos ver el estado real. Con retries hasta ver target aplicado.
+      await loadPromosConDelay(target);
     }
   }
 
