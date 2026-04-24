@@ -2320,6 +2320,51 @@ export async function eliminarPicking(id: string): Promise<boolean> {
   return result;
 }
 
+// Anular picking session — mantiene registro historico (estado=ANULADA).
+// Diferente de eliminarPicking que hace DELETE. Usar cuando:
+//   - hubo picking parcial y no queremos revertir automatico (quedan OUTs
+//     registrados que pueden servir de auditoria)
+//   - el negocio requiere trazabilidad de envios decididos pero no hechos
+//   - se quiere poder reabrir el caso despues (revisar quien/cuando anulo)
+// getActivePickingSessions filtra por ABIERTA/EN_PROCESO, ANULADA no aparece
+// en listas activas. queryEnviosFullPendientes del motor tambien lo ignora.
+export async function anularPicking(id: string, motivo?: string): Promise<boolean> {
+  const sessions = await db.getActivePickingSessions();
+  const session = sessions.find(s => s.id === id);
+  if (!session) return false;
+
+  const ok = await db.updatePickingSession(id, {
+    estado: "ANULADA",
+  } as Partial<db.DBPickingSession>);
+  if (!ok) return false;
+
+  // Si es envio_full, liberar reservas y re-sincronizar SKUs pendientes a ML
+  if (session.tipo === "envio_full") {
+    const skus = session.lineas
+      .filter(l => l.estado === "PENDIENTE")
+      .map(l => l.componentes[0]?.skuOrigen)
+      .filter(Boolean);
+    if (skus.length > 0) {
+      const sb = db.getSupabase();
+      if (sb) { try { await sb.rpc("reconciliar_reservas"); } catch {} }
+      db.enqueueAndSync(skus);
+    }
+  }
+
+  // Audit log para trazabilidad
+  const sb = db.getSupabase();
+  if (sb) {
+    void sb.from("audit_log").insert({
+      accion: "picking:anular",
+      entidad: "picking_sessions",
+      entidad_id: id,
+      params: { tipo: session.tipo, lineas: session.lineas.length, motivo: motivo || null },
+      operario: "admin",
+    });
+  }
+  return true;
+}
+
 // ==================== RUTA INTELIGENTE (SERPENTINA) ====================
 
 interface PosConCoords {
