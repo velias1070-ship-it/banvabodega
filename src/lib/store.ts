@@ -2320,6 +2320,114 @@ export async function eliminarPicking(id: string): Promise<boolean> {
   return result;
 }
 
+// Duplicar picking envio_full en nueva sesion con stock/posiciones actuales.
+// Toma los SKU venta + qtyVenta del original, recalcula componentes y posiciones
+// usando stock actual (buildPickingLineasFull). El original queda intacto.
+// Util para reactivar envios anulados/completados cuando queremos volver a mandar.
+export async function duplicarPicking(id: string): Promise<{ newId: string | null; errors: string[] }> {
+  const errors: string[] = [];
+  // Fetch the source session (any state) by ID — use raw DB fetch, not active-only
+  const sb = db.getSupabase();
+  if (!sb) return { newId: null, errors: ["No DB"] };
+  const { data } = await sb.from("picking_sessions").select("*").eq("id", id).limit(1);
+  const source = (data || [])[0] as db.DBPickingSession | undefined;
+  if (!source) return { newId: null, errors: [`Sesion ${id} no existe`] };
+  if (source.tipo !== "envio_full") {
+    return { newId: null, errors: ["Solo se puede duplicar envios a Full"] };
+  }
+
+  // Extraer SKU venta + componentes del original.
+  // Agrupar por skuVenta: si varias lineas apuntan al mismo skuVenta (multi-posicion),
+  // consolidar qty.
+  interface EnvioInput {
+    skuVenta: string;
+    nombre: string;
+    mandarFull: number;
+    tipo: "simple" | "pack" | "combo";
+    componentes: {
+      skuOrigen: string;
+      nombreOrigen: string;
+      unidadesPorPack: number;
+      unidadesFisicas: number;
+      alternativos?: string[];
+    }[];
+  }
+  const envioMap = new Map<string, EnvioInput>();
+  for (const l of source.lineas) {
+    const skuVenta = l.skuVenta;
+    const tipoFull = (l.tipoFull as "simple" | "pack" | "combo" | undefined) || "simple";
+    const qtyVenta = l.qtyVenta || l.qtyPedida || 0;
+    if (qtyVenta <= 0) continue;
+    if (!envioMap.has(skuVenta)) {
+      const compsPorOrigen = new Map<string, EnvioInput["componentes"][0]>();
+      for (const c of (l.componentes || [])) {
+        const prev = compsPorOrigen.get(c.skuOrigen);
+        if (prev) {
+          prev.unidadesFisicas += c.unidades || 0;
+        } else {
+          compsPorOrigen.set(c.skuOrigen, {
+            skuOrigen: c.skuOrigen,
+            nombreOrigen: c.nombre || c.skuOrigen,
+            unidadesPorPack: qtyVenta > 0 ? (c.unidades || 0) / qtyVenta : c.unidades || 0,
+            unidadesFisicas: c.unidades || 0,
+            alternativos: [],
+          });
+        }
+      }
+      envioMap.set(skuVenta, {
+        skuVenta,
+        nombre: (l.componentes?.[0]?.nombre) || skuVenta,
+        mandarFull: qtyVenta,
+        tipo: tipoFull,
+        componentes: Array.from(compsPorOrigen.values()),
+      });
+    } else {
+      // Multi-posicion: sumar al existente
+      const existing = envioMap.get(skuVenta)!;
+      existing.mandarFull += qtyVenta;
+      for (const c of (l.componentes || [])) {
+        const prev = existing.componentes.find(cc => cc.skuOrigen === c.skuOrigen);
+        if (prev) prev.unidadesFisicas += c.unidades || 0;
+        else {
+          existing.componentes.push({
+            skuOrigen: c.skuOrigen,
+            nombreOrigen: c.nombre || c.skuOrigen,
+            unidadesPorPack: qtyVenta > 0 ? (c.unidades || 0) / qtyVenta : c.unidades || 0,
+            unidadesFisicas: c.unidades || 0,
+            alternativos: [],
+          });
+        }
+      }
+    }
+  }
+
+  if (envioMap.size === 0) {
+    return { newId: null, errors: ["Sesion original sin lineas validas"] };
+  }
+
+  // Reconstruir lineas con stock/posiciones actuales
+  const { lineas: nuevasLineas, errors: buildErrors } = buildPickingLineasFull(
+    Array.from(envioMap.values())
+  );
+  errors.push(...buildErrors);
+
+  if (nuevasLineas.length === 0) {
+    return { newId: null, errors: [...errors, "No hay stock para ningun SKU del envio original"] };
+  }
+
+  const fecha = new Date().toISOString().slice(0, 10);
+  const titulo = `Duplicado de ${id.slice(0, 8)}`;
+  const newId = await crearPickingSession(fecha, nuevasLineas, "envio_full", titulo);
+
+  if (newId) {
+    // Encolar SKUs para re-sincronizar ML (las reservas se activan en el proximo ciclo)
+    const skus = Array.from(envioMap.keys());
+    if (skus.length > 0) db.enqueueAndSync(skus);
+  }
+
+  return { newId, errors };
+}
+
 // Anular picking session — mantiene registro historico (estado=ANULADA).
 // Diferente de eliminarPicking que hace DELETE. Usar cuando:
 //   - hubo picking parcial y no queremos revertir automatico (quedan OUTs
