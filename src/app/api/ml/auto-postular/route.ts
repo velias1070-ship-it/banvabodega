@@ -5,6 +5,84 @@ import { evaluarGates, margenPostAds, type CanalLogistico } from "@/lib/pricing"
 export const maxDuration = 300;
 
 /**
+ * GET /api/ml/auto-postular
+ *
+ * Devuelve el resumen + decisiones del ultimo dry-run (agrupado por hora
+ * de corrida). Si no hay ejecuciones, devuelve arrays vacios.
+ */
+export async function GET() {
+  const sb = getServerSupabase();
+  if (!sb) return NextResponse.json({ error: "no_db" }, { status: 500 });
+
+  // Ultimo run = ventana de 5 min desde el log mas reciente
+  const { data: ultimo } = await sb
+    .from("auto_postulacion_log")
+    .select("fecha")
+    .order("fecha", { ascending: false })
+    .limit(1);
+  if (!ultimo || ultimo.length === 0) {
+    return NextResponse.json({
+      last_run: null,
+      total: 0,
+      decisiones: { postular: 0, skipear: 0, error: 0 },
+      motivos: [],
+      filas: [],
+    });
+  }
+  const lastRunAt = (ultimo[0] as { fecha: string }).fecha;
+  const since = new Date(new Date(lastRunAt).getTime() - 5 * 60000).toISOString();
+
+  const { data: rows, error } = await sb
+    .from("auto_postulacion_log")
+    .select("id, fecha, sku, item_id, promo_name, promo_type, decision, motivo, precio_objetivo, precio_actual, floor_calculado, margen_proyectado_pct, modo, contexto")
+    .gte("fecha", since)
+    .order("sku", { ascending: true })
+    .limit(5000);
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  const filas = (rows || []) as Array<{
+    id: string;
+    fecha: string;
+    sku: string;
+    item_id: string | null;
+    promo_name: string | null;
+    promo_type: string | null;
+    decision: string;
+    motivo: string;
+    precio_objetivo: number | null;
+    precio_actual: number | null;
+    floor_calculado: number | null;
+    margen_proyectado_pct: number | null;
+    modo: string;
+    contexto: Record<string, unknown> | null;
+  }>;
+
+  const decisiones = { postular: 0, skipear: 0, error: 0 };
+  const motivosMap = new Map<string, number>();
+  for (const r of filas) {
+    const d = r.decision.replace("dry_run_", "");
+    if (d === "postular") decisiones.postular++;
+    else if (d === "skipear") decisiones.skipear++;
+    else if (d === "error") decisiones.error++;
+    if (d === "skipear") {
+      const tipo = r.motivo.split(":")[0]?.trim() || "otro";
+      motivosMap.set(tipo, (motivosMap.get(tipo) || 0) + 1);
+    }
+  }
+  const motivos = Array.from(motivosMap.entries())
+    .map(([tipo, count]) => ({ tipo, count }))
+    .sort((a, b) => b.count - a.count);
+
+  return NextResponse.json({
+    last_run: lastRunAt,
+    total: filas.length,
+    decisiones,
+    motivos,
+    filas,
+  });
+}
+
+/**
  * POST /api/ml/auto-postular
  *
  * Motor de postulacion automatica — dry-run por default. Para cada par
