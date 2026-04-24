@@ -77,20 +77,24 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // Traer promos + precio real del item en paralelo. El precio real es
-    // necesario para distinguir la promo "realmente aplicada" de las que ML
-    // devuelve con status=started solo porque la campaña global esta corriendo
-    // (pero el item no esta suscrito).
-    const [raw, itemData] = await Promise.all([
-      mlGet<RawPromo[]>(`/seller-promotions/items/${itemId}?app_version=v2`),
-      mlGet<{ id: string; price: number; original_price?: number }>(`/items/${itemId}?attributes=id,price,original_price`),
-    ]);
-    // Nota: este endpoint es para 1 item (desde simulador), fetch individual
-    // es OK. El refresh masivo usa batch multi-get (/items?ids=).
+    const raw = await mlGet<RawPromo[]>(`/seller-promotions/items/${itemId}?app_version=v2`);
     if (!Array.isArray(raw)) {
       return NextResponse.json({ promotions: [] });
     }
-    const precioRealItem = itemData?.price || 0;
+
+    // ML aplica siempre el descuento que mas beneficia al comprador. Cuando
+    // hay varias promos con status=started y price>0, la aplicada es la de
+    // MENOR price_actual. Las demas tambien tienen status=started pero son
+    // candidatas globales donde el item aun no esta suscrito o tiene un precio
+    // menos beneficioso.
+    // NO se puede usar /items/{id}?price para identificar la aplicada: ese
+    // endpoint devuelve el price base del seller, sin considerar DEALs externos
+    // (ver comentario en margin-cache/refresh para caso TXV25QLBRBG25).
+    const menorPrecioStarted = Math.min(
+      ...raw.filter(p => (p.status || "").toLowerCase() === "started" && (p.price || 0) > 0)
+        .map(p => p.price || Infinity),
+      Infinity,
+    );
 
     const normalized: NormalizedPromo[] = raw.map(p => {
       const type = (p.type || "").toUpperCase();
@@ -98,13 +102,10 @@ export async function GET(req: NextRequest) {
       const meliPct = p.meli_percentage ?? p.benefits?.meli_percentage ?? 0;
       const sellerPct = p.seller_percentage ?? p.benefits?.seller_percentage ?? 0;
       const priceActual = p.price ?? 0;
-      // "Activa" = el item esta realmente participando en esta promo.
-      // Criterio: status=started Y el price_actual de la promo coincide con el
-      // precio actual del item en ML (tolerancia de $2 por redondeos).
-      // Antes era solo status=started, pero ML devuelve multiples promos con
-      // ese status (la aplicada + campañas globales donde el item es candidato).
-      const matchesItemPrice = priceActual > 0 && precioRealItem > 0 &&
-        Math.abs(priceActual - precioRealItem) <= 2;
+      // "Activa" = status started Y price es el menor (la que ML aplica).
+      // Si hay solo 1 started, esa es la aplicada automaticamente.
+      const esAplicada = status === "started" && priceActual > 0 &&
+        priceActual === menorPrecioStarted;
       return {
         id: p.id ?? null,
         type,
@@ -123,9 +124,10 @@ export async function GET(req: NextRequest) {
         meli_pct: meliPct,
         seller_pct: sellerPct,
         deal_id: p.deal_id ?? null,
-        activa: status === "started" && matchesItemPrice,
+        activa: esAplicada,
+        // Las started pero no aplicadas (precio mayor) son candidatas disponibles
         postulable: status === "candidate" || status === "pending" ||
-          (status === "started" && !matchesItemPrice), // started pero no aplicada = postulable
+          (status === "started" && !esAplicada),
         permite_custom_price: PROMO_TYPES_CUSTOM_PRICE.has(type),
       };
     });

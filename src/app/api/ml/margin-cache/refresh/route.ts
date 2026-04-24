@@ -189,27 +189,6 @@ async function handleRefresh(req: NextRequest) {
     }
   }
 
-  // Pre-fetch BATCH de precios reales del item en ML.
-  // Evita N llamadas individuales a /items/{id} — una sola llamada con multi-get
-  // trae todos los precios en un round-trip. ML acepta hasta 20 ids por request.
-  const priceByItemId = new Map<string, number>();
-  const itemIds = rows.map(r => r.item_id).filter(Boolean);
-  for (let i = 0; i < itemIds.length; i += 20) {
-    const batch = itemIds.slice(i, i + 20);
-    try {
-      const multiRes = await mlGet<Array<{ code: number; body: { id: string; price: number } }>>(
-        `/items?ids=${batch.join(",")}&attributes=id,price`
-      );
-      if (Array.isArray(multiRes)) {
-        for (const r of multiRes) {
-          if (r.code === 200 && r.body?.id) {
-            priceByItemId.set(r.body.id, r.body.price || 0);
-          }
-        }
-      }
-    } catch { /* silent, fallback a row.price en cada iteracion */ }
-  }
-
   // Procesar cada item (2 llamadas ML: shipping + promos, con commission cacheada)
   const cacheRows: Array<Record<string, unknown>> = [];
 
@@ -307,9 +286,6 @@ async function handleRefresh(req: NextRequest) {
           pesoFacturable = shipFree.coverage.all_country.billable_weight || 0;
         }
         comisionPct = feePct;
-        // Precio actual del item en ML (del batch multi-get precargado).
-        // Incluye promo aplicada si hay. Fallback a row.price si el batch fallo.
-        const priceEnML = priceByItemId.get(row.item_id) || row.price || 0;
         if (Array.isArray(promos)) {
           // Antes de buscar la promo activa, corregir priceList usando el
           // original_price que ML reporta. Si el valor guardado en ml_items_map
@@ -319,21 +295,21 @@ async function handleRefresh(req: NextRequest) {
             priceList = maxOriginal;
           }
 
-          // Identificar la promo REALMENTE aplicada: debe tener status=started
-          // Y su price debe coincidir con el precio actual del item en ML.
-          // Antes se elegia la de menor precio, lo cual confundia promos donde
-          // el item era candidato (status=started pero no postulado) con la
-          // realmente aplicada. Bug detectado 2026-04-24 (Oferta Banva Abril
-          // vs Dia de la Mama 2026 en JSCNAE192P15W).
-          const startedConPrecio = promos.filter(p => p.status === "started" && p.price > 0);
-          let activa: PromoInfo | undefined = priceEnML > 0
-            ? startedConPrecio.find(p => Math.abs(p.price - priceEnML) <= 2)
-            : undefined;
-          // Fallback: si no encontramos match por precio exacto, usar la de
-          // menor precio (comportamiento viejo) pero es señal de desalineo.
-          if (!activa && startedConPrecio.length > 0) {
-            activa = startedConPrecio.sort((a, b) => a.price - b.price)[0];
-          }
+          // Identificar la promo realmente aplicada:
+          // ML aplica SIEMPRE el descuento que mas beneficia al comprador.
+          // Cuando hay >=2 promos con status=started y price>0, la aplicada
+          // es la de MENOR price_actual.
+          //
+          // Nota: NO se puede confiar en /items/{id}?price para identificar la
+          // aplicada — ese endpoint devuelve el price base del seller, sin
+          // considerar DEALs externos de ML (Dia de la Mama, Cyber Day) que
+          // se aplican por encima sin modificar item.price.
+          // Caso real TXV25QLBRBG25 (2026-04-24): item.price=24730 (Oferta Banva
+          // Abril SELLER_CAMPAIGN) pero en la UI se muestra 24700 (Dia de la
+          // Mama DEAL, aplicado encima). La aplicada real es Dia de la Mama.
+          const activa = promos
+            .filter(p => p.status === "started" && p.price > 0)
+            .sort((a, b) => a.price - b.price)[0];
           if (activa) {
             tienePromo = true;
             precioVenta = activa.price;
