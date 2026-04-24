@@ -19,6 +19,8 @@ interface MLItemMultiget {
     listing_type_id: string;
     condition: string;
     category_id: string;
+    date_created?: string;
+    start_time?: string;
   } | null;
 }
 
@@ -81,6 +83,8 @@ export async function GET(req: NextRequest) {
               listing_type: item.listing_type_id,
               condition: item.condition,
               category_id: item.category_id,
+              date_created_ml: item.date_created || null,
+              start_time_ml: item.start_time || null,
               updated_at: new Date().toISOString(),
             }).eq("item_id", item.id);
             if (!error) updated++;
@@ -104,6 +108,8 @@ export async function GET(req: NextRequest) {
                 listing_type: item.listing_type_id,
                 condition: item.condition,
                 category_id: item.category_id,
+                date_created_ml: item.date_created || null,
+                start_time_ml: item.start_time || null,
                 updated_at: new Date().toISOString(),
               }).eq("item_id", item.id);
               updated++;
