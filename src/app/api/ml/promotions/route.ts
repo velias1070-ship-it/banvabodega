@@ -190,15 +190,22 @@ export async function POST(req: NextRequest) {
       prevSku = row?.sku || null;
       prevPrice = row?.price ?? null;
     }
-    // Helper para logear acciones de promo. Fire-and-forget, nunca bloquea la respuesta.
-    const logAction = (accion: string, detalle: Record<string, unknown>) => {
-      if (!auditSb) return;
-      void auditSb.from("admin_actions_log").insert({
+    // Helper para logear acciones de promo. No bloquea pero loguea errores
+    // para poder depurar si el insert falla (antes era silent y no se veia).
+    const logAction = async (accion: string, detalle: Record<string, unknown>) => {
+      if (!auditSb) {
+        console.warn("[ml_promo_log] no supabase client, skipping");
+        return;
+      }
+      const { error } = await auditSb.from("admin_actions_log").insert({
         accion,
         entidad: "ml_items_map",
         entidad_id: item_id,
         detalle: { sku: prevSku, prev_price: prevPrice, ...detalle },
       });
+      if (error) {
+        console.error(`[ml_promo_log] insert failed for ${accion} on ${item_id}: ${error.message}`);
+      }
     };
 
     // Helper: parsea respuesta de ML defensivamente (puede venir vacía)
@@ -223,10 +230,10 @@ export async function POST(req: NextRequest) {
       const data = await parseMlResponse(resp);
       if (!resp.ok) {
         const errMsg = (data as { message?: string }).message || `HTTP ${resp.status}`;
-        logAction("ml_promo:create_discount_error", { deal_price, start_date, finish_date, error: errMsg });
+        await logAction("ml_promo:create_discount_error", { deal_price, start_date, finish_date, error: errMsg });
         return NextResponse.json({ error: errMsg, detail: data }, { status: resp.status });
       }
-      logAction("ml_promo:create_discount", { deal_price, start_date, finish_date, result: data });
+      await logAction("ml_promo:create_discount", { deal_price, start_date, finish_date, result: data });
       return NextResponse.json({ ok: true, result: data });
     }
 
@@ -293,7 +300,7 @@ export async function POST(req: NextRequest) {
 
       if (!resp.ok) {
         const errMsg = (data as { message?: string }).message || `HTTP ${resp.status}`;
-        logAction("ml_promo:join_error", { promotion_id, promotion_type, deal_price, error: errMsg });
+        await logAction("ml_promo:join_error", { promotion_id, promotion_type, deal_price, error: errMsg });
         return NextResponse.json({ error: errMsg, detail: data }, { status: resp.status });
       }
 
@@ -304,7 +311,7 @@ export async function POST(req: NextRequest) {
       const appliedPrice = (data as { price?: number }).price;
       const priceTolerance = Math.max(200, Math.round(deal_price * 0.02));
       if (deal_price && appliedPrice && Math.abs(appliedPrice - deal_price) > priceTolerance) {
-        logAction("ml_promo:join", { promotion_id, promotion_type, deal_price_requested: deal_price, deal_price_applied: appliedPrice, overridden: true });
+        await logAction("ml_promo:join", { promotion_id, promotion_type, deal_price_requested: deal_price, deal_price_applied: appliedPrice, overridden: true });
         return NextResponse.json({
           ok: true,
           result: data,
@@ -316,7 +323,7 @@ export async function POST(req: NextRequest) {
           },
         });
       }
-      logAction("ml_promo:join", { promotion_id, promotion_type, deal_price, deal_price_applied: appliedPrice });
+      await logAction("ml_promo:join", { promotion_id, promotion_type, deal_price, deal_price_applied: appliedPrice });
       return NextResponse.json({ ok: true, result: data });
     }
 
@@ -332,10 +339,10 @@ export async function POST(req: NextRequest) {
       const data = await parseMlResponse(resp);
       if (!resp.ok) {
         const errMsg = (data as { message?: string }).message || `HTTP ${resp.status}`;
-        logAction("ml_promo:delete_error", { promotion_id: delId, promotion_type: delType, error: errMsg });
+        await logAction("ml_promo:delete_error", { promotion_id: delId, promotion_type: delType, error: errMsg });
         return NextResponse.json({ error: errMsg, detail: data }, { status: resp.status });
       }
-      logAction("ml_promo:delete", { promotion_id: delId, promotion_type: delType });
+      await logAction("ml_promo:delete", { promotion_id: delId, promotion_type: delType });
       return NextResponse.json({ ok: true, result: data });
     }
 

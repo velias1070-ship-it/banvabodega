@@ -34,8 +34,10 @@ export async function PUT(req: NextRequest) {
       if (updates.title) localUpdates.titulo = updates.title;
       await sb.from("ml_items_map").update(localUpdates).eq("item_id", item_id);
 
-      // Audit log: registra cambios manuales a items ML
-      void sb.from("admin_actions_log").insert({
+      // Audit log: registra cambios manuales a items ML. Await para garantizar
+      // que el insert se ejecute antes de retornar (Supabase PromiseLike no
+      // corre sin await/then — feedback_supabase_promiselike).
+      const { error: logErr } = await sb.from("admin_actions_log").insert({
         accion: "ml_item_update",
         entidad: "ml_items_map",
         entidad_id: item_id,
@@ -50,6 +52,7 @@ export async function PUT(req: NextRequest) {
           result: { id: result.id, status: result.status, price: result.price },
         },
       });
+      if (logErr) console.error(`[item_update_log] insert failed for ${item_id}: ${logErr.message}`);
     }
 
     return NextResponse.json({ item: result });
