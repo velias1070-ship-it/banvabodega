@@ -2570,8 +2570,8 @@ function AdminEnviosFull({ refresh }: { refresh: () => void }) {
   const [selSession, setSelSession] = useState<DBPickingSession | null>(null);
   const [historial, setHistorial] = useState<EnvioHistorialCabecera[]>([]);
   const [historialOpen, setHistorialOpen] = useState(false);
-  const [lineasAbiertoId, setLineasAbiertoId] = useState<string | null>(null);
-  const [lineas, setLineas] = useState<EnvioHistorialLinea[]>([]);
+  const [selHistorial, setSelHistorial] = useState<{ cabecera: EnvioHistorialCabecera; lineas: EnvioHistorialLinea[] } | null>(null);
+  const [loadingHistorialDetail, setLoadingHistorialDetail] = useState(false);
 
   const loadSessions = async () => {
     setLoading(true);
@@ -2600,20 +2600,17 @@ function AdminEnviosFull({ refresh }: { refresh: () => void }) {
     }
   };
 
-  const toggleLineas = async (envioId: string) => {
-    if (lineasAbiertoId === envioId) {
-      setLineasAbiertoId(null);
-      setLineas([]);
-      return;
-    }
+  const openHistorialDetail = async (envioId: string) => {
+    setLoadingHistorialDetail(true);
     try {
       const res = await fetch(`/api/intelligence/envio-full-historial?id=${envioId}`);
       if (!res.ok) return;
       const j = await res.json();
-      setLineas(j.lineas || []);
-      setLineasAbiertoId(envioId);
+      setSelHistorial({ cabecera: j.cabecera, lineas: j.lineas || [] });
     } catch (err) {
       console.error("[envio-full-historial] detalle:", err);
+    } finally {
+      setLoadingHistorialDetail(false);
     }
   };
 
@@ -2621,6 +2618,93 @@ function AdminEnviosFull({ refresh }: { refresh: () => void }) {
 
   if (selSession) {
     return <PickingSessionDetail session={selSession} onBack={() => { setSelSession(null); loadSessions(); }}/>;
+  }
+
+  // Vista detalle de un envío histórico (pantalla dedicada)
+  if (selHistorial) {
+    const { cabecera: h, lineas: lns } = selHistorial;
+    const fechaCreado = new Date(h.created_at).toLocaleString("es-CL", { dateStyle: "medium", timeStyle: "short" });
+    const totalBultosReal = lns.reduce((s, l) => s + (l.bultos || 0), 0);
+    return (
+      <div>
+        <div className="card">
+          <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12}}>
+            <button onClick={()=>setSelHistorial(null)} style={{padding:"8px 14px",borderRadius:8,background:"var(--bg3)",color:"var(--cyan)",fontWeight:700,fontSize:13,border:"1px solid var(--bg4)",cursor:"pointer"}}>← Historial</button>
+            <div style={{flex:1}}>
+              <div style={{fontSize:18,fontWeight:700}}>Envío a Full — {h.fecha}</div>
+              <div style={{fontSize:12,color:"var(--txt3)"}}>Creado: {fechaCreado}</div>
+            </div>
+            {h.evento_activo && (
+              <div style={{padding:"4px 10px",borderRadius:6,background:"var(--amberBg)",color:"var(--amber)",fontSize:11,fontWeight:700,border:"1px solid var(--amberBd)"}}>
+                🎯 {h.evento_activo} (×{h.multiplicador_evento})
+              </div>
+            )}
+          </div>
+
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:8}}>
+            <div style={{padding:10,background:"var(--bg3)",borderRadius:8}}>
+              <div style={{fontSize:10,color:"var(--txt3)"}}>SKUs</div>
+              <div className="mono" style={{fontSize:18,fontWeight:700,color:"var(--txt)"}}>{h.total_skus}</div>
+            </div>
+            <div style={{padding:10,background:"var(--bg3)",borderRadius:8}}>
+              <div style={{fontSize:10,color:"var(--txt3)"}}>UDS VENTA</div>
+              <div className="mono" style={{fontSize:18,fontWeight:700,color:"var(--cyan)"}}>{h.total_uds_venta.toLocaleString("es-CL")}</div>
+            </div>
+            <div style={{padding:10,background:"var(--bg3)",borderRadius:8}}>
+              <div style={{fontSize:10,color:"var(--txt3)"}}>UDS FÍSICAS</div>
+              <div className="mono" style={{fontSize:18,fontWeight:700,color:"var(--blue)"}}>{h.total_uds_fisicas.toLocaleString("es-CL")}</div>
+            </div>
+            <div style={{padding:10,background:"var(--bg3)",borderRadius:8,border:"1px solid var(--cyanBd)"}}>
+              <div style={{fontSize:10,color:"var(--cyan)",fontWeight:700}}>📦 BULTOS</div>
+              <div className="mono" style={{fontSize:18,fontWeight:700,color:"var(--cyan)"}}>{h.total_bultos}</div>
+              {totalBultosReal > 0 && totalBultosReal !== h.total_bultos && (
+                <div style={{fontSize:9,color:"var(--txt3)"}}>Suma líneas: {totalBultosReal}</div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="card" style={{padding:0,overflow:"hidden"}}>
+          <div style={{padding:"10px 14px",borderBottom:"1px solid var(--bg4)",fontSize:12,fontWeight:700,color:"var(--txt2)"}}>
+            Detalle por SKU ({lns.length})
+          </div>
+          <div style={{overflowX:"auto"}}>
+            <table className="tbl" style={{fontSize:11,width:"100%"}}>
+              <thead>
+                <tr>
+                  <th style={{textAlign:"left"}}>SKU Venta</th>
+                  <th style={{textAlign:"left"}}>SKU Origen</th>
+                  <th style={{textAlign:"right"}}>Sugerido</th>
+                  <th style={{textAlign:"right"}}>Enviado</th>
+                  <th style={{textAlign:"right"}}>Bultos</th>
+                  <th style={{textAlign:"center"}}>ABC</th>
+                  <th style={{textAlign:"right"}}>Vel.pond</th>
+                  <th style={{textAlign:"right"}}>Full antes</th>
+                  <th style={{textAlign:"right"}}>Bodega antes</th>
+                  <th style={{textAlign:"center"}}>Editado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lns.map((l, i) => (
+                  <tr key={i}>
+                    <td className="mono">{l.sku_venta}</td>
+                    <td className="mono" style={{color:"var(--txt3)"}}>{l.sku_origen}</td>
+                    <td className="mono" style={{textAlign:"right",color:"var(--txt3)"}}>{l.cantidad_sugerida}</td>
+                    <td className="mono" style={{textAlign:"right",fontWeight:700}}>{l.cantidad_enviada}</td>
+                    <td className="mono" style={{textAlign:"right",color:l.bultos!=null&&l.bultos>0?"var(--cyan)":"var(--txt3)",fontWeight:l.bultos!=null&&l.bultos>0?700:400}}>{l.bultos ?? 0}</td>
+                    <td style={{textAlign:"center"}}>{l.abc || "—"}</td>
+                    <td className="mono" style={{textAlign:"right"}}>{l.vel_ponderada != null ? l.vel_ponderada.toFixed(1) : "—"}</td>
+                    <td className="mono" style={{textAlign:"right"}}>{l.stock_full_antes ?? "—"}</td>
+                    <td className="mono" style={{textAlign:"right"}}>{l.stock_bodega_antes ?? "—"}</td>
+                    <td style={{textAlign:"center",color:l.fue_editada?"var(--amber)":"var(--txt3)"}}>{l.fue_editada ? "✏" : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -2702,63 +2786,18 @@ function AdminEnviosFull({ refresh }: { refresh: () => void }) {
                   </thead>
                   <tbody>
                     {historial.map(e => {
-                      const abierto = lineasAbiertoId === e.id;
                       const fechaStr = new Date(e.created_at).toLocaleString("es-CL", { dateStyle: "short", timeStyle: "short" });
                       return (
                         <React.Fragment key={e.id}>
-                          <tr onClick={() => toggleLineas(e.id)} style={{cursor:"pointer",background:abierto?"var(--bg3)":undefined}}>
+                          <tr onClick={() => openHistorialDetail(e.id)} style={{cursor:"pointer"}}>
                             <td>{fechaStr}</td>
                             <td className="mono" style={{textAlign:"right"}}>{e.total_skus}</td>
                             <td className="mono" style={{textAlign:"right"}}>{e.total_uds_venta.toLocaleString("es-CL")}</td>
                             <td className="mono" style={{textAlign:"right"}}>{e.total_uds_fisicas.toLocaleString("es-CL")}</td>
                             <td className="mono" style={{textAlign:"right"}}>{e.total_bultos.toLocaleString("es-CL")}</td>
                             <td style={{color:e.evento_activo?"var(--amber)":"var(--txt3)"}}>{e.evento_activo || "—"}</td>
-                            <td style={{textAlign:"center",color:"var(--txt3)",fontSize:10}}>{abierto ? "▼" : "▶"}</td>
+                            <td style={{textAlign:"center",color:"var(--cyan)",fontSize:10}}>→</td>
                           </tr>
-                          {abierto && (
-                            <tr>
-                              <td colSpan={7} style={{padding:0,background:"var(--bg2)"}}>
-                                <div style={{padding:12}}>
-                                  {lineas.length === 0 ? (
-                                    <div style={{color:"var(--txt3)",fontSize:11}}>Cargando...</div>
-                                  ) : (
-                                    <table className="tbl" style={{fontSize:11,width:"100%"}}>
-                                      <thead>
-                                        <tr>
-                                          <th style={{textAlign:"left"}}>SKU Venta</th>
-                                          <th style={{textAlign:"left"}}>SKU Origen</th>
-                                          <th style={{textAlign:"right"}}>Sugerido</th>
-                                          <th style={{textAlign:"right"}}>Enviado</th>
-                                          <th style={{textAlign:"right"}}>Bultos</th>
-                                          <th style={{textAlign:"center"}}>ABC</th>
-                                          <th style={{textAlign:"right"}}>Vel.pond</th>
-                                          <th style={{textAlign:"right"}}>Stock Full antes</th>
-                                          <th style={{textAlign:"right"}}>Bodega antes</th>
-                                          <th style={{textAlign:"center"}}>Editado</th>
-                                        </tr>
-                                      </thead>
-                                      <tbody>
-                                        {lineas.map((l, i) => (
-                                          <tr key={i}>
-                                            <td className="mono">{l.sku_venta}</td>
-                                            <td className="mono" style={{color:"var(--txt3)"}}>{l.sku_origen}</td>
-                                            <td className="mono" style={{textAlign:"right",color:"var(--txt3)"}}>{l.cantidad_sugerida}</td>
-                                            <td className="mono" style={{textAlign:"right",fontWeight:700}}>{l.cantidad_enviada}</td>
-                                            <td className="mono" style={{textAlign:"right",color:l.bultos!=null&&l.bultos>0?"var(--cyan)":"var(--txt3)",fontWeight:l.bultos!=null&&l.bultos>0?700:400}}>{l.bultos ?? 0}</td>
-                                            <td style={{textAlign:"center"}}>{l.abc || "—"}</td>
-                                            <td className="mono" style={{textAlign:"right"}}>{l.vel_ponderada != null ? l.vel_ponderada.toFixed(1) : "—"}</td>
-                                            <td className="mono" style={{textAlign:"right"}}>{l.stock_full_antes ?? "—"}</td>
-                                            <td className="mono" style={{textAlign:"right"}}>{l.stock_bodega_antes ?? "—"}</td>
-                                            <td style={{textAlign:"center",color:l.fue_editada?"var(--amber)":"var(--txt3)"}}>{l.fue_editada ? "✏" : "—"}</td>
-                                          </tr>
-                                        ))}
-                                      </tbody>
-                                    </table>
-                                  )}
-                                </div>
-                              </td>
-                            </tr>
-                          )}
                         </React.Fragment>
                       );
                     })}
