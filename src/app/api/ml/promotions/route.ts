@@ -237,12 +237,37 @@ export async function POST(req: NextRequest) {
         } catch { /* ignore, el POST siguiente tirará error si hay algo mal */ }
       }
 
-      const resp = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${item_id}?app_version=v2`, {
+      let resp = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${item_id}?app_version=v2`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify(joinBody),
       });
-      const data = await parseMlResponse(resp);
+      let data = await parseMlResponse(resp);
+
+      // Auto-retry OFFER_ALREADY_EXISTS: el item ya tiene una promo activa
+      // (la misma o una distinta). Para actualizar el precio o cambiar de promo
+      // necesitamos DELETE → wait → POST. Lo hacemos automatico aca para que
+      // cualquier caller (modal "Actualizar", switch, bulk) funcione sin retry
+      // duplicado en frontend.
+      if (!resp.ok) {
+        const errMsg = (data as { message?: string }).message || "";
+        if (/offer_already_exists/i.test(errMsg) || /offer.*already/i.test(errMsg)) {
+          try {
+            await fetch(`https://api.mercadolibre.com/seller-promotions/items/${item_id}?app_version=v2`, {
+              method: "DELETE",
+              headers: { Authorization: `Bearer ${token}` },
+            });
+          } catch { /* ignore */ }
+          await new Promise(r => setTimeout(r, 4500));
+          resp = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${item_id}?app_version=v2`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify(joinBody),
+          });
+          data = await parseMlResponse(resp);
+        }
+      }
+
       if (!resp.ok) {
         const errMsg = (data as { message?: string }).message || `HTTP ${resp.status}`;
         return NextResponse.json({ error: errMsg, detail: data }, { status: resp.status });
