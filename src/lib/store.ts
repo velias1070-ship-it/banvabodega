@@ -2422,6 +2422,57 @@ export async function duplicarPicking(id: string): Promise<{ newId: string | nul
     // Encolar SKUs para re-sincronizar ML (las reservas se activan en el proximo ciclo)
     const skus = Array.from(envioMap.keys());
     if (skus.length > 0) db.enqueueAndSync(skus);
+
+    // Generar snapshot en envios_full_historial para que el duplicado aparezca
+    // en el historial con totales calculados (evita huerfanos como el bug
+    // detectado 2026-04-24). Tambien redirige snapshot anterior si existia
+    // apuntando al picking original, para no dejar 2 entradas del mismo envio.
+    try {
+      const totalSkus = envioMap.size;
+      const totalUdsVenta = Array.from(envioMap.values()).reduce((s, e) => s + e.mandarFull, 0);
+      const totalUdsFisicas = Array.from(envioMap.values()).reduce(
+        (s, e) => s + e.componentes.reduce((s2, c) => s2 + c.unidadesFisicas, 0),
+        0
+      );
+      // Bultos: estimar usando inner_pack del sku_origen principal (si existe)
+      let totalBultos = 0;
+      for (const e of Array.from(envioMap.values())) {
+        for (const c of e.componentes) {
+          const prod = _cache.products[c.skuOrigen];
+          const ip = prod?.innerPack && prod.innerPack > 1 ? prod.innerPack : 1;
+          totalBultos += Math.ceil(c.unidadesFisicas / ip);
+        }
+      }
+
+      const sb = db.getSupabase();
+      if (sb) {
+        // Si el picking original tenia snapshot, redirigirlo al duplicado
+        // (en vez de crear uno nuevo). Evita que 2 filas del historial
+        // apunten a versiones distintas del mismo envio logico.
+        const { data: existing } = await sb.from("envios_full_historial")
+          .select("id").eq("picking_session_id", id).limit(1);
+        if (existing && existing.length > 0) {
+          await sb.from("envios_full_historial")
+            .update({ picking_session_id: newId })
+            .eq("id", (existing[0] as { id: string }).id);
+        } else {
+          // Sin snapshot previo: crear uno nuevo con los totales calculados
+          await sb.from("envios_full_historial").insert({
+            picking_session_id: newId,
+            fecha,
+            total_skus: totalSkus,
+            total_uds_venta: totalUdsVenta,
+            total_uds_fisicas: totalUdsFisicas,
+            total_bultos: totalBultos,
+            evento_activo: null,
+            multiplicador_evento: 1.0,
+          });
+        }
+      }
+    } catch (e) {
+      console.error("[duplicarPicking] Error guardando snapshot:", e);
+      // no bloqueante: el picking ya fue creado, el snapshot es informativo
+    }
   }
 
   return { newId, errors };
