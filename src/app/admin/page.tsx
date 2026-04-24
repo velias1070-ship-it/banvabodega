@@ -5656,6 +5656,8 @@ function Inventario() {
   const [skusConFlex, setSkusConFlex] = useState<Set<string>>(new Set());
   const [skusConFull, setSkusConFull] = useState<Set<string>>(new Set());
   const [skusConMapping, setSkusConMapping] = useState<Set<string>>(new Set());
+  const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set());
+  const [bulkWorking, setBulkWorking] = useState(false);
   const [,setTick] = useState(0);
   const refresh = useCallback(() => setTick(t => t + 1), []);
   const s = getStore();
@@ -5798,6 +5800,48 @@ function Inventario() {
     : soloSinMapping ? skusSinMapping
     : allSkus;
   const grandTotal = filteredSkus.reduce((s,sku)=>s+skuTotal(sku),0);
+
+  // Bulk select: habilitado en filtros que suelen llevar a accion masiva
+  const bulkEnabled = soloSinFlex || soloSinFull || soloSinMapping;
+  const filteredNoAgotar = filteredSkus.filter(sku => (s.products[sku]?.estadoSku || "activo") !== "agotar");
+  const allBulkSelected = bulkEnabled && filteredNoAgotar.length > 0 && filteredNoAgotar.every(sku => bulkSelected.has(sku));
+  const toggleBulkAll = () => {
+    if (allBulkSelected) setBulkSelected(new Set());
+    else setBulkSelected(new Set(filteredNoAgotar));
+  };
+  const toggleBulkOne = (sku: string) => {
+    setBulkSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(sku)) next.delete(sku); else next.add(sku);
+      return next;
+    });
+  };
+  const doBulkAgotar = async () => {
+    const skus = Array.from(bulkSelected).filter(sku => (s.products[sku]?.estadoSku || "activo") !== "agotar");
+    if (skus.length === 0) return;
+    if (!confirm(`Marcar ${skus.length} SKU${skus.length!==1?"s":""} como AGOTAR?\n\nSe publicara toda unidad en bodega en Flex ignorando el buffer (2/4). El sync a ML se dispara automaticamente.`)) return;
+    setBulkWorking(true);
+    try {
+      for (const sku of skus) {
+        const prod = s.products[sku];
+        if (!prod) continue;
+        s.products[sku] = { ...prod, estadoSku: "agotar" };
+      }
+      saveStore();
+      const dbMod = await import("@/lib/db");
+      const allToEnqueue = new Set<string>(skus);
+      for (const sku of skus) {
+        const ventas = getVentasPorSkuOrigen(sku);
+        for (const v of ventas) allToEnqueue.add(v.skuVenta);
+      }
+      dbMod.enqueueAndSync(Array.from(allToEnqueue));
+      setBulkSelected(new Set());
+      refresh();
+    } finally {
+      setBulkWorking(false);
+    }
+  };
+  useEffect(() => { setBulkSelected(new Set()); }, [soloSinFlex, soloSinFull, soloSinMapping, soloSinEtiquetar, soloComprometidos, viewMode]);
 
   // KPIs de etiquetado global
   const etiqGlobal = (() => {
@@ -6705,11 +6749,34 @@ function Inventario() {
       ) : (
         /* ===== PHYSICAL STOCK VIEW (original) ===== */
         <>
+          {bulkEnabled && bulkSelected.size > 0 && (
+            <div className="card" style={{padding:"10px 14px",background:"var(--amberBg)",border:"1px solid var(--amberBd)",display:"flex",alignItems:"center",gap:12}}>
+              <div style={{fontSize:12,fontWeight:700,color:"var(--amber)"}}>
+                {bulkSelected.size} SKU{bulkSelected.size!==1?"s":""} seleccionado{bulkSelected.size!==1?"s":""}
+              </div>
+              <div style={{flex:1}}/>
+              <button onClick={()=>setBulkSelected(new Set())} disabled={bulkWorking}
+                style={{padding:"6px 12px",borderRadius:6,fontSize:11,fontWeight:700,background:"var(--bg3)",color:"var(--txt2)",border:"1px solid var(--bg4)",cursor:"pointer"}}>
+                Limpiar
+              </button>
+              <button onClick={doBulkAgotar} disabled={bulkWorking}
+                style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,background:"var(--amber)",color:"#000",border:"1px solid var(--amber)",cursor:bulkWorking?"wait":"pointer",opacity:bulkWorking?0.6:1}}>
+                {bulkWorking ? "Marcando..." : `🏁 Marcar ${bulkSelected.size} como Agotar`}
+              </button>
+            </div>
+          )}
           {/* Desktop: table view */}
           <div className="desktop-only">
             <div className="card" style={{padding:0,overflowX:"auto"}}>
               <table className="tbl" style={{minWidth:1300}}>
                 <thead><tr>
+                  {bulkEnabled && (
+                    <th style={{width:36,textAlign:"center"}}>
+                      <input type="checkbox" checked={allBulkSelected} onChange={toggleBulkAll}
+                        title={allBulkSelected ? "Deseleccionar todos" : "Seleccionar todos (omite los ya marcados como Agotar)"}
+                        style={{cursor:"pointer"}}/>
+                    </th>
+                  )}
                   <th>SKU</th><th>Producto</th><th>Cat.</th><th>Prov.</th><th>Etiq.</th><th>Ubicaciones</th><th style={{textAlign:"right"}}>Total</th><th style={{textAlign:"right"}}>Comp.</th><th style={{textAlign:"right"}}>Disp.</th><th style={{textAlign:"right"}}>OC</th><th>Estado</th><th style={{textAlign:"right"}}>Valor</th>
                 </tr></thead>
                 <tbody>
@@ -6721,8 +6788,19 @@ function Inventario() {
                     const sinEtQty=det.filter(d=>d.skuVenta===SIN_ETIQUETAR).reduce((s,d)=>s+d.qty,0);
                     const etiqStatus=total===0?"—":sinEtQty===0?"full":etiqQty===0?"none":"partial";
                     const etiqFormatos=Array.from(new Set(det.filter(d=>d.skuVenta!==SIN_ETIQUETAR).map(d=>d.skuVenta)));
+                    const yaAgotar = (prod?.estadoSku||"activo") === "agotar";
                     return([
                       <tr key={sku} onClick={()=>setSelectedSku(sku)} style={{cursor:"pointer",background:"transparent"}}>
+                        {bulkEnabled && (
+                          <td style={{textAlign:"center"}} onClick={e=>e.stopPropagation()}>
+                            <input type="checkbox"
+                              checked={bulkSelected.has(sku)}
+                              disabled={yaAgotar}
+                              onChange={()=>toggleBulkOne(sku)}
+                              title={yaAgotar?"Ya esta en Agotar":"Seleccionar"}
+                              style={{cursor:yaAgotar?"not-allowed":"pointer",opacity:yaAgotar?0.4:1}}/>
+                          </td>
+                        )}
                         <td className="mono" style={{fontWeight:700,fontSize:12}}>{sku}</td>
                         <td style={{fontSize:12}}>{prod?.name||sku}</td>
                         <td><span className="tag">{prod?.cat}</span></td>
@@ -6788,7 +6866,7 @@ function Inventario() {
                         })()}
                         <td className="mono" style={{textAlign:"right",fontSize:11}}>{prod?fmtMoney((prod.costAvg||prod.cost)*total):"-"}</td>
                       </tr>,
-                      reservasSku === sku && <tr key={sku+"-reservas"}><td colSpan={12} style={{background:"var(--amberBg)",padding:12}}>
+                      reservasSku === sku && <tr key={sku+"-reservas"}><td colSpan={bulkEnabled?13:12} style={{background:"var(--amberBg)",padding:12}}>
                         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
                           <span style={{fontSize:12,fontWeight:700,color:"var(--amber)"}}>Reservas activas — {sku}</span>
                           <button onClick={(e) => { e.stopPropagation(); setReservasSku(null); }} style={{padding:"2px 8px",borderRadius:4,background:"var(--bg3)",color:"var(--txt3)",fontSize:10,border:"1px solid var(--bg4)"}}>X</button>
@@ -6834,7 +6912,7 @@ function Inventario() {
                           </div>
                         )}
                       </td></tr>,
-                      isOpen && <tr key={sku+"-detail"}><td colSpan={12} style={{background:"var(--bg3)",padding:16}}>
+                      isOpen && <tr key={sku+"-detail"}><td colSpan={bulkEnabled?13:12} style={{background:"var(--bg3)",padding:16}}>
                         {/* Detalle por formato de venta */}
                         {(()=>{const detalle=skuStockDetalle(sku);return detalle.length>0&&(
                           <div style={{marginBottom:16}}>
