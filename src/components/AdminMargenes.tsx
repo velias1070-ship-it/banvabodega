@@ -15,7 +15,7 @@ type MarginRow = {
   promo_type: string | null;
   promo_name: string | null;
   promo_pct: number | null;
-  promos_postulables: Array<{ name: string; type: string; id: string | null }> | null;
+  promos_postulables: Array<{ name: string; type: string; id: string | null; min?: number; max?: number; suggested?: number; offer_type?: string | null }> | null;
   status_ml: string | null;
   stock_total: number | null;
   costo_neto: number;
@@ -123,6 +123,9 @@ export default function AdminMargenes() {
   };
   const [showErrorsModal, setShowErrorsModal] = useState(false);
   const [campaignMode, setCampaignMode] = useState<"join" | "leave">("join");
+
+  const [switchMenuFor, setSwitchMenuFor] = useState<string | null>(null);
+  const [switchingItem, setSwitchingItem] = useState<string | null>(null);
 
   const toggleSelect = (itemId: string) => {
     setSelected(prev => {
@@ -709,6 +712,96 @@ export default function AdminMargenes() {
     await refrescarItemsAfectados(Array.from(itemsAfectadosGlobal));
   };
 
+  const switchPromo = async (
+    r: MarginRow,
+    target: { id: string | null; type: string; name: string; min?: number; max?: number; offer_type?: string | null },
+  ) => {
+    const price = r.precio_venta;
+    if (target.min && price < target.min) {
+      alert(`Precio actual ${fmtCLP(price)} está bajo el mínimo de "${target.name}" (${fmtCLP(target.min)})`);
+      return;
+    }
+    if (target.max && price > target.max) {
+      alert(`Precio actual ${fmtCLP(price)} supera el máximo de "${target.name}" (${fmtCLP(target.max)})`);
+      return;
+    }
+    const desde = r.promo_name || r.promo_type || "(sin promo)";
+    if (!confirm(`${r.sku}: cambiar "${desde}" → "${target.name}" a ${fmtCLP(price)} (mismo precio)?`)) return;
+
+    setSwitchingItem(r.item_id);
+    try {
+      const delRes = await fetch("/api/ml/promotions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          item_id: r.item_id,
+          action: "delete",
+          promotion_type: r.promo_type,
+        }),
+      });
+      const delData = await delRes.json();
+      if (!delRes.ok && !/not.*found|does not|no existe/i.test(String(delData?.error || ""))) {
+        throw new Error(`leave: ${delData?.error || `HTTP ${delRes.status}`}`);
+      }
+      await new Promise(res => setTimeout(res, 2500));
+
+      const joinRes = await fetch("/api/ml/promotions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          item_id: r.item_id,
+          action: "join",
+          promotion_id: target.id,
+          promotion_type: target.type,
+          deal_price: price,
+          offer_type: target.offer_type,
+        }),
+      });
+      const joinData = await joinRes.json();
+      if (!joinRes.ok) {
+        if (/offer_already_exists/i.test(String(joinData?.error || ""))) {
+          await new Promise(res => setTimeout(res, 1200));
+          await fetch("/api/ml/promotions", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              item_id: r.item_id,
+              action: "delete",
+              promotion_id: target.id,
+              promotion_type: target.type,
+            }),
+          }).catch(() => null);
+          await new Promise(res => setTimeout(res, 600));
+          const retry = await fetch("/api/ml/promotions", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              item_id: r.item_id,
+              action: "join",
+              promotion_id: target.id,
+              promotion_type: target.type,
+              deal_price: price,
+              offer_type: target.offer_type,
+            }),
+          });
+          const retryData = await retry.json();
+          if (!retry.ok) throw new Error(retryData?.error || `HTTP ${retry.status}`);
+        } else {
+          throw new Error(String(joinData?.error || `HTTP ${joinRes.status}`));
+        }
+      }
+      setSwitchMenuFor(null);
+      await refrescarItemsAfectados([r.item_id]);
+      if (joinData?.warning?.type === "price_overridden") {
+        alert(`⚠️ ${joinData.warning.message}`);
+      }
+    } catch (e) {
+      alert(`Error al cambiar promo: ${e instanceof Error ? e.message : "desconocido"}`);
+    } finally {
+      setSwitchingItem(null);
+    }
+  };
+
   const runBulkLeave = async () => {
     if (!selectedPromoKey) return;
     const promo = commonPromos.find(p => (p.id ? `${p.type}::${p.id}` : `${p.type}::_`) === selectedPromoKey);
@@ -1147,11 +1240,73 @@ export default function AdminMargenes() {
                     </td>
                     <td style={{ padding: "9px 8px", maxWidth: 260 }}>
                       <div style={{ fontSize: 11, color: "var(--txt)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.titulo}</div>
-                      {r.tiene_promo && (
-                        <div style={{ fontSize: 9, color: "var(--amber)" }} title={r.promo_type || undefined}>
-                          {r.promo_name || r.promo_type} −{r.promo_pct}% (lista {fmtCLP(r.price_ml)})
-                        </div>
-                      )}
+                      {r.tiene_promo && (() => {
+                        const activaNombre = (r.promo_name || r.promo_type || "").trim();
+                        const alt = (r.promos_postulables || []).filter(p => {
+                          const nombre = (p.name || "").trim();
+                          if (nombre === activaNombre) return false;
+                          if (nombre === "PRICE_DISCOUNT" && r.promo_type === "PRICE_DISCOUNT") return false;
+                          return true;
+                        });
+                        const abierto = switchMenuFor === r.item_id;
+                        const busy = switchingItem === r.item_id;
+                        return (
+                          <div style={{ fontSize: 9, color: "var(--amber)", position: "relative", display: "flex", alignItems: "center", gap: 4 }} title={r.promo_type || undefined}>
+                            <span>{r.promo_name || r.promo_type} −{r.promo_pct}% (lista {fmtCLP(r.price_ml)})</span>
+                            {alt.length > 0 && (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); setSwitchMenuFor(abierto ? null : r.item_id); }}
+                                disabled={busy}
+                                title="Cambiar a otra promo (mismo precio)"
+                                style={{ padding: "1px 5px", borderRadius: 3, fontSize: 9, background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)", cursor: busy ? "wait" : "pointer", lineHeight: 1 }}
+                              >{busy ? "…" : "⇄"}</button>
+                            )}
+                            {abierto && !busy && (
+                              <>
+                                <div
+                                  onClick={() => setSwitchMenuFor(null)}
+                                  style={{ position: "fixed", inset: 0, zIndex: 50 }}
+                                />
+                                <div style={{ position: "absolute", top: "100%", left: 0, marginTop: 4, background: "var(--bg3)", border: "1px solid var(--bg4)", borderRadius: 6, padding: 6, minWidth: 260, zIndex: 51, boxShadow: "0 4px 16px rgba(0,0,0,0.5)" }}>
+                                  <div style={{ fontSize: 10, color: "var(--txt2)", marginBottom: 6, fontWeight: 600 }}>
+                                    Cambiar a (manteniendo {fmtCLP(r.precio_venta)}):
+                                  </div>
+                                  {alt.map((p, i) => {
+                                    const outOfRange =
+                                      (p.min && r.precio_venta < p.min) ||
+                                      (p.max && r.precio_venta > p.max);
+                                    return (
+                                      <button
+                                        key={`${p.type}::${p.id || "_"}::${i}`}
+                                        onClick={(e) => { e.stopPropagation(); switchPromo(r, p); }}
+                                        disabled={!!outOfRange}
+                                        style={{
+                                          display: "block", width: "100%", textAlign: "left",
+                                          padding: "5px 7px", marginBottom: 3, borderRadius: 4,
+                                          fontSize: 10,
+                                          background: outOfRange ? "var(--bg2)" : "var(--bg4)",
+                                          color: outOfRange ? "var(--txt3)" : "var(--txt)",
+                                          border: "1px solid var(--bg4)",
+                                          cursor: outOfRange ? "not-allowed" : "pointer",
+                                        }}
+                                        title={outOfRange ? `Fuera de rango ${p.min ? fmtCLP(p.min) : "?"}–${p.max ? fmtCLP(p.max) : "?"}` : undefined}
+                                      >
+                                        <div style={{ fontWeight: 600 }}>{p.name}</div>
+                                        <div style={{ fontSize: 9, color: "var(--txt3)" }}>
+                                          {p.type}
+                                          {p.min ? ` · min ${fmtCLP(p.min)}` : ""}
+                                          {p.max ? ` · max ${fmtCLP(p.max)}` : ""}
+                                          {outOfRange && <span style={{ color: "var(--red)" }}> · precio fuera de rango</span>}
+                                        </div>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </td>
                     <td className="mono" style={{ padding: "9px 8px", textAlign: "right", fontSize: 10, color: "var(--txt3)" }}>
                       {r.peso_facturable ? `${(r.peso_facturable / 1000).toFixed(1)} kg` : "—"}
