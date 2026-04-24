@@ -1050,12 +1050,27 @@ export default function AdminVentasML({ modo }: { modo?: VentasMlModo } = {}) {
                   return (
                     <tr key={p.sku_venta} style={{ borderBottom: "1px solid var(--bg3)" }}>
                       <td style={{ padding: "10px 8px" }}>
-                        <div className="mono" style={{ fontSize: 11, fontWeight: 700, color: "var(--cyan)" }}>{p.sku_venta}</div>
-                        <div style={{ fontSize: 10, color: "var(--txt3)", maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.nombre}</div>
-                        <div style={{ fontSize: 9, color: "var(--txt3)", marginTop: 2 }}>
-                          <span style={{ padding: "1px 5px", borderRadius: 3, background: p.canal === "Full" ? "var(--blueBg)" : p.canal === "Flex" ? "var(--cyanBg)" : "var(--bg3)", color: p.canal === "Full" ? "var(--blue)" : p.canal === "Flex" ? "var(--cyan)" : "var(--txt3)" }}>{p.canal}</span>
-                          {" · "}{p.orders} órdenes · {p.unidades} u
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMlDirectoSearch(p.sku_venta);
+                            setView("ml_directo");
+                            window.scrollTo({ top: 0, behavior: "smooth" });
+                          }}
+                          title={`Ver órdenes de ${p.sku_venta} en el rango actual`}
+                          style={{ background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "left", display: "block", width: "100%" }}
+                        >
+                          <div className="mono" style={{ fontSize: 11, fontWeight: 700, color: "var(--cyan)", textDecoration: "underline", textDecorationColor: "transparent", transition: "text-decoration-color 0.15s" }}
+                               onMouseEnter={e => (e.currentTarget.style.textDecorationColor = "var(--cyan)")}
+                               onMouseLeave={e => (e.currentTarget.style.textDecorationColor = "transparent")}>
+                            {p.sku_venta}
+                          </div>
+                          <div style={{ fontSize: 10, color: "var(--txt3)", maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.nombre}</div>
+                          <div style={{ fontSize: 9, color: "var(--txt3)", marginTop: 2 }}>
+                            <span style={{ padding: "1px 5px", borderRadius: 3, background: p.canal === "Full" ? "var(--blueBg)" : p.canal === "Flex" ? "var(--cyanBg)" : "var(--bg3)", color: p.canal === "Full" ? "var(--blue)" : p.canal === "Flex" ? "var(--cyan)" : "var(--txt3)" }}>{p.canal}</span>
+                            {" · "}{p.orders} órdenes · {p.unidades} u
+                          </div>
+                        </button>
                       </td>
                       <td className="mono" style={{ textAlign: "right", padding: "10px 8px" }}>
                         <div style={{ fontSize: 13, fontWeight: 700 }}>{fmt(p.ingresos)}</div>
