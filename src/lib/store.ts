@@ -2352,6 +2352,12 @@ export async function duplicarPicking(id: string): Promise<{ newId: string | nul
       alternativos?: string[];
     }[];
   }
+  // En multi-posicion, las lineas comparten skuVenta y qtyVenta es el TOTAL
+  // repetido en cada linea (no dividido). componentes.unidades SI se divide
+  // entre posiciones. Agrupar correctamente:
+  //   - mandarFull = qtyVenta del PRIMERO (no sumar entre lineas del mismo skuVenta)
+  //   - componentes.unidadesFisicas = SUMA de unidades de todas las lineas del mismo skuVenta+skuOrigen
+  //   - unidadesPorPack = totalUnidadesComponente / mandarFull (ratio real)
   const envioMap = new Map<string, EnvioInput>();
   for (const l of source.lineas) {
     const skuVenta = l.skuVenta;
@@ -2359,45 +2365,38 @@ export async function duplicarPicking(id: string): Promise<{ newId: string | nul
     const qtyVenta = l.qtyVenta || l.qtyPedida || 0;
     if (qtyVenta <= 0) continue;
     if (!envioMap.has(skuVenta)) {
-      const compsPorOrigen = new Map<string, EnvioInput["componentes"][0]>();
-      for (const c of (l.componentes || [])) {
-        const prev = compsPorOrigen.get(c.skuOrigen);
-        if (prev) {
-          prev.unidadesFisicas += c.unidades || 0;
-        } else {
-          compsPorOrigen.set(c.skuOrigen, {
-            skuOrigen: c.skuOrigen,
-            nombreOrigen: c.nombre || c.skuOrigen,
-            unidadesPorPack: qtyVenta > 0 ? (c.unidades || 0) / qtyVenta : c.unidades || 0,
-            unidadesFisicas: c.unidades || 0,
-            alternativos: [],
-          });
-        }
-      }
       envioMap.set(skuVenta, {
         skuVenta,
         nombre: (l.componentes?.[0]?.nombre) || skuVenta,
-        mandarFull: qtyVenta,
+        mandarFull: qtyVenta,  // qtyVenta ya es el total, no se acumula
         tipo: tipoFull,
-        componentes: Array.from(compsPorOrigen.values()),
+        componentes: [],  // se llena abajo
       });
-    } else {
-      // Multi-posicion: sumar al existente
-      const existing = envioMap.get(skuVenta)!;
-      existing.mandarFull += qtyVenta;
-      for (const c of (l.componentes || [])) {
-        const prev = existing.componentes.find(cc => cc.skuOrigen === c.skuOrigen);
-        if (prev) prev.unidadesFisicas += c.unidades || 0;
-        else {
-          existing.componentes.push({
-            skuOrigen: c.skuOrigen,
-            nombreOrigen: c.nombre || c.skuOrigen,
-            unidadesPorPack: qtyVenta > 0 ? (c.unidades || 0) / qtyVenta : c.unidades || 0,
-            unidadesFisicas: c.unidades || 0,
-            alternativos: [],
-          });
-        }
+    }
+    const existing = envioMap.get(skuVenta)!;
+    // Acumular uds fisicas por componente (estas si se reparten entre posiciones)
+    for (const c of (l.componentes || [])) {
+      const prev = existing.componentes.find(cc => cc.skuOrigen === c.skuOrigen);
+      if (prev) {
+        prev.unidadesFisicas += c.unidades || 0;
+      } else {
+        existing.componentes.push({
+          skuOrigen: c.skuOrigen,
+          nombreOrigen: c.nombre || c.skuOrigen,
+          unidadesPorPack: 0, // placeholder, se calcula al final
+          unidadesFisicas: c.unidades || 0,
+          alternativos: [],
+        });
       }
+    }
+  }
+  // Recalcular unidadesPorPack: ratio real con las uds totales acumuladas
+  for (const envio of envioMap.values()) {
+    for (const c of envio.componentes) {
+      c.unidadesPorPack = envio.mandarFull > 0
+        ? Math.round(c.unidadesFisicas / envio.mandarFull)
+        : 1;
+      if (c.unidadesPorPack < 1) c.unidadesPorPack = 1; // fallback seguro
     }
   }
 
