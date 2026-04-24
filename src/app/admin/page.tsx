@@ -7653,14 +7653,14 @@ function Productos({ refresh }: { refresh: () => void }) {
     }
     return map;
   }, [mlItems]);
-  // Un producto es "descubierto sin validar" si fue creado automaticamente
-  // por syncStockFull y aun tiene defaults "Otro/Otros" o sin costo/categoria real.
-  // Senales: proveedor='Otro' O categoria='Otros' O cost=0 (y sin WAC).
+  // Un producto es "descubierto sin validar" cuando le falta info CRITICA
+  // (proveedor real o costo). Categoria='Otros' por si sola NO califica
+  // porque algunos SKUs son legitimamente fuera-de-giro (biblias, chocolates,
+  // termos, mates, etc.) y mantenerlos en "Otros" es la decision correcta.
   const esDescubierto = (p:Product) => {
     const sinProveedor = !p.prov || p.prov === "Otro" || p.prov === "";
-    const sinCategoria = !p.cat || p.cat === "Otros" || p.cat === "";
     const sinCosto = (p.cost || 0) === 0 && (p.costAvg || 0) === 0;
-    return sinProveedor || sinCategoria || sinCosto;
+    return sinProveedor || sinCosto;
   };
   const descubiertosCount = Object.values(s.products).filter(esDescubierto).length;
   const prods = Object.values(s.products).filter(p=>{
