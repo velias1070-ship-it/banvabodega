@@ -1862,10 +1862,14 @@ export async function autohealComposicionExtendido(
     return { inserted: 0, candidatos: 0, errores };
   }
 
+  // Incluye items con sku_venta=null (comun cuando el seller no asigno
+  // sku_venta explicito — el autoheal asume que sku_venta=sku en ese caso).
+  // Antes exigia r.sku && r.sku_venta && r.sku === r.sku_venta lo que excluia
+  // silenciosamente ~115 items (18% de los activos) cuyo sku_venta era null.
   const skusActivos = Array.from(new Set(
     (allActive || [])
       .filter((r: { sku: string | null; sku_venta: string | null }) =>
-        r.sku && r.sku_venta && r.sku === r.sku_venta)
+        !!r.sku && (!r.sku_venta || r.sku_venta === r.sku))
       .map((r: { sku: string }) => r.sku),
   ));
   if (skusActivos.length === 0) return { inserted: 0, candidatos: 0, errores };
