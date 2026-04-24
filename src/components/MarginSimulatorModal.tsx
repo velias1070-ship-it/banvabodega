@@ -87,6 +87,48 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
   const [promos, setPromos] = useState<NormalizedPromo[]>([]);
   const [promosLoaded, setPromosLoaded] = useState(false);
   const [promosLoading, setPromosLoading] = useState(false);
+
+  // Cache local de rangos por promo. ML no devuelve min/max/suggested cuando
+  // una promo esta APLICADA al item (status=started con el item adentro).
+  // Si antes la vimos como candidate y guardamos su rango, lo usamos como
+  // fallback al renderizar. Key: item_id:promo_type:promo_id
+  const rangeCacheKey = useCallback((p: NormalizedPromo) => {
+    return `mgn_range:${item.item_id}:${p.type}:${p.id || "_"}`;
+  }, [item.item_id]);
+
+  // Enriquece una lista de promos con rangos guardados previamente si
+  // ML vino sin ellos. Tambien persiste los que SI vienen para usos futuros.
+  const enrichWithCachedRanges = useCallback((input: NormalizedPromo[]): NormalizedPromo[] => {
+    if (typeof window === "undefined") return input;
+    return input.map(p => {
+      const key = rangeCacheKey(p);
+      if (p.min_price > 0 || p.max_price > 0 || p.suggested_price > 0) {
+        // ML lo da: persistir para futuros renders cuando no venga
+        try {
+          localStorage.setItem(key, JSON.stringify({
+            min: p.min_price, max: p.max_price, suggested: p.suggested_price,
+            original: p.original_price, savedAt: Date.now(),
+          }));
+        } catch { /* storage lleno u off */ }
+        return p;
+      }
+      // ML no lo dio: buscar en cache
+      try {
+        const raw = localStorage.getItem(key);
+        if (!raw) return p;
+        const cached = JSON.parse(raw) as { min?: number; max?: number; suggested?: number; original?: number; savedAt?: number };
+        // Ignorar si el cache tiene > 30 dias (data muy vieja)
+        if (cached.savedAt && Date.now() - cached.savedAt > 30 * 86400_000) return p;
+        return {
+          ...p,
+          min_price: p.min_price || cached.min || 0,
+          max_price: p.max_price || cached.max || 0,
+          suggested_price: p.suggested_price || cached.suggested || 0,
+          original_price: p.original_price || cached.original || 0,
+        };
+      } catch { return p; }
+    });
+  }, [rangeCacheKey]);
   const [promoAction, setPromoAction] = useState<string | null>(null); // id de la promo en acción
 
   // Historial de acciones (postulaciones, salidas, cambios de precio)
@@ -161,12 +203,12 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
       const res = await fetch(`/api/ml/item-promotions?item_id=${item.item_id}&_=${Date.now()}`, { cache: "no-store" });
       const data = await res.json();
       if (res.ok && Array.isArray(data.promotions)) {
-        setPromos(data.promotions);
+        setPromos(enrichWithCachedRanges(data.promotions));
         setPromosLoaded(true);
       }
     } catch { /* silent */ }
     setPromosLoading(false);
-  }, [item.item_id]);
+  }, [item.item_id, enrichWithCachedRanges]);
 
   // Re-fetch con retries porque ML tarda 3-10s en propagar cambios en
   // seller-promotions tras POST/DELETE. Si pasamos expectedPrice, reintenta
@@ -180,7 +222,7 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
         const res = await fetch(`/api/ml/item-promotions?item_id=${item.item_id}&_=${Date.now()}`, { cache: "no-store" });
         const data = await res.json();
         if (res.ok && Array.isArray(data.promotions)) {
-          setPromos(data.promotions);
+          setPromos(enrichWithCachedRanges(data.promotions));
           setPromosLoaded(true);
           if (!expectedPrice) return;
           const activa = (data.promotions as NormalizedPromo[]).find(p => p.activa && p.price_actual > 0);
@@ -188,7 +230,7 @@ export default function MarginSimulatorModal({ item, onClose, onApplied }: Props
         }
       } catch { /* silent, sigue al siguiente intento */ }
     }
-  }, [item.item_id]);
+  }, [item.item_id, enrichWithCachedRanges]);
 
   useEffect(() => { loadPromos(); }, [loadPromos]);
 
