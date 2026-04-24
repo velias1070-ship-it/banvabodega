@@ -7654,6 +7654,7 @@ function ProductoBadges({ sku }: { sku: string }) {
 }
 
 function Productos({ refresh }: { refresh: () => void }) {
+  const [productosTab, setProductosTab] = useState<"productos"|"composiciones">("productos");
   const [showAdd, setShowAdd] = useState(false);
   const [editSku, setEditSku] = useState<string|null>(null);
   const [q, setQ] = useState("");
@@ -7661,6 +7662,18 @@ function Productos({ refresh }: { refresh: () => void }) {
   const [filtroDescubiertos, setFiltroDescubiertos] = useState(false);
   const [mlItems, setMlItems] = useState<DBMLItemMap[]>([]);
   const s = getStore();
+  // Para tab Composiciones: lista cruzada productos × composiciones desde el store
+  const skusVenta = getSkusVenta();
+  const allProducts = Object.values(s.products);
+  const [compSearch, setCompSearch] = useState("");
+  const compSearchUpper = compSearch.toUpperCase().trim();
+  const filteredComposicion = compSearchUpper
+    ? skusVenta.filter(sv =>
+        sv.skuVenta.toUpperCase().includes(compSearchUpper) ||
+        sv.codigoMl.toUpperCase().includes(compSearchUpper) ||
+        sv.componentes.some(c => c.skuOrigen.toUpperCase().includes(compSearchUpper))
+      )
+    : skusVenta;
 
   // Cargar ml_items_map para mostrar capa ML en detalle de producto
   useEffect(() => { fetchMLItemsMap().then(setMlItems); }, []);
@@ -7694,13 +7707,33 @@ function Productos({ refresh }: { refresh: () => void }) {
   }).sort((a,b)=>a.sku.localeCompare(b.sku));
 
   const [form, setForm] = useState<Partial<Product>>({sku:"",name:"",mlCode:"",cat:getCategorias()[0],prov:getProveedores()[0],cost:0,price:0,reorder:20,tamano:"",color:"",innerPack:1});
-  const startEdit=(p:Product)=>{setForm({...p});setEditSku(p.sku);setShowAdd(true);};
-  const startAdd=()=>{setForm({sku:"",name:"",mlCode:"",cat:getCategorias()[0],prov:getProveedores()[0],cost:0,price:0,reorder:20,tamano:"",color:"",innerPack:1});setEditSku(null);setShowAdd(true);};
-  const save=()=>{
+  // Default: al crear un SKU nuevo, asumimos que se vende como unidad simple
+  // (sku_venta = sku_origen, unidades = 1). Cubre el 90% de casos. Para packs,
+  // desactivar y crear la composicion manualmente desde el tab "Composiciones".
+  const [autoComposicionTrivial, setAutoComposicionTrivial] = useState(true);
+  const startEdit=(p:Product)=>{setForm({...p});setEditSku(p.sku);setShowAdd(true);setAutoComposicionTrivial(false);};
+  const startAdd=()=>{setForm({sku:"",name:"",mlCode:"",cat:getCategorias()[0],prov:getProveedores()[0],cost:0,price:0,reorder:20,tamano:"",color:"",innerPack:1});setEditSku(null);setShowAdd(true);setAutoComposicionTrivial(true);};
+  const save=async()=>{
     if(!form.sku||!form.name)return;
     const sku=form.sku.toUpperCase();
+    const isNew = !s.products[sku];
     s.products[sku]={sku,skuVenta:"",name:form.name!,mlCode:form.mlCode||"",cat:form.cat||"Otros",prov:form.prov||"Otro",cost:form.cost||0,costAvg:s.products[sku]?.costAvg||form.cost||0,price:form.price||0,reorder:form.reorder||20,estadoSku:form.estadoSku||null,tamano:form.tamano||"",color:form.color||"",innerPack:form.innerPack??1};
-    saveStore();setShowAdd(false);setEditSku(null);refresh();
+    saveStore();
+    // Si es nuevo y el checkbox esta activo, crear composicion trivial
+    // (sku_venta=sku_origen, unidades=1) para que aparezca en App Etiquetas y
+    // el motor de inteligencia lo asocie con sus ventas ML.
+    if (isNew && autoComposicionTrivial) {
+      try {
+        const sb = getSupabase();
+        if (sb) {
+          await sb.from("composicion_venta").upsert({
+            sku_venta: sku, sku_origen: sku, unidades: 1,
+            codigo_ml: form.mlCode || "", tipo_relacion: "componente",
+          }, { onConflict: "sku_venta,sku_origen" });
+        }
+      } catch (e) { console.error("[productos] auto-comp trivial:", e); }
+    }
+    setShowAdd(false);setEditSku(null);refresh();
   };
   const remove=(sku:string)=>{
     const stock = skuTotal(sku);
@@ -7717,6 +7750,26 @@ function Productos({ refresh }: { refresh: () => void }) {
 
   return(
     <div>
+      {/* Sub-tabs Productos vs Composiciones */}
+      <div style={{display:"flex",gap:6,marginBottom:12}}>
+        {([
+          ["productos","Productos","🏷️",`${Object.keys(s.products).length}`],
+          ["composiciones","Composiciones (packs)","🔗",`${skusVenta.length}`],
+        ] as const).map(([key,label,icon,count])=>(
+          <button key={key} onClick={()=>setProductosTab(key as "productos"|"composiciones")}
+            style={{padding:"8px 16px",borderRadius:8,background:productosTab===key?"var(--cyan)":"var(--bg3)",
+              color:productosTab===key?"#fff":"var(--txt2)",fontWeight:productosTab===key?700:500,fontSize:13,
+              border:productosTab===key?"none":"1px solid var(--bg4)",cursor:"pointer"}}>
+            {icon} {label} <span style={{opacity:0.7,marginLeft:4,fontSize:11}}>({count})</span>
+          </button>
+        ))}
+      </div>
+
+      {productosTab === "composiciones" && (
+        <ComposicionEditor allProducts={allProducts} filteredComposicion={filteredComposicion} search={compSearch} setSearch={setCompSearch}/>
+      )}
+
+      {productosTab === "productos" && (<>
       <div className="card">
         {descubiertosCount > 0 && !filtroDescubiertos && (
           <div style={{padding:"10px 14px",background:"var(--amberBg)",border:"1px solid var(--amberBd)",borderRadius:8,marginBottom:10,display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap"}}>
@@ -7785,6 +7838,20 @@ function Productos({ refresh }: { refresh: () => void }) {
               )}
             </div>
           </div>
+          {!editSku && (
+            <div style={{marginTop:12,padding:"10px 12px",background:"var(--cyanBg)",borderRadius:8,border:"1px solid var(--cyanBd)"}}>
+              <label style={{display:"flex",alignItems:"flex-start",gap:8,cursor:"pointer"}}>
+                <input type="checkbox" checked={autoComposicionTrivial} onChange={e=>setAutoComposicionTrivial(e.target.checked)} style={{marginTop:2,accentColor:"var(--cyan)"}}/>
+                <div>
+                  <div style={{fontSize:12,fontWeight:600,color:"var(--cyan)"}}>También vender como unidad simple en MercadoLibre</div>
+                  <div style={{fontSize:10,color:"var(--txt3)",marginTop:2,lineHeight:1.4}}>
+                    Crea automáticamente la composición trivial (1 SKU venta = este SKU origen × 1 unidad). Necesario para que aparezca en App Etiquetas y el motor lo asocie con sus ventas ML.
+                    Desactivá si este producto solo se vende como componente de packs (no como unidad).
+                  </div>
+                </div>
+              </label>
+            </div>
+          )}
           <div style={{display:"flex",gap:8,marginTop:12}}>
             <button onClick={()=>{setShowAdd(false);setEditSku(null);}} style={{flex:1,padding:10,borderRadius:8,background:"var(--bg3)",color:"var(--txt3)",fontWeight:600,border:"1px solid var(--bg4)"}}>Cancelar</button>
             <button onClick={save} disabled={!form.sku||!form.name} style={{flex:2,padding:10,borderRadius:8,background:"var(--green)",color:"#fff",fontWeight:700}}>Guardar</button>
@@ -7914,6 +7981,7 @@ function Productos({ refresh }: { refresh: () => void }) {
           </div>);
         })}
       </div>
+      </>)}
     </div>
   );
 }
@@ -11895,7 +11963,7 @@ function Configuracion({ refresh, initialSubTab, currentUser }: { refresh: () =>
         {(() => {
           const baseTabs: Array<[string, string, string]> = [
             ["por_atender","Por Atender","🔔"],["general","General","⚙️"],["ml","MercadoLibre","🛒"],
-            ["diccionario","Diccionario","📖"],["posiciones","Posiciones","📍"],["mapa","Mapa Bodega","🗺️"],
+            ["posiciones","Posiciones","📍"],["mapa","Mapa Bodega","🗺️"],
             ["etiquetas","Etiquetas","🖨️"],["carga_stock","Carga Stock","📥"],["conteos","Conteo Cíclico","📋"],
             ["conciliador","Conciliador","🏦"],
           ];
@@ -11911,7 +11979,9 @@ function Configuracion({ refresh, initialSubTab, currentUser }: { refresh: () =>
       {configTab==="por_atender"&&<PorAtender refresh={refresh}/>}
       {configTab==="usuarios"&&currentUser&&canManageUsers(currentUser)&&<AdminUsuarios currentUserId={currentUser.id}/>}
       {configTab==="ml"&&<ConfigML/>}
-      {configTab==="diccionario"&&<DiccionarioConfig/>}
+      {/* configTab==="diccionario": tab eliminado. Composiciones se editan en
+          Inventario → Productos → tab "Composiciones". DiccionarioConfig sigue
+          exportada por compat por si hay deep-links viejos. */}
       {configTab==="posiciones"&&<Posiciones refresh={refresh}/>}
       {configTab==="etiquetas"&&<AdminEtiquetas/>}
       {configTab==="carga_stock"&&<CargaStock refresh={refresh}/>}
