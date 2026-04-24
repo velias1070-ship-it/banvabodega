@@ -300,7 +300,10 @@ export default function AdminPage() {
           <button onClick={auth.logout} style={{padding:"6px 14px",borderRadius:6,background:"var(--bg3)",color:"var(--red)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>Cerrar sesión</button>
         </div>
       </div>
-      <SheetSync onSynced={r}/>
+      {/* <SheetSync onSynced={r}/> — DESACTIVADO 2026-04-24: BANVA es ahora la fuente de verdad
+          del diccionario (productos + composicion_venta). El Google Sheet queda como backup
+          read-only. Reactivar solo si hay rollback necesario. Eliminar definitivamente despues
+          de 1-2 semanas de operacion estable. */}
       <div className="admin-layout">
         <nav className="admin-sidebar">
           {/* Dashboard — always visible si tiene permiso */}

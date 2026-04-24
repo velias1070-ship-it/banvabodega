@@ -63,7 +63,7 @@ export default function OperadorPage() {
           </Link>
         </div>
       </div>
-      <SheetSync onSynced={r}/>
+      {/* <SheetSync onSynced={r}/> — DESACTIVADO 2026-04-24: ver nota en admin/page.tsx */}
       <div style={{padding:12}}>
         {screen === "menu" && <MainMenu onSelect={setScreen}/>}
         {screen === "in" && <Ingreso refresh={r}/>}
