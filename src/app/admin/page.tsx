@@ -5716,6 +5716,7 @@ function Inventario() {
   const [q, setQ] = useState("");
   const [expanded, setExpanded] = useState<string|null>(null);
   const [selectedSku, setSelectedSku] = useState<string|null>(null);
+  const [mlRefresh, setMlRefresh] = useState(0);
   const [viewMode, setViewMode] = useState<"fisico"|"ml">("fisico");
   const [soloSinEtiquetar, setSoloSinEtiquetar] = useState(false);
   const [soloComprometidos, setSoloComprometidos] = useState(false);
@@ -5834,7 +5835,7 @@ function Inventario() {
       }
     })();
     return () => { cancelled = true; };
-  }, [selectedSku]);
+  }, [selectedSku, mlRefresh]);
 
   // Physical stock view (also search by sku_venta via composicion)
   // Include all products (even with 0 stock) + any SKUs in stock not in products
@@ -6329,6 +6330,8 @@ function Inventario() {
                         const ventas = getVentasPorSkuOrigen(sku);
                         if (ventas.length > 0) dbMod.enqueueAndSync(ventas.map(v=>v.skuVenta));
                         refresh();
+                        // Re-fetch stock_flex_cache + stock_full_cache ~3s despues (tiempo tipico del /api/ml/stock-sync)
+                        setTimeout(() => setMlRefresh(n => n + 1), 3000);
                       }}
                       style={{flex:1,padding:"8px 10px",borderRadius:6,fontSize:11,fontWeight:700,cursor:"pointer",
                         background:active?color:"var(--bg2)",color:active?"#000":"var(--txt2)",
