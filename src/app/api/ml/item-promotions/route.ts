@@ -77,16 +77,32 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const raw = await mlGet<RawPromo[]>(`/seller-promotions/items/${itemId}?app_version=v2`);
+    // Traer promos + precio real del item en paralelo. El precio real es
+    // necesario para distinguir la promo "realmente aplicada" de las que ML
+    // devuelve con status=started solo porque la campaña global esta corriendo
+    // (pero el item no esta suscrito).
+    const [raw, itemData] = await Promise.all([
+      mlGet<RawPromo[]>(`/seller-promotions/items/${itemId}?app_version=v2`),
+      mlGet<{ id: string; price: number; original_price?: number }>(`/items/${itemId}?attributes=id,price,original_price`),
+    ]);
     if (!Array.isArray(raw)) {
       return NextResponse.json({ promotions: [] });
     }
+    const precioRealItem = itemData?.price || 0;
 
     const normalized: NormalizedPromo[] = raw.map(p => {
       const type = (p.type || "").toUpperCase();
       const status = (p.status || "").toLowerCase();
       const meliPct = p.meli_percentage ?? p.benefits?.meli_percentage ?? 0;
       const sellerPct = p.seller_percentage ?? p.benefits?.seller_percentage ?? 0;
+      const priceActual = p.price ?? 0;
+      // "Activa" = el item esta realmente participando en esta promo.
+      // Criterio: status=started Y el price_actual de la promo coincide con el
+      // precio actual del item en ML (tolerancia de $2 por redondeos).
+      // Antes era solo status=started, pero ML devuelve multiples promos con
+      // ese status (la aplicada + campañas globales donde el item es candidato).
+      const matchesItemPrice = priceActual > 0 && precioRealItem > 0 &&
+        Math.abs(priceActual - precioRealItem) <= 2;
       return {
         id: p.id ?? null,
         type,
@@ -96,7 +112,7 @@ export async function GET(req: NextRequest) {
         offer_type: p.offer_type ?? null,
         start_date: p.start_date ?? null,
         finish_date: p.finish_date ?? null,
-        price_actual: p.price ?? 0,
+        price_actual: priceActual,
         original_price: p.original_price ?? 0,
         suggested_price: p.suggested_discounted_price ?? 0,
         min_price: p.min_discounted_price ?? 0,
@@ -105,8 +121,9 @@ export async function GET(req: NextRequest) {
         meli_pct: meliPct,
         seller_pct: sellerPct,
         deal_id: p.deal_id ?? null,
-        activa: status === "started",
-        postulable: status === "candidate" || status === "pending",
+        activa: status === "started" && matchesItemPrice,
+        postulable: status === "candidate" || status === "pending" ||
+          (status === "started" && !matchesItemPrice), // started pero no aplicada = postulable
         permite_custom_price: PROMO_TYPES_CUSTOM_PRICE.has(type),
       };
     });

@@ -277,15 +277,18 @@ async function handleRefresh(req: NextRequest) {
     try {
       const sellerId = (await sb.from("ml_config").select("seller_id").eq("id", "main").limit(1)).data?.[0]?.seller_id;
       if (sellerId) {
-        const [shipFree, promos, feePct] = await Promise.all([
+        const [shipFree, promos, feePct, itemDetail] = await Promise.all([
           mlGet<ShipFree>(`/users/${sellerId}/shipping_options/free?item_id=${row.item_id}`),
           mlGet<PromoInfo[]>(`/seller-promotions/items/${row.item_id}?app_version=v2`),
           categoryId ? getFeePct(categoryId, listingType, priceList || 20000) : Promise.resolve(0),
+          mlGet<{ id: string; price: number }>(`/items/${row.item_id}?attributes=id,price`),
         ]);
         if (shipFree?.coverage?.all_country) {
           pesoFacturable = shipFree.coverage.all_country.billable_weight || 0;
         }
         comisionPct = feePct;
+        // Precio actual del item en ML (incluye promo aplicada si hay)
+        const priceEnML = itemDetail?.price || 0;
         if (Array.isArray(promos)) {
           // Antes de buscar la promo activa, corregir priceList usando el
           // original_price que ML reporta. Si el valor guardado en ml_items_map
@@ -295,9 +298,21 @@ async function handleRefresh(req: NextRequest) {
             priceList = maxOriginal;
           }
 
-          const activa = promos
-            .filter(p => p.status === "started" && p.price > 0)
-            .sort((a, b) => a.price - b.price)[0];
+          // Identificar la promo REALMENTE aplicada: debe tener status=started
+          // Y su price debe coincidir con el precio actual del item en ML.
+          // Antes se elegia la de menor precio, lo cual confundia promos donde
+          // el item era candidato (status=started pero no postulado) con la
+          // realmente aplicada. Bug detectado 2026-04-24 (Oferta Banva Abril
+          // vs Dia de la Mama 2026 en JSCNAE192P15W).
+          const startedConPrecio = promos.filter(p => p.status === "started" && p.price > 0);
+          let activa: PromoInfo | undefined = priceEnML > 0
+            ? startedConPrecio.find(p => Math.abs(p.price - priceEnML) <= 2)
+            : undefined;
+          // Fallback: si no encontramos match por precio exacto, usar la de
+          // menor precio (comportamiento viejo) pero es señal de desalineo.
+          if (!activa && startedConPrecio.length > 0) {
+            activa = startedConPrecio.sort((a, b) => a.price - b.price)[0];
+          }
           if (activa) {
             tienePromo = true;
             precioVenta = activa.price;
