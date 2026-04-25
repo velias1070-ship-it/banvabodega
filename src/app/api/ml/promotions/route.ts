@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { mlGet } from "@/lib/ml";
+import { mlGet, logPriceChange } from "@/lib/ml";
 import { getServerSupabase } from "@/lib/supabase-server";
 
 export const maxDuration = 120;
@@ -312,6 +312,13 @@ export async function POST(req: NextRequest) {
       const priceTolerance = Math.max(200, Math.round(deal_price * 0.02));
       if (deal_price && appliedPrice && Math.abs(appliedPrice - deal_price) > priceTolerance) {
         await logAction("ml_promo:join", { promotion_id, promotion_type, deal_price_requested: deal_price, deal_price_applied: appliedPrice, overridden: true });
+        await logPriceChange({
+          item_id, sku: prevSku,
+          precio: appliedPrice, precio_anterior: prevPrice,
+          promo_name: promotion_id || promotion_type, fuente: "promo_join",
+          ejecutado_por: "admin_ui",
+          contexto: { promotion_type, promotion_id, deal_price_requested: deal_price, overridden: true },
+        });
         return NextResponse.json({
           ok: true,
           result: data,
@@ -324,6 +331,15 @@ export async function POST(req: NextRequest) {
         });
       }
       await logAction("ml_promo:join", { promotion_id, promotion_type, deal_price, deal_price_applied: appliedPrice });
+      if (appliedPrice) {
+        await logPriceChange({
+          item_id, sku: prevSku,
+          precio: appliedPrice, precio_anterior: prevPrice,
+          promo_name: promotion_id || promotion_type, fuente: "promo_join",
+          ejecutado_por: "admin_ui",
+          contexto: { promotion_type, promotion_id, deal_price_requested: deal_price },
+        });
+      }
       return NextResponse.json({ ok: true, result: data });
     }
 
@@ -343,6 +359,20 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: errMsg, detail: data }, { status: resp.status });
       }
       await logAction("ml_promo:delete", { promotion_id: delId, promotion_type: delType });
+      // Tras el delete el precio publicado vuelve al listado. ML no devuelve
+      // el nuevo precio en el body; el cron de margin-cache/refresh lo va a
+      // capturar como sync_diff dentro de 2min, pero igual dejamos un marker
+      // explicito (precio=null en la tabla no es valido, asi que solo logeamos
+      // si ML devolvio algo en data.price post-delete).
+      const postDeletePrice = (data as { price?: number }).price;
+      if (postDeletePrice) {
+        await logPriceChange({
+          item_id, sku: prevSku,
+          precio: postDeletePrice, precio_anterior: prevPrice,
+          fuente: "promo_delete", ejecutado_por: "admin_ui",
+          contexto: { promotion_type: delType, promotion_id: delId },
+        });
+      }
       return NextResponse.json({ ok: true, result: data });
     }
 

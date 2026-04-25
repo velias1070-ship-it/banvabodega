@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { mlPut } from "@/lib/ml";
+import { mlPut, logPriceChange } from "@/lib/ml";
 import { getServerSupabase } from "@/lib/supabase-server";
 
 /**
@@ -53,6 +53,21 @@ export async function PUT(req: NextRequest) {
         },
       });
       if (logErr) console.error(`[item_update_log] insert failed for ${item_id}: ${logErr.message}`);
+
+      // Si el update incluyo cambio de precio, dejar rastro en ml_price_history
+      // para que el repricer/cooldown/leakage lo vea. Precondicion del repricer
+      // segun BANVA_Pricing_Investigacion_Comparada §6.4.
+      if (typeof updates.price === "number" && result.price) {
+        await logPriceChange({
+          item_id,
+          sku: prevRow?.sku || null,
+          precio: result.price,
+          precio_anterior: prevRow?.price ?? null,
+          fuente: "item_update_api",
+          ejecutado_por: "admin_ui",
+          contexto: { updates, result_status: result.status },
+        });
+      }
     }
 
     return NextResponse.json({ item: result });

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { mlGet } from "@/lib/ml";
+import { mlGet, logPriceChange } from "@/lib/ml";
 import { getServerSupabase } from "@/lib/supabase-server";
 import { calcularCostoEnvioML, columnaPorPrecio, tramoPorPeso } from "@/lib/ml-shipping";
 
@@ -391,6 +391,28 @@ async function handleRefresh(req: NextRequest) {
     new Map(cacheRows.map(r => [r.item_id as string, r])).values()
   );
 
+  // Snapshot de precios previos para detectar cambios externos (promo aplicada
+  // por ML, dynamic pricing, edicion manual desde web ML). Se loguean en
+  // ml_price_history con fuente='sync_diff'. Precondicion del repricer
+  // competitivo (BANVA_Pricing_Investigacion_Comparada §6.4).
+  const itemIdsToCheck = uniqueCacheRows.map(r => r.item_id as string);
+  const prevByItemId = new Map<string, { precio_venta: number | null; price_ml: number | null }>();
+  const skuOrigenByItemId = new Map<string, string | null>();
+  if (itemIdsToCheck.length > 0) {
+    const [{ data: prevRows }, { data: mapRows }] = await Promise.all([
+      sb.from("ml_margin_cache").select("item_id, precio_venta, price_ml").in("item_id", itemIdsToCheck),
+      sb.from("ml_items_map").select("item_id, sku_origen").in("item_id", itemIdsToCheck),
+    ]);
+    for (const r of (prevRows || []) as { item_id: string; precio_venta: number | null; price_ml: number | null }[]) {
+      prevByItemId.set(r.item_id, { precio_venta: r.precio_venta, price_ml: r.price_ml });
+    }
+    for (const r of (mapRows || []) as { item_id: string; sku_origen: string | null }[]) {
+      if (!skuOrigenByItemId.has(r.item_id)) skuOrigenByItemId.set(r.item_id, r.sku_origen);
+    }
+  }
+
+  const priceChangesDetected: Array<{ item_id: string; precio_anterior: number | null; precio_nuevo: number }> = [];
+
   if (uniqueCacheRows.length > 0) {
     // Upsert 1 por 1 para evitar cualquier interacción extraña con la PK
     for (const cr of uniqueCacheRows) {
@@ -401,6 +423,27 @@ async function handleRefresh(req: NextRequest) {
           failed_item: cr.item_id,
           processed: offset,
         }, { status: 500 });
+      }
+      // Detectar cambio de precio publicado vs snapshot previo.
+      const itemId = cr.item_id as string;
+      const prev = prevByItemId.get(itemId);
+      const precioNuevo = Number(cr.precio_venta) || 0;
+      const precioAnterior = prev?.precio_venta ?? null;
+      if (precioNuevo > 0 && precioAnterior != null && precioAnterior !== precioNuevo) {
+        priceChangesDetected.push({ item_id: itemId, precio_anterior: precioAnterior, precio_nuevo: precioNuevo });
+        await logPriceChange({
+          item_id: itemId,
+          sku: (cr.sku as string) || null,
+          sku_origen: skuOrigenByItemId.get(itemId) ?? null,
+          precio: precioNuevo,
+          precio_anterior: precioAnterior,
+          precio_lista: Number(cr.price_ml) || null,
+          promo_pct: (cr.promo_pct as number) ?? null,
+          promo_name: (cr.promo_name as string) ?? null,
+          fuente: "sync_diff",
+          ejecutado_por: "cron_margin_cache",
+          contexto: { tiene_promo: cr.tiene_promo === true, promo_type: cr.promo_type ?? null },
+        });
       }
     }
   }
@@ -413,5 +456,7 @@ async function handleRefresh(req: NextRequest) {
     chunk: rows.length,
     stale_mode: staleMode,
     done: isFocused ? true : processed >= (total || 0),
+    price_changes_detected: priceChangesDetected.length,
+    price_changes_sample: priceChangesDetected.slice(0, 5),
   });
 }

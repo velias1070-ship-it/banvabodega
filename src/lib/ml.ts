@@ -2646,6 +2646,62 @@ export async function syncStockByUserProductId(userProductId: string): Promise<s
   return skuVenta;
 }
 
+// ==================== ML PRICE HISTORY ====================
+// Append-only writer para ml_price_history (v73). Precondicion del repricer
+// competitivo segun BANVA_Pricing_Investigacion_Comparada §6.4 +
+// BANVA_Pricing_Ajuste_Plan §3 ("Automatizacion Acotada"). Sin esta serie
+// historica el cooldown anti-race-to-the-bottom y la regla 30-day-lowest
+// SERNAC son imposibles.
+//
+// Skip silencioso si precio === precio_anterior (no es cambio real). Los
+// snapshots forzados (cron diario) deben llamar pasando precio_anterior=null.
+
+export type MlPriceFuente =
+  | "sync_diff"
+  | "item_update_api"
+  | "promo_join"
+  | "promo_delete"
+  | "snapshot_diario"
+  | "manual_admin";
+
+export interface LogPriceChangeOpts {
+  item_id: string;
+  precio: number;
+  precio_anterior?: number | null;
+  precio_lista?: number | null;
+  promo_pct?: number | null;
+  promo_name?: string | null;
+  fuente: MlPriceFuente;
+  ejecutado_por?: string | null;
+  sku?: string | null;
+  sku_origen?: string | null;
+  contexto?: Record<string, unknown> | null;
+}
+
+export async function logPriceChange(opts: LogPriceChangeOpts): Promise<void> {
+  if (opts.precio_anterior != null && opts.precio === opts.precio_anterior) return;
+  const sb = getServerSupabase();
+  if (!sb) return;
+  const delta = opts.precio_anterior != null && opts.precio_anterior > 0
+    ? Number((((opts.precio - opts.precio_anterior) / opts.precio_anterior) * 100).toFixed(4))
+    : null;
+  const { error } = await sb.from("ml_price_history").insert({
+    item_id: opts.item_id,
+    sku: opts.sku ?? null,
+    sku_origen: opts.sku_origen ?? null,
+    precio: opts.precio,
+    precio_lista: opts.precio_lista ?? null,
+    promo_pct: opts.promo_pct ?? null,
+    promo_name: opts.promo_name ?? null,
+    precio_anterior: opts.precio_anterior ?? null,
+    delta_pct: delta,
+    fuente: opts.fuente,
+    ejecutado_por: opts.ejecutado_por ?? null,
+    contexto: opts.contexto ?? null,
+  });
+  if (error) console.error(`[ml_price_history] insert failed item=${opts.item_id} fuente=${opts.fuente}: ${error.message}`);
+}
+
 // ==================== OAUTH URL ====================
 
 export function getOAuthUrl(clientId: string, redirectUri: string): string {
