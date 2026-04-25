@@ -8,13 +8,23 @@
 
 ## 1. Findings de investigación previa
 
-### 1.1 Los 5 campos avanzados no están disponibles en `campaigns/search`
+### 1.1 Los 5 campos avanzados — bloqueados por tier de cuenta
 
-Probé `impression_share`, `top_impression_share`, `lost_impression_share_by_budget`, `lost_impression_share_by_ad_rank`, `lost_by_budget`, `lost_by_rank`, `acos_benchmark`, `benchmark_acos` uno por uno contra `/marketplace/advertising/MLC/advertisers/.../product_ads/campaigns/search` con `api-version: 2`. **Todos rechazados**. El comentario actual del código (`ml-metrics.ts:422-423`) es exacto, no obsoleto.
+Probados en **3 paths distintos** (2026-04-25):
 
-**Métricos confirmados como aceptados**: `clicks, prints, ctr, cost, cpc, acos, roas, cvr, sov, direct_amount, indirect_amount, total_amount, direct_units_quantity, indirect_units_quantity, units_quantity, organic_units_quantity, organic_units_amount, direct_items_quantity, indirect_items_quantity, organic_items_quantity`.
+| Path | Resultado |
+|---|---|
+| `/marketplace/advertising/MLC/advertisers/.../product_ads/campaigns/search` | 400 — todos los avanzados rechazados |
+| `/marketplace/advertising/MLC/advertisers/.../product_ads/items/{ITEM_ID}` | 404 — path no existe |
+| `/advertising/MLC/product_ads/items/{ITEM_ID}` (legacy) | 200 OK con SAFE; 400 con avanzados |
 
-**Decisión**: las columnas SQL se crean igual como `NULLABLE sin DEFAULT`. Si ML las habilita después (otro endpoint, otro tier), el cron las puebla sin tocar schema.
+El error del endpoint legacy es explícito: **`"Field IMPRESSION_SHARE not allowed at endpoint ads_single_search"`**. ML reconoce los campos como concepto pero los bloquea por endpoint. Es **tema de tier de cuenta**, no de path.
+
+**Acción paralela** (no bloquea este PR): abrir ticket con asesor comercial ML Ads para confirmar tier que habilita `impression_share, top_impression_share, lost_impression_share_by_budget, lost_impression_share_by_ad_rank, acos_benchmark`.
+
+**Métricos confirmados como aceptados** en `campaigns/search`: `clicks, prints, ctr, cost, cpc, acos, roas, cvr, sov, direct_amount, indirect_amount, total_amount, direct_units_quantity, indirect_units_quantity, units_quantity, organic_units_quantity, organic_units_amount, direct_items_quantity, indirect_items_quantity, organic_items_quantity`.
+
+**Decisión**: las columnas SQL se crean igual como `NULLABLE sin DEFAULT`. Cuando ML habilite el tier, el cron las puebla sin tocar schema.
 
 ### 1.2 Estrategia de granularidad daily
 
@@ -59,10 +69,13 @@ CREATE TABLE ml_campaigns_daily_cache (
   acos_real NUMERIC(8,4),
   acos_benchmark NUMERIC(8,4),  -- NULL hoy
   roas_real NUMERIC(8,4),
-  -- Unidades
+  -- Unidades (units = packs vendidos, items = SKUs distintos en cada pack)
   direct_units INTEGER,
   indirect_units INTEGER,
   organic_units INTEGER,
+  direct_items INTEGER,
+  indirect_items INTEGER,
+  organic_items INTEGER,
   organic_amount NUMERIC(12,2),
   -- Config snapshot del día (lo que tenía la campaña ese día)
   acos_target NUMERIC(8,4),
@@ -214,6 +227,9 @@ SELECT
   SUM(direct_units) AS direct_units,
   SUM(indirect_units) AS indirect_units,
   SUM(organic_units) AS organic_units,
+  SUM(direct_items) AS direct_items,
+  SUM(indirect_items) AS indirect_items,
+  SUM(organic_items) AS organic_items,
   -- ACOS y ROAS calculados desde totales (no AVG diario)
   CASE WHEN SUM(total_amount) > 0
        THEN SUM(cost)::NUMERIC / SUM(total_amount) * 100
@@ -248,7 +264,8 @@ GROUP BY campaign_id, TO_CHAR(date, 'YYYY-MM');
 
 | Archivo | Rol |
 |---|---|
-| `src/app/api/ml/campaigns-daily-sync/route.ts` | Endpoint cron del sync diario. Acepta `?action=backfill&date_from=&date_to=` para ejecución one-shot. Itera día por día. Al terminar escribe a `ml_sync_health.last_success_at`. |
+| `src/app/api/ml/campaigns-daily-sync/route.ts` | Endpoint cron del sync diario. Acepta `?action=backfill&date_from=&date_to=` para ejecución one-shot. Itera día por día. Al terminar escribe a `ml_sync_health.last_success_at`. **El modo backfill bypasea el early-return de 30min** (sino no se puede re-disparar para reprocesar un rango). |
+| `src/app/admin/.../OutboxMonitor.tsx` (componente, dentro del tab Config admin) | Dashboard simple: últimas 50 entradas de `notifications_outbox` con su `status, attempts, last_error, sent_at`. Permite monitorear que Viki esté drenando la cola sin tener que SSH al droplet. Filtros por status (pending/sent/failed). |
 | `src/app/api/ml/sync-health-check/route.ts` | Cron horario. Lee `ml_sync_health`, identifica jobs stale (`NOW() - last_success_at > staleness_threshold_hours`), inserta a `notifications_outbox` evitando duplicar (no emitir si `last_alert_sent_at < 6h` para no spamear). |
 | `src/lib/notifications.ts` | Helper `enqueueNotification(channel, destination, payload)` — INSERT a `notifications_outbox`. |
 
@@ -289,7 +306,21 @@ Coordinación con Viki: dejar entrada en `/home/vicente/.claude/inbox.md` cuando
 4. Agregar crons en `vercel.json`
 5. Coordinar con Viki: implementar poller del outbox
 
-### Fase 2 — Backfill (one-shot)
+### Fase 1.5 — Test E2E del bridge (gate antes de Fase 2)
+
+**Antes de hacer backfill ni depender del outbox para alertas reales**, validar que el bridge anda:
+
+```sql
+-- Insert manual de prueba
+INSERT INTO notifications_outbox (channel, destination, payload)
+VALUES ('whatsapp', '56991655931@s.whatsapp.net', '{"text":"Test E2E bridge — ignorar"}');
+```
+
+Criterio de éxito: el mensaje llega al WhatsApp del owner en **menos de 2 minutos** (1 min poll del droplet + entrega del plugin Baileys). Si no llega, debug Viki/poller antes de continuar.
+
+Con esta validación de 5 segundos descubrimos problemas del bridge antes de esperar 36h por la primera alerta real de stale.
+
+### Fase 2 — Backfill (one-shot, solo después de pasar Fase 1.5)
 
 `POST /api/ml/campaigns-daily-sync` con `{action: "backfill", date_from: "2026-01-01", date_to: "2026-04-25"}`. Esto puebla `ml_campaigns_daily_cache` con histórico 2026 completo.
 
@@ -305,15 +336,18 @@ Mientras corren ambos crons (mensual viejo + daily nuevo):
 
 - Dropear tabla `ml_campaigns_mensual`
 - Eliminar la lógica que escribía esa tabla en `ml-metrics.ts:447-488`
-- Documentar en regla nueva del `inventory-policy.md`: "Regla 7 — todo job recurrente debe registrar su estado en `ml_sync_health` y configurar threshold de staleness"
+
+**Regla 7 del `inventory-policy.md` se agrega después de validar 4-6 semanas**, no en este PR. Una regla nueva necesita evidencia de que el patrón funciona en producción, no solo de que se desplegó.
 
 ---
 
 ## 6. Checklist de aceptación
 
 - [ ] Migraciones v73-v77 aplicadas sin error
+- [ ] **Test E2E bridge (Fase 1.5)**: INSERT manual a `notifications_outbox` llega a WhatsApp en <2 min — gate antes de Fase 2
 - [ ] `campaigns-daily-sync` corre y popula `ml_campaigns_daily_cache` para los 5 campaigns
 - [ ] Backfill 2026 (1-ene a 25-abr) ejecutado sin duplicar rows (UPSERT idempotente con PK `(campaign_id, date)`)
+- [ ] `?action=backfill` bypasea el early-return de 30min para permitir reprocesar
 - [ ] Cambio manual en una campaña en ML aparece en `config_history` al siguiente sync
 - [ ] Vista `monthly_summary` coincide con `ml_campaigns_mensual` para marzo (±1%)
 - [ ] Health-check inserta a `notifications_outbox` cuando un job está stale
@@ -321,6 +355,7 @@ Mientras corren ambos crons (mensual viejo + daily nuevo):
 - [ ] Apagar cron 12h → recibir alerta WhatsApp dentro del threshold (36h - 12h iniciales = avisa en ~24h)
 - [ ] Re-correr backfill mismo día no duplica rows
 - [ ] `metrics-sync` mensual sigue funcionando intacto
+- [ ] Dashboard `OutboxMonitor` muestra últimas 50 entradas con filtro por status
 
 ---
 
@@ -331,7 +366,7 @@ Mientras corren ambos crons (mensual viejo + daily nuevo):
 | ML cambia el shape del response | Validación defensiva en el sync; si falla, escribe a `last_error` y no rompe el job |
 | Backfill consume rate limit | Spacing 500ms + UPSERT idempotente permite re-correr si se corta |
 | Viki está caído cuando llega un health alert crítico | Outbox queda con `status='pending'`. Cuando Viki vuelve, drena. Si la urgencia exige <5 min, no es el canal correcto — escalar a otro |
-| Tabla `notifications_outbox` crece sin límite | Cleanup cron en droplet o Vercel: `DELETE WHERE status='sent' AND sent_at < NOW() - INTERVAL '30 days'` |
+| Tabla `notifications_outbox` crece sin límite | Cleanup cron en droplet o Vercel: `DELETE WHERE status='sent' AND sent_at < NOW() - INTERVAL '90 days'`. Retención 90d para auditoría retroactiva ("qué alertas mandé el mes pasado") y detección de patrones de fallas. Storage es trivial. |
 | Vercel cron ejecuta 2× por race | UPSERT idempotente + lock optimista en el endpoint (early return si último sync <30min) |
 
 ---
