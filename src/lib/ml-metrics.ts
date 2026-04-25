@@ -1089,6 +1089,24 @@ export async function ejecutarFase(estado: SyncEstado): Promise<{
   let procesados = 0;
 
   try {
+    // Cadencias diferenciadas: pregunta a ml_sync_phases_config si la fase debe correr ahora.
+    // Si la fase no está en config (null) → run (compat hacia atrás).
+    // Si está y next_run_at > now → skip + avanzar a siguiente fase sin marcar progress.
+    // 'ads' no se gestiona por config (migrado a campaigns-daily-sync separado).
+    const { shouldRunPhase, markPhaseRun } = await import("./sync-phases-config");
+    const phaseGate = fase === "ads" ? null : await shouldRunPhase(fase);
+
+    if (phaseGate === false) {
+      console.log(`[ml-metrics] Skipping phase: ${fase} (cadencia config dice que no toca ahora)`);
+      const nextFaseSkip = siguienteFase(fase);
+      await updateSyncEstado({
+        fase: nextFaseSkip,
+        ultimo_item_idx: 0,
+        items_procesados: 0,
+      });
+      return { ok: true, fase_completada: fase, items_procesados: 0 };
+    }
+
     console.log(`[ml-metrics] Starting phase: ${fase} (${itemIds.length} items, idx=${estado.ultimo_item_idx})`);
 
     switch (fase) {
@@ -1115,6 +1133,11 @@ export async function ejecutarFase(estado: SyncEstado): Promise<{
         break;
       default:
         break;
+    }
+
+    // Marcar la fase como corrida (excepto ads que se gestiona aparte)
+    if (fase !== "ads" && phaseGate !== null) {
+      await markPhaseRun(fase, true);
     }
 
     const nextFase = siguienteFase(fase);
@@ -1152,6 +1175,13 @@ export async function ejecutarFase(estado: SyncEstado): Promise<{
         last_attempt_at: new Date().toISOString(),
         last_error: `${fase}: ${msg}`,
       }).eq("job_name", "metrics_monthly");
+    }
+    // Telemetría de error per-fase (excepto ads)
+    if (fase !== "ads") {
+      try {
+        const { markPhaseRun } = await import("./sync-phases-config");
+        await markPhaseRun(fase, false, msg);
+      } catch { /* no-op si import falla */ }
     }
     return { ok: false, fase_completada: fase, items_procesados: procesados, error: msg };
   }
