@@ -273,20 +273,39 @@ async function handleRefresh(req: NextRequest) {
     let promoPct: number | null = null;
     let promosPostulables: Array<{ name: string; type: string; id: string | null; min: number; max: number; suggested: number }> = [];
     let syncError: string | null = null;
+    // Flag de fetch de promos. Si es false (exception o null), NO confiamos en
+    // los defaults precioVenta=priceList/tienePromo=false — conservamos lo que
+    // habia en cache. Bug 2026-04-25: una falla transitoria del endpoint
+    // /seller-promotions hacia oscilar precio_venta entre con-promo y sin-promo
+    // y polucionaba ml_price_history con falsos sync_diff.
+    let promosFetchOk = false;
 
     try {
       const sellerId = (await sb.from("ml_config").select("seller_id").eq("id", "main").limit(1)).data?.[0]?.seller_id;
       if (sellerId) {
-        const [shipFree, promos, feePct] = await Promise.all([
+        const [shipFreeRes, promosRes, feePctRes] = await Promise.allSettled([
           mlGet<ShipFree>(`/users/${sellerId}/shipping_options/free?item_id=${row.item_id}`),
           mlGet<PromoInfo[]>(`/seller-promotions/items/${row.item_id}?app_version=v2`),
           categoryId ? getFeePct(categoryId, listingType, priceList || 20000) : Promise.resolve(0),
         ]);
+        const shipFree = shipFreeRes.status === "fulfilled" ? shipFreeRes.value : null;
+        const promos = promosRes.status === "fulfilled" ? promosRes.value : null;
+        const feePct = feePctRes.status === "fulfilled" ? feePctRes.value : 0;
+        if (shipFreeRes.status === "rejected") {
+          syncError = `shipFree: ${String(shipFreeRes.reason)}`;
+        }
+        if (promosRes.status === "rejected") {
+          syncError = (syncError ? syncError + " | " : "") + `promos: ${String(promosRes.reason)}`;
+        }
+        if (feePctRes.status === "rejected") {
+          syncError = (syncError ? syncError + " | " : "") + `feePct: ${String(feePctRes.reason)}`;
+        }
         if (shipFree?.coverage?.all_country) {
           pesoFacturable = shipFree.coverage.all_country.billable_weight || 0;
         }
         comisionPct = feePct;
         if (Array.isArray(promos)) {
+          promosFetchOk = true;
           // Antes de buscar la promo activa, corregir priceList usando el
           // original_price que ML reporta. Si el valor guardado en ml_items_map
           // venia con la promo aplicada, el original_price es el "lista real".
@@ -342,6 +361,13 @@ async function handleRefresh(req: NextRequest) {
               suggested: Math.round(p.suggested_discounted_price || 0),
             });
           }
+        } else if (promosRes.status === "rejected" || promos === null) {
+          // Promos fetch fallo: no confiamos en los defaults. Marcamos para que
+          // el bloque de upsert preserve el valor previo de precio_venta y
+          // promo_*. Sin esto, una falla transitoria del API ML pisa la cache
+          // y dispara falsos sync_diff (Regla 1 inventory-policy: no centinelas;
+          // promosFetchOk=false es el guard explicito).
+          if (!syncError) syncError = "promos_fetch_failed_or_null";
         }
       }
     } catch (e) {
@@ -356,6 +382,7 @@ async function handleRefresh(req: NextRequest) {
     const tramo = tramoPorPeso(pesoFacturable);
 
     cacheRows.push({
+      _promos_fetch_ok: promosFetchOk,
       item_id: row.item_id,
       sku: row.sku,
       titulo: row.titulo || "",
@@ -412,21 +439,55 @@ async function handleRefresh(req: NextRequest) {
   }
 
   const priceChangesDetected: Array<{ item_id: string; precio_anterior: number | null; precio_nuevo: number }> = [];
+  let promos_fetch_skipped = 0;
 
   if (uniqueCacheRows.length > 0) {
     // Upsert 1 por 1 para evitar cualquier interacción extraña con la PK
     for (const cr of uniqueCacheRows) {
-      const { error: upErr } = await sb.from("ml_margin_cache").upsert(cr, { onConflict: "item_id" });
+      const promosFetchOk = (cr as { _promos_fetch_ok?: boolean })._promos_fetch_ok === true;
+      // Strip flag interno antes de upsertear (no es columna de la tabla)
+      const crClean: Record<string, unknown> = { ...(cr as Record<string, unknown>) };
+      delete crClean._promos_fetch_ok;
+      // Si la fetch de promos fallo, NO sobrescribir precio_venta/promo_* en la
+      // cache: una falla transitoria no debe destruir el snapshot anterior.
+      // Construimos un payload reducido que conserva campos seguros y omite los
+      // contaminados (Regla 5 inventory-policy: no sobrescribir fuente canonica
+      // con datos derivados de respuesta parcial).
+      let payload: Record<string, unknown> = crClean;
+      if (!promosFetchOk) {
+        promos_fetch_skipped += 1;
+        payload = { ...crClean };
+        delete payload.precio_venta;
+        delete payload.tiene_promo;
+        delete payload.promo_type;
+        delete payload.promo_name;
+        delete payload.promo_pct;
+        delete payload.promos_postulables;
+        delete payload.price_ml;
+        delete payload.margen_clp;
+        delete payload.margen_pct;
+        delete payload.envio_clp;
+        delete payload.zona;
+      }
+      const itemId = cr.item_id as string;
+      const prev = prevByItemId.get(itemId);
+      // Si promos fallo Y el item NO existe en cache aun, NO upsertear (no
+      // queremos crear un row con datos parciales). Skip y log.
+      if (!promosFetchOk && !prev) {
+        console.warn(`[margin-cache] skip insert ${itemId}: promos fetch failed and no previous cache row`);
+        continue;
+      }
+      const { error: upErr } = await sb.from("ml_margin_cache").upsert(payload, { onConflict: "item_id" });
       if (upErr) {
         return NextResponse.json({
           error: upErr.message,
-          failed_item: cr.item_id,
+          failed_item: itemId,
           processed: offset,
         }, { status: 500 });
       }
-      // Detectar cambio de precio publicado vs snapshot previo.
-      const itemId = cr.item_id as string;
-      const prev = prevByItemId.get(itemId);
+      // Solo loguear sync_diff cuando confiamos en el dato. Un fetch fallido
+      // de promos NO califica para detectar cambio de precio.
+      if (!promosFetchOk) continue;
       const precioNuevo = Number(cr.precio_venta) || 0;
       const precioAnterior = prev?.precio_venta ?? null;
       if (precioNuevo > 0 && precioAnterior != null && precioAnterior !== precioNuevo) {
@@ -458,5 +519,6 @@ async function handleRefresh(req: NextRequest) {
     done: isFocused ? true : processed >= (total || 0),
     price_changes_detected: priceChangesDetected.length,
     price_changes_sample: priceChangesDetected.slice(0, 5),
+    promos_fetch_skipped,
   });
 }
