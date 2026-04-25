@@ -38,11 +38,15 @@ type SkuRow = {
   estado_sku: string | null;
   cuadrante: string | null;
   abc: string | null;
-  cubeta: string | null;
+  abc_ingreso: string | null;
+  abc_unidades: string | null;
+  xyz: string | null;
   vel_ponderada: number | null;
   stock_total: number | null;
   margen_full_30d: number | null;
   precio_actual: number | null;
+  dias_en_quiebre: number | null;
+  factor_rampup: number | null;
 };
 
 const POLITICAS = ["defender", "seguir", "exprimir", "liquidar"] as const;
@@ -291,8 +295,10 @@ export default function AdminPricingConfig() {
                 <th style={{ textAlign: "left" }}>Nombre</th>
                 <th>Cuadrante</th>
                 <th>ABC</th>
+                <th>XYZ</th>
                 <th>Vel/d</th>
                 <th>Stock</th>
+                <th title="Días en quiebre">Q</th>
                 <th>Costo prom.</th>
                 <th>Precio actual</th>
                 <th>Margen 30d</th>
@@ -317,8 +323,12 @@ export default function AdminPricingConfig() {
                       </span>
                     </td>
                     <td style={{ textAlign: "center", color: "var(--txt2)" }}>{s.abc || "—"}</td>
+                    <td style={{ textAlign: "center", color: "var(--txt2)" }}>{s.xyz || "—"}</td>
                     <td style={{ textAlign: "right", color: "var(--txt2)" }}>{s.vel_ponderada != null ? Number(s.vel_ponderada).toFixed(2) : "—"}</td>
                     <td style={{ textAlign: "right", color: "var(--txt2)" }}>{s.stock_total ?? "—"}</td>
+                    <td style={{ textAlign: "right", color: s.dias_en_quiebre && s.dias_en_quiebre > 0 ? "var(--red)" : "var(--txt3)" }}>
+                      {s.dias_en_quiebre && s.dias_en_quiebre > 0 ? `${s.dias_en_quiebre}d` : "—"}
+                    </td>
                     <td style={{ textAlign: "right" }}>{fmtCLP(s.costo_promedio)}</td>
                     <td style={{ textAlign: "right" }}>{fmtCLP(s.precio_actual)}</td>
                     <td style={{ textAlign: "right" }}>{fmtPct(s.margen_full_30d)}</td>
