@@ -75,6 +75,14 @@
     {
       "path": "/api/ml/activate-warehouse-all",
       "schedule": "15 * * * *"
+    },
+    {
+      "path": "/api/ml/campaigns-daily-sync",
+      "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/ml/sync-health-check",
+      "schedule": "0 * * * *"
     }
   ]
 }

@@ -352,7 +352,7 @@ Mientras corren ambos crons (mensual viejo + daily nuevo):
 - [ ] Vista `monthly_summary` coincide con `ml_campaigns_mensual` para marzo (±1%)
 - [ ] Health-check inserta a `notifications_outbox` cuando un job está stale
 - [ ] Poller del droplet entrega el mensaje de outbox al WhatsApp en <2 min
-- [ ] Apagar cron 12h → recibir alerta WhatsApp dentro del threshold (36h - 12h iniciales = avisa en ~24h)
+- [ ] Apagar cron 36h continuas → llega alerta WhatsApp (validar threshold de `campaigns_daily`)
 - [ ] Re-correr backfill mismo día no duplica rows
 - [ ] `metrics-sync` mensual sigue funcionando intacto
 - [ ] Dashboard `OutboxMonitor` muestra últimas 50 entradas con filtro por status
