@@ -11,23 +11,21 @@ export const dynamic = "force-dynamic";
 /**
  * POST /api/pricing/recalcular-floors
  *
- * Cron diario que recalcula productos.precio_piso_calculado para cada SKU
- * activo. Itera ml_margin_cache para encontrar el listing principal de cada
- * SKU (el de mas sold_quantity), aplica resolverPricingConfig + calcularFloor,
- * persiste resultado + inputs en JSONB para auditoria.
+ * Cron diario 11:30am que cubre los SKUs sin promos disponibles para evaluar
+ * (que el motor de auto-postular nunca evalua porque no tiene promos
+ * candidate). Para esos SKUs inserta una fila en auto_postulacion_log con
+ * decision='baseline_warming' para que la vista v_precio_piso_actual los
+ * cubra junto con los SKUs que sí tienen promos evaluadas.
  *
- * Manual: BANVA_Pricing_Investigacion_Comparada §6.2 (reglas deterministicas
- * en WMS) + Inv_P3 §10. Repricer interno (no Ajuste Auto ML) porque BANVA
- * tiene 0 SKUs con catalog_listing=true.
- *
- * Auth: Bearer CRON_SECRET (cron Vercel) o NODE_ENV=development (local).
+ * Manual: inventory-policy.md Regla 5 (no duplicar fuente). El floor lo
+ * calcula y persiste auto-postular cada vez que evalua una promo. Este cron
+ * solo cubre el gap (~262 SKUs sin promos disponibles hoy).
  */
 
 function isAuthorized(req: NextRequest): boolean {
   const authHeader = req.headers.get("authorization");
   const isVercelCron = authHeader === `Bearer ${process.env.CRON_SECRET}`;
   const isLocalDev = process.env.NODE_ENV === "development";
-  // Tambien permitir trigger manual desde admin (sin auth header) para tests
   const isManualTrigger = req.nextUrl.searchParams.get("manual") === "1";
   return isVercelCron || isLocalDev || isManualTrigger;
 }
@@ -46,7 +44,8 @@ export async function POST(req: NextRequest) {
     pisos_calculados: 0,
     skipped_sin_costo: 0,
     skipped_sin_listing: 0,
-    skipped_sin_intel: 0,
+    skipped_descontinuado: 0,
+    skipped_ya_evaluado_hoy: 0,
     errores: 0,
   };
   const muestra: Array<Record<string, unknown>> = [];
@@ -63,7 +62,19 @@ export async function POST(req: NextRequest) {
   }
   const defaultCuadrante = cuadrantesConfig.get("_DEFAULT") || null;
 
-  // 2. Productos activos con costo
+  // 2. SKUs ya evaluados hoy por auto-postular (skip para no duplicar)
+  const hoyISO = new Date().toISOString().slice(0, 10);
+  const skusEvaluadosHoy = new Set<string>();
+  {
+    const { data: logHoy } = await sb.from("auto_postulacion_log")
+      .select("sku")
+      .gte("fecha", hoyISO);
+    for (const r of (logHoy || []) as Array<{ sku: string }>) {
+      skusEvaluadosHoy.add(r.sku);
+    }
+  }
+
+  // 3. Productos activos
   const { data: prods, error: ePr } = await sb.from("productos")
     .select("sku, costo, costo_promedio, precio_piso, margen_minimo_pct, politica_pricing, es_kvi, auto_postular, estado_sku");
   if (ePr) return NextResponse.json({ error: ePr.message }, { status: 500 });
@@ -74,8 +85,7 @@ export async function POST(req: NextRequest) {
     estado_sku: string | null;
   }>;
 
-  // 3. ml_margin_cache (todos los listings activos) — agrupar por SKU,
-  //    elegir el listing con mayor stock_total (proxy de "principal").
+  // 4. ml_margin_cache (listing principal por SKU)
   const { data: cacheRows, error: eCache } = await sb.from("ml_margin_cache")
     .select("sku, item_id, status_ml, price_ml, precio_venta, costo_neto, peso_facturable, comision_pct, envio_clp, logistic_type, stock_total")
     .eq("status_ml", "active");
@@ -95,7 +105,7 @@ export async function POST(req: NextRequest) {
     if (!cur || stockNuevo > stockCur) principalBySku.set(r.sku, r);
   }
 
-  // 4. Cuadrante por SKU desde sku_intelligence
+  // 5. Cuadrante por SKU
   const cuadranteBySku = new Map<string, string | null>();
   {
     const { data: intel } = await sb.from("sku_intelligence")
@@ -105,11 +115,12 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // 5. Iterar productos y calcular floor
-  const updates: Array<{ sku: string; precio_piso_calculado: number; precio_piso_calculado_at: string; precio_piso_calculado_inputs: Record<string, unknown> }> = [];
+  // 6. Para cada SKU sin evaluacion hoy, calcular floor e insertar en log
+  const inserts: Array<Record<string, unknown>> = [];
   for (const p of productos) {
     stats.productos_evaluados++;
-    if (p.estado_sku === "descontinuado") continue;
+    if (p.estado_sku === "descontinuado") { stats.skipped_descontinuado++; continue; }
+    if (skusEvaluadosHoy.has(p.sku)) { stats.skipped_ya_evaluado_hoy++; continue; }
 
     const costoNeto = p.costo_promedio || p.costo || 0;
     if (costoNeto <= 0) { stats.skipped_sin_costo++; continue; }
@@ -134,46 +145,60 @@ export async function POST(req: NextRequest) {
     const canal: CanalLogistico = principal.logistic_type === "fulfillment" ? "full"
       : principal.logistic_type === "self_service" ? "flex"
       : "unknown";
-
-    // Ads forward-looking: precio_referencia × ACOS objetivo (cuadrante)
     const precioRef = principal.precio_venta || principal.price_ml || 20000;
     const adsObj = Math.round(precioRef * (resolved.acos_objetivo_pct ?? 0) / 100);
 
-    const inputs = {
-      costoNeto,
-      precioReferencia: precioRef,
-      pesoGr: principal.peso_facturable || 0,
-      comisionPct: Number(principal.comision_pct) || 0,
-      canal,
-      costoEnvioFullUnit: canal === "full" ? (principal.envio_clp || 0) : 0,
-      adsFraccionUnit: adsObj,
-      margenMinimoFrac: resolved.margen_min_frac,
-    };
-
     try {
-      const { floor, desglose } = calcularFloor(inputs);
+      const { floor, desglose } = calcularFloor({
+        costoNeto,
+        precioReferencia: precioRef,
+        pesoGr: principal.peso_facturable || 0,
+        comisionPct: Number(principal.comision_pct) || 0,
+        canal,
+        costoEnvioFullUnit: canal === "full" ? (principal.envio_clp || 0) : 0,
+        adsFraccionUnit: adsObj,
+        margenMinimoFrac: resolved.margen_min_frac,
+      });
       if (!isFinite(floor) || floor <= 0) { stats.errores++; continue; }
       stats.pisos_calculados++;
-      updates.push({
+
+      inserts.push({
         sku: p.sku,
-        precio_piso_calculado: floor,
-        precio_piso_calculado_at: new Date().toISOString(),
-        precio_piso_calculado_inputs: {
-          item_id: principal.item_id,
-          cuadrante,
-          margen_min_pct: resolved.margen_min_pct,
-          margen_min_fuente: resolved.fuente.margen,
-          acos_objetivo_pct: resolved.acos_objetivo_pct,
+        item_id: principal.item_id,
+        promo_id: null,
+        promo_type: "_baseline",
+        promo_name: "_baseline_warming",
+        decision: "baseline_warming",
+        motivo: `baseline cron · floor ${floor} · margen ${resolved.margen_min_pct}%${resolved.es_kvi ? " · KVI" : ""}`,
+        precio_objetivo: floor,
+        precio_actual: precioRef,
+        floor_calculado: floor,
+        margen_proyectado_pct: resolved.margen_min_pct,
+        modo: "baseline",
+        contexto: {
           canal,
-          costoNeto,
-          costoNetoConIva: desglose.costoNetoConIva,
-          comisionClp: desglose.comisionClp,
-          envioClp: desglose.envioClp,
-          adsClp: desglose.adsClp,
-          margenMinClp: desglose.margenMinClp,
-          precio_referencia: precioRef,
+          cuadrante,
+          es_kvi: resolved.es_kvi,
+          politica: resolved.politica,
+          margen_min_pct_aplicado: resolved.margen_min_pct,
+          margen_min_fuente: resolved.fuente.margen,
+          politica_fuente: resolved.fuente.politica,
+          descuento_max_aplicado: resolved.descuento_max_pct,
+          acos_objetivo_pct: resolved.acos_objetivo_pct,
+          ads_fraccion_objetivo: adsObj,
+          comision_pct: Number(principal.comision_pct) || 0,
+          desglose_floor: {
+            costoNetoConIva: desglose.costoNetoConIva,
+            comisionClp: desglose.comisionClp,
+            envioClp: desglose.envioClp,
+            adsClp: desglose.adsClp,
+            margenMinClp: desglose.margenMinClp,
+          },
+          ads_modelo: "forward_acos_objetivo",
+          fuente_calculo: "cron_pricing_recalcular_floors",
         },
       });
+
       if (muestra.length < 10) {
         muestra.push({ sku: p.sku, cuadrante, floor, precio_actual: precioRef, espacio_pct: precioRef > 0 ? Math.round((1 - floor / precioRef) * 1000) / 10 : null });
       }
@@ -183,19 +208,13 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // 6. Persistir en chunks (upsert por sku)
-  for (let i = 0; i < updates.length; i += 200) {
-    const chunk = updates.slice(i, i + 200);
-    for (const u of chunk) {
-      const { error } = await sb.from("productos").update({
-        precio_piso_calculado: u.precio_piso_calculado,
-        precio_piso_calculado_at: u.precio_piso_calculado_at,
-        precio_piso_calculado_inputs: u.precio_piso_calculado_inputs,
-      }).eq("sku", u.sku);
-      if (error) {
-        console.error(`[recalcular-floors] update error sku=${u.sku}: ${error.message}`);
-        stats.errores++;
-      }
+  // 7. Insert batch
+  for (let i = 0; i < inserts.length; i += 200) {
+    const chunk = inserts.slice(i, i + 200);
+    const { error } = await sb.from("auto_postulacion_log").insert(chunk);
+    if (error) {
+      console.error(`[recalcular-floors] insert batch error: ${error.message}`);
+      stats.errores += chunk.length;
     }
   }
 

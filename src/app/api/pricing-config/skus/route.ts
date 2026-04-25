@@ -17,16 +17,19 @@ export async function GET() {
   // filas por sku_origen) y solo se actualiza los lunes — datos hasta 7d
   // stale. Manual confirma que la decision de cuadrante vive en sku_intelligence
   // (intelligence.ts:1749) y semaforo solo lo copia (BANVA_Pricing_Investigacion_Comparada §6.2).
-  const [prodRes, intelRes] = await Promise.all([
+  const [prodRes, intelRes, pisoRes] = await Promise.all([
     sb.from("productos").select(
       "sku, nombre, categoria, proveedor, costo, costo_promedio, precio, " +
-      "precio_piso, precio_piso_calculado, precio_piso_calculado_at, precio_piso_calculado_inputs, " +
-      "margen_minimo_pct, politica_pricing, es_kvi, auto_postular, estado_sku"
+      "precio_piso, margen_minimo_pct, politica_pricing, es_kvi, auto_postular, estado_sku"
     ),
     sb.from("sku_intelligence").select(
       "sku_origen, cuadrante, abc, abc_ingreso, abc_unidades, xyz, " +
       "vel_ponderada, stock_total, margen_full_30d, precio_promedio, " +
       "dias_en_quiebre, factor_rampup_aplicado"
+    ),
+    // Vista derivada: ultimo floor por SKU (incluye baseline_warming + evals reales)
+    sb.from("v_precio_piso_actual").select(
+      "sku, precio_piso_calculado, calculado_at, decision, contexto"
     ),
   ]);
   if (prodRes.error) {
@@ -34,6 +37,9 @@ export async function GET() {
   }
   if (intelRes.error) {
     console.error(`[pricing-config/skus] sku_intelligence error: ${intelRes.error.message}`);
+  }
+  if (pisoRes.error) {
+    console.error(`[pricing-config/skus] v_precio_piso_actual error: ${pisoRes.error.message}`);
   }
   const productos = (prodRes.data || []) as unknown as Array<Record<string, unknown>>;
   const intel = (intelRes.data || []) as unknown as Array<{
@@ -43,12 +49,20 @@ export async function GET() {
     margen_full_30d: number | null; precio_promedio: number | null;
     dias_en_quiebre: number | null; factor_rampup_aplicado: number | null;
   }>;
+  const pisos = (pisoRes.data || []) as unknown as Array<{
+    sku: string; precio_piso_calculado: number | null;
+    calculado_at: string | null; decision: string | null;
+    contexto: Record<string, unknown> | null;
+  }>;
 
   const intelBySku = new Map<string, typeof intel[number]>();
   for (const r of intel) intelBySku.set(r.sku_origen, r);
+  const pisoBySku = new Map<string, typeof pisos[number]>();
+  for (const r of pisos) pisoBySku.set(r.sku, r);
 
   const rows = productos.map(p => {
     const i = intelBySku.get(p.sku as string);
+    const piso = pisoBySku.get(p.sku as string);
     return {
       ...p,
       cuadrante: i?.cuadrante ?? null,
@@ -62,6 +76,10 @@ export async function GET() {
       precio_actual: i?.precio_promedio ?? null,
       dias_en_quiebre: i?.dias_en_quiebre ?? null,
       factor_rampup: i?.factor_rampup_aplicado ?? null,
+      precio_piso_calculado: piso?.precio_piso_calculado ?? null,
+      precio_piso_calculado_at: piso?.calculado_at ?? null,
+      precio_piso_calculado_inputs: piso?.contexto ?? null,
+      precio_piso_decision: piso?.decision ?? null,
     };
   });
 

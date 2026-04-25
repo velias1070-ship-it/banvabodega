@@ -34,6 +34,7 @@ type SkuRow = {
   precio_piso_calculado: number | null;
   precio_piso_calculado_at: string | null;
   precio_piso_calculado_inputs: Record<string, unknown> | null;
+  precio_piso_decision: string | null;
   margen_minimo_pct: number | null;
   politica_pricing: string | null;
   es_kvi: boolean | null;
@@ -403,23 +404,31 @@ const inputStyle: React.CSSProperties = {
 
 function pisoTooltip(s: SkuRow): string {
   if (!s.precio_piso_calculado || !s.precio_piso_calculado_inputs) {
-    return "Sin piso calculado todavía. Próximo cron 11:30 AM.";
+    return "Sin piso calculado todavía. Lo trae el motor al evaluar promos o el cron 11:30 AM.";
   }
-  const i = s.precio_piso_calculado_inputs as Record<string, unknown>;
+  const ctx = s.precio_piso_calculado_inputs as Record<string, unknown>;
+  // El contexto viene de auto_postulacion_log: si tiene desglose_floor (cron),
+  // úsalo. Si no, el cálculo viene de una evaluación de promo (sin desglose
+  // detallado pero con campos top-level).
+  const desglose = (ctx.desglose_floor as Record<string, unknown> | undefined) || ctx;
   const at = s.precio_piso_calculado_at ? new Date(s.precio_piso_calculado_at).toLocaleString("es-CL") : "—";
+  const fuente = s.precio_piso_decision === "baseline_warming" ? "cron baseline"
+    : s.precio_piso_decision?.includes("postular") ? "evaluación promo"
+    : s.precio_piso_decision || "—";
   return [
     `Piso $${Math.round(s.precio_piso_calculado).toLocaleString("es-CL")}`,
-    `Cuadrante: ${i.cuadrante || "—"}`,
-    `Margen mín: ${i.margen_min_pct}% (${i.margen_min_fuente})`,
-    `ACOS obj: ${i.acos_objetivo_pct}%`,
-    `Canal: ${i.canal}`,
-    `Costo+IVA: $${Math.round(Number(i.costoNetoConIva) || 0).toLocaleString("es-CL")}`,
-    `Comisión: $${Math.round(Number(i.comisionClp) || 0).toLocaleString("es-CL")}`,
-    `Envío: $${Math.round(Number(i.envioClp) || 0).toLocaleString("es-CL")}`,
-    `Ads obj: $${Math.round(Number(i.adsClp) || 0).toLocaleString("es-CL")}`,
-    `Margen mín $: $${Math.round(Number(i.margenMinClp) || 0).toLocaleString("es-CL")}`,
+    `Cuadrante: ${ctx.cuadrante || "—"}`,
+    `Margen mín: ${ctx.margen_min_pct_aplicado}% (${ctx.margen_min_fuente})`,
+    `ACOS obj: ${ctx.acos_objetivo_pct}%`,
+    `Canal: ${ctx.canal}`,
+    desglose.costoNetoConIva != null ? `Costo+IVA: $${Math.round(Number(desglose.costoNetoConIva)).toLocaleString("es-CL")}` : "",
+    desglose.comisionClp != null ? `Comisión: $${Math.round(Number(desglose.comisionClp)).toLocaleString("es-CL")}` : "",
+    desglose.envioClp != null ? `Envío: $${Math.round(Number(desglose.envioClp)).toLocaleString("es-CL")}` : "",
+    desglose.adsClp != null ? `Ads obj: $${Math.round(Number(desglose.adsClp)).toLocaleString("es-CL")}` : "",
+    desglose.margenMinClp != null ? `Margen mín $: $${Math.round(Number(desglose.margenMinClp)).toLocaleString("es-CL")}` : "",
+    `Fuente: ${fuente}`,
     `Calculado: ${at}`,
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 function cuadColor(c: string | null): string {
