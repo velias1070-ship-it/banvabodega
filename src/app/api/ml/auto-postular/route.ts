@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
-import { evaluarGates, margenPostAds, type CanalLogistico } from "@/lib/pricing";
+import {
+  evaluarGates, margenPostAds, resolverPricingConfig,
+  type CanalLogistico, type PricingCuadranteConfig,
+} from "@/lib/pricing";
 
 export const maxDuration = 300;
 
@@ -195,6 +198,20 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // 3a.bis Cargar config por cuadrante (defaults editables desde tab Pricing
+  // Config). Cascada que aplica resolverPricingConfig: SKU > cuadrante > _DEFAULT.
+  // Manual: BANVA_Pricing_Investigacion_Comparada §6.2 (defaults por cuadrante).
+  const cuadrantesConfigMap = new Map<string, PricingCuadranteConfig>();
+  {
+    const { data: ccRows } = await sb.from("pricing_cuadrante_config").select(
+      "cuadrante, margen_min_pct, politica_default, acos_objetivo_pct, descuento_max_pct, descuento_max_kvi_pct, canal_preferido"
+    );
+    for (const r of (ccRows || []) as PricingCuadranteConfig[]) {
+      cuadrantesConfigMap.set(r.cuadrante, r);
+    }
+  }
+  const defaultCuadrante = cuadrantesConfigMap.get("_DEFAULT") || null;
+
   // 3b. Cargar ads fraccion por SKU (promedio ads_cost_asignado / unidades en 30d)
   const sinceIso = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
   const adsFraccionBySku = new Map<string, number>();
@@ -224,8 +241,25 @@ export async function POST(req: NextRequest) {
   for (const row of cache) {
     if (procesados >= limit) break;
     const policy = policyMap.get(row.sku);
+    const intel = coberturaMap.get(row.sku);
+
+    // Resolver pricing por cascada: SKU override > cuadrante config > _DEFAULT.
+    // Habilita que ediciones en tab Pricing Config se apliquen automaticamente.
+    const cuadranteRow = intel?.cuadrante ? cuadrantesConfigMap.get(intel.cuadrante) || defaultCuadrante : defaultCuadrante;
+    const resolved = resolverPricingConfig(
+      policy ? {
+        precio_piso: policy.precio_piso ?? null,
+        margen_minimo_pct: policy.margen_minimo_pct ?? null,
+        politica_pricing: policy.politica_pricing ?? null,
+        es_kvi: policy.es_kvi ?? false,
+        auto_postular: policy.auto_postular ?? false,
+      } : null,
+      cuadranteRow ?? null,
+      defaultCuadrante,
+    );
+
     // Gate pre-motor: scope apply exige flag explicito
-    if (scope === "auto_postular_only" && !policy?.auto_postular) continue;
+    if (scope === "auto_postular_only" && !resolved.auto_postular) continue;
 
     const promos = row.promos_postulables || [];
     if (promos.length === 0) continue;
@@ -244,9 +278,7 @@ export async function POST(req: NextRequest) {
         : row.logistic_type === "self_service" ? "flex"
         : "unknown";
       const costoNeto = policy?.costo_promedio || policy?.costo || row.costo_neto || 0;
-      const margenMinFrac = (policy?.margen_minimo_pct ?? 15) / 100;
 
-      const intel = coberturaMap.get(row.sku);
       const gateInputs = {
         costoNeto,
         precioReferencia: precioObjetivo,
@@ -255,12 +287,12 @@ export async function POST(req: NextRequest) {
         canal,
         costoEnvioFullUnit: canal === "full" ? (row.envio_clp || 0) : 0,
         adsFraccionUnit: adsFraccionBySku.get(row.sku) || 0,
-        margenMinimoFrac: margenMinFrac,
+        margenMinimoFrac: resolved.margen_min_frac,
         precioObjetivo,
-        precioPisoManual: policy?.precio_piso || null,
-        esKvi: policy?.es_kvi || false,
+        precioPisoManual: resolved.precio_piso_manual,
+        esKvi: resolved.es_kvi,
         precioLista: row.price_ml,
-        politica: policy?.politica_pricing || "seguir",
+        politica: resolved.politica,
         coberturaDias: intel?.cob_total ?? null,
       };
 
@@ -274,6 +306,13 @@ export async function POST(req: NextRequest) {
       // Rango de la propia promo
       if (promo.min > 0 && precioObjetivo < promo.min) hardExtras.push(`promo_rango: ${precioObjetivo} < min ${promo.min}`);
       if (promo.max > 0 && precioObjetivo > promo.max) hardExtras.push(`promo_rango: ${precioObjetivo} > max ${promo.max}`);
+      // Gate descuento_max_pct configurable por cuadrante (Pricing Config)
+      if (resolved.descuento_max_pct != null && row.price_ml > 0) {
+        const descPct = ((row.price_ml - precioObjetivo) / row.price_ml) * 100;
+        if (descPct > resolved.descuento_max_pct) {
+          hardExtras.push(`descuento_max_cuadrante: ${descPct.toFixed(1)}% > ${resolved.descuento_max_pct}% permitido para cuadrante ${intel?.cuadrante || "_DEFAULT"}`);
+        }
+      }
 
       const gate = evaluarGates(gateInputs);
       const bloquea = [...hardExtras, ...gate.motivosBloqueo];
@@ -311,8 +350,12 @@ export async function POST(req: NextRequest) {
           stock_total: row.stock_total,
           cobertura_dias: intel?.cob_total ?? null,
           cuadrante: intel?.cuadrante || null,
-          es_kvi: policy?.es_kvi,
-          politica: policy?.politica_pricing,
+          es_kvi: resolved.es_kvi,
+          politica: resolved.politica,
+          margen_min_pct_aplicado: resolved.margen_min_pct,
+          margen_min_fuente: resolved.fuente.margen,
+          politica_fuente: resolved.fuente.politica,
+          descuento_max_aplicado: resolved.descuento_max_pct,
           ads_fraccion: adsFraccionBySku.get(row.sku) || 0,
           comision_pct: Number(row.comision_pct),
           titulo: row.titulo,
