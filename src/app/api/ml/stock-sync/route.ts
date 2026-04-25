@@ -174,6 +174,13 @@ export async function POST(req: NextRequest) {
         // 8. Calculate: publicar = FLOOR((disponible - buffer) / unidades_pack)
         const available = Math.max(0, Math.floor((disponibleOrigen - buffer) / unidadesPack));
 
+        // Log decision context para diagnóstico de race conditions con estado_sku
+        await sb.from("audit_log").insert({
+          accion: "stock_sync:decision",
+          entidad: "productos", entidad_id: skuOrigen,
+          params: { sku, skuOrigen, esAgotar, buffer, disponibleOrigen, unidadesPack, available },
+        });
+
         // 9. Send to ML
         const count = await syncStockToML(sku, available);
         if (count > 0) synced++;

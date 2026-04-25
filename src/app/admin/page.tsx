@@ -5935,13 +5935,29 @@ function Inventario() {
         s.products[sku] = { ...prod, estadoSku: "agotar" };
       }
       saveStore();
+      // Persistir estado_sku a DB INMEDIATAMENTE (no esperar al flush debounced de 500ms).
+      // Sin esto el sync inline lee el estado_sku viejo y publica con buffer 2/4 en vez de 0.
+      const sb = getSupabase();
+      if (sb) {
+        const nowIso = new Date().toISOString();
+        const { error: estErr } = await sb.from("productos")
+          .update({ estado_sku: "agotar", updated_at: nowIso }).in("sku", skus);
+        if (estErr) console.error(`[bulk estadoSku update] ${estErr.message}`);
+        const auditRows = skus.map(sku => ({
+          accion: "estado_sku_change",
+          entidad: "productos",
+          entidad_id: sku,
+          params: { nuevo: "agotar", source: "admin_inventario_bulk" },
+        }));
+        await sb.from("audit_log").insert(auditRows);
+      }
       const dbMod = await import("@/lib/db");
       const allToEnqueue = new Set<string>(skus);
       for (const sku of skus) {
         const ventas = getVentasPorSkuOrigen(sku);
         for (const v of ventas) allToEnqueue.add(v.skuVenta);
       }
-      dbMod.enqueueAndSync(Array.from(allToEnqueue));
+      await dbMod.enqueueAndSyncAwait(Array.from(allToEnqueue));
       setBulkSelected(new Set());
       refresh();
     } finally {
@@ -6353,22 +6369,35 @@ function Inventario() {
                           ? `Marcar ${sku} como AGOTAR? Se publicara toda unidad en bodega en Flex ignorando el buffer (2/4).`
                           : null;
                         if (confirmMsg && !confirm(confirmMsg)) return;
+                        const previo = prod.estadoSku ?? null;
                         s.products[sku] = { ...prod, estadoSku: nuevo };
                         saveStore();
-                        // Forzar escritura de estado_sku a DB antes del sync para evitar race con el flush debounced (500ms).
-                        // Sin esto, /api/ml/stock-sync lee el estado_sku viejo y publica con buffer incorrecto.
+                        // Forzar escritura de estado_sku a DB antes del sync para evitar race con el flush debounced (500ms)
+                        // y con el cron stock-sync (cada minuto): si el cron lee estado_sku antes de la escritura, publica
+                        // con buffer incorrecto. Por eso awaiteamos update + audit + sync inline.
                         const sb = getSupabase();
                         if (sb) {
-                          const { error: estErr } = await sb.from("productos").update({ estado_sku: nuevo }).eq("sku", sku);
+                          const nowIso = new Date().toISOString();
+                          const { error: estErr } = await sb.from("productos")
+                            .update({ estado_sku: nuevo, updated_at: nowIso }).eq("sku", sku);
                           if (estErr) console.error(`[estadoSku update] ${sku}: ${estErr.message}`);
+                          await sb.from("audit_log").insert({
+                            accion: "estado_sku_change",
+                            entidad: "productos",
+                            entidad_id: sku,
+                            params: { previo, nuevo, source: "admin_inventario_button" },
+                          });
                         }
                         const dbMod = await import("@/lib/db");
-                        dbMod.enqueueAndSync([sku]);
+                        const allEnqueue = new Set<string>([sku]);
                         const ventas = getVentasPorSkuOrigen(sku);
-                        if (ventas.length > 0) dbMod.enqueueAndSync(ventas.map(v=>v.skuVenta));
+                        for (const v of ventas) allEnqueue.add(v.skuVenta);
+                        // AWAIT el sync para garantizar que ML reciba el nuevo cálculo (con buffer correcto)
+                        // antes de devolver feedback al usuario. Sin await había un race con el cron del minuto.
+                        await dbMod.enqueueAndSyncAwait(Array.from(allEnqueue));
                         refresh();
-                        // Re-fetch stock_flex_cache + stock_full_cache ~3s despues (tiempo tipico del /api/ml/stock-sync)
-                        setTimeout(() => setMlRefresh(n => n + 1), 3000);
+                        // Re-fetch stock_flex_cache + stock_full_cache despues del sync
+                        setMlRefresh(n => n + 1);
                       }}
                       style={{flex:1,padding:"8px 10px",borderRadius:6,fontSize:11,fontWeight:700,cursor:"pointer",
                         background:active?color:"var(--bg2)",color:active?"#000":"var(--txt2)",

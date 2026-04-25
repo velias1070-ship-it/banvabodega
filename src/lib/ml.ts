@@ -1355,7 +1355,7 @@ export async function syncStockToML(sku: string, availableQty: number): Promise<
   const sb = getServerSupabase();
   if (!sb) return 0;
 
-  await sb.from("audit_log").insert({ accion: "stock_sync:entry", params: { sku, availableQty } });
+  await sb.from("audit_log").insert({ accion: "stock_sync:entry", params: { sku, availableQty, ts: new Date().toISOString() } });
 
   // Buscar por SKU en sku o sku_origen: 13 filas históricas tienen ml_items_map.sku
   // = sku_venta (p.ej. LA-BIB-29 para producto fisico 9788481693263). Cuando el

@@ -2038,6 +2038,34 @@ export function enqueueAndSync(skus: string[]): void {
   expandAndSync().catch(() => {});
 }
 
+/**
+ * Variante AWAITABLE: garantiza que el sync server-side termine antes de devolver.
+ * Usar cuando un cambio que afecta el cálculo del sync (p.ej. estado_sku=agotar)
+ * debe verse reflejado en ML antes de continuar — evita el race con el cron del minuto.
+ */
+export async function enqueueAndSyncAwait(skus: string[]): Promise<void> {
+  const sb = getSupabase();
+  if (sb) {
+    const { data } = await sb.from("ml_items_map")
+      .select("sku")
+      .in("sku_origen", skus)
+      .eq("activo", true);
+    const extra = data ? (data as { sku: string }[]).map(r => r.sku) : [];
+    const all = Array.from(new Set([...skus, ...extra]));
+    await addToStockSyncQueue(all);
+  } else {
+    await addToStockSyncQueue(skus);
+  }
+  try {
+    await fetch("/api/ml/stock-sync", {
+      method: "POST",
+      headers: { "x-internal": "1" },
+    });
+  } catch (err) {
+    console.error("[enqueueAndSyncAwait] sync fetch failed:", err);
+  }
+}
+
 export async function clearStockSyncQueue(skus: string[]): Promise<void> {
   const sb = getSupabase(); if (!sb) return;
   await sb.from("stock_sync_queue").delete().in("sku", skus);
