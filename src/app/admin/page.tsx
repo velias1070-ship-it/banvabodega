@@ -7777,6 +7777,10 @@ function Productos({ refresh }: { refresh: () => void }) {
       )}
 
       {productosTab === "productos" && (<>
+      {editSku && (
+        <button onClick={()=>{setShowAdd(false);setEditSku(null);}} style={{marginBottom:10,padding:"8px 14px",borderRadius:8,background:"var(--bg3)",color:"var(--txt2)",fontWeight:600,fontSize:12,border:"1px solid var(--bg4)",cursor:"pointer"}}>← Volver al listado</button>
+      )}
+      {!editSku && (
       <div className="card">
         {descubiertosCount > 0 && !filtroDescubiertos && (
           <div style={{padding:"10px 14px",background:"var(--amberBg)",border:"1px solid var(--amberBd)",borderRadius:8,marginBottom:10,display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap"}}>
@@ -7793,6 +7797,7 @@ function Productos({ refresh }: { refresh: () => void }) {
         </div>
         <div style={{fontSize:11,color:"var(--txt3)",marginTop:6}}>{prods.length} productos en diccionario</div>
       </div>
+      )}
 
       {showAdd&&(
         <div className="card" style={{border:"2px solid var(--cyan)"}}>
@@ -7844,22 +7849,62 @@ function Productos({ refresh }: { refresh: () => void }) {
               </label>
             </div>
           )}
+          {editSku && (() => {
+            const ventas = getVentasPorSkuOrigen(editSku);
+            return (
+              <div style={{marginTop:14,padding:"10px 12px",background:"var(--bg3)",borderRadius:8,border:"1px solid var(--bg4)"}}>
+                <div style={{fontSize:11,fontWeight:700,color:"var(--txt2)",marginBottom:6,textTransform:"uppercase",letterSpacing:0.5}}>Publicaciones ML asociadas</div>
+                {ventas.length === 0 ? (
+                  <div style={{fontSize:11,color:"var(--txt3)"}}>Sin publicación. Creá una composición en el tab "Composiciones".</div>
+                ) : (
+                  ventas.map((v, i) => {
+                    const mlItems4sv = mlBySkuVenta[v.skuVenta.toUpperCase()] || [];
+                    return (
+                      <div key={i} style={{marginBottom:i<ventas.length-1?6:0,fontSize:11}}>
+                        <div style={{display:"flex",alignItems:"center",gap:6}}>
+                          <span style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:3,
+                            background:v.unidades>1?"var(--amber)15":"var(--cyan)15",
+                            color:v.unidades>1?"var(--amber)":"var(--cyan)"}}>
+                            {v.unidades>1?`x${v.unidades}`:"x1"}
+                          </span>
+                          <span className="mono" style={{fontSize:11}}>{v.codigoMl}</span>
+                          <span className="mono" style={{fontSize:10,color:"var(--txt3)"}}>sku_venta: {v.skuVenta}</span>
+                        </div>
+                        {mlItems4sv.map((ml, j) => (
+                          <div key={j} style={{marginLeft:16,marginTop:2,display:"flex",alignItems:"center",gap:6,fontSize:10,color:"var(--txt3)"}}>
+                            <span style={{color:"var(--green)"}}>ML</span>
+                            <span className="mono">{ml.item_id}</span>
+                            {ml.inventory_id && <span className="mono">inv:{ml.inventory_id}</span>}
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })
+                )}
+                <div style={{fontSize:9,color:"var(--txt3)",marginTop:6,fontStyle:"italic"}}>Para modificar publicaciones, ir al tab "Composiciones".</div>
+              </div>
+            );
+          })()}
           <div style={{display:"flex",gap:8,marginTop:12}}>
             <button onClick={()=>{setShowAdd(false);setEditSku(null);}} style={{flex:1,padding:10,borderRadius:8,background:"var(--bg3)",color:"var(--txt3)",fontWeight:600,border:"1px solid var(--bg4)"}}>Cancelar</button>
+            {editSku && (
+              <button onClick={()=>remove(editSku)} style={{flex:1,padding:10,borderRadius:8,background:"var(--bg3)",color:"var(--red)",fontWeight:700,border:"1px solid var(--bg4)"}}>Eliminar</button>
+            )}
             <button onClick={save} disabled={!form.sku||!form.name} style={{flex:2,padding:10,borderRadius:8,background:"var(--green)",color:"#fff",fontWeight:700}}>Guardar</button>
           </div>
         </div>
       )}
 
+      {!editSku && (<>
       {/* Desktop table */}
       <div className="desktop-only">
         <div className="card" style={{padding:0,overflow:"hidden"}}>
           <table className="tbl">
-            <thead><tr><th>SKU Origen</th><th>Nombre</th><th>Publicaciones ML</th><th>Cat.</th><th>Prov.</th><th></th></tr></thead>
+            <thead><tr><th>SKU Origen</th><th>Nombre</th><th>Publicaciones ML</th><th>Cat.</th><th>Prov.</th></tr></thead>
             <tbody>{prods.map(p=>{
               const ventas = getVentasPorSkuOrigen(p.sku);
               return (
-              <tr key={p.sku}>
+              <tr key={p.sku} onClick={()=>startEdit(p)} style={{cursor:"pointer"}} className="row-clickable">
                 <td className="mono" style={{fontWeight:700,fontSize:12}}>
                   {p.sku}
                   {p.estadoSku==="agotar" && <div style={{fontSize:9,fontWeight:700,color:"var(--amber)",marginTop:2}}>🏁 AGOTAR</div>}
@@ -7897,10 +7942,6 @@ function Productos({ refresh }: { refresh: () => void }) {
                 </td>
                 <td><span className="tag">{p.cat}</span></td>
                 <td><span className="tag">{p.prov}</span></td>
-                <td style={{textAlign:"right"}}>
-                  <button onClick={()=>startEdit(p)} style={{padding:"4px 10px",borderRadius:4,background:"var(--bg3)",color:"var(--cyan)",fontSize:10,fontWeight:600,border:"1px solid var(--bg4)",marginRight:4}}>Editar</button>
-                  <button onClick={()=>remove(p.sku)} style={{padding:"4px 10px",borderRadius:4,background:"var(--bg3)",color:"var(--red)",fontSize:10,fontWeight:600,border:"1px solid var(--bg4)"}}>X</button>
-                </td>
               </tr>);
             })}</tbody>
           </table>
@@ -7912,7 +7953,7 @@ function Productos({ refresh }: { refresh: () => void }) {
         {prods.map(p=>{
           const ventas = getVentasPorSkuOrigen(p.sku);
           return (
-          <div key={p.sku} className="card" style={{marginTop:6}}>
+          <div key={p.sku} className="card" onClick={()=>startEdit(p)} style={{marginTop:6,cursor:"pointer"}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
               <div style={{flex:1,minWidth:0}}>
                 <div className="mono" style={{fontWeight:700,fontSize:13}}>{p.sku}</div>
@@ -7948,14 +7989,12 @@ function Productos({ refresh }: { refresh: () => void }) {
                   </div>
                 )}
               </div>
-              <div style={{display:"flex",gap:4,marginLeft:8}}>
-                <button onClick={()=>startEdit(p)} style={{padding:"6px 10px",borderRadius:6,background:"var(--bg3)",color:"var(--cyan)",fontSize:10,fontWeight:600,border:"1px solid var(--bg4)"}}>Editar</button>
-                <button onClick={()=>remove(p.sku)} style={{padding:"6px 10px",borderRadius:6,background:"var(--bg3)",color:"var(--red)",fontSize:10,fontWeight:600,border:"1px solid var(--bg4)"}}>X</button>
-              </div>
+              <div style={{fontSize:10,color:"var(--txt3)",marginLeft:8}}>›</div>
             </div>
           </div>);
         })}
       </div>
+      </>)}
       </>)}
     </div>
   );
