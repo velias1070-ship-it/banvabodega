@@ -7658,7 +7658,6 @@ function Productos({ refresh }: { refresh: () => void }) {
   const [showAdd, setShowAdd] = useState(false);
   const [editSku, setEditSku] = useState<string|null>(null);
   const [q, setQ] = useState("");
-  const [filtroSinCosto, setFiltroSinCosto] = useState(false);
   const [filtroDescubiertos, setFiltroDescubiertos] = useState(false);
   const [mlItems, setMlItems] = useState<DBMLItemMap[]>([]);
   const s = getStore();
@@ -7700,7 +7699,6 @@ function Productos({ refresh }: { refresh: () => void }) {
   };
   const descubiertosCount = Object.values(s.products).filter(esDescubierto).length;
   const prods = Object.values(s.products).filter(p=>{
-    if(filtroSinCosto && (p.cost > 0 || (p.costAvg ?? 0) > 0)) return false;
     if(filtroDescubiertos && !esDescubierto(p)) return false;
     if(!q)return true;const ql=q.toLowerCase();
     return p.sku.toLowerCase().includes(ql)||p.name.toLowerCase().includes(ql)||p.mlCode.toLowerCase().includes(ql)||p.cat.toLowerCase().includes(ql)||p.prov.toLowerCase().includes(ql);
@@ -7790,22 +7788,7 @@ function Productos({ refresh }: { refresh: () => void }) {
         )}
         <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
           <input className="form-input mono" value={q} onChange={e=>setQ(e.target.value)} placeholder="Buscar SKU, nombre, código ML..." style={{flex:1,fontSize:12,minWidth:200}}/>
-          <button onClick={()=>{setFiltroDescubiertos(!filtroDescubiertos);if(!filtroDescubiertos)setFiltroSinCosto(false);}} style={{padding:"10px 16px",borderRadius:8,background:filtroDescubiertos?"var(--amber)":"var(--bg3)",color:filtroDescubiertos?"#000":"var(--txt2)",fontWeight:600,fontSize:12,border:filtroDescubiertos?"none":"1px solid var(--bg4)",whiteSpace:"nowrap"}}>⚠️ Descubiertos ({descubiertosCount})</button>
-          <button onClick={()=>setFiltroSinCosto(!filtroSinCosto)} style={{padding:"10px 16px",borderRadius:8,background:filtroSinCosto?"var(--red)":"var(--bg3)",color:filtroSinCosto?"#fff":"var(--txt2)",fontWeight:600,fontSize:12,border:filtroSinCosto?"none":"1px solid var(--bg4)",whiteSpace:"nowrap"}}>Sin Costo</button>
-          <button onClick={()=>{
-            const sinCosto = Object.values(s.products).filter(p=>!p.cost && !(p.costAvg??0));
-            const rows = [["SKU Origen","Nombre","Categoria","Proveedor","SKUs Venta","Costo (llenar)"].join(",")];
-            for(const p of sinCosto.sort((a,b)=>a.sku.localeCompare(b.sku))){
-              const ventas = getVentasPorSkuOrigen(p.sku);
-              const skuVentas = ventas.map(v=>`${v.skuVenta}(x${v.unidades})`).join(" | ") || "-";
-              rows.push([p.sku,`"${p.name.replace(/"/g,'""')}"`,p.cat,p.prov,`"${skuVentas}"`,0].join(","));
-            }
-            const blob = new Blob([rows.join("\n")],{type:"text/csv"});
-            const a = document.createElement("a");
-            a.href = URL.createObjectURL(blob);
-            a.download = "productos_sin_costo.csv";
-            a.click();
-          }} style={{padding:"10px 16px",borderRadius:8,background:"var(--bg3)",color:"var(--amber)",fontWeight:600,fontSize:12,border:"1px solid var(--bg4)",whiteSpace:"nowrap"}}>Exportar Sin Costo</button>
+          <button onClick={()=>setFiltroDescubiertos(!filtroDescubiertos)} style={{padding:"10px 16px",borderRadius:8,background:filtroDescubiertos?"var(--amber)":"var(--bg3)",color:filtroDescubiertos?"#000":"var(--txt2)",fontWeight:600,fontSize:12,border:filtroDescubiertos?"none":"1px solid var(--bg4)",whiteSpace:"nowrap"}}>⚠️ Descubiertos ({descubiertosCount})</button>
           <button onClick={startAdd} style={{padding:"10px 20px",borderRadius:8,background:"var(--green)",color:"#fff",fontWeight:700,fontSize:13,whiteSpace:"nowrap"}}>+ Nuevo Producto</button>
         </div>
         <div style={{fontSize:11,color:"var(--txt3)",marginTop:6}}>{prods.length} productos en diccionario</div>
@@ -7872,10 +7855,9 @@ function Productos({ refresh }: { refresh: () => void }) {
       <div className="desktop-only">
         <div className="card" style={{padding:0,overflow:"hidden"}}>
           <table className="tbl">
-            <thead><tr><th>SKU Origen</th><th>Nombre</th><th>Publicaciones ML</th><th>Cat.</th><th>Prov.</th><th style={{textAlign:"right"}}>Costo</th><th style={{textAlign:"right"}}>Stock</th><th style={{textAlign:"right"}}>Vendible</th><th></th></tr></thead>
+            <thead><tr><th>SKU Origen</th><th>Nombre</th><th>Publicaciones ML</th><th>Cat.</th><th>Prov.</th><th></th></tr></thead>
             <tbody>{prods.map(p=>{
               const ventas = getVentasPorSkuOrigen(p.sku);
-              const stock = skuTotal(p.sku);
               return (
               <tr key={p.sku}>
                 <td className="mono" style={{fontWeight:700,fontSize:12}}>
@@ -7915,17 +7897,6 @@ function Productos({ refresh }: { refresh: () => void }) {
                 </td>
                 <td><span className="tag">{p.cat}</span></td>
                 <td><span className="tag">{p.prov}</span></td>
-                <td className="mono" style={{textAlign:"right",fontSize:11}}>{fmtMoney(p.cost)}</td>
-                <td className="mono" style={{textAlign:"right",fontWeight:700,color:"var(--blue)"}}>{stock}</td>
-                <td style={{textAlign:"right",fontSize:11}}>
-                  {ventas.length > 0 ? ventas.map((v, i) => {
-                    const sellable = Math.floor(stock / v.unidades);
-                    return (
-                      <div key={i} style={{color:sellable>0?"var(--green)":"var(--red)",fontWeight:600}}>
-                        {sellable}{v.unidades>1?` pack${sellable!==1?"s":""}`:""}</div>
-                    );
-                  }) : <span className="mono" style={{fontWeight:700,color:"var(--blue)"}}>{stock}</span>}
-                </td>
                 <td style={{textAlign:"right"}}>
                   <button onClick={()=>startEdit(p)} style={{padding:"4px 10px",borderRadius:4,background:"var(--bg3)",color:"var(--cyan)",fontSize:10,fontWeight:600,border:"1px solid var(--bg4)",marginRight:4}}>Editar</button>
                   <button onClick={()=>remove(p.sku)} style={{padding:"4px 10px",borderRadius:4,background:"var(--bg3)",color:"var(--red)",fontSize:10,fontWeight:600,border:"1px solid var(--bg4)"}}>X</button>
@@ -7940,7 +7911,6 @@ function Productos({ refresh }: { refresh: () => void }) {
       <div className="mobile-only">
         {prods.map(p=>{
           const ventas = getVentasPorSkuOrigen(p.sku);
-          const stock = skuTotal(p.sku);
           return (
           <div key={p.sku} className="card" style={{marginTop:6}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
@@ -7948,12 +7918,10 @@ function Productos({ refresh }: { refresh: () => void }) {
                 <div className="mono" style={{fontWeight:700,fontSize:13}}>{p.sku}</div>
                 <div style={{fontSize:12,color:"var(--txt2)"}}>{p.name}</div>
                 <div style={{display:"flex",gap:4,marginTop:3,flexWrap:"wrap"}}><span className="tag">{p.cat}</span><span className="tag">{p.prov}</span></div>
-                <div style={{fontSize:10,color:"var(--txt3)",marginTop:3}}>Costo: {fmtMoney(p.cost)} | Stock: <strong style={{color:"var(--blue)"}}>{stock}</strong> uds</div>
                 {ventas.length > 0 && (
                   <div style={{marginTop:4,borderTop:"1px solid var(--bg4)",paddingTop:4}}>
                     <div style={{fontSize:10,color:"var(--txt3)",fontWeight:600,marginBottom:2}}>Publicaciones:</div>
                     {ventas.map((v, i) => {
-                      const sellable = Math.floor(stock / v.unidades);
                       const mlItems4sv = mlBySkuVenta[v.skuVenta.toUpperCase()] || [];
                       return (
                         <div key={i} style={{marginBottom:4}}>
@@ -7964,9 +7932,7 @@ function Productos({ refresh }: { refresh: () => void }) {
                               {v.unidades>1?`Pack x${v.unidades}`:"x1"}
                             </span>
                             <span className="mono">{v.codigoMl}</span>
-                            <span style={{color:sellable>0?"var(--green)":"var(--red)",fontWeight:600,marginLeft:"auto"}}>
-                              {sellable} vendibles
-                            </span>
+                            <span style={{fontSize:9,color:"var(--txt3)",marginLeft:"auto"}}>{v.skuVenta}</span>
                           </div>
                           {mlItems4sv.length > 0 && mlItems4sv.map((ml, j) => (
                             <div key={j} style={{marginLeft:12,marginTop:1,display:"flex",alignItems:"center",gap:4,fontSize:9,color:"var(--txt3)"}}>
