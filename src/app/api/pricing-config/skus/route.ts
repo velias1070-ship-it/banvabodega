@@ -12,7 +12,7 @@ export async function GET() {
   const sb = getServerSupabase();
   if (!sb) return NextResponse.json({ error: "no_db" }, { status: 500 });
 
-  const [{ data: productos }, { data: semaforo }] = await Promise.all([
+  const [prodRes, semRes] = await Promise.all([
     sb.from("productos").select(
       "sku, nombre, categoria, proveedor, costo, costo_promedio, precio, " +
       "precio_piso, margen_minimo_pct, politica_pricing, es_kvi, auto_postular, estado_sku"
@@ -20,13 +20,21 @@ export async function GET() {
     sb.from("semaforo_semanal").select("sku_origen, cuadrante, abc_ingreso, cubeta, vel_ponderada, stock_total, margen_full_30d, precio_actual")
       .order("semana_calculo", { ascending: false }),
   ]);
+  if (prodRes.error) {
+    return NextResponse.json({ error: `productos: ${prodRes.error.message}` }, { status: 500 });
+  }
+  if (semRes.error) {
+    console.error(`[pricing-config/skus] semaforo error: ${semRes.error.message}`);
+  }
+  const productos = (prodRes.data || []) as unknown as Array<Record<string, unknown>>;
+  const semaforo = (semRes.data || []) as unknown as Array<{ sku_origen: string; cuadrante: string | null; abc_ingreso: string | null; cubeta: string | null; vel_ponderada: number | null; stock_total: number | null; margen_full_30d: number | null; precio_actual: number | null }>;
 
   const semaforoBySku = new Map<string, {
     cuadrante: string | null; abc: string | null; cubeta: string | null;
     vel_ponderada: number | null; stock_total: number | null;
     margen_full_30d: number | null; precio_actual: number | null;
   }>();
-  for (const r of (semaforo || []) as Array<{ sku_origen: string; cuadrante: string | null; abc_ingreso: string | null; cubeta: string | null; vel_ponderada: number | null; stock_total: number | null; margen_full_30d: number | null; precio_actual: number | null }>) {
+  for (const r of semaforo) {
     if (!semaforoBySku.has(r.sku_origen)) {
       semaforoBySku.set(r.sku_origen, {
         cuadrante: r.cuadrante, abc: r.abc_ingreso, cubeta: r.cubeta,
@@ -36,7 +44,7 @@ export async function GET() {
     }
   }
 
-  const rows = (productos || []).map((p: Record<string, unknown>) => ({
+  const rows = productos.map(p => ({
     ...p,
     ...(semaforoBySku.get(p.sku as string) || {
       cuadrante: null, abc: null, cubeta: null,
