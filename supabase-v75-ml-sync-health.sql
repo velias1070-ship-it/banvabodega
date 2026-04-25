@@ -15,10 +15,14 @@ CREATE TABLE IF NOT EXISTS ml_sync_health (
   last_alert_sent_at TIMESTAMPTZ
 );
 
+-- Thresholds calibrados a la frecuencia natural del job:
+--   campaigns_daily: cron diario → alerta si 36h sin éxito
+--   ads_daily:       cron 6h     → alerta si 12h sin éxito
+--   metrics_monthly: cron 1× mes → alerta si 35d (840h) sin éxito
 INSERT INTO ml_sync_health(job_name, staleness_threshold_hours, alert_channel, alert_destination) VALUES
-  ('campaigns_daily',  36, 'whatsapp', '56991655931@s.whatsapp.net'),
-  ('ads_daily',        12, 'whatsapp', '56991655931@s.whatsapp.net'),
-  ('metrics_monthly',  72, 'whatsapp', '56991655931@s.whatsapp.net')
+  ('campaigns_daily',  36,  'whatsapp', '56991655931@s.whatsapp.net'),
+  ('ads_daily',        12,  'whatsapp', '56991655931@s.whatsapp.net'),
+  ('metrics_monthly',  840, 'whatsapp', '56991655931@s.whatsapp.net')
 ON CONFLICT (job_name) DO NOTHING;
 
 ALTER TABLE ml_sync_health ENABLE ROW LEVEL SECURITY;
