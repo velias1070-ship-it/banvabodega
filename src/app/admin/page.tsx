@@ -5729,6 +5729,7 @@ function Inventario() {
   const [skusConFlex, setSkusConFlex] = useState<Set<string>>(new Set());
   const [skusConFull, setSkusConFull] = useState<Set<string>>(new Set());
   const [skusConMapping, setSkusConMapping] = useState<Set<string>>(new Set());
+  const [skusVirtualesPuros, setSkusVirtualesPuros] = useState<Set<string>>(new Set());
   const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set());
   const [bulkWorking, setBulkWorking] = useState(false);
   const [,setTick] = useState(0);
@@ -5760,9 +5761,20 @@ function Inventario() {
         sb.from("composicion_venta").select("sku_venta, sku_origen"),
       ]);
       const svToOrigen: Record<string, string> = {};
+      const sku_ventas_distintos = new Set<string>();
+      const sku_origenes = new Set<string>();
       for (const c of ((compRes.data || []) as {sku_venta:string;sku_origen:string}[])) {
         svToOrigen[c.sku_venta] = c.sku_origen;
+        if (c.sku_venta !== c.sku_origen) sku_ventas_distintos.add(c.sku_venta);
+        sku_origenes.add(c.sku_origen);
       }
+      // Virtuales puros: SKUs que existen como sku_venta apuntando a otro sku_origen
+      // y NO son origen de nadie (no son producto físico).
+      const virtualesPuros = new Set<string>();
+      sku_ventas_distintos.forEach(sv => {
+        if (!sku_origenes.has(sv)) virtualesPuros.add(sv);
+      });
+      setSkusVirtualesPuros(virtualesPuros);
       const flexSet = new Set<string>();
       const mappingSet = new Set<string>();
       for (const i of ((itemsRes.data || []) as {sku:string;sku_origen:string|null;stock_flex_cache:number|null}[])) {
@@ -5862,8 +5874,10 @@ function Inventario() {
 
   // Physical stock view (also search by sku_venta via composicion)
   // Include all products (even with 0 stock) + any SKUs in stock not in products
+  // Excluye SKUs virtuales puros (sku_venta de listings ML que no son producto físico).
   const allProductSkus = new Set([...Object.keys(s.products), ...Object.keys(s.stock)]);
   const allSkus = Array.from(allProductSkus).filter(sku => {
+    if (skusVirtualesPuros.has(sku)) return false;
     if (!q) return true;
     const ql = q.toLowerCase();
     const prod = s.products[sku];
