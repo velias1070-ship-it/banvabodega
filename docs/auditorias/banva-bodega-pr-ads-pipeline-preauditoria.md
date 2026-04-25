@@ -324,6 +324,13 @@ Con esta validación de 5 segundos descubrimos problemas del bridge antes de esp
 
 `POST /api/ml/campaigns-daily-sync` con `{action: "backfill", date_from: "2026-01-01", date_to: "2026-04-25"}`. Esto puebla `ml_campaigns_daily_cache` con histórico 2026 completo.
 
+**Caveat del backfill** (descubierto post-ejecución 2026-04-25): el endpoint ML devuelve el `config actual` de la campaña (`acos_target`, `budget`, `strategy`, `status`) en cada row, NO el config histórico del día. Por eso:
+- Las **métricas** (`cost/clicks/prints/total_amount/etc.`) son históricas correctas día por día
+- Los **campos de config** reflejan el valor actual hoy, propagado a todas las filas pasadas
+- `ml_campaigns_config_history` empieza vacía de cambios (solo baseline) y **acumula data útil desde el primer cambio post-backfill**, no retroactivo
+
+Este es un constraint del endpoint ML, no un bug del pipeline. Para reconstruir config histórico hace falta otra fuente (changelog manual o ML billing logs si existen).
+
 ### Fase 3 — Validación (1 semana en sombra)
 
 Mientras corren ambos crons (mensual viejo + daily nuevo):
