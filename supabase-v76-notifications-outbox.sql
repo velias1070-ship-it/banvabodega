@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS notifications_outbox (
   channel TEXT NOT NULL,                      -- 'whatsapp' | 'email' | 'slack' | ...
   destination TEXT NOT NULL,                  -- chat_id, email, etc.
   payload JSONB NOT NULL,                     -- { text, attachments, ... }
-  status TEXT NOT NULL DEFAULT 'pending',     -- 'pending' | 'sent' | 'failed'
+  status TEXT NOT NULL DEFAULT 'pending',     -- 'pending' | 'sent' | 'failed' | 'cancelled'
   attempts INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   sent_at TIMESTAMPTZ,

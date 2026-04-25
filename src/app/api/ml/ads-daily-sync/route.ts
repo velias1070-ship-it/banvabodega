@@ -146,6 +146,16 @@ export async function GET(req: NextRequest) {
 
     const totalCost = allCacheRows.reduce((s, r) => s + ((r.cost_neto as number) || 0), 0);
 
+    // Telemetría a ml_sync_health (Regla 7 in-progress)
+    {
+      const now = new Date().toISOString();
+      const ok_run = upsertErrors.length === 0;
+      await sb.from("ml_sync_health").update({
+        last_attempt_at: now,
+        ...(ok_run ? { last_success_at: now, last_error: null, consecutive_failures: 0 } : {}),
+      }).eq("job_name", "ads_daily");
+    }
+
     return NextResponse.json({
       status: "ok",
       range: `${dateFrom} → ${dateTo}`,
@@ -161,6 +171,14 @@ export async function GET(req: NextRequest) {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("[ads-daily-sync] error:", msg);
+    const sb2 = getServerSupabase();
+    if (sb2) {
+      await sb2.from("ml_sync_health").update({
+        last_attempt_at: new Date().toISOString(),
+        last_error: msg,
+        consecutive_failures: 1, // simplificado: no incrementa, marca que falló
+      }).eq("job_name", "ads_daily");
+    }
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

@@ -1121,6 +1121,20 @@ export async function ejecutarFase(estado: SyncEstado): Promise<{
       completado_at: nextFase === "done" ? new Date().toISOString() : undefined,
     });
 
+    // Telemetría a ml_sync_health cuando el sync mensual termina (Regla 7 in-progress)
+    if (nextFase === "done") {
+      const sbHealth = getServerSupabase();
+      if (sbHealth) {
+        const now = new Date().toISOString();
+        await sbHealth.from("ml_sync_health").update({
+          last_attempt_at: now,
+          last_success_at: now,
+          last_error: null,
+          consecutive_failures: 0,
+        }).eq("job_name", "metrics_monthly");
+      }
+    }
+
     console.log(`[ml-metrics] Phase ${fase} done (${procesados} items). Next: ${nextFase}`);
     return { ok: true, fase_completada: fase, items_procesados: procesados };
 
@@ -1128,6 +1142,13 @@ export async function ejecutarFase(estado: SyncEstado): Promise<{
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[ml-metrics] Phase ${fase} error:`, msg);
     await updateSyncEstado({ fase: "error", error_msg: `${fase}: ${msg}` });
+    const sbHealthErr = getServerSupabase();
+    if (sbHealthErr) {
+      await sbHealthErr.from("ml_sync_health").update({
+        last_attempt_at: new Date().toISOString(),
+        last_error: `${fase}: ${msg}`,
+      }).eq("job_name", "metrics_monthly");
+    }
     return { ok: false, fase_completada: fase, items_procesados: procesados, error: msg };
   }
 }
