@@ -83,6 +83,10 @@
     {
       "path": "/api/ml/sync-health-check",
       "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/pricing/recalcular-floors",
+      "schedule": "30 11 * * *"
     }
   ]
 }

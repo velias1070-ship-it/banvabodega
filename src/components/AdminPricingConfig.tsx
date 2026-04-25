@@ -31,6 +31,9 @@ type SkuRow = {
   costo_promedio: number | null;
   precio: number | null;
   precio_piso: number | null;
+  precio_piso_calculado: number | null;
+  precio_piso_calculado_at: string | null;
+  precio_piso_calculado_inputs: Record<string, unknown> | null;
   margen_minimo_pct: number | null;
   politica_pricing: string | null;
   es_kvi: boolean | null;
@@ -299,6 +302,7 @@ export default function AdminPricingConfig() {
                 <th>Vel/d</th>
                 <th>Stock</th>
                 <th title="Días en quiebre">Q</th>
+                <th title="Piso $ calculado por motor (forward ACOS)">Piso calc.</th>
                 <th>Costo prom.</th>
                 <th>Precio actual</th>
                 <th>Margen 30d</th>
@@ -328,6 +332,10 @@ export default function AdminPricingConfig() {
                     <td style={{ textAlign: "right", color: "var(--txt2)" }}>{s.stock_total ?? "—"}</td>
                     <td style={{ textAlign: "right", color: s.dias_en_quiebre && s.dias_en_quiebre > 0 ? "var(--red)" : "var(--txt3)" }}>
                       {s.dias_en_quiebre && s.dias_en_quiebre > 0 ? `${s.dias_en_quiebre}d` : "—"}
+                    </td>
+                    <td style={{ textAlign: "right", color: "var(--cyan)", fontWeight: 600 }}
+                      title={pisoTooltip(s)}>
+                      {fmtCLP(s.precio_piso_calculado)}
                     </td>
                     <td style={{ textAlign: "right" }}>{fmtCLP(s.costo_promedio)}</td>
                     <td style={{ textAlign: "right" }}>{fmtCLP(s.precio_actual)}</td>
@@ -392,6 +400,27 @@ const inputStyle: React.CSSProperties = {
   fontSize: 11,
   width: 70,
 };
+
+function pisoTooltip(s: SkuRow): string {
+  if (!s.precio_piso_calculado || !s.precio_piso_calculado_inputs) {
+    return "Sin piso calculado todavía. Próximo cron 11:30 AM.";
+  }
+  const i = s.precio_piso_calculado_inputs as Record<string, unknown>;
+  const at = s.precio_piso_calculado_at ? new Date(s.precio_piso_calculado_at).toLocaleString("es-CL") : "—";
+  return [
+    `Piso $${Math.round(s.precio_piso_calculado).toLocaleString("es-CL")}`,
+    `Cuadrante: ${i.cuadrante || "—"}`,
+    `Margen mín: ${i.margen_min_pct}% (${i.margen_min_fuente})`,
+    `ACOS obj: ${i.acos_objetivo_pct}%`,
+    `Canal: ${i.canal}`,
+    `Costo+IVA: $${Math.round(Number(i.costoNetoConIva) || 0).toLocaleString("es-CL")}`,
+    `Comisión: $${Math.round(Number(i.comisionClp) || 0).toLocaleString("es-CL")}`,
+    `Envío: $${Math.round(Number(i.envioClp) || 0).toLocaleString("es-CL")}`,
+    `Ads obj: $${Math.round(Number(i.adsClp) || 0).toLocaleString("es-CL")}`,
+    `Margen mín $: $${Math.round(Number(i.margenMinClp) || 0).toLocaleString("es-CL")}`,
+    `Calculado: ${at}`,
+  ].join("\n");
+}
 
 function cuadColor(c: string | null): string {
   if (c === "ESTRELLA") return "var(--cyan)";

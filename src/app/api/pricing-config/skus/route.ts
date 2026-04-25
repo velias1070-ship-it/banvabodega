@@ -20,7 +20,8 @@ export async function GET() {
   const [prodRes, intelRes] = await Promise.all([
     sb.from("productos").select(
       "sku, nombre, categoria, proveedor, costo, costo_promedio, precio, " +
-      "precio_piso, margen_minimo_pct, politica_pricing, es_kvi, auto_postular, estado_sku"
+      "precio_piso, precio_piso_calculado, precio_piso_calculado_at, precio_piso_calculado_inputs, " +
+      "margen_minimo_pct, politica_pricing, es_kvi, auto_postular, estado_sku"
     ),
     sb.from("sku_intelligence").select(
       "sku_origen, cuadrante, abc, abc_ingreso, abc_unidades, xyz, " +
