@@ -28,6 +28,7 @@ Si dudás, **no borres** — mover a `historico/` es preferible. El "por qué se
 | [banva-bodega-auditoria-2026-04-18.md](banva-bodega-auditoria-2026-04-18.md) | Forense | Comparativa amplia (63 requisitos) contra estándares clase mundial. 33% cumplimiento. | Pausa ads OOS automática, σ_LT real desde OCs, KVI/PLC tagging, ceremonias S&OP |
 | [banva-bodega-pr7-preauditoria-oc-recepcion.md](banva-bodega-pr7-preauditoria-oc-recepcion.md) | Preauditoría | Vinculación OC ↔ recepciones. App Etiquetas inserta `orden_compra_id=NULL`. | Selector dropdown de OC en `~/banva1/` (cross-repo) |
 | [banva-bodega-pr6b-preauditoria.md](banva-bodega-pr6b-preauditoria.md) | Preauditoría | Pausa automática de ads en SKUs OOS. **NO IMPLEMENTADO** (verificado 2026-04-25: no existe migración v57 con columnas `ad_*`, no hay cron `ads-pause-oos`, no hay función `pauseProductAd`). | Implementar todo el plan: migración + endpoint + cron + UI. Ahorro proyectado ~$2.1M CLP/año. ~1 día de trabajo. |
+| [banva-bodega-pr-ads-pipeline-preauditoria.md](banva-bodega-pr-ads-pipeline-preauditoria.md) | Preauditoría | Refactor del pipeline de métricas de ads ML — pasar de mensual condicional a daily, agregar `config_history` y `sync_health`. Origen: gap de 19 días silencioso de `ml_campaigns_mensual`. | Implementar 5 migraciones (v73-v77) + 3 endpoints + helper de notifications + poller en Viki. ~12.5h. Plan en sombra 1 semana antes de cutover. |
 
 ### 🟡 Histórico parcial (PR desplegado, items diferidos abiertos)
 
