@@ -1,6 +1,6 @@
 "use client";
 import { useState, useCallback, useEffect, useRef } from "react";
-import { initStore, refreshStore, isSupabaseConfigured, activePositions, posContents, getMapConfig, getStore, findProduct } from "@/lib/store";
+import { initStore, refreshStore, isSupabaseConfigured, activePositions, posContents, getMapConfig, getStore, findProduct, getCodigosMlBySkuOrigen } from "@/lib/store";
 import { fetchActiveConteos, updateConteo } from "@/lib/db";
 import type { DBConteo, ConteoLinea } from "@/lib/db";
 import dynamic from "next/dynamic";
@@ -313,9 +313,9 @@ function CountPosition({ conteo, posIdx, operario, onDone, onBack }: {
     if (prods.length > 0) {
       addProduct(prods[0].sku, prods[0].name);
     } else {
-      // Try by ML code in products
+      // Try by inventory_id (codigo ML) via composicion_venta
       const allProds = Object.values(s.products);
-      const found = allProds.find(p => p.mlCode && p.mlCode.split(",").some(c => c.trim() === code));
+      const found = allProds.find(p => getCodigosMlBySkuOrigen(p.sku).some(c => c === code));
       if (found) {
         addProduct(found.sku, found.name);
       }

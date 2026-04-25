@@ -27,6 +27,7 @@ Si dudás, **no borres** — mover a `historico/` es preferible. El "por qué se
 | [auditoria-inventarios-vs-codigo-2026-04-25.md](auditoria-inventarios-vs-codigo-2026-04-25.md) | Forense | 25 prácticas de los 6 manuales en `docs/manuales/inventarios/` mapeadas al código. ~67% cumplimiento. | Reservaciones explícitas, lotes/series, cycle counting auto, EOQ, Holt-Winters por categoría |
 | [banva-bodega-auditoria-2026-04-18.md](banva-bodega-auditoria-2026-04-18.md) | Forense | Comparativa amplia (63 requisitos) contra estándares clase mundial. 33% cumplimiento. | Pausa ads OOS automática, σ_LT real desde OCs, KVI/PLC tagging, ceremonias S&OP |
 | [banva-bodega-pr7-preauditoria-oc-recepcion.md](banva-bodega-pr7-preauditoria-oc-recepcion.md) | Preauditoría | Vinculación OC ↔ recepciones. App Etiquetas inserta `orden_compra_id=NULL`. | Selector dropdown de OC en `~/banva1/` (cross-repo) |
+| [banva-bodega-pr6b-preauditoria.md](banva-bodega-pr6b-preauditoria.md) | Preauditoría | Pausa automática de ads en SKUs OOS. **NO IMPLEMENTADO** (verificado 2026-04-25: no existe migración v57 con columnas `ad_*`, no hay cron `ads-pause-oos`, no hay función `pauseProductAd`). | Implementar todo el plan: migración + endpoint + cron + UI. Ahorro proyectado ~$2.1M CLP/año. ~1 día de trabajo. |
 
 ### 🟡 Histórico parcial (PR desplegado, items diferidos abiertos)
 
@@ -34,7 +35,6 @@ Si dudás, **no borres** — mover a `historico/` es preferible. El "por qué se
 |---|---|---|
 | [banva-bodega-pr3-preauditoria.md](banva-bodega-pr3-preauditoria.md) | TSB Fase A: 104 SKUs en shadow mode (`tsb_modelo_usado='tsb'`) | Fase C (activación operativa) — espera ≥4 semanas reales post 2026-05-18 |
 | [banva-bodega-pr4-preauditoria.md](banva-bodega-pr4-preauditoria.md) | PR4 Fase 1: flag `es_estacional` (v54), 67/533 SKUs marcados manualmente | Fase 2 (detección autocorrelación lag-12) — julio 2026 / Fase 3 (Holt-Winters) — enero 2027 |
-| [banva-bodega-pr6b-preauditoria.md](banva-bodega-pr6b-preauditoria.md) | Infra de pausa ads OOS (v57: `ad_status`, `ad_paused_by_motor`, endpoint) | Confirmar que el cron diario está pausando en producción + criterio A vs B en evaluación |
 
 ### ⚫ Histórico cerrado (referencia de "por qué se hizo así")
 

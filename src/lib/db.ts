@@ -5,7 +5,6 @@ import { getSupabase } from "./supabase";
 export interface DBProduct {
   id?: string;
   sku: string;
-  codigo_ml: string;
   nombre: string;
   categoria: string;
   proveedor: string;
@@ -206,7 +205,6 @@ export interface DBDiscrepanciaQty {
 function cleanProduct(p: DBProduct): DBProduct {
   return {
     sku: (p.sku || "").toUpperCase().trim(),
-    codigo_ml: p.codigo_ml,
     nombre: p.nombre, categoria: p.categoria, proveedor: p.proveedor,
     costo: p.costo, precio: p.precio, reorder: p.reorder,
     requiere_etiqueta: p.requiere_etiqueta, tamano: p.tamano, color: p.color,
@@ -975,7 +973,7 @@ export async function syncDiccionarioFromSheet(): Promise<{
     const codigosMlByOrigen = new Map<string, Set<string>>();
 
     for (const row of rows) {
-      // Track all SKU Ventas and Codigos ML for this SKU Origen
+      // Track all Codigos ML for this SKU Origen (usados para `requiere_etiqueta`)
       if (!codigosMlByOrigen.has(row.skuOrigen)) codigosMlByOrigen.set(row.skuOrigen, new Set());
       if (row.codigoMl) codigosMlByOrigen.get(row.skuOrigen)!.add(row.codigoMl);
 
@@ -983,7 +981,6 @@ export async function syncDiccionarioFromSheet(): Promise<{
         // Use unit cost (unidades=1 row). If first row is a pack, cost/name will be corrected below.
         productMap.set(row.skuOrigen, {
           sku: row.skuOrigen,
-          codigo_ml: row.codigoMl, // will be overwritten below with all codes
           nombre: row.nombreOrigen,
           categoria: row.categoria,
           proveedor: row.proveedor,
@@ -1007,11 +1004,10 @@ export async function syncDiccionarioFromSheet(): Promise<{
       }
     }
 
-    // Now set codigo_ml with ALL values for each product
+    // Set requiere_etiqueta segun si tiene algun codigo ML asociado en el Sheet
     productMap.forEach((prod, skuOrigen) => {
       const codigos = codigosMlByOrigen.get(skuOrigen);
-      prod.codigo_ml = codigos ? Array.from(codigos).join(",") : "";
-      prod.requiere_etiqueta = !!prod.codigo_ml;
+      prod.requiere_etiqueta = !!(codigos && codigos.size > 0);
     });
 
     // Fetch existing to detect added vs updated
@@ -1035,7 +1031,6 @@ export async function syncDiccionarioFromSheet(): Promise<{
         if (ex.nombre !== prod.nombre || ex.proveedor !== prod.proveedor ||
             ex.categoria !== prod.categoria || ex.tamano !== prod.tamano ||
             ex.color !== prod.color || ex.costo !== costoFinal ||
-            ex.codigo_ml !== prod.codigo_ml ||
             ex.requiere_etiqueta !== prod.requiere_etiqueta) {
           toUpsert.push({
             ...ex,
@@ -1045,7 +1040,6 @@ export async function syncDiccionarioFromSheet(): Promise<{
             costo: costoFinal,
             tamano: prod.tamano,
             color: prod.color,
-            codigo_ml: prod.codigo_ml,
             requiere_etiqueta: prod.requiere_etiqueta,
           });
           result.productos.updated++;
@@ -1167,7 +1161,7 @@ export async function importStockFromSheet(): Promise<{ imported: number; totalU
       const mlCode = (cols[0] || "").trim();
       if (nombre) {
         await upsertProducto({
-          sku, codigo_ml: mlCode, nombre,
+          sku, nombre,
           categoria: "Otros", proveedor: "Otro", costo: 0, precio: 0,
           reorder: 20, requiere_etiqueta: true, tamano: "", color: "",
         });

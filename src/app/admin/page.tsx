@@ -1,7 +1,7 @@
 "use client";
 /* v3.1 — conteos + pedidos ML + cron fix */
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, refreshStore, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, eliminarPicking, anularPicking, duplicarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote, reconciliarStock, aplicarReconciliacion, editarStockVariante, sustituirProducto, getRecepcionAjustes, registrarAjuste, backfillFacturaOriginal, getNotasOperativas, despickearComponente, buildPickingLineasFull, getSkuFisicoPorSkuVenta, syncFlexPickingSession, resetearLineaRecepcion, sincronizarCostoMovimientosRecepcion } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, refreshStore, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, eliminarPicking, anularPicking, duplicarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote, reconciliarStock, aplicarReconciliacion, editarStockVariante, sustituirProducto, getRecepcionAjustes, registrarAjuste, backfillFacturaOriginal, getNotasOperativas, despickearComponente, buildPickingLineasFull, getSkuFisicoPorSkuVenta, syncFlexPickingSession, resetearLineaRecepcion, sincronizarCostoMovimientosRecepcion, getCodigosMlBySkuOrigen, getCodigoMlPrimario } from "@/lib/store";
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia, IntegrityError } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
@@ -731,7 +731,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
     const skuUp = addSku.toUpperCase();
     const costo = prod?.cost || 0;
     await agregarLineaRecepcion(selRec.id!, {
-      sku: skuUp, nombre: prod?.name || addSku, codigoML: prod?.mlCode || "",
+      sku: skuUp, nombre: prod?.name || addSku, codigoML: getCodigoMlPrimario(skuUp),
       cantidad: addQty, costo, requiereEtiqueta: prod?.requiresLabel !== false,
     });
     await registrarAjuste({
@@ -794,7 +794,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
       await actualizarLineaRecepcion(errorLinea.id!, {
         sku: newProduct.sku,
         nombre: newProduct.name,
-        codigo_ml: newProduct.mlCode || "",
+        codigo_ml: getCodigoMlPrimario(newProduct.sku),
         requiere_etiqueta: newProduct.requiresLabel ?? errorLinea.requiere_etiqueta,
         notas: `${errorLinea.notas ? errorLinea.notas + " | " : ""}Cambio SKU: ${oldSku} → ${newProduct.sku}`,
       });
@@ -834,7 +834,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
         {
           sku: sustSelected.sku,
           nombre: sustSelected.name,
-          codigoML: sustSelected.mlCode || "",
+          codigoML: getCodigoMlPrimario(sustSelected.sku),
           requiereEtiqueta: sustSelected.requiresLabel !== false,
           costoDiccionario: sustSelected.cost || 0,
         },
@@ -871,7 +871,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
     if (!newSku) return;
     const prod = getStore().products[newSku.toUpperCase()];
     setNewLineas(l => [...l, {
-      sku: newSku.toUpperCase(), nombre: prod?.name || newSku, codigoML: prod?.mlCode || "",
+      sku: newSku.toUpperCase(), nombre: prod?.name || newSku, codigoML: getCodigoMlPrimario(newSku),
       cantidad: newQty, costo: prod?.cost || 0, requiereEtiqueta: prod?.requiresLabel !== false,
     }]);
     setNewSku(""); setNewQty(1);
@@ -1571,7 +1571,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                           marginBottom:4,cursor:"pointer",opacity:p.sku===errorLinea.sku?0.4:1}}>
                         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                           <span className="mono" style={{fontWeight:700,fontSize:13,color:"var(--cyan)"}}>{p.sku}</span>
-                          {p.mlCode && <span className="mono" style={{fontSize:10,color:"var(--txt3)"}}>{p.mlCode}</span>}
+                          {(() => { const c = getCodigoMlPrimario(p.sku); return c ? <span className="mono" style={{fontSize:10,color:"var(--txt3)"}}>{c}</span> : null; })()}
                         </div>
                         <div style={{fontSize:11,color:"var(--txt2)",marginTop:2}}>{p.name}</div>
                       </div>
@@ -4620,15 +4620,7 @@ function EtiquetasProductos() {
   const showToast = (m: string) => { setToast(m); setTimeout(() => setToast(""), 2500); };
 
   // Get the ML barcode code for a product (the code on the label like YJIH30730)
-  const getMLCode = (sku: string): string => {
-    const prod = s.products[sku];
-    if (!prod) return "";
-    // Check composicion_venta for this SKU as skuOrigen
-    const ventas = getVentasPorSkuOrigen(sku);
-    if (ventas.length > 0 && ventas[0].codigoMl) return ventas[0].codigoMl;
-    if (prod.mlCode) return prod.mlCode;
-    return "";
-  };
+  const getMLCode = (sku: string): string => getCodigoMlPrimario(sku);
 
   const getSkuVenta = (sku: string): string => {
     const ventas = getVentasPorSkuOrigen(sku);
@@ -7254,7 +7246,7 @@ function SinMappingMLBlock({ sku, onLinked }: { sku: string; onLinked: () => voi
   const [searched, setSearched] = useState(false);
   const [linking, setLinking] = useState<string|null>(null);
   const [error, setError] = useState<string|null>(null);
-  const codigoMl = (getStore().products[sku]?.mlCode || "").trim();
+  const codigoMl = getCodigoMlPrimario(sku).trim();
 
   const buscar = async () => {
     setLoading(true); setError(null); setSearched(true);
@@ -7744,21 +7736,23 @@ function Productos({ refresh }: { refresh: () => void }) {
   const prods = Object.values(s.products).filter(p=>{
     if(filtroDescubiertos && !esDescubierto(p)) return false;
     if(!q)return true;const ql=q.toLowerCase();
-    return p.sku.toLowerCase().includes(ql)||p.name.toLowerCase().includes(ql)||p.mlCode.toLowerCase().includes(ql)||p.cat.toLowerCase().includes(ql)||p.prov.toLowerCase().includes(ql);
+    if(p.sku.toLowerCase().includes(ql)||p.name.toLowerCase().includes(ql)||p.cat.toLowerCase().includes(ql)||p.prov.toLowerCase().includes(ql)) return true;
+    // Match contra codigos ML asociados via composicion_venta
+    return getCodigosMlBySkuOrigen(p.sku).some(c => c.toLowerCase().includes(ql));
   }).sort((a,b)=>a.sku.localeCompare(b.sku));
 
-  const [form, setForm] = useState<Partial<Product>>({sku:"",name:"",mlCode:"",cat:getCategorias()[0],prov:getProveedores()[0],cost:0,price:0,reorder:20,tamano:"",color:"",innerPack:1});
+  const [form, setForm] = useState<Partial<Product>>({sku:"",name:"",cat:getCategorias()[0],prov:getProveedores()[0],cost:0,price:0,reorder:20,tamano:"",color:"",innerPack:1});
   // Default: al crear un SKU nuevo, asumimos que se vende como unidad simple
   // (sku_venta = sku_origen, unidades = 1). Cubre el 90% de casos. Para packs,
   // desactivar y crear la composicion manualmente desde el tab "Composiciones".
   const [autoComposicionTrivial, setAutoComposicionTrivial] = useState(true);
   const startEdit=(p:Product)=>{setForm({...p});setEditSku(p.sku);setShowAdd(true);setAutoComposicionTrivial(false);};
-  const startAdd=()=>{setForm({sku:"",name:"",mlCode:"",cat:getCategorias()[0],prov:getProveedores()[0],cost:0,price:0,reorder:20,tamano:"",color:"",innerPack:1});setEditSku(null);setShowAdd(true);setAutoComposicionTrivial(true);};
+  const startAdd=()=>{setForm({sku:"",name:"",cat:getCategorias()[0],prov:getProveedores()[0],cost:0,price:0,reorder:20,tamano:"",color:"",innerPack:1});setEditSku(null);setShowAdd(true);setAutoComposicionTrivial(true);};
   const save=async()=>{
     if(!form.sku||!form.name)return;
     const sku=form.sku.toUpperCase();
     const isNew = !s.products[sku];
-    s.products[sku]={sku,name:form.name!,mlCode:form.mlCode||"",cat:form.cat||"Otros",prov:form.prov||"Otro",cost:form.cost||0,costAvg:s.products[sku]?.costAvg||form.cost||0,price:form.price||0,reorder:form.reorder||20,estadoSku:form.estadoSku||null,tamano:form.tamano||"",color:form.color||"",innerPack:form.innerPack??1};
+    s.products[sku]={sku,name:form.name!,cat:form.cat||"Otros",prov:form.prov||"Otro",cost:form.cost||0,costAvg:s.products[sku]?.costAvg||form.cost||0,price:form.price||0,reorder:form.reorder||20,estadoSku:form.estadoSku||null,tamano:form.tamano||"",color:form.color||"",innerPack:form.innerPack??1};
     saveStore();
     // Si es nuevo y el checkbox esta activo, crear composicion trivial
     // (sku_venta=sku_origen, unidades=1) para que aparezca en App Etiquetas y
@@ -7848,8 +7842,7 @@ function Productos({ refresh }: { refresh: () => void }) {
           {editSku && <ProductoBadges sku={editSku}/>}
           <div className="admin-form-grid">
             <div className="form-group"><label className="form-label">SKU *</label><input className="form-input mono" value={form.sku||""} onChange={e=>setForm({...form,sku:e.target.value.toUpperCase()})} disabled={!!editSku}/></div>
-            <div className="form-group"><label className="form-label">Código ML</label><input className="form-input mono" value={form.mlCode||""} onChange={e=>setForm({...form,mlCode:e.target.value})}/></div>
-            <div className="form-group" style={{gridColumn:"span 2"}}><label className="form-label">Nombre *</label><input className="form-input" value={form.name||""} onChange={e=>setForm({...form,name:e.target.value})}/></div>
+            <div className="form-group" style={{gridColumn:"span 3"}}><label className="form-label">Nombre *</label><input className="form-input" value={form.name||""} onChange={e=>setForm({...form,name:e.target.value})}/></div>
             <div className="form-group">
               <label className="form-label">Categoría</label>
               <select className="form-select" value={form.cat||""} onChange={e=>setForm({...form,cat:e.target.value})}>
@@ -10702,8 +10695,8 @@ function DiccionarioConfig() {
     ? allProducts.filter(p =>
         p.sku.toUpperCase().includes(searchUpper) ||
         p.name.toUpperCase().includes(searchUpper) ||
-        (p.mlCode||"").toUpperCase().includes(searchUpper) ||
-        (p.prov||"").toUpperCase().includes(searchUpper)
+        (p.prov||"").toUpperCase().includes(searchUpper) ||
+        getCodigosMlBySkuOrigen(p.sku).some(c => c.toUpperCase().includes(searchUpper))
       )
     : allProducts;
 
@@ -10832,7 +10825,7 @@ function DiccionarioConfig() {
                     <td style={{fontSize:11,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</td>
                     <td style={{fontSize:11}}>{p.prov||"—"}</td>
                     <td style={{fontSize:11}}>{p.cat||"—"}</td>
-                    <td className="mono" style={{fontSize:10,color:"var(--txt3)",maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.mlCode||"—"}</td>
+                    <td className="mono" style={{fontSize:10,color:"var(--txt3)",maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{getCodigosMlBySkuOrigen(p.sku).join(",")||"—"}</td>
                     <td style={{fontSize:11}}>{p.tamano||"—"}</td>
                     <td style={{fontSize:11}}>{p.color||"—"}</td>
                     <td className="mono" style={{fontSize:11,color:"var(--green)"}}>{p.cost ? fmtMoney(p.cost) : "—"}</td>
@@ -11418,9 +11411,9 @@ function AdminTimeline() {
       .filter(([sku, p]) =>
         sku.includes(t) ||
         (p.name || "").toUpperCase().includes(t) ||
-        (p.mlCode || "").toUpperCase().includes(t)
+        getCodigosMlBySkuOrigen(sku).some(c => c.toUpperCase().includes(t))
       )
-      .map(([sku, p]) => ({ sku, name: p.name || "", mlCode: p.mlCode || "" }))
+      .map(([sku, p]) => ({ sku, name: p.name || "", mlCode: getCodigoMlPrimario(sku) }))
       .slice(0, 10);
   }, [q, s.products]);
 

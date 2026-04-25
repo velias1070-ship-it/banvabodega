@@ -9,7 +9,6 @@ export { isConfigured as isSupabaseConfigured } from "./supabase";
 export interface Product {
   sku: string;
   name: string;
-  mlCode: string;
   cat: string;
   prov: string;
   cost: number;
@@ -80,6 +79,35 @@ export interface StoreData {
   mapConfig?: MapConfig;
   composicion: ComposicionVenta[];
   skuVentaToFisico: Record<string, string>;
+  // Indice derivado de composicion: sku_origen → [codigo_ml, ...]
+  // Reemplaza al campo legacy productos.codigo_ml. Se reconstruye junto a composicion.
+  codigosMlPorSkuOrigen: Record<string, string[]>;
+}
+
+function buildCodigosMlIndex(composicion: ComposicionVenta[]): Record<string, string[]> {
+  const idx: Record<string, string[]> = {};
+  for (const c of composicion) {
+    if (!c.codigoMl) continue;
+    const so = c.skuOrigen.toUpperCase();
+    if (!idx[so]) idx[so] = [];
+    if (!idx[so].includes(c.codigoMl)) idx[so].push(c.codigoMl);
+  }
+  return idx;
+}
+
+/** Devuelve los inventory_id (codigos ML) asociados a un sku_origen via composicion_venta. */
+export function getCodigosMlBySkuOrigen(skuOrigen: string): string[] {
+  return _cache.codigosMlPorSkuOrigen[skuOrigen.toUpperCase()] || [];
+}
+
+/** Devuelve el primer codigo ML (preferencia: composicion trivial sku_venta=sku_origen). */
+export function getCodigoMlPrimario(skuOrigen: string): string {
+  const so = skuOrigen.toUpperCase();
+  // Buscar primero la composicion trivial
+  const trivial = _cache.composicion.find(c => c.skuOrigen.toUpperCase() === so && c.skuVenta.toUpperCase() === so);
+  if (trivial?.codigoMl) return trivial.codigoMl;
+  // Fallback: cualquier composicion del SKU
+  return (_cache.codigosMlPorSkuOrigen[so] || [])[0] || "";
 }
 
 // ==================== CONSTANTS ====================
@@ -117,7 +145,7 @@ export function saveProveedores(provs: string[]) {
 
 // ==================== CACHE ====================
 let _cache: StoreData = {
-  products: {}, positions: [], stock: {}, stockDetalle: {}, movements: [], movCounter: 0, composicion: [], skuVentaToFisico: {},
+  products: {}, positions: [], stock: {}, stockDetalle: {}, movements: [], movCounter: 0, composicion: [], skuVentaToFisico: {}, codigosMlPorSkuOrigen: {},
 };
 let _initialized = false;
 let _loading = false;
@@ -142,7 +170,7 @@ export async function initStore(): Promise<void> {
     const products: Record<string, Product> = {};
     for (const p of prods) {
       products[p.sku] = {
-        sku: p.sku, name: p.nombre, mlCode: p.codigo_ml,
+        sku: p.sku, name: p.nombre,
         cat: p.categoria, prov: p.proveedor, cost: p.costo, costAvg: p.costo_promedio || p.costo || 0,
         price: p.precio, reorder: p.reorder,
         requiresLabel: p.requiere_etiqueta,
@@ -195,7 +223,7 @@ export async function initStore(): Promise<void> {
       notaOperativa: c.nota_operativa || null,
     }));
 
-    _cache = { products, positions, stock, stockDetalle, movements, movCounter: movements.length, mapConfig, composicion, skuVentaToFisico };
+    _cache = { products, positions, stock, stockDetalle, movements, movCounter: movements.length, mapConfig, composicion, skuVentaToFisico, codigosMlPorSkuOrigen: buildCodigosMlIndex(composicion) };
     _initialized = true;
   } catch (err) {
     console.error("initStore error:", err);
@@ -263,7 +291,7 @@ async function flushToSupabase() {
   try {
     // Flush products
     const dbProds: db.DBProduct[] = Object.values(_cache.products).map(p => ({
-      sku: p.sku, codigo_ml: p.mlCode, nombre: p.name,
+      sku: p.sku, nombre: p.name,
       categoria: p.cat, proveedor: p.prov, costo: p.cost, costo_promedio: p.costAvg, precio: p.price,
       reorder: p.reorder, requiere_etiqueta: p.requiresLabel !== false,
       tamano: p.tamano || "", color: p.color || "",
@@ -289,7 +317,7 @@ async function flushToSupabase() {
 
 export function resetStore() {
   if (_flushTimer) { clearTimeout(_flushTimer); _flushTimer = null; }
-  _cache = { products: {}, positions: [], stock: {}, stockDetalle: {}, movements: [], movCounter: 0, composicion: [], skuVentaToFisico: {} };
+  _cache = { products: {}, positions: [], stock: {}, stockDetalle: {}, movements: [], movCounter: 0, composicion: [], skuVentaToFisico: {}, codigosMlPorSkuOrigen: {} };
   _initialized = false;
 }
 
@@ -374,7 +402,7 @@ export function findProduct(query: string): Product[] {
   for (const p of Object.values(_cache.products)) {
     const skuN = normalize(p.sku);
     const nameN = normalize(p.name);
-    const mlN = normalize(p.mlCode || "");
+    const mlN = normalize(getCodigosMlBySkuOrigen(p.sku).join(","));
     const catN = normalize(p.cat || "");
     const provN = normalize(p.prov || "");
     const haystack = `${skuN} ${nameN} ${mlN} ${catN} ${provN}`;
@@ -541,7 +569,9 @@ export function findSkuVenta(query: string): { skuVenta: string; codigoMl: strin
 
     const skuN = normalize(p.sku);
     const nameN = normalize(p.name);
-    const mlN = normalize(p.mlCode || "");
+    const codigos = getCodigosMlBySkuOrigen(p.sku);
+    const codigoPrimario = codigos[0] || "";
+    const mlN = normalize(codigos.join(","));
     const haystack = `${skuN} ${nameN} ${mlN}`;
 
     let score = 0;
@@ -562,9 +592,9 @@ export function findSkuVenta(query: string): { skuVenta: string; codigoMl: strin
       scored.push({
         item: {
           skuVenta: p.sku,
-          codigoMl: p.mlCode || "",
+          codigoMl: codigoPrimario,
           nombre: p.name,
-          componentes: [{ skuVenta: p.sku, codigoMl: p.mlCode || "", skuOrigen: p.sku, unidades: 1, tipoRelacion: "componente" as const }],
+          componentes: [{ skuVenta: p.sku, codigoMl: codigoPrimario, skuOrigen: p.sku, unidades: 1, tipoRelacion: "componente" as const }],
         },
         score,
       });
@@ -769,7 +799,7 @@ export async function saveProductAsync(p: Product) {
   _cache.products[p.sku] = p;
   if (isConfigured()) {
     await db.upsertProducto({
-      sku: p.sku, codigo_ml: p.mlCode, nombre: p.name,
+      sku: p.sku, nombre: p.name,
       categoria: p.cat, proveedor: p.prov, costo: p.cost, costo_promedio: p.costAvg, precio: p.price,
       reorder: p.reorder, requiere_etiqueta: p.requiresLabel !== false,
       tamano: p.tamano || "", color: p.color || "",
@@ -843,7 +873,7 @@ export async function syncFromSheet(): Promise<{ added: number; updated: number;
   _cache.products = {};
   for (const p of prods) {
     _cache.products[p.sku] = {
-      sku: p.sku, name: p.nombre, mlCode: p.codigo_ml,
+      sku: p.sku, name: p.nombre,
       cat: p.categoria, prov: p.proveedor, cost: p.costo, costAvg: p.costo_promedio || p.costo || 0,
       price: p.precio, reorder: p.reorder,
       requiresLabel: p.requiere_etiqueta,
@@ -859,6 +889,7 @@ export async function syncFromSheet(): Promise<{ added: number; updated: number;
     tipoRelacion: c.tipo_relacion || "componente",
     notaOperativa: c.nota_operativa || null,
   }));
+  _cache.codigosMlPorSkuOrigen = buildCodigosMlIndex(_cache.composicion);
 
   console.log(`[sync] composicion from CSV: ${result.composicion.total}, from DB: ${compVenta.length}, cache: ${_cache.composicion.length}`);
 
@@ -1732,7 +1763,7 @@ export async function repararRecepcion(recepcionId: string, posicionDestino: str
     // Step 1: Create product if missing
     if (!existeProducto) {
       try {
-        await db.upsertProducto({ sku: l.sku, codigo_ml: l.codigo_ml || "", nombre: l.nombre, categoria: "Otros", proveedor: "Otro", costo: l.costo_unitario || 0, costo_promedio: l.costo_unitario || 0, precio: 0, reorder: 20, requiere_etiqueta: true, tamano: "", color: "" });
+        await db.upsertProducto({ sku: l.sku, nombre: l.nombre, categoria: "Otros", proveedor: "Otro", costo: l.costo_unitario || 0, costo_promedio: l.costo_unitario || 0, precio: 0, reorder: 20, requiere_etiqueta: true, tamano: "", color: "" });
         result.detalle += `Producto ${l.sku} creado. `;
       } catch (e: unknown) {
         result.problema = `No se pudo crear producto: ${e instanceof Error ? e.message : e}`;
@@ -1992,7 +2023,7 @@ export function buildPickingLineas(orders: { skuVenta: string; qty: number; orde
                 id: `P${String(lineas.length + 1).padStart(3, "0")}`,
                 skuVenta, qtyPedida: fuente.qty, estado: "PENDIENTE",
                 componentes: [{
-                  skuOrigen: fuente.sku, codigoMl: fProd.mlCode || "", nombre: fProd.name,
+                  skuOrigen: fuente.sku, codigoMl: getCodigoMlPrimario(fuente.sku), nombre: fProd.name,
                   unidades: fuente.qty, posicion: "?", posLabel: "Sin posición", stockDisponible: 0,
                   estado: "PENDIENTE", pickedAt: null, operario: null,
                 }],
@@ -2006,7 +2037,7 @@ export function buildPickingLineas(orders: { skuVenta: string; qty: number; orde
                 id: `P${String(lineas.length + 1).padStart(3, "0")}`,
                 skuVenta, qtyPedida: tomar, estado: "PENDIENTE",
                 componentes: [{
-                  skuOrigen: fuente.sku, codigoMl: fProd.mlCode || "", nombre: fProd.name,
+                  skuOrigen: fuente.sku, codigoMl: getCodigoMlPrimario(fuente.sku), nombre: fProd.name,
                   unidades: tomar, posicion: posInfo.pos, posLabel: posInfo.label, stockDisponible: posInfo.qty,
                   estado: "PENDIENTE", pickedAt: null, operario: null,
                 }],
@@ -2045,7 +2076,7 @@ export function buildPickingLineas(orders: { skuVenta: string; qty: number; orde
             id: `P${String(lineas.length + 1).padStart(3, "0")}`,
             skuVenta, qtyPedida: fuente.qty, estado: "PENDIENTE",
             componentes: [{
-              skuOrigen: fuente.sku, codigoMl: comp.codigoMl || prod?.mlCode || "",
+              skuOrigen: fuente.sku, codigoMl: comp.codigoMl || getCodigoMlPrimario(fuente.sku),
               nombre: prod?.name || fuente.sku, unidades: fuente.qty,
               posicion: "?", posLabel: "Sin posición", stockDisponible: 0,
               estado: "PENDIENTE", pickedAt: null, operario: null,
@@ -2059,7 +2090,7 @@ export function buildPickingLineas(orders: { skuVenta: string; qty: number; orde
               id: `P${String(lineas.length + 1).padStart(3, "0")}`,
               skuVenta, qtyPedida: tomar, estado: "PENDIENTE",
               componentes: [{
-                skuOrigen: fuente.sku, codigoMl: comp.codigoMl || prod?.mlCode || "",
+                skuOrigen: fuente.sku, codigoMl: comp.codigoMl || getCodigoMlPrimario(fuente.sku),
                 nombre: prod?.name || fuente.sku, unidades: tomar,
                 posicion: posInfo.pos, posLabel: posInfo.label, stockDisponible: posInfo.qty,
                 estado: "PENDIENTE", pickedAt: null, operario: null,
@@ -2107,14 +2138,10 @@ export function verificarScanPicking(scannedCode: string, componente: db.Picking
   // 2. Codigo ML of the composicion entry
   if (componente.codigoMl && matchesAnyCode(componente.codigoMl, code)) return true;
 
-  // 3. Product's ML codes (may be comma-separated: "ML1,ML2")
-  const prod = _cache.products[componente.skuOrigen];
-  if (prod?.mlCode && matchesAnyCode(prod.mlCode, code)) return true;
-
-  // 4. SKU Venta match (the "Cod. Universal" on the label)
+  // 3. SKU Venta match (the "Cod. Universal" on the label)
   if (skuVenta && skuVenta.toUpperCase() === code) return true;
 
-  // 5. Check ALL composicion entries for this skuOrigen — any codigoMl match
+  // 4. Check ALL composicion entries for this skuOrigen — any codigoMl match
   const ventas = getVentasPorSkuOrigen(componente.skuOrigen);
   for (const v of ventas) {
     if (v.codigoMl && v.codigoMl.toUpperCase() === code) return true;
@@ -2686,7 +2713,7 @@ export function buildPickingLineasFull(
             estado: "PENDIENTE",
             componentes: [{
               skuOrigen: fuente.sku,
-              codigoMl: prod?.mlCode || "",
+              codigoMl: getCodigoMlPrimario(fuente.sku),
               nombre: prod?.name || fuente.sku,
               unidades: fuente.qty,
               posicion: "?",
@@ -2717,7 +2744,7 @@ export function buildPickingLineasFull(
               estado: "PENDIENTE",
               componentes: [{
                 skuOrigen: fuente.sku,
-                codigoMl: prod?.mlCode || "",
+                codigoMl: getCodigoMlPrimario(fuente.sku),
                 nombre: prod?.name || fuente.sku,
                 unidades: tomar,
                 posicion: posInfo.pos,
