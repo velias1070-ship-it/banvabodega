@@ -331,13 +331,24 @@ Con esta validación de 5 segundos descubrimos problemas del bridge antes de esp
 
 Este es un constraint del endpoint ML, no un bug del pipeline. Para reconstruir config histórico hace falta otra fuente (changelog manual o ML billing logs si existen).
 
-### Fase 3 — Validación (1 semana en sombra)
+### Fase 3 — Validación shadow week (arrancada 2026-04-25, evaluación 2026-05-05)
 
-Mientras corren ambos crons (mensual viejo + daily nuevo):
-- Comparar `ml_campaigns_monthly_summary` (vista, calculada desde daily) vs `ml_campaigns_mensual` (tabla, llenada por cron viejo) para marzo 2026
-- Validar que `acos_real` y totales coincidan dentro de ±1% (atribución retroactiva puede mover)
-- Verificar que `config_history` registra cambios reales (modificar manualmente budget de una campaña en ML → debe aparecer entrada al siguiente sync)
-- Probar alerta: pausar el cron `campaigns-daily-sync` por 12h → debe llegar WhatsApp después de 36h sin sync
+**Comparación dual** (la tabla vieja dejó de sincronizarse el 6-abril, último período cerrado: marzo 2026):
+
+| Período | Comparar contra | Modo | Criterio aceptación |
+|---|---|---|---|
+| **Marzo 2026** | `ml_campaigns_mensual` (tabla huérfana del cron viejo) | Auto, query SQL | ±1% en cost / acos_real / total_amount por campaña |
+| **Abril 2026** | Panel browser ML Ads directamente | Manual (Vicente) | Screenshot de los números para referencia exacta |
+
+**Decisión de cutover**:
+- Marzo OK (±1%) **Y** abril valida contra browser → cutover (drop `ml_campaigns_mensual`, eliminar lógica de `ml-metrics.ts:447-488`)
+- Marzo OK pero abril discrepa → investigar antes de cutover
+- Marzo fuera de ±1% → investigar antes (posible bug de mapeo o agregación en VIEW)
+
+**Otros validaciones (no bloqueantes para cutover)**:
+- Cron `campaigns-daily-sync` corrió 9-10 veces consecutivas (1× por día desde 2026-04-26 a 2026-05-05)
+- `config_history` registra cambios reales si el config de alguna campaña cambia en ML durante la semana
+- Si pausamos el cron 36h → debe llegar alerta WhatsApp por `campaigns_daily` stale
 
 ### Fase 4 — Cutover (post-validación)
 
