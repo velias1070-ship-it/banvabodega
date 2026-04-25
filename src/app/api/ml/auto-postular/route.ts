@@ -279,6 +279,16 @@ export async function POST(req: NextRequest) {
         : "unknown";
       const costoNeto = policy?.costo_promedio || policy?.costo || row.costo_neto || 0;
 
+      // Ads fraccion = forward-looking (ACOS objetivo del cuadrante × precio_objetivo).
+      // Antes usabamos realizado historico 30d (adsFraccionBySku); cambio a
+      // forward-looking para que el motor sea predictivo, no reactivo
+      // (BANVA_Pricing_Investigacion_Comparada §4.4: "Max CPC = AOV × CVR × Target
+      // ACOS — not realized, target"). El realizado se conserva en contexto
+      // para auditoria del gap forward vs realized.
+      const acosObjPct = resolved.acos_objetivo_pct ?? 0;
+      const adsFraccionObjetivo = Math.round(precioObjetivo * acosObjPct / 100);
+      const adsFraccionRealizado = adsFraccionBySku.get(row.sku) || 0;
+
       const gateInputs = {
         costoNeto,
         precioReferencia: precioObjetivo,
@@ -286,7 +296,7 @@ export async function POST(req: NextRequest) {
         comisionPct: Number(row.comision_pct) || 0,
         canal,
         costoEnvioFullUnit: canal === "full" ? (row.envio_clp || 0) : 0,
-        adsFraccionUnit: adsFraccionBySku.get(row.sku) || 0,
+        adsFraccionUnit: adsFraccionObjetivo,
         margenMinimoFrac: resolved.margen_min_frac,
         precioObjetivo,
         precioPisoManual: resolved.precio_piso_manual,
@@ -356,7 +366,10 @@ export async function POST(req: NextRequest) {
           margen_min_fuente: resolved.fuente.margen,
           politica_fuente: resolved.fuente.politica,
           descuento_max_aplicado: resolved.descuento_max_pct,
-          ads_fraccion: adsFraccionBySku.get(row.sku) || 0,
+          acos_objetivo_pct: acosObjPct,
+          ads_fraccion_objetivo: adsFraccionObjetivo,
+          ads_fraccion_realizado_30d: adsFraccionRealizado,
+          ads_modelo: "forward_acos_objetivo",
           comision_pct: Number(row.comision_pct),
           titulo: row.titulo,
         },
