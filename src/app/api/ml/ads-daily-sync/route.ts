@@ -59,30 +59,17 @@ export async function GET(req: NextRequest) {
   const dateFrom = from.toISOString().slice(0, 10);
 
   try {
-    // 1. SKUs vendidos en el período
-    const allSkus = new Set<string>();
-    let off = 0;
-    while (true) {
-      const { data } = await sb
-        .from("ventas_ml_cache")
-        .select("sku_venta")
-        .gte("fecha_date", dateFrom)
-        .lte("fecha_date", dateTo)
-        .range(off, off + 999);
-      if (!data || !data.length) break;
-      for (const r of data) if (r.sku_venta) allSkus.add(r.sku_venta);
-      if (data.length < 1000) break;
-      off += 1000;
-    }
-
-    // 2. Resolver item_ids
+    // 1. Items activos: fuente canónica ml_items_map (Regla 6 inventory-policy: NO iterar
+    //    sobre respuesta parcial como ventas_ml_cache, que dejaba items pausados/sin venta
+    //    histórica fuera del sync. Cobertura previa: 54%, esperada con este cambio: 100%).
     const { data: imap } = await sb
       .from("ml_items_map")
-      .select("sku, item_id")
-      .in("sku", Array.from(allSkus));
-    const itemIds = Array.from(new Set((imap || []).map((i) => i.item_id).filter(Boolean)));
+      .select("item_id")
+      .eq("activo", true)
+      .not("item_id", "is", null);
+    const itemIds = Array.from(new Set(((imap || []) as { item_id: string }[]).map((i) => i.item_id).filter(Boolean)));
 
-    console.log(`[ads-daily-sync] ${allSkus.size} skus → ${itemIds.length} item_ids, rango ${dateFrom}→${dateTo}`);
+    console.log(`[ads-daily-sync] ${itemIds.length} item_ids activos, rango ${dateFrom}→${dateTo}`);
 
     // 3. Fetch daily ads por item con paralelismo controlado
     const allCacheRows: Record<string, unknown>[] = [];
@@ -159,7 +146,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       status: "ok",
       range: `${dateFrom} → ${dateTo}`,
-      skus: allSkus.size,
       items_total: itemIds.length,
       items_fetched: ok,
       items_failed: fail,
