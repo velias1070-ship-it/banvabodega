@@ -17,7 +17,7 @@ export async function GET(req: NextRequest) {
   // Search as sku_origen
   const { data: asOrigen } = await sb.from("composicion_venta").select("*").ilike("sku_origen", `%${skuUp}%`);
   // Search in productos
-  const { data: producto } = await sb.from("productos").select("sku, sku_venta, nombre, codigo_ml, categoria, proveedor").ilike("sku", `%${skuUp}%`);
+  const { data: producto } = await sb.from("productos").select("sku, nombre, codigo_ml, categoria, proveedor").ilike("sku", `%${skuUp}%`);
 
   return NextResponse.json({
     composicion_como_venta: asVenta || [],

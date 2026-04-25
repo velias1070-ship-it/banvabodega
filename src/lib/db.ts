@@ -5,7 +5,6 @@ import { getSupabase } from "./supabase";
 export interface DBProduct {
   id?: string;
   sku: string;
-  sku_venta: string;
   codigo_ml: string;
   nombre: string;
   categoria: string;
@@ -207,7 +206,6 @@ export interface DBDiscrepanciaQty {
 function cleanProduct(p: DBProduct): DBProduct {
   return {
     sku: (p.sku || "").toUpperCase().trim(),
-    sku_venta: p.sku_venta ? p.sku_venta.split(",").map(s => s.trim().toUpperCase()).filter(Boolean).join(",") : p.sku_venta,
     codigo_ml: p.codigo_ml,
     nombre: p.nombre, categoria: p.categoria, proveedor: p.proveedor,
     costo: p.costo, precio: p.precio, reorder: p.reorder,
@@ -974,21 +972,17 @@ export async function syncDiccionarioFromSheet(): Promise<{
     // A single SKU Origen can appear in MULTIPLE rows with different SKU Venta
     // (e.g., same product sold as single unit AND as pack of 2)
     const productMap = new Map<string, DBProduct>();
-    const skuVentasByOrigen = new Map<string, Set<string>>();
     const codigosMlByOrigen = new Map<string, Set<string>>();
 
     for (const row of rows) {
       // Track all SKU Ventas and Codigos ML for this SKU Origen
-      if (!skuVentasByOrigen.has(row.skuOrigen)) skuVentasByOrigen.set(row.skuOrigen, new Set());
       if (!codigosMlByOrigen.has(row.skuOrigen)) codigosMlByOrigen.set(row.skuOrigen, new Set());
-      if (row.skuVenta) skuVentasByOrigen.get(row.skuOrigen)!.add(row.skuVenta);
       if (row.codigoMl) codigosMlByOrigen.get(row.skuOrigen)!.add(row.codigoMl);
 
       if (!productMap.has(row.skuOrigen)) {
         // Use unit cost (unidades=1 row). If first row is a pack, cost/name will be corrected below.
         productMap.set(row.skuOrigen, {
           sku: row.skuOrigen,
-          sku_venta: row.skuVenta, // will be overwritten below with all ventas
           codigo_ml: row.codigoMl, // will be overwritten below with all codes
           nombre: row.nombreOrigen,
           categoria: row.categoria,
@@ -1013,11 +1007,9 @@ export async function syncDiccionarioFromSheet(): Promise<{
       }
     }
 
-    // Now set sku_venta and codigo_ml with ALL values for each product
+    // Now set codigo_ml with ALL values for each product
     productMap.forEach((prod, skuOrigen) => {
-      const ventas = skuVentasByOrigen.get(skuOrigen);
       const codigos = codigosMlByOrigen.get(skuOrigen);
-      prod.sku_venta = ventas ? Array.from(ventas).join(",") : "";
       prod.codigo_ml = codigos ? Array.from(codigos).join(",") : "";
       prod.requiere_etiqueta = !!prod.codigo_ml;
     });
@@ -1043,7 +1035,7 @@ export async function syncDiccionarioFromSheet(): Promise<{
         if (ex.nombre !== prod.nombre || ex.proveedor !== prod.proveedor ||
             ex.categoria !== prod.categoria || ex.tamano !== prod.tamano ||
             ex.color !== prod.color || ex.costo !== costoFinal ||
-            ex.codigo_ml !== prod.codigo_ml || ex.sku_venta !== prod.sku_venta ||
+            ex.codigo_ml !== prod.codigo_ml ||
             ex.requiere_etiqueta !== prod.requiere_etiqueta) {
           toUpsert.push({
             ...ex,
@@ -1054,7 +1046,6 @@ export async function syncDiccionarioFromSheet(): Promise<{
             tamano: prod.tamano,
             color: prod.color,
             codigo_ml: prod.codigo_ml,
-            sku_venta: prod.sku_venta,
             requiere_etiqueta: prod.requiere_etiqueta,
           });
           result.productos.updated++;
@@ -1176,7 +1167,7 @@ export async function importStockFromSheet(): Promise<{ imported: number; totalU
       const mlCode = (cols[0] || "").trim();
       if (nombre) {
         await upsertProducto({
-          sku, sku_venta: "", codigo_ml: mlCode, nombre,
+          sku, codigo_ml: mlCode, nombre,
           categoria: "Otros", proveedor: "Otro", costo: 0, precio: 0,
           reorder: 20, requiere_etiqueta: true, tamano: "", color: "",
         });

@@ -9,7 +9,6 @@ import { getServerSupabase } from "./supabase-server";
 
 export interface ProductoRow {
   sku: string;
-  sku_venta: string;
   nombre: string;
   categoria: string;
   proveedor: string;
@@ -152,11 +151,10 @@ export async function queryProductos(): Promise<ProductoRow[]> {
   const sb = getServerSupabase();
   if (!sb) return [];
   const data = await paginatedSelect(() =>
-    sb.from("productos").select("sku, sku_venta, nombre, categoria, proveedor, costo, costo_promedio, precio, inner_pack, lead_time_dias, moq, estado_sku, updated_at")
+    sb.from("productos").select("sku, nombre, categoria, proveedor, costo, costo_promedio, precio, inner_pack, lead_time_dias, moq, estado_sku, updated_at")
   );
   return data.map((p) => ({
     sku: p.sku as string,
-    sku_venta: (p.sku_venta as string) || "",
     nombre: (p.nombre as string) || "",
     categoria: (p.categoria as string) || "",
     proveedor: (p.proveedor as string) || "",

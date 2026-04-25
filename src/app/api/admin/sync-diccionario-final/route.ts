@@ -80,7 +80,7 @@ export async function GET(req: NextRequest) {
 
   // 3. Snapshot BANVA
   const [{ data: prodsDB }, { data: compsDB }] = await Promise.all([
-    sb.from("productos").select("sku, nombre, categoria, proveedor, costo, costo_promedio, tamano, color, codigo_ml, sku_venta, requiere_etiqueta"),
+    sb.from("productos").select("sku, nombre, categoria, proveedor, costo, costo_promedio, tamano, color, codigo_ml, requiere_etiqueta"),
     sb.from("composicion_venta").select("sku_venta, sku_origen, unidades, tipo_relacion, nota_operativa"),
   ]);
   const prodMapDB = new Map((prodsDB || []).map(p => [(p.sku || "").toUpperCase(), p]));
@@ -91,13 +91,10 @@ export async function GET(req: NextRequest) {
 
   // 4. Construir productMap desde Sheet (mismo algoritmo de syncDiccionarioFromSheet)
   const productMap = new Map<string, SheetRow & { costoCalc: number }>();
-  const skuVentasByOrigen = new Map<string, Set<string>>();
   const codigosMlByOrigen = new Map<string, Set<string>>();
 
   for (const row of rows) {
-    if (!skuVentasByOrigen.has(row.skuOrigen)) skuVentasByOrigen.set(row.skuOrigen, new Set());
     if (!codigosMlByOrigen.has(row.skuOrigen)) codigosMlByOrigen.set(row.skuOrigen, new Set());
-    if (row.skuVenta) skuVentasByOrigen.get(row.skuOrigen)!.add(row.skuVenta);
     if (row.codigoMl) codigosMlByOrigen.get(row.skuOrigen)!.add(row.codigoMl);
 
     if (!productMap.has(row.skuOrigen)) {
@@ -147,9 +144,7 @@ export async function GET(req: NextRequest) {
   const toUpsertProds: Record<string, unknown>[] = [];
   productMap.forEach((sheet, skuOrigen) => {
     const dbRow = prodMapDB.get(skuOrigen);
-    const ventas = skuVentasByOrigen.get(skuOrigen);
     const codigos = codigosMlByOrigen.get(skuOrigen);
-    const skuVentaConcat = ventas ? Array.from(ventas).join(",") : "";
     const codigoMlConcat = codigos ? Array.from(codigos).join(",") : "";
     const requiereEtiqueta = !!codigoMlConcat;
 
@@ -166,7 +161,6 @@ export async function GET(req: NextRequest) {
       tamano: sheet.tamano,
       color: sheet.color,
       codigo_ml: codigoMlConcat,
-      sku_venta: skuVentaConcat,
       requiere_etiqueta: requiereEtiqueta,
     };
 
@@ -182,7 +176,6 @@ export async function GET(req: NextRequest) {
       if ((dbRow.tamano || "") !== target.tamano) cambios.push(`tamano: "${dbRow.tamano || ""}" → "${target.tamano}"`);
       if ((dbRow.color || "") !== target.color) cambios.push(`color: "${dbRow.color || ""}" → "${target.color}"`);
       if ((dbRow.codigo_ml || "") !== target.codigo_ml) cambios.push(`codigo_ml: diff`);
-      if ((dbRow.sku_venta || "") !== target.sku_venta) cambios.push(`sku_venta: diff`);
       if (dbRow.requiere_etiqueta !== target.requiere_etiqueta) cambios.push(`requiere_etiqueta: ${dbRow.requiere_etiqueta} → ${target.requiere_etiqueta}`);
 
       if (cambios.length > 0) {

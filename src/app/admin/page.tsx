@@ -7758,7 +7758,7 @@ function Productos({ refresh }: { refresh: () => void }) {
     if(!form.sku||!form.name)return;
     const sku=form.sku.toUpperCase();
     const isNew = !s.products[sku];
-    s.products[sku]={sku,skuVenta:"",name:form.name!,mlCode:form.mlCode||"",cat:form.cat||"Otros",prov:form.prov||"Otro",cost:form.cost||0,costAvg:s.products[sku]?.costAvg||form.cost||0,price:form.price||0,reorder:form.reorder||20,estadoSku:form.estadoSku||null,tamano:form.tamano||"",color:form.color||"",innerPack:form.innerPack??1};
+    s.products[sku]={sku,name:form.name!,mlCode:form.mlCode||"",cat:form.cat||"Otros",prov:form.prov||"Otro",cost:form.cost||0,costAvg:s.products[sku]?.costAvg||form.cost||0,price:form.price||0,reorder:form.reorder||20,estadoSku:form.estadoSku||null,tamano:form.tamano||"",color:form.color||"",innerPack:form.innerPack??1};
     saveStore();
     // Si es nuevo y el checkbox esta activo, crear composicion trivial
     // (sku_venta=sku_origen, unidades=1) para que aparezca en App Etiquetas y
@@ -10702,7 +10702,6 @@ function DiccionarioConfig() {
     ? allProducts.filter(p =>
         p.sku.toUpperCase().includes(searchUpper) ||
         p.name.toUpperCase().includes(searchUpper) ||
-        (p.skuVenta||"").toUpperCase().includes(searchUpper) ||
         (p.mlCode||"").toUpperCase().includes(searchUpper) ||
         (p.prov||"").toUpperCase().includes(searchUpper)
       )
@@ -10820,7 +10819,6 @@ function DiccionarioConfig() {
                   <th>Nombre</th>
                   <th>Proveedor</th>
                   <th>Categoria</th>
-                  <th>SKUs Venta</th>
                   <th>Codigo ML</th>
                   <th>Tamano</th>
                   <th>Color</th>
@@ -10834,7 +10832,6 @@ function DiccionarioConfig() {
                     <td style={{fontSize:11,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</td>
                     <td style={{fontSize:11}}>{p.prov||"—"}</td>
                     <td style={{fontSize:11}}>{p.cat||"—"}</td>
-                    <td className="mono" style={{fontSize:10,color:"var(--cyan)",maxWidth:150,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.skuVenta||"—"}</td>
                     <td className="mono" style={{fontSize:10,color:"var(--txt3)",maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.mlCode||"—"}</td>
                     <td style={{fontSize:11}}>{p.tamano||"—"}</td>
                     <td style={{fontSize:11}}>{p.color||"—"}</td>

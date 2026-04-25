@@ -326,7 +326,6 @@ export interface OrdenInput {
 
 export interface ProductoInput {
   sku: string;
-  sku_venta: string;
   nombre: string;
   categoria: string;
   proveedor: string;

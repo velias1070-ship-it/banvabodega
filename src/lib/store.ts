@@ -8,7 +8,6 @@ export { isConfigured as isSupabaseConfigured } from "./supabase";
 // ==================== TYPES (backward compatible) ====================
 export interface Product {
   sku: string;
-  skuVenta: string;
   name: string;
   mlCode: string;
   cat: string;
@@ -143,7 +142,7 @@ export async function initStore(): Promise<void> {
     const products: Record<string, Product> = {};
     for (const p of prods) {
       products[p.sku] = {
-        sku: p.sku, skuVenta: p.sku_venta || "", name: p.nombre, mlCode: p.codigo_ml,
+        sku: p.sku, name: p.nombre, mlCode: p.codigo_ml,
         cat: p.categoria, prov: p.proveedor, cost: p.costo, costAvg: p.costo_promedio || p.costo || 0,
         price: p.precio, reorder: p.reorder,
         requiresLabel: p.requiere_etiqueta,
@@ -264,7 +263,7 @@ async function flushToSupabase() {
   try {
     // Flush products
     const dbProds: db.DBProduct[] = Object.values(_cache.products).map(p => ({
-      sku: p.sku, sku_venta: "", codigo_ml: p.mlCode, nombre: p.name,
+      sku: p.sku, codigo_ml: p.mlCode, nombre: p.name,
       categoria: p.cat, proveedor: p.prov, costo: p.cost, costo_promedio: p.costAvg, precio: p.price,
       reorder: p.reorder, requiere_etiqueta: p.requiresLabel !== false,
       tamano: p.tamano || "", color: p.color || "",
@@ -378,8 +377,7 @@ export function findProduct(query: string): Product[] {
     const mlN = normalize(p.mlCode || "");
     const catN = normalize(p.cat || "");
     const provN = normalize(p.prov || "");
-    const skuVentaN = normalize(p.skuVenta || "");
-    const haystack = `${skuN} ${nameN} ${mlN} ${catN} ${provN} ${skuVentaN}`;
+    const haystack = `${skuN} ${nameN} ${mlN} ${catN} ${provN}`;
 
     let score = 0;
     let allMatch = true;
@@ -387,13 +385,6 @@ export function findProduct(query: string): Product[] {
     for (const w of words) {
       // Exact SKU match = high score
       if (skuN === w) { score += 100; continue; }
-      // Exact SKU venta match (comma-separated)
-      if (skuVentaN) {
-        const ventaList = skuVentaN.split(",").map(s => s.trim()).filter(Boolean);
-        if (ventaList.includes(w)) { score += 90; continue; }
-        if (ventaList.some(sv => sv.startsWith(w))) { score += 45; continue; }
-        if (ventaList.some(sv => sv.includes(w))) { score += 30; continue; }
-      }
       // SKU starts with word
       if (skuN.startsWith(w)) { score += 50; continue; }
       // SKU contains
@@ -474,16 +465,11 @@ export function getNotasOperativas(skuVenta: string): string[] {
 // Dado un SKU Venta, busca el SKU físico en la tabla de productos (para productos simples sin composicion_venta)
 export function getSkuFisicoPorSkuVenta(skuVenta: string): string | null {
   const svUpper = skuVenta.toUpperCase();
-  // 1. Buscar en el campo skuVenta de productos (case-insensitive)
-  for (const [sku, prod] of Object.entries(_cache.products)) {
-    const ventas = prod.skuVenta.split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
-    if (ventas.includes(svUpper)) return sku;
-  }
-  // 2. Buscar en stockDetalle: si algún SKU físico tiene stock etiquetado con este skuVenta
+  // 1. Buscar en stockDetalle: si algún SKU físico tiene stock etiquetado con este skuVenta
   for (const [sku, svMap] of Object.entries(_cache.stockDetalle)) {
     if (svMap[skuVenta] || svMap[svUpper]) return sku;
   }
-  // 3. Buscar en mapeo ML: seller_sku → SKU físico (via ml_shipment_items + ml_items_map)
+  // 2. Buscar en mapeo ML: seller_sku → SKU físico (via ml_shipment_items + ml_items_map)
   const fromML = _cache.skuVentaToFisico[skuVenta]
     || _cache.skuVentaToFisico[svUpper]
     || _cache.skuVentaToFisico[skuVenta.toLowerCase()];
@@ -783,7 +769,7 @@ export async function saveProductAsync(p: Product) {
   _cache.products[p.sku] = p;
   if (isConfigured()) {
     await db.upsertProducto({
-      sku: p.sku, sku_venta: "", codigo_ml: p.mlCode, nombre: p.name,
+      sku: p.sku, codigo_ml: p.mlCode, nombre: p.name,
       categoria: p.cat, proveedor: p.prov, costo: p.cost, costo_promedio: p.costAvg, precio: p.price,
       reorder: p.reorder, requiere_etiqueta: p.requiresLabel !== false,
       tamano: p.tamano || "", color: p.color || "",
@@ -857,7 +843,7 @@ export async function syncFromSheet(): Promise<{ added: number; updated: number;
   _cache.products = {};
   for (const p of prods) {
     _cache.products[p.sku] = {
-      sku: p.sku, skuVenta: p.sku_venta || "", name: p.nombre, mlCode: p.codigo_ml,
+      sku: p.sku, name: p.nombre, mlCode: p.codigo_ml,
       cat: p.categoria, prov: p.proveedor, cost: p.costo, costAvg: p.costo_promedio || p.costo || 0,
       price: p.precio, reorder: p.reorder,
       requiresLabel: p.requiere_etiqueta,
@@ -1746,7 +1732,7 @@ export async function repararRecepcion(recepcionId: string, posicionDestino: str
     // Step 1: Create product if missing
     if (!existeProducto) {
       try {
-        await db.upsertProducto({ sku: l.sku, sku_venta: "", codigo_ml: l.codigo_ml || "", nombre: l.nombre, categoria: "Otros", proveedor: "Otro", costo: l.costo_unitario || 0, costo_promedio: l.costo_unitario || 0, precio: 0, reorder: 20, requiere_etiqueta: true, tamano: "", color: "" });
+        await db.upsertProducto({ sku: l.sku, codigo_ml: l.codigo_ml || "", nombre: l.nombre, categoria: "Otros", proveedor: "Otro", costo: l.costo_unitario || 0, costo_promedio: l.costo_unitario || 0, precio: 0, reorder: 20, requiere_etiqueta: true, tamano: "", color: "" });
         result.detalle += `Producto ${l.sku} creado. `;
       } catch (e: unknown) {
         result.problema = `No se pudo crear producto: ${e instanceof Error ? e.message : e}`;

@@ -24,7 +24,7 @@ export async function GET() {
         .select("sku_origen, nombre, categoria, proveedor, skus_venta, abc, xyz, cuadrante, accion, prioridad, alertas, alertas_count, target_dias_full, stock_bodega, stock_en_transito, mandar_full, pedir_proveedor, pedir_proveedor_sin_rampup, factor_rampup_aplicado, rampup_motivo, evento_activo, multiplicador_evento, liquidacion_accion, dias_en_quiebre, vel_pre_quiebre, es_quiebre_proveedor, abc_pre_quiebre, es_catch_up, venta_perdida_pesos, updated_at, vel_ponderada, vel_objetivo, gap_vel_pct, gmroi, dio")
         .or("vel_ponderada.gt.0,stock_total.gt.0"),
       sb.from("composicion_venta").select("sku_venta, sku_origen, unidades, tipo_relacion"),
-      sb.from("productos").select("sku, sku_venta, nombre, costo, precio"),
+      sb.from("productos").select("sku, nombre, costo, precio"),
       sb.from("stock_full_cache").select("sku_venta, cantidad, stock_danado, stock_perdido, stock_transferencia, stock_no_disponible"),
       sb.from("orders_history")
         .select("sku_venta, cantidad, canal, fecha, subtotal, comision_total, costo_envio, ingreso_envio, total")
@@ -35,7 +35,7 @@ export async function GET() {
 
     const intelRows = (intelRes.data || []) as Record<string, unknown>[];
     const composicion = (compRes.data || []) as { sku_venta: string; sku_origen: string; unidades: number; tipo_relacion?: string }[];
-    const productos = (prodRes.data || []) as { sku: string; sku_venta: string; nombre: string; costo: number; precio: number }[];
+    const productos = (prodRes.data || []) as { sku: string; nombre: string; costo: number; precio: number }[];
     const cacheRows = (cacheRes.data || []) as { sku_venta: string; cantidad: number; stock_danado: number; stock_perdido: number; stock_transferencia: number; stock_no_disponible: number }[];
     const ordenes = (ordRes.data || []) as { sku_venta: string; cantidad: number; canal: string; fecha: string; subtotal: number; comision_total: number; costo_envio: number; ingreso_envio: number; total: number }[];
 

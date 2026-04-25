@@ -133,14 +133,12 @@ function ProductSearch({ onSelect, placeholder }: { onSelect: (p: Product) => vo
 
   const select = (p: Product) => { setQ(""); setOpen(false); onSelect(p); };
 
-  // Detectar si el query matchea un SKU venta del producto
+  // Detectar si el query matchea un SKU venta del producto via composicion_venta
   const qNorm = q.trim().toLowerCase();
   const matchedSkuVenta = (p: Product): string | null => {
-    if (!p.skuVenta) return null;
-    const ventaList = p.skuVenta.split(",").map(s => s.trim()).filter(Boolean);
-    const match = ventaList.find(sv => sv.toLowerCase() === qNorm || sv.toLowerCase().includes(qNorm));
-    // Solo mostrar si el match NO es por el SKU origen (para evitar redundancia)
-    return match && match.toLowerCase() !== p.sku.toLowerCase() ? match : null;
+    const ventas = getVentasPorSkuOrigen(p.sku);
+    const match = ventas.find(v => v.skuVenta.toLowerCase() === qNorm || v.skuVenta.toLowerCase().includes(qNorm));
+    return match && match.skuVenta.toLowerCase() !== p.sku.toLowerCase() ? match.skuVenta : null;
   };
 
   return (

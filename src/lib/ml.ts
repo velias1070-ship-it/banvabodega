@@ -1961,21 +1961,10 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     }
   }
   // b) productos.sku set for direct match against seller_custom_field
-  const { data: prodData } = await sb.from("productos").select("sku, sku_venta");
+  const { data: prodData } = await sb.from("productos").select("sku");
   const knownSkus = new Set<string>();
-  const skuVentaToSku = new Map<string, string>();
   for (const p of (prodData || [])) {
     if (p.sku) knownSkus.add(p.sku.toUpperCase());
-    if (p.sku_venta) {
-      // sku_venta can be comma-separated
-      for (const sv of p.sku_venta.split(",")) {
-        const trimmed = sv.trim().toUpperCase();
-        if (trimmed) {
-          knownSkus.add(trimmed);
-          skuVentaToSku.set(trimmed, p.sku.toUpperCase());
-        }
-      }
-    }
   }
 
   // 2. Listar todos los items del seller
@@ -1996,9 +1985,6 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     if (sellerCustomField) {
       const scf = sellerCustomField.toUpperCase().trim();
       if (knownSkus.has(scf)) return scf;
-      // Check if it maps through sku_venta → sku
-      const mapped = skuVentaToSku.get(scf);
-      if (mapped) return scf;
     }
     return null;
   }

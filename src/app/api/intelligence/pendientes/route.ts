@@ -26,14 +26,14 @@ export async function GET() {
   try {
     const [cacheRes, prodRes, stockRes, compRes, itemsMapRes] = await Promise.all([
       sb.from("stock_full_cache").select("sku_venta, cantidad").gt("cantidad", 0),
-      sb.from("productos").select("sku, nombre, costo, sku_venta"),
+      sb.from("productos").select("sku, nombre, costo"),
       sb.from("stock").select("sku, cantidad, qty_reserved"),
       sb.from("composicion_venta").select("sku_venta, sku_origen"),
       sb.from("ml_items_map").select("sku, item_id, sku_venta, titulo").eq("activo", true),
     ]);
 
     const fullCache = (cacheRes.data || []) as { sku_venta: string; cantidad: number }[];
-    const productos = (prodRes.data || []) as { sku: string; nombre: string; costo: number; sku_venta: string | null }[];
+    const productos = (prodRes.data || []) as { sku: string; nombre: string; costo: number }[];
     const stock = (stockRes.data || []) as { sku: string; cantidad: number; qty_reserved: number }[];
     const composicion = (compRes.data || []) as { sku_venta: string; sku_origen: string }[];
     const itemsMap = (itemsMapRes.data || []) as { sku: string; item_id: string; sku_venta: string | null; titulo: string | null }[];
@@ -50,15 +50,8 @@ export async function GET() {
 
     // productos lookup
     const prodBySku = new Map<string, { nombre: string; costo: number }>();
-    const prodBySkuVenta = new Map<string, { sku: string; nombre: string; costo: number }>();
     for (const p of productos) {
       prodBySku.set(p.sku.toUpperCase(), { nombre: p.nombre, costo: p.costo || 0 });
-      if (p.sku_venta) {
-        for (const sv of p.sku_venta.split(",")) {
-          const trimmed = sv.trim().toUpperCase();
-          if (trimmed) prodBySkuVenta.set(trimmed, { sku: p.sku, nombre: p.nombre, costo: p.costo || 0 });
-        }
-      }
     }
 
     // composicion: sku_venta → sku_origen
@@ -102,7 +95,7 @@ export async function GET() {
       }
 
       // Buscar producto
-      const prod = prodBySku.get(skuReal) || prodBySku.get(svUp) || prodBySkuVenta.get(svUp) || prodBySkuVenta.get(skuReal);
+      const prod = prodBySku.get(skuReal) || prodBySku.get(svUp);
       if (prod) {
         skuReal = skuReal; // ya resuelto
         titulo = prod.nombre || titulo;
@@ -129,7 +122,7 @@ export async function GET() {
 
     // 1. Evaluar cada SKU resuelto
     for (const [skuReal, info] of Array.from(resolvedMap.entries())) {
-      const prod = prodBySku.get(skuReal) || prodBySkuVenta.get(skuReal);
+      const prod = prodBySku.get(skuReal);
 
       if (!prod) {
         pendientes.push({
