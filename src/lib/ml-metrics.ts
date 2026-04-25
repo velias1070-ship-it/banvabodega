@@ -808,8 +808,12 @@ async function faseAggregate(estado: SyncEstado): Promise<number> {
 
   await batchUpdateSnapshot(periodo, updates);
 
-  // 5. Compute weekly velocity
-  await computeVelocidadSemanal(periodo, ordenes || []);
+  // 5. Compute weekly velocity — DESCONECTADO 2026-04-25 (quarantine).
+  // ml_velocidad_semanal renombrada a _deprecated_ml_velocidad_semanal_2026_05_09.
+  // 0 lectores activos (commit ae0a2ee reemplazó por orders_history canónico).
+  // DROP planeado 2026-05-09. Si algo grita en el período, reactivar esta llamada
+  // + RENAME de vuelta. Función computeVelocidadSemanal() se mantiene para reverso fácil.
+  // await computeVelocidadSemanal(periodo, ordenes || []);
 
   // 6. Compute benchmarks
   await computeBenchmarks(periodo, snapshots || [], categoriasMap);

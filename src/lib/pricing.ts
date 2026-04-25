@@ -255,3 +255,105 @@ export function margenPostAds(precio: number, inputs: FloorInputs): number | nul
   const margenAbs = precio - costoConIva - comision - envio - adsFraccionUnit;
   return margenAbs / precio;
 }
+
+/**
+ * Resolver de configuracion pricing por SKU con override jerarquico.
+ *
+ * Cascada: productos.<campo> override > pricing_cuadrante_config[cuadrante] > _DEFAULT.
+ *
+ * Fuente: BANVA_Pricing_Ajuste_Plan §5 + Investigacion_Comparada §6.2 ("defaults
+ * por cuadrante, override por SKU"). El manual prescribe NO un default uniforme
+ * de margen 15% sino diferenciacion: ESTRELLA 8%, CASHCOW 20%, REVISAR 0%.
+ */
+export interface PricingCuadranteConfig {
+  cuadrante: string;
+  margen_min_pct: number;
+  politica_default: "defender" | "seguir" | "exprimir" | "liquidar";
+  acos_objetivo_pct: number | null;
+  descuento_max_pct: number | null;
+  descuento_max_kvi_pct: number | null;
+  canal_preferido: string | null;
+}
+
+export interface PricingProductoOverrides {
+  precio_piso: number | null;
+  margen_minimo_pct: number | null;
+  politica_pricing: string | null;
+  es_kvi: boolean;
+  auto_postular: boolean;
+}
+
+export interface PricingResolved {
+  margen_min_pct: number;
+  margen_min_frac: number;
+  politica: "defender" | "seguir" | "exprimir" | "liquidar";
+  acos_objetivo_pct: number | null;
+  descuento_max_pct: number | null;
+  precio_piso_manual: number | null;
+  es_kvi: boolean;
+  auto_postular: boolean;
+  fuente: {
+    margen: "sku" | "cuadrante" | "default";
+    politica: "sku" | "cuadrante" | "default";
+  };
+}
+
+const FALLBACK_GLOBAL = {
+  margen_min_pct: 15,
+  politica: "seguir" as const,
+  acos_objetivo_pct: 12,
+  descuento_max_pct: 20,
+};
+
+export function resolverPricingConfig(
+  override: PricingProductoOverrides | null,
+  cuadranteConfig: PricingCuadranteConfig | null,
+  defaultConfig: PricingCuadranteConfig | null,
+): PricingResolved {
+  const ov = override ?? { precio_piso: null, margen_minimo_pct: null, politica_pricing: null, es_kvi: false, auto_postular: false };
+  const cu = cuadranteConfig ?? defaultConfig ?? null;
+
+  const margenSku = ov.margen_minimo_pct;
+  const margenCuad = cu?.margen_min_pct;
+  let margen_min_pct: number;
+  let fuenteMargen: "sku" | "cuadrante" | "default";
+  if (margenSku != null && margenSku !== 15) {
+    margen_min_pct = margenSku;
+    fuenteMargen = "sku";
+  } else if (margenCuad != null) {
+    margen_min_pct = margenCuad;
+    fuenteMargen = "cuadrante";
+  } else {
+    margen_min_pct = FALLBACK_GLOBAL.margen_min_pct;
+    fuenteMargen = "default";
+  }
+
+  const politicaSku = ov.politica_pricing;
+  const politicaCuad = cu?.politica_default;
+  let politica: PricingResolved["politica"];
+  let fuentePolitica: "sku" | "cuadrante" | "default";
+  if (politicaSku && politicaSku !== "seguir") {
+    politica = politicaSku as PricingResolved["politica"];
+    fuentePolitica = "sku";
+  } else if (politicaCuad) {
+    politica = politicaCuad;
+    fuentePolitica = "cuadrante";
+  } else {
+    politica = FALLBACK_GLOBAL.politica;
+    fuentePolitica = "default";
+  }
+
+  return {
+    margen_min_pct,
+    margen_min_frac: margen_min_pct / 100,
+    politica,
+    acos_objetivo_pct: cu?.acos_objetivo_pct ?? FALLBACK_GLOBAL.acos_objetivo_pct,
+    descuento_max_pct: ov.es_kvi
+      ? (cu?.descuento_max_kvi_pct ?? FALLBACK_GLOBAL.descuento_max_pct)
+      : (cu?.descuento_max_pct ?? FALLBACK_GLOBAL.descuento_max_pct),
+    precio_piso_manual: ov.precio_piso,
+    es_kvi: ov.es_kvi,
+    auto_postular: ov.auto_postular,
+    fuente: { margen: fuenteMargen, politica: fuentePolitica },
+  };
+}
