@@ -7807,8 +7807,25 @@ function Productos({ refresh }: { refresh: () => void }) {
             <div className="form-group"><label className="form-label">SKU *</label><input className="form-input mono" value={form.sku||""} onChange={e=>setForm({...form,sku:e.target.value.toUpperCase()})} disabled={!!editSku}/></div>
             <div className="form-group"><label className="form-label">Código ML</label><input className="form-input mono" value={form.mlCode||""} onChange={e=>setForm({...form,mlCode:e.target.value})}/></div>
             <div className="form-group" style={{gridColumn:"span 2"}}><label className="form-label">Nombre *</label><input className="form-input" value={form.name||""} onChange={e=>setForm({...form,name:e.target.value})}/></div>
-            <div className="form-group"><label className="form-label">Categoría</label><select className="form-select" value={form.cat} onChange={e=>setForm({...form,cat:e.target.value})}>{getCategorias().map(c=><option key={c}>{c}</option>)}</select></div>
-            <div className="form-group"><label className="form-label">Proveedor</label><select className="form-select" value={form.prov} onChange={e=>setForm({...form,prov:e.target.value})}>{getProveedores().map(p=><option key={p}>{p}</option>)}</select></div>
+            <div className="form-group">
+              <label className="form-label">Categoría</label>
+              <select className="form-select" value={form.cat||""} onChange={e=>setForm({...form,cat:e.target.value})}>
+                {form.cat && !getCategorias().includes(form.cat) && <option value={form.cat}>{form.cat} (no canónico)</option>}
+                {getCategorias().map(c=><option key={c}>{c}</option>)}
+              </select>
+            </div>
+            <div className="form-group">
+              <label className="form-label">Proveedor</label>
+              <select className="form-select" value={form.prov||""} onChange={e=>setForm({...form,prov:e.target.value})}>
+                {form.prov && !getProveedores().includes(form.prov) && <option value={form.prov}>{form.prov} (no canónico)</option>}
+                {getProveedores().map(p=><option key={p}>{p}</option>)}
+              </select>
+              {form.prov && !getProveedores().includes(form.prov) && (
+                <div style={{fontSize:9,color:"var(--amber)",marginTop:4,lineHeight:1.4}}>
+                  Razón social cruda del DTE. Cambiá a un proveedor canónico para normalizarlo.
+                </div>
+              )}
+            </div>
             <div className="form-group"><label className="form-label">Costo</label><input type="number" className="form-input mono" value={form.cost||""} onChange={e=>setForm({...form,cost:parseInt(e.target.value)||0})}/></div>
             <div className="form-group"><label className="form-label">Precio ML</label><input type="number" className="form-input mono" value={form.price||""} onChange={e=>setForm({...form,price:parseInt(e.target.value)||0})}/></div>
             <div className="form-group"><label className="form-label">Tamaño</label><input className="form-input" value={form.tamano||""} onChange={e=>setForm({...form,tamano:e.target.value})} placeholder="1.5P, 2P, 2.5P, King..."/></div>
