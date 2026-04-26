@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import AdminAutoPostularDashboard from "./AdminAutoPostularDashboard";
 
 /**
  * Pricing Config — defaults por cuadrante + overrides por SKU.
@@ -178,6 +179,9 @@ export default function AdminPricingConfig() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+
+      {/* Dashboard del motor auto-postular: KPIs, motivos de skip, histórico */}
+      <AdminAutoPostularDashboard />
 
       {tiposUnknown.length > 0 && (
         <div className="card" style={{
