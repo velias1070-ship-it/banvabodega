@@ -25,6 +25,8 @@ type PromoInfo = {
   min_discounted_price?: number;
   max_discounted_price?: number;
   suggested_discounted_price?: number;
+  start_date?: string;
+  finish_date?: string;
 };
 
 type ShipFree = { coverage?: { all_country?: { list_cost: number; billable_weight: number } } };
@@ -271,7 +273,7 @@ async function handleRefresh(req: NextRequest) {
     let promoType: string | null = null;
     let promoName: string | null = null;
     let promoPct: number | null = null;
-    let promosPostulables: Array<{ name: string; type: string; id: string | null; min: number; max: number; suggested: number }> = [];
+    let promosPostulables: Array<{ name: string; type: string; id: string | null; min: number; max: number; suggested: number; start_date: string | null; finish_date: string | null }> = [];
     let syncError: string | null = null;
     // Flag de fetch de promos. Si es false (exception o null), NO confiamos en
     // los defaults precioVenta=priceList/tienePromo=false — conservamos lo que
@@ -359,6 +361,8 @@ async function handleRefresh(req: NextRequest) {
               min: Math.round(p.min_discounted_price || 0),
               max: Math.round(p.max_discounted_price || 0),
               suggested: Math.round(p.suggested_discounted_price || 0),
+              start_date: p.start_date || null,
+              finish_date: p.finish_date || null,
             });
           }
         } else if (promosRes.status === "rejected" || promos === null) {

@@ -115,7 +115,12 @@ export async function GET() {
  * }
  */
 
-type PromoPostulable = { name: string; type: string; id: string | null; min: number; max: number; suggested: number };
+type PromoPostulable = {
+  name: string; type: string; id: string | null;
+  min: number; max: number; suggested: number;
+  start_date?: string | null;
+  finish_date?: string | null;
+};
 
 type MarginCacheRow = {
   item_id: string;
@@ -361,6 +366,30 @@ export async function POST(req: NextRequest) {
       if (cooldownResult.bloqueado) {
         hardExtras.push(cooldownResult.motivo!);
       }
+      // Gates por fecha de la promo (Manual: BANVA_Pricing_Investigacion_Comparada §4.4
+      // playbook eventos). ML envía start_date/finish_date en /seller-promotions —
+      // margin-cache las persiste en promos_postulables.
+      const ahoraMs = Date.now();
+      const startMs = promo.start_date ? new Date(promo.start_date).getTime() : null;
+      const finishMs = promo.finish_date ? new Date(promo.finish_date).getTime() : null;
+      const HORA = 3600_000;
+      // Promo termina en <24h: postular = gasto sin retorno (la promo queda activa
+      // poco tiempo y el ranking no se recupera). Excepción LIGHTNING (relámpago).
+      if (finishMs && !/LIGHTNING/i.test(promo.type)) {
+        const horasRestantes = (finishMs - ahoraMs) / HORA;
+        if (horasRestantes < 24 && horasRestantes > 0) {
+          hardExtras.push(`promo_casi_vencida: ${horasRestantes.toFixed(1)}h restantes (<24h, no vale postular)`);
+        } else if (horasRestantes <= 0) {
+          hardExtras.push(`promo_vencida: termino ${promo.finish_date}`);
+        }
+      }
+      // Promo arranca en >14 días: skipear, postular más cerca del inicio
+      if (startMs) {
+        const diasHastaInicio = (startMs - ahoraMs) / (HORA * 24);
+        if (diasHastaInicio > 14) {
+          hardExtras.push(`promo_lejana: arranca en ${diasHastaInicio.toFixed(0)}d (>14d, postular más cerca)`);
+        }
+      }
 
       const gate = evaluarGates(gateInputs);
       const bloquea = [...hardExtras, ...gate.motivosBloqueo];
@@ -416,6 +445,10 @@ export async function POST(req: NextRequest) {
           promo_min: promo.min,
           promo_max: promo.max,
           promo_suggested: promo.suggested,
+          promo_start_date: promo.start_date || null,
+          promo_finish_date: promo.finish_date || null,
+          promo_horas_restantes: finishMs ? Math.max(0, Math.round((finishMs - ahoraMs) / HORA)) : null,
+          promo_dias_hasta_inicio: startMs && startMs > ahoraMs ? Math.round((startMs - ahoraMs) / (HORA * 24)) : null,
           cooldown_bajadas_24h: bajadasPorSku.get(row.sku) || 0,
           cooldown_ventana_horas: COOLDOWN_VENTANA_HORAS,
           cooldown_max_bajadas: COOLDOWN_MAX_BAJADAS,
