@@ -257,6 +257,39 @@ export function margenPostAds(precio: number, inputs: FloorInputs): number | nul
 }
 
 /**
+ * Cooldown anti race-to-the-bottom.
+ *
+ * Manual: BANVA_Pricing_Investigacion_Comparada §4.1 implicacion #3:
+ *   "Si bajo el precio 2 veces en 24h sin recuperar Buy Box, frenar."
+ *
+ * Adaptado a BANVA (sin Buy Box, sin catalogo competitivo): si el SKU
+ * tuvo N o mas bajadas de precio en la ventana de horas, bloquear nuevas
+ * postulaciones a promo. Evita loop accidental cuando hay mucha promo
+ * disponible y los gates sueltan a varias en cadena.
+ *
+ * Lee ml_price_history (delta_pct < 0 = bajada) en ventana reciente.
+ *
+ * Uso:
+ *   const result = await evaluarCooldown(sb, sku, { ventanaHoras: 24, maxBajadas: 2 });
+ *   if (result.bloqueado) -> push motivo a hardExtras
+ */
+export interface CooldownInputs {
+  ventanaHoras: number;
+  maxBajadas: number;
+}
+
+export interface CooldownResult {
+  bloqueado: boolean;
+  bajadas_en_ventana: number;
+  motivo: string | null;
+  ultima_bajada_at?: string;
+}
+
+// Constants exportadas para reuso en UI/tests
+export const COOLDOWN_VENTANA_HORAS = 24;
+export const COOLDOWN_MAX_BAJADAS = 2;
+
+/**
  * Resolver de configuracion pricing por SKU con override jerarquico.
  *
  * Cascada: productos.<campo> override > pricing_cuadrante_config[cuadrante] > _DEFAULT.
@@ -355,5 +388,28 @@ export function resolverPricingConfig(
     es_kvi: ov.es_kvi,
     auto_postular: ov.auto_postular,
     fuente: { margen: fuenteMargen, politica: fuentePolitica },
+  };
+}
+
+/**
+ * Evalua el gate de cooldown a partir del conteo de bajadas en ventana.
+ * Sincrónico — el caller hace la query a ml_price_history y pasa el count.
+ *
+ * Patron para usarlo en un endpoint:
+ *   1. Query batch a ml_price_history WHERE delta_pct < 0 AND detected_at > NOW() - 24h
+ *   2. Construir Map<sku, count_bajadas>
+ *   3. Para cada SKU evaluado: evaluarCooldown(map.get(sku) ?? 0, opts)
+ */
+export function evaluarCooldown(
+  bajadasEnVentana: number,
+  opts: CooldownInputs = { ventanaHoras: COOLDOWN_VENTANA_HORAS, maxBajadas: COOLDOWN_MAX_BAJADAS },
+): CooldownResult {
+  const bloqueado = bajadasEnVentana >= opts.maxBajadas;
+  return {
+    bloqueado,
+    bajadas_en_ventana: bajadasEnVentana,
+    motivo: bloqueado
+      ? `cooldown: ${bajadasEnVentana} bajadas en ${opts.ventanaHoras}h (max ${opts.maxBajadas})`
+      : null,
   };
 }

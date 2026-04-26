@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
 import {
   evaluarGates, margenPostAds, resolverPricingConfig,
+  evaluarCooldown, COOLDOWN_VENTANA_HORAS, COOLDOWN_MAX_BAJADAS,
   type CanalLogistico, type PricingCuadranteConfig,
 } from "@/lib/pricing";
 
@@ -212,6 +213,26 @@ export async function POST(req: NextRequest) {
   }
   const defaultCuadrante = cuadrantesConfigMap.get("_DEFAULT") || null;
 
+  // 3c. Cooldown anti race-to-the-bottom. Cargamos batch las bajadas de
+  // precio ocurridas en la ventana (24h por default) desde ml_price_history,
+  // por sku, para evaluarlo como gate por SKU sin n+1 queries.
+  // Manual: BANVA_Pricing_Investigacion_Comparada §4.1 implicacion #3.
+  const cooldownDesde = new Date(Date.now() - COOLDOWN_VENTANA_HORAS * 3600_000).toISOString();
+  const bajadasPorSku = new Map<string, number>();
+  if (skus.length > 0) {
+    for (let i = 0; i < skus.length; i += 500) {
+      const chunk = skus.slice(i, i + 500);
+      const { data: bajadas } = await sb.from("ml_price_history")
+        .select("sku, delta_pct")
+        .in("sku", chunk)
+        .lt("delta_pct", 0)
+        .gte("detected_at", cooldownDesde);
+      for (const r of (bajadas || []) as Array<{ sku: string }>) {
+        bajadasPorSku.set(r.sku, (bajadasPorSku.get(r.sku) || 0) + 1);
+      }
+    }
+  }
+
   // 3b. Cargar ads fraccion por SKU (promedio ads_cost_asignado / unidades en 30d)
   const sinceIso = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
   const adsFraccionBySku = new Map<string, number>();
@@ -323,6 +344,11 @@ export async function POST(req: NextRequest) {
           hardExtras.push(`descuento_max_cuadrante: ${descPct.toFixed(1)}% > ${resolved.descuento_max_pct}% permitido para cuadrante ${intel?.cuadrante || "_DEFAULT"}`);
         }
       }
+      // Gate cooldown: si el SKU bajó de precio N veces en ventana, frenar.
+      const cooldownResult = evaluarCooldown(bajadasPorSku.get(row.sku) || 0);
+      if (cooldownResult.bloqueado) {
+        hardExtras.push(cooldownResult.motivo!);
+      }
 
       const gate = evaluarGates(gateInputs);
       const bloquea = [...hardExtras, ...gate.motivosBloqueo];
@@ -373,6 +399,9 @@ export async function POST(req: NextRequest) {
           ads_modelo: "forward_acos_objetivo",
           comision_pct: Number(row.comision_pct),
           titulo: row.titulo,
+          cooldown_bajadas_24h: bajadasPorSku.get(row.sku) || 0,
+          cooldown_ventana_horas: COOLDOWN_VENTANA_HORAS,
+          cooldown_max_bajadas: COOLDOWN_MAX_BAJADAS,
         },
       });
 
