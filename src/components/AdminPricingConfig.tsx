@@ -75,16 +75,19 @@ export default function AdminPricingConfig() {
   const [filtroCuad, setFiltroCuad] = useState<string>("");
   const [filtroQ, setFiltroQ] = useState<string>("");
   const [filtroOverrides, setFiltroOverrides] = useState(false);
+  const [tiposUnknown, setTiposUnknown] = useState<Array<{ type: string; count: number; sample_skus: string[] }>>([]);
 
   const load = async () => {
     setLoading(true);
     try {
-      const [c, s] = await Promise.all([
+      const [c, s, u] = await Promise.all([
         fetch("/api/pricing-config/cuadrantes").then(r => r.json()),
         fetch("/api/pricing-config/skus").then(r => r.json()),
+        fetch("/api/pricing/promo-types-unknown").then(r => r.json()).catch(() => ({ unknown: [] })),
       ]);
       setCuadrantes(c.rows || []);
       setSkus(s.rows || []);
+      setTiposUnknown(u.unknown || []);
     } finally {
       setLoading(false);
     }
@@ -175,6 +178,45 @@ export default function AdminPricingConfig() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+
+      {tiposUnknown.length > 0 && (
+        <div className="card" style={{
+          padding: 16,
+          border: "1px solid var(--amberBd)",
+          background: "var(--amberBg)",
+        }}>
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+            <div style={{ fontSize: 24 }}>⚠️</div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: "var(--amber)", marginBottom: 6 }}>
+                {tiposUnknown.length === 1
+                  ? "Hay 1 tipo de promo nuevo de ML que no está clasificado"
+                  : `Hay ${tiposUnknown.length} tipos de promo nuevos de ML que no están clasificados`}
+              </div>
+              <div style={{ fontSize: 12, color: "var(--txt2)", marginBottom: 10 }}>
+                ML está disponibilizando promos con tipos que el motor no conoce. Por defecto las trata como tier 1 (sin vitrina). Si alguno debería ser de mayor exposición, agregalo a <code style={{ color: "var(--cyan)" }}>VITRINA_TIER</code> en <code style={{ color: "var(--cyan)" }}>src/lib/pricing.ts</code>.
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {tiposUnknown.map(t => (
+                  <div key={t.type} style={{
+                    display: "flex",
+                    gap: 12,
+                    alignItems: "center",
+                    padding: "6px 10px",
+                    background: "var(--bg3)",
+                    borderRadius: 6,
+                    fontSize: 12,
+                  }}>
+                    <code style={{ color: "var(--amber)", fontWeight: 600 }}>{t.type}</code>
+                    <span style={{ color: "var(--txt2)" }}>{t.count} apariciones</span>
+                    <span style={{ color: "var(--txt3)" }}>SKUs ej: {t.sample_skus.join(", ")}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="card" style={{ padding: 16 }}>
         <div style={{ marginBottom: 12 }}>
