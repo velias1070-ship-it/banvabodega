@@ -290,10 +290,21 @@ export async function POST(req: NextRequest) {
       procesados++;
       if (procesados > limit) break;
 
-      // Precio objetivo: default = suggested de ML, fallback = max del rango
-      const precioObjetivo = promo.suggested > 0
-        ? promo.suggested
-        : promo.max > 0 ? promo.max : row.precio_venta;
+      // Precio objetivo según política comercial del SKU.
+      // Manual: BANVA_Pricing_Investigacion_Comparada §6.1 + Ajuste_Plan §5.
+      //   exprimir / defender → MAX permitido (proteger margen)
+      //   liquidar            → MIN permitido (mover stock rápido)
+      //   seguir              → suggested ML (volumen)
+      const precioObjetivo: number = (() => {
+        if (resolved.politica === "exprimir" || resolved.politica === "defender") {
+          return promo.max > 0 ? promo.max : (promo.suggested > 0 ? promo.suggested : row.precio_venta);
+        }
+        if (resolved.politica === "liquidar") {
+          return promo.min > 0 ? promo.min : (promo.suggested > 0 ? promo.suggested : row.precio_venta);
+        }
+        // política "seguir" (default): toma suggested
+        return promo.suggested > 0 ? promo.suggested : (promo.max > 0 ? promo.max : row.precio_venta);
+      })();
 
       const canal: CanalLogistico = row.logistic_type === "fulfillment" ? "full"
         : row.logistic_type === "self_service" ? "flex"
@@ -399,6 +410,11 @@ export async function POST(req: NextRequest) {
           ads_modelo: "forward_acos_objetivo",
           comision_pct: Number(row.comision_pct),
           titulo: row.titulo,
+          precio_objetivo_modo: resolved.politica === "exprimir" || resolved.politica === "defender" ? "max"
+            : resolved.politica === "liquidar" ? "min" : "suggested",
+          promo_min: promo.min,
+          promo_max: promo.max,
+          promo_suggested: promo.suggested,
           cooldown_bajadas_24h: bajadasPorSku.get(row.sku) || 0,
           cooldown_ventana_horas: COOLDOWN_VENTANA_HORAS,
           cooldown_max_bajadas: COOLDOWN_MAX_BAJADAS,
