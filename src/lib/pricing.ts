@@ -299,29 +299,44 @@ export const COOLDOWN_MAX_BAJADAS = 2;
 
 /**
  * Tier de vitrina/exposición de cada tipo de promo en MercadoLibre.
- * Manual: BANVA_Pricing_Investigacion_Comparada §4.4 (eventos premium ML
- * dan más tráfico que campañas seller propias). El motor lo usa como
- * gate: no degradar de tier mayor a tier menor cuando ya hay promo activa.
+ * Mapeo derivado de la investigación operativa ML Chile (sección Ofertas,
+ * eventos comerciales, etiquetas de descuento) y BANVA_Pricing_Investigacion_Comparada §4.4.
+ * El motor lo usa como gate: no degradar de tier mayor a tier menor cuando ya hay promo activa.
  *
- * 5 = máxima vitrina (curado ML, 1 SKU/categoría/día)
- * 4 = alta (campañas masivas ML con badge dedicado)
- * 3 = media (ML targeted: stock estancado, baja rotación)
- * 2 = ML automatizado (sin badge dedicado, pero ML decide precio)
- * 1 = baja (vendedor crea, sin badge especial)
+ * TIER S (5) — Máxima exposición: sección "Ofertas" + push notifications.
+ *   DOD (24h, 1 SKU/categoría, +1M visitas/día), LIGHTNING (6h, urgencia + sección).
+ *
+ * TIER A (4) — Eventos comerciales con sección exclusiva o co-financiamiento.
+ *   DEAL (Hot Sale, CyberDay, Día de la Mama), MARKETPLACE_CAMPAIGN, SMART (ML co-fondea
+ *   y prioriza ranking porque está co-invirtiendo).
+ *
+ * TIER B (3) — Etiqueta verde "% OFF" + boost CTR en grilla, sin sección dedicada.
+ *   PRICE_DISCOUNT (descuento individual con tag verde), PRE_NEGOTIATED (negociado 1-a-1 con KAM).
+ *
+ * TIER C (2) — Boost moderado de nicho (ML targeted, sin tag premium).
+ *   UNHEALTHY_STOCK (ML quiere desalojar Full estancado, boost moderado).
+ *
+ * TIER D (1) — Sin boost de exposición. Solo precio rebajado.
+ *   PRICE_MATCHING, SELLER_CAMPAIGN, SELLER_COUPON_CAMPAIGN, VOLUME (BNGM/BNSP/SPONTH).
  */
 export const VITRINA_TIER: Record<string, number> = {
   DOD: 5,
   MELI_CHOICE: 5,
+  LIGHTNING: 5,
+  LIGHTNING_DEAL: 5,
   DEAL: 4,
   MARKETPLACE_CAMPAIGN: 4,
-  LIGHTNING: 4,
-  LIGHTNING_DEAL: 4,
-  UNHEALTHY_STOCK: 3,
+  SMART: 4,
+  PRICE_DISCOUNT: 3,
   PRE_NEGOTIATED: 3,
-  PRICE_MATCHING: 2,
-  SMART: 2,
+  UNHEALTHY_STOCK: 2,
+  PRICE_MATCHING: 1,
   SELLER_CAMPAIGN: 1,
-  PRICE_DISCOUNT: 1,
+  SELLER_COUPON_CAMPAIGN: 1,
+  VOLUME: 1,
+  BNGM: 1,
+  BNSP: 1,
+  SPONTH: 1,
 };
 
 export function tierVitrina(promoType: string | null | undefined): number {
