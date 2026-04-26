@@ -178,9 +178,9 @@ export default function AdminPricingConfig() {
 
       <div className="card" style={{ padding: 16 }}>
         <div style={{ marginBottom: 12 }}>
-          <h2 style={{ margin: 0, fontSize: 18, color: "var(--txt)" }}>💰 Pricing Config — Defaults por cuadrante</h2>
+          <h2 style={{ margin: 0, fontSize: 18, color: "var(--txt)" }}>💰 Reglas de pricing por cuadrante <span style={{ fontSize: 12, color: "var(--txt3)", fontWeight: 400 }}>(canal-agnósticas)</span></h2>
           <div style={{ fontSize: 12, color: "var(--txt3)", marginTop: 4 }}>
-            Manual: <code style={{ color: "var(--cyan)" }}>BANVA_Pricing_Ajuste_Plan §5</code> + <code style={{ color: "var(--cyan)" }}>Investigacion_Comparada §6.2</code>. Override jerárquico: SKU &gt; cuadrante &gt; default.
+            Estas son las reglas comerciales del SKU — independientes del canal donde vendas. Manual: <code style={{ color: "var(--cyan)" }}>BANVA_Pricing_Ajuste_Plan §5</code> + <code style={{ color: "var(--cyan)" }}>Investigacion_Comparada §6.2</code>. Override jerárquico: SKU &gt; cuadrante &gt; default.
           </div>
         </div>
 
@@ -268,7 +268,7 @@ export default function AdminPricingConfig() {
 
       <div className="card" style={{ padding: 16 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
-          <h2 style={{ margin: 0, fontSize: 18, color: "var(--txt)" }}>📋 Lista por SKU — overrides</h2>
+          <h2 style={{ margin: 0, fontSize: 18, color: "var(--txt)" }}>📋 SKUs — reglas + pisos por canal</h2>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             <input
               placeholder="Buscar SKU/nombre/proveedor"
@@ -303,7 +303,7 @@ export default function AdminPricingConfig() {
                 <th>Vel/d</th>
                 <th>Stock</th>
                 <th title="Días en quiebre">Q</th>
-                <th title="Piso $ calculado por motor (forward ACOS)">Piso calc.</th>
+                <th title="Piso $ calculado por motor para canal ML (forward ACOS). Cuando se agreguen Falabella/D2C aparecerán columnas adicionales.">Piso ML</th>
                 <th>Costo prom.</th>
                 <th>Precio actual</th>
                 <th>Margen 30d</th>

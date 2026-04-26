@@ -164,6 +164,7 @@ export async function POST(req: NextRequest) {
 
       inserts.push({
         sku: p.sku,
+        canal: "ml",
         item_id: principal.item_id,
         promo_id: null,
         promo_type: "_baseline",

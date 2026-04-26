@@ -344,6 +344,7 @@ export async function POST(req: NextRequest) {
 
       logRows.push({
         sku: row.sku,
+        canal: "ml",
         item_id: row.item_id,
         promo_id: promo.id,
         promo_type: promo.type,

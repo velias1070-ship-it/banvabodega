@@ -27,10 +27,12 @@ export async function GET() {
       "vel_ponderada, stock_total, margen_full_30d, precio_promedio, " +
       "dias_en_quiebre, factor_rampup_aplicado"
     ),
-    // Vista derivada: ultimo floor por SKU (incluye baseline_warming + evals reales)
-    sb.from("v_precio_piso_actual").select(
-      "sku, precio_piso_calculado, calculado_at, decision, contexto"
-    ),
+    // Vista derivada por canal: hoy filtramos canal='ml'.
+    // Cuando agreguemos Falabella/D2C, reemplazar este select por
+    // múltiples (uno por canal) o devolver array de pisos por canal.
+    sb.from("v_precio_piso_por_canal").select(
+      "sku, canal, precio_piso_calculado, calculado_at, decision, contexto"
+    ).eq("canal", "ml"),
   ]);
   if (prodRes.error) {
     return NextResponse.json({ error: `productos: ${prodRes.error.message}` }, { status: 500 });
