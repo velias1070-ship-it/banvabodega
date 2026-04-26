@@ -27,7 +27,33 @@ type PromoInfo = {
   suggested_discounted_price?: number;
   start_date?: string;
   finish_date?: string;
+  // Para promos donde ML obliga precio sin rango (UNHEALTHY_STOCK, SMART
+  // candidate, PRE_NEGOTIATED), el precio NO viene en `price`. ML expresa
+  // el descuento como porcentajes que tu (seller) y ML aportan. El precio
+  // efectivo que tendrias que aceptar es:
+  //   original_price × (1 - (seller_percentage + meli_percentage) / 100)
+  meli_percentage?: number;
+  seller_percentage?: number;
 };
+
+/**
+ * Precio efectivo que ML obliga para una promo. Para promos con `price`
+ * directo (LIGHTNING, DOD, SMART started) usa ese. Para promos donde ML
+ * expresa el descuento como porcentajes (UNHEALTHY_STOCK candidate, SMART
+ * candidate sin price), calcula original_price × (1 - %seller - %meli).
+ *
+ * Manual: feedback_ml_promos_precio_obligado.md (memoria persistente).
+ */
+function calcularPrecioFijoML(p: PromoInfo): number {
+  if (p.price && p.price > 0) return Math.round(p.price);
+  const sellerPct = p.seller_percentage || 0;
+  const meliPct = p.meli_percentage || 0;
+  const totalPct = sellerPct + meliPct;
+  if (totalPct > 0 && p.original_price > 0) {
+    return Math.round(p.original_price * (1 - totalPct / 100));
+  }
+  return 0;
+}
 
 type ShipFree = { coverage?: { all_country?: { list_cost: number; billable_weight: number } } };
 type FeeInfo = { sale_fee_amount: number; sale_fee_details?: { percentage_fee: number } };
@@ -361,10 +387,11 @@ async function handleRefresh(req: NextRequest) {
               min: Math.round(p.min_discounted_price || 0),
               max: Math.round(p.max_discounted_price || 0),
               suggested: Math.round(p.suggested_discounted_price || 0),
-              // Para promos donde ML decide el precio (LIGHTNING/DOD/SMART/UNHEALTHY/
-              // PRE_NEGOTIATED/PRICE_MATCHING), p.price contiene el precio que ML
-              // aplicará al postular. Permite evaluar si conviene aceptar la promo.
-              precio_fijo_ml: Math.round(p.price || 0),
+              // Precio fijo obligado por ML. Maneja 2 casos:
+              //   1. price directo (LIGHTNING/DOD/SMART started)
+              //   2. seller_percentage + meli_percentage sobre original_price
+              //      (UNHEALTHY_STOCK candidate, SMART candidate, PRE_NEGOTIATED)
+              precio_fijo_ml: calcularPrecioFijoML(p),
               start_date: p.start_date || null,
               finish_date: p.finish_date || null,
             });
