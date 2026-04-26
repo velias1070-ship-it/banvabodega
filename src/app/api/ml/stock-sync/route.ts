@@ -64,6 +64,16 @@ export async function POST(req: NextRequest) {
     const skus = (queue || []).map((d: { sku: string }) => d.sku);
 
     if (skus.length === 0) {
+      // Telemetría a ml_sync_health: queue vacía es un éxito (cron corrió, no había trabajo).
+      // Sin esto el cron natural de cada 1 min nunca actualizaría last_success_at en períodos
+      // tranquilos → falso positivo de stale a los 30 min.
+      const nowEmpty = new Date().toISOString();
+      await sb.from("ml_sync_health").update({
+        last_attempt_at: nowEmpty,
+        last_success_at: nowEmpty,
+        last_error: null,
+        consecutive_failures: 0,
+      }).eq("job_name", "stock_sync");
       return NextResponse.json({
         status: "ok", synced: 0, total: 0, remaining: 0, message: "queue empty",
         enqueue_all_ran: enqueueAllRan, enqueue_all_inserted: enqueueAllInserted,
