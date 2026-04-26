@@ -199,6 +199,19 @@ export async function POST(req: NextRequest) {
 
     const remaining = uniqueSkus.length - processed.length;
     console.log(`[ML Stock Sync] Done: ${synced}/${processed.length} synced, ${remaining} remaining`);
+
+    // Telemetría a ml_sync_health.stock_sync (P1.1 inventario crons).
+    // OK si no hubo errores. Si hubo errors[] pero algo se procesó, sigue contando como
+    // "intento" pero no éxito — el siguiente sync corregirá los SKUs en queue.
+    {
+      const now = new Date().toISOString();
+      const ok_run = errors.length === 0;
+      await sb.from("ml_sync_health").update({
+        last_attempt_at: now,
+        ...(ok_run ? { last_success_at: now, last_error: null, consecutive_failures: 0 } : { last_error: errors.slice(0, 3).join(" | ") }),
+      }).eq("job_name", "stock_sync");
+    }
+
     return NextResponse.json({
       status: "ok",
       synced,
@@ -211,6 +224,13 @@ export async function POST(req: NextRequest) {
     });
   } catch (err) {
     console.error("[ML Stock Sync] Error:", err);
+    const sb2 = getServerSupabase();
+    if (sb2) {
+      await sb2.from("ml_sync_health").update({
+        last_attempt_at: new Date().toISOString(),
+        last_error: String(err).slice(0, 500),
+      }).eq("job_name", "stock_sync");
+    }
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
