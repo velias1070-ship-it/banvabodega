@@ -5,6 +5,7 @@ import {
   evaluarCooldown, COOLDOWN_VENTANA_HORAS, COOLDOWN_MAX_BAJADAS,
   type CanalLogistico, type PricingCuadranteConfig,
 } from "@/lib/pricing";
+import { getBaseUrl } from "@/lib/base-url";
 
 export const maxDuration = 300;
 
@@ -453,12 +454,143 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // 6. En modo apply, ejecutar las postulaciones realmente
-  // (POR AHORA: solo loguear, no ejecutar. El apply real se habilita en una
-  // iteracion siguiente cuando el dry-run valide que las decisiones son correctas.)
+  // 6. En modo apply, ejecutar las postulaciones realmente.
+  // Llama /api/ml/promotions { action: "join" } para cada decision='postular'.
+  // Reusa el endpoint que ya maneja DELETE→retry, error de offer_already_exists,
+  // detección de price_overridden, y log en admin_actions_log con accion='ml_promo:join'.
+  // Solo aplica filas con decision==='postular' (modo='apply' ya filtró auto_postular=true
+  // en el scope). Actualiza la fila ya insertada con resultado real.
+  const apply_stats = { ejecutadas: 0, ok: 0, error: 0, skipped: 0 };
+  const apply_resultados: Array<{
+    sku: string; promo_name: string | null; promo_id: string | null;
+    status: "ok" | "error" | "overridden"; message?: string;
+    applied_price?: number;
+  }> = [];
+
   if (modo === "apply") {
-    // TODO: ejecutar join a ML para filas con decision=postular.
-    // Mantenemos seguro por ahora: el modo apply loguea pero no actualiza ML.
+    const baseUrl = getBaseUrl();
+    const postularRows = logRows
+      .map((r, i) => ({ row: r, id: logIds[i] }))
+      .filter(x => x.row.decision === "postular");
+
+    apply_stats.ejecutadas = postularRows.length;
+
+    for (const { row, id } of postularRows) {
+      const item_id = row.item_id as string;
+      const promotion_type = row.promo_type as string | null;
+      const promotion_id = row.promo_id as string | null;
+      const deal_price = row.precio_objetivo as number;
+      const startedAt = new Date().toISOString();
+
+      try {
+        const resp = await fetch(`${baseUrl}/api/ml/promotions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            item_id,
+            action: "join",
+            promotion_type,
+            promotion_id,
+            deal_price,
+          }),
+        });
+        const respJson = await resp.json().catch(() => ({})) as {
+          ok?: boolean;
+          error?: string;
+          warning?: { type: string; applied: number; requested: number; message: string };
+          result?: { price?: number; status?: string };
+        };
+
+        if (!resp.ok) {
+          apply_stats.error++;
+          const errMsg = respJson.error || `HTTP ${resp.status}`;
+          apply_resultados.push({
+            sku: row.sku as string,
+            promo_name: row.promo_name as string | null,
+            promo_id: promotion_id,
+            status: "error",
+            message: errMsg,
+          });
+          if (id) {
+            await sb.from("auto_postulacion_log").update({
+              decision: "error",
+              motivo: `apply ERROR · ${errMsg}`,
+              contexto: {
+                ...(row.contexto as Record<string, unknown>),
+                apply_status: "error",
+                apply_error: errMsg,
+                applied_at: startedAt,
+              },
+            }).eq("id", id);
+          }
+        } else if (respJson.warning?.type === "price_overridden") {
+          apply_stats.ok++;
+          apply_resultados.push({
+            sku: row.sku as string,
+            promo_name: row.promo_name as string | null,
+            promo_id: promotion_id,
+            status: "overridden",
+            applied_price: respJson.warning.applied,
+            message: respJson.warning.message,
+          });
+          if (id) {
+            await sb.from("auto_postulacion_log").update({
+              motivo: `apply OK (price overridden) · solicitado=${respJson.warning.requested} · aplicado=${respJson.warning.applied}`,
+              contexto: {
+                ...(row.contexto as Record<string, unknown>),
+                apply_status: "overridden",
+                applied_price: respJson.warning.applied,
+                requested_price: respJson.warning.requested,
+                applied_at: startedAt,
+              },
+            }).eq("id", id);
+          }
+        } else {
+          apply_stats.ok++;
+          const appliedPrice = respJson.result?.price ?? deal_price;
+          apply_resultados.push({
+            sku: row.sku as string,
+            promo_name: row.promo_name as string | null,
+            promo_id: promotion_id,
+            status: "ok",
+            applied_price: appliedPrice,
+          });
+          if (id) {
+            await sb.from("auto_postulacion_log").update({
+              motivo: `apply OK · price=${appliedPrice}`,
+              contexto: {
+                ...(row.contexto as Record<string, unknown>),
+                apply_status: "ok",
+                applied_price: appliedPrice,
+                applied_at: startedAt,
+              },
+            }).eq("id", id);
+          }
+        }
+      } catch (e) {
+        apply_stats.error++;
+        const errMsg = e instanceof Error ? e.message : String(e);
+        apply_resultados.push({
+          sku: row.sku as string,
+          promo_name: row.promo_name as string | null,
+          promo_id: promotion_id,
+          status: "error",
+          message: errMsg,
+        });
+        if (id) {
+          await sb.from("auto_postulacion_log").update({
+            decision: "error",
+            motivo: `apply EXCEPTION · ${errMsg}`,
+            contexto: {
+              ...(row.contexto as Record<string, unknown>),
+              apply_status: "exception",
+              apply_error: errMsg,
+              applied_at: startedAt,
+            },
+          }).eq("id", id);
+        }
+      }
+    }
   }
 
   return NextResponse.json({
@@ -468,8 +600,10 @@ export async function POST(req: NextRequest) {
     decisiones,
     muestra,
     log_insertadas: logIds.length,
+    apply_stats,
+    apply_resultados: apply_resultados.slice(0, 20),
     nota: modo === "apply"
-      ? "APPLY en modo seguro: se loguearon decisiones pero NO se ejecutaron postulaciones en ML. Habilitar tras validar dry-run."
+      ? `APPLY ejecutado: ${apply_stats.ok}/${apply_stats.ejecutadas} postulaciones exitosas (${apply_stats.error} errores).`
       : "Dry-run completado. Revisa auto_postulacion_log para ver todas las decisiones.",
   });
 }
