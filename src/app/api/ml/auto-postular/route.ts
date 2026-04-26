@@ -118,6 +118,10 @@ export async function GET() {
 type PromoPostulable = {
   name: string; type: string; id: string | null;
   min: number; max: number; suggested: number;
+  // Para promos donde ML obliga precio (LIGHTNING/DOD/SMART/UNHEALTHY_STOCK/
+  // PRE_NEGOTIATED/PRICE_MATCHING). Cuando viene >0, vos no podés elegir,
+  // solo aceptar o no. El motor lo evalúa contra el floor para decidir.
+  precio_fijo_ml?: number;
   start_date?: string | null;
   finish_date?: string | null;
 };
@@ -296,21 +300,26 @@ export async function POST(req: NextRequest) {
       procesados++;
       if (procesados > limit) break;
 
-      // Precio objetivo según política comercial del SKU.
+      // Precio objetivo según el modo de la promo:
+      //   - precio_fijo_ml > 0  → ML obliga precio (LIGHTNING/DOD/SMART/UNHEALTHY/
+      //                            PRE_NEGOTIATED/PRICE_MATCHING). Vos solo aceptás
+      //                            o no. El motor evalúa contra floor para decidir.
+      //   - exprimir/defender   → MAX permitido (proteger margen)
+      //   - liquidar             → MIN permitido (mover stock rápido)
+      //   - seguir               → suggested ML (volumen)
       // Manual: BANVA_Pricing_Investigacion_Comparada §6.1 + Ajuste_Plan §5.
-      //   exprimir / defender → MAX permitido (proteger margen)
-      //   liquidar            → MIN permitido (mover stock rápido)
-      //   seguir              → suggested ML (volumen)
-      const precioObjetivo: number = (() => {
-        if (resolved.politica === "exprimir" || resolved.politica === "defender") {
-          return promo.max > 0 ? promo.max : (promo.suggested > 0 ? promo.suggested : row.precio_venta);
-        }
-        if (resolved.politica === "liquidar") {
-          return promo.min > 0 ? promo.min : (promo.suggested > 0 ? promo.suggested : row.precio_venta);
-        }
-        // política "seguir" (default): toma suggested
-        return promo.suggested > 0 ? promo.suggested : (promo.max > 0 ? promo.max : row.precio_venta);
-      })();
+      const mlObligaPrecio = (promo.precio_fijo_ml ?? 0) > 0;
+      const precioObjetivo: number = mlObligaPrecio
+        ? (promo.precio_fijo_ml as number)
+        : (() => {
+            if (resolved.politica === "exprimir" || resolved.politica === "defender") {
+              return promo.max > 0 ? promo.max : (promo.suggested > 0 ? promo.suggested : row.precio_venta);
+            }
+            if (resolved.politica === "liquidar") {
+              return promo.min > 0 ? promo.min : (promo.suggested > 0 ? promo.suggested : row.precio_venta);
+            }
+            return promo.suggested > 0 ? promo.suggested : (promo.max > 0 ? promo.max : row.precio_venta);
+          })();
 
       const canal: CanalLogistico = row.logistic_type === "fulfillment" ? "full"
         : row.logistic_type === "self_service" ? "flex"
@@ -440,11 +449,13 @@ export async function POST(req: NextRequest) {
           ads_modelo: "forward_acos_objetivo",
           comision_pct: Number(row.comision_pct),
           titulo: row.titulo,
-          precio_objetivo_modo: resolved.politica === "exprimir" || resolved.politica === "defender" ? "max"
+          precio_objetivo_modo: mlObligaPrecio ? "ml_obliga"
+            : resolved.politica === "exprimir" || resolved.politica === "defender" ? "max"
             : resolved.politica === "liquidar" ? "min" : "suggested",
           promo_min: promo.min,
           promo_max: promo.max,
           promo_suggested: promo.suggested,
+          promo_precio_fijo_ml: promo.precio_fijo_ml ?? 0,
           promo_start_date: promo.start_date || null,
           promo_finish_date: promo.finish_date || null,
           promo_horas_restantes: finishMs ? Math.max(0, Math.round((finishMs - ahoraMs) / HORA)) : null,

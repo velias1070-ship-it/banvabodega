@@ -273,7 +273,7 @@ async function handleRefresh(req: NextRequest) {
     let promoType: string | null = null;
     let promoName: string | null = null;
     let promoPct: number | null = null;
-    let promosPostulables: Array<{ name: string; type: string; id: string | null; min: number; max: number; suggested: number; start_date: string | null; finish_date: string | null }> = [];
+    let promosPostulables: Array<{ name: string; type: string; id: string | null; min: number; max: number; suggested: number; precio_fijo_ml: number; start_date: string | null; finish_date: string | null }> = [];
     let syncError: string | null = null;
     // Flag de fetch de promos. Si es false (exception o null), NO confiamos en
     // los defaults precioVenta=priceList/tienePromo=false — conservamos lo que
@@ -361,6 +361,10 @@ async function handleRefresh(req: NextRequest) {
               min: Math.round(p.min_discounted_price || 0),
               max: Math.round(p.max_discounted_price || 0),
               suggested: Math.round(p.suggested_discounted_price || 0),
+              // Para promos donde ML decide el precio (LIGHTNING/DOD/SMART/UNHEALTHY/
+              // PRE_NEGOTIATED/PRICE_MATCHING), p.price contiene el precio que ML
+              // aplicará al postular. Permite evaluar si conviene aceptar la promo.
+              precio_fijo_ml: Math.round(p.price || 0),
               start_date: p.start_date || null,
               finish_date: p.finish_date || null,
             });
