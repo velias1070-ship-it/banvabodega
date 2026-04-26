@@ -153,7 +153,10 @@ async function handle(req: NextRequest) {
       : principal.logistic_type === "self_service" ? "flex"
       : "unknown";
     const precioRef = principal.precio_venta || principal.price_ml || 20000;
-    const adsObj = Math.round(precioRef * (resolved.acos_objetivo_pct ?? 0) / 100);
+    const acosFrac = (resolved.acos_objetivo_pct ?? 0) / 100;
+    // Para auditoria: ads en CLP al precio referencia (el piso real lo recalcula
+    // proporcional al piso, no al precio referencia).
+    const adsObj = Math.round(precioRef * acosFrac);
 
     try {
       const { floor, desglose } = calcularFloor({
@@ -163,7 +166,7 @@ async function handle(req: NextRequest) {
         comisionPct: Number(principal.comision_pct) || 0,
         canal,
         costoEnvioFullUnit: canal === "full" ? (principal.envio_clp || 0) : 0,
-        adsFraccionUnit: adsObj,
+        acosFrac,
         margenMinimoFrac: resolved.margen_min_frac,
       });
       if (!isFinite(floor) || floor <= 0) { stats.errores++; continue; }

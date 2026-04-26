@@ -335,7 +335,10 @@ export async function POST(req: NextRequest) {
       // ACOS — not realized, target"). El realizado se conserva en contexto
       // para auditoria del gap forward vs realized.
       const acosObjPct = resolved.acos_objetivo_pct ?? 0;
-      const adsFraccionObjetivo = Math.round(precioObjetivo * acosObjPct / 100);
+      const acosFrac = acosObjPct / 100;
+      // Para auditoria: ads en CLP estimado al precio objetivo.
+      // El piso real del motor calcula proporcional al piso, no al precio objetivo.
+      const adsFraccionObjetivo = Math.round(precioObjetivo * acosFrac);
       const adsFraccionRealizado = adsFraccionBySku.get(row.sku) || 0;
 
       const gateInputs = {
@@ -345,7 +348,7 @@ export async function POST(req: NextRequest) {
         comisionPct: Number(row.comision_pct) || 0,
         canal,
         costoEnvioFullUnit: canal === "full" ? (row.envio_clp || 0) : 0,
-        adsFraccionUnit: adsFraccionObjetivo,
+        acosFrac,
         margenMinimoFrac: resolved.margen_min_frac,
         precioObjetivo,
         precioPisoManual: resolved.precio_piso_manual,

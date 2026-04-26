@@ -60,8 +60,16 @@ export type FloorInputs = {
   canal: CanalLogistico;
   /** Costo de envío Full unitario en CLP (si aplica). 0 si es Flex. */
   costoEnvioFullUnit?: number;
-  /** Fracción de ads esperada por unidad (CLP/unidad). 0 si no hay ads. */
-  adsFraccionUnit?: number;
+  /**
+   * ACOS objetivo como fracción del precio final (0.05 = 5%). El motor lo
+   * trata proporcional al piso: ads = piso × acosFrac. Va al denominador
+   * de la fórmula (mismo trato que comisión y margen mínimo).
+   *
+   * Antes había `adsFraccionUnit` con valor absoluto fijo (CLP), pero
+   * sobrestimaba el piso porque imputaba el ads del precio actual incluso
+   * al precio reducido. Si bajas el precio, los ads bajan proporcionales.
+   */
+  acosFrac?: number;
   /** Margen mínimo neto requerido, en fracción (0.15 = 15%). */
   margenMinimoFrac: number;
 };
@@ -83,12 +91,11 @@ export type FloorResult = {
 /**
  * Calcula el floor matemático.
  *
- * Algebra: precio = costoNetoConIVA + comision + envio + ads + margenMin
- * Como comisión es % del precio, hay que despejar:
- *   precio (1 - comisionFrac) = costoConIVA + envio + ads + margenMinAbs
- * Si margenMin se expresa como fracción del precio:
- *   precio (1 - comisionFrac - margenMinFrac) = costoConIVA + envio + ads
- *   precio = (costoConIVA + envio + ads) / (1 - comisionFrac - margenMinFrac)
+ * Algebra: precio = costoConIVA + comision + envio + ads + margenMin
+ * Comisión, ads y margenMin se expresan como fracción del precio →
+ * todos van al denominador:
+ *   precio (1 - comisionFrac - acosFrac - margenMinFrac) = costoConIVA + envio
+ *   precio = (costoConIVA + envio) / (1 - comisionFrac - acosFrac - margenMinFrac)
  */
 export function calcularFloor(inputs: FloorInputs): FloorResult {
   const {
@@ -98,7 +105,7 @@ export function calcularFloor(inputs: FloorInputs): FloorResult {
     comisionPct,
     canal,
     costoEnvioFullUnit = 0,
-    adsFraccionUnit = 0,
+    acosFrac = 0,
     margenMinimoFrac,
   } = inputs;
 
@@ -109,11 +116,10 @@ export function calcularFloor(inputs: FloorInputs): FloorResult {
     : canal === "flex"
       ? calcularCostoEnvioML(pesoGr, precioReferencia)
       : calcularCostoEnvioML(pesoGr, precioReferencia);
-  const adsClp = Math.round(adsFraccionUnit);
 
-  const denominador = 1 - comisionFrac - margenMinimoFrac;
+  const denominador = 1 - comisionFrac - acosFrac - margenMinimoFrac;
   if (denominador <= 0) {
-    // Combinación imposible: comisión + margen mínimo > 100% del precio.
+    // Combinación imposible: comisión + ads + margen > 100% del precio.
     return {
       floor: Number.POSITIVE_INFINITY,
       desglose: {
@@ -121,15 +127,16 @@ export function calcularFloor(inputs: FloorInputs): FloorResult {
         costoNetoConIva,
         comisionClp: 0,
         envioClp,
-        adsClp,
+        adsClp: 0,
         margenMinClp: 0,
       },
     };
   }
 
-  const numerador = costoNetoConIva + envioClp + adsClp;
+  const numerador = costoNetoConIva + envioClp;
   const floor = Math.round(numerador / denominador);
   const comisionClp = Math.round(floor * comisionFrac);
+  const adsClp = Math.round(floor * acosFrac);
   const margenMinClp = Math.round(floor * margenMinimoFrac);
 
   return {
@@ -244,7 +251,7 @@ export function evaluarGates(inputs: GateInputs): GateResult {
  */
 export function margenPostAds(precio: number, inputs: FloorInputs): number | null {
   if (precio <= 0) return null;
-  const { costoNeto, pesoGr, comisionPct, canal, costoEnvioFullUnit = 0, adsFraccionUnit = 0 } = inputs;
+  const { costoNeto, pesoGr, comisionPct, canal, costoEnvioFullUnit = 0, acosFrac = 0 } = inputs;
   const costoConIva = costoNeto * (1 + IVA_PCT);
   const comision = precio * (comisionPct / 100);
   const envio = canal === "full"
@@ -252,7 +259,8 @@ export function margenPostAds(precio: number, inputs: FloorInputs): number | nul
     : canal === "flex"
       ? calcularCostoEnvioML(pesoGr, precio)
       : calcularCostoEnvioML(pesoGr, precio);
-  const margenAbs = precio - costoConIva - comision - envio - adsFraccionUnit;
+  const adsAbs = precio * acosFrac;
+  const margenAbs = precio - costoConIva - comision - envio - adsAbs;
   return margenAbs / precio;
 }
 
