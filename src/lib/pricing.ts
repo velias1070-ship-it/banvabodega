@@ -290,6 +290,38 @@ export const COOLDOWN_VENTANA_HORAS = 24;
 export const COOLDOWN_MAX_BAJADAS = 2;
 
 /**
+ * Tier de vitrina/exposición de cada tipo de promo en MercadoLibre.
+ * Manual: BANVA_Pricing_Investigacion_Comparada §4.4 (eventos premium ML
+ * dan más tráfico que campañas seller propias). El motor lo usa como
+ * gate: no degradar de tier mayor a tier menor cuando ya hay promo activa.
+ *
+ * 5 = máxima vitrina (curado ML, 1 SKU/categoría/día)
+ * 4 = alta (campañas masivas ML con badge dedicado)
+ * 3 = media (ML targeted: stock estancado, baja rotación)
+ * 2 = ML automatizado (sin badge dedicado, pero ML decide precio)
+ * 1 = baja (vendedor crea, sin badge especial)
+ */
+export const VITRINA_TIER: Record<string, number> = {
+  DOD: 5,
+  MELI_CHOICE: 5,
+  DEAL: 4,
+  MARKETPLACE_CAMPAIGN: 4,
+  LIGHTNING: 4,
+  LIGHTNING_DEAL: 4,
+  UNHEALTHY_STOCK: 3,
+  PRE_NEGOTIATED: 3,
+  PRICE_MATCHING: 2,
+  SMART: 2,
+  SELLER_CAMPAIGN: 1,
+  PRICE_DISCOUNT: 1,
+};
+
+export function tierVitrina(promoType: string | null | undefined): number {
+  if (!promoType) return 0;
+  return VITRINA_TIER[promoType.toUpperCase()] ?? 1;
+}
+
+/**
  * Resolver de configuracion pricing por SKU con override jerarquico.
  *
  * Cascada: productos.<campo> override > pricing_cuadrante_config[cuadrante] > _DEFAULT.

@@ -3,6 +3,7 @@ import { getServerSupabase } from "@/lib/supabase-server";
 import {
   evaluarGates, margenPostAds, resolverPricingConfig,
   evaluarCooldown, COOLDOWN_VENTANA_HORAS, COOLDOWN_MAX_BAJADAS,
+  tierVitrina,
   type CanalLogistico, type PricingCuadranteConfig,
 } from "@/lib/pricing";
 import { getBaseUrl } from "@/lib/base-url";
@@ -141,6 +142,7 @@ type MarginCacheRow = {
   logistic_type: string | null;
   tiene_promo: boolean;
   promo_name: string | null;
+  promo_type: string | null;
   stock_total: number | null;
   promos_postulables: PromoPostulable[] | null;
 };
@@ -172,7 +174,7 @@ export async function POST(req: NextRequest) {
   // 1. Cargar margin cache — solo activos en ML con promos candidate disponibles
   let query = sb
     .from("ml_margin_cache")
-    .select("item_id, sku, titulo, status_ml, price_ml, precio_venta, costo_neto, costo_bruto, peso_facturable, comision_pct, envio_clp, logistic_type, tiene_promo, promo_name, stock_total, promos_postulables")
+    .select("item_id, sku, titulo, status_ml, price_ml, precio_venta, costo_neto, costo_bruto, peso_facturable, comision_pct, envio_clp, logistic_type, tiene_promo, promo_name, promo_type, stock_total, promos_postulables")
     .eq("status_ml", "active");
   if (skuFilter) query = query.eq("sku", skuFilter);
   const { data: cacheData, error: eCache } = await query;
@@ -375,6 +377,20 @@ export async function POST(req: NextRequest) {
       if (cooldownResult.bloqueado) {
         hardExtras.push(cooldownResult.motivo!);
       }
+      // Gate vitrina: si el SKU ya tiene promo activa con tier >= candidata,
+      // no degradar (Manual: BANVA_Pricing_Investigacion_Comparada §4.4 — DEAL/
+      // DOD/MELI_CHOICE dan más tráfico que SELLER_CAMPAIGN propio).
+      const tierActual = row.tiene_promo ? tierVitrina(row.promo_type) : 0;
+      const tierCandidata = tierVitrina(promo.type);
+      const mismaPromo = row.tiene_promo && row.promo_name && promo.name &&
+        row.promo_name.trim().toLowerCase() === promo.name.trim().toLowerCase();
+      if (mismaPromo) {
+        hardExtras.push(`promo_misma: ya está en "${row.promo_name}" — re-postular es no-op`);
+      } else if (row.tiene_promo && tierCandidata <= tierActual) {
+        hardExtras.push(
+          `degrada_vitrina: activa "${row.promo_name}" (tier ${tierActual}) > candidata "${promo.name}" (tier ${tierCandidata})`
+        );
+      }
       // Gates por fecha de la promo (Manual: BANVA_Pricing_Investigacion_Comparada §4.4
       // playbook eventos). ML envía start_date/finish_date en /seller-promotions —
       // margin-cache las persiste en promos_postulables.
@@ -456,6 +472,10 @@ export async function POST(req: NextRequest) {
           promo_max: promo.max,
           promo_suggested: promo.suggested,
           promo_precio_fijo_ml: promo.precio_fijo_ml ?? 0,
+          promo_tier_candidata: tierCandidata,
+          promo_tier_activa: tierActual,
+          promo_activa_name: row.promo_name,
+          promo_activa_type: row.promo_type,
           promo_start_date: promo.start_date || null,
           promo_finish_date: promo.finish_date || null,
           promo_horas_restantes: finishMs ? Math.max(0, Math.round((finishMs - ahoraMs) / HORA)) : null,
