@@ -61,6 +61,32 @@ export async function shouldRunPhase(fase: string): Promise<boolean | null> {
  * @param ok - true si la fase corrió sin errores; false si falló
  * @param errMsg - mensaje de error si ok=false
  */
+/**
+ * ¿Hay alguna fase activa con next_run_at vencido?
+ * Usado por el cron para decidir si re-arrancar el sync (cutover real del gating día 1-3).
+ *
+ * Excluye 'ads' (que se gestiona en campaigns-daily-sync separado).
+ */
+export async function anyPhaseDue(): Promise<boolean> {
+  const sb = getServerSupabase();
+  if (!sb) return false;
+  const { data, error } = await sb
+    .from("ml_sync_phases_config")
+    .select("fase, next_run_at")
+    .eq("active", true)
+    .neq("fase", "ads");
+  if (error) {
+    console.error(`[sync-phases-config] anyPhaseDue read failed: ${error.message}`);
+    return false;
+  }
+  const now = Date.now();
+  for (const row of (data || []) as { fase: string; next_run_at: string | null }[]) {
+    if (!row.next_run_at) return true; // never ran → due
+    if (new Date(row.next_run_at).getTime() <= now) return true;
+  }
+  return false;
+}
+
 export async function markPhaseRun(
   fase: string,
   ok: boolean,

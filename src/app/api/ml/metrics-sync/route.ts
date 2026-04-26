@@ -4,6 +4,7 @@ import {
   iniciarSync,
   ejecutarSyncCompleto,
   getPreviousMonthPeriod,
+  getCurrentMonthPeriod,
 } from "@/lib/ml-metrics";
 import { getServerSupabase } from "@/lib/supabase-server";
 
@@ -33,12 +34,25 @@ export async function GET(req: NextRequest) {
   try {
     let estado = await getSyncEstado();
 
-    // Auto-start on 1st-3rd of month if idle
+    // Auto-arranque cadencia-driven (cutover real, reemplaza gating día 1-3 puro):
+    //  1. Días 1-3 del mes + idle → arranca para el MES PREVIO (cierre mensual, comportamiento original)
+    //  2. Cualquier otro día + (idle O done) + alguna fase due → arranca para el MES ACTUAL
+    //     (esto es el camino que activa las cadencias diferenciadas: visits/questions/aggregate diarias)
     const day = new Date().getDate();
-    if (estado && estado.fase === "idle" && day >= 1 && day <= 3) {
-      const periodo = getPreviousMonthPeriod();
-      console.log(`[metrics-sync] Auto-starting sync for ${periodo}`);
-      estado = await iniciarSync(periodo);
+    const isClosingWindow = day >= 1 && day <= 3;
+    const { anyPhaseDue } = await import("@/lib/sync-phases-config");
+    const phaseDue = await anyPhaseDue();
+
+    if (estado && (estado.fase === "idle" || estado.fase === "done")) {
+      if (isClosingWindow && estado.fase === "idle") {
+        const periodo = getPreviousMonthPeriod();
+        console.log(`[metrics-sync] Cierre mensual: arrancando ${periodo}`);
+        estado = await iniciarSync(periodo);
+      } else if (phaseDue) {
+        const periodo = getCurrentMonthPeriod();
+        console.log(`[metrics-sync] Cadencia-driven re-start: ${periodo} (alguna fase due)`);
+        estado = await iniciarSync(periodo);
+      }
     }
 
     if (!estado || estado.fase === "idle" || estado.fase === "done") {
@@ -48,6 +62,7 @@ export async function GET(req: NextRequest) {
         estado: estado?.fase ?? "idle",
         periodo: estado?.periodo ?? null,
         completado_at: estado?.completado_at ?? null,
+        any_phase_due: phaseDue,
         timestamp: new Date().toISOString(),
       });
     }
