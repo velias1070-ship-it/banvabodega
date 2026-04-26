@@ -510,25 +510,30 @@ export async function queryMargenPorSku(diasAtras: number = 30): Promise<{
 
   const desde = new Date(Date.now() - diasAtras * 86400000).toISOString().slice(0, 10);
 
-  const { data: ventas } = await sb
-    .from("ventas_ml_cache")
-    .select("sku_venta, margen, cantidad")
-    .gte("fecha_date", desde)
-    .eq("anulada", false)
-    .neq("costo_fuente", "sin_costo");
+  // Regla 3 (inventory-policy.md): paginatedSelect propaga errores de supabase y
+  // pagina sobre el cap de 1000 filas. Con `.select()` directo, BANVA pasa de 1000
+  // ventas en 30d y truncaba silenciosamente el Pareto ABC.
+  const ventas = await paginatedSelect(() =>
+    sb.from("ventas_ml_cache")
+      .select("sku_venta, margen, cantidad")
+      .gte("fecha_date", desde)
+      .eq("anulada", false)
+      .neq("costo_fuente", "sin_costo")
+  ) as Array<{ sku_venta: string; margen: number; cantidad: number }>;
 
-  if (!ventas || ventas.length === 0) {
+  if (ventas.length === 0) {
     return { margen: new Map(), unidades: new Map() };
   }
 
   // Composición sku_venta → sku_origen (solo componentes, no alternativos)
-  const { data: comp } = await sb
-    .from("composicion_venta")
-    .select("sku_venta, sku_origen, tipo_relacion")
-    .eq("tipo_relacion", "componente");
+  const comp = await paginatedSelect(() =>
+    sb.from("composicion_venta")
+      .select("sku_venta, sku_origen, tipo_relacion")
+      .eq("tipo_relacion", "componente")
+  ) as Array<{ sku_venta: string; sku_origen: string }>;
 
   const compMap = new Map<string, string[]>();
-  for (const c of (comp || []) as Array<{ sku_venta: string; sku_origen: string }>) {
+  for (const c of comp) {
     const key = (c.sku_venta || "").toUpperCase();
     const arr = compMap.get(key) || [];
     arr.push((c.sku_origen || "").toUpperCase());
@@ -537,7 +542,7 @@ export async function queryMargenPorSku(diasAtras: number = 30): Promise<{
 
   const margen = new Map<string, number>();
   const unidades = new Map<string, number>();
-  for (const v of ventas as Array<{ sku_venta: string; margen: number; cantidad: number }>) {
+  for (const v of ventas) {
     const orígenes = compMap.get((v.sku_venta || "").toUpperCase());
     // Atribuir a cada componente (un sku_venta puede tener múltiples componentes en un pack).
     // Para packs reales (unidades > 1), la atribución es 1:N — el margen va al componente
