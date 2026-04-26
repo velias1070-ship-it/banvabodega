@@ -382,7 +382,7 @@ export async function POST(req: NextRequest) {
       }
       // Gate vitrina: si el SKU ya tiene promo activa con tier >= candidata,
       // no degradar (Manual: BANVA_Pricing_Investigacion_Comparada §4.4 — DEAL/
-      // DOD/MELI_CHOICE dan más tráfico que SELLER_CAMPAIGN propio).
+      // DOD/LIGHTNING dan más tráfico que SELLER_CAMPAIGN propio).
       const tierActual = row.tiene_promo ? tierVitrina(row.promo_type) : 0;
       const tierCandidata = tierVitrina(promo.type);
       const mismaPromo = row.tiene_promo && row.promo_name && promo.name &&

@@ -640,7 +640,7 @@ export default function AdminMargenes() {
       const todosAplicables = [...promo.itemsPostulables, ...promo.itemsActivos];
       const invalidos: Array<{ itemId: string; sku: string; rango: RangoItem; motivo: string }> = [];
       const validos: string[] = [];
-      // LIGHTNING_DEAL exige stock entre 5 y 15 ademas del rango de precio.
+      // LIGHTNING exige stock entre 5 y 15 ademas del rango de precio.
       const esLightning = /LIGHTNING/i.test(promo.type || "");
       for (const itemId of todosAplicables) {
         const rango = promo.rangosPorItem.get(itemId);
@@ -1770,7 +1770,6 @@ export default function AdminMargenes() {
                         SMART: "Smart (precio óptimo)",
                         UNHEALTHY_STOCK: "Stock estancado",
                         LIGHTNING: "Oferta relámpago",
-                        LIGHTNING_DEAL: "Oferta relámpago",
                         DOD: "Oferta del día",
                       };
                       return map[p.type] || p.type;

@@ -242,7 +242,7 @@ export async function POST(req: NextRequest) {
       const joinBody: Record<string, unknown> = { promotion_type };
       if (promotion_id) joinBody.promotion_id = promotion_id;
       // ML usa distintos campos según el tipo de promo:
-      //   - PRICE_DISCOUNT, DEAL, MELI_CHOICE, MARKETPLACE_CAMPAIGN, DOD → deal_price
+      //   - PRICE_DISCOUNT, DEAL, MARKETPLACE_CAMPAIGN, DOD → deal_price
       //   - SELLER_CAMPAIGN (FLEXIBLE_PERCENTAGE, CUSTOM_PRICE) → price
       // Mandamos AMBOS para cubrir todos los casos — ML ignora el que no aplica.
       if (deal_price) {

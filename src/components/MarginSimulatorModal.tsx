@@ -32,10 +32,10 @@ const PROMO_LABELS: Record<string, string> = {
   SELLER_CAMPAIGN: "Campaña vendedor",
   SMART: "Smart (precio óptimo)",
   LIGHTNING: "Oferta relámpago",
-  LIGHTNING_DEAL: "Oferta relámpago",
   DOD: "Oferta del día",
-  MELI_CHOICE: "Meli Choice",
-  PRICE_MATCHING_MELI_ALL: "Price matching",
+  PRICE_MATCHING: "Price matching",
+  PRE_NEGOTIATED: "Pre-negociada",
+  SELLER_COUPON_CAMPAIGN: "Cupón seguidores",
   UNHEALTHY_STOCK: "Stock estancado",
   VOLUME: "Descuento por volumen",
 };

@@ -303,6 +303,12 @@ export const COOLDOWN_MAX_BAJADAS = 2;
  * eventos comerciales, etiquetas de descuento) y BANVA_Pricing_Investigacion_Comparada §4.4.
  * El motor lo usa como gate: no degradar de tier mayor a tier menor cuando ya hay promo activa.
  *
+ * Lista canónica oficial de tipos en seller-promotions v2 (al 2026-04-26):
+ * DEAL, MARKETPLACE_CAMPAIGN, PRICE_DISCOUNT, LIGHTNING, DOD, VOLUME,
+ * PRE_NEGOTIATED, SELLER_CAMPAIGN, SMART, PRICE_MATCHING, UNHEALTHY_STOCK,
+ * SELLER_COUPON_CAMPAIGN. Tipos nuevos que ML disponibilice en el futuro
+ * caen al fallback tier 1 vía `tierVitrina()`.
+ *
  * TIER S (5) — Máxima exposición: sección "Ofertas" + push notifications.
  *   DOD (24h, 1 SKU/categoría, +1M visitas/día), LIGHTNING (6h, urgencia + sección).
  *
@@ -317,13 +323,11 @@ export const COOLDOWN_MAX_BAJADAS = 2;
  *   UNHEALTHY_STOCK (ML quiere desalojar Full estancado, boost moderado).
  *
  * TIER D (1) — Sin boost de exposición. Solo precio rebajado.
- *   PRICE_MATCHING, SELLER_CAMPAIGN, SELLER_COUPON_CAMPAIGN, VOLUME (BNGM/BNSP/SPONTH).
+ *   PRICE_MATCHING, SELLER_CAMPAIGN, SELLER_COUPON_CAMPAIGN, VOLUME.
  */
 export const VITRINA_TIER: Record<string, number> = {
   DOD: 5,
-  MELI_CHOICE: 5,
   LIGHTNING: 5,
-  LIGHTNING_DEAL: 5,
   DEAL: 4,
   MARKETPLACE_CAMPAIGN: 4,
   SMART: 4,
@@ -334,9 +338,6 @@ export const VITRINA_TIER: Record<string, number> = {
   SELLER_CAMPAIGN: 1,
   SELLER_COUPON_CAMPAIGN: 1,
   VOLUME: 1,
-  BNGM: 1,
-  BNSP: 1,
-  SPONTH: 1,
 };
 
 export function tierVitrina(promoType: string | null | undefined): number {
