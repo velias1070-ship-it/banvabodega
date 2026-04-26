@@ -525,18 +525,26 @@ export async function queryMargenPorSku(diasAtras: number = 30): Promise<{
     return { margen: new Map(), unidades: new Map() };
   }
 
-  // Composición sku_venta → sku_origen (solo componentes, no alternativos)
+  // Composición sku_venta → sku_origen (solo componentes, no alternativos).
+  // unidades = multiplicador físico: 1 venta del listing pack consume N
+  // unidades del sku_origen. Hasta 2026-04-26 este SELECT no traía la columna
+  // y el código sumaba cantidad×1 — subreportaba SKUs físicos vendidos via
+  // listings pack (X2, X4). Detectado en LICAAFVIS5746 (146→109 esperado),
+  // TX2ALIMFP5070 (20→10), TXALMILLVIS46 (32→21).
   const comp = await paginatedSelect(() =>
     sb.from("composicion_venta")
-      .select("sku_venta, sku_origen, tipo_relacion")
+      .select("sku_venta, sku_origen, unidades, tipo_relacion")
       .eq("tipo_relacion", "componente")
-  ) as Array<{ sku_venta: string; sku_origen: string }>;
+  ) as Array<{ sku_venta: string; sku_origen: string; unidades: number }>;
 
-  const compMap = new Map<string, string[]>();
+  const compMap = new Map<string, Array<{ sku_origen: string; unidades: number }>>();
   for (const c of comp) {
     const key = (c.sku_venta || "").toUpperCase();
     const arr = compMap.get(key) || [];
-    arr.push((c.sku_origen || "").toUpperCase());
+    arr.push({
+      sku_origen: (c.sku_origen || "").toUpperCase(),
+      unidades: (c.unidades as number) || 1,
+    });
     compMap.set(key, arr);
   }
 
@@ -546,14 +554,17 @@ export async function queryMargenPorSku(diasAtras: number = 30): Promise<{
     const orígenes = compMap.get((v.sku_venta || "").toUpperCase());
     // Atribuir a cada componente (un sku_venta puede tener múltiples componentes en un pack).
     // Para packs reales (unidades > 1), la atribución es 1:N — el margen va al componente
-    // pero la métrica se mantiene a nivel sku_origen agregada.
+    // y las unidades físicas = v.cantidad × c.unidades (1 venta del pack consume N).
     if (orígenes && orígenes.length > 0) {
-      for (const sku_origen of orígenes) {
-        margen.set(sku_origen, (margen.get(sku_origen) || 0) + (v.margen || 0));
-        unidades.set(sku_origen, (unidades.get(sku_origen) || 0) + (v.cantidad || 0));
+      for (const c of orígenes) {
+        margen.set(c.sku_origen, (margen.get(c.sku_origen) || 0) + (v.margen || 0));
+        unidades.set(
+          c.sku_origen,
+          (unidades.get(c.sku_origen) || 0) + ((v.cantidad || 0) * (c.unidades || 1))
+        );
       }
     } else {
-      // Fallback: sku_venta = sku_origen
+      // Fallback: sku_venta = sku_origen sin composicion (multiplicador asumido 1).
       const sku = (v.sku_venta || "").toUpperCase();
       margen.set(sku, (margen.get(sku) || 0) + (v.margen || 0));
       unidades.set(sku, (unidades.get(sku) || 0) + (v.cantidad || 0));
