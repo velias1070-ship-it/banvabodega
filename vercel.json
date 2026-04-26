@@ -87,6 +87,14 @@
     {
       "path": "/api/pricing/recalcular-floors",
       "schedule": "30 11 * * *"
+    },
+    {
+      "path": "/api/ml/auto-postular/cron?limit=50",
+      "schedule": "0 10,14,18,22 * * *"
+    },
+    {
+      "path": "/api/pricing/markdown-auto?modo=dry_run",
+      "schedule": "0 8 * * *"
     }
   ]
 }

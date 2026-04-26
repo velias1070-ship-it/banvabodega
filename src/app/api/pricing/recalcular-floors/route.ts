@@ -30,7 +30,14 @@ function isAuthorized(req: NextRequest): boolean {
   return isVercelCron || isLocalDev || isManualTrigger;
 }
 
+export async function GET(req: NextRequest) {
+  return handle(req);
+}
 export async function POST(req: NextRequest) {
+  return handle(req);
+}
+
+async function handle(req: NextRequest) {
   if (!isAuthorized(req)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
