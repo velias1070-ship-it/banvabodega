@@ -9,7 +9,7 @@ import {
 } from "@/lib/db";
 import type { DBOrdenCompra, DBOrdenCompraLinea, DBRecepcion, DBRecepcionLinea, OCEstado } from "@/lib/db";
 import { getSupabase } from "@/lib/supabase";
-import { exportarOCExcel } from "@/lib/oc-export";
+import { exportarOCExcel, fetchOCRecepcionesItems } from "@/lib/oc-export";
 import dynamic from "next/dynamic";
 
 const AdminConciliacionDocs = dynamic(() => import("./AdminConciliacionDocs"), { ssr: false });
@@ -624,7 +624,10 @@ export default function AdminCompras() {
         <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
           {/* Exportar Excel: disponible en todos los estados excepto BORRADOR vacío */}
           {ocLineas.length > 0 && (
-            <button onClick={() => exportarOCExcel(selectedOC, ocLineas)}
+            <button onClick={async () => {
+                const recepcionesItems = selectedOC.id ? await fetchOCRecepcionesItems(selectedOC.id) : [];
+                exportarOCExcel(selectedOC, ocLineas, recepcionesItems);
+              }}
               title="Descargar OC como Excel para enviar al proveedor"
               style={{ padding: "8px 16px", borderRadius: 6, background: "var(--bg3)", color: "var(--green)", fontWeight: 700, fontSize: 12, border: "1px solid var(--green)", cursor: "pointer" }}>
               📊 Exportar Excel
