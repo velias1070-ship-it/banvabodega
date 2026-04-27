@@ -23,6 +23,22 @@ type CuadranteRow = {
   updated_at?: string;
 };
 
+type CuadranteMetrics = {
+  cuadrante: string;
+  skus_total: number;
+  skus_con_venta_30d: number;
+  gmv_30d: number;
+  margen_real_30d_pct: number | null;
+  margen_actual_med_pct: number | null;
+  acos_real_30d_pct: number | null;
+  acos_total_30d_pct: number | null;
+  items_con_gasto_ads: number;
+  cost_neto_ads_30d: number;
+  descuento_actual_med_pct: number | null;
+  ventas_full: number;
+  ventas_flex: number;
+};
+
 type SkuRow = {
   sku: string;
   nombre: string;
@@ -77,18 +93,21 @@ export default function AdminPricingConfig() {
   const [filtroQ, setFiltroQ] = useState<string>("");
   const [filtroOverrides, setFiltroOverrides] = useState(false);
   const [tiposUnknown, setTiposUnknown] = useState<Array<{ type: string; count: number; sample_skus: string[] }>>([]);
+  const [metrics, setMetrics] = useState<CuadranteMetrics[]>([]);
 
   const load = async () => {
     setLoading(true);
     try {
-      const [c, s, u] = await Promise.all([
+      const [c, s, u, m] = await Promise.all([
         fetch("/api/pricing-config/cuadrantes").then(r => r.json()),
         fetch("/api/pricing-config/skus").then(r => r.json()),
         fetch("/api/pricing/promo-types-unknown").then(r => r.json()).catch(() => ({ unknown: [] })),
+        fetch("/api/pricing/cuadrante-metrics-real").then(r => r.json()).catch(() => ({ metrics: [] })),
       ]);
       setCuadrantes(c.rows || []);
       setSkus(s.rows || []);
       setTiposUnknown(u.unknown || []);
+      setMetrics(m.metrics || []);
     } finally {
       setLoading(false);
     }
@@ -100,6 +119,12 @@ export default function AdminPricingConfig() {
     for (const c of cuadrantes) m.set(c.cuadrante, c);
     return m;
   }, [cuadrantes]);
+
+  const metricsByCuadrante = useMemo(() => {
+    const m = new Map<string, CuadranteMetrics>();
+    for (const x of metrics) m.set(x.cuadrante, x);
+    return m;
+  }, [metrics]);
 
   const skusFiltrados = useMemo(() => {
     let out = skus;
@@ -245,11 +270,26 @@ export default function AdminPricingConfig() {
               </tr>
             </thead>
             <tbody>
-              {cuadrantes.map(c => (
+              {cuadrantes.map(c => {
+                const mx = metricsByCuadrante.get(c.cuadrante);
+                const realStyle = (within: boolean): React.CSSProperties => ({
+                  fontSize: 10,
+                  fontWeight: 600,
+                  marginTop: 3,
+                  color: within ? "var(--green)" : "var(--amber)",
+                });
+                const subStyle: React.CSSProperties = { fontSize: 9, color: "var(--txt3)", marginTop: 1 };
+                return (
                 <tr key={c.cuadrante} style={{ opacity: savingCuad === c.cuadrante ? 0.5 : 1 }}>
                   <td style={{ fontWeight: 700, color: "var(--cyan)" }}>
                     {c.cuadrante}
                     <div style={{ fontSize: 10, color: "var(--txt3)", fontWeight: 400 }}>{CUAD_LABELS[c.cuadrante] || ""}</div>
+                    {mx && (
+                      <div style={{ fontSize: 10, color: "var(--txt2)", marginTop: 4, fontWeight: 400 }}>
+                        {mx.skus_total} SKUs · {mx.skus_con_venta_30d} con venta 30d
+                        <div style={{ fontSize: 10, color: "var(--txt3)" }}>GMV 30d: {fmtCLP(mx.gmv_30d)}</div>
+                      </div>
+                    )}
                   </td>
                   <td>
                     <input type="number" step="0.5" defaultValue={c.margen_min_pct}
@@ -258,6 +298,16 @@ export default function AdminPricingConfig() {
                         if (!Number.isNaN(v) && v !== c.margen_min_pct) void saveCuadrante(c, { margen_min_pct: v });
                       }}
                       style={inputStyle} />
+                    {mx?.margen_real_30d_pct != null && (
+                      <>
+                        <div style={realStyle(mx.margen_real_30d_pct >= c.margen_min_pct)}>
+                          real 30d: {mx.margen_real_30d_pct}%
+                        </div>
+                        {mx.margen_actual_med_pct != null && (
+                          <div style={subStyle}>med listing: {mx.margen_actual_med_pct}%</div>
+                        )}
+                      </>
+                    )}
                   </td>
                   <td>
                     <select defaultValue={c.politica_default}
@@ -276,6 +326,16 @@ export default function AdminPricingConfig() {
                         if (v !== c.acos_objetivo_pct) void saveCuadrante(c, { acos_objetivo_pct: v });
                       }}
                       style={inputStyle} />
+                    {mx?.acos_real_30d_pct != null && (
+                      <>
+                        <div style={realStyle(c.acos_objetivo_pct == null || mx.acos_real_30d_pct <= c.acos_objetivo_pct)}>
+                          real 30d: {mx.acos_real_30d_pct}%
+                        </div>
+                        <div style={subStyle}>
+                          {mx.items_con_gasto_ads} items · {fmtCLP(mx.cost_neto_ads_30d)}
+                        </div>
+                      </>
+                    )}
                   </td>
                   <td>
                     <input type="number" step="1" defaultValue={c.descuento_max_pct ?? ""}
@@ -284,6 +344,11 @@ export default function AdminPricingConfig() {
                         if (v !== c.descuento_max_pct) void saveCuadrante(c, { descuento_max_pct: v });
                       }}
                       style={inputStyle} />
+                    {mx?.descuento_actual_med_pct != null && (
+                      <div style={realStyle(c.descuento_max_pct == null || mx.descuento_actual_med_pct <= c.descuento_max_pct)}>
+                        med actual: {mx.descuento_actual_med_pct}%
+                      </div>
+                    )}
                   </td>
                   <td>
                     <input type="number" step="1" defaultValue={c.descuento_max_kvi_pct ?? ""}
@@ -303,10 +368,23 @@ export default function AdminPricingConfig() {
                       <option value="">—</option>
                       {CANALES.map(p => <option key={p} value={p}>{p}</option>)}
                     </select>
+                    {mx && (mx.ventas_full + mx.ventas_flex) > 0 && (() => {
+                      const tot = mx.ventas_full + mx.ventas_flex;
+                      const pctFull = Math.round((mx.ventas_full / tot) * 100);
+                      const real = pctFull >= 60 ? "full" : pctFull <= 40 ? "flex" : "mixto";
+                      return (
+                        <>
+                          <div style={realStyle(c.canal_preferido === null || c.canal_preferido === real || c.canal_preferido === "mixto")}>
+                            real: {real}
+                          </div>
+                          <div style={subStyle}>Full {mx.ventas_full} · Flex {mx.ventas_flex}</div>
+                        </>
+                      );
+                    })()}
                   </td>
                   <td style={{ fontSize: 11, color: "var(--txt3)", maxWidth: 280 }}>{c.notas}</td>
                 </tr>
-              ))}
+              );})}
             </tbody>
           </table>
         </div>
