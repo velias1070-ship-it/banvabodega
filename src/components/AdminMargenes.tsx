@@ -601,8 +601,19 @@ export default function AdminMargenes() {
   // IMPORTANTE: ML tarda 3-5s en propagar cambios de promociones tras un POST/DELETE. Si el
   // refresh se ejecuta inmediatamente, el endpoint va a leer el estado VIEJO de ML y guardar
   // en cache datos desactualizados. Por eso esperamos antes de gatillar el refresh.
-  const refrescarItemsAfectados = async (itemIds: string[], expectedPrice?: number) => {
+  // expected: Map<item_id, precio_esperado>. Si se pasa, valida y reintenta hasta que TODOS
+  // los items en cache reflejen su precio esperado (single y multi-item por igual).
+  const refrescarItemsAfectados = async (
+    itemIds: string[],
+    expected?: Map<string, number> | number,
+  ) => {
     if (itemIds.length === 0) return;
+    // Compatibilidad: aceptar number (precio único, single item) o Map por-item.
+    const expectedMap: Map<string, number> | null = expected == null
+      ? null
+      : typeof expected === "number"
+        ? (itemIds.length === 1 ? new Map([[itemIds[0], expected]]) : null)
+        : expected;
     try {
       const q = itemIds.join(",");
       // ML tarda 3-10s en propagar cambios en seller-promotions. Reintentar
@@ -612,12 +623,37 @@ export default function AdminMargenes() {
         await new Promise(r => setTimeout(r, delays[i]));
         await fetch(`/api/ml/margin-cache/refresh?item_ids=${encodeURIComponent(q)}`, { method: "POST" });
         const res = await loadCache();
-        if (!expectedPrice || itemIds.length !== 1) return; // sin target o multi-item: un solo intento
-        // Validar que el cache ya refleje el precio esperado
-        const row = res?.find?.((r: { item_id: string; precio_venta?: number }) => r.item_id === itemIds[0]);
-        if (row && row.precio_venta != null && Math.abs(row.precio_venta - expectedPrice) < 1) return;
+        if (!expectedMap || expectedMap.size === 0) return;
+        // Validar que TODOS los items en cache reflejen su precio esperado.
+        const todosOk = Array.from(expectedMap.entries()).every(([itemId, precio]) => {
+          const row = res?.find?.((r: { item_id: string; precio_venta?: number }) => r.item_id === itemId);
+          return row && row.precio_venta != null && Math.abs(row.precio_venta - precio) < 1;
+        });
+        if (todosOk) return;
       }
     } catch { /* silent */ }
+  };
+
+  // Optimistic update: mutar el row local apenas el join devuelve OK, antes de
+  // que ML/cache propaguen el cambio. La UI refleja el cambio instantáneo y el
+  // refresh server-side valida en background.
+  const aplicarUpdateOptimista = (
+    itemId: string,
+    nuevoPrecio: number,
+    promo: CommonPromo,
+  ) => {
+    setRows(prev => prev.map(r => {
+      if (r.item_id !== itemId) return r;
+      const promoPct = r.price_ml > 0 ? Math.round((1 - nuevoPrecio / r.price_ml) * 100) : null;
+      return {
+        ...r,
+        precio_venta: nuevoPrecio,
+        tiene_promo: true,
+        promo_type: promo.type,
+        promo_name: promo.name,
+        promo_pct: promoPct,
+      };
+    }));
   };
 
   // Resuelve el deal_price por-item siguiendo el chain target → max(rango) → sugerido(ML).
@@ -800,6 +836,10 @@ export default function AdminMargenes() {
     };
 
     const itemsAfectadosGlobal = new Set<string>();
+    // Map item_id -> precio postulado, para validar el refresh post-bulk.
+    // Si un item se postula a múltiples promos, gana el último precio (que es
+    // el que ML va a aplicar, ya que las promos se sobrescriben).
+    const preciosEsperados = new Map<string, number>();
     for (const { promo, validos } of plan) {
       const setActivos = new Set(promo.itemsActivos);
       for (const v of validos) {
@@ -855,6 +895,10 @@ export default function AdminMargenes() {
           if (!join.ok) throw new Error(join.msg);
           okCount++;
           itemsAfectadosGlobal.add(itemId);
+          preciosEsperados.set(itemId, dealPrice);
+          // Optimistic update — la UI refleja el cambio inmediatamente sin
+          // esperar el refresh del cache (que tarda 4-14s por lag de ML).
+          aplicarUpdateOptimista(itemId, dealPrice, promo);
         } catch (e) {
           errors.push({ sku: `${v.sku} [${promo.name}]`, error: e instanceof Error ? e.message : "Error" });
         }
@@ -864,7 +908,11 @@ export default function AdminMargenes() {
     }
     setBulkErrors(errors);
     setBulkApplying("none");
-    await refrescarItemsAfectados(Array.from(itemsAfectadosGlobal));
+    // Refresh server-side en background con validación per-item: si un item
+    // todavía no está propagado en ML, reintenta hasta 3 veces. La UI ya
+    // reflejó los cambios via optimistic update; este paso pisa con la
+    // verdad de ML cuando llega.
+    await refrescarItemsAfectados(Array.from(itemsAfectadosGlobal), preciosEsperados);
   };
 
   const switchPromo = async (
