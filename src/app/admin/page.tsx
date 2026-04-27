@@ -10228,12 +10228,16 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
         ))}
       </div>
 
-      {/* Approve all button */}
-      {conteo.estado === "REVISION" && conDiferencia > 0 && (
+      {/* Approve all button — aparece si hay alguna linea en CONTADO (con o sin diff) */}
+      {conteo.estado === "REVISION" && (sinDiferencia + conDiferencia) > 0 && (
         <div className="card" style={{border:"2px solid #a855f744"}}>
           <button onClick={aprobarTodo} disabled={processing}
             style={{width:"100%",padding:14,borderRadius:10,background:"linear-gradient(135deg,#7c3aed,#a855f7)",color:"#fff",fontWeight:700,fontSize:14,border:"none",cursor:"pointer"}}>
-            {processing ? "Procesando..." : `✅ Aprobar todos los ajustes (${conDiferencia} diferencias)`}
+            {processing
+              ? "Procesando..."
+              : conDiferencia > 0
+                ? `✅ Aprobar todo (${conDiferencia} con diff${sinDiferencia > 0 ? ` + ${sinDiferencia} sin diff` : ""})`
+                : `✅ Cerrar conteo (${sinDiferencia} líneas exactas, sin ajustes)`}
           </button>
         </div>
       )}
@@ -10328,7 +10332,11 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
                             </>
                           )}
                           {isContado && diff === 0 && (
-                            <span style={{fontSize:9,color:"#10b981",fontWeight:600}}>✓ OK</span>
+                            <button onClick={() => aprobarLinea(l.posicion_id, l.sku)} disabled={processing}
+                              title="Marcar como verificado (sin diferencia, no genera movimiento)"
+                              style={{padding:"3px 8px",borderRadius:4,fontSize:9,fontWeight:700,background:"#10b98122",color:"#10b981",border:"1px solid #10b98144"}}>
+                              ✓ Aceptar
+                            </button>
                           )}
                         </td>
                       )}
