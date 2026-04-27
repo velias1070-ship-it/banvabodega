@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import AdminAutoPostularDashboard from "./AdminAutoPostularDashboard";
 import AdminMarkdownPilot from "./AdminMarkdownPilot";
 
 /**
@@ -50,18 +49,6 @@ type CMAACuadrante = {
   acos_objetivo_pct: number | null;
   skus_cmaa_negativo: number;
   skus_cmaa_bajo_umbral: number;
-};
-
-type CMAASku = {
-  sku: string;
-  cuadrante: string | null;
-  gmv_30d: number;
-  margen_neto_30d: number;
-  margen_real_pct: number;
-  ads_30d: number;
-  tacos_pct: number;
-  cmaa_real_pct: number;
-  cmaa_clp: number;
 };
 
 type SkuRow = {
@@ -117,27 +104,22 @@ export default function AdminPricingConfig() {
   const [filtroCuad, setFiltroCuad] = useState<string>("");
   const [filtroQ, setFiltroQ] = useState<string>("");
   const [filtroOverrides, setFiltroOverrides] = useState(false);
-  const [tiposUnknown, setTiposUnknown] = useState<Array<{ type: string; count: number; sample_skus: string[] }>>([]);
   const [metrics, setMetrics] = useState<CuadranteMetrics[]>([]);
   const [cmaaCuad, setCmaaCuad] = useState<CMAACuadrante[]>([]);
-  const [cmaaTop, setCmaaTop] = useState<CMAASku[]>([]);
 
   const load = async () => {
     setLoading(true);
     try {
-      const [c, s, u, m, cmaa] = await Promise.all([
+      const [c, s, m, cmaa] = await Promise.all([
         fetch("/api/pricing-config/cuadrantes").then(r => r.json()),
         fetch("/api/pricing-config/skus").then(r => r.json()),
-        fetch("/api/pricing/promo-types-unknown").then(r => r.json()).catch(() => ({ unknown: [] })),
         fetch("/api/pricing/cuadrante-metrics-real").then(r => r.json()).catch(() => ({ metrics: [] })),
-        fetch("/api/pricing/cmaa-real").then(r => r.json()).catch(() => ({ cuadrante: [], top_negativos: [] })),
+        fetch("/api/pricing/cmaa-real").then(r => r.json()).catch(() => ({ cuadrante: [] })),
       ]);
       setCuadrantes(c.rows || []);
       setSkus(s.rows || []);
-      setTiposUnknown(u.unknown || []);
       setMetrics(m.metrics || []);
       setCmaaCuad(cmaa.cuadrante || []);
-      setCmaaTop(cmaa.top_negativos || []);
     } finally {
       setLoading(false);
     }
@@ -243,48 +225,6 @@ export default function AdminPricingConfig() {
 
       {/* Markdown piloto SKU por SKU: dry-run + apply individual */}
       <AdminMarkdownPilot />
-
-      {/* Dashboard del motor auto-postular: KPIs, motivos de skip, histórico */}
-      <AdminAutoPostularDashboard />
-
-      {tiposUnknown.length > 0 && (
-        <div className="card" style={{
-          padding: 16,
-          border: "1px solid var(--amberBd)",
-          background: "var(--amberBg)",
-        }}>
-          <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
-            <div style={{ fontSize: 24 }}>⚠️</div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 14, fontWeight: 600, color: "var(--amber)", marginBottom: 6 }}>
-                {tiposUnknown.length === 1
-                  ? "Hay 1 tipo de promo nuevo de ML que no está clasificado"
-                  : `Hay ${tiposUnknown.length} tipos de promo nuevos de ML que no están clasificados`}
-              </div>
-              <div style={{ fontSize: 12, color: "var(--txt2)", marginBottom: 10 }}>
-                ML está disponibilizando promos con tipos que el motor no conoce. Por defecto las trata como tier 1 (sin vitrina). Si alguno debería ser de mayor exposición, agregalo a <code style={{ color: "var(--cyan)" }}>VITRINA_TIER</code> en <code style={{ color: "var(--cyan)" }}>src/lib/pricing.ts</code>.
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {tiposUnknown.map(t => (
-                  <div key={t.type} style={{
-                    display: "flex",
-                    gap: 12,
-                    alignItems: "center",
-                    padding: "6px 10px",
-                    background: "var(--bg3)",
-                    borderRadius: 6,
-                    fontSize: 12,
-                  }}>
-                    <code style={{ color: "var(--amber)", fontWeight: 600 }}>{t.type}</code>
-                    <span style={{ color: "var(--txt2)" }}>{t.count} apariciones</span>
-                    <span style={{ color: "var(--txt3)" }}>SKUs ej: {t.sample_skus.join(", ")}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       <div className="card" style={{ padding: 16 }}>
         <div style={{ marginBottom: 12 }}>
@@ -448,77 +388,6 @@ export default function AdminPricingConfig() {
           </table>
         </div>
       </div>
-
-      {cmaaTop.length > 0 && (
-        <div className="card" style={{ padding: 16 }}>
-          <div style={{ marginBottom: 12 }}>
-            <h2 style={{ margin: 0, fontSize: 18, color: "var(--txt)" }}>
-              🩸 Top SKUs en CMAA negativo (30d)
-            </h2>
-            <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 4 }}>
-              CMAA = margen real − ads atribuibles. Ordenados por pérdida absoluta CLP.
-              Manual: <span className="mono">SKU con CMAA &lt;8% durante 60d entra a revisión de portfolio pruning</span>
-              {" "}(Investigacion_Comparada:329).
-            </div>
-          </div>
-          <div style={{ overflowX: "auto" }}>
-            <table className="tbl" style={{ width: "100%", fontSize: 12 }}>
-              <thead>
-                <tr style={{ color: "var(--txt2)", fontSize: 11, textTransform: "uppercase" }}>
-                  <th style={{ textAlign: "left", padding: "6px 8px" }}>SKU</th>
-                  <th style={{ textAlign: "left", padding: "6px 8px" }}>Cuad</th>
-                  <th style={{ textAlign: "right", padding: "6px 8px" }}>GMV 30d</th>
-                  <th style={{ textAlign: "right", padding: "6px 8px" }}>Margen %</th>
-                  <th style={{ textAlign: "right", padding: "6px 8px" }}>Ads 30d</th>
-                  <th style={{ textAlign: "right", padding: "6px 8px" }}>TACoS %</th>
-                  <th style={{ textAlign: "right", padding: "6px 8px" }}>CMAA %</th>
-                  <th style={{ textAlign: "right", padding: "6px 8px" }}>CMAA $</th>
-                </tr>
-              </thead>
-              <tbody>
-                {cmaaTop.filter(r => r.cmaa_clp < 0).map(r => {
-                  const cuadColor: Record<string, string> = {
-                    ESTRELLA: "var(--cyan)", CASHCOW: "var(--green)",
-                    VOLUMEN: "var(--blue)", REVISAR: "var(--amber)",
-                  };
-                  return (
-                    <tr key={r.sku}>
-                      <td className="mono" style={{ padding: "6px 8px", fontSize: 11 }}>
-                        <button
-                          onClick={() => { setFiltroQ(r.sku); }}
-                          style={{ background: "none", border: "none", color: "var(--cyan)", cursor: "pointer", padding: 0, fontFamily: "inherit", fontSize: 11 }}
-                          title="Filtrar tabla SKUs por este código"
-                        >{r.sku}</button>
-                      </td>
-                      <td style={{ padding: "6px 8px", fontSize: 11, color: r.cuadrante ? cuadColor[r.cuadrante] : "var(--txt3)" }}>
-                        {r.cuadrante || "—"}
-                      </td>
-                      <td style={{ padding: "6px 8px", textAlign: "right" }}>{fmtCLP(r.gmv_30d)}</td>
-                      <td style={{ padding: "6px 8px", textAlign: "right", color: r.margen_real_pct < 0 ? "var(--red)" : "var(--txt2)" }}>
-                        {r.margen_real_pct}%
-                      </td>
-                      <td style={{ padding: "6px 8px", textAlign: "right" }}>{fmtCLP(r.ads_30d)}</td>
-                      <td style={{ padding: "6px 8px", textAlign: "right", color: r.tacos_pct > 20 ? "var(--amber)" : "var(--txt2)" }}>
-                        {r.tacos_pct}%
-                      </td>
-                      <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, color: "var(--red)" }}>
-                        {r.cmaa_real_pct}%
-                      </td>
-                      <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, color: "var(--red)" }}>
-                        {fmtCLP(r.cmaa_clp)}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 8 }}>
-            {cmaaTop.filter(r => r.cmaa_clp < 0).length} SKUs sangrando ·
-            pérdida total: {fmtCLP(cmaaTop.filter(r => r.cmaa_clp < 0).reduce((s, r) => s + r.cmaa_clp, 0))} en 30 días
-          </div>
-        </div>
-      )}
 
       <div className="card" style={{ padding: 16 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
