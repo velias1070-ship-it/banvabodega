@@ -5,8 +5,8 @@ import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, s
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia, IntegrityError } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
-import { fetchConteos, createConteo, updateConteo, deleteConteo, calcularIRAConteo, toleranciaPorAbc, fetchAbcMap, CAUSA_RAIZ_LABEL, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado, transferirStock, reconciliarReservas, fetchResumenMovimientosHoy, fetchStockDisponible, fetchMovimientosHoy, fetchDesgloseReservas, enqueueAndSync, updateProductoCosto, toggleShipmentHidden, patchLineaPicking, agregarLineaPicking, eliminarLineaPicking, dividirEnvioFull } from "@/lib/db";
-import type { ConteoCausaRaiz } from "@/lib/db";
+import { fetchConteos, createConteo, updateConteo, deleteConteo, calcularIRAConteo, toleranciaPorAbc, fetchAbcMap, fetchIRASemanal, CAUSA_RAIZ_LABEL, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado, transferirStock, reconciliarReservas, fetchResumenMovimientosHoy, fetchStockDisponible, fetchMovimientosHoy, fetchDesgloseReservas, enqueueAndSync, updateProductoCosto, toggleShipmentHidden, patchLineaPicking, agregarLineaPicking, eliminarLineaPicking, dividirEnvioFull } from "@/lib/db";
+import type { ConteoCausaRaiz, IRASemana } from "@/lib/db";
 import type { DBStockProyectado, DBReconciliacion } from "@/lib/db";
 import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap, ShipmentWithItems } from "@/lib/db";
 import { getOAuthUrl } from "@/lib/ml";
@@ -9659,6 +9659,120 @@ function AdminPedidosFlex({ refresh, initialView = "pedidos" }: { refresh: () =>
   );
 }
 
+// ==================== IRA SEMANAL (Manual Inventarios Parte3 §5.6) ====================
+function colorPorIRA(pct: number | null | undefined): string {
+  if (pct == null) return "#94a3b8";
+  if (pct >= 99) return "#10b981";
+  if (pct >= 95) return "#3b82f6";
+  if (pct >= 85) return "#f59e0b";
+  return "#ef4444";
+}
+function veredictoIRA(pct: number | null | undefined): string {
+  if (pct == null) return "—";
+  if (pct >= 99) return "Clase mundial";
+  if (pct >= 95) return "Aceptable";
+  if (pct >= 85) return "Bajo benchmark";
+  return "Crítico";
+}
+
+function IRASemanalCard({ semanas }: { semanas: IRASemana[] }) {
+  if (semanas.length === 0) {
+    return (
+      <div className="card" style={{textAlign:"center",padding:20,color:"var(--txt3)",fontSize:12,marginBottom:12}}>
+        Sin conteos cerrados todavía. El IRA semanal se construye a medida que cierres conteos.
+      </div>
+    );
+  }
+  const [actual, ...resto] = semanas;
+  const previa = resto[0];
+  const tendencia = previa && actual.ira_pct != null && previa.ira_pct != null ? actual.ira_pct - previa.ira_pct : null;
+  const colorActual = colorPorIRA(actual.ira_pct);
+  const veredictoActual = veredictoIRA(actual.ira_pct);
+  // Sparkline simple en SVG (últimas 12 semanas, izquierda→derecha)
+  const series = [...semanas].reverse().filter(s => s.ira_pct != null) as (IRASemana & { ira_pct: number })[];
+  const minV = series.length > 0 ? Math.min(...series.map(s => s.ira_pct), 70) : 0;
+  const W = 220, H = 36;
+  const range = Math.max(100 - minV, 1);
+  const points = series.map((s, i) => {
+    const x = series.length === 1 ? W / 2 : (i / (series.length - 1)) * W;
+    const y = H - ((s.ira_pct - minV) / range) * H;
+    return `${x},${y}`;
+  }).join(" ");
+  return (
+    <div className="card" style={{border:`2px solid ${colorActual}55`, marginBottom:12, padding:16}}>
+      <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:16,flexWrap:"wrap"}}>
+        <div>
+          <div style={{fontSize:11,color:"var(--txt3)",fontWeight:700,letterSpacing:0.5}}>IRA SEMANAL · semana {actual.semana}</div>
+          <div style={{fontSize:36,fontWeight:800,color:colorActual,lineHeight:1.1,marginTop:4}}>
+            {actual.ira_pct != null ? `${actual.ira_pct.toFixed(1)}%` : "—"}
+          </div>
+          <div style={{fontSize:11,color:colorActual,fontWeight:600,marginTop:2}}>
+            {veredictoActual}
+            {tendencia != null && (
+              <span style={{marginLeft:8,color: tendencia >= 0 ? "#10b981" : "#ef4444"}}>
+                {tendencia >= 0 ? "▲" : "▼"} {Math.abs(tendencia).toFixed(1)} pp vs semana previa
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div style={{display:"flex",gap:14,fontSize:12,color:"var(--txt2)",alignSelf:"center"}}>
+          <div><span style={{color:"#10b981",fontWeight:800}}>{actual.lineas_ok}</span> exactas</div>
+          <div><span style={{color:"#f59e0b",fontWeight:800}}>{actual.lineas_diff}</span> con diff</div>
+          <div><span style={{color:"var(--txt2)",fontWeight:800}}>{actual.lineas_total}</span> total · <span style={{color:"var(--txt2)"}}>{actual.conteos_cerrados} conteos</span></div>
+        </div>
+
+        {series.length >= 2 && (
+          <svg width={W} height={H+8} style={{flexShrink:0}}>
+            <polyline fill="none" stroke={colorActual} strokeWidth={2} points={points}/>
+            {series.map((s, i) => {
+              const x = series.length === 1 ? W / 2 : (i / (series.length - 1)) * W;
+              const y = H - ((s.ira_pct - minV) / range) * H;
+              return <circle key={i} cx={x} cy={y} r={2.5} fill={colorPorIRA(s.ira_pct)}/>;
+            })}
+          </svg>
+        )}
+      </div>
+
+      {semanas.length >= 2 && (
+        <details style={{marginTop:10}}>
+          <summary style={{fontSize:10,color:"var(--txt3)",cursor:"pointer",fontWeight:600}}>
+            Ver últimas {semanas.length} semanas
+          </summary>
+          <table className="tbl" style={{marginTop:8,fontSize:11}}>
+            <thead><tr>
+              <th style={{textAlign:"left"}}>Semana</th>
+              <th style={{textAlign:"right"}}>Conteos</th>
+              <th style={{textAlign:"right"}}>Líneas</th>
+              <th style={{textAlign:"right"}}>OK</th>
+              <th style={{textAlign:"right"}}>Diff</th>
+              <th style={{textAlign:"right"}}>IRA</th>
+            </tr></thead>
+            <tbody>
+              {semanas.map(s => (
+                <tr key={s.semana}>
+                  <td className="mono">{s.semana}</td>
+                  <td className="mono" style={{textAlign:"right"}}>{s.conteos_cerrados}</td>
+                  <td className="mono" style={{textAlign:"right"}}>{s.lineas_total}</td>
+                  <td className="mono" style={{textAlign:"right",color:"#10b981"}}>{s.lineas_ok}</td>
+                  <td className="mono" style={{textAlign:"right",color: s.lineas_diff > 0 ? "#f59e0b" : "var(--txt3)"}}>{s.lineas_diff}</td>
+                  <td className="mono" style={{textAlign:"right",fontWeight:700,color: colorPorIRA(s.ira_pct)}}>
+                    {s.ira_pct != null ? `${s.ira_pct.toFixed(1)}%` : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </details>
+      )}
+
+      <div style={{fontSize:10,color:"var(--txt3)",marginTop:8,lineHeight:1.5}}>
+        Manual Inventarios Parte 3 §5.6: target 95% en 3 meses, 99% en 12 meses. Bodegas inmaduras 70-85%.
+      </div>
+    </div>
+  );
+}
+
 // ==================== CONTEO CÍCLICO ====================
 function AdminConteos({ refresh }: { refresh: () => void }) {
   const [conteos, setConteos] = useState<DBConteo[]>([]);
@@ -9666,11 +9780,13 @@ function AdminConteos({ refresh }: { refresh: () => void }) {
   const [showCreate, setShowCreate] = useState(false);
   const [selConteo, setSelConteo] = useState<DBConteo | null>(null);
   const [filter, setFilter] = useState<"activas"|"revision"|"cerradas"|"todas">("activas");
+  const [iraSemanas, setIraSemanas] = useState<IRASemana[]>([]);
 
   const loadConteos = useCallback(async () => {
     setLoading(true);
-    const data = await fetchConteos();
+    const [data, iraData] = await Promise.all([fetchConteos(), fetchIRASemanal(12)]);
     setConteos(data);
+    setIraSemanas(iraData);
     setLoading(false);
   }, []);
 
@@ -9700,6 +9816,10 @@ function AdminConteos({ refresh }: { refresh: () => void }) {
 
   return (
     <div>
+      {/* IRA semanal - Manual Inventarios Parte3 §5.6 línea 247:
+          "Mide IRA semanalmente. Target: 95% en 3 meses, 99% en 12 meses." */}
+      <IRASemanalCard semanas={iraSemanas}/>
+
       <div className="card">
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
           <div className="card-title">📋 Conteo Cíclico</div>

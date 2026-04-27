@@ -1515,6 +1515,37 @@ export function toleranciaPorAbc(abc: string | null | undefined): number {
 }
 
 /**
+ * Tracking IRA semanal — Manual Inventarios Parte3 §5.6 línea 247.
+ * Una fila por semana ISO. Usa snapshots ya persistidos en conteos.lineas_*.
+ */
+export interface IRASemana {
+  semana: string;             // ISO date del lunes de esa semana
+  conteos_cerrados: number;
+  lineas_total: number;
+  lineas_ok: number;
+  lineas_diff: number;
+  ira_pct: number | null;
+}
+
+export async function fetchIRASemanal(limit = 12): Promise<IRASemana[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data, error } = await sb.from("v_ira_semanal_global")
+    .select("*").order("semana", { ascending: false }).limit(limit);
+  if (error) {
+    console.error(`[fetchIRASemanal] ${error.message}`);
+    return [];
+  }
+  return (data || []).map(r => ({
+    semana: String(r.semana),
+    conteos_cerrados: Number(r.conteos_cerrados ?? 0),
+    lineas_total: Number(r.lineas_total ?? 0),
+    lineas_ok: Number(r.lineas_ok ?? 0),
+    lineas_diff: Number(r.lineas_diff ?? 0),
+    ira_pct: r.ira_pct === null || r.ira_pct === undefined ? null : Number(r.ira_pct),
+  }));
+}
+
+/**
  * Carga clasificación ABC actual por sku_origen desde sku_intelligence.
  * Se usa para hidratar `abc_snapshot` en líneas de conteo al cerrar.
  */
