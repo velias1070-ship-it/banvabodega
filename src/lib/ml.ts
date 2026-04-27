@@ -2169,19 +2169,21 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     } else {
       const yaSet = new Set(((yaVistos || []) as Array<{ item_id: string }>).map(r => r.item_id));
       const ahora = new Date().toISOString();
-      const upsertRows = unmappedDedup.map(r => {
-        const base = {
-          item_id: r.item_id,
-          titulo: r.titulo,
-          user_product_id: r.user_product_id,
-          catalog_listing: r.catalog_listing,
-          status_ml: r.status_ml,
-          ultima_vez_visto: ahora,
-        };
-        return yaSet.has(r.item_id)
-          ? base
-          : { ...base, primera_vez_visto: ahora, notificado: false };
-      });
+      // Shape uniforme para todos los rows del batch — supabase-js arma un solo
+      // INSERT con todas las columnas y rellena null donde falta. Si mezclamos
+      // {primera_vez_visto, notificado} solo en algunos rows, los demás
+      // intentan insertar null en columnas NOT NULL.
+      // primera_vez_visto y notificado tienen DEFAULT en la tabla, así que las
+      // omitimos del payload — postgres aplica DEFAULT en INSERT y deja
+      // intactas en UPDATE.
+      const upsertRows = unmappedDedup.map(r => ({
+        item_id: r.item_id,
+        titulo: r.titulo,
+        user_product_id: r.user_product_id,
+        catalog_listing: r.catalog_listing,
+        status_ml: r.status_ml,
+        ultima_vez_visto: ahora,
+      }));
       const { error: upsErr } = await sb
         .from("ml_items_unmapped")
         .upsert(upsertRows, { onConflict: "item_id" });
