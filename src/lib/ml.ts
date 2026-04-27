@@ -2148,7 +2148,13 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
   let unmappedPersistidos = 0;
   let unmappedNotificados = 0;
   if (unmapped.length > 0) {
-    const ids = unmapped.map(r => r.item_id);
+    // Deduplicar por item_id: items con variations aparecen múltiples veces
+    // (una por variación) en itemsMapRows. PostgreSQL no permite que un upsert
+    // toque la misma fila dos veces en el mismo batch.
+    const unmappedDedup = Array.from(
+      new Map(unmapped.map(r => [r.item_id, r])).values(),
+    );
+    const ids = unmappedDedup.map(r => r.item_id);
     const { data: yaVistos, error: yaErr } = await sb
       .from("ml_items_unmapped")
       .select("item_id")
@@ -2158,7 +2164,7 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     } else {
       const yaSet = new Set(((yaVistos || []) as Array<{ item_id: string }>).map(r => r.item_id));
       const ahora = new Date().toISOString();
-      const upsertRows = unmapped.map(r => {
+      const upsertRows = unmappedDedup.map(r => {
         const base = {
           item_id: r.item_id,
           titulo: r.titulo,
@@ -2178,7 +2184,7 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
         errores.push(`[syncStockFull] ml_items_unmapped upsert: ${upsErr.message}`);
       } else {
         unmappedPersistidos = upsertRows.length;
-        const nuevos = unmapped.filter(r => !yaSet.has(r.item_id));
+        const nuevos = unmappedDedup.filter(r => !yaSet.has(r.item_id));
         if (nuevos.length > 0) {
           const catalogCount = nuevos.filter(r => r.catalog_listing).length;
           const lineas = nuevos.slice(0, 5).map(r =>
