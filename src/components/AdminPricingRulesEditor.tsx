@@ -46,27 +46,33 @@ type ActiveResp = {
 
 type ListResp = { rule_sets: RuleSetMeta[]; pointers: Pointer[] };
 
-const RULE_DESCRIPTIONS: Record<string, { titulo: string; resumen: (v: any) => string; manual: string }> = {
-  markdown_ladder:        { titulo: "🪙 Markdown ladder", resumen: (v) => `${v.min_dias_para_postular}d → ${v.niveles?.map((n: any) => `${n.dias_min}d=-${n.descuento_pct}%`).join(", ")}`, manual: "Comparada:197" },
-  valle_muerte:           { titulo: "🚫 Valle muerte ML",  resumen: (v) => `No postular entre $${v.min_clp?.toLocaleString("es-CL")} y $${v.max_clp?.toLocaleString("es-CL")}`, manual: "Engines" },
-  promos_postulacion:     { titulo: "🎯 Promos: cuándo postular", resumen: (v) => `Tiers obligatorios: ${(v.siempre_postular_tiers||[]).join(",")} | Tipos obligatorios: ${(v.siempre_postular_tipos||[]).join(", ")}${v.bypass_floor_para_obligatorios ? " (bypass floor)" : ""}`, manual: "Comparada:303-310" },
-  subtipo_revisar:        { titulo: "🔍 Subtipos REVISAR", resumen: (v) => `liquidar ≥${v.criterios?.liquidar_dias_sin_mov_min}d, nuevo ≤${v.criterios?.nuevo_dias_desde_primera_max}d`, manual: "Comparada:197" },
-  triggers_reclasificacion: { titulo: "🔄 Triggers reclasif", resumen: (v) => `aging ≥${v.aging?.dias_sin_movimiento_min}d, MoM ≥${v.crecimiento?.mom_pct_min}%×${v.crecimiento?.meses_consecutivos}m, margen ≤${v.margen_bajo?.margen_pct_max}%×${v.margen_bajo?.meses_consecutivos}m`, manual: "Comparada:235" },
-  pareto:                 { titulo: "📊 Pareto ABC", resumen: (v) => `A=${v.umbral_clase_a}%, B=${v.umbral_clase_b}%`, manual: "ABC clásico" },
-  recovery_rampup:        { titulo: "📈 Recovery rampup", resumen: (v) => `vel_30d ≥${v.vel_30d_min_pct_de_pre_quiebre}% del pre-quiebre`, manual: "—" },
-  distribucion_default:   { titulo: "📦 Distribución default", resumen: (v) => `Full ${v.full_pct}% / Flex ${v.flex_pct}%`, manual: "—" },
-  rampup_post_quiebre:    { titulo: "⚡ Rampup post-quiebre", resumen: (v) => `${v.buckets?.length ?? 0} buckets`, manual: "—" },
-  cooldown:               { titulo: "❄️ Cooldown bajadas", resumen: (v) => `${v.ventana_horas}h, max ${v.max_bajadas_en_ventana} bajadas`, manual: "Engines:593" },
-  cmaa_alerta:            { titulo: "💸 CMAA alerta", resumen: (v) => `<${v.umbral_pct}% × ${v.ventana_dias}d`, manual: "Comparada:329" },
-  cobertura:              { titulo: "📅 Cobertura", resumen: (v) => `min ${v.min_postular_dias}d, A=${v.target_dias_a}/B=${v.target_dias_b}/C=${v.target_dias_c}`, manual: "—" },
-  service_level_z:        { titulo: "📐 Service level Z",   resumen: (v) => `97%=${v.z_97}, 95%=${v.z_95}, 80%=${v.z_80}`, manual: "estadística" },
-  forecast_quality_alerts:{ titulo: "🎯 Forecast quality", resumen: (v) => `tracking_signal=${v.tracking_signal_umbral}, bias≥${v.bias_pct_de_vel_umbral}%`, manual: "—" },
-  gates:                  { titulo: "🚪 Gates descuento", resumen: (v) => `KVI max ${v.kvi_descuento_max_pct}%, defender max ${v.defender_descuento_max_pct}%`, manual: "—" },
-  quiebre_prolongado:     { titulo: "⏳ Quiebre prolongado", resumen: (v) => `r1: ${v.rama_1_dias_min}d+vel≥${v.rama_1_vel_pre_min} | r2: ${v.rama_2_dias_min}d+vel×${v.vel_pre_factor_vs_act}`, manual: "—" },
-  tsb:                    { titulo: "🆕 TSB edad mínima", resumen: (v) => `${v.edad_minima_dias}d`, manual: "—" },
-  imputacion:             { titulo: "🔢 Imputación", resumen: (v) => `${v.semanas_en_30d} semanas/30d`, manual: "—" },
-  cuadrantes:             { titulo: "🎲 Cuadrantes", resumen: (v) => `ESTRELLA m≥${v.ESTRELLA?.margen_min_pct}% / VOLUMEN m≥${v.VOLUMEN?.margen_min_pct}% / CASHCOW m≥${v.CASHCOW?.margen_min_pct}% / REVISAR m≥${v.REVISAR?.margen_min_pct}%`, manual: "Comparada:148" },
-  governance:             { titulo: "⚖️ Governance %/cambio", resumen: (v) => `${v.status} — ${v.max_change_pct_diario}%/día, ${v.max_change_pct_semanal}%/sem`, manual: "Comparada:630" },
+type RuleMeta = { titulo: string; resumen: (v: any) => string; manual: string; tipo: "operativa" | "tecnica" };
+
+// Operativas: las que vos cambias para mover el negocio.
+// Tecnicas: parametros internos del motor de inteligencia, raro tocar.
+const RULE_DESCRIPTIONS: Record<string, RuleMeta> = {
+  promos_postulacion:       { tipo: "operativa", titulo: "🎯 Promos — cuándo postular", resumen: (v) => `Siempre postular tier ${(v.siempre_postular_tiers||[]).join(",")} (${(v.siempre_postular_tipos||[]).join(", ")})${v.bypass_floor_para_obligatorios ? " · bypass floor" : ""}`, manual: "Comparada:303-310" },
+  markdown_ladder:          { tipo: "operativa", titulo: "🪙 Markdown ladder",          resumen: (v) => `${v.min_dias_para_postular}d → ${v.niveles?.map((n: any) => `${n.dias_min}d=-${n.descuento_pct}%`).join(", ")}`, manual: "Comparada:197" },
+  cuadrantes:               { tipo: "operativa", titulo: "🎲 Cuadrantes (margen min)",  resumen: (v) => `ESTRELLA ≥${v.ESTRELLA?.margen_min_pct}% · VOLUMEN ≥${v.VOLUMEN?.margen_min_pct}% · CASHCOW ≥${v.CASHCOW?.margen_min_pct}% · REVISAR ≥${v.REVISAR?.margen_min_pct}%`, manual: "Comparada:148" },
+  cmaa_alerta:              { tipo: "operativa", titulo: "💸 CMAA alerta",              resumen: (v) => `<${v.umbral_pct}% por ${v.ventana_dias}d → flag`, manual: "Comparada:329" },
+  cooldown:                 { tipo: "operativa", titulo: "❄️ Cooldown bajadas",         resumen: (v) => `Max ${v.max_bajadas_en_ventana} bajadas en ${v.ventana_horas}h`, manual: "Engines:593" },
+  gates:                    { tipo: "operativa", titulo: "🚪 Gates descuento",          resumen: (v) => `KVI max ${v.kvi_descuento_max_pct}% · defender max ${v.defender_descuento_max_pct}%`, manual: "—" },
+  triggers_reclasificacion: { tipo: "operativa", titulo: "🔄 Triggers reclasif",        resumen: (v) => `aging ≥${v.aging?.dias_sin_movimiento_min}d · MoM ≥${v.crecimiento?.mom_pct_min}%×${v.crecimiento?.meses_consecutivos}m · margen ≤${v.margen_bajo?.margen_pct_max}%×${v.margen_bajo?.meses_consecutivos}m`, manual: "Comparada:235" },
+  governance:               { tipo: "operativa", titulo: "⚖️ Governance %/cambio",      resumen: (v) => `${v.status} · ${v.max_change_pct_diario}%/día · ${v.max_change_pct_semanal}%/sem`, manual: "Comparada:630" },
+  valle_muerte:             { tipo: "operativa", titulo: "🚫 Valle muerto ML",          resumen: (v) => `No postular entre $${v.min_clp?.toLocaleString("es-CL")}–$${v.max_clp?.toLocaleString("es-CL")}`, manual: "Engines" },
+  distribucion_default:     { tipo: "operativa", titulo: "📦 Distribución default",     resumen: (v) => `Full ${v.full_pct}% / Flex ${v.flex_pct}%`, manual: "—" },
+
+  // Tecnicas (motor de inteligencia, raro tocar)
+  subtipo_revisar:          { tipo: "tecnica", titulo: "🔍 Subtipos REVISAR",        resumen: (v) => `liquidar ≥${v.criterios?.liquidar_dias_sin_mov_min}d · nuevo ≤${v.criterios?.nuevo_dias_desde_primera_max}d`, manual: "Comparada:197" },
+  pareto:                   { tipo: "tecnica", titulo: "📊 Pareto ABC",              resumen: (v) => `A=${v.umbral_clase_a}% · B=${v.umbral_clase_b}%`, manual: "ABC clásico" },
+  recovery_rampup:          { tipo: "tecnica", titulo: "📈 Recovery rampup",         resumen: (v) => `vel_30d ≥${v.vel_30d_min_pct_de_pre_quiebre}% del pre-quiebre`, manual: "—" },
+  rampup_post_quiebre:      { tipo: "tecnica", titulo: "⚡ Rampup post-quiebre",      resumen: (v) => `${v.buckets?.length ?? 0} buckets de factor`, manual: "—" },
+  cobertura:                { tipo: "tecnica", titulo: "📅 Cobertura objetivo",      resumen: (v) => `min ${v.min_postular_dias}d · A=${v.target_dias_a}/B=${v.target_dias_b}/C=${v.target_dias_c}`, manual: "—" },
+  service_level_z:          { tipo: "tecnica", titulo: "📐 Service level Z",         resumen: (v) => `z_97=${v.z_97} · z_95=${v.z_95} · z_80=${v.z_80}`, manual: "estadística" },
+  forecast_quality_alerts:  { tipo: "tecnica", titulo: "🎯 Forecast quality",        resumen: (v) => `tracking_signal=${v.tracking_signal_umbral} · bias≥${v.bias_pct_de_vel_umbral}%`, manual: "—" },
+  quiebre_prolongado:       { tipo: "tecnica", titulo: "⏳ Quiebre prolongado",       resumen: (v) => `r1: ${v.rama_1_dias_min}d+vel≥${v.rama_1_vel_pre_min} · r2: ${v.rama_2_dias_min}d+vel×${v.vel_pre_factor_vs_act}`, manual: "—" },
+  tsb:                      { tipo: "tecnica", titulo: "🆕 TSB edad mínima",         resumen: (v) => `${v.edad_minima_dias}d`, manual: "—" },
+  imputacion:               { tipo: "tecnica", titulo: "🔢 Imputación",              resumen: (v) => `${v.semanas_en_30d} sem/30d`, manual: "—" },
 };
 
 const truncHash = (h: string | null | undefined) => (h ? `${h.slice(0, 7)}…` : "—");
@@ -79,6 +85,7 @@ export default function AdminPricingRulesEditor() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [showTecnicas, setShowTecnicas] = useState(false);
   const [draftJson, setDraftJson] = useState<string>("");
   const [versionLabel, setVersionLabel] = useState("");
   const [createdBy, setCreatedBy] = useState("");
@@ -218,22 +225,49 @@ export default function AdminPricingRulesEditor() {
         </div>
       )}
 
-      {tab === "activo" && active && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 8 }}>
-          {Object.entries(active.rules).filter(([k]) => k !== "version" && k !== "domain" && k !== "fuente").map(([k, v]) => {
-            const meta = RULE_DESCRIPTIONS[k];
-            return (
-              <div key={k} style={{ padding: 10, background: "var(--bg3)", border: "1px solid var(--bg4)", borderRadius: 8 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{meta?.titulo || k}</div>
-                <div style={{ fontSize: 11, color: "var(--txt2)", marginBottom: 4 }} className="mono">
-                  {meta?.resumen?.(v) || "—"}
-                </div>
-                {meta?.manual && <div style={{ fontSize: 10, color: "var(--txt3)" }}>📖 {meta.manual}</div>}
+      {tab === "activo" && active && (() => {
+        const entries = Object.entries(active.rules).filter(([k]) => k !== "version" && k !== "domain" && k !== "fuente");
+        const operativas = entries.filter(([k]) => RULE_DESCRIPTIONS[k]?.tipo === "operativa");
+        const tecnicas   = entries.filter(([k]) => RULE_DESCRIPTIONS[k]?.tipo === "tecnica");
+        const otras      = entries.filter(([k]) => !RULE_DESCRIPTIONS[k]);
+
+        const renderCard = ([k, v]: [string, unknown]) => {
+          const meta = RULE_DESCRIPTIONS[k];
+          return (
+            <div key={k} style={{ padding: 10, background: "var(--bg3)", border: "1px solid var(--bg4)", borderRadius: 8 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{meta?.titulo || k}</div>
+              <div style={{ fontSize: 11, color: "var(--txt2)", marginBottom: 4 }} className="mono">{meta?.resumen?.(v) || "—"}</div>
+              {meta?.manual && <div style={{ fontSize: 10, color: "var(--txt3)" }}>📖 {meta.manual}</div>}
+            </div>
+          );
+        };
+
+        return (
+          <>
+            <div style={{ fontSize: 11, color: "var(--txt3)", marginBottom: 8 }}>
+              Reglas que mueven el negocio. Para editar valores: tab <strong>Editor JSON</strong>.
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 8 }}>
+              {operativas.map(renderCard)}
+            </div>
+
+            {(tecnicas.length > 0 || otras.length > 0) && (
+              <button
+                onClick={() => setShowTecnicas((s) => !s)}
+                style={{ marginTop: 12, padding: "6px 12px", background: "var(--bg3)", border: "1px solid var(--bg4)", color: "var(--txt2)", borderRadius: 6, fontSize: 12, cursor: "pointer" }}
+              >
+                {showTecnicas ? "▼" : "▶"} Reglas técnicas del motor ({tecnicas.length + otras.length}) — raro tocar
+              </button>
+            )}
+            {showTecnicas && (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 8, marginTop: 8, opacity: 0.85 }}>
+                {tecnicas.map(renderCard)}
+                {otras.map(renderCard)}
               </div>
-            );
-          })}
-        </div>
-      )}
+            )}
+          </>
+        );
+      })()}
 
       {tab === "editor" && (
         <div>
