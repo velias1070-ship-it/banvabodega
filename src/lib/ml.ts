@@ -1712,6 +1712,10 @@ export interface SyncStockFullResult {
   items_sincronizados: number;
   stock_actualizado: number;
   sin_inventory_id: number;
+  unmapped_total: number;
+  unmapped_resueltos_via_user_product: number;
+  unmapped_persistidos: number;
+  unmapped_notificados: number;
   errores: string[];
   tiempo_ms: number;
 }
@@ -1944,7 +1948,7 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
 
   const config = await getMLConfig();
   if (!config?.seller_id || !sb) {
-    return { ok: false, items_sincronizados: 0, stock_actualizado: 0, sin_inventory_id: 0, errores: ["No ML config o seller_id"], tiempo_ms: Date.now() - start };
+    return { ok: false, items_sincronizados: 0, stock_actualizado: 0, sin_inventory_id: 0, unmapped_total: 0, unmapped_resueltos_via_user_product: 0, unmapped_persistidos: 0, unmapped_notificados: 0, errores: ["No ML config o seller_id"], tiempo_ms: Date.now() - start };
   }
 
   // 1. Obtener mapeos para resolver SKU desde múltiples fuentes
@@ -2001,6 +2005,7 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     variation_id: string | null;
     user_product_id: string | null;
     status_ml: string | null;
+    catalog_listing: boolean;
   }> = [];
 
   let sinInventoryId = 0;
@@ -2033,6 +2038,7 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
               variation_id: String(v.id),
               user_product_id: v.user_product_id || item.user_product_id || null,
               status_ml: item.status || null,
+              catalog_listing: !!(item as { catalog_listing?: boolean }).catalog_listing,
             });
           }
         } else {
@@ -2052,6 +2058,7 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
             variation_id: null,
             user_product_id: item.user_product_id || null,
             status_ml: item.status || null,
+            catalog_listing: !!(item as { catalog_listing?: boolean }).catalog_listing,
           });
         }
       } catch (err) {
@@ -2085,6 +2092,44 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     if (i + 20 < inventoryIds.length) await delay(100);
   }
 
+  // 4b. Segunda pasada — heredar SKU vía user_product_id contra ml_items_map ya mapeado.
+  // Catalog listings tienen seller_custom_field=null y resolveSkuVenta() los descarta,
+  // pero comparten user_product_id con su par marketplace que sí está mapeado. ML los
+  // trata como inventario unificado (mismo user_product_id ⇒ mismo SKU físico), así que
+  // el SKU del marketplace aplica al catalog. Sin esto, esos items se descartan y el
+  // admin pierde visibilidad de la publicación.
+  let resueltosViaUP = 0;
+  const candidatosUP = itemsMapRows.filter(r => !r.sku_venta && r.user_product_id);
+  if (candidatosUP.length > 0) {
+    const userProductIds = Array.from(new Set(candidatosUP.map(r => r.user_product_id!)));
+    const { data: knownByUP, error: upErr } = await sb
+      .from("ml_items_map")
+      .select("user_product_id, sku_venta, sku_origen")
+      .in("user_product_id", userProductIds)
+      .not("sku_venta", "is", null);
+    if (upErr) {
+      errores.push(`[syncStockFull] upid_resolve select: ${upErr.message}`);
+    } else {
+      const upToSku = new Map<string, { sku_venta: string; sku_origen: string }>();
+      for (const r of (knownByUP || []) as Array<{ user_product_id: string; sku_venta: string; sku_origen: string | null }>) {
+        if (r.user_product_id && r.sku_venta && !upToSku.has(r.user_product_id)) {
+          upToSku.set(r.user_product_id, { sku_venta: r.sku_venta, sku_origen: r.sku_origen || r.sku_venta });
+        }
+      }
+      for (const row of candidatosUP) {
+        const m = upToSku.get(row.user_product_id!);
+        if (m) {
+          row.sku_venta = m.sku_venta;
+          row.sku_origen = m.sku_origen;
+          resueltosViaUP++;
+        }
+      }
+      if (resueltosViaUP > 0) {
+        console.log(`[syncStockFull] Heredados ${resueltosViaUP}/${candidatosUP.length} unmapped vía user_product_id (catalog listings)`);
+      }
+    }
+  }
+
   // 5. Upsert ml_items_map
   // Deduplicar por (sku, item_id) — para items con variaciones, múltiples variaciones
   // pueden resolver al mismo sku_venta, generando filas con la misma PK en el batch.
@@ -2092,9 +2137,76 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
   // Preferimos la fila con inventory_id (variación real sobre padre).
   const mapped = itemsMapRows.filter(r => r.sku_venta);
   const unmapped = itemsMapRows.filter(r => !r.sku_venta);
-  console.log(`[syncStockFull] ${mapped.length} items con SKU resuelto, ${unmapped.length} sin mapeo`);
+  console.log(`[syncStockFull] ${mapped.length} items con SKU resuelto, ${unmapped.length} sin mapeo (post-segunda-pasada)`);
   if (unmapped.length > 0) {
     console.log(`[syncStockFull] Items sin mapeo (primeros 10): ${unmapped.slice(0, 10).map(r => `${r.item_id}(scf=${r.titulo})`).join(", ")}`);
+  }
+
+  // 4c. Persistir unmapped en ml_items_unmapped + notificación WhatsApp para items nuevos.
+  // Observabilidad de catalog listings (y otros) que no podemos mapear automáticamente.
+  // Vicente recibe alerta para revisar y agregar override manual si corresponde.
+  let unmappedPersistidos = 0;
+  let unmappedNotificados = 0;
+  if (unmapped.length > 0) {
+    const ids = unmapped.map(r => r.item_id);
+    const { data: yaVistos, error: yaErr } = await sb
+      .from("ml_items_unmapped")
+      .select("item_id")
+      .in("item_id", ids);
+    if (yaErr) {
+      errores.push(`[syncStockFull] ml_items_unmapped select: ${yaErr.message}`);
+    } else {
+      const yaSet = new Set(((yaVistos || []) as Array<{ item_id: string }>).map(r => r.item_id));
+      const ahora = new Date().toISOString();
+      const upsertRows = unmapped.map(r => {
+        const base = {
+          item_id: r.item_id,
+          titulo: r.titulo,
+          user_product_id: r.user_product_id,
+          catalog_listing: r.catalog_listing,
+          status_ml: r.status_ml,
+          ultima_vez_visto: ahora,
+        };
+        return yaSet.has(r.item_id)
+          ? base
+          : { ...base, primera_vez_visto: ahora, notificado: false };
+      });
+      const { error: upsErr } = await sb
+        .from("ml_items_unmapped")
+        .upsert(upsertRows, { onConflict: "item_id" });
+      if (upsErr) {
+        errores.push(`[syncStockFull] ml_items_unmapped upsert: ${upsErr.message}`);
+      } else {
+        unmappedPersistidos = upsertRows.length;
+        const nuevos = unmapped.filter(r => !yaSet.has(r.item_id));
+        if (nuevos.length > 0) {
+          const catalogCount = nuevos.filter(r => r.catalog_listing).length;
+          const lineas = nuevos.slice(0, 5).map(r =>
+            `• ${r.item_id}${r.catalog_listing ? " [catalog]" : ""} — "${(r.titulo || "").slice(0, 50)}" (up=${r.user_product_id || "-"})`,
+          );
+          const text = `[BANVA] ${nuevos.length} item(s) ML sin mapping (${catalogCount} catalog):\n${lineas.join("\n")}${nuevos.length > 5 ? `\n• ...y ${nuevos.length - 5} más` : ""}`;
+          const { error: notifErr } = await sb.from("notifications_outbox").insert({
+            channel: "whatsapp",
+            destination: "56991655931",
+            payload: { text },
+          });
+          if (notifErr) {
+            errores.push(`[syncStockFull] notifications_outbox insert: ${notifErr.message}`);
+          } else {
+            const { error: markErr } = await sb
+              .from("ml_items_unmapped")
+              .update({ notificado: true })
+              .in("item_id", nuevos.map(r => r.item_id));
+            if (markErr) {
+              errores.push(`[syncStockFull] ml_items_unmapped mark notificado: ${markErr.message}`);
+            } else {
+              unmappedNotificados = nuevos.length;
+              console.log(`[syncStockFull] WhatsApp notificado para ${nuevos.length} items unmapped nuevos`);
+            }
+          }
+        }
+      }
+    }
   }
 
   // Solo insertar filas con sku_venta resuelto. Usar item_id como SKU contamina
@@ -2448,11 +2560,15 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
     items_sincronizados: itemsMapRows.length,
     stock_actualizado: allSkus.size,
     sin_inventory_id: sinInventoryId,
+    unmapped_total: unmapped.length,
+    unmapped_resueltos_via_user_product: resueltosViaUP,
+    unmapped_persistidos: unmappedPersistidos,
+    unmapped_notificados: unmappedNotificados,
     errores,
     tiempo_ms: Date.now() - start,
   };
 
-  console.log(`[syncStockFull] Completado: ${result.items_sincronizados} items, ${result.stock_actualizado} SKUs actualizados, ${result.sin_inventory_id} sin inventory_id, ${result.errores.length} errores en ${result.tiempo_ms}ms`);
+  console.log(`[syncStockFull] Completado: ${result.items_sincronizados} items, ${result.stock_actualizado} SKUs actualizados, ${result.sin_inventory_id} sin inventory_id, ${result.unmapped_resueltos_via_user_product} heredados via user_product, ${result.unmapped_total} unmapped persistidos (${result.unmapped_notificados} notificados), ${result.errores.length} errores en ${result.tiempo_ms}ms`);
   return result;
 }
 
