@@ -250,7 +250,8 @@ export interface SkuIntelRow {
   liquidacion_descuento_sugerido: number;
 
   ultimo_conteo: string | null;
-  dias_sin_conteo: number;
+  /** null cuando el SKU nunca fue contado. Regla 1 inventory-policy.md (no centinela 999). */
+  dias_sin_conteo: number | null;
   diferencias_conteo: number;
   ultimo_movimiento: string | null;
   /** PR6a: null si el SKU no tiene movimientos en la ventana consultada. */
@@ -1435,9 +1436,13 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     if (velPonderada >= 10 && precioPromedio > 0 && margenProm < precioPromedio * 0.05) requiereAjustePrecio = true;
 
     // ── PASO 18: Operación (conteos y movimientos) ──
+    // dias_sin_conteo = null cuando el SKU nunca fue contado.
+    // Regla 1 inventory-policy.md: prohibido centinela 999. NULL + branch explícito.
     const conteoInfo = conteoPorSku.get(skuOrigen);
     const ultimoConteo = conteoInfo?.ultimoConteo || null;
-    const diasSinConteo = ultimoConteo ? Math.floor((hoyMs - new Date(ultimoConteo).getTime()) / 86400000) : 999;
+    const diasSinConteo: number | null = ultimoConteo
+      ? Math.floor((hoyMs - new Date(ultimoConteo).getTime()) / 86400000)
+      : null;
     const diferenciasConteo = conteoInfo?.diferencias || 0;
 
     // Ingreso estimado 30d (para ABC)
@@ -2097,7 +2102,7 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     if (r.margen_tendencia_full === "bajando") alertas.push("margen_full_bajando");
     if (r.margen_tendencia_flex === "bajando") alertas.push("margen_flex_bajando");
     if (r.requiere_ajuste_precio) alertas.push("requiere_ajuste_precio");
-    if (r.dias_sin_conteo > 30) alertas.push("sin_conteo_30d");
+    if (r.dias_sin_conteo != null && r.dias_sin_conteo > 30) alertas.push("sin_conteo_30d");
     if (r.liquidacion_accion !== null) alertas.push("liquidar");
     if (r.evento_activo !== null) alertas.push("evento_activo");
     if (r.stock_en_transito > 0) alertas.push("en_transito");

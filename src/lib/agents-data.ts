@@ -118,11 +118,13 @@ async function prepararInventario(): Promise<{ datos: Record<string, unknown>; h
   const sb = getServerSupabase();
   if (!sb) return { datos: {}, hash: "empty" };
 
-  // Datos de intelligence para métricas de inventario
+  // Datos de intelligence para métricas de inventario.
+  // Filtro: traer SKUs con stock o con conteo reciente (<90d). Los nunca-contados
+  // con stock entran por la rama stock_total>0. NULL en dias_sin_conteo es válido.
   const { data: intel } = await sb.from("sku_intelligence")
     .select("sku_origen, nombre, categoria, stock_full, stock_bodega, stock_total, stock_sin_etiquetar, stock_en_transito, stock_proyectado, oc_pendientes, cob_total, dio, gmroi, costo_inventario_total, ultimo_conteo, dias_sin_conteo, diferencias_conteo, ultimo_movimiento, dias_sin_movimiento, accion, liquidacion_accion, liquidacion_dias_extra, liquidacion_descuento_sugerido, alertas, alertas_count")
     .or("stock_total.gt.0,dias_sin_conteo.lt.90")
-    .order("dias_sin_conteo", { ascending: false })
+    .order("dias_sin_conteo", { ascending: false, nullsFirst: false })
     .limit(200);
 
   // Conteos recientes (datos operativos no en intelligence)
@@ -147,7 +149,12 @@ async function prepararInventario(): Promise<{ datos: Record<string, unknown>; h
   const datos: Record<string, unknown> = {
     resumen: {
       total_skus_con_stock: rows.filter((r: Record<string, unknown>) => (r.stock_total as number) > 0).length,
-      skus_sin_conteo_30d: rows.filter((r: Record<string, unknown>) => (r.dias_sin_conteo as number) >= 30).length,
+      // Incluye SKUs con conteo > 30d Y los que nunca fueron contados pero tienen stock.
+      skus_sin_conteo_30d: rows.filter((r: Record<string, unknown>) => {
+        const d = r.dias_sin_conteo as number | null;
+        const stock = (r.stock_total as number) || 0;
+        return (d != null && d >= 30) || (d == null && stock > 0);
+      }).length,
       skus_con_diferencias: rows.filter((r: Record<string, unknown>) => (r.diferencias_conteo as number) > 0).length,
       skus_liquidacion: rows.filter((r: Record<string, unknown>) => r.liquidacion_accion).length,
       conteos_recientes: (conteos || []).length,
