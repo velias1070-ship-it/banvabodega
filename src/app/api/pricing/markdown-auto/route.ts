@@ -158,12 +158,19 @@ async function handle(req: NextRequest) {
     }
   }
 
-  // 4. Cuadrante para auditoría
-  const cuadranteBySku = new Map<string, string | null>();
+  // 4. Cuadrante + datos de quiebre para gate "rampup post-quiebre"
+  type IntelRow = {
+    sku_origen: string; cuadrante: string | null;
+    dias_en_quiebre: number | null;
+    fecha_entrada_quiebre: string | null;
+    vel_pre_quiebre: number | null;
+  };
+  const intelBySku = new Map<string, IntelRow>();
   {
-    const { data: intel } = await sb.from("sku_intelligence").select("sku_origen, cuadrante");
-    for (const r of (intel || []) as Array<{ sku_origen: string; cuadrante: string | null }>) {
-      cuadranteBySku.set(r.sku_origen, r.cuadrante);
+    const { data: intel } = await sb.from("sku_intelligence")
+      .select("sku_origen, cuadrante, dias_en_quiebre, fecha_entrada_quiebre, vel_pre_quiebre");
+    for (const r of (intel || []) as IntelRow[]) {
+      intelBySku.set(r.sku_origen, r);
     }
   }
 
@@ -202,6 +209,23 @@ async function handle(req: NextRequest) {
     if (stock <= 0) { stats.sin_stock++; bloqueadoPor.push(`stock=${stock}`); }
     if (precioActual <= 0) bloqueadoPor.push("precio_actual=0");
     if (!p.costo_promedio || p.costo_promedio <= 0) { stats.sin_costo++; bloqueadoPor.push("sin_costo"); }
+
+    // Gate "rampup post-quiebre": no markdownear SKUs cuyo aging viene de
+    // estar sin stock (no de demanda baja). El motor ya sabe vel_pre_quiebre
+    // y fecha_entrada_quiebre. Logica:
+    //   - si dias_en_quiebre>0 (todavia en quiebre) ya queda fuera por stock=0
+    //   - si vendia antes (vel_pre_quiebre > 0.5 uds/dia) Y entro en quiebre
+    //     dentro del periodo de aging (fecha_entrada_quiebre cae entre
+    //     hoy-diasSinVenta y hoy), el aging es por quiebre, no por demanda
+    const intel = intelBySku.get(p.sku);
+    if (intel && (intel.vel_pre_quiebre ?? 0) > 0.5 && intel.fecha_entrada_quiebre) {
+      const fechaQ = new Date(intel.fecha_entrada_quiebre);
+      const inicioAging = new Date(hoy.getTime() - diasSinVenta * 86400_000);
+      if (fechaQ >= inicioAging) {
+        const diasDesdeQuiebre = Math.floor((hoy.getTime() - fechaQ.getTime()) / 86400_000);
+        bloqueadoPor.push(`rampup_post_quiebre: entrada_quiebre hace ${diasDesdeQuiebre}d, vel_pre=${intel.vel_pre_quiebre}/d (aging es por falta de stock)`);
+      }
+    }
     if (!p.auto_postular && nivelMarkdown <= -40) bloqueadoPor.push("auto_postular=false (nivel >=120d requiere opt-in)");
 
     const factor = (100 + nivelMarkdown) / 100;
@@ -223,7 +247,7 @@ async function handle(req: NextRequest) {
     candidatos.push({
       sku: p.sku,
       nombre: p.nombre,
-      cuadrante: cuadranteBySku.get(p.sku) ?? null,
+      cuadrante: intelBySku.get(p.sku)?.cuadrante ?? null,
       stock,
       ultima_venta: ultimaStr,
       dias_sin_venta: diasSinVenta,
