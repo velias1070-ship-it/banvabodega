@@ -196,17 +196,33 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // 3a. Cargar cobertura (y cuadrante) desde sku_intelligence
-  const coberturaMap = new Map<string, { cob_total: number | null; cuadrante: string | null }>();
+  // 3a. Cargar cobertura, cuadrante y métricas para sub-clasificar REVISAR.
+  // Manual: Investigacion_Comparada §3 + §6 — REVISAR contiene 4 sub-tipos
+  // (cola larga sana, dead stock, sin stock, nuevo) que requieren políticas
+  // distintas. Sin estas métricas el motor tratarí­a a los 181 SKUs sanos
+  // como liquidar (default cuadrante REVISAR), violando el manual.
+  type IntelMetrics = {
+    cob_total: number | null; cuadrante: string | null;
+    uds_30d: number | null; margen_neto_30d: number | null;
+    dias_sin_movimiento: number | null; dias_desde_primera_venta: number | null;
+    stock_total: number | null; alertas: string[] | null;
+  };
+  const coberturaMap = new Map<string, IntelMetrics>();
   if (skus.length > 0) {
     for (let i = 0; i < skus.length; i += 500) {
       const chunk = skus.slice(i, i + 500);
       const { data: intel } = await sb
         .from("sku_intelligence")
-        .select("sku_origen, cob_total, cuadrante")
+        .select("sku_origen, cob_total, cuadrante, uds_30d, margen_neto_30d, dias_sin_movimiento, dias_desde_primera_venta, stock_total, alertas")
         .in("sku_origen", chunk);
-      for (const r of (intel || []) as Array<{ sku_origen: string; cob_total: number | null; cuadrante: string | null }>) {
-        coberturaMap.set(r.sku_origen, { cob_total: r.cob_total, cuadrante: r.cuadrante });
+      for (const r of (intel || []) as Array<{ sku_origen: string } & IntelMetrics>) {
+        coberturaMap.set(r.sku_origen, {
+          cob_total: r.cob_total, cuadrante: r.cuadrante,
+          uds_30d: r.uds_30d, margen_neto_30d: r.margen_neto_30d,
+          dias_sin_movimiento: r.dias_sin_movimiento,
+          dias_desde_primera_venta: r.dias_desde_primera_venta,
+          stock_total: r.stock_total, alertas: r.alertas,
+        });
       }
     }
   }
@@ -278,6 +294,7 @@ export async function POST(req: NextRequest) {
 
     // Resolver pricing por cascada: SKU override > cuadrante config > _DEFAULT.
     // Habilita que ediciones en tab Pricing Config se apliquen automaticamente.
+    // Pasamos métricas para sub-clasificar dentro de REVISAR (manual §3+§6).
     const cuadranteRow = intel?.cuadrante ? cuadrantesConfigMap.get(intel.cuadrante) || defaultCuadrante : defaultCuadrante;
     const resolved = resolverPricingConfig(
       policy ? {
@@ -289,6 +306,15 @@ export async function POST(req: NextRequest) {
       } : null,
       cuadranteRow ?? null,
       defaultCuadrante,
+      intel?.cuadrante ?? null,
+      intel ? {
+        uds_30d: intel.uds_30d,
+        margen_neto_30d: intel.margen_neto_30d,
+        dias_sin_movimiento: intel.dias_sin_movimiento,
+        dias_desde_primera_venta: intel.dias_desde_primera_venta,
+        stock_total: intel.stock_total,
+        alertas: intel.alertas,
+      } : undefined,
     );
 
     // Gate pre-motor: scope apply exige flag explicito
@@ -364,6 +390,12 @@ export async function POST(req: NextRequest) {
       if (/LIGHTNING/i.test(promo.type)) {
         const st = row.stock_total ?? 0;
         if (st < 5 || st > 15) hardExtras.push(`lightning_stock: ${st} fuera de 5-15`);
+      }
+      // Gate sub-clasificación REVISAR: el manual prescribe NO postular cuando
+      // el SKU es nuevo (<60d) o sin stock (gobierno de surtido).
+      if (resolved.no_postular_por_subtipo) {
+        const sub = resolved.cuadrante_subtipo || "?";
+        hardExtras.push(`subtipo_${sub}: el manual prescribe no postular este SKU`);
       }
       // Rango de la propia promo
       if (promo.min > 0 && precioObjetivo < promo.min) hardExtras.push(`promo_rango: ${precioObjetivo} < min ${promo.min}`);
@@ -456,6 +488,7 @@ export async function POST(req: NextRequest) {
           stock_total: row.stock_total,
           cobertura_dias: intel?.cob_total ?? null,
           cuadrante: intel?.cuadrante || null,
+          cuadrante_subtipo: resolved.cuadrante_subtipo,
           es_kvi: resolved.es_kvi,
           politica: resolved.politica,
           margen_min_pct_aplicado: resolved.margen_min_pct,

@@ -385,6 +385,55 @@ export interface PricingResolved {
     margen: "sku" | "cuadrante" | "default";
     politica: "sku" | "cuadrante" | "default";
   };
+  /**
+   * Sub-clasificacion derivada cuando cuadrante = REVISAR. El manual
+   * (Investigacion_Comparada §3 + §6) separa cola larga sana, dead stock
+   * real, sin stock y nuevo. La matriz ABC×Margen los junta indistintamente.
+   * null = no aplica (el cuadrante NO es REVISAR o no se pasaron metricas).
+   */
+  cuadrante_subtipo: "revisar_sano" | "revisar_liquidar" | "revisar_sin_stock" | "revisar_nuevo" | null;
+  /**
+   * Bandera derivada del subtipo. true cuando el manual prescribe NO
+   * postular (sin stock o nuevo). El motor lo respeta como hard-skip.
+   */
+  no_postular_por_subtipo: boolean;
+}
+
+/**
+ * Metricas de inventario/ventas necesarias para sub-clasificar dentro
+ * de REVISAR. Tomadas de sku_intelligence directamente.
+ */
+export interface MetricsParaSubtipo {
+  uds_30d: number | null;
+  margen_neto_30d: number | null;
+  dias_sin_movimiento: number | null;
+  dias_desde_primera_venta: number | null;
+  stock_total: number | null;
+  alertas: string[] | null;
+}
+
+/**
+ * Sub-clasificacion del cuadrante REVISAR siguiendo los umbrales del
+ * manual (Investigacion_Comparada §3 línea 197 + §6 línea 237):
+ *   - revisar_liquidar: dead stock real (>180d sin movimiento o alerta dead_stock).
+ *     Manual: "Dog/descontinuar: >90-180d slow; >180-365d dead stock".
+ *   - revisar_sin_stock: stock = 0 y sin venta. Gobierno de surtido:
+ *     descontinuar (manual Deep_Research §3 "gobierno de surtido").
+ *   - revisar_nuevo: <60d desde primera venta. Esperar a que madure.
+ *   - revisar_sano (default): cola larga rentable. Manual: "Long tail con
+ *     premium monitoreado +10-20% vs commodity, NO hacer price exploration".
+ */
+export function subtipoRevisar(metrics: MetricsParaSubtipo): NonNullable<PricingResolved["cuadrante_subtipo"]> {
+  const uds = metrics.uds_30d ?? 0;
+  const stock = metrics.stock_total ?? 0;
+  const dias_sin_mov = metrics.dias_sin_movimiento ?? 0;
+  const dias_desde_primera = metrics.dias_desde_primera_venta ?? 999;
+  const alertas = metrics.alertas ?? [];
+
+  if (alertas.includes("dead_stock") || dias_sin_mov >= 180) return "revisar_liquidar";
+  if (stock <= 0 && uds === 0) return "revisar_sin_stock";
+  if (dias_desde_primera < 60) return "revisar_nuevo";
+  return "revisar_sano";
 }
 
 const FALLBACK_GLOBAL = {
@@ -398,6 +447,10 @@ export function resolverPricingConfig(
   override: PricingProductoOverrides | null,
   cuadranteConfig: PricingCuadranteConfig | null,
   defaultConfig: PricingCuadranteConfig | null,
+  // Opcionales para sub-clasificar dentro de REVISAR. Si no se pasan,
+  // el resolver mantiene el comportamiento previo (REVISAR → liquidar).
+  cuadranteName?: string | null,
+  metrics?: MetricsParaSubtipo,
 ): PricingResolved {
   const ov = override ?? { precio_piso: null, margen_minimo_pct: null, politica_pricing: null, es_kvi: false, auto_postular: false };
   const cu = cuadranteConfig ?? defaultConfig ?? null;
@@ -432,18 +485,51 @@ export function resolverPricingConfig(
     fuentePolitica = "default";
   }
 
+  // Sub-clasificación dentro de REVISAR (manual Investigacion_Comparada §3 + §6).
+  // Override programático que NO toca pricing_cuadrante_config — los defaults
+  // del cuadrante REVISAR se aplican solo al subtipo "revisar_liquidar".
+  let cuadrante_subtipo: PricingResolved["cuadrante_subtipo"] = null;
+  let no_postular_por_subtipo = false;
+  let descuento_max_override: number | null = null;
+  if (cuadranteName === "REVISAR" && metrics && fuentePolitica === "cuadrante" && fuenteMargen === "cuadrante") {
+    cuadrante_subtipo = subtipoRevisar(metrics);
+    if (cuadrante_subtipo === "revisar_sano") {
+      // Cola larga sana: defender margen +10-15%, NO liquidar.
+      politica = "defender";
+      margen_min_pct = 15;
+      descuento_max_override = 20;
+    } else if (cuadrante_subtipo === "revisar_sin_stock") {
+      // Sin stock + sin venta: gobierno de surtido = no postular.
+      politica = "defender";
+      margen_min_pct = 20;
+      descuento_max_override = 10;
+      no_postular_por_subtipo = true;
+    } else if (cuadrante_subtipo === "revisar_nuevo") {
+      // SKU nuevo (<60d): esperar a que madure, no actuar.
+      politica = "defender";
+      margen_min_pct = 15;
+      descuento_max_override = 15;
+      no_postular_por_subtipo = true;
+    }
+    // revisar_liquidar: mantiene config REVISAR (liquidar, 0%, 60%).
+  }
+
   return {
     margen_min_pct,
     margen_min_frac: margen_min_pct / 100,
     politica,
     acos_objetivo_pct: cu?.acos_objetivo_pct ?? FALLBACK_GLOBAL.acos_objetivo_pct,
-    descuento_max_pct: ov.es_kvi
-      ? (cu?.descuento_max_kvi_pct ?? FALLBACK_GLOBAL.descuento_max_pct)
-      : (cu?.descuento_max_pct ?? FALLBACK_GLOBAL.descuento_max_pct),
+    descuento_max_pct: descuento_max_override != null
+      ? descuento_max_override
+      : ov.es_kvi
+        ? (cu?.descuento_max_kvi_pct ?? FALLBACK_GLOBAL.descuento_max_pct)
+        : (cu?.descuento_max_pct ?? FALLBACK_GLOBAL.descuento_max_pct),
     precio_piso_manual: ov.precio_piso,
     es_kvi: ov.es_kvi,
     auto_postular: ov.auto_postular,
     fuente: { margen: fuenteMargen, politica: fuentePolitica },
+    cuadrante_subtipo,
+    no_postular_por_subtipo,
   };
 }
 

@@ -112,13 +112,25 @@ async function handle(req: NextRequest) {
     if (!cur || stockNuevo > stockCur) principalBySku.set(r.sku, r);
   }
 
-  // 5. Cuadrante por SKU
-  const cuadranteBySku = new Map<string, string | null>();
+  // 5. Cuadrante + métricas por SKU (para sub-clasificar dentro de REVISAR)
+  type IntelMetrics = {
+    cuadrante: string | null;
+    uds_30d: number | null; margen_neto_30d: number | null;
+    dias_sin_movimiento: number | null; dias_desde_primera_venta: number | null;
+    stock_total: number | null; alertas: string[] | null;
+  };
+  const intelBySku = new Map<string, IntelMetrics>();
   {
     const { data: intel } = await sb.from("sku_intelligence")
-      .select("sku_origen, cuadrante");
-    for (const r of (intel || []) as Array<{ sku_origen: string; cuadrante: string | null }>) {
-      cuadranteBySku.set(r.sku_origen, r.cuadrante);
+      .select("sku_origen, cuadrante, uds_30d, margen_neto_30d, dias_sin_movimiento, dias_desde_primera_venta, stock_total, alertas");
+    for (const r of (intel || []) as Array<{ sku_origen: string } & IntelMetrics>) {
+      intelBySku.set(r.sku_origen, {
+        cuadrante: r.cuadrante,
+        uds_30d: r.uds_30d, margen_neto_30d: r.margen_neto_30d,
+        dias_sin_movimiento: r.dias_sin_movimiento,
+        dias_desde_primera_venta: r.dias_desde_primera_venta,
+        stock_total: r.stock_total, alertas: r.alertas,
+      });
     }
   }
 
@@ -135,7 +147,8 @@ async function handle(req: NextRequest) {
     const principal = principalBySku.get(p.sku);
     if (!principal) { stats.skipped_sin_listing++; continue; }
 
-    const cuadrante = cuadranteBySku.get(p.sku) ?? null;
+    const intel = intelBySku.get(p.sku) ?? null;
+    const cuadrante = intel?.cuadrante ?? null;
     const cuadranteRow = cuadrante ? cuadrantesConfig.get(cuadrante) || defaultCuadrante : defaultCuadrante;
     const resolved = resolverPricingConfig(
       {
@@ -147,6 +160,15 @@ async function handle(req: NextRequest) {
       },
       cuadranteRow ?? null,
       defaultCuadrante,
+      cuadrante,
+      intel ? {
+        uds_30d: intel.uds_30d,
+        margen_neto_30d: intel.margen_neto_30d,
+        dias_sin_movimiento: intel.dias_sin_movimiento,
+        dias_desde_primera_venta: intel.dias_desde_primera_venta,
+        stock_total: intel.stock_total,
+        alertas: intel.alertas,
+      } : undefined,
     );
 
     const canal: CanalLogistico = principal.logistic_type === "fulfillment" ? "full"
@@ -189,6 +211,7 @@ async function handle(req: NextRequest) {
         contexto: {
           canal,
           cuadrante,
+          cuadrante_subtipo: resolved.cuadrante_subtipo,
           es_kvi: resolved.es_kvi,
           politica: resolved.politica,
           margen_min_pct_aplicado: resolved.margen_min_pct,
