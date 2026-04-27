@@ -2814,10 +2814,113 @@ export async function logPriceChange(opts: LogPriceChangeOpts): Promise<void> {
   const delta = opts.precio_anterior != null && opts.precio_anterior > 0
     ? Number((((opts.precio - opts.precio_anterior) / opts.precio_anterior) * 100).toFixed(4))
     : null;
+
+  // Resolver sku_origen si no fue pasado (vía ml_margin_cache).
+  let sku = opts.sku ?? null;
+  let sku_origen = opts.sku_origen ?? null;
+  if (!sku_origen) {
+    try {
+      const { data } = await sb
+        .from("ml_margin_cache")
+        .select("sku")
+        .eq("item_id", opts.item_id)
+        .limit(1)
+        .maybeSingle();
+      if (data?.sku) {
+        sku_origen = data.sku;
+        if (!sku) sku = data.sku;
+      }
+    } catch {/* best effort */}
+  }
+
+  // Enriquecer contexto con condiciones del SKU al momento del cambio.
+  // Manual Investigacion_Comparada §4.5/§6.4: registrar covariates que
+  // permitan estimar elasticidad después controlando confounders (stock,
+  // velocidad previa, ACOS, cuadrante, alertas).
+  const enriched: Record<string, unknown> = { ...(opts.contexto ?? {}) };
+
+  if (sku_origen) {
+    try {
+      const { data: si } = await sb
+        .from("sku_intelligence")
+        .select("cuadrante, abc, xyz, vel_ponderada, dias_sin_movimiento, dias_en_quiebre, stock_total, alertas, factor_rampup")
+        .eq("sku_origen", sku_origen)
+        .limit(1)
+        .maybeSingle();
+      if (si) {
+        enriched.cuadrante = si.cuadrante;
+        enriched.abc = si.abc;
+        enriched.xyz = si.xyz;
+        enriched.vel_ponderada = si.vel_ponderada;
+        enriched.dias_sin_movimiento = si.dias_sin_movimiento;
+        enriched.dias_en_quiebre = si.dias_en_quiebre;
+        enriched.stock_total_intelligence = si.stock_total;
+        enriched.alertas = si.alertas;
+        enriched.factor_rampup = si.factor_rampup;
+      }
+    } catch {/* best effort */}
+  }
+
+  try {
+    const { data: mc } = await sb
+      .from("ml_margin_cache")
+      .select("margen_pct, margen_clp, comision_pct, envio_clp, stock_total, status_ml, logistic_type, listing_type")
+      .eq("item_id", opts.item_id)
+      .limit(1)
+      .maybeSingle();
+    if (mc) {
+      enriched.margen_pct_pre = mc.margen_pct;
+      enriched.margen_clp_pre = mc.margen_clp;
+      enriched.comision_pct = mc.comision_pct;
+      enriched.envio_clp = mc.envio_clp;
+      enriched.stock_total_publicacion = mc.stock_total;
+      enriched.status_ml = mc.status_ml;
+      enriched.logistic_type = mc.logistic_type;
+      enriched.listing_type = mc.listing_type;
+    }
+  } catch {/* best effort */}
+
+  // ACOS últimos 7d (ad spend / direct_amount) — proxy del coste publicitario
+  // sosteniendo este SKU al momento del cambio.
+  try {
+    const since = new Date();
+    since.setDate(since.getDate() - 7);
+    const sinceStr = since.toISOString().slice(0, 10);
+    const { data: ads } = await sb
+      .from("ml_ads_daily_cache")
+      .select("cost_neto, direct_amount, total_amount")
+      .eq("item_id", opts.item_id)
+      .gte("date", sinceStr);
+    if (ads && ads.length) {
+      const cost = ads.reduce((s, r) => s + Number((r as { cost_neto: number | null }).cost_neto || 0), 0);
+      const direct = ads.reduce((s, r) => s + Number((r as { direct_amount: number | null }).direct_amount || 0), 0);
+      const total = ads.reduce((s, r) => s + Number((r as { total_amount: number | null }).total_amount || 0), 0);
+      enriched.ads_cost_7d_pre = cost;
+      enriched.ads_direct_7d_pre = direct;
+      enriched.ads_total_7d_pre = total;
+      enriched.acos_real_7d_pre_pct = direct > 0 ? Math.round((cost / direct) * 1000) / 10 : null;
+    }
+  } catch {/* best effort */}
+
+  // Días desde último cambio de precio (cooldown observation).
+  try {
+    const { data: prev } = await sb
+      .from("ml_price_history")
+      .select("detected_at")
+      .eq("item_id", opts.item_id)
+      .order("detected_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (prev?.detected_at) {
+      const diffMs = Date.now() - new Date(prev.detected_at).getTime();
+      enriched.dias_desde_ultimo_cambio = Math.round((diffMs / 86400_000) * 10) / 10;
+    }
+  } catch {/* best effort */}
+
   const { error } = await sb.from("ml_price_history").insert({
     item_id: opts.item_id,
-    sku: opts.sku ?? null,
-    sku_origen: opts.sku_origen ?? null,
+    sku,
+    sku_origen,
     precio: opts.precio,
     precio_lista: opts.precio_lista ?? null,
     promo_pct: opts.promo_pct ?? null,
@@ -2826,7 +2929,7 @@ export async function logPriceChange(opts: LogPriceChangeOpts): Promise<void> {
     delta_pct: delta,
     fuente: opts.fuente,
     ejecutado_por: opts.ejecutado_por ?? null,
-    contexto: opts.contexto ?? null,
+    contexto: Object.keys(enriched).length > 0 ? enriched : null,
   });
   if (error) console.error(`[ml_price_history] insert failed item=${opts.item_id} fuente=${opts.fuente}: ${error.message}`);
 }
