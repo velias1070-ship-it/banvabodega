@@ -3,6 +3,7 @@ import { getServerSupabase } from "@/lib/supabase-server";
 import { VALLE_MUERTE_MIN, VALLE_MUERTE_MAX } from "@/lib/pricing";
 import { loadActiveRuleSet, readRule, logDecision, type MarkdownLadder, type ValleMuerte } from "@/lib/pricing-rules";
 import { mlPut, logPriceChange } from "@/lib/ml";
+import { queryUltimaVentaPorSkuOrigen } from "@/lib/intelligence-queries";
 
 export const maxDuration = 120;
 export const dynamic = "force-dynamic";
@@ -95,12 +96,21 @@ async function handle(req: NextRequest) {
   // Ordenar niveles desc por dias_min: el primero que matchea es el descuento mas agresivo.
   const nivelesDesc = [...ladder.niveles].sort((a, b) => b.dias_min - a.dias_min);
 
-  // 1. Última venta por sku_origen vía composicion_venta + orders_history
+  // 1. Última venta por sku_origen.
+  // Fuente primaria: ventas_ml_cache via composicion_venta (cubre historia
+  // larga >1 ano). Mergeamos despues con la RPC ultima_venta_por_sku_origen
+  // si está disponible (orders_history reciente puede tener ventas más nuevas
+  // que ventas_ml_cache si la cache se actualiza con lag).
+  let ultimaVentaPorSku = await queryUltimaVentaPorSkuOrigen();
+
   const { data: ventasRaw, error: eVentas } = await sb.rpc("ultima_venta_por_sku_origen");
-  let ultimaVentaPorSku = new Map<string, string>();
   if (!eVentas && Array.isArray(ventasRaw)) {
     for (const r of ventasRaw as Array<{ sku_origen: string; ultima_venta: string }>) {
-      ultimaVentaPorSku.set(r.sku_origen, r.ultima_venta);
+      const k = (r.sku_origen || "").trim().toUpperCase();
+      const f = (r.ultima_venta || "").slice(0, 10);
+      if (!k || !f) continue;
+      const cur = ultimaVentaPorSku.get(k);
+      if (!cur || f > cur) ultimaVentaPorSku.set(k, f);
     }
   } else {
     // Fallback: query manual paginada (la RPC quizás no existe).
@@ -166,7 +176,8 @@ async function handle(req: NextRequest) {
     if (filtroSku && p.sku.trim().toUpperCase() !== filtroSku) continue;
     stats.evaluados++;
     if (p.estado_sku === "descontinuado") { stats.descontinuados++; continue; }
-    const ultimaStr = ultimaVentaPorSku.get(p.sku);
+    // El helper devuelve keys UPPER. Normalizar el lookup también.
+    const ultimaStr = ultimaVentaPorSku.get(p.sku.trim().toUpperCase());
     if (!ultimaStr) { stats.sin_venta++; continue; }
 
     const ultimaDate = new Date(ultimaStr + "T00:00:00Z");
