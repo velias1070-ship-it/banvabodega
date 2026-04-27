@@ -1515,6 +1515,41 @@ export function toleranciaPorAbc(abc: string | null | undefined): number {
 }
 
 /**
+ * SKU vencido según cadencia ABC para conteo cíclico.
+ * Manual Inventarios Parte2 §5.6.1: A>30d, B>90d, C>365d.
+ */
+export interface SkuVencidoConteo {
+  sku_origen: string;
+  nombre: string;
+  abc: "A" | "B" | "C";
+  stock_total: number;
+  dias_sin_conteo: number | null;   // null = nunca contado
+  umbral_dias: number;
+  dias_vencido: number | null;       // null si nunca contado
+  urgencia_score: number;            // 1000 = nunca contado con stock; resto = dias - umbral
+}
+
+export async function fetchSkusVencidosConteo(limit = 50): Promise<SkuVencidoConteo[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data, error } = await sb.from("v_skus_vencidos_conteo")
+    .select("*").limit(limit);
+  if (error) {
+    console.error(`[fetchSkusVencidosConteo] ${error.message}`);
+    return [];
+  }
+  return (data || []).map(r => ({
+    sku_origen: String(r.sku_origen),
+    nombre: String(r.nombre ?? ""),
+    abc: r.abc as "A" | "B" | "C",
+    stock_total: Number(r.stock_total ?? 0),
+    dias_sin_conteo: r.dias_sin_conteo === null || r.dias_sin_conteo === undefined ? null : Number(r.dias_sin_conteo),
+    umbral_dias: Number(r.umbral_dias ?? 0),
+    dias_vencido: r.dias_vencido === null || r.dias_vencido === undefined ? null : Number(r.dias_vencido),
+    urgencia_score: Number(r.urgencia_score ?? 0),
+  }));
+}
+
+/**
  * Tracking IRA semanal — Manual Inventarios Parte3 §5.6 línea 247.
  * Una fila por semana ISO. Usa snapshots ya persistidos en conteos.lineas_*.
  */

@@ -5,8 +5,8 @@ import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, s
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia, IntegrityError } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
-import { fetchConteos, createConteo, updateConteo, deleteConteo, calcularIRAConteo, toleranciaPorAbc, fetchAbcMap, fetchIRASemanal, CAUSA_RAIZ_LABEL, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado, transferirStock, reconciliarReservas, fetchResumenMovimientosHoy, fetchStockDisponible, fetchMovimientosHoy, fetchDesgloseReservas, enqueueAndSync, updateProductoCosto, toggleShipmentHidden, patchLineaPicking, agregarLineaPicking, eliminarLineaPicking, dividirEnvioFull } from "@/lib/db";
-import type { ConteoCausaRaiz, IRASemana } from "@/lib/db";
+import { fetchConteos, createConteo, updateConteo, deleteConteo, calcularIRAConteo, toleranciaPorAbc, fetchAbcMap, fetchIRASemanal, fetchSkusVencidosConteo, CAUSA_RAIZ_LABEL, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado, transferirStock, reconciliarReservas, fetchResumenMovimientosHoy, fetchStockDisponible, fetchMovimientosHoy, fetchDesgloseReservas, enqueueAndSync, updateProductoCosto, toggleShipmentHidden, patchLineaPicking, agregarLineaPicking, eliminarLineaPicking, dividirEnvioFull } from "@/lib/db";
+import type { ConteoCausaRaiz, IRASemana, SkuVencidoConteo } from "@/lib/db";
 import type { DBStockProyectado, DBReconciliacion } from "@/lib/db";
 import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap, ShipmentWithItems } from "@/lib/db";
 import { getOAuthUrl } from "@/lib/ml";
@@ -9894,10 +9894,29 @@ function CreateConteo({ onCreated, onCancel }: { onCreated: () => void; onCancel
   const [skuSearch, setSkuSearch] = useState("");
   const [selSkus, setSelSkus] = useState<Set<string>>(new Set());
   const [creating, setCreating] = useState(false);
+  // Sugerencia automática Manual Parte2 §5.6.1 (cadencia ABC).
+  const [vencidos, setVencidos] = useState<SkuVencidoConteo[]>([]);
+  const [showSugerencia, setShowSugerencia] = useState(false);
+  const [tamanoLista, setTamanoLista] = useState(4);  // Manual: ~3.4 SKUs/día hábil
+  const [loadingVencidos, setLoadingVencidos] = useState(false);
 
   const s = getStore();
   const positions = activePositions().filter(p => p.active);
   const allProds = Object.values(s.products).sort((a, b) => a.sku.localeCompare(b.sku));
+
+  const cargarVencidos = async () => {
+    setLoadingVencidos(true);
+    const data = await fetchSkusVencidosConteo(50);
+    setVencidos(data);
+    setLoadingVencidos(false);
+  };
+
+  const aplicarSugerencia = () => {
+    setTipo("por_sku");
+    const top = vencidos.slice(0, tamanoLista).map(v => v.sku_origen);
+    setSelSkus(new Set(top));
+    setShowSugerencia(false);
+  };
 
   const togglePos = (id: string) => {
     const next = new Set(selPositions);
@@ -9992,6 +10011,91 @@ function CreateConteo({ onCreated, onCancel }: { onCreated: () => void; onCancel
     <div>
       <div className="card" style={{border:"2px solid var(--cyan)"}}>
         <div className="card-title">Nuevo Conteo Cíclico</div>
+
+        {/* Sugerir lista del día — Manual Inventarios Parte2 §5.6.1: cadencia ABC */}
+        <div style={{marginBottom:14, padding:12, borderRadius:10, background:"#a855f70d", border:"1px solid #a855f733"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+            <div>
+              <div style={{fontSize:12,fontWeight:700,color:"#a855f7"}}>📋 Sugerencia automática (cadencia ABC)</div>
+              <div style={{fontSize:10,color:"var(--txt3)",marginTop:2}}>
+                Manual Parte2 §5.6.1: A &gt;30d, B &gt;90d, C &gt;365d. Lista priorizada por urgencia.
+              </div>
+            </div>
+            {!showSugerencia ? (
+              <button onClick={() => { setShowSugerencia(true); cargarVencidos(); }}
+                style={{padding:"8px 14px",borderRadius:8,background:"#a855f7",color:"#fff",fontWeight:700,fontSize:12,border:"none",cursor:"pointer"}}>
+                Sugerir lista del día
+              </button>
+            ) : (
+              <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                <span style={{fontSize:10,color:"var(--txt3)"}}>Tamaño:</span>
+                <input type="number" value={tamanoLista} min={1} max={50}
+                  onChange={e => setTamanoLista(Math.max(1, Math.min(50, parseInt(e.target.value) || 4)))}
+                  style={{width:50,padding:"4px 6px",borderRadius:6,background:"var(--bg3)",color:"#fff",fontSize:11,border:"1px solid var(--bg4)",textAlign:"center"}}/>
+                <button onClick={() => setShowSugerencia(false)}
+                  style={{padding:"6px 10px",borderRadius:6,background:"var(--bg3)",color:"var(--txt3)",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>Ocultar</button>
+              </div>
+            )}
+          </div>
+
+          {showSugerencia && (
+            <div style={{marginTop:10}}>
+              {loadingVencidos && <div style={{fontSize:11,color:"var(--txt3)"}}>Calculando vencidos…</div>}
+              {!loadingVencidos && vencidos.length === 0 && (
+                <div style={{fontSize:11,color:"#10b981"}}>✓ No hay SKUs vencidos según cadencia ABC. Todo al día.</div>
+              )}
+              {!loadingVencidos && vencidos.length > 0 && (() => {
+                const top = vencidos.slice(0, tamanoLista);
+                const counts = { A: 0, B: 0, C: 0 };
+                vencidos.forEach(v => { counts[v.abc]++; });
+                return (
+                  <>
+                    <div style={{fontSize:10,color:"var(--txt2)",marginBottom:8}}>
+                      <strong>{vencidos.length}</strong> vencidos detectados · A={counts.A} B={counts.B} C={counts.C} ·
+                      mostrando los top <strong>{top.length}</strong> más urgentes.
+                    </div>
+                    <div style={{maxHeight:180,overflow:"auto",marginBottom:8,fontSize:10}}>
+                      <table className="tbl" style={{fontSize:10}}>
+                        <thead><tr>
+                          <th style={{textAlign:"left"}}>SKU</th>
+                          <th>ABC</th>
+                          <th style={{textAlign:"right"}}>Stock</th>
+                          <th style={{textAlign:"right"}}>Sin contar</th>
+                          <th style={{textAlign:"right"}}>Vencido por</th>
+                        </tr></thead>
+                        <tbody>
+                          {top.map(v => {
+                            const abcColor = v.abc === "A" ? "#ef4444" : v.abc === "B" ? "#f59e0b" : "#3b82f6";
+                            const nuncaContado = v.dias_sin_conteo == null;
+                            return (
+                              <tr key={v.sku_origen}>
+                                <td className="mono" style={{fontWeight:700}}>{v.sku_origen}</td>
+                                <td style={{textAlign:"center"}}>
+                                  <span style={{fontSize:9,padding:"1px 5px",borderRadius:3,background:`${abcColor}22`,color:abcColor,fontWeight:800}}>{v.abc}</span>
+                                </td>
+                                <td className="mono" style={{textAlign:"right"}}>{v.stock_total}</td>
+                                <td className="mono" style={{textAlign:"right",color: nuncaContado ? "#ef4444" : "var(--txt2)"}}>
+                                  {nuncaContado ? "nunca" : `${v.dias_sin_conteo}d`}
+                                </td>
+                                <td className="mono" style={{textAlign:"right",fontWeight:700,color: nuncaContado ? "#ef4444" : "#f59e0b"}}>
+                                  {nuncaContado ? "—" : `+${v.dias_vencido}d`}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    <button onClick={aplicarSugerencia}
+                      style={{width:"100%",padding:10,borderRadius:8,background:"linear-gradient(135deg,#7c3aed,#a855f7)",color:"#fff",fontWeight:700,fontSize:12,border:"none",cursor:"pointer"}}>
+                      ✅ Aplicar — crear conteo por SKU con estos {top.length}
+                    </button>
+                  </>
+                );
+              })()}
+            </div>
+          )}
+        </div>
 
         <div style={{marginBottom:16}}>
           <div className="form-label">Tipo de conteo</div>
