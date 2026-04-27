@@ -84,6 +84,9 @@ export default function AdminMargenes() {
   // Selección múltiple + bulk apply
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkPrice, setBulkPrice] = useState<string>("");
+  // Tolerancia para fallback automático: si el precio aceptado por la promo cae
+  // más de X% bajo el target, el item se skipea en vez de postular en pérdida.
+  const [bulkTolerancePct, setBulkTolerancePct] = useState<number>(15);
   const [bulkApplying, setBulkApplying] = useState<"none" | "lista" | "promo" | "campaign">("none");
   const [bulkProgress, setBulkProgress] = useState({ done: 0, total: 0, ok: 0, err: 0 });
   const [bulkErrors, setBulkErrors] = useState<Array<{ sku: string; error: string }>>([]);
@@ -617,14 +620,62 @@ export default function AdminMargenes() {
     } catch { /* silent */ }
   };
 
+  // Resuelve el deal_price por-item siguiendo el chain target → max(rango) → sugerido(ML).
+  // - target: si encaja en [min, max] del item, gana.
+  // - max: si target > max y max no cae bajo tolerancia, clampea al techo del rango.
+  // - sugerido: fallback de credibilidad — ML lo provee con su credibility-check ya
+  //   considerado, así que postular ahí casi nunca rebota con ERROR_CREDIBILITY.
+  // - skip: si todos los candidatos caen más de tolPct% bajo target.
+  type ResolvedPrice =
+    | { kind: "ok"; price: number; fuente: "target" | "max" | "sugerido"; bajoPct: number; sugerido: number }
+    | { kind: "skip"; motivo: string };
+
+  const resolveDealPrice = (target: number, rango: RangoItem | undefined, tolPct: number): ResolvedPrice => {
+    if (target <= 0) return { kind: "skip", motivo: "target inválido" };
+    if (!rango) {
+      return { kind: "ok", price: target, fuente: "target", bajoPct: 0, sugerido: 0 };
+    }
+    const minTolerado = Math.round(target * (1 - tolPct / 100));
+    const enRango = (p: number) =>
+      (rango.min === 0 || p >= rango.min) && (rango.max === 0 || p <= rango.max);
+    const sugerido = rango.suggested > 0 ? rango.suggested : 0;
+
+    // Tier 1: target si encaja en el rango → mantiene tu margen
+    if (enRango(target)) {
+      return { kind: "ok", price: target, fuente: "target", bajoPct: 0, sugerido };
+    }
+    // Si target < min: ML te exige bajar más que el mínimo → skip por seguridad
+    if (rango.min > 0 && target < rango.min) {
+      return { kind: "skip", motivo: `target ${fmtCLP(target)} < min ${fmtCLP(rango.min)}` };
+    }
+    // Tier 2: target > max → clampear al techo (si la caída no excede tolerancia)
+    if (rango.max > 0 && target > rango.max) {
+      if (rango.max >= minTolerado && (rango.min === 0 || rango.max >= rango.min)) {
+        const bajoPct = Math.round((1 - rango.max / target) * 100);
+        return { kind: "ok", price: rango.max, fuente: "max", bajoPct, sugerido };
+      }
+      // Tier 3: si max queda fuera de tolerancia, probar sugerido (raro, pero defensivo)
+      if (sugerido >= minTolerado && enRango(sugerido)) {
+        const bajoPct = Math.round((1 - sugerido / target) * 100);
+        return { kind: "ok", price: sugerido, fuente: "sugerido", bajoPct, sugerido };
+      }
+      return {
+        kind: "skip",
+        motivo: `max ${fmtCLP(rango.max)} cae > ${tolPct}% bajo target ${fmtCLP(target)}`,
+      };
+    }
+    return { kind: "skip", motivo: "sin precio aceptable" };
+  };
+
   const runBulkCampaign = async () => {
     const target = parseInt(bulkPrice) || 0;
     if (target <= 0) { alert("Ingresa un precio válido"); return; }
+    const tolPct = Math.max(0, Math.min(50, bulkTolerancePct || 0));
 
     // Multi-promo: el user puede haber seleccionado N promos. Se postula a cada
-    // una con el mismo precio target. Para cada promo, la logica interna es
-    // la de antes: validar rango por-item, leave+rejoin en ya activos, join
-    // directo en postulables.
+    // una con su precio resuelto por-item (target → max-clamp → sugerido).
+    // Por cada promo, la logica interna es: leave+rejoin en activos, join
+    // directo en postulables, runtime-fallback a sugerido si credibility rebota.
     const keys = Array.from(selectedPromoKeys);
     if (keys.length === 0) return;
     const promos = keys
@@ -634,31 +685,33 @@ export default function AdminMargenes() {
 
     // Calcular total de unidades a tocar (suma cross-promo) para barra de progreso.
     // No deduplicamos items: el mismo SKU postulado a 2 promos son 2 operaciones.
+    type ItemValido = { itemId: string; sku: string; price: number; fuente: "target" | "max" | "sugerido"; bajoPct: number; sugerido: number };
+    type ItemInvalido = { itemId: string; sku: string; rango: RangoItem; motivo: string };
     let totalOps = 0;
-    const plan: Array<{ promo: CommonPromo; validos: string[]; invalidos: Array<{ itemId: string; sku: string; rango: RangoItem; motivo: string }> }> = [];
+    const plan: Array<{ promo: CommonPromo; validos: ItemValido[]; invalidos: ItemInvalido[] }> = [];
     for (const promo of promos) {
       const todosAplicables = [...promo.itemsPostulables, ...promo.itemsActivos];
-      const invalidos: Array<{ itemId: string; sku: string; rango: RangoItem; motivo: string }> = [];
-      const validos: string[] = [];
+      const invalidos: ItemInvalido[] = [];
+      const validos: ItemValido[] = [];
       // LIGHTNING exige stock entre 5 y 15 ademas del rango de precio.
       const esLightning = /LIGHTNING/i.test(promo.type || "");
       for (const itemId of todosAplicables) {
         const rango = promo.rangosPorItem.get(itemId);
         const row = rows.find(r => r.item_id === itemId);
         const sku = row?.sku || itemId;
-        const motivos: string[] = [];
+        // Stock check primero (LIGHTNING)
         if (esLightning && row) {
           const st = row.stock_total ?? 0;
-          if (st < 5 || st > 15) motivos.push(`stock ${st} fuera de 5–15`);
+          if (st < 5 || st > 15) {
+            invalidos.push({ itemId, sku, rango: rango || { min: 0, max: 0, suggested: 0 }, motivo: `[${promo.name}] stock ${st} fuera de 5–15` });
+            continue;
+          }
         }
-        if (rango) {
-          if (rango.min > 0 && target < rango.min) motivos.push(`${fmtCLP(target)} < min ${fmtCLP(rango.min)}`);
-          else if (rango.max > 0 && target > rango.max) motivos.push(`${fmtCLP(target)} > max ${fmtCLP(rango.max)}`);
-        }
-        if (motivos.length > 0) {
-          invalidos.push({ itemId, sku, rango: rango || { min: 0, max: 0, suggested: 0 }, motivo: `[${promo.name}] ${motivos.join(" · ")}` });
+        const resuelto = resolveDealPrice(target, rango, tolPct);
+        if (resuelto.kind === "skip") {
+          invalidos.push({ itemId, sku, rango: rango || { min: 0, max: 0, suggested: 0 }, motivo: `[${promo.name}] ${resuelto.motivo}` });
         } else {
-          validos.push(itemId);
+          validos.push({ itemId, sku, price: resuelto.price, fuente: resuelto.fuente, bajoPct: resuelto.bajoPct, sugerido: resuelto.sugerido });
         }
       }
       totalOps += validos.length;
@@ -667,27 +720,49 @@ export default function AdminMargenes() {
 
     const totalInvalidos = plan.reduce((s, p) => s + p.invalidos.length, 0);
     if (totalOps === 0) {
-      const lista = plan.flatMap(p => p.invalidos).slice(0, 10).map(i => `• ${i.motivo}`).join("\n");
-      alert(`Ningún ítem acepta ${fmtCLP(target)} en las ${promos.length} promo${promos.length !== 1 ? "s" : ""} seleccionadas:\n\n${lista}`);
+      const lista = plan.flatMap(p => p.invalidos).slice(0, 10).map(i => `• ${i.sku}: ${i.motivo}`).join("\n");
+      alert(`Ningún ítem acepta ${fmtCLP(target)} (tolerancia ${tolPct}%) en las ${promos.length} promo${promos.length !== 1 ? "s" : ""} seleccionadas:\n\n${lista}`);
       return;
     }
-    if (totalInvalidos > 0) {
-      const preview = plan.flatMap(p => p.invalidos).slice(0, 10).map(i => `• ${i.sku}: ${i.motivo}`).join("\n");
-      const extra = totalInvalidos > 10 ? `\n… y ${totalInvalidos - 10} más` : "";
-      const ok = confirm(
-        `${totalInvalidos} combinación${totalInvalidos !== 1 ? "es" : ""} item×promo fuera de rango (se skipean):\n\n${preview}${extra}\n\n¿Aplicar a las ${totalOps} operaciones válidas en ${promos.length} promo${promos.length !== 1 ? "s" : ""}?`
-      );
-      if (!ok) return;
+
+    // Confirm dialog: muestra desglose por-fuente (target / max / sugerido) y
+    // top-N items por fuente para que el usuario sepa exactamente qué se va a postular.
+    const todosValidos = plan.flatMap(p => p.validos.map(v => ({ ...v, promoName: p.promo.name })));
+    const porFuente = {
+      target: todosValidos.filter(v => v.fuente === "target"),
+      max: todosValidos.filter(v => v.fuente === "max"),
+      sugerido: todosValidos.filter(v => v.fuente === "sugerido"),
+    };
+    const lineasResumen: string[] = [];
+    if (porFuente.target.length > 0) lineasResumen.push(`✓ ${porFuente.target.length} a tu target ${fmtCLP(target)}`);
+    if (porFuente.max.length > 0) {
+      const muestra = porFuente.max.slice(0, 5).map(v => `   ${v.sku} → ${fmtCLP(v.price)}`).join("\n");
+      const extra = porFuente.max.length > 5 ? `\n   … +${porFuente.max.length - 5} más` : "";
+      lineasResumen.push(`↓ ${porFuente.max.length} clampeados al techo de la promo:\n${muestra}${extra}`);
     }
+    if (porFuente.sugerido.length > 0) {
+      const muestra = porFuente.sugerido.slice(0, 5).map(v => `   ${v.sku} → ${fmtCLP(v.price)} (-${v.bajoPct}%)`).join("\n");
+      const extra = porFuente.sugerido.length > 5 ? `\n   … +${porFuente.sugerido.length - 5} más` : "";
+      lineasResumen.push(`⚙ ${porFuente.sugerido.length} al sugerido por ML (credibility-safe):\n${muestra}${extra}`);
+    }
+    if (totalInvalidos > 0) {
+      const muestra = plan.flatMap(p => p.invalidos).slice(0, 5).map(i => `   ${i.sku}: ${i.motivo}`).join("\n");
+      const extra = totalInvalidos > 5 ? `\n   … +${totalInvalidos - 5} más` : "";
+      lineasResumen.push(`✗ ${totalInvalidos} skipeados:\n${muestra}${extra}`);
+    }
+    const ok = confirm(
+      `Bulk a ${promos.length} promo${promos.length !== 1 ? "s" : ""} · target ${fmtCLP(target)} · tolerancia ${tolPct}%\n\n${lineasResumen.join("\n\n")}\n\n¿Aplicar las ${totalOps} operaciones?`
+    );
+    if (!ok) return;
 
     setBulkApplying("campaign");
     setBulkProgress({ done: 0, total: totalOps, ok: 0, err: totalInvalidos });
     const errors: Array<{ sku: string; error: string }> = plan.flatMap(p => p.invalidos.map(i => ({ sku: i.sku, error: i.motivo })));
     setBulkErrors(errors);
-    let ok = 0;
+    let okCount = 0;
     let done = 0;
 
-    const joinItem = async (itemId: string, promo: CommonPromo) => {
+    const joinItem = async (itemId: string, promo: CommonPromo, dealPrice: number) => {
       const res = await fetch("/api/ml/promotions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -696,7 +771,7 @@ export default function AdminMargenes() {
           action: "join",
           promotion_id: promo.id,
           promotion_type: promo.type,
-          deal_price: target,
+          deal_price: dealPrice,
           offer_type: promo.offer_type,
         }),
       });
@@ -722,8 +797,8 @@ export default function AdminMargenes() {
     const itemsAfectadosGlobal = new Set<string>();
     for (const { promo, validos } of plan) {
       const setActivos = new Set(promo.itemsActivos);
-      for (const itemId of validos) {
-        const row = rows.find(r => r.item_id === itemId);
+      for (const v of validos) {
+        const itemId = v.itemId;
         try {
           if (setActivos.has(itemId)) {
             const leave = await leaveItem(itemId, promo);
@@ -732,25 +807,41 @@ export default function AdminMargenes() {
             }
             await new Promise(r => setTimeout(r, 400));
           }
-          const join = await joinItem(itemId, promo);
-          if (!join.ok) {
-            if (/offer_already_exists/i.test(join.msg)) {
-              await new Promise(r => setTimeout(r, 1200));
-              await leaveItem(itemId, promo).catch(() => null);
+          let dealPrice = v.price;
+          let join = await joinItem(itemId, promo, dealPrice);
+          if (!join.ok && /offer_already_exists/i.test(join.msg)) {
+            await new Promise(r => setTimeout(r, 1200));
+            await leaveItem(itemId, promo).catch(() => null);
+            await new Promise(r => setTimeout(r, 600));
+            join = await joinItem(itemId, promo, dealPrice);
+          }
+          // Runtime fallback: si rebota por credibility y no estábamos ya en
+          // sugerido, reintentar con el sugerido de ML (siempre y cuando esté
+          // dentro de tolerancia y sea distinto al precio que falló).
+          if (!join.ok && /credibility|credible|ERROR_CREDIBILITY/i.test(join.msg) && v.fuente !== "sugerido") {
+            const minTolerado = Math.round(target * (1 - tolPct / 100));
+            if (v.sugerido > 0 && v.sugerido >= minTolerado && v.sugerido < dealPrice) {
               await new Promise(r => setTimeout(r, 600));
-              const retry = await joinItem(itemId, promo);
-              if (!retry.ok) throw new Error(retry.msg || "retry fallo");
-            } else {
-              throw new Error(join.msg);
+              dealPrice = v.sugerido;
+              const retry = await joinItem(itemId, promo, dealPrice);
+              if (retry.ok) {
+                v.bajoPct = Math.round((1 - dealPrice / target) * 100);
+                v.fuente = "sugerido";
+                v.price = dealPrice;
+                join = retry;
+              } else {
+                join = retry; // se reporta el último error
+              }
             }
           }
-          ok++;
+          if (!join.ok) throw new Error(join.msg);
+          okCount++;
           itemsAfectadosGlobal.add(itemId);
         } catch (e) {
-          errors.push({ sku: `${row?.sku || itemId} [${promo.name}]`, error: e instanceof Error ? e.message : "Error" });
+          errors.push({ sku: `${v.sku} [${promo.name}]`, error: e instanceof Error ? e.message : "Error" });
         }
         done++;
-        setBulkProgress({ done, total: totalOps, ok, err: errors.length });
+        setBulkProgress({ done, total: totalOps, ok: okCount, err: errors.length });
       }
     }
     setBulkErrors(errors);
@@ -1713,18 +1804,39 @@ export default function AdminMargenes() {
               return (
               <>
                 {campaignMode === "join" && (
-                <div style={{ padding: "14px 20px 10px" }}>
-                  <div style={{ fontSize: 9, color: "var(--txt3)", marginBottom: 4 }}>Precio objetivo</div>
-                  <input
-                    type="number"
-                    value={bulkPrice}
-                    onChange={e => setBulkPrice(e.target.value.replace(/\D/g, ""))}
-                    placeholder="ej. 19980"
-                    className="form-input"
-                    style={{ width: "100%", padding: "10px 12px", fontSize: 16, fontWeight: 700, fontFamily: "var(--font-mono, monospace)", textAlign: "right" }}
-                    inputMode="numeric"
-                    disabled={bulkApplying !== "none"}
-                  />
+                <div style={{ padding: "14px 20px 10px", display: "flex", gap: 10, alignItems: "flex-end" }}>
+                  <div style={{ flex: 2 }}>
+                    <div style={{ fontSize: 9, color: "var(--txt3)", marginBottom: 4 }}>Precio objetivo</div>
+                    <input
+                      type="number"
+                      value={bulkPrice}
+                      onChange={e => setBulkPrice(e.target.value.replace(/\D/g, ""))}
+                      placeholder="ej. 19980"
+                      className="form-input"
+                      style={{ width: "100%", padding: "10px 12px", fontSize: 16, fontWeight: 700, fontFamily: "var(--font-mono, monospace)", textAlign: "right" }}
+                      inputMode="numeric"
+                      disabled={bulkApplying !== "none"}
+                    />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 9, color: "var(--txt3)", marginBottom: 4 }}>
+                      Tolerancia · skip si cae &gt; X% bajo target
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <input
+                        type="number"
+                        value={bulkTolerancePct}
+                        onChange={e => setBulkTolerancePct(Math.max(0, Math.min(50, parseInt(e.target.value) || 0)))}
+                        className="form-input"
+                        style={{ width: "100%", padding: "10px 12px", fontSize: 16, fontWeight: 700, fontFamily: "var(--font-mono, monospace)", textAlign: "right" }}
+                        inputMode="numeric"
+                        min={0}
+                        max={50}
+                        disabled={bulkApplying !== "none"}
+                      />
+                      <span style={{ fontSize: 14, color: "var(--txt2)" }}>%</span>
+                    </div>
+                  </div>
                 </div>
                 )}
                 {campaignMode === "switch" && (
@@ -1739,7 +1851,8 @@ export default function AdminMargenes() {
                     const isMultiSelected = campaignMode === "join" ? selectedPromoKeys.has(key) : selectedPromoKey === key;
                     const totalAplicables = p.itemsPostulables.length + p.itemsActivos.length;
                     const target = parseInt(bulkPrice) || 0;
-                    let validosCount = 0;
+                    type PreviewValido = { itemId: string; sku: string; price: number; fuente: "target" | "max" | "sugerido"; bajoPct: number };
+                    const previewValidos: PreviewValido[] = [];
                     const invalidosItems: Array<{ itemId: string; sku: string; rango: RangoItem; motivoExtra?: string }> = [];
                     const esLightning = /LIGHTNING/i.test(p.type || "");
                     if (target > 0 && totalAplicables > 0) {
@@ -1747,19 +1860,26 @@ export default function AdminMargenes() {
                       for (const id of aplicablesIds) {
                         const rango = p.rangosPorItem.get(id);
                         const row = rows.find(r => r.item_id === id);
-                        const motivosCard: string[] = [];
+                        const sku = row?.sku || id;
                         if (esLightning && row) {
                           const st = row.stock_total ?? 0;
-                          if (st < 5 || st > 15) motivosCard.push(`stock ${st}`);
+                          if (st < 5 || st > 15) {
+                            invalidosItems.push({ itemId: id, sku, rango: rango || { min: 0, max: 0, suggested: 0 }, motivoExtra: `stock ${st}` });
+                            continue;
+                          }
                         }
-                        if (rango) {
-                          const ok = (rango.min === 0 || target >= rango.min) && (rango.max === 0 || target <= rango.max);
-                          if (!ok) motivosCard.push(rango.min > 0 && target < rango.min ? `< ${fmtCLP(rango.min)}` : `> ${fmtCLP(rango.max)}`);
+                        const resuelto = resolveDealPrice(target, rango, bulkTolerancePct);
+                        if (resuelto.kind === "ok") {
+                          previewValidos.push({ itemId: id, sku, price: resuelto.price, fuente: resuelto.fuente, bajoPct: resuelto.bajoPct });
+                        } else {
+                          invalidosItems.push({ itemId: id, sku, rango: rango || { min: 0, max: 0, suggested: 0 }, motivoExtra: resuelto.motivo });
                         }
-                        if (motivosCard.length === 0) validosCount++;
-                        else invalidosItems.push({ itemId: id, sku: row?.sku || id, rango: rango || { min: 0, max: 0, suggested: 0 }, motivoExtra: motivosCard.join(" · ") });
                       }
                     }
+                    const validosCount = previewValidos.length;
+                    const cntTarget = previewValidos.filter(v => v.fuente === "target").length;
+                    const cntMax = previewValidos.filter(v => v.fuente === "max").length;
+                    const cntSug = previewValidos.filter(v => v.fuente === "sugerido").length;
                     const fueraRango = invalidosItems.length > 0;
                     const tipoLabel = (() => {
                       const map: Record<string, string> = {
@@ -1859,34 +1979,58 @@ export default function AdminMargenes() {
                               )}
                             </div>
                             {target > 0 && totalAplicables > 0 && (
-                              <div style={{ marginTop: 6, fontSize: 10, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                                <span style={{ color: "var(--green)", fontWeight: 600 }}>
-                                  ✓ {validosCount} acepta{validosCount !== 1 ? "n" : ""} {fmtCLP(target)}
-                                </span>
+                              <div style={{ marginTop: 6, fontSize: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                                {cntTarget > 0 && (
+                                  <span style={{ color: "var(--green)", fontWeight: 600 }} title="Postula al target sin clampear">
+                                    ✓ {cntTarget} a {fmtCLP(target)}
+                                  </span>
+                                )}
+                                {cntMax > 0 && (
+                                  <span style={{ color: "var(--amber)", fontWeight: 600 }} title="Clampeados al techo de la promo (max por-item)">
+                                    ↓ {cntMax} clampeado{cntMax !== 1 ? "s" : ""} al max
+                                  </span>
+                                )}
+                                {cntSug > 0 && (
+                                  <span style={{ color: "var(--cyan)", fontWeight: 600 }} title="Postula al sugerido por ML — credibility-safe">
+                                    ⚙ {cntSug} al sugerido
+                                  </span>
+                                )}
                                 {fueraRango && (
                                   <span style={{ color: "var(--red)", fontWeight: 600 }}>
-                                    ✗ {invalidosItems.length} fuera de rango
+                                    ✗ {invalidosItems.length} skip
                                   </span>
                                 )}
                               </div>
                             )}
-                            {isMultiSelected && fueraRango && target > 0 && (
+                            {isMultiSelected && target > 0 && (previewValidos.length > 0 || fueraRango) && (
                               <details style={{ marginTop: 6 }}>
-                                <summary style={{ fontSize: 10, color: "var(--red)", cursor: "pointer", fontWeight: 600 }}>
-                                  Ver {invalidosItems.length} ítem{invalidosItems.length !== 1 ? "s" : ""} fuera de rango
+                                <summary style={{ fontSize: 10, color: "var(--txt2)", cursor: "pointer", fontWeight: 600 }}>
+                                  Ver desglose por ítem ({previewValidos.length + invalidosItems.length})
                                 </summary>
-                                <div style={{ marginTop: 6, maxHeight: 160, overflowY: "auto", background: "var(--bg4)", borderRadius: 6, padding: 8 }}>
+                                <div style={{ marginTop: 6, maxHeight: 200, overflowY: "auto", background: "var(--bg4)", borderRadius: 6, padding: 8 }}>
+                                  {previewValidos.slice(0, 80).map(v => {
+                                    const color = v.fuente === "target" ? "var(--green)" : v.fuente === "max" ? "var(--amber)" : "var(--cyan)";
+                                    const tag = v.fuente === "target" ? "target" : v.fuente === "max" ? "max promo" : "sugerido ML";
+                                    return (
+                                      <div key={`v-${v.itemId}`} style={{ fontSize: 10, display: "flex", justifyContent: "space-between", gap: 8, padding: "2px 0" }}>
+                                        <span className="mono" style={{ color: "var(--txt)" }}>{v.sku}</span>
+                                        <span className="mono" style={{ color }}>
+                                          {fmtCLP(v.price)}{v.bajoPct > 0 ? ` (-${v.bajoPct}%)` : ""} · {tag}
+                                        </span>
+                                      </div>
+                                    );
+                                  })}
                                   {invalidosItems.slice(0, 50).map(inv => (
-                                    <div key={inv.itemId} style={{ fontSize: 10, display: "flex", justifyContent: "space-between", gap: 8, padding: "2px 0", color: "var(--txt2)" }}>
-                                      <span className="mono" style={{ color: "var(--txt)" }}>{inv.sku}</span>
+                                    <div key={`i-${inv.itemId}`} style={{ fontSize: 10, display: "flex", justifyContent: "space-between", gap: 8, padding: "2px 0", opacity: 0.7 }}>
+                                      <span className="mono" style={{ color: "var(--txt3)" }}>{inv.sku}</span>
                                       <span className="mono" style={{ color: "var(--red)" }}>
                                         {inv.motivoExtra || `${fmtCLP(inv.rango.min)}–${fmtCLP(inv.rango.max)}`}
                                       </span>
                                     </div>
                                   ))}
-                                  {invalidosItems.length > 50 && (
+                                  {(previewValidos.length + invalidosItems.length) > 130 && (
                                     <div style={{ fontSize: 9, color: "var(--txt3)", marginTop: 4, textAlign: "center" }}>
-                                      … y {invalidosItems.length - 50} más
+                                      … y {(previewValidos.length + invalidosItems.length) - 130} más
                                     </div>
                                   )}
                                 </div>
