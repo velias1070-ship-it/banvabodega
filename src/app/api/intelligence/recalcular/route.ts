@@ -23,6 +23,7 @@ import {
   queryMargenPorSku,
   queryProveedores,
   queryPrimeraVentaPorSkuOrigen,
+  queryUltimaVentaPorSkuOrigen,
   queryFlagEstacional,
   type SkuIntelligenceUpsert,
 } from "@/lib/intelligence-queries";
@@ -135,12 +136,17 @@ async function ejecutarRecalculo(params: { skus?: string[]; full: boolean; snaps
       queryProveedorCatalogo(),
     ]);
 
-    // Fetch vel_objetivo, config, margen y proveedores LT
-    const [velObjetivos, intelConfig, ventasMlAgregado, proveedoresLT] = await Promise.all([
+    // Fetch vel_objetivo, config, margen y proveedores LT.
+    // Aging fix: queryUltimaVentaPorSkuOrigen agrega ventas_ml_cache via
+    // composicion_venta como fuente complementaria de "ultimo movimiento"
+    // del SKU. Sin esto, dias_sin_movimiento topea en 60d (data window de
+    // tabla `movimientos`). Manual: Investigacion_Comparada:197 (>90-180d slow).
+    const [velObjetivos, intelConfig, ventasMlAgregado, proveedoresLT, ultimaVentaPorSkuOrigen] = await Promise.all([
       queryVelObjetivos(),
       queryIntelConfig(),
       queryMargenPorSku(30),
-      queryProveedores(),  // Fase B: lead times por proveedor
+      queryProveedores(),
+      queryUltimaVentaPorSkuOrigen(),
     ]);
 
     // Eventos activos para hoy
@@ -259,6 +265,7 @@ async function ejecutarRecalculo(params: { skus?: string[]; full: boolean; snaps
         sku: m.sku,
         created_at: m.created_at,
       })),
+      ultimaVentaPorSkuOrigen,
       stockEnTransito,
       ocPendientesPorSku,
       prevIntelligence,

@@ -2791,7 +2791,8 @@ export type MlPriceFuente =
   | "promo_join"
   | "promo_delete"
   | "snapshot_diario"
-  | "manual_admin";
+  | "manual_admin"
+  | "markdown_auto_pilot";
 
 export interface LogPriceChangeOpts {
   item_id: string;

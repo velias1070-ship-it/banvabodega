@@ -259,6 +259,64 @@ export async function queryMovimientos(desdeDias: number = 400): Promise<Movimie
   return data as unknown as MovimientoRow[];
 }
 
+/** Última venta por sku_origen — combina ventas_ml_cache via composicion_venta.
+ *
+ * Razón: la tabla `movimientos` solo tiene historia desde 2026-02-26 (~60d),
+ * lo que topea `dias_sin_movimiento` artificialmente. `ventas_ml_cache` tiene
+ * historia más larga (>1 año). Mergeando ambas fuentes y tomando max(),
+ * `dias_sin_movimiento` refleja el dato real para triggers de aging.
+ *
+ * Implementación: SDK paginado (no RPC) para ser autosuficiente. Devuelve
+ * Map<sku_origen UPPER, fecha ISO YYYY-MM-DD>.
+ */
+export async function queryUltimaVentaPorSkuOrigen(): Promise<Map<string, string>> {
+  const sb = getServerSupabase();
+  const out = new Map<string, string>();
+  if (!sb) return out;
+
+  // composicion_venta: sku_venta -> sku_origen (puede ser N:N para combos)
+  const skuVentaToOrigen = new Map<string, string[]>();
+  {
+    const comp = await paginatedSelect(() =>
+      sb.from("composicion_venta").select("sku_venta, sku_origen")
+    );
+    for (const row of comp as Array<{ sku_venta: string; sku_origen: string }>) {
+      const v = (row.sku_venta || "").trim().toUpperCase();
+      const o = (row.sku_origen || "").trim().toUpperCase();
+      if (!v || !o) continue;
+      const arr = skuVentaToOrigen.get(v) || [];
+      arr.push(o);
+      skuVentaToOrigen.set(v, arr);
+    }
+  }
+
+  // ventas_ml_cache: traer última fecha por sku_venta
+  const ultimaPorSkuVenta = new Map<string, string>();
+  {
+    const ventas = await paginatedSelect(() =>
+      sb.from("ventas_ml_cache").select("sku_venta, fecha")
+    );
+    for (const row of ventas as Array<{ sku_venta: string; fecha: string }>) {
+      const sku = (row.sku_venta || "").trim().toUpperCase();
+      const fecha = (row.fecha || "").slice(0, 10);
+      if (!sku || !fecha) continue;
+      const cur = ultimaPorSkuVenta.get(sku);
+      if (!cur || fecha > cur) ultimaPorSkuVenta.set(sku, fecha);
+    }
+  }
+
+  // Mapear sku_venta -> sku_origen y consolidar max por sku_origen
+  Array.from(ultimaPorSkuVenta.entries()).forEach(([skuVenta, fecha]) => {
+    const origenes = skuVentaToOrigen.get(skuVenta) || [skuVenta];
+    for (const origen of origenes) {
+      const cur = out.get(origen);
+      if (!cur || fecha > cur) out.set(origen, fecha);
+    }
+  });
+
+  return out;
+}
+
 /** Stock Full cache (server-side) — paginado */
 export async function queryStockFullCache(): Promise<Map<string, number>> {
   const sb = getServerSupabase();

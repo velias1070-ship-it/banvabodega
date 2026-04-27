@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
 import { VALLE_MUERTE_MIN, VALLE_MUERTE_MAX } from "@/lib/pricing";
-import { loadActiveRuleSet, readRule, type MarkdownLadder, type ValleMuerte } from "@/lib/pricing-rules";
+import { loadActiveRuleSet, readRule, logDecision, type MarkdownLadder, type ValleMuerte } from "@/lib/pricing-rules";
+import { mlPut, logPriceChange } from "@/lib/ml";
 
 export const maxDuration = 120;
 export const dynamic = "force-dynamic";
@@ -83,6 +84,8 @@ async function handle(req: NextRequest) {
 
   const url = new URL(req.url);
   const modo: "dry_run" | "apply" = url.searchParams.get("modo") === "apply" ? "apply" : "dry_run";
+  const filtroSku = (url.searchParams.get("sku") || "").trim().toUpperCase() || null;
+  const confirmApply = url.searchParams.get("confirm") === "1";
   const start = Date.now();
 
   // Cargar rule set activo (cache 60s). Fallback a defaults si falla.
@@ -160,6 +163,7 @@ async function handle(req: NextRequest) {
   const stats = { evaluados: 0, sin_venta: 0, candidatos_real: 0, bloqueados: 0, sin_listing: 0, sin_stock: 0, sin_costo: 0, descontinuados: 0 };
 
   for (const p of productos) {
+    if (filtroSku && p.sku.trim().toUpperCase() !== filtroSku) continue;
     stats.evaluados++;
     if (p.estado_sku === "descontinuado") { stats.descontinuados++; continue; }
     const ultimaStr = ultimaVentaPorSku.get(p.sku);
@@ -229,11 +233,105 @@ async function handle(req: NextRequest) {
     using_fallback: false,
   } : { version_label: "FALLBACK_HARDCODED", content_hash: null, channel: null, using_fallback: true };
 
-  // 6. Apply real bloqueado por ahora (TODO)
+  // 6. Apply real: solo permitido como PILOTO en 1 SKU especifico
+  // (?modo=apply&sku=XXX&confirm=1). Esta restricción evita aplicar masivo
+  // sin validar manual primero. Cuando se decida masivo, se levanta este gate.
   if (modo === "apply") {
+    if (!filtroSku) {
+      return NextResponse.json({
+        modo, rule_set: rule_set_meta, stats, candidatos: candidatos.length, duration_ms: Date.now() - start,
+        nota: "APPLY masivo bloqueado. Para piloto en 1 SKU usar ?modo=apply&sku=XXX&confirm=1.",
+      });
+    }
+    if (!confirmApply) {
+      return NextResponse.json({
+        modo, rule_set: rule_set_meta, stats, candidatos, duration_ms: Date.now() - start,
+        nota: `APPLY a SKU ${filtroSku} requiere confirm=1. Revisar candidato dry_run primero.`,
+      });
+    }
+    const cand = candidatos.find(c => c.sku.trim().toUpperCase() === filtroSku && c.decision === "candidato");
+    if (!cand) {
+      return NextResponse.json({
+        modo, rule_set: rule_set_meta, stats, candidatos, duration_ms: Date.now() - start,
+        nota: `SKU ${filtroSku} no es candidato valido (skip o no encontrado). No se aplica nada.`,
+      }, { status: 422 });
+    }
+    const principalCand = principalBySku.get(cand.sku);
+    if (!principalCand) {
+      return NextResponse.json({
+        modo, rule_set: rule_set_meta, error: "principal_listing_missing", sku: cand.sku,
+      }, { status: 422 });
+    }
+
+    // Ejecutar PUT a ML
+    const result = await mlPut<{ id: string; status: string; price: number }>(
+      `/items/${principalCand.item_id}`,
+      { price: cand.precio_markdown }
+    );
+    if (!result) {
+      return NextResponse.json({
+        modo, rule_set: rule_set_meta, error: "ml_put_failed",
+        sku: cand.sku, item_id: principalCand.item_id, precio_target: cand.precio_markdown,
+      }, { status: 502 });
+    }
+
+    // Persistir cambio en ml_items_map y ml_price_history
+    if (sb) {
+      await sb.from("ml_items_map")
+        .update({ price: result.price, updated_at: new Date().toISOString() })
+        .eq("item_id", principalCand.item_id);
+
+      await logPriceChange({
+        item_id: principalCand.item_id,
+        sku: cand.sku,
+        precio: result.price,
+        precio_anterior: cand.precio_actual,
+        fuente: "markdown_auto_pilot",
+        ejecutado_por: "pilot_apply",
+        contexto: {
+          dias_sin_venta: cand.dias_sin_venta,
+          nivel_markdown: cand.nivel_markdown,
+          rule_set_hash: rs?.content_hash,
+          motivo: cand.motivo,
+        },
+      });
+
+      await logDecision({
+        sku_origen: cand.sku,
+        domain: "global",
+        rule_set_hash: rs?.content_hash || "FALLBACK",
+        channel: "production",
+        inputs: {
+          dias_sin_venta: cand.dias_sin_venta,
+          stock: cand.stock,
+          precio_actual: cand.precio_actual,
+          cuadrante: cand.cuadrante,
+        },
+        decision: {
+          accion: "markdown_apply_pilot",
+          nivel_markdown: cand.nivel_markdown,
+          precio_markdown: cand.precio_markdown,
+          precio_aplicado: result.price,
+          item_id: principalCand.item_id,
+        },
+        applied: true,
+      });
+    }
+
     return NextResponse.json({
-      modo, rule_set: rule_set_meta, stats, candidatos: candidatos.length, duration_ms: Date.now() - start,
-      nota: "APPLY bloqueado en este endpoint. Validar dry-run primero. Habilitar en una iteración siguiente cuando los candidatos sean revisados.",
+      modo, rule_set: rule_set_meta, ladder_aplicado: ladder, valle_muerte_aplicado: valle,
+      duration_ms: Date.now() - start,
+      pilot_apply: {
+        sku: cand.sku,
+        item_id: principalCand.item_id,
+        precio_anterior: cand.precio_actual,
+        precio_aplicado: result.price,
+        precio_target: cand.precio_markdown,
+        nivel_markdown: cand.nivel_markdown,
+        dias_sin_venta: cand.dias_sin_venta,
+        ml_status: result.status,
+      },
+      candidato: cand,
     });
   }
 

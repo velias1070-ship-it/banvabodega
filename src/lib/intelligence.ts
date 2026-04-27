@@ -439,6 +439,11 @@ export interface RecalculoInput {
   quiebres: QuiebreSnapshot[];
   conteos: ConteoInput[];
   movimientos: MovimientoInput[];
+  /** Aging fix: Map<sku_origen UPPER, fecha YYYY-MM-DD> con la última venta
+   *  conocida del SKU según ventas_ml_cache (vía composicion_venta). Se mergea
+   *  con `ultimoMovPorSku` derivado de `movimientos` para que la tabla
+   *  `movimientos` (window corta) no tope `dias_sin_movimiento`. */
+  ultimaVentaPorSkuOrigen?: Map<string, string>;
   stockEnTransito: Map<string, number>;
   ocPendientesPorSku: Map<string, number>;
   prevIntelligence: Map<string, PrevIntelRow>;
@@ -664,7 +669,7 @@ export function evaluarAlertasForecast(
 export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; debugLog?: DebugSkuLog } {
   const {
     productos, composicion, ordenes, stockBodega, stockFull, stockFullDetail,
-    eventosActivos, quiebres, conteos, movimientos,
+    eventosActivos, quiebres, conteos, movimientos, ultimaVentaPorSkuOrigen,
     stockEnTransito, ocPendientesPorSku, prevIntelligence, velObjetivos,
     proveedorCatalogo, config, hoy,
     debugSku,
@@ -845,6 +850,28 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       ultimoMovPorSku.set(key, m.created_at);
     }
   }
+  // Aging fix: mergear ventas_ml_cache (vía composicion_venta) con ultimoMovPorSku.
+  // ventas_ml_cache tiene historia >1 año; tabla `movimientos` solo desde
+  // 2026-02-26 (~60d). Sin este merge, dias_sin_movimiento topea a 60.
+  // Manual: Investigacion_Comparada:197 (>90-180d slow, >180-365d dead stock).
+  if (ultimaVentaPorSkuOrigen && ultimaVentaPorSkuOrigen.size > 0) {
+    let mergedNuevos = 0;
+    let mergedActualizados = 0;
+    Array.from(ultimaVentaPorSkuOrigen.entries()).forEach(([sku, fecha]) => {
+      const key = (sku || "").trim().toUpperCase();
+      const fechaIso = `${fecha}T00:00:00Z`; // YYYY-MM-DD -> timestamp ISO comparable
+      const prev = ultimoMovPorSku.get(key);
+      if (!prev) {
+        ultimoMovPorSku.set(key, fechaIso);
+        mergedNuevos++;
+      } else if (fechaIso > prev) {
+        ultimoMovPorSku.set(key, fechaIso);
+        mergedActualizados++;
+      }
+    });
+    console.warn(`[intelligence] aging-fix merge: ventas_input=${ultimaVentaPorSkuOrigen.size} nuevos=${mergedNuevos} actualizados=${mergedActualizados} mapSize_final=${ultimoMovPorSku.size}`);
+  }
+
   // PR6a-bis/3: logging completo con sample para diagnosticar mismatches.
   // Usa warn en todos los casos — Vercel filtra console.log por default.
   if (movimientos.length === 0) {
