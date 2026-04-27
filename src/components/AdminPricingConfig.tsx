@@ -483,6 +483,17 @@ export default function AdminPricingConfig() {
                         placeholder={`${me.val}`}
                         style={{ ...inputStyle, width: 60, color: me.fuente === "sku" ? "var(--green)" : "var(--txt3)" }}
                         title={`Efectivo: ${me.val}% (${me.fuente})`} />
+                      {(() => {
+                        const ctx = s.precio_piso_calculado_inputs as Record<string, unknown> | null;
+                        const margenReal = ctx?.margen_min_pct_aplicado as number | string | undefined;
+                        const fuente = ctx?.margen_min_fuente as string | undefined;
+                        if (margenReal == null || margenReal === "") return null;
+                        return (
+                          <div style={{ fontSize: 9, color: "var(--cyan)", marginTop: 2 }}>
+                            real: {margenReal}% <span style={{ color: "var(--txt3)" }}>({fuente})</span>
+                          </div>
+                        );
+                      })()}
                     </td>
                     <td>
                       <select defaultValue={s.politica_pricing || ""}
@@ -495,6 +506,20 @@ export default function AdminPricingConfig() {
                         <option value="">—</option>
                         {POLITICAS.map(p => <option key={p} value={p}>{p}</option>)}
                       </select>
+                      {(() => {
+                        const ctx = s.precio_piso_calculado_inputs as Record<string, unknown> | null;
+                        const polReal = ctx?.politica as string | undefined;
+                        const subtipo = ctx?.cuadrante_subtipo as string | undefined;
+                        const fuente = ctx?.politica_fuente as string | undefined;
+                        if (!polReal) return null;
+                        return (
+                          <div style={{ fontSize: 9, color: "var(--cyan)", marginTop: 2 }}>
+                            real: {polReal}
+                            {subtipo && <span style={{ color: "var(--txt3)" }}> · {subtipo}</span>}
+                            {fuente && <span style={{ color: "var(--txt3)" }}> ({fuente})</span>}
+                          </div>
+                        );
+                      })()}
                     </td>
                     <td style={{ textAlign: "center" }}>
                       <input type="checkbox" defaultChecked={s.es_kvi === true}
