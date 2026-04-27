@@ -1731,10 +1731,15 @@ async function fetchSellerItemsByStatus(sellerId: string, status: string): Promi
 
   ids.push(...resp.results);
 
-  // Paginar con scroll_id
+  // Paginar con scroll_id hasta que el server deje de devolver resultados.
+  // ANTES: while (scrollId && ids.length < total). Bug: ML reporta paging.total
+  // como estimado (visto 353) pero el scroll devuelve más items (visto 441).
+  // El cap prematuro perdía catalog listings con item_id alto y los descartaba
+  // del syncStockFull silenciosamente.
   let scrollId: string | null = resp.scroll_id || null;
-  const total = resp.paging?.total || 0;
-  while (scrollId && ids.length < total) {
+  // Hard limit defensivo para no entrar en loops infinitos si ML se rompe.
+  const HARD_LIMIT = 50000;
+  while (scrollId && ids.length < HARD_LIMIT) {
     await delay(500);
     const sp = await mlGet<{ results: string[]; scroll_id?: string }>(
       `/users/${sellerId}/items/search?search_type=scan&scroll_id=${scrollId}&limit=100`
