@@ -5,7 +5,7 @@ import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, s
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia, IntegrityError } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
-import { fetchConteos, createConteo, updateConteo, deleteConteo, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado, transferirStock, reconciliarReservas, fetchResumenMovimientosHoy, fetchStockDisponible, fetchMovimientosHoy, fetchDesgloseReservas, enqueueAndSync, updateProductoCosto, toggleShipmentHidden, patchLineaPicking, agregarLineaPicking, eliminarLineaPicking, dividirEnvioFull } from "@/lib/db";
+import { fetchConteos, createConteo, updateConteo, deleteConteo, calcularIRAConteo, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado, transferirStock, reconciliarReservas, fetchResumenMovimientosHoy, fetchStockDisponible, fetchMovimientosHoy, fetchDesgloseReservas, enqueueAndSync, updateProductoCosto, toggleShipmentHidden, patchLineaPicking, agregarLineaPicking, eliminarLineaPicking, dividirEnvioFull } from "@/lib/db";
 import type { DBStockProyectado, DBReconciliacion } from "@/lib/db";
 import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap, ShipmentWithItems } from "@/lib/db";
 import { getOAuthUrl } from "@/lib/ml";
@@ -9733,6 +9733,7 @@ function AdminConteos({ refresh }: { refresh: () => void }) {
         const pct = total > 0 ? Math.round((done / total) * 100) : 0;
         const estadoColors: Record<string, string> = { ABIERTA: "#f59e0b", EN_PROCESO: "#3b82f6", REVISION: "#a855f7", CERRADA: "#10b981" };
         const color = estadoColors[c.estado] || "#94a3b8";
+        const iraColor = c.ira_pct == null ? "#94a3b8" : c.ira_pct >= 99 ? "#10b981" : c.ira_pct >= 95 ? "#3b82f6" : c.ira_pct >= 85 ? "#f59e0b" : "#ef4444";
         return (
           <div key={c.id} className="card" style={{cursor:"pointer",border:`1px solid ${color}33`}} onClick={() => setSelConteo(c)}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
@@ -9742,9 +9743,17 @@ function AdminConteos({ refresh }: { refresh: () => void }) {
                   {c.tipo === "por_posicion" ? "Por posición" : "Por SKU"} · {total} posiciones · Creado por: {c.created_by}
                 </div>
               </div>
-              <span style={{padding:"4px 10px",borderRadius:6,fontSize:10,fontWeight:700,background:`${color}22`,color,border:`1px solid ${color}44`}}>
-                {c.estado}
-              </span>
+              <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                {c.estado === "CERRADA" && c.ira_pct != null && (
+                  <span title={`${c.lineas_ok}/${c.lineas_total} líneas exactas · ${c.lineas_diff} con diferencia`}
+                    style={{padding:"4px 10px",borderRadius:6,fontSize:10,fontWeight:700,background:`${iraColor}22`,color:iraColor,border:`1px solid ${iraColor}44`}}>
+                    IRA {c.ira_pct.toFixed(1)}%
+                  </span>
+                )}
+                <span style={{padding:"4px 10px",borderRadius:6,fontSize:10,fontWeight:700,background:`${color}22`,color,border:`1px solid ${color}44`}}>
+                  {c.estado}
+                </span>
+              </div>
             </div>
             <div style={{background:"var(--bg3)",borderRadius:6,height:6,overflow:"hidden"}}>
               <div style={{width:`${pct}%`,height:"100%",background:color,borderRadius:6,transition:"width .3s"}}/>
@@ -10051,13 +10060,13 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
     );
 
     const allResolved = newLineas.every(l => l.estado !== "CONTADO" && l.estado !== "PENDIENTE");
+    const cierre = allResolved
+      ? { estado: "CERRADA" as const, closed_at: new Date().toISOString(), closed_by: "Admin", ...calcularIRAConteo(newLineas) }
+      : {};
 
-    await updateConteo(conteo.id!, {
-      lineas: newLineas,
-      ...(allResolved ? { estado: "CERRADA", closed_at: new Date().toISOString(), closed_by: "Admin" } : {}),
-    });
+    await updateConteo(conteo.id!, { lineas: newLineas, ...cierre });
 
-    setConteo({ ...conteo, lineas: newLineas, ...(allResolved ? { estado: "CERRADA" as const } : {}) });
+    setConteo({ ...conteo, lineas: newLineas, ...cierre });
     refresh();
     setProcessing(false);
   };
@@ -10068,11 +10077,11 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
       l.posicion_id === posId && l.sku === sku ? { ...l, estado: "VERIFICADO" as const } : l
     );
     const allResolved = newLineas.every(l => l.estado !== "CONTADO" && l.estado !== "PENDIENTE");
-    await updateConteo(conteo.id!, {
-      lineas: newLineas,
-      ...(allResolved ? { estado: "CERRADA", closed_at: new Date().toISOString(), closed_by: "Admin" } : {}),
-    });
-    setConteo({ ...conteo, lineas: newLineas, ...(allResolved ? { estado: "CERRADA" as const } : {}) });
+    const cierre = allResolved
+      ? { estado: "CERRADA" as const, closed_at: new Date().toISOString(), closed_by: "Admin", ...calcularIRAConteo(newLineas) }
+      : {};
+    await updateConteo(conteo.id!, { lineas: newLineas, ...cierre });
+    setConteo({ ...conteo, lineas: newLineas, ...cierre });
     setProcessing(false);
   };
 
@@ -10115,11 +10124,11 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
     });
 
     const allResolved = newLineas.every(l => l.estado !== "CONTADO" && l.estado !== "PENDIENTE");
-    await updateConteo(conteo.id!, {
-      lineas: newLineas,
-      ...(allResolved ? { estado: "CERRADA", closed_at: new Date().toISOString(), closed_by: "Admin" } : {}),
-    });
-    setConteo({ ...conteo, lineas: newLineas, ...(allResolved ? { estado: "CERRADA" as const } : {}) });
+    const cierre = allResolved
+      ? { estado: "CERRADA" as const, closed_at: new Date().toISOString(), closed_by: "Admin", ...calcularIRAConteo(newLineas) }
+      : {};
+    await updateConteo(conteo.id!, { lineas: newLineas, ...cierre });
+    setConteo({ ...conteo, lineas: newLineas, ...cierre });
     refresh();
     setProcessing(false);
   };
@@ -10144,8 +10153,9 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
       }
     }
     const newLineas = conteo.lineas.map(l => l.estado === "CONTADO" ? { ...l, estado: "AJUSTADO" as const } : l);
-    await updateConteo(conteo.id!, { lineas: newLineas, estado: "CERRADA", closed_at: new Date().toISOString(), closed_by: "Admin" });
-    setConteo({ ...conteo, lineas: newLineas, estado: "CERRADA" });
+    const ira = calcularIRAConteo(newLineas);
+    await updateConteo(conteo.id!, { lineas: newLineas, estado: "CERRADA", closed_at: new Date().toISOString(), closed_by: "Admin", ...ira });
+    setConteo({ ...conteo, lineas: newLineas, estado: "CERRADA", ...ira });
     refresh();
     setProcessing(false);
   };
@@ -10177,6 +10187,31 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
           </div>
         </div>
       </div>
+
+      {/* IRA snapshot al cierre — Manual Inventarios Parte2 §5.6.2, benchmark >95% */}
+      {conteo.estado === "CERRADA" && conteo.ira_pct != null && (() => {
+        const iraColor = conteo.ira_pct >= 99 ? "#10b981" : conteo.ira_pct >= 95 ? "#3b82f6" : conteo.ira_pct >= 85 ? "#f59e0b" : "#ef4444";
+        const veredicto = conteo.ira_pct >= 99 ? "Clase mundial" : conteo.ira_pct >= 95 ? "Aceptable" : conteo.ira_pct >= 85 ? "Bajo benchmark" : "Crítico — investigar procesos";
+        return (
+          <div className="card" style={{border:`2px solid ${iraColor}55`, marginBottom:12, padding:16}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:16,flexWrap:"wrap"}}>
+              <div>
+                <div style={{fontSize:11,color:"var(--txt3)",fontWeight:700,letterSpacing:0.5}}>INVENTORY RECORD ACCURACY (IRA)</div>
+                <div style={{fontSize:36,fontWeight:800,color:iraColor,lineHeight:1.1,marginTop:4}}>{conteo.ira_pct.toFixed(1)}%</div>
+                <div style={{fontSize:11,color:iraColor,fontWeight:600,marginTop:2}}>{veredicto}</div>
+              </div>
+              <div style={{display:"flex",gap:14,fontSize:12,color:"var(--txt2)"}}>
+                <div><span style={{color:"#10b981",fontWeight:800}}>{conteo.lineas_ok}</span> exactas</div>
+                <div><span style={{color:"#f59e0b",fontWeight:800}}>{conteo.lineas_diff}</span> con diff</div>
+                <div><span style={{color:"var(--txt2)",fontWeight:800}}>{conteo.lineas_total}</span> total</div>
+              </div>
+            </div>
+            <div style={{fontSize:10,color:"var(--txt3)",marginTop:8,lineHeight:1.5}}>
+              Benchmark Manual Inventarios Parte 2 §5.6.2: clase mundial &gt;99%, aceptable &gt;95%, bodegas inmaduras 70-85%.
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Stats */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:12}}>

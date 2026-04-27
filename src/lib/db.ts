@@ -1486,6 +1486,36 @@ export interface DBConteo {
   created_by: string;
   closed_at?: string | null;
   closed_by?: string | null;
+  // IRA snapshot (v84). Se calcula al pasar a CERRADA y queda inmutable.
+  // Manual Inventarios Parte2 §5.6.2: IRA = lineas_ok / lineas_total. Benchmark >95%.
+  lineas_total?: number | null;
+  lineas_ok?: number | null;
+  lineas_diff?: number | null;
+  ira_pct?: number | null;
+}
+
+/**
+ * Calcula IRA snapshot a partir de las líneas finales del conteo.
+ * Línea OK = stock_contado === stock_sistema (sin tolerancia por ahora).
+ * Línea diff = ambos counts presentes y distintos.
+ * PENDIENTE no cuenta en el denominador.
+ *
+ * Iteración futura: aplicar tolerancia por clase ABC (A=0, B=±1, C=±2).
+ */
+export function calcularIRAConteo(lineas: ConteoLinea[]): {
+  lineas_total: number; lineas_ok: number; lineas_diff: number; ira_pct: number | null;
+} {
+  const contadas = lineas.filter(l => l.estado !== "PENDIENTE");
+  const total = contadas.length;
+  if (total === 0) return { lineas_total: 0, lineas_ok: 0, lineas_diff: 0, ira_pct: null };
+  const ok = contadas.filter(l => l.stock_contado === l.stock_sistema).length;
+  const diff = total - ok;
+  return {
+    lineas_total: total,
+    lineas_ok: ok,
+    lineas_diff: diff,
+    ira_pct: Math.round((ok / total) * 10000) / 100,
+  };
 }
 
 export async function createConteo(conteo: Omit<DBConteo, "id" | "created_at">): Promise<string | null> {
@@ -1503,15 +1533,23 @@ export async function createConteo(conteo: Omit<DBConteo, "id" | "created_at">):
   return data?.id || null;
 }
 
-export async function fetchConteos(): Promise<DBConteo[]> {
-  const sb = getSupabase(); if (!sb) return [];
-  const { data } = await sb.from("conteos").select("*").order("created_at", { ascending: false });
-  return (data || []).map(d => ({
-    ...d,
+function mapDBConteoRow(d: Record<string, unknown>): DBConteo {
+  return {
+    ...(d as unknown as DBConteo),
     lineas: (d.lineas || []) as ConteoLinea[],
     posiciones: (d.posiciones || []) as string[],
     posiciones_contadas: (d.posiciones_contadas || []) as string[],
-  }));
+    lineas_total: (d.lineas_total ?? null) as number | null,
+    lineas_ok: (d.lineas_ok ?? null) as number | null,
+    lineas_diff: (d.lineas_diff ?? null) as number | null,
+    ira_pct: d.ira_pct === null || d.ira_pct === undefined ? null : Number(d.ira_pct),
+  };
+}
+
+export async function fetchConteos(): Promise<DBConteo[]> {
+  const sb = getSupabase(); if (!sb) return [];
+  const { data } = await sb.from("conteos").select("*").order("created_at", { ascending: false });
+  return (data || []).map(mapDBConteoRow);
 }
 
 export async function fetchActiveConteos(): Promise<DBConteo[]> {
@@ -1519,12 +1557,7 @@ export async function fetchActiveConteos(): Promise<DBConteo[]> {
   const { data } = await sb.from("conteos").select("*")
     .in("estado", ["ABIERTA", "EN_PROCESO"])
     .order("created_at", { ascending: false });
-  return (data || []).map(d => ({
-    ...d,
-    lineas: (d.lineas || []) as ConteoLinea[],
-    posiciones: (d.posiciones || []) as string[],
-    posiciones_contadas: (d.posiciones_contadas || []) as string[],
-  }));
+  return (data || []).map(mapDBConteoRow);
 }
 
 export async function updateConteo(id: string, updates: Partial<DBConteo>): Promise<boolean> {
@@ -1535,6 +1568,10 @@ export async function updateConteo(id: string, updates: Partial<DBConteo>): Prom
   if (updates.posiciones_contadas !== undefined) payload.posiciones_contadas = updates.posiciones_contadas;
   if (updates.closed_at !== undefined) payload.closed_at = updates.closed_at;
   if (updates.closed_by !== undefined) payload.closed_by = updates.closed_by;
+  if (updates.lineas_total !== undefined) payload.lineas_total = updates.lineas_total;
+  if (updates.lineas_ok !== undefined) payload.lineas_ok = updates.lineas_ok;
+  if (updates.lineas_diff !== undefined) payload.lineas_diff = updates.lineas_diff;
+  if (updates.ira_pct !== undefined) payload.ira_pct = updates.ira_pct;
   const { error } = await sb.from("conteos").update(payload).eq("id", id);
   if (error) { console.error("updateConteo error:", error); return false; }
   return true;
