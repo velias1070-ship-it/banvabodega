@@ -1581,20 +1581,32 @@ export async function fetchIRASemanal(limit = 12): Promise<IRASemana[]> {
 }
 
 /**
- * Carga clasificación ABC actual por sku_origen desde sku_intelligence.
- * Se usa para hidratar `abc_snapshot` en líneas de conteo al cerrar.
+ * Carga clasificación ABC efectiva por sku_origen desde sku_intelligence.
+ * Manual Inventarios Parte1 §2.2 línea 179: "críticamente, debes hacer el ABC
+ * tres veces, no una": margen, ingreso y unidades. Para cycle counting tomamos
+ * el MAX de los 3 — un SKU es A si es A en cualquiera. Razón: para tolerancia
+ * de inventario importan los 3 riesgos (financiero, ingreso, operativo).
+ * Sin esto, SKUs A en velocidad pero C en margen recibían tolerancia laxa.
  */
+function abcMax(...vals: (string | null | undefined)[]): "A" | "B" | "C" | null {
+  if (vals.some(v => v === "A")) return "A";
+  if (vals.some(v => v === "B")) return "B";
+  if (vals.some(v => v === "C")) return "C";
+  return null;
+}
+
 export async function fetchAbcMap(skus: string[]): Promise<Record<string, "A" | "B" | "C" | null>> {
   const sb = getSupabase(); if (!sb || skus.length === 0) return {};
-  const { data, error } = await sb.from("sku_intelligence").select("sku_origen, abc").in("sku_origen", skus);
+  const { data, error } = await sb.from("sku_intelligence")
+    .select("sku_origen, abc_margen, abc_ingreso, abc_unidades")
+    .in("sku_origen", skus);
   if (error) {
     console.error(`[fetchAbcMap] query failed: ${error.message}`);
     return {};
   }
   const out: Record<string, "A" | "B" | "C" | null> = {};
-  for (const r of (data || []) as { sku_origen: string; abc: string | null }[]) {
-    const a = r.abc;
-    out[r.sku_origen] = a === "A" || a === "B" || a === "C" ? a : null;
+  for (const r of (data || []) as { sku_origen: string; abc_margen: string | null; abc_ingreso: string | null; abc_unidades: string | null }[]) {
+    out[r.sku_origen] = abcMax(r.abc_margen, r.abc_ingreso, r.abc_unidades);
   }
   return out;
 }
