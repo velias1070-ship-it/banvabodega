@@ -1461,6 +1461,29 @@ export async function dividirEnvioFull(
 
 // ==================== CONTEOS CÍCLICOS ====================
 
+/**
+ * Causas raíz de discrepancia en conteo cíclico.
+ * Manual Inventarios Parte2 §5.6.2: "cada discrepancia se investiga:
+ * ¿error de picking? ¿error de receiving? ¿robo? ¿daño no reportado?
+ * La causa raíz alimenta mejoras de proceso."
+ */
+export type ConteoCausaRaiz =
+  | "picking_error"        // Sacaron otro o más uds en picking
+  | "receiving_error"      // Mal contado al recibir mercadería
+  | "merma_robo"           // Pérdida no registrada (mermas, hurtos)
+  | "producto_danado"      // Producto descartado por daño
+  | "mal_ubicado"          // Estaba en otra posición (preferir Traspasar)
+  | "desconocida";         // Último recurso
+
+export const CAUSA_RAIZ_LABEL: Record<ConteoCausaRaiz, string> = {
+  picking_error:   "🛒 Error de picking",
+  receiving_error: "📦 Error de receiving",
+  merma_robo:      "💸 Merma o robo",
+  producto_danado: "🩹 Producto dañado",
+  mal_ubicado:     "🔀 Estaba mal ubicado",
+  desconocida:     "❓ Desconocida",
+};
+
 export interface ConteoLinea {
   posicion_id: string;
   posicion_label: string;
@@ -1472,6 +1495,42 @@ export interface ConteoLinea {
   timestamp: string;
   estado: "PENDIENTE" | "CONTADO" | "VERIFICADO" | "AJUSTADO";
   es_inesperado: boolean;
+  // v85: causa raíz al aprobar/rechazar (Manual Inventarios Parte2 §5.6.2)
+  causa_raiz?: ConteoCausaRaiz | null;
+  // Snapshot del ABC al momento del conteo (para IRA reproducible histórico).
+  // Si null/undefined: IRA usa criterio estricto (sin tolerancia).
+  abc_snapshot?: "A" | "B" | "C" | null;
+}
+
+/**
+ * Tolerancia en unidades por clase ABC al considerar línea OK.
+ * Manual Inventarios Parte2 §5.6.2: A=0, B=±1, C=±2.
+ * Sin clase ABC conocida → 0 (criterio estricto).
+ */
+export function toleranciaPorAbc(abc: string | null | undefined): number {
+  if (abc === "A") return 0;
+  if (abc === "B") return 1;
+  if (abc === "C") return 2;
+  return 0;
+}
+
+/**
+ * Carga clasificación ABC actual por sku_origen desde sku_intelligence.
+ * Se usa para hidratar `abc_snapshot` en líneas de conteo al cerrar.
+ */
+export async function fetchAbcMap(skus: string[]): Promise<Record<string, "A" | "B" | "C" | null>> {
+  const sb = getSupabase(); if (!sb || skus.length === 0) return {};
+  const { data, error } = await sb.from("sku_intelligence").select("sku_origen, abc").in("sku_origen", skus);
+  if (error) {
+    console.error(`[fetchAbcMap] query failed: ${error.message}`);
+    return {};
+  }
+  const out: Record<string, "A" | "B" | "C" | null> = {};
+  for (const r of (data || []) as { sku_origen: string; abc: string | null }[]) {
+    const a = r.abc;
+    out[r.sku_origen] = a === "A" || a === "B" || a === "C" ? a : null;
+  }
+  return out;
 }
 
 export interface DBConteo {
@@ -1496,11 +1555,10 @@ export interface DBConteo {
 
 /**
  * Calcula IRA snapshot a partir de las líneas finales del conteo.
- * Línea OK = stock_contado === stock_sistema (sin tolerancia por ahora).
- * Línea diff = ambos counts presentes y distintos.
+ * Línea OK = |stock_contado - stock_sistema| <= tolerancia(abc_snapshot).
+ * Si la línea no tiene abc_snapshot, tolerancia = 0 (criterio estricto).
+ * Manual Inventarios Parte2 §5.6.2: A=0, B=±1, C=±2.
  * PENDIENTE no cuenta en el denominador.
- *
- * Iteración futura: aplicar tolerancia por clase ABC (A=0, B=±1, C=±2).
  */
 export function calcularIRAConteo(lineas: ConteoLinea[]): {
   lineas_total: number; lineas_ok: number; lineas_diff: number; ira_pct: number | null;
@@ -1508,7 +1566,10 @@ export function calcularIRAConteo(lineas: ConteoLinea[]): {
   const contadas = lineas.filter(l => l.estado !== "PENDIENTE");
   const total = contadas.length;
   if (total === 0) return { lineas_total: 0, lineas_ok: 0, lineas_diff: 0, ira_pct: null };
-  const ok = contadas.filter(l => l.stock_contado === l.stock_sistema).length;
+  const ok = contadas.filter(l => {
+    const diff = Math.abs(l.stock_contado - l.stock_sistema);
+    return diff <= toleranciaPorAbc(l.abc_snapshot);
+  }).length;
   const diff = total - ok;
   return {
     lineas_total: total,

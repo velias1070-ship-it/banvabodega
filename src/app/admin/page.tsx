@@ -5,7 +5,8 @@ import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, s
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia, IntegrityError } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
-import { fetchConteos, createConteo, updateConteo, deleteConteo, calcularIRAConteo, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado, transferirStock, reconciliarReservas, fetchResumenMovimientosHoy, fetchStockDisponible, fetchMovimientosHoy, fetchDesgloseReservas, enqueueAndSync, updateProductoCosto, toggleShipmentHidden, patchLineaPicking, agregarLineaPicking, eliminarLineaPicking, dividirEnvioFull } from "@/lib/db";
+import { fetchConteos, createConteo, updateConteo, deleteConteo, calcularIRAConteo, toleranciaPorAbc, fetchAbcMap, CAUSA_RAIZ_LABEL, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado, transferirStock, reconciliarReservas, fetchResumenMovimientosHoy, fetchStockDisponible, fetchMovimientosHoy, fetchDesgloseReservas, enqueueAndSync, updateProductoCosto, toggleShipmentHidden, patchLineaPicking, agregarLineaPicking, eliminarLineaPicking, dividirEnvioFull } from "@/lib/db";
+import type { ConteoCausaRaiz } from "@/lib/db";
 import type { DBStockProyectado, DBReconciliacion } from "@/lib/db";
 import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap, ShipmentWithItems } from "@/lib/db";
 import { getOAuthUrl } from "@/lib/ml";
@@ -9974,6 +9975,17 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
   const [processing, setProcessing] = useState(false);
   const [expandedSku, setExpandedSku] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState(Date.now());
+  // ABC por sku_origen para mostrar tolerancia + hidratar abc_snapshot al cerrar.
+  const [abcMap, setAbcMap] = useState<Record<string, "A" | "B" | "C" | null>>({});
+  // Modal de causa raíz al aprobar línea con diff que excede tolerancia.
+  const [causaModal, setCausaModal] = useState<{ posId: string; sku: string } | null>(null);
+  const [causaSel, setCausaSel] = useState<ConteoCausaRaiz>("desconocida");
+
+  useEffect(() => {
+    const skus = Array.from(new Set(initialConteo.lineas.map(l => l.sku)));
+    if (skus.length === 0) return;
+    fetchAbcMap(skus).then(setAbcMap);
+  }, [initialConteo.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Función para refrescar stock_sistema con el stock real actual
   const refreshStockSistema = useCallback(() => {
@@ -10035,14 +10047,22 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
   const sinDiferencia = conteo.lineas.filter(l => l.estado === "CONTADO" && l.stock_sistema === l.stock_contado).length;
   const ajustados = conteo.lineas.filter(l => l.estado === "AJUSTADO" || l.estado === "VERIFICADO").length;
 
-  const aprobarLinea = async (posId: string, sku: string) => {
+  // Hidrata abc_snapshot en cualquier línea que aún no lo tenga.
+  // Snapshot inmutable: el IRA se calcula con la clase ABC del momento del cierre.
+  const hidratarAbcSnapshot = (lineas: ConteoLinea[]): ConteoLinea[] =>
+    lineas.map(l => l.abc_snapshot !== undefined ? l : { ...l, abc_snapshot: abcMap[l.sku] ?? null });
+
+  const aprobarLinea = async (posId: string, sku: string, causaRaiz?: ConteoCausaRaiz) => {
     setProcessing(true);
     const linea = conteo.lineas.find(l => l.posicion_id === posId && l.sku === sku && l.estado === "CONTADO");
     if (!linea) { setProcessing(false); return; }
 
     const diff = linea.stock_contado - linea.stock_sistema;
+    const tol = toleranciaPorAbc(abcMap[sku]);
+    const dentroTolerancia = Math.abs(diff) <= tol;
     if (diff !== 0) {
       const ts = new Date().toISOString();
+      const causaTxt = causaRaiz ? CAUSA_RAIZ_LABEL[causaRaiz] : (dentroTolerancia ? "✓ Dentro de tolerancia" : "Sin causa registrada");
       await recordMovementAsync({
         ts,
         type: diff > 0 ? "in" : "out",
@@ -10051,12 +10071,16 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
         pos: linea.posicion_id,
         qty: Math.abs(diff),
         who: "Admin (conteo)",
-        note: `Ajuste conteo cíclico ${conteo.fecha} — ${diff > 0 ? "sobrante" : "faltante"}`,
+        note: `Ajuste conteo cíclico ${conteo.fecha} — ${diff > 0 ? "sobrante" : "faltante"} — ${causaTxt}`,
       });
     }
 
-    const newLineas = conteo.lineas.map(l =>
-      l.posicion_id === posId && l.sku === sku ? { ...l, estado: "AJUSTADO" as const } : l
+    const newLineas = hidratarAbcSnapshot(
+      conteo.lineas.map(l =>
+        l.posicion_id === posId && l.sku === sku
+          ? { ...l, estado: "AJUSTADO" as const, causa_raiz: causaRaiz ?? l.causa_raiz ?? null }
+          : l
+      )
     );
 
     const allResolved = newLineas.every(l => l.estado !== "CONTADO" && l.estado !== "PENDIENTE");
@@ -10071,10 +10095,27 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
     setProcessing(false);
   };
 
+  // Click en "Aprobar" de una linea con diff: si excede tolerancia ABC, abre modal de causa raíz.
+  // Si está dentro de tolerancia o diff=0, aprueba directo.
+  const onClickAprobar = (posId: string, sku: string) => {
+    const linea = conteo.lineas.find(l => l.posicion_id === posId && l.sku === sku);
+    if (!linea) return;
+    const diff = Math.abs(linea.stock_contado - linea.stock_sistema);
+    const tol = toleranciaPorAbc(abcMap[sku]);
+    if (diff === 0 || diff <= tol) {
+      void aprobarLinea(posId, sku);
+    } else {
+      setCausaSel("desconocida");
+      setCausaModal({ posId, sku });
+    }
+  };
+
   const rechazarLinea = async (posId: string, sku: string) => {
     setProcessing(true);
-    const newLineas = conteo.lineas.map(l =>
-      l.posicion_id === posId && l.sku === sku ? { ...l, estado: "VERIFICADO" as const } : l
+    const newLineas = hidratarAbcSnapshot(
+      conteo.lineas.map(l =>
+        l.posicion_id === posId && l.sku === sku ? { ...l, estado: "VERIFICADO" as const } : l
+      )
     );
     const allResolved = newLineas.every(l => l.estado !== "CONTADO" && l.estado !== "PENDIENTE");
     const cierre = allResolved
@@ -10114,14 +10155,14 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
       who: "Admin (conteo)", note: nota,
     });
 
-    // Marcar la línea como ajustada y actualizar stock_sistema
+    // Marcar la línea como ajustada y actualizar stock_sistema. Causa raíz fija = mal_ubicado.
     const s = getStore();
-    const newLineas = conteo.lineas.map(l => {
+    const newLineas = hidratarAbcSnapshot(conteo.lineas.map(l => {
       if (l.posicion_id === posId && l.sku === sku) {
-        return { ...l, estado: "AJUSTADO" as const, stock_sistema: s.stock[sku]?.[posId] ?? l.stock_contado };
+        return { ...l, estado: "AJUSTADO" as const, stock_sistema: s.stock[sku]?.[posId] ?? l.stock_contado, causa_raiz: "mal_ubicado" as ConteoCausaRaiz };
       }
       return l;
-    });
+    }));
 
     const allResolved = newLineas.every(l => l.estado !== "CONTADO" && l.estado !== "PENDIENTE");
     const cierre = allResolved
@@ -10134,11 +10175,23 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
   };
 
   const aprobarTodo = async () => {
-    if (!confirm("¿Aprobar TODOS los ajustes pendientes? Se generarán movimientos automáticos.")) return;
+    // Cuenta las líneas que requieren causa raíz (diff > tolerancia ABC).
+    const requierenCausa = conteo.lineas.filter(l => {
+      if (l.estado !== "CONTADO") return false;
+      const diff = Math.abs(l.stock_contado - l.stock_sistema);
+      return diff > toleranciaPorAbc(abcMap[l.sku]);
+    });
+    const msg = requierenCausa.length > 0
+      ? `¿Aprobar TODOS los ajustes? ${requierenCausa.length} líneas exceden tolerancia ABC y se aprobarán con causa raíz "Desconocida". Se generarán movimientos automáticos.`
+      : "¿Aprobar TODOS los ajustes pendientes? Todas las diferencias están dentro de tolerancia ABC.";
+    if (!confirm(msg)) return;
     setProcessing(true);
     for (const l of conteo.lineas) {
       if (l.estado !== "CONTADO") continue;
       const diff = l.stock_contado - l.stock_sistema;
+      const tol = toleranciaPorAbc(abcMap[l.sku]);
+      const dentroTolerancia = Math.abs(diff) <= tol;
+      const causaTxt = dentroTolerancia ? "✓ Dentro de tolerancia" : CAUSA_RAIZ_LABEL["desconocida"];
       if (diff !== 0) {
         await recordMovementAsync({
           ts: new Date().toISOString(),
@@ -10148,11 +10201,19 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
           pos: l.posicion_id,
           qty: Math.abs(diff),
           who: "Admin (conteo)",
-          note: `Ajuste conteo cíclico ${conteo.fecha}`,
+          note: `Ajuste conteo cíclico ${conteo.fecha} — ${causaTxt}`,
         });
       }
     }
-    const newLineas = conteo.lineas.map(l => l.estado === "CONTADO" ? { ...l, estado: "AJUSTADO" as const } : l);
+    const newLineas = hidratarAbcSnapshot(
+      conteo.lineas.map(l => {
+        if (l.estado !== "CONTADO") return l;
+        const diff = Math.abs(l.stock_contado - l.stock_sistema);
+        const tol = toleranciaPorAbc(abcMap[l.sku]);
+        const causa: ConteoCausaRaiz | null = diff === 0 ? null : (diff <= tol ? null : "desconocida");
+        return { ...l, estado: "AJUSTADO" as const, causa_raiz: l.causa_raiz ?? causa };
+      })
+    );
     const ira = calcularIRAConteo(newLineas);
     await updateConteo(conteo.id!, { lineas: newLineas, estado: "CERRADA", closed_at: new Date().toISOString(), closed_by: "Admin", ...ira });
     setConteo({ ...conteo, lineas: newLineas, estado: "CERRADA", ...ira });
@@ -10270,7 +10331,12 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
               <tbody>
                 {lines.map((l, i) => {
                   const diff = l.stock_contado - l.stock_sistema;
-                  const diffColor = diff === 0 ? "#10b981" : Math.abs(diff) >= 5 ? "#ef4444" : "#f59e0b";
+                  const absDiff = Math.abs(diff);
+                  const abc = abcMap[l.sku] ?? l.abc_snapshot ?? null;
+                  const tol = toleranciaPorAbc(abc);
+                  const dentroTolerancia = absDiff <= tol;
+                  // Verde si exacto o tolerable; ámbar si excede pero <5; rojo si >=5.
+                  const diffColor = diff === 0 ? "#10b981" : dentroTolerancia ? "#10b981" : absDiff >= 5 ? "#ef4444" : "#f59e0b";
                   const isContado = l.estado === "CONTADO";
                   const lineKey = `${l.posicion_id}|${l.sku}`;
                   const isExpanded = expandedSku === lineKey;
@@ -10295,6 +10361,15 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
                       onClick={() => hasDiff && setExpandedSku(isExpanded ? null : lineKey)}>
                       <td className="mono" style={{fontWeight:700,fontSize:11}}>
                         {l.sku}
+                        {abc && (() => {
+                          const abcColor = abc === "A" ? "#ef4444" : abc === "B" ? "#f59e0b" : "#3b82f6";
+                          return (
+                            <span title={`Clase ${abc} — tolerancia ±${tol} uds`}
+                              style={{marginLeft:4,fontSize:9,padding:"1px 5px",borderRadius:3,background:`${abcColor}22`,color:abcColor,border:`1px solid ${abcColor}55`,fontWeight:800}}>
+                              {abc}±{tol}
+                            </span>
+                          );
+                        })()}
                         {l.es_inesperado && <span style={{marginLeft:4,fontSize:9,padding:"1px 4px",borderRadius:3,background:"#f59e0b22",color:"#f59e0b",fontWeight:700}}>NUEVO</span>}
                         {hasDiff && <span style={{marginLeft:4,fontSize:9,color:"var(--txt3)"}}>{isExpanded ? "▼" : "▶"}</span>}
                       </td>
@@ -10317,9 +10392,15 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
                         <td style={{textAlign:"right",whiteSpace:"nowrap"}} onClick={e => e.stopPropagation()}>
                           {isContado && diff !== 0 && (
                             <>
-                              <button onClick={() => aprobarLinea(l.posicion_id, l.sku)} disabled={processing}
-                                style={{padding:"3px 8px",borderRadius:4,fontSize:9,fontWeight:700,background:"#10b98122",color:"#10b981",border:"1px solid #10b98144",marginRight:3}}>
-                                Aprobar
+                              <button onClick={() => onClickAprobar(l.posicion_id, l.sku)} disabled={processing}
+                                title={dentroTolerancia
+                                  ? `Diff ${diff > 0 ? "+" : ""}${diff} dentro de tolerancia clase ${abc ?? "—"} (±${tol}). No requiere causa raíz.`
+                                  : `Diff ${diff > 0 ? "+" : ""}${diff} excede tolerancia clase ${abc ?? "—"} (±${tol}). Pide causa raíz.`}
+                                style={{padding:"3px 8px",borderRadius:4,fontSize:9,fontWeight:700,marginRight:3,
+                                  background: dentroTolerancia ? "#10b98122" : "#a855f722",
+                                  color:      dentroTolerancia ? "#10b981" : "#a855f7",
+                                  border:    `1px solid ${dentroTolerancia ? "#10b98144" : "#a855f744"}`}}>
+                                {dentroTolerancia ? "✓ Aceptar (tolerable)" : "Aprobar…"}
                               </button>
                               <button onClick={() => rechazarLinea(l.posicion_id, l.sku)} disabled={processing}
                                 style={{padding:"3px 8px",borderRadius:4,fontSize:9,fontWeight:700,background:"var(--bg3)",color:"var(--txt3)",border:"1px solid var(--bg4)",marginRight:3}}>
@@ -10517,6 +10598,56 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
           </div>
         );
       })}
+
+      {/* Modal de causa raíz al aprobar línea con diff que excede tolerancia ABC.
+          Manual Inventarios Parte2 §5.6.2: cada discrepancia se investiga. */}
+      {causaModal && (() => {
+        const linea = conteo.lineas.find(l => l.posicion_id === causaModal.posId && l.sku === causaModal.sku);
+        if (!linea) return null;
+        const diff = linea.stock_contado - linea.stock_sistema;
+        const abc = abcMap[linea.sku] ?? null;
+        return (
+          <div onClick={() => setCausaModal(null)}
+            style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:16}}>
+            <div onClick={e => e.stopPropagation()}
+              style={{background:"var(--bg2)",border:"2px solid #a855f755",borderRadius:14,padding:20,maxWidth:480,width:"100%",boxShadow:"0 20px 60px #00000099"}}>
+              <div style={{fontSize:11,color:"var(--txt3)",fontWeight:700,letterSpacing:0.5,marginBottom:6}}>CAUSA RAÍZ DEL AJUSTE</div>
+              <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>{linea.sku} <span style={{color:"var(--txt3)",fontWeight:400}}>· {linea.posicion_id}</span></div>
+              <div style={{fontSize:12,color:"var(--txt2)",marginBottom:12}}>
+                Sistema: <strong>{linea.stock_sistema}</strong> · Contado: <strong>{linea.stock_contado}</strong> · Diff: <strong style={{color: diff > 0 ? "#10b981" : "#ef4444"}}>{diff > 0 ? "+" : ""}{diff}</strong>
+                {abc && <span style={{marginLeft:8,fontSize:10,color:"var(--txt3)"}}>(clase {abc}, tolerancia ±{toleranciaPorAbc(abc)})</span>}
+              </div>
+              <div style={{fontSize:10,color:"var(--txt3)",marginBottom:10,lineHeight:1.5}}>
+                Manual Inventarios §5.6.2: cada discrepancia se investiga (¿picking? ¿receiving? ¿robo? ¿daño?). La causa raíz alimenta mejoras de proceso.
+              </div>
+              <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:14}}>
+                {(Object.keys(CAUSA_RAIZ_LABEL) as ConteoCausaRaiz[]).map(k => (
+                  <button key={k} onClick={() => setCausaSel(k)}
+                    style={{padding:"10px 12px",borderRadius:8,fontSize:12,fontWeight:600,textAlign:"left",cursor:"pointer",
+                      background: causaSel === k ? "#a855f733" : "var(--bg3)",
+                      color:      causaSel === k ? "#a855f7" : "var(--txt2)",
+                      border:    `1px solid ${causaSel === k ? "#a855f7" : "var(--bg4)"}`}}>
+                    {CAUSA_RAIZ_LABEL[k]}
+                  </button>
+                ))}
+              </div>
+              <div style={{display:"flex",gap:8}}>
+                <button onClick={() => setCausaModal(null)} disabled={processing}
+                  style={{flex:1,padding:10,borderRadius:8,background:"var(--bg3)",color:"var(--txt2)",fontWeight:600,fontSize:12,border:"1px solid var(--bg4)"}}>
+                  Cancelar
+                </button>
+                <button onClick={async () => {
+                    const m = causaModal; setCausaModal(null);
+                    await aprobarLinea(m.posId, m.sku, causaSel);
+                  }} disabled={processing}
+                  style={{flex:2,padding:10,borderRadius:8,background:"linear-gradient(135deg,#7c3aed,#a855f7)",color:"#fff",fontWeight:700,fontSize:12,border:"none",cursor:"pointer"}}>
+                  {processing ? "Procesando..." : "Aprobar con esta causa"}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
