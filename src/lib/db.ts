@@ -1611,6 +1611,15 @@ export async function fetchAbcMap(skus: string[]): Promise<Record<string, "A" | 
   return out;
 }
 
+export type ConteoOrigen = "manual" | "sugerencia_abc" | "trigger_discrepancia" | "auditoria_aleatoria";
+
+export interface ConteoSkuDisparador {
+  sku: string;
+  nombre?: string;
+  abc?: "A" | "B" | "C" | null;
+  razon?: string;          // ej. "nunca contado, clase A vencida >30d"
+}
+
 export interface DBConteo {
   id?: string;
   fecha: string;
@@ -1629,6 +1638,9 @@ export interface DBConteo {
   lineas_ok?: number | null;
   lineas_diff?: number | null;
   ira_pct?: number | null;
+  // Trazabilidad del origen (v90). Por qué se creó este conteo.
+  origen?: ConteoOrigen | null;
+  skus_disparadores?: ConteoSkuDisparador[] | null;
 }
 
 /**
@@ -1667,6 +1679,8 @@ export async function createConteo(conteo: Omit<DBConteo, "id" | "created_at">):
     posiciones: conteo.posiciones,
     posiciones_contadas: conteo.posiciones_contadas,
     created_by: conteo.created_by,
+    origen: conteo.origen ?? "manual",
+    skus_disparadores: (conteo.skus_disparadores ?? null) as unknown,
   }).select("id").single();
   if (error) { console.error("createConteo error:", error); return null; }
   return data?.id || null;
@@ -1682,6 +1696,8 @@ function mapDBConteoRow(d: Record<string, unknown>): DBConteo {
     lineas_ok: (d.lineas_ok ?? null) as number | null,
     lineas_diff: (d.lineas_diff ?? null) as number | null,
     ira_pct: d.ira_pct === null || d.ira_pct === undefined ? null : Number(d.ira_pct),
+    origen: (d.origen ?? null) as ConteoOrigen | null,
+    skus_disparadores: (d.skus_disparadores ?? null) as ConteoSkuDisparador[] | null,
   };
 }
 

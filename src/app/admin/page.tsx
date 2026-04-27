@@ -6,7 +6,7 @@ import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepa
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
 import { fetchConteos, createConteo, updateConteo, deleteConteo, calcularIRAConteo, toleranciaPorAbc, fetchAbcMap, fetchIRASemanal, fetchSkusVencidosConteo, CAUSA_RAIZ_LABEL, fetchPedidosFlex, updatePedidosFlex, fetchMLConfig, upsertMLConfig, fetchMLItemsMap, fetchShipmentsToArm, fetchAllShipments, fetchStoreIds, fetchActiveFlexShipments, fetchMovimientosBySku, updateRecepcionFacturaOriginal, upsertNotasOperativas, fetchStockProyectado, transferirStock, reconciliarReservas, fetchResumenMovimientosHoy, fetchStockDisponible, fetchMovimientosHoy, fetchDesgloseReservas, enqueueAndSync, updateProductoCosto, toggleShipmentHidden, patchLineaPicking, agregarLineaPicking, eliminarLineaPicking, dividirEnvioFull } from "@/lib/db";
-import type { ConteoCausaRaiz, IRASemana, SkuVencidoConteo } from "@/lib/db";
+import type { ConteoCausaRaiz, IRASemana, SkuVencidoConteo, ConteoSkuDisparador, ConteoOrigen } from "@/lib/db";
 import type { DBStockProyectado, DBReconciliacion } from "@/lib/db";
 import type { DBConteo, ConteoLinea, DBPedidoFlex, DBMLConfig, DBMLItemMap, ShipmentWithItems } from "@/lib/db";
 import { getOAuthUrl } from "@/lib/ml";
@@ -9899,6 +9899,9 @@ function CreateConteo({ onCreated, onCancel }: { onCreated: () => void; onCancel
   const [showSugerencia, setShowSugerencia] = useState(false);
   const [tamanoLista, setTamanoLista] = useState(4);  // Manual: ~3.4 SKUs/día hábil
   const [loadingVencidos, setLoadingVencidos] = useState(false);
+  // Trazabilidad: SKUs que dispararon la sugerencia (se persiste en el conteo).
+  const [origenConteo, setOrigenConteo] = useState<ConteoOrigen>("manual");
+  const [skusDisparadores, setSkusDisparadores] = useState<ConteoSkuDisparador[]>([]);
 
   const s = getStore();
   const positions = activePositions().filter(p => p.active);
@@ -9918,17 +9921,23 @@ function CreateConteo({ onCreated, onCancel }: { onCreated: () => void; onCancel
   // en cada posición (incluyendo SKUs no vencidos en la misma posición).
   // Esto da IRA limpio y descubre fantasmas y mal-ubicaciones.
   const aplicarSugerencia = () => {
-    const top = vencidos.slice(0, tamanoLista).map(v => v.sku_origen);
+    const top = vencidos.slice(0, tamanoLista);
     const posSet = new Set<string>();
-    for (const sku of top) {
-      const stockEntries = s.stock[sku] || {};
+    const disparadores: ConteoSkuDisparador[] = top.map(v => {
+      const stockEntries = s.stock[v.sku_origen] || {};
       for (const [posId, qty] of Object.entries(stockEntries)) {
         if (qty > 0) posSet.add(posId);
       }
-    }
+      const razonBase = v.dias_sin_conteo == null
+        ? `nunca contado, clase ${v.abc} con stock`
+        : `clase ${v.abc} vencido +${v.dias_vencido}d (umbral ${v.umbral_dias}d)`;
+      return { sku: v.sku_origen, nombre: v.nombre, abc: v.abc, razon: razonBase };
+    });
     setTipo("por_posicion");
     setSelPositions(posSet);
     setSelSkus(new Set());
+    setOrigenConteo("sugerencia_abc");
+    setSkusDisparadores(disparadores);
     setShowSugerencia(false);
   };
 
@@ -10015,6 +10024,8 @@ function CreateConteo({ onCreated, onCancel }: { onCreated: () => void; onCancel
       created_by: "Admin",
       closed_at: null,
       closed_by: null,
+      origen: origenConteo,
+      skus_disparadores: skusDisparadores.length > 0 ? skusDisparadores : null,
     });
 
     setCreating(false);
@@ -10487,6 +10498,39 @@ function ConteoDetail({ conteo: initialConteo, onBack, refresh }: { conteo: DBCo
             <div style={{fontSize:11,color:"var(--txt3)"}}>
               {conteo.tipo === "por_posicion" ? "Por posición" : "Por SKU"} · {conteo.posiciones.length} posiciones · Estado: <strong>{conteo.estado}</strong>
             </div>
+            {conteo.origen && conteo.origen !== "manual" && (
+              <div style={{marginTop:8,padding:8,borderRadius:8,background:"#a855f70d",border:"1px solid #a855f733",fontSize:11}}>
+                <div style={{fontWeight:700,color:"#a855f7",marginBottom:4}}>
+                  {conteo.origen === "sugerencia_abc" && "📋 Origen: Sugerencia automática (cadencia ABC)"}
+                  {conteo.origen === "trigger_discrepancia" && "🚨 Origen: Disparado por discrepancia"}
+                  {conteo.origen === "auditoria_aleatoria" && "🎲 Origen: Auditoría aleatoria"}
+                </div>
+                {conteo.origen === "sugerencia_abc" && conteo.skus_disparadores && conteo.skus_disparadores.length > 0 && (
+                  <div>
+                    <div style={{fontSize:10,color:"var(--txt3)",marginBottom:4}}>
+                      SKU{conteo.skus_disparadores.length > 1 ? "s" : ""} que dispararon la sugerencia · el conteo abarca toda la posición (location-based, Manual §5.6.2):
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                      {conteo.skus_disparadores.map((d, idx) => {
+                        const abcColor = d.abc === "A" ? "#ef4444" : d.abc === "B" ? "#f59e0b" : "#3b82f6";
+                        return (
+                          <div key={idx} style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}>
+                            <span className="mono" style={{fontWeight:700}}>{d.sku}</span>
+                            {d.abc && (
+                              <span style={{padding:"1px 5px",borderRadius:3,background:`${abcColor}22`,color:abcColor,fontWeight:800,fontSize:9}}>
+                                {d.abc}
+                              </span>
+                            )}
+                            {d.nombre && <span style={{color:"var(--txt2)"}}>{d.nombre}</span>}
+                            {d.razon && <span style={{color:"var(--txt3)",fontStyle:"italic"}}>— {d.razon}</span>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
           <div style={{display:"flex",gap:6,alignItems:"center"}}>
             {conteo.estado !== "CERRADA" && (
