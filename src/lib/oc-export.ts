@@ -49,12 +49,7 @@ function formatFecha(fecha: string): string {
  * Exporta una OC a Excel con el formato estándar para enviar al proveedor.
  *
  * - Header: número OC, proveedor, fechas, estado, notas
- * - Tabla: SKU, descripción, cantidades (pedida/recibida/pendiente),
- *          recepciones (fecha+cantidad por evento), precio, subtotal, fuente
- * - Footer: subtotal neto, IVA 19%, total bruto
- *
- * Usa precio_acordado_neto si está congelado (OC confirmada), sino fallback a
- * costo_unitario (OC en borrador).
+ * - Tabla: SKU, descripción, pedida, recibida, pendiente, recepciones
  *
  * El nombre del archivo: OC-{numero}-{proveedor}.xlsx
  */
@@ -63,10 +58,6 @@ export function exportarOCExcel(
   lineas: DBOrdenCompraLinea[],
   recepciones: OCRecepcionItem[] = [],
 ): void {
-  const totalNeto = lineas.reduce((s, l) => s + l.cantidad_pedida * (l.precio_acordado_neto ?? l.costo_unitario), 0);
-  const iva = Math.round(totalNeto * 0.19);
-  const totalBruto = totalNeto + iva;
-
   const aoa: (string | number)[][] = [
     [`ORDEN DE COMPRA ${oc.numero}`],
     [],
@@ -76,9 +67,8 @@ export function exportarOCExcel(
     [`Estado:`, oc.estado || ""],
     ...(oc.notas ? [[`Notas:`, oc.notas]] : []),
     [],
-    ["SKU", "Descripción", "Pedida", "Recibida", "Pendiente", "Recepciones", "Precio Unit. Neto", "Subtotal Neto", "Fuente Precio", "Notas línea"],
+    ["SKU", "Descripción", "Pedida", "Recibida", "Pendiente", "Recepciones"],
     ...lineas.map(l => {
-      const precio = l.precio_acordado_neto ?? l.costo_unitario;
       const recibida = l.cantidad_recibida ?? 0;
       const pendiente = l.cantidad_pedida - recibida;
       const recepcionesSku = recepciones
@@ -87,11 +77,6 @@ export function exportarOCExcel(
       const detalleRecepciones = recepcionesSku
         .map(r => `${formatFecha(r.fecha)}: ${r.cantidad}u`)
         .join(" + ");
-      const fuente = l.precio_fuente === "catalogo" ? "Catálogo" :
-                     l.precio_fuente === "ultima_recepcion" ? "Última recepción" :
-                     l.precio_fuente === "wac_fallback" ? "WAC histórico" :
-                     l.precio_fuente === "sin_precio" ? "SIN PRECIO" :
-                     l.precio_fuente === "manual" ? "Manual" : "—";
       return [
         l.sku_origen,
         l.nombre || "",
@@ -99,21 +84,13 @@ export function exportarOCExcel(
         recibida,
         pendiente,
         detalleRecepciones,
-        precio,
-        l.cantidad_pedida * precio,
-        fuente,
-        "",
       ];
     }),
-    [],
-    ["", "", "", "", "", "", "Subtotal Neto:", totalNeto, "", ""],
-    ["", "", "", "", "", "", "IVA 19%:", iva, "", ""],
-    ["", "", "", "", "", "", "TOTAL BRUTO:", totalBruto, "", ""],
   ];
 
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws["!cols"] = [
-    { wch: 18 }, { wch: 35 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 28 }, { wch: 16 }, { wch: 16 }, { wch: 18 }, { wch: 25 },
+    { wch: 18 }, { wch: 35 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 28 },
   ];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "OC");
