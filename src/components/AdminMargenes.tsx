@@ -685,7 +685,7 @@ export default function AdminMargenes() {
 
     // Calcular total de unidades a tocar (suma cross-promo) para barra de progreso.
     // No deduplicamos items: el mismo SKU postulado a 2 promos son 2 operaciones.
-    type ItemValido = { itemId: string; sku: string; price: number; fuente: "target" | "max" | "sugerido"; bajoPct: number; sugerido: number };
+    type ItemValido = { itemId: string; sku: string; price: number; fuente: "target" | "max" | "sugerido"; bajoPct: number; sugerido: number; precioVentaActual: number };
     type ItemInvalido = { itemId: string; sku: string; rango: RangoItem; motivo: string };
     let totalOps = 0;
     const plan: Array<{ promo: CommonPromo; validos: ItemValido[]; invalidos: ItemInvalido[] }> = [];
@@ -711,7 +711,12 @@ export default function AdminMargenes() {
         if (resuelto.kind === "skip") {
           invalidos.push({ itemId, sku, rango: rango || { min: 0, max: 0, suggested: 0 }, motivo: `[${promo.name}] ${resuelto.motivo}` });
         } else {
-          validos.push({ itemId, sku, price: resuelto.price, fuente: resuelto.fuente, bajoPct: resuelto.bajoPct, sugerido: resuelto.sugerido });
+          validos.push({
+            itemId, sku,
+            price: resuelto.price, fuente: resuelto.fuente, bajoPct: resuelto.bajoPct,
+            sugerido: resuelto.sugerido,
+            precioVentaActual: row?.precio_venta ?? 0,
+          });
         }
       }
       totalOps += validos.length;
@@ -815,23 +820,36 @@ export default function AdminMargenes() {
             await new Promise(r => setTimeout(r, 600));
             join = await joinItem(itemId, promo, dealPrice);
           }
-          // Runtime fallback: si rebota por credibility y no estábamos ya en
-          // sugerido, reintentar con el sugerido de ML (siempre y cuando esté
-          // dentro de tolerancia y sea distinto al precio que falló).
-          if (!join.ok && /credibility|credible|ERROR_CREDIBILITY/i.test(join.msg) && v.fuente !== "sugerido") {
+          // Runtime fallback escalonado: si rebota por credibility, ir bajando
+          // por una cadena de precios hasta encontrar uno que ML acepte
+          // (suggested → precio_venta_actual → bisección 97%/94%/91% del target).
+          // Cada candidato debe estar dentro de tolerancia y por debajo del
+          // último precio que falló.
+          if (!join.ok && /credibility|credible|ERROR_CREDIBILITY/i.test(join.msg)) {
             const minTolerado = Math.round(target * (1 - tolPct / 100));
-            if (v.sugerido > 0 && v.sugerido >= minTolerado && v.sugerido < dealPrice) {
+            const candidatos: Array<{ price: number; fuente: "sugerido" | "precio_actual" | "bisect" }> = [];
+            if (v.sugerido > 0) candidatos.push({ price: v.sugerido, fuente: "sugerido" });
+            if (v.precioVentaActual > 0) candidatos.push({ price: v.precioVentaActual, fuente: "precio_actual" });
+            // Bisección defensiva: 3 saltos hacia abajo en steps de ~3% del target.
+            // Cubre el caso DEAL/MARKETPLACE_CAMPAIGN donde ML no provee sugerido.
+            for (const pct of [0.97, 0.94, 0.91]) {
+              candidatos.push({ price: Math.round(target * pct), fuente: "bisect" });
+            }
+            for (const cand of candidatos) {
+              if (cand.price < minTolerado || cand.price >= dealPrice) continue;
               await new Promise(r => setTimeout(r, 600));
-              dealPrice = v.sugerido;
+              dealPrice = cand.price;
               const retry = await joinItem(itemId, promo, dealPrice);
               if (retry.ok) {
                 v.bajoPct = Math.round((1 - dealPrice / target) * 100);
-                v.fuente = "sugerido";
+                v.fuente = cand.fuente === "sugerido" ? "sugerido" : "max";
                 v.price = dealPrice;
                 join = retry;
-              } else {
-                join = retry; // se reporta el último error
+                break;
               }
+              join = retry; // se reporta el último error si todos fallan
+              // Si el nuevo error NO es credibility, romper — es otro problema
+              if (!/credibility|credible|ERROR_CREDIBILITY/i.test(join.msg)) break;
             }
           }
           if (!join.ok) throw new Error(join.msg);
