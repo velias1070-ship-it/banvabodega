@@ -48,7 +48,7 @@ type CMAACuadrante = {
   cmaa_planeado_med_pct: number | null;
   acos_objetivo_pct: number | null;
   skus_cmaa_negativo: number;
-  skus_cmaa_bajo_8pct: number;
+  skus_cmaa_bajo_umbral: number;
 };
 
 type CMAASku = {
@@ -355,10 +355,10 @@ export default function AdminPricingConfig() {
                             CMAA real: {cm.cmaa_real_med_pct}%
                           </div>
                         )}
-                        {cm && (cm.skus_cmaa_negativo > 0 || cm.skus_cmaa_bajo_8pct > 0) && (
+                        {cm && (cm.skus_cmaa_negativo > 0 || cm.skus_cmaa_bajo_umbral > 0) && (
                           <div style={subStyle}>
                             {cm.skus_cmaa_negativo > 0 && <span style={{ color: "var(--red)" }}>{cm.skus_cmaa_negativo} negativos </span>}
-                            {cm.skus_cmaa_bajo_8pct > 0 && <span style={{ color: "var(--amber)" }}>{cm.skus_cmaa_bajo_8pct} {"<"}8%</span>}
+                            {cm.skus_cmaa_bajo_umbral > 0 && <span style={{ color: "var(--amber)" }}>{cm.skus_cmaa_bajo_umbral} {"<"}8%</span>}
                           </div>
                         )}
                       </>

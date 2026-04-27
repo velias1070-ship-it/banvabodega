@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
 import { VALLE_MUERTE_MIN, VALLE_MUERTE_MAX } from "@/lib/pricing";
+import { loadActiveRuleSet, readRule, type MarkdownLadder, type ValleMuerte } from "@/lib/pricing-rules";
 
 export const maxDuration = 120;
 export const dynamic = "force-dynamic";
@@ -42,12 +43,27 @@ type Candidato = {
   stock: number;
   ultima_venta: string;
   dias_sin_venta: number;
-  nivel_markdown: -20 | -40 | -60;
+  nivel_markdown: number; // negativo: -20, -40, -60... configurable via rule set
   precio_actual: number;
   precio_markdown: number;
   motivo: string;
   bloqueado_por: string[];
   decision: "candidato" | "skip";
+};
+
+// Defaults si el rule set no carga (defensivo). Reflejan el manual:
+// Investigacion_Comparada:197 (90/120/180 + descuentos -20/-40/-60).
+const FALLBACK_LADDER: MarkdownLadder = {
+  min_dias_para_postular: 90,
+  niveles: [
+    { dias_min: 90,  descuento_pct: 20 },
+    { dias_min: 120, descuento_pct: 40 },
+    { dias_min: 180, descuento_pct: 60 },
+  ],
+};
+const FALLBACK_VALLE: ValleMuerte = {
+  min_clp: VALLE_MUERTE_MIN,
+  max_clp: VALLE_MUERTE_MAX,
 };
 
 export async function GET(req: NextRequest) {
@@ -68,6 +84,13 @@ async function handle(req: NextRequest) {
   const url = new URL(req.url);
   const modo: "dry_run" | "apply" = url.searchParams.get("modo") === "apply" ? "apply" : "dry_run";
   const start = Date.now();
+
+  // Cargar rule set activo (cache 60s). Fallback a defaults si falla.
+  const rs = await loadActiveRuleSet();
+  const ladder = readRule<MarkdownLadder>(rs?.rules ?? {}, "markdown_ladder", FALLBACK_LADDER);
+  const valle  = readRule<ValleMuerte>(rs?.rules  ?? {}, "valle_muerte",    FALLBACK_VALLE);
+  // Ordenar niveles desc por dias_min: el primero que matchea es el descuento mas agresivo.
+  const nivelesDesc = [...ladder.niveles].sort((a, b) => b.dias_min - a.dias_min);
 
   // 1. Última venta por sku_origen vía composicion_venta + orders_history
   const { data: ventasRaw, error: eVentas } = await sb.rpc("ultima_venta_por_sku_origen");
@@ -144,12 +167,16 @@ async function handle(req: NextRequest) {
 
     const ultimaDate = new Date(ultimaStr + "T00:00:00Z");
     const diasSinVenta = Math.floor((hoy.getTime() - ultimaDate.getTime()) / 86400_000);
-    if (diasSinVenta < 90) continue;
+    if (diasSinVenta < ladder.min_dias_para_postular) continue;
 
-    let nivelMarkdown: -20 | -40 | -60;
-    if (diasSinVenta >= 180) nivelMarkdown = -60;
-    else if (diasSinVenta >= 120) nivelMarkdown = -40;
-    else nivelMarkdown = -20;
+    // Match al primer nivel cuyo dias_min sea <= diasSinVenta (recorrido desc).
+    let nivelMarkdown = -ladder.niveles[0].descuento_pct;
+    for (const n of nivelesDesc) {
+      if (diasSinVenta >= n.dias_min) {
+        nivelMarkdown = -n.descuento_pct;
+        break;
+      }
+    }
 
     const principal = principalBySku.get(p.sku);
     const stock = principal?.stock ?? 0;
@@ -169,9 +196,9 @@ async function handle(req: NextRequest) {
     if (p.precio_piso && precioMarkdown < p.precio_piso) {
       bloqueadoPor.push(`precio_piso_manual: $${precioMarkdown} < $${p.precio_piso}`);
     }
-    // Valle muerte
-    if (precioMarkdown > VALLE_MUERTE_MIN && precioMarkdown < VALLE_MUERTE_MAX) {
-      bloqueadoPor.push(`valle_muerte: $${precioMarkdown} en $${VALLE_MUERTE_MIN}-$${VALLE_MUERTE_MAX}`);
+    // Valle muerte (rango leído del rule set)
+    if (precioMarkdown > valle.min_clp && precioMarkdown < valle.max_clp) {
+      bloqueadoPor.push(`valle_muerte: $${precioMarkdown} en $${valle.min_clp}-$${valle.max_clp}`);
     }
 
     const decision: "candidato" | "skip" = bloqueadoPor.length > 0 ? "skip" : "candidato";
@@ -194,16 +221,27 @@ async function handle(req: NextRequest) {
     });
   }
 
+  // Visibilidad: qué rule set decidió.
+  const rule_set_meta = rs ? {
+    version_label: rs.version_label,
+    content_hash: rs.content_hash.slice(0, 12),
+    channel: "production",
+    using_fallback: false,
+  } : { version_label: "FALLBACK_HARDCODED", content_hash: null, channel: null, using_fallback: true };
+
   // 6. Apply real bloqueado por ahora (TODO)
   if (modo === "apply") {
     return NextResponse.json({
-      modo, stats, candidatos: candidatos.length, duration_ms: Date.now() - start,
+      modo, rule_set: rule_set_meta, stats, candidatos: candidatos.length, duration_ms: Date.now() - start,
       nota: "APPLY bloqueado en este endpoint. Validar dry-run primero. Habilitar en una iteración siguiente cuando los candidatos sean revisados.",
     });
   }
 
   return NextResponse.json({
     modo,
+    rule_set: rule_set_meta,
+    ladder_aplicado: ladder,
+    valle_muerte_aplicado: valle,
     duration_ms: Date.now() - start,
     stats,
     candidatos: candidatos.sort((a, b) => b.dias_sin_venta - a.dias_sin_venta),

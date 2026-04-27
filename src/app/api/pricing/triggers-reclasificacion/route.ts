@@ -1,8 +1,16 @@
 import { NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
+import { loadActiveRuleSet, readRule, type TriggersReclasificacion } from "@/lib/pricing-rules";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
+
+// Defaults si el rule set no carga (defensivo). Reflejan Investigacion_Comparada:235.
+const FALLBACK_TRIGGERS: TriggersReclasificacion = {
+  aging:       { dias_sin_movimiento_min: 120 },
+  crecimiento: { mom_pct_min: 20, meses_consecutivos: 3 },
+  margen_bajo: { margen_pct_max: 15, meses_consecutivos: 2 },
+};
 
 /**
  * GET /api/pricing/triggers-reclasificacion
@@ -36,6 +44,10 @@ type TriggerResult = {
 export async function GET() {
   const sb = getServerSupabase();
   if (!sb) return NextResponse.json({ error: "no_db" }, { status: 500 });
+
+  // Cargar rule set (cache 60s).
+  const rs = await loadActiveRuleSet();
+  const triggers_cfg = readRule<TriggersReclasificacion>(rs?.rules ?? {}, "triggers_reclasificacion", FALLBACK_TRIGGERS);
 
   // 1. SKUs activos con cuadrante
   const { data: intel } = await sb
@@ -101,18 +113,17 @@ export async function GET() {
     // No data: marcar como observable cuando exista price_to_win histórico.
     // No agregamos al disparo, solo dejamos el flag de pendiente.
 
-    // === Trigger 2: Aging >120 días sin movimiento ===
+    // === Trigger 2: Aging > N días sin movimiento (rule set) ===
     const dsm = s.dias_sin_movimiento;
-    if (dsm != null && dsm > 120) {
-      triggers.push("aging_120d");
+    if (dsm != null && dsm > triggers_cfg.aging.dias_sin_movimiento_min) {
+      triggers.push(`aging_${triggers_cfg.aging.dias_sin_movimiento_min}d`);
       detalle.dias_sin_movimiento = dsm;
     }
 
     // === Trigger 3: Competidor agresivo -10% unit economics (pendiente_data) ===
     // Sin price_to_win/Nubimetrics no hay señal.
 
-    // === Trigger 4: Crecimiento +20% MoM por 3 meses ===
-    // Definición manual: 3 meses consecutivos con crecimiento >+20% MoM en uds.
+    // === Trigger 4: Crecimiento +N% MoM por M meses (rule set) ===
     const u0 = ventasMes.get(M0)?.uds || 0;
     const u1 = ventasMes.get(M1)?.uds || 0;
     const u2 = ventasMes.get(M2)?.uds || 0;
@@ -123,40 +134,46 @@ export async function GET() {
     const mom_M3_M2 = mom(u2, u3);
     detalle.uds_mensual = { [M0]: u0, [M1]: u1, [M2]: u2, [M3]: u3 };
     detalle.mom_pct = { [`${M1}_${M0}`]: mom_M1_M0, [`${M2}_${M1}`]: mom_M2_M1, [`${M3}_${M2}`]: mom_M3_M2 };
-    if (mom_M1_M0 != null && mom_M1_M0 > 20 &&
-        mom_M2_M1 != null && mom_M2_M1 > 20 &&
-        mom_M3_M2 != null && mom_M3_M2 > 20) {
-      triggers.push("crecimiento_mom_20_3m");
+    const cMoM = triggers_cfg.crecimiento.mom_pct_min;
+    const cMeses = triggers_cfg.crecimiento.meses_consecutivos;
+    // Soporta meses_consecutivos = 2 o 3 (default). Si fuera otro, ampliar serie.
+    const momsArr = [mom_M1_M0, mom_M2_M1, mom_M3_M2].slice(0, cMeses);
+    if (momsArr.length === cMeses && momsArr.every(m => m != null && m > cMoM)) {
+      triggers.push(`crecimiento_mom_${cMoM}_${cMeses}m`);
     }
 
-    // === Trigger 5: Margen post-fees <15% por 2 meses ===
-    // Definición manual: 2 meses consecutivos con margen real <15%.
-    // Usamos margen_neto/subtotal de ventas_ml_cache como proxy de margen post-fees.
+    // === Trigger 5: Margen post-fees <N% por M meses (rule set) ===
     const k0 = ventasMes.get(M0);
     const k1 = ventasMes.get(M1);
+    const k2 = ventasMes.get(M2);
     const margen_M0 = k0 && k0.gmv > 0 ? (k0.margen_neto / k0.gmv) * 100 : null;
     const margen_M1 = k1 && k1.gmv > 0 ? (k1.margen_neto / k1.gmv) * 100 : null;
-    detalle.margen_pct_mes = { [M0]: margen_M0, [M1]: margen_M1 };
-    if (margen_M0 != null && margen_M0 < 15 &&
-        margen_M1 != null && margen_M1 < 15) {
-      triggers.push("margen_post_fees_lt15_2m");
+    const margen_M2 = k2 && k2.gmv > 0 ? (k2.margen_neto / k2.gmv) * 100 : null;
+    detalle.margen_pct_mes = { [M0]: margen_M0, [M1]: margen_M1, [M2]: margen_M2 };
+    const mMax = triggers_cfg.margen_bajo.margen_pct_max;
+    const mMeses = triggers_cfg.margen_bajo.meses_consecutivos;
+    const margArr = [margen_M0, margen_M1, margen_M2].slice(0, mMeses);
+    if (margArr.length === mMeses && margArr.every(m => m != null && m < mMax)) {
+      triggers.push(`margen_post_fees_lt${mMax}_${mMeses}m`);
     }
 
-    // === Acción sugerida según manual ===
+    // === Acción sugerida según manual (matchea por prefijo, no string fijo) ===
     let accion = "mantener";
-    if (triggers.includes("aging_120d")) {
+    const hasAging      = triggers.some(t => t.startsWith("aging_"));
+    const hasMargenBajo = triggers.some(t => t.startsWith("margen_post_fees_lt"));
+    const hasCrecim     = triggers.some(t => t.startsWith("crecimiento_mom_"));
+    if (hasAging) {
       accion = "reclasificar_a_revisar_liquidar"; // Investigacion_Comparada:197 dead stock
     }
-    if (triggers.includes("margen_post_fees_lt15_2m")) {
+    if (hasMargenBajo) {
       // Manual Investigacion_Comparada:329: portfolio pruning si CMAA<8% por 60d.
-      // Margen bruto post-fees <15% por 2m es señal previa.
+      // Margen bruto post-fees bajo por N meses es señal previa.
       accion = s.cuadrante === "ESTRELLA"
         ? "estrella_aparente_revisar_costo_o_subir_precio"
         : "reclasificar_a_revisar_o_pruning";
     }
-    if (triggers.includes("crecimiento_mom_20_3m")) {
+    if (hasCrecim) {
       // Manual Investigacion_Comparada:208: bestsellers competitive/dynamic.
-      // Si crece sostenido y no es Estrella, promover.
       accion = s.cuadrante === "ESTRELLA" ? "mantener_proteger_estrella" : "promover_a_estrella_o_volumen";
     }
 
@@ -179,8 +196,17 @@ export async function GET() {
     }
   }
 
+  const rule_set_meta = rs ? {
+    version_label: rs.version_label,
+    content_hash: rs.content_hash.slice(0, 12),
+    channel: "production",
+    using_fallback: false,
+  } : { version_label: "FALLBACK_HARDCODED", content_hash: null, channel: null, using_fallback: true };
+
   return NextResponse.json({
     ok: true,
+    rule_set: rule_set_meta,
+    triggers_aplicados: triggers_cfg,
     skus_evaluados: skus.length,
     skus_con_triggers: out.length,
     pendiente_data: {

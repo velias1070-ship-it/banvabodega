@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
+import { loadActiveRuleSet, readRule, type CmaaAlerta } from "@/lib/pricing-rules";
 
 export const dynamic = "force-dynamic";
+
+const FALLBACK_CMAA: CmaaAlerta = { umbral_pct: 8, ventana_dias: 60 };
 
 /**
  * GET /api/pricing/cmaa-real
@@ -31,7 +34,7 @@ type CMAACuadrante = {
   cmaa_planeado_med_pct: number | null;
   acos_objetivo_pct: number | null;
   skus_cmaa_negativo: number;
-  skus_cmaa_bajo_8pct: number;
+  skus_cmaa_bajo_umbral: number; // umbral viene del rule set (cmaa_alerta.umbral_pct)
 };
 
 type CMAASku = {
@@ -139,9 +142,12 @@ export async function GET() {
   const sb = getServerSupabase();
   if (!sb) return NextResponse.json({ error: "no_db" }, { status: 500 });
 
+  const rs = await loadActiveRuleSet();
+  const cmaa_cfg = readRule<CmaaAlerta>(rs?.rules ?? {}, "cmaa_alerta", FALLBACK_CMAA);
+
   // Sin RPC exec_sql disponible en este proyecto: ejecutar la composición
   // directamente con SDK supabase, evitando depender de SQL ad-hoc.
-  return await fallbackDirectQueries(sb);
+  return await fallbackDirectQueries(sb, cmaa_cfg, rs);
 }
 
 // SQL_CUADRANTE y SQL_TOP_NEGATIVOS quedan como referencia documental de
@@ -149,7 +155,11 @@ export async function GET() {
 void SQL_CUADRANTE;
 void SQL_TOP_NEGATIVOS;
 
-async function fallbackDirectQueries(sb: NonNullable<ReturnType<typeof getServerSupabase>>) {
+async function fallbackDirectQueries(
+  sb: NonNullable<ReturnType<typeof getServerSupabase>>,
+  cmaa_cfg: CmaaAlerta,
+  ruleSet: Awaited<ReturnType<typeof loadActiveRuleSet>>,
+) {
   // Fallback ejecutando los CTEs en TypeScript (sin RPC).
   const since30 = new Date();
   since30.setDate(since30.getDate() - 30);
@@ -263,7 +273,7 @@ async function fallbackDirectQueries(sb: NonNullable<ReturnType<typeof getServer
       cmaa_planeado_med_pct: acosObj != null ? Math.round(avg(rs.map((r: Row) => r.margen_pct - acosObj)) * 10) / 10 : null,
       acos_objetivo_pct: acosObj,
       skus_cmaa_negativo: rs.filter((r: Row) => r.cmaa_pct < 0).length,
-      skus_cmaa_bajo_8pct: rs.filter((r: Row) => r.cmaa_pct < 8).length,
+      skus_cmaa_bajo_umbral: rs.filter((r: Row) => r.cmaa_pct < cmaa_cfg.umbral_pct).length,
     });
   });
   cuadranteOut.sort((a, b) => a.cuadrante.localeCompare(b.cuadrante));
@@ -284,5 +294,19 @@ async function fallbackDirectQueries(sb: NonNullable<ReturnType<typeof getServer
       cmaa_clp: Math.round(r.cmaa_clp),
     }));
 
-  return NextResponse.json({ ok: true, cuadrante: cuadranteOut, top_negativos: topOut });
+  const rule_set_meta = ruleSet ? {
+    version_label: ruleSet.version_label,
+    content_hash: ruleSet.content_hash.slice(0, 12),
+    channel: "production",
+    using_fallback: false,
+  } : { version_label: "FALLBACK_HARDCODED", content_hash: null, channel: null, using_fallback: true };
+
+  return NextResponse.json({
+    ok: true,
+    rule_set: rule_set_meta,
+    cmaa_umbral_aplicado_pct: cmaa_cfg.umbral_pct,
+    cmaa_ventana_aplicada_dias: cmaa_cfg.ventana_dias,
+    cuadrante: cuadranteOut,
+    top_negativos: topOut,
+  });
 }
