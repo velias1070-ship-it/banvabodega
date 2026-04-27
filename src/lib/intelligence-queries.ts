@@ -234,8 +234,15 @@ export async function queryConteos(limiteMeses: number = 3): Promise<ConteoRow[]
  * provocaba que Supabase respondiera vacío en producción, rompiendo
  * `ultimoMovPorSku` y dejando `dias_sin_movimiento` NULL para los 533.
  * El motor no necesita orden — recorre todo y computa max() en memoria.
+ *
+ * 2026-04-27: cutoff 60d era el techo efectivo de dias_sin_movimiento.
+ * Manual BANVA_Pricing_Investigacion_Comparada:197 distingue ">90-180d
+ * sin movimiento = slow; >180-365d = dead stock"; trigger de
+ * reclasificación :235 dispara a >120d. Con cutoff 60d esos triggers
+ * estaban virtualmente apagados. Subimos a 400d para cubrir el rango
+ * dead stock + margen. La paginación absorbe el incremento de filas.
  */
-export async function queryMovimientos(desdeDias: number = 60): Promise<MovimientoRow[]> {
+export async function queryMovimientos(desdeDias: number = 400): Promise<MovimientoRow[]> {
   const sb = getServerSupabase();
   if (!sb) return [];
   const desde = new Date(Date.now() - desdeDias * 86400000).toISOString();

@@ -126,7 +126,10 @@ async function ejecutarRecalculo(params: { skus?: string[]; full: boolean; snaps
       queryStockSnapshots(60),
       queryOrdenesCompraActivas(),
       queryConteos(3),
-      queryMovimientos(60),
+      // 400d cubre rango "dead stock" del manual (Investigacion_Comparada:197).
+      // Antes era 60d → dias_sin_movimiento topeaba en 60 → triggers de
+      // reclasificación >120d nunca disparaban.
+      queryMovimientos(400),
       queryPrevIntelligence(),
       queryStockFullDetail(),
       queryProveedorCatalogo(),
