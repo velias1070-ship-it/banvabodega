@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import AdminAutoPostularDashboard from "./AdminAutoPostularDashboard";
+import AdminMarkdownPilot from "./AdminMarkdownPilot";
 
 /**
  * Pricing Config — defaults por cuadrante + overrides por SKU.
@@ -239,6 +240,9 @@ export default function AdminPricingConfig() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+
+      {/* Markdown piloto SKU por SKU: dry-run + apply individual */}
+      <AdminMarkdownPilot />
 
       {/* Dashboard del motor auto-postular: KPIs, motivos de skip, histórico */}
       <AdminAutoPostularDashboard />
