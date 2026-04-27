@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import AdminMarkdownPilot from "./AdminMarkdownPilot";
+import AdminPricingRulesEditor from "./AdminPricingRulesEditor";
 
 /**
  * Pricing Config — defaults por cuadrante + overrides por SKU.
@@ -222,6 +223,9 @@ export default function AdminPricingConfig() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+
+      {/* Editor de reglas: ver/editar/publicar/promover el rule set global */}
+      <AdminPricingRulesEditor />
 
       {/* Markdown piloto SKU por SKU: dry-run + apply individual */}
       <AdminMarkdownPilot />

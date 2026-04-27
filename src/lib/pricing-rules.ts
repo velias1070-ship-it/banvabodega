@@ -289,3 +289,29 @@ export type Governance = {
   max_change_pct_diario: number; max_change_pct_semanal: number; max_change_pct_mensual: number;
   fuente?: string; notas?: string;
 };
+
+/**
+ * Reglas de postulacion a promos ML. v1.1.0+.
+ *
+ * Tier 5 (LIGHTNING/DOD): siempre postular sea cual sea el precio (bypass floor).
+ *   La exposicion de "Ofertas" + push notif compensa el margen perdido en el ciclo
+ *   de la promo (6-24h). ML la pone con fecha fin obligatoria, no compromete baseline.
+ * Tier 4 (DEAL/MARKETPLACE_CAMPAIGN/SMART): postular si margen post-promo >= 0.
+ * Tier 3 (PRICE_DISCOUNT/PRE_NEGOTIATED): requiere margen >= margen_min cuadrante.
+ * Tier 1-2: solo si SKU en aging (long tail liquidacion).
+ */
+export type PromosPostulacion = {
+  siempre_postular_tiers:           number[];
+  siempre_postular_tipos:           string[];
+  bypass_floor_para_obligatorios:   boolean;
+  tier_minimo_postular:             number;
+  nunca_postular_tipos:             string[];
+  tier_4_requiere_margen_post_pct:  number;
+  tier_3_usa_margen_min_cuadrante:  boolean;
+  tier_2_solo_si_aging_min_dias:    number;
+  tier_1_solo_si_aging_min_dias:    number;
+  no_degradar_tier_activo:          boolean;
+  cooldown_post_promo_horas:        number;
+  fuente?: string;
+  notas?: string;
+};
