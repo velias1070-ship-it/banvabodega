@@ -27,9 +27,11 @@ export function exportarOCExcel(oc: DBOrdenCompra, lineas: DBOrdenCompraLinea[])
     [`Estado:`, oc.estado || ""],
     ...(oc.notas ? [[`Notas:`, oc.notas]] : []),
     [],
-    ["SKU", "Descripción", "Cantidad", "Precio Unit. Neto", "Subtotal Neto", "Fuente Precio", "Notas línea"],
+    ["SKU", "Descripción", "Pedida", "Recibida", "Pendiente", "Precio Unit. Neto", "Subtotal Neto", "Fuente Precio", "Notas línea"],
     ...lineas.map(l => {
       const precio = l.precio_acordado_neto ?? l.costo_unitario;
+      const recibida = l.cantidad_recibida ?? 0;
+      const pendiente = l.cantidad_pedida - recibida;
       const fuente = l.precio_fuente === "catalogo" ? "Catálogo" :
                      l.precio_fuente === "ultima_recepcion" ? "Última recepción" :
                      l.precio_fuente === "wac_fallback" ? "WAC histórico" :
@@ -39,6 +41,8 @@ export function exportarOCExcel(oc: DBOrdenCompra, lineas: DBOrdenCompraLinea[])
         l.sku_origen,
         l.nombre || "",
         l.cantidad_pedida,
+        recibida,
+        pendiente,
         precio,
         l.cantidad_pedida * precio,
         fuente,
@@ -46,14 +50,14 @@ export function exportarOCExcel(oc: DBOrdenCompra, lineas: DBOrdenCompraLinea[])
       ];
     }),
     [],
-    ["", "", "", "Subtotal Neto:", totalNeto, "", ""],
-    ["", "", "", "IVA 19%:", iva, "", ""],
-    ["", "", "", "TOTAL BRUTO:", totalBruto, "", ""],
+    ["", "", "", "", "", "Subtotal Neto:", totalNeto, "", ""],
+    ["", "", "", "", "", "IVA 19%:", iva, "", ""],
+    ["", "", "", "", "", "TOTAL BRUTO:", totalBruto, "", ""],
   ];
 
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws["!cols"] = [
-    { wch: 18 }, { wch: 35 }, { wch: 10 }, { wch: 16 }, { wch: 16 }, { wch: 18 }, { wch: 25 },
+    { wch: 18 }, { wch: 35 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 16 }, { wch: 16 }, { wch: 18 }, { wch: 25 },
   ];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "OC");
