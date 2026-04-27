@@ -67,6 +67,26 @@ export async function POST(req: NextRequest) {
   });
 }
 
+/**
+ * Telemetría a ml_sync_health.intelligence_recalcular. Llamar en TODOS los return paths
+ * del cron (success o error). Lección P1.1: el "queue empty / sin trabajo" también
+ * cuenta como éxito (cron corrió, no había nada que recalcular).
+ */
+async function reportHealth(ok: boolean, errMsg?: string): Promise<void> {
+  const sb = getServerSupabase();
+  if (!sb) return;
+  const now = new Date().toISOString();
+  const updates: Record<string, unknown> = { last_attempt_at: now };
+  if (ok) {
+    updates.last_success_at = now;
+    updates.last_error = null;
+    updates.consecutive_failures = 0;
+  } else {
+    updates.last_error = (errMsg ?? "unknown").slice(0, 500);
+  }
+  await sb.from("ml_sync_health").update(updates).eq("job_name", "intelligence_recalcular");
+}
+
 async function ejecutarRecalculo(params: { skus?: string[]; full: boolean; snapshot: boolean; debugSku?: string }) {
   const start = Date.now();
   try {
@@ -77,6 +97,7 @@ async function ejecutarRecalculo(params: { skus?: string[]; full: boolean; snaps
 
     const sb = getServerSupabase();
     if (!sb) {
+      await reportHealth(false, "Sin conexión a Supabase");
       return NextResponse.json({ error: "Sin conexión a Supabase" }, { status: 500 });
     }
 
@@ -273,6 +294,7 @@ async function ejecutarRecalculo(params: { skus?: string[]; full: boolean; snaps
       }
       // Si no hay movimientos recientes, no recalcular nada
       if (skusConMov.size === 0) {
+        await reportHealth(true);
         return NextResponse.json({
           ok: true,
           recalculados: 0,
@@ -311,6 +333,7 @@ async function ejecutarRecalculo(params: { skus?: string[]; full: boolean; snaps
     const tiempo = Date.now() - start;
     console.log(`[intelligence] Recálculo completado. ${total} SKUs en ${tiempo}ms.`);
 
+    await reportHealth(true);
     return NextResponse.json({
       ok: true,
       recalculados: total,
@@ -331,6 +354,7 @@ async function ejecutarRecalculo(params: { skus?: string[]; full: boolean; snaps
     });
   } catch (err) {
     console.error("[intelligence] Error en recálculo:", err);
+    await reportHealth(false, String(err));
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
