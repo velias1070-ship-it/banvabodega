@@ -9911,10 +9911,24 @@ function CreateConteo({ onCreated, onCancel }: { onCreated: () => void; onCancel
     setLoadingVencidos(false);
   };
 
+  // Manual Inventarios Parte2 §5.6.2 línea 144: "IRA = % de UBICACIONES donde
+  // el conteo físico = sistema". Cycle counting estándar es location-based:
+  // tomamos los SKUs vencidos, extraemos las posiciones donde están, y
+  // disparamos modo "por posición" para que el operador cuente todo lo que hay
+  // en cada posición (incluyendo SKUs no vencidos en la misma posición).
+  // Esto da IRA limpio y descubre fantasmas y mal-ubicaciones.
   const aplicarSugerencia = () => {
-    setTipo("por_sku");
     const top = vencidos.slice(0, tamanoLista).map(v => v.sku_origen);
-    setSelSkus(new Set(top));
+    const posSet = new Set<string>();
+    for (const sku of top) {
+      const stockEntries = s.stock[sku] || {};
+      for (const [posId, qty] of Object.entries(stockEntries)) {
+        if (qty > 0) posSet.add(posId);
+      }
+    }
+    setTipo("por_posicion");
+    setSelPositions(posSet);
+    setSelSkus(new Set());
     setShowSugerencia(false);
   };
 
@@ -10018,7 +10032,8 @@ function CreateConteo({ onCreated, onCancel }: { onCreated: () => void; onCancel
             <div>
               <div style={{fontSize:12,fontWeight:700,color:"#a855f7"}}>📋 Sugerencia automática (cadencia ABC)</div>
               <div style={{fontSize:10,color:"var(--txt3)",marginTop:2}}>
-                Manual Parte2 §5.6.1: A &gt;30d, B &gt;90d, C &gt;365d. Lista priorizada por urgencia.
+                Manual Parte2 §5.6.1: A &gt;30d, B &gt;90d, C &gt;365d · §5.6.2: IRA por ubicación.
+                <br/>Genera conteo <strong>por posición</strong> con todas las ubicaciones donde están los SKUs vencidos.
               </div>
             </div>
             {!showSugerencia ? (
@@ -10086,10 +10101,21 @@ function CreateConteo({ onCreated, onCancel }: { onCreated: () => void; onCancel
                         </tbody>
                       </table>
                     </div>
-                    <button onClick={aplicarSugerencia}
-                      style={{width:"100%",padding:10,borderRadius:8,background:"linear-gradient(135deg,#7c3aed,#a855f7)",color:"#fff",fontWeight:700,fontSize:12,border:"none",cursor:"pointer"}}>
-                      ✅ Aplicar — crear conteo por SKU con estos {top.length}
-                    </button>
+                    {(() => {
+                      const posSet = new Set<string>();
+                      for (const v of top) {
+                        const entries = s.stock[v.sku_origen] || {};
+                        for (const [posId, qty] of Object.entries(entries)) {
+                          if (qty > 0) posSet.add(posId);
+                        }
+                      }
+                      return (
+                        <button onClick={aplicarSugerencia}
+                          style={{width:"100%",padding:10,borderRadius:8,background:"linear-gradient(135deg,#7c3aed,#a855f7)",color:"#fff",fontWeight:700,fontSize:12,border:"none",cursor:"pointer"}}>
+                          ✅ Aplicar — conteo por posición ({posSet.size} pos. · {top.length} SKUs vencidos dentro)
+                        </button>
+                      );
+                    })()}
                   </>
                 );
               })()}
