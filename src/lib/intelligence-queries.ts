@@ -252,16 +252,21 @@ export async function queryMovimientos(desdeDias: number = 400): Promise<Movimie
   // devolvía []. Causa raíz real del bug "dias_sin_movimiento NULL en 533".
   // El motor solo usa `sku` y `created_at` — el resto estaba de más.
   //
-  // 2026-04-27: Filtrar a motivos de VENTA real. Antes traía TODOS los
-  // movimientos (transferencias, ajustes, reasignacion_formato, recepciones).
+  // 2026-04-27: Filtrar a motivos de VENTA real al cliente final. Antes traía
+  // TODOS los movimientos (transferencias, ajustes, reasignacion_formato).
   // Caso ALPCMPRSQ6012: backfill v71 'reasignacion_formato' del 23-abr
   // marcaba dias_sin_movimiento=4 cuando última venta real era 19-ene (98d).
-  // Solo señales comerciales: venta_flex, envio_full, despacho_ml.
+  //
+  // venta_flex y despacho_ml = salida directa a cliente.
+  // envio_full EXCLUIDO: es transferencia bodega -> Full ML, no venta;
+  // SKUs que venden solo por Full nunca generan movimientos locales (la
+  // venta sale del centro Full de ML). Para esos casos el motor depende
+  // 100% de queryUltimaVentaPorSkuOrigen via ventas_ml_cache.
   const data = await paginatedSelect(() =>
     sb.from("movimientos")
       .select("sku, created_at")
       .gte("created_at", desde)
-      .in("motivo", ["venta_flex", "envio_full", "despacho_ml"])
+      .in("motivo", ["venta_flex", "despacho_ml"])
   );
   return data as unknown as MovimientoRow[];
 }
