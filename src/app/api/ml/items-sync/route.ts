@@ -72,9 +72,18 @@ export async function GET(req: NextRequest) {
         for (const wrapper of multiResult) {
           if (wrapper.code === 200 && wrapper.body) {
             const item = wrapper.body;
+            // Caso real ALPCMPRSQ6012 (28-abr-2026): API /items devuelve
+            // item.price=19787 (precio base del seller, valor histórico),
+            // pero el listing real ML tenía price_ml=29980 + Día de la Mama
+            // -40% efectivo=17980. Para DEALs externos de ML, item.price
+            // queda contaminado por valores antiguos. Preferir original_price
+            // si es mayor (refleja el lista real cuando hay promo seller).
+            // El precio efectivo "real" se calcula en margin-cache/refresh.
+            const itemAny = item as { price: number; original_price?: number | null };
+            const priceWrite = Math.max(itemAny.price || 0, itemAny.original_price || 0);
             const { error } = await sb.from("ml_items_map").update({
               titulo: item.title,
-              price: item.price,
+              price: priceWrite,
               status_ml: item.status,
               thumbnail: item.thumbnail,
               permalink: item.permalink,
@@ -97,9 +106,11 @@ export async function GET(req: NextRequest) {
           try {
             const item = await mlGet<MLItemMultiget["body"]>(`/items/${id}`);
             if (item) {
+              const itemAny = item as { price: number; original_price?: number | null };
+              const priceWrite = Math.max(itemAny.price || 0, itemAny.original_price || 0);
               await sb.from("ml_items_map").update({
                 titulo: item.title,
-                price: item.price,
+                price: priceWrite,
                 status_ml: item.status,
                 thumbnail: item.thumbnail,
                 permalink: item.permalink,

@@ -520,6 +520,24 @@ async function handleRefresh(req: NextRequest) {
           processed: offset,
         }, { status: 500 });
       }
+      // 2026-04-28: Sincronizar ml_items_map.price con el price_ml corregido
+      // (lista real, viene de original_price de la promo activa). Fix caso
+      // ALPCMPRSQ6012: items-sync persistió $19.787 (precio base API ML),
+      // pero el lista real era $29.980. ml_items_map.price es leído por
+      // varios lectores (item-update, scan-promos, promotions, investigate)
+      // y debe reflejar el lista real, no el dato base API potencialmente
+      // contaminado por DEALs externos.
+      if (promosFetchOk && payload.price_ml) {
+        const priceMl = Number(payload.price_ml);
+        if (priceMl > 0) {
+          const { error: mapErr } = await sb.from("ml_items_map")
+            .update({ price: priceMl })
+            .eq("item_id", itemId);
+          if (mapErr) {
+            console.error(`[margin-cache] sync ml_items_map.price ${itemId} failed: ${mapErr.message}`);
+          }
+        }
+      }
       // Solo loguear sync_diff cuando confiamos en el dato. Un fetch fallido
       // de promos NO califica para detectar cambio de precio.
       if (!promosFetchOk) continue;
