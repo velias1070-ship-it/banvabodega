@@ -145,10 +145,18 @@ export default function AdminMarkdownPilot() {
           </div>
         </div>
         <button
-          className="scan-btn"
-          style={{ padding: "6px 12px", fontSize: 12 }}
           onClick={loadDryRun}
           disabled={loading}
+          style={{
+            padding: "6px 12px",
+            fontSize: 12,
+            background: "var(--bg3)",
+            border: "1px solid var(--bg4)",
+            color: "var(--txt)",
+            borderRadius: 6,
+            cursor: loading ? "default" : "pointer",
+            opacity: loading ? 0.5 : 1,
+          }}
         >
           {loading ? "..." : "Refrescar"}
         </button>
@@ -273,10 +281,19 @@ export default function AdminMarkdownPilot() {
                       <td style={{ textAlign: "right", fontFamily: "var(--mono)", color: "var(--cyan)" }}>{fmtCLP(c.precio_markdown)}</td>
                       <td style={{ textAlign: "center" }}>
                         <button
-                          className="scan-btn"
-                          style={{ padding: "4px 10px", fontSize: 11 }}
                           onClick={() => applyToSku(c)}
                           disabled={applyingSku === c.sku}
+                          style={{
+                            padding: "4px 12px",
+                            fontSize: 11,
+                            fontWeight: 600,
+                            background: "linear-gradient(135deg, #0891b2, var(--cyan))",
+                            border: "none",
+                            color: "#fff",
+                            borderRadius: 6,
+                            cursor: applyingSku === c.sku ? "default" : "pointer",
+                            opacity: applyingSku === c.sku ? 0.5 : 1,
+                          }}
                         >
                           {applyingSku === c.sku ? "..." : "Aplicar"}
                         </button>
