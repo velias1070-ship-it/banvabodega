@@ -36,6 +36,7 @@ interface ProveedorRow {
   ncEsperadaNeto: number;
   diferencia: number;
   estadoCuadre: "cuadrado" | "backorder" | "adelanto" | "sin_recepcion" | "sin_factura";
+  esInventario: boolean; // true si el proveedor tuvo alguna recepción HISTÓRICA (no solo del período)
 }
 
 export default function AdminConciliacionDocs() {
@@ -56,6 +57,7 @@ export default function AdminConciliacionDocs() {
   const [provSortKey, setProvSortKey] = useState<SortKey>("diferencia");
   const [provSortDir, setProvSortDir] = useState<SortDir>("desc");
   const [provFiltroEstado, setProvFiltroEstado] = useState<"todos" | "cuadrado" | "backorder" | "adelanto" | "sin_recepcion" | "sin_factura">("todos");
+  const [provSoloInventario, setProvSoloInventario] = useState(true);
   const [provExpanded, setProvExpanded] = useState<Set<string>>(new Set());
 
   const toggleProvSort = (col: SortKey) => {
@@ -211,6 +213,18 @@ export default function AdminConciliacionDocs() {
     });
   }, [recPeriodo, rcvPeriodo]);
 
+  // Set de proveedores normalizados que TIENEN al menos 1 recepción histórica.
+  // Es el proxy operativo de "proveedor de inventario": si nunca recibimos mercadería,
+  // lo más probable es que sea un proveedor de servicios (telco, contabilidad, etc.).
+  const proveedoresInventario = useMemo(() => {
+    const s = new Set<string>();
+    for (const r of recepciones) {
+      const k = normProv(r.proveedor || "");
+      if (k && k !== "DESCONOCIDO" && k !== "OTRO") s.add(k);
+    }
+    return s;
+  }, [recepciones]);
+
   // Cuadre por proveedor del período: agrupa facturas SII + NCs + recepciones bodega y
   // calcula la diferencia neta. Refleja la realidad N:M (una recepción puede tapar varias
   // facturas; una factura puede llegar en partes). Cuadre 1:1 factura-a-recepción es ficción.
@@ -291,6 +305,9 @@ export default function AdminConciliacionDocs() {
       else if (diferencia > 0) estadoCuadre = "backorder";
       else estadoCuadre = "adelanto";
 
+      const provNormRow = normProv(acc.razon);
+      const esInventario = acc.recs.length > 0 || proveedoresInventario.has(provNormRow);
+
       rows.push({
         rut: acc.rut,
         razonSocial: acc.razon,
@@ -303,13 +320,15 @@ export default function AdminConciliacionDocs() {
         ncEsperadaNeto,
         diferencia,
         estadoCuadre,
+        esInventario,
       });
     }
     return rows;
-  }, [rcvPeriodo, recPeriodo, recByFolio, discs, lineasPorLineaId, catalogo, productos]);
+  }, [rcvPeriodo, recPeriodo, recByFolio, discs, lineasPorLineaId, catalogo, productos, proveedoresInventario]);
 
   const proveedoresFiltered = useMemo(() => {
     let rows = proveedoresRows;
+    if (provSoloInventario) rows = rows.filter(r => r.esInventario);
     if (provFiltroEstado !== "todos") rows = rows.filter(r => r.estadoCuadre === provFiltroEstado);
     const dir = provSortDir === "asc" ? 1 : -1;
     rows = [...rows].sort((a, b) => {
@@ -571,20 +590,34 @@ export default function AdminConciliacionDocs() {
 
         return (
           <div className="card" style={{ padding: 0 }}>
-            {/* Filtros estado */}
-            <div style={{ display: "flex", gap: 6, padding: "10px 12px", borderBottom: "1px solid var(--bg4)", flexWrap: "wrap" }}>
-              {([
-                ["todos", "Todos"], ["cuadrado", "✓ Cuadrados"], ["backorder", "⏳ Backorder"],
-                ["adelanto", "↑ Adelanto"], ["sin_recepcion", "Sin recep."], ["sin_factura", "Sin factura"],
-              ] as const).map(([k, l]) => (
-                <button key={k} onClick={() => setProvFiltroEstado(k)}
-                  style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid var(--bg4)",
-                    background: provFiltroEstado === k ? "var(--cyan)" : "var(--bg3)",
-                    color: provFiltroEstado === k ? "#000" : "var(--txt2)",
-                    fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
-                  {l}
-                </button>
-              ))}
+            {/* Filtros */}
+            <div style={{ display: "flex", gap: 12, padding: "10px 12px", borderBottom: "1px solid var(--bg4)", flexWrap: "wrap", alignItems: "center" }}>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {([
+                  ["todos", "Todos"], ["cuadrado", "✓ Cuadrados"], ["backorder", "⏳ Backorder"],
+                  ["adelanto", "↑ Adelanto"], ["sin_recepcion", "Sin recep."], ["sin_factura", "Sin factura"],
+                ] as const).map(([k, l]) => (
+                  <button key={k} onClick={() => setProvFiltroEstado(k)}
+                    style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid var(--bg4)",
+                      background: provFiltroEstado === k ? "var(--cyan)" : "var(--bg3)",
+                      color: provFiltroEstado === k ? "#000" : "var(--txt2)",
+                      fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
+                    {l}
+                  </button>
+                ))}
+              </div>
+              <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--txt2)", cursor: "pointer" }}
+                  title="Filtrar a proveedores que históricamente recibimos mercadería (excluye servicios, telcos, etc.)">
+                  <input type="checkbox" checked={provSoloInventario}
+                    onChange={e => setProvSoloInventario(e.target.checked)}
+                    style={{ accentColor: "var(--cyan)" }} />
+                  Solo inventario
+                  <span style={{ fontSize: 10, color: "var(--txt3)" }}>
+                    ({proveedoresRows.filter(r => r.esInventario).length} de {proveedoresRows.length})
+                  </span>
+                </label>
+              </div>
             </div>
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
