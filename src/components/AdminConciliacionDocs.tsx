@@ -6,6 +6,7 @@ import {
   updateRecepcion,
 } from "@/lib/db";
 import type { DBRcvCompra, DBRecepcion, DBOrdenCompra, DBDiscrepanciaCosto, DBRecepcionLinea, DBProduct, DBProveedorCatalogo } from "@/lib/db";
+import { calcularNCEsperadaParaDiscs, normProv } from "@/lib/nc-esperada";
 
 const fmtInt = (n: number | null | undefined) => n == null ? "—" : Math.round(Number(n)).toLocaleString("es-CL");
 const fmtMoney = (n: number | null | undefined) => n == null ? "—" : "$" + Math.round(Number(n)).toLocaleString("es-CL");
@@ -13,9 +14,6 @@ const fmtDate = (d: string | null | undefined) => {
   if (!d) return "—";
   return new Date(d).toLocaleDateString("es-CL", { day: "2-digit", month: "2-digit", year: "2-digit" });
 };
-const normProv = (s: string): string => (s || "").toUpperCase().trim()
-  .replace(/\s+(S\.?A\.?|SPA|LTDA\.?|LIMITADA|SRL|EIRL)\.?$/i, "")
-  .replace(/[.,]/g, "").replace(/\s+/g, " ").trim();
 
 const TIPO_DOC: Record<number, string> = {
   33: "FC", 34: "FCE", 46: "FC", 52: "GUIA", 56: "ND", 61: "NC", 71: "BHE",
@@ -430,29 +428,19 @@ export default function AdminConciliacionDocs() {
                   if (deltaSign > umbralDelta) estadoMatch = "parcial";
                   else if (deltaSign < -umbralDelta) estadoMatch = "excedente";
                 }
-                // NC esperada: por cada discrepancia PENDIENTE, delta = (fac - precio real) × qty
-                // Precio real: 1º catálogo del proveedor (pactado), 2º WAC (fallback)
-                const provNorm = normProv(f.rcv.razon_social || "");
-                const ncItems = f.discrepancias.map(d => {
-                  const linea = d.linea_id ? lineasPorLineaId.get(d.linea_id) : undefined;
-                  const qty = linea?.qty_recibida || 0;
-                  const skuUp = (d.sku || "").toUpperCase().trim();
-                  const precioCat = catalogo.get(`${provNorm}|${skuUp}`) || 0;
-                  const prod = productos.get(skuUp);
-                  const wac = (prod?.costo_promedio as number) || 0;
-                  const precioRef = precioCat > 0 ? precioCat : wac;
-                  const fuente: "catalogo" | "wac" = precioCat > 0 ? "catalogo" : "wac";
-                  const deltaUd = (Number(d.costo_factura) || 0) - precioRef;
-                  return { sku: d.sku, qty, deltaUd, subtotal: deltaUd * qty, precioRef, fuente };
-                }).filter(x => x.deltaUd > 0 && x.qty > 0);
-                const fuenteMix = ncItems.length > 0
-                  ? (ncItems.every(x => x.fuente === "catalogo") ? "catálogo"
-                    : ncItems.every(x => x.fuente === "wac") ? "WAC (sin catálogo)"
-                    : "mixto")
-                  : "—";
-                const ncNeto = Math.round(ncItems.reduce((s, x) => s + x.subtotal, 0));
-                const ncIva = Math.round(ncNeto * 0.19);
-                const ncTotal = ncNeto + ncIva;
+                // NC esperada: helper compartido (src/lib/nc-esperada.ts) — fórmula unificada con /conciliacion.
+                const ncEsp = calcularNCEsperadaParaDiscs({
+                  proveedorRazonSocial: f.rcv.razon_social || "",
+                  discrepancias: f.discrepancias,
+                  lineasPorLineaId,
+                  catalogo,
+                  productos,
+                });
+                const ncItems = ncEsp.items;
+                const fuenteMix = ncEsp.fuenteMix;
+                const ncNeto = ncEsp.neto;
+                const ncIva = ncEsp.iva;
+                const ncTotal = ncEsp.total;
                 const ncCovered = f.ncs.reduce((s, nc) => s + (Number(nc.monto_total) || 0), 0);
                 return (
                   <React.Fragment key={id}>

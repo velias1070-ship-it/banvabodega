@@ -13,11 +13,17 @@ import {
   upsertProveedorCuenta,
   fetchPlanCuentasHojas,
   updateRcvCompra,
+  fetchDiscrepanciasGlobal,
+  fetchRecepciones,
+  fetchLineasDeRecepciones,
+  fetchProductos,
+  fetchProveedorCatalogo,
 } from "@/lib/db";
 import type {
   DBEmpresa, DBRcvCompra, DBRcvVenta, DBMovimientoBanco,
   DBConciliacion, DBConciliacionItem, DBAlerta, DBSyncLog, DBProveedorCuenta,
 } from "@/lib/db";
+import { calcularNCEsperadaPorFactura, normProv as normProvNC, type NCEsperada } from "@/lib/nc-esperada";
 import CsvUploader from "@/components/CsvUploader";
 import type { CsvRow } from "@/components/CsvUploader";
 import dynamic from "next/dynamic";
@@ -453,19 +459,24 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const [editCuenta, setEditCuenta] = useState("");
   const [editVariable, setEditVariable] = useState(false);
   const [cuentasHoja, setCuentasHoja] = useState<{ id: string; codigo: string; nombre: string }[]>([]);
+  const [ncEsperadaMap, setNcEsperadaMap] = useState<Map<string, NCEsperada>>(new Map());
 
   const isAnual = periodo.length === 4;
 
   const load = useCallback(async () => {
     if (!empresa.id) return;
     setLoading(true);
-    const [conc, items, pc, ctas, allCompras, movs] = await Promise.all([
+    const [conc, items, pc, ctas, allCompras, movs, discs, recs, prods, cat] = await Promise.all([
       fetchConciliaciones(empresa.id),
       fetchAllConciliacionItems(),
       fetchProveedorCuentas(),
       fetchPlanCuentasHojas(),
       fetchRcvCompras(empresa.id),
       fetchMovimientosBanco(empresa.id, { desde: undefined, hasta: undefined }),
+      fetchDiscrepanciasGlobal(["PENDIENTE"]),
+      fetchRecepciones(),
+      fetchProductos(),
+      fetchProveedorCatalogo(),
     ]);
     setConciliaciones(conc);
     setConciliacionItems(items);
@@ -478,6 +489,34 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
     } else {
       setData(allCompras.filter(c => c.periodo === periodo));
     }
+
+    // NC esperada — calcula del lado cliente con discrepancias_costo PENDIENTES,
+    // recepcion_lineas + proveedor_catalogo + productos.costo_promedio (WAC).
+    try {
+      const recIds = recs.map(r => r.id!).filter(Boolean);
+      const lineas = recIds.length > 0 ? await fetchLineasDeRecepciones(recIds) : [];
+      const lineasPorLineaId = new Map(lineas.filter(l => l.id).map(l => [l.id!, l]));
+      const catMap = new Map<string, number>();
+      for (const c of cat) {
+        const precio = (c.precio_neto as number) || 0;
+        if (precio > 0) catMap.set(`${normProvNC(c.proveedor || "")}|${(c.sku_origen || "").toUpperCase().trim()}`, precio);
+      }
+      const prodMap = new Map(prods.map(p => [p.sku.toUpperCase().trim(), p]));
+      const facturasInv = allCompras.filter(c => Number(c.tipo_doc) === 33 || Number(c.tipo_doc) === 34 || Number(c.tipo_doc) === 46);
+      const ncMap = calcularNCEsperadaPorFactura({
+        facturas: facturasInv,
+        recepciones: recs,
+        discrepancias: discs,
+        lineasPorLineaId,
+        catalogo: catMap,
+        productos: prodMap,
+      });
+      setNcEsperadaMap(ncMap);
+    } catch (e) {
+      console.error("[conciliacion] error computando NC esperada:", e);
+      setNcEsperadaMap(new Map());
+    }
+
     setLoading(false);
   }, [empresa.id, periodo, isAnual]);
 
@@ -1037,14 +1076,24 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                                 );
                               } else {
                                 const ncs = ncsPorFactura.get(c.id!) || [];
-                                if (ncs.length > 0) {
-                                  const totalNC = ncs.reduce((s, n) => s + (n.monto_total || 0), 0);
-                                  return (
-                                    <div style={{ fontSize: 9, color: "var(--amber)", marginTop: 3, fontWeight: 600 }}>
-                                      &larr; {ncs.length} NC asociada{ncs.length > 1 ? "s" : ""} &middot; -{fmtMoney(totalNC)}
-                                    </div>
-                                  );
-                                }
+                                const ncRecibidasMonto = ncs.reduce((s, n) => s + (n.monto_total || 0), 0);
+                                const nc = ncEsperadaMap.get(c.id!);
+                                const ncOutstanding = nc ? Math.max(0, nc.total - ncRecibidasMonto) : 0;
+                                return (
+                                  <>
+                                    {ncs.length > 0 && (
+                                      <div style={{ fontSize: 9, color: "var(--amber)", marginTop: 3, fontWeight: 600 }}>
+                                        &larr; {ncs.length} NC asociada{ncs.length > 1 ? "s" : ""} &middot; -{fmtMoney(ncRecibidasMonto)}
+                                      </div>
+                                    )}
+                                    {ncOutstanding > 0 && nc && (
+                                      <div title={`${nc.items.length} discrepancia${nc.items.length > 1 ? "s" : ""} pendiente${nc.items.length > 1 ? "s" : ""} · base: ${nc.fuenteMix}`}
+                                        style={{ fontSize: 9, color: "var(--cyan)", marginTop: 3, fontWeight: 600 }}>
+                                        &darr; NC esperada {fmtMoney(ncOutstanding)} &middot; {nc.items.length} discr.
+                                      </div>
+                                    )}
+                                  </>
+                                );
                               }
                               return null;
                             })()}
@@ -1094,6 +1143,25 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                       <td style={{ padding: "14px 14px", textAlign: "right" }}>
                         <div className="mono" style={{ fontSize: 14, fontWeight: 700 }}>{fmtMoney(c.monto_total || 0)}</div>
                         <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 1 }}>Incluye IVA</div>
+                        {(() => {
+                          if (c.tipo_doc === 61) return null;
+                          const ncsRecibidas = ncsPorFactura.get(c.id!) || [];
+                          const ncRecibidasMonto = ncsRecibidas.reduce((s, n) => s + (n.monto_total || 0), 0);
+                          const nc = ncEsperadaMap.get(c.id!);
+                          const ncOutstanding = nc ? Math.max(0, nc.total - ncRecibidasMonto) : 0;
+                          if (ncOutstanding <= 0) return null;
+                          const netoSugerido = Math.max(0, (c.monto_total || 0) - ncOutstanding);
+                          return (
+                            <>
+                              <div className="mono" style={{ fontSize: 10, color: "var(--cyan)", marginTop: 4, fontWeight: 600 }}>
+                                &darr; Esperás NC {fmtMoney(ncOutstanding)}
+                              </div>
+                              <div className="mono" style={{ fontSize: 11, color: "var(--cyan)", marginTop: 1, fontWeight: 700 }}>
+                                Neto sugerido: {fmtMoney(netoSugerido)}
+                              </div>
+                            </>
+                          );
+                        })()}
                       </td>
                       {/* Estado / Accion */}
                       <td style={{ padding: "14px 14px", textAlign: "right", whiteSpace: "nowrap", position: "relative" }}>
