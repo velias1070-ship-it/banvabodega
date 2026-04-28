@@ -171,6 +171,53 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ items: results });
 }
 
+/**
+ * Para errores de credibility de ML: trae las promos candidate del mismo item
+ * y arma un mensaje útil con el max_aceptable y el sugerido. ML no expone
+ * min/max de promos `started`, pero las candidate del mismo item comparten
+ * (en general) el mismo techo de credibility a nivel item.
+ */
+async function buildCredibilityHint(itemId: string, dealPriceRequested: number) {
+  try {
+    const promos = await mlGet<Array<{
+      id?: string; type: string; name?: string; status: string;
+      min_discounted_price?: number; max_discounted_price?: number;
+      suggested_discounted_price?: number;
+    }>>(`/seller-promotions/items/${itemId}?app_version=v2`);
+    if (!promos || !Array.isArray(promos)) return null;
+    const candidates = promos.filter(p =>
+      p.status === "candidate" &&
+      typeof p.max_discounted_price === "number" && p.max_discounted_price > 0,
+    );
+    if (candidates.length === 0) return null;
+    // Tomamos el max más alto entre candidates (mejor escenario para el seller)
+    const best = candidates.reduce((a, b) =>
+      (b.max_discounted_price! > (a.max_discounted_price || 0) ? b : a),
+    );
+    return {
+      max_aceptable: best.max_discounted_price!,
+      sugerido: best.suggested_discounted_price || 0,
+      min_aceptable: best.min_discounted_price || 0,
+      promo_referencia: best.name || best.type,
+      precio_solicitado: dealPriceRequested,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function friendlyCredibilityError(
+  hint: { max_aceptable: number; sugerido: number; precio_solicitado: number; promo_referencia: string } | null,
+  rawErr: string,
+): { message: string; max_aceptable?: number; sugerido?: number } {
+  if (!hint) {
+    return { message: `ML rechazó el precio. Probá un valor más bajo. (${rawErr})` };
+  }
+  const fmt = (n: number) => `$${n.toLocaleString("es-CL")}`;
+  const msg = `ML no acepta ${fmt(hint.precio_solicitado)} para esta promo. Máximo aceptable ahora: ${fmt(hint.max_aceptable)}${hint.sugerido > 0 ? ` · Sugerido: ${fmt(hint.sugerido)}` : ""}.`;
+  return { message: msg, max_aceptable: hint.max_aceptable, sugerido: hint.sugerido };
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -232,6 +279,18 @@ export async function POST(req: NextRequest) {
       if (!resp.ok) {
         const errMsg = (data as { message?: string }).message || `HTTP ${resp.status}`;
         await logAction("ml_promo:create_discount_error", { deal_price, start_date, finish_date, error: errMsg });
+        if (/credibility|credible|ERROR_CREDIBILITY/i.test(errMsg)) {
+          const hint = await buildCredibilityHint(item_id, deal_price);
+          const friendly = friendlyCredibilityError(hint, errMsg);
+          return NextResponse.json({
+            error: friendly.message,
+            code: "CREDIBILITY_REJECT",
+            max_aceptable: friendly.max_aceptable,
+            sugerido: friendly.sugerido,
+            raw_error: errMsg,
+            detail: data,
+          }, { status: resp.status });
+        }
         return NextResponse.json({ error: errMsg, detail: data }, { status: resp.status });
       }
       await logAction("ml_promo:create_discount", { deal_price, start_date, finish_date, result: data });
@@ -302,6 +361,18 @@ export async function POST(req: NextRequest) {
       if (!resp.ok) {
         const errMsg = (data as { message?: string }).message || `HTTP ${resp.status}`;
         await logAction("ml_promo:join_error", { promotion_id, promotion_type, deal_price, error: errMsg });
+        if (/credibility|credible|ERROR_CREDIBILITY/i.test(errMsg)) {
+          const hint = await buildCredibilityHint(item_id, deal_price);
+          const friendly = friendlyCredibilityError(hint, errMsg);
+          return NextResponse.json({
+            error: friendly.message,
+            code: "CREDIBILITY_REJECT",
+            max_aceptable: friendly.max_aceptable,
+            sugerido: friendly.sugerido,
+            raw_error: errMsg,
+            detail: data,
+          }, { status: resp.status });
+        }
         return NextResponse.json({ error: errMsg, detail: data }, { status: resp.status });
       }
 

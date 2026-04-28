@@ -43,8 +43,15 @@ export type NormalizedPromo = {
   price_actual: number;        // precio si ya estás postulado
   original_price: number;
   suggested_price: number;      // sugerido por ML
-  min_price: number;            // mínimo permitido
-  max_price: number;            // máximo permitido
+  min_price: number;            // mínimo permitido (0 si ML no lo expone, ej. started)
+  max_price: number;            // máximo permitido (0 si ML no lo expone)
+  // Rango estimado por inferencia con candidates del mismo item. Útil para
+  // promos `started`, donde ML no devuelve min/max. Asumimos que el techo de
+  // credibility es a nivel item, no por promo. `range_estimado=true` indica
+  // que esos valores no son los oficiales de esta promo.
+  min_price_estimado: number;
+  max_price_estimado: number;
+  range_estimado: boolean;
   top_deal_price: number;       // umbral de "oferta destacada"
   meli_pct: number;
   seller_pct: number;
@@ -98,6 +105,21 @@ export async function GET(req: NextRequest) {
       Infinity,
     );
 
+    // Estimación del rango de credibility a nivel item: el techo más alto
+    // entre los candidates con min/max definido. ML no expone min/max para
+    // promos `started`, pero el techo de credibility es a nivel item, así que
+    // las candidates del mismo item son una proxy útil para el seller.
+    const candidatesConRango = raw.filter(p =>
+      (p.status || "").toLowerCase() === "candidate" &&
+      typeof p.max_discounted_price === "number" && (p.max_discounted_price || 0) > 0,
+    );
+    const maxItemEstimado = candidatesConRango.length > 0
+      ? Math.max(...candidatesConRango.map(p => p.max_discounted_price || 0))
+      : 0;
+    const minItemEstimado = candidatesConRango.length > 0
+      ? Math.min(...candidatesConRango.map(p => p.min_discounted_price || 0))
+      : 0;
+
     const normalized: NormalizedPromo[] = raw.map(p => {
       const type = (p.type || "").toUpperCase();
       const status = (p.status || "").toLowerCase();
@@ -108,6 +130,9 @@ export async function GET(req: NextRequest) {
       // Si hay solo 1 started, esa es la aplicada automaticamente.
       const esAplicada = status === "started" && priceActual > 0 &&
         priceActual === menorPrecioStarted;
+      const minRaw = p.min_discounted_price ?? 0;
+      const maxRaw = p.max_discounted_price ?? 0;
+      const tieneRangoPropio = minRaw > 0 || maxRaw > 0;
       return {
         id: p.id ?? null,
         type,
@@ -120,8 +145,11 @@ export async function GET(req: NextRequest) {
         price_actual: priceActual,
         original_price: p.original_price ?? 0,
         suggested_price: p.suggested_discounted_price ?? 0,
-        min_price: p.min_discounted_price ?? 0,
-        max_price: p.max_discounted_price ?? 0,
+        min_price: minRaw,
+        max_price: maxRaw,
+        min_price_estimado: tieneRangoPropio ? minRaw : minItemEstimado,
+        max_price_estimado: tieneRangoPropio ? maxRaw : maxItemEstimado,
+        range_estimado: !tieneRangoPropio && maxItemEstimado > 0,
         top_deal_price: p.top_deal_price ?? 0,
         meli_pct: meliPct,
         seller_pct: sellerPct,
