@@ -30,6 +30,21 @@ export const dynamic = "force-dynamic";
 const MIN_DELTA_PCT_BAJADA = -5; // bajadas significativas (más estricto que el global -3% para sugerencias UI)
 
 type Estado = "en_eval" | "exitoso" | "marginal" | "sin_lift" | "indeterminado" | "expirado";
+type Confianza = "nula" | "baja" | "media" | "alta";
+
+// Thresholds para clasificar confianza estadística del lift parcial.
+// Engines:544 — "lift sostenido p<0.05" requiere ventana completa de 14d.
+// Antes de eso, distinguir señal real vs ruido por n insuficiente.
+//   nula:  <3d post O 0 uds. Cualquier número es ruido. No mostrar lift.
+//   baja:  3-7d con <5 uds. Mostrar lift parcial pero NO emitir acciones
+//          (excepto alerta de stock crítico — esa viene del lado del stock,
+//          no del lift, así que escala con cualquier confianza).
+//   media: ≥7d Y ≥5 uds. Suficiente n para early-stop preliminar.
+//   alta:  ≥14d. Ventana completa, decisión final.
+const CONFIANZA_MIN_DIAS_BAJA = 3;
+const CONFIANZA_MIN_UDS_BAJA = 1;
+const CONFIANZA_MIN_DIAS_MEDIA = 7;
+const CONFIANZA_MIN_UDS_MEDIA = 5;
 
 interface SeguimientoRow {
   sku: string;
@@ -55,8 +70,11 @@ interface SeguimientoRow {
   stock_actual: number;
   sell_through: number | null;     // uds_post / stock_al_t0
   estado: Estado;
+  confianza: Confianza;             // calidad estadística de la medición actual
+  confianza_motivo: string;          // por qué esa confianza
   recomendacion: string;
   recomendacion_accion: "esperar" | "mantener_baseline" | "subir_precio" | "esperar_fin_promo" | "profundizar" | "salir_deal" | "ninguna";
+  alerta_stock_temprana: boolean;    // escala aunque confianza sea baja (Hueco 4 proactivo)
   margen_pct_actual: number | null;
   // Hueco 1 — contexto para recomendación ramificada:
   tiene_promo_activa: boolean;
@@ -231,58 +249,98 @@ export async function GET(req: NextRequest) {
     const reposicionDisponible = !!intel?.tiene_stock_prov && (intel?.stock_proveedor ?? 0) > 0;
     const esClaseAB = intel?.abc === "A" || intel?.abc === "B" || intel?.abc_ingreso === "A" || intel?.abc_ingreso === "B";
 
+    // Confianza estadística del lift parcial (Engines:544).
+    let confianza: Confianza;
+    let confianza_motivo: string;
+    if (diasDesdeMd < CONFIANZA_MIN_DIAS_BAJA || udsPost < CONFIANZA_MIN_UDS_BAJA) {
+      confianza = "nula";
+      confianza_motivo = `Solo ${diasDesdeMd}d post-MD y ${udsPost} uds — ruido estadístico, esperá ${CONFIANZA_MIN_DIAS_BAJA - diasDesdeMd}d más`;
+    } else if (diasDesdeMd >= VENTANA_LIFT_DIAS) {
+      confianza = "alta";
+      confianza_motivo = `Ventana 14d completa con ${udsPost} uds`;
+    } else if (diasDesdeMd >= CONFIANZA_MIN_DIAS_MEDIA && udsPost >= CONFIANZA_MIN_UDS_MEDIA) {
+      confianza = "media";
+      confianza_motivo = `${diasDesdeMd}d + ${udsPost} uds — early-stop preliminar (faltan ${VENTANA_LIFT_DIAS - diasDesdeMd}d para confianza alta)`;
+    } else {
+      confianza = "baja";
+      confianza_motivo = `${diasDesdeMd}d + ${udsPost} uds — n insuficiente para concluir lift, observar`;
+    }
+
+    // Hueco 4 PROACTIVO: alerta stock temprana. Esta señal viene del LADO del
+    // stock, no del lift, así que se escala aunque confianza sea baja/nula.
+    // Para clase A/B con stock crítico que va a quebrar antes del próximo
+    // reabastecimiento (lead_time + ss) y SIN reposición disponible.
+    const alerta_stock_temprana = esClaseAB && stockCritico && !reposicionDisponible;
+
     let estado: Estado;
     let recomendacion: string;
     let recomendacion_accion: SeguimientoRow["recomendacion_accion"] = "ninguna";
+
     if (diasDesdeMd >= VENTANA_EVAL_DIAS) {
       estado = "expirado";
       recomendacion = "Ventana eval cerrada. Liberado para nuevas señales.";
       recomendacion_accion = "ninguna";
-    } else if (diasDesdeMd < VENTANA_LIFT_DIAS) {
+    } else if (confianza === "nula") {
+      // Caso "muy temprano": no decir nada de lift, pero SÍ alertar stock.
       estado = "en_eval";
-      recomendacion = `Esperar ${VENTANA_LIFT_DIAS - diasDesdeMd}d más antes de evaluar lift.`;
-      recomendacion_accion = "esperar";
+      if (alerta_stock_temprana) {
+        const promoBloquea = tienePromoActiva && promoActivaTier >= 3;
+        recomendacion = promoBloquea
+          ? `⚠️ ALERTA STOCK TEMPRANA (n=${udsPost} aún ruido): cob ${cobAlVelPost?.toFixed(1)}d < lead_time+ss ${cobMinima.toFixed(1)}d, clase ${intel?.abc || intel?.abc_ingreso}. Promo activa "${promoActivaNombre}" tier ${promoActivaTier} bloquea subir. Acelerar OC al proveedor.`
+          : `⚠️ ALERTA STOCK TEMPRANA (n=${udsPost} aún ruido): cob ${cobAlVelPost?.toFixed(1)}d < lead_time+ss ${cobMinima.toFixed(1)}d, clase ${intel?.abc || intel?.abc_ingreso}. Sin promo activa — considerar subir precio o acelerar OC.`;
+        recomendacion_accion = promoBloquea ? "esperar_fin_promo" : "subir_precio";
+      } else {
+        recomendacion = `Solo ${diasDesdeMd}d post-MD y ${udsPost} uds — esperar más datos antes de evaluar.`;
+        recomendacion_accion = "esperar";
+      }
     } else if (velPre <= 0) {
       estado = "indeterminado";
-      recomendacion = "No había base de venta en pre-period. Mantener baseline + observar otros 14d.";
+      recomendacion = `No había base de venta en pre-period (vel_pre=0). Observar absoluto: ${udsPost} uds en ${diasDesdeMd}d a $${cambio.precio_post.toLocaleString("es-CL")}.`;
       recomendacion_accion = "esperar";
+    } else if (confianza === "baja") {
+      // Datos pero pocos: mostrar lift parcial pero NO emitir acción de lift.
+      // Excepción: alerta stock temprana sí escala.
+      estado = "en_eval";
+      if (alerta_stock_temprana) {
+        const promoBloquea = tienePromoActiva && promoActivaTier >= 3;
+        recomendacion = promoBloquea
+          ? `⚠️ ALERTA STOCK (lift parcial ${lift?.toFixed(2) ?? "—"}× con n=${udsPost} aún preliminar): cob ${cobAlVelPost?.toFixed(1)}d < lead_time+ss ${cobMinima.toFixed(1)}d, A/B. Promo "${promoActivaNombre}" bloquea — acelerar OC.`
+          : `⚠️ ALERTA STOCK (lift parcial ${lift?.toFixed(2) ?? "—"}× con n=${udsPost} aún preliminar): cob ${cobAlVelPost?.toFixed(1)}d < lead_time+ss ${cobMinima.toFixed(1)}d, A/B sin promo. Subir precio o acelerar OC.`;
+        recomendacion_accion = promoBloquea ? "esperar_fin_promo" : "subir_precio";
+      } else {
+        recomendacion = `Datos preliminares (${udsPost} uds en ${diasDesdeMd}d, lift parcial ${lift?.toFixed(2) ?? "—"}×). Esperar a 7d+5uds para early-stop.`;
+        recomendacion_accion = "esperar";
+      }
     } else if (lift != null && lift >= 1.5) {
+      // confianza media o alta + lift bueno → ramificar Hueco 1
       estado = "exitoso";
-      // Hueco 1 — Ramificar exitoso según stock + promo activa:
-      //   1) Stock crítico (clase A/B y cob<lead_time+ss) sin reposición:
-      //      → Ajuste_Plan:21 prescribe SUBIR precio para desacelerar demanda.
-      //      Pero Op_Limpieza:498,504 prohíbe subir durante credibilidad MLC 30d
-      //      si hay promo activa. Solo se puede subir si NO hay promo activa.
-      //   2) Stock crítico + promo activa de tier alto (≥3, DEAL/SMART/etc.):
-      //      → no salir manualmente (perder ranking). Esperar fin de promo
-      //      y subir al siguiente listing (Op_Limpieza:504).
-      //   3) Sin stock crítico:
-      //      → mantener baseline (KPI #4 cumple).
+      const tag = confianza === "alta" ? "✅" : "🟢 (preliminar)";
       if (stockCritico && esClaseAB && !reposicionDisponible) {
         if (tienePromoActiva && promoActivaTier >= 3) {
-          recomendacion = `Lift ${lift.toFixed(2)}× cumple, PERO stock crítico (cob ${cobAlVelPost?.toFixed(1)}d < lead_time+ss ${cobMinima.toFixed(1)}d, clase ${intel?.abc || intel?.abc_ingreso}). Promo activa "${promoActivaNombre}" tier ${promoActivaTier} → NO salir (Op_Limpieza:504). Esperar fin de promo y subir al siguiente listing.`;
+          recomendacion = `${tag} Lift ${lift.toFixed(2)}× cumple, PERO stock crítico (cob ${cobAlVelPost?.toFixed(1)}d < lead_time+ss ${cobMinima.toFixed(1)}d, clase ${intel?.abc || intel?.abc_ingreso}). Promo "${promoActivaNombre}" tier ${promoActivaTier} → NO salir (Op_Limpieza:504). Esperar fin promo y subir.`;
           recomendacion_accion = "esperar_fin_promo";
         } else {
-          recomendacion = `Lift ${lift.toFixed(2)}× cumple, PERO stock crítico (cob ${cobAlVelPost?.toFixed(1)}d < lead_time+ss ${cobMinima.toFixed(1)}d, clase ${intel?.abc || intel?.abc_ingreso}, sin reposición). Subir precio para desacelerar (Ajuste_Plan:21). Sin promo activa que bloquee.`;
+          recomendacion = `${tag} Lift ${lift.toFixed(2)}× cumple, PERO stock crítico (cob ${cobAlVelPost?.toFixed(1)}d < lead_time+ss ${cobMinima.toFixed(1)}d, A/B sin reposición). Subir precio (Ajuste_Plan:21).`;
           recomendacion_accion = "subir_precio";
         }
       } else if (stockCritico && reposicionDisponible) {
-        recomendacion = `Lift ${lift.toFixed(2)}× cumple. Cob baja (${cobAlVelPost?.toFixed(1)}d) pero hay stock_proveedor disponible. Mantener baseline + acelerar reposición.`;
+        recomendacion = `${tag} Lift ${lift.toFixed(2)}×. Cob baja (${cobAlVelPost?.toFixed(1)}d) pero hay stock_proveedor. Mantener + acelerar OC.`;
         recomendacion_accion = "mantener_baseline";
       } else {
-        recomendacion = `Lift ${lift.toFixed(2)}× ≥1.5× — mantener nuevo baseline (Op_Limpieza KPI #4 cumple).`;
+        recomendacion = `${tag} Lift ${lift.toFixed(2)}× ≥1.5× — mantener baseline (Op_Limpieza KPI #4 cumple).`;
         recomendacion_accion = "mantener_baseline";
       }
     } else if (lift != null && lift >= 1.0) {
       estado = "marginal";
-      recomendacion = `Lift ${lift.toFixed(2)}× entre 1.0× y 1.5× — rondar 4 sem antes de profundizar.`;
+      recomendacion = `Lift ${lift.toFixed(2)}× entre 1.0× y 1.5× (confianza ${confianza}) — rondar antes de profundizar.`;
       recomendacion_accion = "esperar";
     } else {
       estado = "sin_lift";
-      // Sin lift: profundizar (otro escalón) está prohibido por Op_Limpieza:498
-      // si todavía estamos en ventana eval. Solo recomendamos profundizar si la
-      // ventana ya cerró. Si todavía está abierta, esperar.
-      recomendacion = `Lift ${lift?.toFixed(2) ?? "—"}× <1.0×. Esperar cierre ventana eval (${VENTANA_EVAL_DIAS - diasDesdeMd}d restantes) antes de profundizar al siguiente escalón.`;
+      if (confianza === "alta") {
+        recomendacion = `Lift ${lift?.toFixed(2) ?? "—"}× <1.0× con ventana 14d completa. Profundizar al siguiente escalón al cerrar ventana eval (${VENTANA_EVAL_DIAS - diasDesdeMd}d restantes).`;
+      } else {
+        recomendacion = `Lift ${lift?.toFixed(2) ?? "—"}× <1.0× preliminar (${confianza}). Esperar cierre ventana 14d antes de profundizar.`;
+      }
       recomendacion_accion = "esperar";
     }
 
@@ -310,8 +368,11 @@ export async function GET(req: NextRequest) {
       stock_actual: stockActual,
       sell_through: sellThrough != null ? Math.round(sellThrough * 1000) / 1000 : null,
       estado,
+      confianza,
+      confianza_motivo,
       recomendacion,
       recomendacion_accion,
+      alerta_stock_temprana,
       margen_pct_actual: cache?.margen_pct ?? null,
       tiene_promo_activa: tienePromoActiva,
       promo_activa_nombre: promoActivaNombre,

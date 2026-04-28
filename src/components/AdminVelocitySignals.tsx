@@ -61,6 +61,7 @@ const SENAL_META: Record<Senal, { titulo: string; icon: string; color: string; b
 // ─── M5-B/C: estado de seguimiento ─────────────────────────────────────
 type EstadoSeg = "en_eval" | "exitoso" | "marginal" | "sin_lift" | "indeterminado" | "expirado";
 type RecAccion = "esperar" | "mantener_baseline" | "subir_precio" | "esperar_fin_promo" | "profundizar" | "salir_deal" | "ninguna";
+type Confianza = "nula" | "baja" | "media" | "alta";
 type SeguimientoRow = {
   sku: string; titulo: string | null; cuadrante: string | null; abc: string | null;
   precio_pre: number; precio_post: number; delta_pct: number;
@@ -69,11 +70,20 @@ type SeguimientoRow = {
   uds_pre_14d: number; uds_post_actuales: number; uds_post_14d: number | null;
   vel_pre: number; vel_post: number | null; lift: number | null;
   stock_al_t0: number; stock_actual: number; sell_through: number | null;
-  estado: EstadoSeg; recomendacion: string; recomendacion_accion: RecAccion;
+  estado: EstadoSeg; confianza: Confianza; confianza_motivo: string;
+  recomendacion: string; recomendacion_accion: RecAccion;
+  alerta_stock_temprana: boolean;
   margen_pct_actual: number | null;
   tiene_promo_activa: boolean; promo_activa_nombre: string | null; promo_activa_tier: number;
   cob_actual_dias: number | null; lead_time_dias: number | null; safety_stock_dias: number | null;
   stock_critico: boolean; reposicion_disponible: boolean;
+};
+
+const CONFIANZA_META: Record<Confianza, { color: string; label: string; icon: string }> = {
+  nula:  { color: "var(--txt3)",  label: "muy temprano", icon: "—" },
+  baja:  { color: "var(--amber)", label: "preliminar",   icon: "◔" },
+  media: { color: "var(--cyan)",  label: "early-stop",   icon: "◑" },
+  alta:  { color: "var(--green)", label: "completa",     icon: "●" },
 };
 type SegResp = {
   ventana_eval_dias: number; ventana_lift_dias: number;
@@ -371,6 +381,7 @@ function SeguimientoPanel({
             <thead>
               <tr>
                 <th>Estado</th>
+                <th>Conf</th>
                 <th>SKU</th>
                 <th>Cambio</th>
                 <th style={{ textAlign: "right" }}>Día</th>
@@ -390,7 +401,7 @@ function SeguimientoPanel({
               {data.seguimiento.map(r => {
                 const m = ESTADO_META[r.estado];
                 return (
-                  <tr key={r.sku + r.t0}>
+                  <tr key={r.sku + r.t0} style={r.alerta_stock_temprana ? { background: "var(--redBg)" } : undefined}>
                     <td>
                       <span style={{
                         display: "inline-block", padding: "2px 6px", borderRadius: 4, fontSize: 10,
@@ -398,6 +409,15 @@ function SeguimientoPanel({
                       }}>
                         {m.icon} {m.label}
                       </span>
+                      {r.alerta_stock_temprana && (
+                        <div style={{ fontSize: 9, color: "var(--red)", marginTop: 2, fontWeight: 600 }}>⚠️ stock</div>
+                      )}
+                    </td>
+                    <td title={r.confianza_motivo} style={{ fontSize: 10 }}>
+                      {(() => {
+                        const c = CONFIANZA_META[r.confianza];
+                        return <span style={{ color: c.color }}>{c.icon} {c.label}</span>;
+                      })()}
                     </td>
                     <td>
                       <div className="mono" style={{ fontWeight: 600 }}>{r.sku}</div>
