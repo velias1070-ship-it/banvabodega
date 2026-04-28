@@ -77,6 +77,7 @@ export default function AdminMarkdownPilot() {
   const [error, setError] = useState<string | null>(null);
   const [applyResult, setApplyResult] = useState<ApplyResp | null>(null);
   const [applyingSku, setApplyingSku] = useState<string | null>(null);
+  const [showBlq, setShowBlq] = useState(false);
 
   async function loadDryRun() {
     setLoading(true);
@@ -130,6 +131,9 @@ export default function AdminMarkdownPilot() {
   const rs = data?.rule_set;
   const ladder = data?.ladder_aplicado;
   const valle = data?.valle_muerte_aplicado;
+  const cands = data?.candidatos ?? [];
+  const ok = cands.filter(c => c.decision === "candidato");
+  const blq = cands.filter(c => c.decision === "skip");
 
   return (
     <div className="card" style={{ padding: 16 }}>
@@ -226,53 +230,48 @@ export default function AdminMarkdownPilot() {
 
       {!data && loading && <div style={{ padding: 16, color: "var(--txt3)", fontSize: 12 }}>Cargando…</div>}
 
-      {data && data.candidatos.length === 0 && (
+      {data && cands.length === 0 && (
         <div style={{ padding: 16, fontSize: 12, color: "var(--txt2)", background: "var(--bg3)", borderRadius: 8 }}>
-          No hay candidatos hoy. Para ver candidatos: o esperar que algún SKU acumule días sin venta, o publicar un rule set con <code>min_dias_para_postular</code> menor (ej. 60d) en draft → approve → promote para piloto temporal.
+          No hay SKUs evaluables hoy. Esperar que acumulen días sin venta o ajustar <code>min_dias_para_postular</code> en el rule set.
         </div>
       )}
 
-      {data && data.candidatos.length > 0 && (
-        <div style={{ overflowX: "auto" }}>
-          <table className="tbl" style={{ width: "100%", fontSize: 12 }}>
-            <thead>
-              <tr>
-                <th style={{ textAlign: "left" }}>SKU</th>
-                <th style={{ textAlign: "left" }}>Nombre</th>
-                <th>Cuad.</th>
-                <th>Stock</th>
-                <th>Días s/v</th>
-                <th>Nivel</th>
-                <th style={{ textAlign: "right" }}>Precio actual</th>
-                <th style={{ textAlign: "right" }}>Precio markdown</th>
-                <th>Decisión</th>
-                <th>Acción</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.candidatos.map(c => {
-                const skip = c.decision === "skip";
-                return (
-                  <tr key={c.sku} style={{ opacity: skip ? 0.55 : 1 }}>
-                    <td style={{ fontFamily: "var(--mono)" }}>{c.sku}</td>
-                    <td style={{ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.nombre}</td>
-                    <td style={{ textAlign: "center" }}>{c.cuadrante || "—"}</td>
-                    <td style={{ textAlign: "center" }}>{c.stock}</td>
-                    <td style={{ textAlign: "center", color: c.dias_sin_venta >= 180 ? "var(--red)" : c.dias_sin_venta >= 120 ? "var(--amber)" : "var(--txt2)" }}>{c.dias_sin_venta}</td>
-                    <td style={{ textAlign: "center", color: "var(--cyan)" }}>{c.nivel_markdown}%</td>
-                    <td style={{ textAlign: "right", fontFamily: "var(--mono)" }}>{fmtCLP(c.precio_actual)}</td>
-                    <td style={{ textAlign: "right", fontFamily: "var(--mono)", color: "var(--cyan)" }}>{fmtCLP(c.precio_markdown)}</td>
-                    <td style={{ textAlign: "center" }}>
-                      {skip ? (
-                        <span title={c.bloqueado_por.join("; ")} style={{ color: "var(--amber)", cursor: "help", fontSize: 11 }}>
-                          skip ({c.bloqueado_por.length})
-                        </span>
-                      ) : (
-                        <span style={{ color: "var(--green)" }}>✓ ok</span>
-                      )}
-                    </td>
-                    <td style={{ textAlign: "center" }}>
-                      {!skip && (
+      {data && cands.length > 0 && (
+        <>
+          <div style={{ display: "flex", gap: 16, alignItems: "center", marginBottom: 8, fontSize: 12 }}>
+            <span style={{ color: "var(--green)", fontWeight: 600 }}>✓ {ok.length} aplicables</span>
+            <span style={{ color: "var(--txt3)" }}>·</span>
+            <span style={{ color: "var(--amber)" }}>⚠ {blq.length} bloqueados</span>
+          </div>
+
+          {ok.length > 0 ? (
+            <div style={{ overflowX: "auto", marginBottom: 16 }}>
+              <table className="tbl" style={{ width: "100%", fontSize: 12 }}>
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: "left" }}>SKU</th>
+                    <th style={{ textAlign: "left" }}>Nombre</th>
+                    <th>Cuad.</th>
+                    <th>Stock</th>
+                    <th>Días s/v</th>
+                    <th>Nivel</th>
+                    <th style={{ textAlign: "right" }}>Precio actual</th>
+                    <th style={{ textAlign: "right" }}>Precio markdown</th>
+                    <th>Acción</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ok.map(c => (
+                    <tr key={c.sku}>
+                      <td style={{ fontFamily: "var(--mono)" }}>{c.sku}</td>
+                      <td style={{ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.nombre}</td>
+                      <td style={{ textAlign: "center" }}>{c.cuadrante || "—"}</td>
+                      <td style={{ textAlign: "center" }}>{c.stock}</td>
+                      <td style={{ textAlign: "center", color: c.dias_sin_venta >= 180 ? "var(--red)" : c.dias_sin_venta >= 120 ? "var(--amber)" : "var(--txt2)" }}>{c.dias_sin_venta}</td>
+                      <td style={{ textAlign: "center", color: "var(--cyan)" }}>{c.nivel_markdown}%</td>
+                      <td style={{ textAlign: "right", fontFamily: "var(--mono)" }}>{fmtCLP(c.precio_actual)}</td>
+                      <td style={{ textAlign: "right", fontFamily: "var(--mono)", color: "var(--cyan)" }}>{fmtCLP(c.precio_markdown)}</td>
+                      <td style={{ textAlign: "center" }}>
                         <button
                           className="scan-btn"
                           style={{ padding: "4px 10px", fontSize: 11 }}
@@ -281,14 +280,70 @@ export default function AdminMarkdownPilot() {
                         >
                           {applyingSku === c.sku ? "..." : "Aplicar"}
                         </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div style={{ padding: 12, fontSize: 12, color: "var(--txt2)", background: "var(--bg3)", borderRadius: 8, marginBottom: 12 }}>
+              Sin candidatos aplicables hoy. {blq.length > 0 ? "Hay SKUs evaluados pero todos bloqueados — ver detalle abajo." : ""}
+            </div>
+          )}
+
+          {blq.length > 0 && (
+            <div>
+              <button
+                onClick={() => setShowBlq(s => !s)}
+                style={{
+                  background: "transparent",
+                  border: "1px solid var(--bg4)",
+                  color: "var(--txt2)",
+                  padding: "6px 12px",
+                  borderRadius: 6,
+                  fontSize: 11,
+                  cursor: "pointer",
+                  marginBottom: 8,
+                }}
+              >
+                {showBlq ? "▾" : "▸"} Bloqueados ({blq.length})
+              </button>
+              {showBlq && (
+                <div style={{ overflowX: "auto" }}>
+                  <table className="tbl" style={{ width: "100%", fontSize: 11 }}>
+                    <thead>
+                      <tr>
+                        <th style={{ textAlign: "left" }}>SKU</th>
+                        <th style={{ textAlign: "left" }}>Nombre</th>
+                        <th>Cuad.</th>
+                        <th>Stock</th>
+                        <th>Días s/v</th>
+                        <th>Nivel</th>
+                        <th style={{ textAlign: "right" }}>Precio actual</th>
+                        <th style={{ textAlign: "left" }}>Bloqueado por</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {blq.map(c => (
+                        <tr key={c.sku} style={{ opacity: 0.7 }}>
+                          <td style={{ fontFamily: "var(--mono)" }}>{c.sku}</td>
+                          <td style={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.nombre}</td>
+                          <td style={{ textAlign: "center" }}>{c.cuadrante || "—"}</td>
+                          <td style={{ textAlign: "center" }}>{c.stock}</td>
+                          <td style={{ textAlign: "center" }}>{c.dias_sin_venta}</td>
+                          <td style={{ textAlign: "center", color: "var(--txt3)" }}>{c.nivel_markdown}%</td>
+                          <td style={{ textAlign: "right", fontFamily: "var(--mono)" }}>{fmtCLP(c.precio_actual)}</td>
+                          <td style={{ fontSize: 10, color: "var(--amber)", maxWidth: 360 }}>{c.bloqueado_por.join(" · ")}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
