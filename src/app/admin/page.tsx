@@ -7769,8 +7769,12 @@ function Productos({ refresh }: { refresh: () => void }) {
           // codigo que va al barcode CODE128 de la etiqueta y que ML escanea
           // al recibir bultos en Full. Lo buscamos en ml_items_map.
           let inventoryId = "";
+          // Filtrar por status_ml='active' (no `activo`, que es flag local stale
+          // si la pub se cierra en ML pero el sync no lo refleja). Caso histórico
+          // 2026-04-28: TXTLILL4G4PNG con dos pubs (una closed, una active) ambas
+          // con activo=true → el resolver elegía el inv_id de la cerrada.
           const { data: mlRow } = await sb.from("ml_items_map")
-            .select("inventory_id").eq("sku", sku).eq("activo", true)
+            .select("inventory_id").eq("sku", sku).eq("status_ml", "active")
             .order("updated_at", { ascending: false }).limit(1).maybeSingle();
           if (mlRow?.inventory_id) inventoryId = mlRow.inventory_id;
           await sb.from("composicion_venta").upsert({
