@@ -56,6 +56,7 @@ WITH ventas_30d AS (
     SUM(v.margen_neto) AS margen_neto
   FROM ventas_ml_cache v
   WHERE v.fecha::timestamptz >= now() - interval '30 days'
+    AND v.anulada = false
   GROUP BY v.sku_venta
 ),
 items_sku AS (
@@ -106,6 +107,7 @@ WITH ventas_30d AS (
   SELECT v.sku_venta AS sku, SUM(v.subtotal) AS gmv, SUM(v.margen_neto) AS margen_neto
   FROM ventas_ml_cache v
   WHERE v.fecha::timestamptz >= now() - interval '30 days'
+    AND v.anulada = false
   GROUP BY v.sku_venta
 ),
 items_sku AS (
@@ -174,6 +176,7 @@ async function fallbackDirectQueries(
       .from("ventas_ml_cache")
       .select("sku_venta, subtotal, margen_neto, fecha")
       .gte("fecha", since30Str)
+      .eq("anulada", false)
       .range(from, from + chunk - 1);
     if (error) {
       console.error(`[cmaa-real] ventas error: ${error.message}`);

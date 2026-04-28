@@ -71,6 +71,7 @@ export async function GET() {
   const { data: ventasRaw } = await sb
     .from("ventas_ml_cache")
     .select("sku_venta, subtotal, margen_neto, fecha")
+    .eq("anulada", false)
     .gte("fecha", sinceStr);
 
   // Agregar por mes (YYYY-MM) por SKU

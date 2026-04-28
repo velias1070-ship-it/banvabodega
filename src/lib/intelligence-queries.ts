@@ -290,11 +290,14 @@ export async function queryUltimaVentaPorSkuOrigen(): Promise<Map<string, string
     }
   }
 
-  // ventas_ml_cache: traer última fecha por sku_venta
+  // ventas_ml_cache: traer última fecha por sku_venta.
+  // Filtrar anulada=false: orden cancelada NO es venta (caso ALPCMPRSQ6012:
+  // venta del 14-mar fue cancelada el 16-abr, motor la contaba como "última venta"
+  // y reportaba 44d sin venta cuando real eran 98d, ocultaba candidato a markdown).
   const ultimaPorSkuVenta = new Map<string, string>();
   {
     const ventas = await paginatedSelect(() =>
-      sb.from("ventas_ml_cache").select("sku_venta, fecha")
+      sb.from("ventas_ml_cache").select("sku_venta, fecha").eq("anulada", false)
     );
     for (const row of ventas as Array<{ sku_venta: string; fecha: string }>) {
       const sku = (row.sku_venta || "").trim().toUpperCase();

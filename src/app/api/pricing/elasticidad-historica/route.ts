@@ -99,6 +99,7 @@ export async function GET(req: Request) {
       .from("ventas_ml_cache")
       .select("subtotal, fecha")
       .eq("sku_venta", c.sku_origen)
+      .eq("anulada", false)
       .gte("fecha", tPre.toISOString())
       .lt("fecha", tPost.toISOString());
 

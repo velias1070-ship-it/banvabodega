@@ -43,6 +43,7 @@ export async function GET(req: NextRequest) {
     .select("order_id, sku_venta, cantidad, canal, fecha, subtotal, estado")
     .eq("sku_venta", sku)
     .eq("estado", "Pagada")
+    .eq("anulada", false)  // estado=Pagada NO basta: orden puede pagarse y anularse después
     .order("fecha", { ascending: false })
     .limit(200);
 

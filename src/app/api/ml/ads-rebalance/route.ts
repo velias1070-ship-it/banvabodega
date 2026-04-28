@@ -50,6 +50,7 @@ export async function GET(req: NextRequest) {
       const { data } = await sb
         .from("ventas_ml_cache")
         .select("id, sku_venta, fecha_date, subtotal, margen, costo_producto")
+        .eq("anulada", false)
         .gte("fecha_date", dateFrom)
         .lte("fecha_date", dateTo)
         .range(off, off + 999);

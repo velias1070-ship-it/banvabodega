@@ -70,6 +70,7 @@ export async function GET() {
           .from("ventas_ml_cache")
           .select("sku_venta, subtotal, margen_neto, logistic_type, fecha")
           .in("sku_venta", chunk)
+          .eq("anulada", false)
           .gte("fecha", sinceStr);
         for (const v of (vs || []) as Array<{
           sku_venta: string;
