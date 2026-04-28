@@ -6,7 +6,7 @@ export const maxDuration = 120;
 export const dynamic = "force-dynamic";
 
 // Atributos que queremos vigilar
-const WATCHED_ATTRS = ["COLOR", "SIZE", "BRAND", "MODEL", "LINE", "SELLER_SKU"];
+const WATCHED_ATTRS = ["COLOR", "SIZE", "BRAND", "MODEL", "LINE", "SELLER_SKU", "FLAT_SHEET_WIDTH", "MATTRESS_SIZE", "FABRIC_DESIGN"];
 
 interface MLItemMultiget {
   code: number;
@@ -59,11 +59,12 @@ export async function GET(req: NextRequest) {
     }
     const isFirstRun = snapshotMap.size === 0;
 
-    // 3. Fetch items en batches de 20
+    // 3. Fetch items en batches de 20 — acumular snapshots y upsert via RPC (bypasea schema cache)
     let checked = 0;
     let changes = 0;
     let newSnapshots = 0;
     const changesList: Array<{ item_id: string; titulo: string; attr_id: string; valor_anterior: string; valor_nuevo: string }> = [];
+    const snapshotsToUpsert: Array<{ item_id: string; attr_id: string; attr_value: string; snapshot_at: string }> = [];
 
     for (let i = 0; i < uniqueIds.length; i += 20) {
       const batch = uniqueIds.slice(i, i + 20);
@@ -73,6 +74,7 @@ export async function GET(req: NextRequest) {
 
       if (!multiResult || !Array.isArray(multiResult)) continue;
 
+      const now = new Date().toISOString();
       for (const wrapper of multiResult) {
         if (wrapper.code !== 200 || !wrapper.body) continue;
         const item = wrapper.body;
@@ -85,10 +87,8 @@ export async function GET(req: NextRequest) {
           const prevVal = snapshotMap.get(key);
 
           if (prevVal === undefined) {
-            // Nuevo snapshot
             newSnapshots++;
           } else if (prevVal !== currentVal) {
-            // Cambio detectado
             changes++;
             changesList.push({
               item_id: item.id,
@@ -100,17 +100,22 @@ export async function GET(req: NextRequest) {
             console.log(`[AttrWatch] CAMBIO: ${item.id} ${attr.id}: "${prevVal}" → "${currentVal}" (${item.title})`);
           }
 
-          // Upsert snapshot
-          await sb.from("ml_item_attr_snapshot").upsert({
-            item_id: item.id,
-            attr_id: attr.id,
-            attr_value: currentVal,
-            snapshot_at: new Date().toISOString(),
-          }, { onConflict: "item_id,attr_id" });
+          snapshotsToUpsert.push({ item_id: item.id, attr_id: attr.id, attr_value: currentVal, snapshot_at: now });
         }
       }
 
       if (i + 20 < uniqueIds.length) await new Promise(r => setTimeout(r, 200));
+    }
+
+    // 3b. Upsert via RPC en chunks (bypass schema cache bug)
+    let upsertErrors = 0;
+    for (let i = 0; i < snapshotsToUpsert.length; i += 500) {
+      const chunk = snapshotsToUpsert.slice(i, i + 500);
+      const { error } = await sb.rpc("upsert_attr_snapshot_batch", { snapshots: chunk });
+      if (error) {
+        upsertErrors++;
+        console.error(`[AttrWatch] RPC chunk ${i} failed: ${error.message}`);
+      }
     }
 
     // 4. Guardar cambios detectados
