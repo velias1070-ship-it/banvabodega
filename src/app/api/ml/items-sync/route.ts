@@ -72,18 +72,17 @@ export async function GET(req: NextRequest) {
         for (const wrapper of multiResult) {
           if (wrapper.code === 200 && wrapper.body) {
             const item = wrapper.body;
-            // Caso real ALPCMPRSQ6012 (28-abr-2026): API /items devuelve
-            // item.price=19787 (precio base del seller, valor histórico),
-            // pero el listing real ML tenía price_ml=29980 + Día de la Mama
-            // -40% efectivo=17980. Para DEALs externos de ML, item.price
-            // queda contaminado por valores antiguos. Preferir original_price
-            // si es mayor (refleja el lista real cuando hay promo seller).
-            // El precio efectivo "real" se calcula en margin-cache/refresh.
-            const itemAny = item as { price: number; original_price?: number | null };
-            const priceWrite = Math.max(itemAny.price || 0, itemAny.original_price || 0);
+            // 2026-04-28: items-sync NO escribe `price`. Razón:
+            // API /items/{id} devuelve price base del seller que NO refleja
+            // DEALs externos ML (Dia de la Mama, Cyber Day) ni original_price
+            // cuando ML aplica promos por encima sin tocar item.price.
+            // Caso ALPCMPRSQ6012: API devuelve price=19787 + original_price=null,
+            // pero lista real era $29.980 (visible solo en /seller-promotions).
+            // SSoT del precio = ml_margin_cache (cruza /items + /seller-promotions
+            // cada 2 min y persiste price_ml correcto). margin-cache/refresh
+            // ahora también espejea ml_items_map.price con price_ml correcto.
             const { error } = await sb.from("ml_items_map").update({
               titulo: item.title,
-              price: priceWrite,
               status_ml: item.status,
               thumbnail: item.thumbnail,
               permalink: item.permalink,
@@ -106,11 +105,9 @@ export async function GET(req: NextRequest) {
           try {
             const item = await mlGet<MLItemMultiget["body"]>(`/items/${id}`);
             if (item) {
-              const itemAny = item as { price: number; original_price?: number | null };
-              const priceWrite = Math.max(itemAny.price || 0, itemAny.original_price || 0);
+              // No escribir price: ver comentario arriba (SSoT = margin-cache).
               await sb.from("ml_items_map").update({
                 titulo: item.title,
-                price: priceWrite,
                 status_ml: item.status,
                 thumbnail: item.thumbnail,
                 permalink: item.permalink,
