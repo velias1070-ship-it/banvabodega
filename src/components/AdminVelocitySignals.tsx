@@ -29,6 +29,8 @@ type Sugerencia = {
   precio_propuesto: number;
   motivo: string;
   bloqueado_por: string[];
+  es_ruido: boolean;
+  ruido_motivos: string[];
 };
 
 type Resp = {
@@ -44,6 +46,10 @@ type Resp = {
   stats: {
     total_evaluados: number; total_sugerencias: number;
     caidas: number; aceleraciones: number; estabilidades: number; bloqueadas: number;
+    ruido?: number; accionables?: number;
+  };
+  noise_thresholds?: {
+    min_vel_60d: number; min_ventas_60d: number; excluir_cuadrante: string[];
   };
   sugerencias: Sugerencia[];
 };
@@ -195,6 +201,7 @@ export default function AdminVelocitySignals() {
   const [segError, setSegError] = useState<string | null>(null);
   const [applyingSku, setApplyingSku] = useState<string | null>(null);
   const [appliedMap, setAppliedMap] = useState<Record<string, { ok: boolean; msg: string }>>({});
+  const [mostrarRuido, setMostrarRuido] = useState(false);
 
   async function aplicar(s: Sugerencia) {
     if (s.delta_pct_sugerido === 0) return;
@@ -341,6 +348,37 @@ export default function AdminVelocitySignals() {
             </div>
           </div>
 
+          {/* Toggle ruido — Engines:544 + Op_Limpieza:522. Por default oculta
+              SKUs con vel_60d<0.1, ventas_60d<3, o cuadrante REVISAR. */}
+          {(data.stats.ruido ?? 0) > 0 && (
+            <div style={{
+              padding: "6px 10px", marginBottom: 10, fontSize: 11,
+              background: mostrarRuido ? "var(--amberBg)" : "var(--bg3)",
+              border: `1px solid ${mostrarRuido ? "var(--amberBd)" : "var(--bg4)"}`,
+              borderRadius: 6, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12,
+            }}>
+              <span style={{ color: mostrarRuido ? "var(--amber)" : "var(--txt2)" }}>
+                {mostrarRuido
+                  ? <>⚠️ Mostrando todas — incluyendo {data.stats.ruido} sugerencias de bajo n / cuadrante REVISAR (probable ruido)</>
+                  : <>🎯 Ocultas {data.stats.ruido} sugerencias de bajo n / cuadrante REVISAR · mostrando {data.stats.accionables ?? (data.stats.total_sugerencias - (data.stats.ruido ?? 0))} accionables</>
+                }
+                {data.noise_thresholds && (
+                  <span style={{ marginLeft: 8, color: "var(--txt3)" }}>
+                    (umbral: vel_60d ≥ {data.noise_thresholds.min_vel_60d}/d, ventas_60d ≥ {data.noise_thresholds.min_ventas_60d})
+                  </span>
+                )}
+              </span>
+              <button onClick={() => setMostrarRuido(v => !v)}
+                style={{
+                  padding: "4px 10px", border: "1px solid var(--bg4)",
+                  background: "var(--bg2)", color: "var(--txt)",
+                  borderRadius: 4, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap",
+                }}>
+                {mostrarRuido ? "Ocultar ruido" : "Mostrar todas"}
+              </button>
+            </div>
+          )}
+
           {/* Tabla */}
           {data.sugerencias.length === 0 ? (
             <div style={{ padding: 16, textAlign: "center", color: "var(--txt3)", fontSize: 13 }}>
@@ -366,12 +404,12 @@ export default function AdminVelocitySignals() {
                   </tr>
                 </thead>
                 <tbody>
-                  {data.sugerencias.slice(0, 100).map((s) => {
+                  {(mostrarRuido ? data.sugerencias : data.sugerencias.filter(s => !s.es_ruido)).slice(0, 100).map((s) => {
                     const meta = SENAL_META[s.senal];
                     const bloq = s.bloqueado_por.length > 0;
                     const deltaSign = s.delta_pct_sugerido > 0 ? "+" : s.delta_pct_sugerido < 0 ? "" : "±";
                     return (
-                      <tr key={s.sku + s.senal} style={{ opacity: bloq ? 0.6 : 1 }}>
+                      <tr key={s.sku + s.senal} style={{ opacity: bloq || s.es_ruido ? 0.6 : 1 }}>
                         <td>
                           <span style={{
                             display: "inline-block", padding: "2px 6px", borderRadius: 4, fontSize: 10,
@@ -381,7 +419,19 @@ export default function AdminVelocitySignals() {
                           </span>
                         </td>
                         <td>
-                          <div className="mono" style={{ fontWeight: 600 }}>{s.sku}</div>
+                          <div className="mono" style={{ fontWeight: 600 }}>
+                            {s.sku}
+                            {s.es_ruido && (
+                              <span title={s.ruido_motivos.join(" · ")}
+                                style={{
+                                  marginLeft: 6, padding: "1px 5px", borderRadius: 3,
+                                  background: "var(--amberBg)", color: "var(--amber)",
+                                  border: "1px solid var(--amberBd)", fontSize: 9, fontWeight: 600,
+                                }}>
+                                ruido
+                              </span>
+                            )}
+                          </div>
                           <div style={{ fontSize: 10, color: "var(--txt3)", maxWidth: 200, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.nombre}</div>
                           <div style={{ fontSize: 10, color: "var(--txt3)" }}>{s.cuadrante || "—"} · ABC {s.abc || "—"}</div>
                         </td>

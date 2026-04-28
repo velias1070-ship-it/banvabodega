@@ -119,7 +119,18 @@ type Sugerencia = {
   precio_propuesto: number;
   motivo: string;
   bloqueado_por: string[];
+  // ─── Filtros de ruido (toggle UI "Mostrar ruido") ──────────────────
+  // Engines:544 (lift sostenido p<0.05 requiere n>=14d completo + uds significativas)
+  // Op_Limpieza:522 KPI #4 — sin n suficiente, "lift" calculado es ruido estadístico
+  es_ruido: boolean;             // true si la sugerencia debería ocultarse por default
+  ruido_motivos: string[];       // razones por las que es ruido (para badge UI)
 };
+
+// Umbrales para clasificar como ruido (alineados con manuales).
+// MIN_VEL_60D: <0.1/d ≈ <6 ventas en 60d → slow-mover crónico, no caída.
+// CONFIANZA_NULA_VENTAS_60D: <3 ventas en 60d → n insuficiente para concluir.
+const NOISE_MIN_VEL_60D = 0.1;
+const NOISE_MIN_VENTAS_60D = 3;
 
 export async function GET(req: NextRequest) {
   const sb = getServerSupabase();
@@ -225,6 +236,20 @@ export async function GET(req: NextRequest) {
     const margenMin = margenMinByCuadrante.get(cuadrante) ?? margenMinByCuadrante.get("_DEFAULT") ?? 0;
     const tendPct = Number(r.tendencia_vel_pct ?? 0);
 
+    // Clasificación de ruido (común a todas las señales). Se calcula una sola
+    // vez por SKU y se anexa a la sugerencia para que la UI pueda filtrar/badgear.
+    const ruidoMotivos: string[] = [];
+    if (v60 < NOISE_MIN_VEL_60D) {
+      ruidoMotivos.push(`vel_60d=${v60.toFixed(2)}<${NOISE_MIN_VEL_60D}/d (slow-mover)`);
+    }
+    if (ventas60d < NOISE_MIN_VENTAS_60D) {
+      ruidoMotivos.push(`solo ${ventas60d} uds en 60d (n insuficiente)`);
+    }
+    if (cuadrante === "REVISAR") {
+      ruidoMotivos.push("cuadrante REVISAR (sano mal clasificado, task #38)");
+    }
+    const esRuido = ruidoMotivos.length > 0;
+
     const baseSugerencia = {
       sku,
       item_id: cache.item_id,
@@ -240,6 +265,8 @@ export async function GET(req: NextRequest) {
       precio_lista: precioLista,
       margen_pct: margenPct,
       costo,
+      es_ruido: esRuido,
+      ruido_motivos: ruidoMotivos,
     };
 
     // ─── GATE GLOBAL: VENTANA DE EVALUACIÓN POST-MARKDOWN ───────────────
@@ -343,6 +370,11 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     rule_set: rule_set_meta(rs),
     cfg,
+    noise_thresholds: {
+      min_vel_60d: NOISE_MIN_VEL_60D,
+      min_ventas_60d: NOISE_MIN_VENTAS_60D,
+      excluir_cuadrante: ["REVISAR"],
+    },
     stats: {
       total_evaluados: intel.length,
       total_sugerencias: resultado.length,
@@ -350,6 +382,8 @@ export async function GET(req: NextRequest) {
       aceleraciones:   resultado.filter(s => s.senal === "aceleracion").length,
       estabilidades:   resultado.filter(s => s.senal === "estabilidad_post_markdown").length,
       bloqueadas:      resultado.filter(s => s.bloqueado_por.length > 0).length,
+      ruido:           resultado.filter(s => s.es_ruido).length,
+      accionables:     resultado.filter(s => !s.es_ruido).length,
     },
     sugerencias: resultado,
   });
