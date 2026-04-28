@@ -5,6 +5,7 @@ import {
   collapseSwapBlips, ultimaBajadaRealPorSku, evaluarVentanaEval, VENTANA_EVAL_DIAS,
   type PriceHistoryRow,
 } from "@/lib/pricing";
+import { newCorrelationId } from "@/lib/pricing-tracking";
 import { loadActiveRuleSet, readRule, logDecision, type MarkdownLadder, type ValleMuerte } from "@/lib/pricing-rules";
 import { mlPut, logPriceChange } from "@/lib/ml";
 import { queryUltimaVentaPorSkuOrigen } from "@/lib/intelligence-queries";
@@ -386,6 +387,7 @@ async function handle(req: NextRequest) {
         .update({ price: result.price, updated_at: new Date().toISOString() })
         .eq("item_id", principalCand.item_id);
 
+      const correlationId = newCorrelationId();
       await logPriceChange({
         item_id: principalCand.item_id,
         sku: cand.sku,
@@ -397,8 +399,12 @@ async function handle(req: NextRequest) {
           dias_sin_venta: cand.dias_sin_venta,
           nivel_markdown: cand.nivel_markdown,
           rule_set_hash: rs?.content_hash,
-          motivo: cand.motivo,
+          motivo_legacy: cand.motivo,
         },
+        // v95 — markdown automático por aging (cron 90/120/180d).
+        motivo: "markdown_aging",
+        actor: "auto",
+        correlation_id: correlationId,
       });
 
       await logDecision({
@@ -420,6 +426,9 @@ async function handle(req: NextRequest) {
           item_id: principalCand.item_id,
         },
         applied: true,
+        motivo: "markdown_aging",
+        actor: "auto",
+        request_id: correlationId,
       });
     }
 

@@ -2806,6 +2806,14 @@ export interface LogPriceChangeOpts {
   sku?: string | null;
   sku_origen?: string | null;
   contexto?: Record<string, unknown> | null;
+  // v95 — tracking tipado (manuales: Engines:432, Op_Limpieza:87,89,509).
+  // Si el caller los omite, motivo se infiere por heurística (fuente+contexto)
+  // y actor queda como 'desconocido'. Las decisiones tomadas desde UI deben
+  // pasarlos explícitos para no depender de inferencia.
+  motivo?: import("./pricing-tracking").MotivoPrecio | null;
+  motivo_detalle?: Record<string, unknown> | null;
+  actor?: import("./pricing-tracking").ActorPrecio | null;
+  correlation_id?: string | null;
 }
 
 export async function logPriceChange(opts: LogPriceChangeOpts): Promise<void> {
@@ -2918,6 +2926,11 @@ export async function logPriceChange(opts: LogPriceChangeOpts): Promise<void> {
     }
   } catch {/* best effort */}
 
+  // v95 — resolver motivo: explícito > inferencia desde fuente+contexto.
+  // (`pricing-tracking` import dinámico para evitar ciclo con server bundle.)
+  const { inferMotivoFromFuente } = await import("./pricing-tracking");
+  const motivo = opts.motivo ?? inferMotivoFromFuente(opts.fuente, enriched);
+
   const { error } = await sb.from("ml_price_history").insert({
     item_id: opts.item_id,
     sku,
@@ -2931,6 +2944,10 @@ export async function logPriceChange(opts: LogPriceChangeOpts): Promise<void> {
     fuente: opts.fuente,
     ejecutado_por: opts.ejecutado_por ?? null,
     contexto: Object.keys(enriched).length > 0 ? enriched : null,
+    motivo: motivo ?? null,
+    motivo_detalle: opts.motivo_detalle ?? null,
+    actor: opts.actor ?? (opts.ejecutado_por?.startsWith("cron_") ? "auto" : null),
+    correlation_id: opts.correlation_id ?? null,
   });
   if (error) console.error(`[ml_price_history] insert failed item=${opts.item_id} fuente=${opts.fuente}: ${error.message}`);
 }

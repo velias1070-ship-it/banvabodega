@@ -701,6 +701,12 @@ export async function POST(req: NextRequest) {
             domain: "global",
             channel: "production",
             rule_set_hash: ruleSetHash,
+            // v95: motor automático → motivo='postular_evento', actor='auto'.
+            // request_id queda null (el cron no produce ml_price_history directo;
+            // la inserción ocurre dentro de /api/ml/promotions). Si quisiéramos
+            // correlación cron→history, habría que pasar correlationId via fetch.
+            motivo: "postular_evento",
+            actor: "auto",
             inputs: {
               item_id,
               promotion_type,
@@ -750,6 +756,12 @@ export async function POST(req: NextRequest) {
             domain: "global",
             channel: "production",
             rule_set_hash: ruleSetHash,
+            // v95: motor automático → motivo='postular_evento', actor='auto'.
+            // request_id queda null (el cron no produce ml_price_history directo;
+            // la inserción ocurre dentro de /api/ml/promotions). Si quisiéramos
+            // correlación cron→history, habría que pasar correlationId via fetch.
+            motivo: "postular_evento",
+            actor: "auto",
             inputs: {
               item_id,
               promotion_type,

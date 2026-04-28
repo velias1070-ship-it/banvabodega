@@ -194,6 +194,11 @@ export async function logDecision(args: {
   inputs:        Record<string, unknown>;
   decision:      Record<string, unknown>;
   applied?:      boolean;
+  // v95 — manual: Engines:432 (reason text NOT NULL), Op_Limpieza:87
+  // (aprobado_por), Engines:217 (request_id correlation).
+  motivo?:       import("./pricing-tracking").MotivoPrecio | null;
+  actor?:        import("./pricing-tracking").ActorPrecio | null;
+  request_id?:   string | null;
 }): Promise<boolean> {
   const sb = getServerSupabase();
   if (!sb) return false;
@@ -206,6 +211,9 @@ export async function logDecision(args: {
     p_inputs:        args.inputs,
     p_decision:      args.decision,
     p_applied:       args.applied ?? false,
+    p_motivo:        args.motivo ?? null,
+    p_actor:         args.actor ?? null,
+    p_request_id:    args.request_id ?? null,
   });
   if (error) {
     console.error(`[pricing-rules] log_pricing_decision failed: ${error.message}`);

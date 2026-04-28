@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { mlGet, logPriceChange } from "@/lib/ml";
+import { newCorrelationId, type MotivoPrecio, type ActorPrecio } from "@/lib/pricing-tracking";
 import { getServerSupabase } from "@/lib/supabase-server";
 import { loadActiveRuleSet, logDecision } from "@/lib/pricing-rules";
 
@@ -225,6 +226,13 @@ export async function POST(req: NextRequest) {
     if (!item_id || !action) {
       return NextResponse.json({ error: "item_id y action requeridos" }, { status: 400 });
     }
+    // v95 — motivo y actor del cambio. Si caller no los pasa, default razonable
+    // según action. Manuales: Engines:432 (reason text NOT NULL), Op_Limpieza:87
+    // (aprobado_por). Permite distinguir hipótesis (Pulsos) de operativo (DEAL).
+    const motivoBody = (body.motivo as MotivoPrecio | undefined) ?? null;
+    const actorBody = (body.actor as ActorPrecio | undefined) ?? "admin";
+    const motivoDetalle = (body.motivo_detalle as Record<string, unknown> | undefined) ?? null;
+    const correlationId = newCorrelationId();
 
     const token = await getToken();
     const auditSb = getServerSupabase();
@@ -390,6 +398,10 @@ export async function POST(req: NextRequest) {
           promo_name: promotion_id || promotion_type, fuente: "promo_join",
           ejecutado_por: "admin_ui",
           contexto: { promotion_type, promotion_id, deal_price_requested: deal_price, overridden: true },
+          motivo: motivoBody,  // explicit del UI; null → infer (postular_evento/ml_obliga_precio)
+          motivo_detalle: motivoDetalle,
+          actor: actorBody,
+          correlation_id: correlationId,
         });
         // Audit canónico: cambios manuales también van a pricing_decision_log
         // (Engines:80, "rerun specific request"). Trazabilidad simétrica con motor.
@@ -401,6 +413,9 @@ export async function POST(req: NextRequest) {
             inputs: { item_id, promotion_type, promotion_id, precio_anterior: prevPrice, deal_price_requested: deal_price },
             decision: { accion: "manual_promo_join", applied_price: appliedPrice, status: "overridden" },
             applied: true,
+            motivo: motivoBody,
+            actor: actorBody,
+            request_id: correlationId,
           });
         }
         return NextResponse.json({
@@ -422,6 +437,10 @@ export async function POST(req: NextRequest) {
           promo_name: promotion_id || promotion_type, fuente: "promo_join",
           ejecutado_por: "admin_ui",
           contexto: { promotion_type, promotion_id, deal_price_requested: deal_price },
+          motivo: motivoBody,
+          motivo_detalle: motivoDetalle,
+          actor: actorBody,
+          correlation_id: correlationId,
         });
         if (prevSku) {
           const rs = await loadActiveRuleSet();
@@ -431,6 +450,9 @@ export async function POST(req: NextRequest) {
             inputs: { item_id, promotion_type, promotion_id, precio_anterior: prevPrice, deal_price_requested: deal_price },
             decision: { accion: "manual_promo_join", applied_price: appliedPrice, status: "ok" },
             applied: true,
+            motivo: motivoBody,
+            actor: actorBody,
+            request_id: correlationId,
           });
         }
       }
@@ -460,11 +482,18 @@ export async function POST(req: NextRequest) {
       // si ML devolvio algo en data.price post-delete).
       const postDeletePrice = (data as { price?: number }).price;
       if (postDeletePrice) {
+        // Para delete, motivo default es 'revertir' (subir precio post-promo).
+        // El caller puede override via body.motivo si fue otra razón.
+        const motivoDelete = motivoBody ?? "revertir";
         await logPriceChange({
           item_id, sku: prevSku,
           precio: postDeletePrice, precio_anterior: prevPrice,
           fuente: "promo_delete", ejecutado_por: "admin_ui",
           contexto: { promotion_type: delType, promotion_id: delId },
+          motivo: motivoDelete,
+          motivo_detalle: motivoDetalle,
+          actor: actorBody,
+          correlation_id: correlationId,
         });
         if (prevSku) {
           const rs = await loadActiveRuleSet();
@@ -474,6 +503,9 @@ export async function POST(req: NextRequest) {
             inputs: { item_id, promotion_type: delType, promotion_id: delId, precio_anterior: prevPrice },
             decision: { accion: "manual_promo_delete", applied_price: postDeletePrice, status: "ok" },
             applied: true,
+            motivo: motivoDelete,
+            actor: actorBody,
+            request_id: correlationId,
           });
         }
       }
