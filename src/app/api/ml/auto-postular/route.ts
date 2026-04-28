@@ -3,9 +3,10 @@ import { getServerSupabase } from "@/lib/supabase-server";
 import {
   evaluarGates, margenPostAds, resolverPricingConfig,
   evaluarCooldown, COOLDOWN_VENTANA_HORAS, COOLDOWN_MAX_BAJADAS,
-  tierVitrina,
-  type CanalLogistico, type PricingCuadranteConfig,
+  tierVitrina, collapseSwapBlips,
+  type CanalLogistico, type PricingCuadranteConfig, type PriceHistoryRow,
 } from "@/lib/pricing";
+import { loadActiveRuleSet, logDecision } from "@/lib/pricing-rules";
 import { getBaseUrl } from "@/lib/base-url";
 
 export const maxDuration = 300;
@@ -245,18 +246,28 @@ export async function POST(req: NextRequest) {
   // precio ocurridas en la ventana (24h por default) desde ml_price_history,
   // por sku, para evaluarlo como gate por SKU sin n+1 queries.
   // Manual: BANVA_Pricing_Investigacion_Comparada §4.1 implicacion #3.
+  // Cargamos AMPLIO (sin filtro delta_pct, todas las fuentes) para que
+  // collapseSwapBlips vea el evento real + sus eco sync_diff y los colapse.
+  // Filtramos delta_pct<0 DESPUES del colapso (regla 6 inventory-policy:
+  // construir sobre fuente canónica, no sobre respuesta filtrada).
   const cooldownDesde = new Date(Date.now() - COOLDOWN_VENTANA_HORAS * 3600_000).toISOString();
   const bajadasPorSku = new Map<string, number>();
   if (skus.length > 0) {
     for (let i = 0; i < skus.length; i += 500) {
       const chunk = skus.slice(i, i + 500);
-      const { data: bajadas } = await sb.from("ml_price_history")
-        .select("sku, delta_pct")
+      const { data: bajadasRaw, error: bajadasErr } = await sb.from("ml_price_history")
+        .select("item_id, sku, sku_origen, precio, precio_anterior, delta_pct, fuente, detected_at")
         .in("sku", chunk)
-        .lt("delta_pct", 0)
         .gte("detected_at", cooldownDesde);
-      for (const r of (bajadas || []) as Array<{ sku: string }>) {
-        bajadasPorSku.set(r.sku, (bajadasPorSku.get(r.sku) || 0) + 1);
+      if (bajadasErr) {
+        console.error(`[auto-postular] cooldown query failed (chunk ${i}): ${bajadasErr.message}`);
+        continue;
+      }
+      const eventos = collapseSwapBlips((bajadasRaw || []) as PriceHistoryRow[]);
+      for (const e of eventos) {
+        if (!e.sku) continue;
+        if (e.delta_pct == null || e.delta_pct >= 0) continue;
+        bajadasPorSku.set(e.sku, (bajadasPorSku.get(e.sku) || 0) + 1);
       }
     }
   }
@@ -575,6 +586,11 @@ export async function POST(req: NextRequest) {
 
     apply_stats.ejecutadas = postularRows.length;
 
+    // Cargar rule set activo una vez para hash de auditoría
+    // (Engines:219: cada decision_log row referencia el rule set vigente).
+    const ruleSet = await loadActiveRuleSet();
+    const ruleSetHash = ruleSet?.content_hash || "FALLBACK";
+
     for (const { row, id } of postularRows) {
       const item_id = row.item_id as string;
       const promotion_type = row.promo_type as string | null;
@@ -645,6 +661,31 @@ export async function POST(req: NextRequest) {
               },
             }).eq("id", id);
           }
+          await logDecision({
+            sku_origen: row.sku as string,
+            domain: "global",
+            channel: "production",
+            rule_set_hash: ruleSetHash,
+            inputs: {
+              item_id,
+              promotion_type,
+              promotion_id,
+              precio_actual: row.precio_actual,
+              precio_objetivo: row.precio_objetivo,
+              floor_calculado: row.floor_calculado,
+              margen_proyectado_pct: row.margen_proyectado_pct,
+              cuadrante: (row.contexto as Record<string, unknown>)?.cuadrante ?? null,
+            },
+            decision: {
+              accion: "auto_postular_apply",
+              promo_name: row.promo_name,
+              applied_price: respJson.warning.applied,
+              requested_price: respJson.warning.requested,
+              status: "overridden",
+              warning_message: respJson.warning.message,
+            },
+            applied: true,
+          });
         } else {
           apply_stats.ok++;
           const appliedPrice = respJson.result?.price ?? deal_price;
@@ -666,6 +707,32 @@ export async function POST(req: NextRequest) {
               },
             }).eq("id", id);
           }
+          // Decision log canónico (Engines:219). Se escribe SOLO en apply OK
+          // (no en errores ni dry_run) para que sea trazable: "este SKU recibió
+          // decisión motor el dia X con rule_set Y, resultado Z".
+          await logDecision({
+            sku_origen: row.sku as string,
+            domain: "global",
+            channel: "production",
+            rule_set_hash: ruleSetHash,
+            inputs: {
+              item_id,
+              promotion_type,
+              promotion_id,
+              precio_actual: row.precio_actual,
+              precio_objetivo: row.precio_objetivo,
+              floor_calculado: row.floor_calculado,
+              margen_proyectado_pct: row.margen_proyectado_pct,
+              cuadrante: (row.contexto as Record<string, unknown>)?.cuadrante ?? null,
+            },
+            decision: {
+              accion: "auto_postular_apply",
+              promo_name: row.promo_name,
+              applied_price: appliedPrice,
+              status: "ok",
+            },
+            applied: true,
+          });
         }
       } catch (e) {
         apply_stats.error++;

@@ -186,6 +186,19 @@ async function runRefresh(force = false) {
       .order("sold_quantity", { ascending: false, nullsFirst: false });
     if (mlErr) throw new Error(`ML items query error: ${mlErr.message}`);
 
+    // 4a. Precio efectivo (con promo aplicada) por item desde ml_margin_cache.
+    // ml_items_map.price = precio base del listing; ml_margin_cache.precio_venta
+    // = precio que el cliente paga con promo activa. Ambos quedan persistidos
+    // (precio_actual + precio_venta_efectivo) para 30-day rolling rule
+    // (Comparada:103) y elasticidad pre/post (Engines:282).
+    const { data: marginRows } = await sb
+      .from("ml_margin_cache")
+      .select("item_id, precio_venta");
+    const precioVentaByItemId = new Map<string, number | null>();
+    for (const r of (marginRows || []) as { item_id: string; precio_venta: number | null }[]) {
+      precioVentaByItemId.set(r.item_id, r.precio_venta);
+    }
+
     // Contar publicaciones por sku_origen (para badge "N pub")
     const mlCountsPorOrigen = new Map<string, number>();
     for (const m of mlItems || []) {
@@ -432,6 +445,7 @@ async function runRefresh(force = false) {
         margen_full_30d: margenFull30,
         margen_flex_30d: (si?.margen_flex_30d as number) || 0,
         precio_actual: (m.price as number) || 0,
+        precio_venta_efectivo: precioVentaByItemId.get(itemId) ?? null,
         precio_promedio_30d: precioProm30,
         costo_promedio: costo,
         cuadrante: (si?.cuadrante as string) || null,

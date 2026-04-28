@@ -37,18 +37,48 @@ export async function POST(req: NextRequest) {
   return handle(req);
 }
 
+// Cobertura mínima esperada para considerar exitosa la corrida del cron.
+// Catalogo activo ~342 SKUs (2026-04-28). Si baseline + auto-postular juntos
+// caen <250 SKUs en el día, asumimos que el cron falló o tuvo bug y lo
+// reportamos como falla a ml_sync_health.
+const MIN_COVERAGE_OK = 250;
+
+async function reportHealth(ok: boolean, errMsg?: string): Promise<void> {
+  const sb = getServerSupabase();
+  if (!sb) return;
+  const now = new Date().toISOString();
+  const updates: Record<string, unknown> = { last_attempt_at: now };
+  if (ok) {
+    updates.last_success_at = now;
+    updates.last_error = null;
+    updates.consecutive_failures = 0;
+  } else {
+    updates.last_error = (errMsg ?? "unknown").slice(0, 500);
+  }
+  try {
+    await sb.from("ml_sync_health").update(updates).eq("job_name", "pricing_baseline_cron");
+  } catch (e) {
+    console.error(`[recalcular-floors] reportHealth failed: ${e}`);
+  }
+}
+
 async function handle(req: NextRequest) {
   if (!isAuthorized(req)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
   const sb = getServerSupabase();
-  if (!sb) return NextResponse.json({ error: "no_db" }, { status: 500 });
+  if (!sb) {
+    await reportHealth(false, "no_db");
+    return NextResponse.json({ error: "no_db" }, { status: 500 });
+  }
 
   const start = Date.now();
   const stats = {
     productos_evaluados: 0,
     pisos_calculados: 0,
+    pisos_inserted: 0,
+    insert_errors: 0,
     skipped_sin_costo: 0,
     skipped_sin_listing: 0,
     skipped_descontinuado: 0,
@@ -84,7 +114,10 @@ async function handle(req: NextRequest) {
   // 3. Productos activos
   const { data: prods, error: ePr } = await sb.from("productos")
     .select("sku, costo, costo_promedio, precio_piso, margen_minimo_pct, politica_pricing, es_kvi, auto_postular, estado_sku");
-  if (ePr) return NextResponse.json({ error: ePr.message }, { status: 500 });
+  if (ePr) {
+    await reportHealth(false, `productos query: ${ePr.message}`);
+    return NextResponse.json({ error: ePr.message }, { status: 500 });
+  }
   const productos = (prods || []) as Array<{
     sku: string; costo: number | null; costo_promedio: number | null;
     precio_piso: number | null; margen_minimo_pct: number | null;
@@ -96,7 +129,10 @@ async function handle(req: NextRequest) {
   const { data: cacheRows, error: eCache } = await sb.from("ml_margin_cache")
     .select("sku, item_id, status_ml, price_ml, precio_venta, costo_neto, peso_facturable, comision_pct, envio_clp, logistic_type, stock_total")
     .eq("status_ml", "active");
-  if (eCache) return NextResponse.json({ error: eCache.message }, { status: 500 });
+  if (eCache) {
+    await reportHealth(false, `margin_cache query: ${eCache.message}`);
+    return NextResponse.json({ error: eCache.message }, { status: 500 });
+  }
   type CacheRow = {
     sku: string; item_id: string; price_ml: number | null;
     precio_venta: number | null; costo_neto: number | null;
@@ -248,14 +284,39 @@ async function handle(req: NextRequest) {
     const { error } = await sb.from("auto_postulacion_log").insert(chunk);
     if (error) {
       console.error(`[recalcular-floors] insert batch error: ${error.message}`);
+      stats.insert_errors += chunk.length;
       stats.errores += chunk.length;
+    } else {
+      stats.pisos_inserted += chunk.length;
     }
   }
 
+  // Cobertura total del día: baseline_warming insertado + skus que ya fueron
+  // evaluados por auto-postular antes (skusEvaluadosHoy). Eso es el universo
+  // total de SKUs con snapshot de precio hoy.
+  const coverage_today = stats.pisos_inserted + skusEvaluadosHoy.size;
+  const low_coverage = coverage_today < MIN_COVERAGE_OK;
+  if (low_coverage) {
+    console.warn(
+      `[recalcular-floors] LOW_COVERAGE coverage_today=${coverage_today} ` +
+      `(baseline_inserted=${stats.pisos_inserted} + auto_postular_prev=${skusEvaluadosHoy.size}). ` +
+      `Esperado >=${MIN_COVERAGE_OK}. Posible falla del cron auto-postular o filtros excluyentes.`
+    );
+  }
+
+  const ok = stats.insert_errors === 0 && !low_coverage;
+  await reportHealth(ok, low_coverage
+    ? `low_coverage: ${coverage_today} SKUs (esperado >=${MIN_COVERAGE_OK})`
+    : (stats.insert_errors > 0 ? `${stats.insert_errors} insert errors` : undefined)
+  );
+
   return NextResponse.json({
-    ok: true,
+    ok,
     duration_ms: Date.now() - start,
     stats,
+    coverage_today,
+    min_coverage_ok: MIN_COVERAGE_OK,
+    low_coverage,
     muestra,
   });
 }

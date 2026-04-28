@@ -26,6 +26,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
 import { loadActiveRuleSet, readRule } from "@/lib/pricing-rules";
+import { collapseSwapBlips, type PriceHistoryRow } from "@/lib/pricing";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -161,18 +162,31 @@ export async function GET(req: NextRequest) {
   for (const c of (cuadCfg || []) as CuadranteRow[]) margenMinByCuadrante.set(c.cuadrante, c.margen_min_pct);
 
   // 5. Última bajada de precio reciente (para detector estabilidad post-markdown)
-  // Lee ml_price_history últimas 60d por sku_origen
+  // Lee ml_price_history últimas 60d por sku_origen.
+  //
+  // Importante: cargamos AMPLIO (sin filtro delta_pct) porque collapseSwapBlips
+  // necesita ver el evento "real" + sus eco sync_diff juntos. Si filtramos por
+  // delta_pct < -5 antes, perdemos los eco que cruzan ese umbral en sentido
+  // opuesto y nunca colapsan. El filtro delta_pct se aplica DESPUES del colapso.
   const since60 = new Date(Date.now() - 60 * 86400000).toISOString();
-  const { data: priceHist } = await sb.from("ml_price_history")
-    .select("sku_origen, precio, precio_anterior, delta_pct, detected_at")
-    .gte("detected_at", since60)
-    .lt("delta_pct", -5);  // solo bajadas significativas
+  const { data: priceHistRaw, error: priceHistErr } = await sb.from("ml_price_history")
+    .select("item_id, sku_origen, precio, precio_anterior, delta_pct, fuente, detected_at")
+    .gte("detected_at", since60);
+  if (priceHistErr) {
+    console.error(`[velocity-signals] ml_price_history query failed: ${priceHistErr.message}`);
+  }
+  const priceHist = collapseSwapBlips((priceHistRaw || []) as PriceHistoryRow[]);
   const ultimaBajadaBySku = new Map<string, { precio: number; precio_anterior: number; detected_at: string }>();
-  for (const h of (priceHist || []) as Array<{ sku_origen: string | null; precio: number; precio_anterior: number; delta_pct: number; detected_at: string }>) {
+  for (const h of priceHist) {
     if (!h.sku_origen) continue;
+    if (h.delta_pct == null || h.delta_pct >= -5) continue;
     const cur = ultimaBajadaBySku.get(h.sku_origen);
     if (!cur || h.detected_at > cur.detected_at) {
-      ultimaBajadaBySku.set(h.sku_origen, { precio: h.precio, precio_anterior: h.precio_anterior, detected_at: h.detected_at });
+      ultimaBajadaBySku.set(h.sku_origen, {
+        precio: Number(h.precio),
+        precio_anterior: Number(h.precio_anterior ?? 0),
+        detected_at: h.detected_at,
+      });
     }
   }
 

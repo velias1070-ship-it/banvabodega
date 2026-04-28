@@ -555,3 +555,105 @@ export function evaluarCooldown(
       : null,
   };
 }
+
+// ==================== PRICE HISTORY READER ====================
+//
+// ml_price_history es append-only y captura TODO cambio detectado, incluyendo
+// "ruido" del propio sistema:
+//
+//   1. Admin/motor postula una promo nueva (fuente='promo_join') — cambio real.
+//   2. cron_margin_cache corre con timing imperfecto y ve momentaneamente el
+//      precio sin la promo nueva — registra sync_diff con priceList como precio.
+//   3. cron_margin_cache corre de nuevo cuando ML ya propago la promo — registra
+//      sync_diff con el precio efectivo final.
+//
+// Caso real ALPCMPRBO4575 (2026-04-28 12:41):
+//   - 12:41:13 promo_join admin_ui: $19.980 → $9.980 (real)
+//   - 12:41:23 sync_diff cron:      $11.980 → $19.980 (ruido — vio price_lista)
+//   - 12:41:29 sync_diff cron:      $19.980 → $9.980  (ruido — confirma 1)
+//
+// Sin filtrar, un analizador de "cambios reales" cuenta 3 eventos cuando hubo 1.
+// `collapseSwapBlips` colapsa la cascada manteniendo solo el evento "real".
+
+export type PriceHistoryFuente =
+  | "sync_diff" | "item_update_api" | "promo_join" | "promo_delete"
+  | "snapshot_diario" | "manual_admin" | "markdown_auto_pilot";
+
+export interface PriceHistoryRow {
+  item_id: string;
+  sku_origen?: string | null;
+  sku?: string | null;
+  precio: number;
+  precio_anterior: number | null;
+  delta_pct: number | null;
+  fuente: PriceHistoryFuente | string;
+  ejecutado_por?: string | null;
+  detected_at: string;
+  contexto?: Record<string, unknown> | null;
+}
+
+const REAL_ACTION_FUENTES = new Set<string>([
+  "promo_join", "promo_delete", "item_update_api",
+  "manual_admin", "markdown_auto_pilot",
+]);
+
+const SWAP_BLIP_WINDOW_SECONDS = 60;
+
+/**
+ * Colapsa la cascada de eventos sync_diff que sigue a una accion real
+ * (promo_join, manual_admin, etc) dentro de SWAP_BLIP_WINDOW_SECONDS.
+ *
+ * Reglas:
+ *   - Si un evento de "accion real" tiene >=1 sync_diff dentro de la ventana
+ *     y el ULTIMO sync_diff de la ventana coincide en precio (±$100) con la
+ *     accion real → todos los sync_diff de esa ventana se descartan.
+ *   - Caso 2 sync_diff que se anulan exactamente (a sube X→Y, b baja Y→X) →
+ *     descartar ambos (eco puro del cron sin cambio real).
+ *
+ * Eventos quedan ordenados por detected_at ascendente.
+ */
+export function collapseSwapBlips(events: PriceHistoryRow[]): PriceHistoryRow[] {
+  const sorted = [...events].sort((a, b) => a.detected_at.localeCompare(b.detected_at));
+  const drop = new Set<number>();
+  const ts = (s: string) => new Date(s).getTime();
+
+  for (let i = 0; i < sorted.length; i++) {
+    if (drop.has(i)) continue;
+    const e = sorted[i];
+    if (!REAL_ACTION_FUENTES.has(String(e.fuente))) continue;
+    const tEnd = ts(e.detected_at) + SWAP_BLIP_WINDOW_SECONDS * 1000;
+    const wIdx: number[] = [];
+    for (let j = i + 1; j < sorted.length; j++) {
+      const f = sorted[j];
+      if (f.item_id !== e.item_id) continue;
+      if (ts(f.detected_at) > tEnd) break;
+      if (f.fuente !== "sync_diff") continue;
+      wIdx.push(j);
+    }
+    if (wIdx.length === 0) continue;
+    const last = sorted[wIdx[wIdx.length - 1]];
+    if (Math.abs(Number(last.precio) - Number(e.precio)) <= 100) {
+      for (const j of wIdx) drop.add(j);
+    }
+  }
+
+  for (let i = 0; i < sorted.length; i++) {
+    if (drop.has(i)) continue;
+    if (sorted[i].fuente !== "sync_diff") continue;
+    const a = sorted[i];
+    const b = sorted[i + 1];
+    if (!b || drop.has(i + 1)) continue;
+    if (b.fuente !== "sync_diff") continue;
+    if (b.item_id !== a.item_id) continue;
+    if (ts(b.detected_at) - ts(a.detected_at) > SWAP_BLIP_WINDOW_SECONDS * 1000) continue;
+    if (
+      a.precio_anterior != null && b.precio_anterior != null &&
+      Number(a.precio) === Number(b.precio_anterior) &&
+      Number(a.precio_anterior) === Number(b.precio)
+    ) {
+      drop.add(i); drop.add(i + 1);
+    }
+  }
+
+  return sorted.filter((_, i) => !drop.has(i));
+}

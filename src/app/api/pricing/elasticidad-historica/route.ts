@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
+import { collapseSwapBlips, type PriceHistoryRow } from "@/lib/pricing";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -58,21 +59,26 @@ export async function GET(req: Request) {
   const filtroCuad = url.searchParams.get("cuadrante");
   const minDeltaPct = Number(url.searchParams.get("min_delta_pct") || "1");
 
-  // 1. Cambios de precio significativos
+  // 1. Cambios de precio significativos.
+  //
+  // Cargamos sin filtrar por delta_pct para que collapseSwapBlips vea todos
+  // los eco sync_diff y los descarte antes de medir elasticidad. Si filtramos
+  // antes, contamos cada blip de promo-swap como un "cambio" y la elasticidad
+  // queda contaminada (ej. ALPCMPRBO4575 12:41 generó 3 eventos por 1 cambio
+  // real).
   let q = sb
     .from("ml_price_history")
     .select("id, sku_origen, item_id, precio_anterior, precio, delta_pct, fuente, detected_at, contexto")
     .not("sku_origen", "is", null)
-    .not("delta_pct", "is", null)
     .order("detected_at", { ascending: false })
-    .limit(500);
+    .limit(1000);
   if (filtroSku) q = q.eq("sku_origen", filtroSku);
   const { data: cambios, error } = await q;
   if (error) {
     console.error(`[elasticidad-historica] history error: ${error.message}`);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
-  const filas = (cambios || []) as Array<{
+  type FilaCrudo = {
     id: string;
     sku_origen: string;
     item_id: string;
@@ -82,7 +88,10 @@ export async function GET(req: Request) {
     fuente: string;
     detected_at: string;
     contexto: Record<string, unknown> | null;
-  }>;
+  };
+  const crudo = (cambios || []) as FilaCrudo[];
+  const colapsados = collapseSwapBlips(crudo as unknown as PriceHistoryRow[]) as unknown as FilaCrudo[];
+  const filas = colapsados.filter(c => c.delta_pct != null);
 
   // 2. Para cada cambio, traer ventas pre/post
   const out: Cambio[] = [];
