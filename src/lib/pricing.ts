@@ -682,6 +682,10 @@ export interface PriceHistoryRow {
   ejecutado_por?: string | null;
   detected_at: string;
   contexto?: Record<string, unknown> | null;
+  // v95 — tracking tipado opcional (Engines:432, Op_Limpieza:87,89)
+  motivo?: string | null;
+  correlation_id?: string | null;
+  promo_name?: string | null;
 }
 
 const REAL_ACTION_FUENTES = new Set<string>([

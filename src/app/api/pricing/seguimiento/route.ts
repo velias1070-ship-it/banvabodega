@@ -55,6 +55,9 @@ interface SeguimientoRow {
   precio_post: number;
   delta_pct: number;
   fuente_cambio: string;
+  motivo: string | null;                // v95 — taxonomía cerrada
+  promo_name_at_change: string | null;  // promo asociada al cambio (de contexto)
+  correlation_id: string | null;        // v95 — link ml_price_history ↔ pricing_decision_log
   ejecutado_por: string | null;
   t0: string;
   dias_desde_md: number;
@@ -102,7 +105,7 @@ export async function GET(req: NextRequest) {
 
   // 1. Eventos de bajada en ventana de evaluación, colapsando blips de promo-swap.
   let phQuery = sb.from("ml_price_history")
-    .select("item_id, sku, sku_origen, precio, precio_anterior, delta_pct, fuente, ejecutado_por, detected_at")
+    .select("item_id, sku, sku_origen, precio, precio_anterior, delta_pct, fuente, ejecutado_por, detected_at, motivo, contexto, correlation_id, promo_name")
     .gte("detected_at", sinceLargo);
   if (skuFilter) phQuery = phQuery.eq("sku", skuFilter);
   const { data: priceHistRaw, error: phErr } = await phQuery;
@@ -121,6 +124,9 @@ export async function GET(req: NextRequest) {
     precio_post: number;
     delta_pct: number;
     fuente: string;
+    motivo: string | null;
+    promo_name_at_change: string | null;
+    correlation_id: string | null;
     ejecutado_por: string | null;
     t0: string;
   };
@@ -129,6 +135,11 @@ export async function GET(req: NextRequest) {
     if (!e.sku) continue;
     if (e.delta_pct == null || e.delta_pct >= MIN_DELTA_PCT_BAJADA) continue;
     if (e.detected_at < sinceVentanaEval) continue;
+    // promo_name puede venir directo en columna o en contexto.promotion_id/promotion_type
+    const ctx = (e.contexto ?? {}) as Record<string, unknown>;
+    const promoNameFromCtx = (ctx.promotion_id as string | undefined)
+      ?? (ctx.promotion_type as string | undefined)
+      ?? null;
     const cambio: Cambio = {
       sku: e.sku,
       item_id: e.item_id,
@@ -137,6 +148,9 @@ export async function GET(req: NextRequest) {
       precio_post: Number(e.precio),
       delta_pct: Number(e.delta_pct),
       fuente: String(e.fuente),
+      motivo: (e.motivo as string | null | undefined) ?? null,
+      promo_name_at_change: e.promo_name ?? promoNameFromCtx,
+      correlation_id: (e.correlation_id as string | null | undefined) ?? null,
       ejecutado_por: e.ejecutado_por ?? null,
       t0: e.detected_at,
     };
@@ -353,6 +367,9 @@ export async function GET(req: NextRequest) {
       precio_post: cambio.precio_post,
       delta_pct: Math.round(cambio.delta_pct * 100) / 100,
       fuente_cambio: cambio.fuente,
+      motivo: cambio.motivo,
+      promo_name_at_change: cambio.promo_name_at_change,
+      correlation_id: cambio.correlation_id,
       ejecutado_por: cambio.ejecutado_por,
       t0: cambio.t0,
       dias_desde_md: diasDesdeMd,

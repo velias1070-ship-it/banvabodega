@@ -65,7 +65,9 @@ type Confianza = "nula" | "baja" | "media" | "alta";
 type SeguimientoRow = {
   sku: string; titulo: string | null; cuadrante: string | null; abc: string | null;
   precio_pre: number; precio_post: number; delta_pct: number;
-  fuente_cambio: string; ejecutado_por: string | null;
+  fuente_cambio: string; motivo: string | null;
+  promo_name_at_change: string | null; correlation_id: string | null;
+  ejecutado_por: string | null;
   t0: string; dias_desde_md: number; dias_restantes_lift: number; dias_restantes_eval: number;
   uds_pre_14d: number; uds_post_actuales: number; uds_post_14d: number | null;
   vel_pre: number; vel_post: number | null; lift: number | null;
@@ -99,6 +101,78 @@ const ESTADO_META: Record<EstadoSeg, { color: string; bg: string; bd: string; la
   indeterminado: { color: "var(--txt3)",  bg: "var(--bg3)",     bd: "var(--bg4)",     label: "Indeterminado",  icon: "❔" },
   expirado:      { color: "var(--txt3)",  bg: "var(--bg3)",     bd: "var(--bg4)",     label: "Expirado",        icon: "⏹️" },
 };
+
+// ─── Filtros por motivo (taxonomía v95) — Engines:432, Op_Limpieza:89 ──
+const MOTIVO_TAB_META: Record<string, { label: string; icon: string; color: string }> = {
+  todos:                   { label: "Todos",        icon: "•",  color: "var(--txt2)" },
+  senal_pulsos_velocidad:  { label: "Hipótesis Pulsos", icon: "📊", color: "var(--cyan)" },
+  ajuste_margen_manual:    { label: "Ajustes margen", icon: "✏️", color: "var(--amber)" },
+  postular_evento:         { label: "Eventos DEAL",  icon: "🎯", color: "var(--green)" },
+  markdown_aging:          { label: "Aging",         icon: "⏳", color: "var(--red)" },
+  ml_obliga_precio:        { label: "ML obliga",     icon: "🔒", color: "var(--txt3)" },
+  revertir:                { label: "Revertir",      icon: "↩",  color: "var(--txt3)" },
+  correccion_operativa:    { label: "Correc. op.",   icon: "🔧", color: "var(--txt3)" },
+  sync_externo:            { label: "Externo (sin clasif)", icon: "❔", color: "var(--txt3)" },
+  sin_motivo:              { label: "Sin motivo",    icon: "—",  color: "var(--txt3)" },
+};
+type MotivoTab = keyof typeof MOTIVO_TAB_META;
+
+// Agrupación promo masiva: N≥3 SKUs con MISMO motivo + MISMO promo_name dentro
+// de 5min se pliegan como 1 evento. Reduce ruido cuando se postula un DEAL bulk.
+const PROMO_GROUP_WINDOW_MS = 5 * 60 * 1000;
+const PROMO_GROUP_MIN_N = 3;
+
+type GroupedItem =
+  | { kind: "row"; row: SeguimientoRow }
+  | { kind: "group"; rows: SeguimientoRow[]; promo_name: string; motivo: string; t0_min: string; t0_max: string };
+
+function agruparPromoMasiva(rows: SeguimientoRow[]): GroupedItem[] {
+  // Agrupa por (motivo, promo_name) dentro de ventana 5min. Solo agrupa si N≥3.
+  type Bucket = { motivo: string; promo_name: string; rows: SeguimientoRow[]; t0_min: number; t0_max: number };
+  const buckets: Bucket[] = [];
+  for (const r of rows) {
+    if (!r.motivo || !r.promo_name_at_change) continue;
+    const t = new Date(r.t0).getTime();
+    const fit = buckets.find(b =>
+      b.motivo === r.motivo &&
+      b.promo_name === r.promo_name_at_change &&
+      Math.abs(t - b.t0_min) <= PROMO_GROUP_WINDOW_MS &&
+      Math.abs(t - b.t0_max) <= PROMO_GROUP_WINDOW_MS
+    );
+    if (fit) {
+      fit.rows.push(r);
+      fit.t0_min = Math.min(fit.t0_min, t);
+      fit.t0_max = Math.max(fit.t0_max, t);
+    } else {
+      buckets.push({ motivo: r.motivo, promo_name: r.promo_name_at_change!, rows: [r], t0_min: t, t0_max: t });
+    }
+  }
+  const grouped = new Set<SeguimientoRow>();
+  const result: GroupedItem[] = [];
+  for (const b of buckets) {
+    if (b.rows.length >= PROMO_GROUP_MIN_N) {
+      for (const r of b.rows) grouped.add(r);
+      result.push({
+        kind: "group",
+        rows: b.rows,
+        promo_name: b.promo_name,
+        motivo: b.motivo,
+        t0_min: new Date(b.t0_min).toISOString(),
+        t0_max: new Date(b.t0_max).toISOString(),
+      });
+    }
+  }
+  for (const r of rows) {
+    if (!grouped.has(r)) result.push({ kind: "row", row: r });
+  }
+  // Orden: más reciente arriba (group por t0_max, row por t0).
+  result.sort((a, b) => {
+    const ta = a.kind === "group" ? a.t0_max : a.row.t0;
+    const tb = b.kind === "group" ? b.t0_max : b.row.t0;
+    return tb.localeCompare(ta);
+  });
+  return result;
+}
 
 const ACCION_META: Record<RecAccion, { color: string; label: string }> = {
   esperar:           { color: "var(--amber)", label: "⏳ Esperar" },
@@ -400,6 +474,8 @@ function SeguimientoPanel({
 }: {
   data: SegResp | null; loading: boolean; error: string | null; onReload: () => void;
 }) {
+  const [motivoTab, setMotivoTab] = useState<MotivoTab>("todos");
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   if (loading && !data) {
     return <div style={{ padding: 16, color: "var(--txt2)", fontSize: 13 }}>Cargando seguimiento…</div>;
   }
@@ -412,6 +488,27 @@ function SeguimientoPanel({
   }
   if (!data) return null;
 
+  // Conteo por motivo (sobre el universo total, sin filtrar por estado).
+  const motivoCounts: Record<string, number> = {};
+  for (const r of data.seguimiento) {
+    const k = r.motivo || "sin_motivo";
+    motivoCounts[k] = (motivoCounts[k] ?? 0) + 1;
+  }
+  const motivoCountTodos = data.seguimiento.length;
+
+  const filteredByMotivo = motivoTab === "todos"
+    ? data.seguimiento
+    : data.seguimiento.filter(r => (r.motivo || "sin_motivo") === motivoTab);
+  const grouped = agruparPromoMasiva(filteredByMotivo);
+
+  function toggleGroup(key: string) {
+    setExpandedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }
+
   return (
     <>
       <div style={{ fontSize: 11, color: "var(--txt3)", marginBottom: 8 }}>
@@ -422,7 +519,7 @@ function SeguimientoPanel({
         </button>
       </div>
 
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
         {(["en_eval", "exitoso", "marginal", "sin_lift", "indeterminado"] as EstadoSeg[]).map(e => {
           const m = ESTADO_META[e];
           const n = data.breakdown[e];
@@ -437,6 +534,30 @@ function SeguimientoPanel({
             </div>
           );
         })}
+      </div>
+
+      {/* Filtros por motivo (taxonomía v95). Tab "todos" + uno por motivo presente. */}
+      <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 12, paddingBottom: 8, borderBottom: "1px solid var(--bg4)" }}>
+        {(Object.keys(MOTIVO_TAB_META) as MotivoTab[])
+          .filter(k => k === "todos" || (motivoCounts[k] ?? 0) > 0)
+          .map(k => {
+            const meta = MOTIVO_TAB_META[k];
+            const n = k === "todos" ? motivoCountTodos : (motivoCounts[k] ?? 0);
+            const isActive = motivoTab === k;
+            return (
+              <button key={k}
+                onClick={() => setMotivoTab(k)}
+                style={{
+                  padding: "4px 8px",
+                  border: isActive ? `1px solid ${meta.color}` : "1px solid var(--bg4)",
+                  background: isActive ? "var(--bg3)" : "transparent",
+                  color: isActive ? meta.color : "var(--txt2)",
+                  borderRadius: 4, fontSize: 11, cursor: "pointer",
+                }}>
+                {meta.icon} {meta.label} <span style={{ opacity: 0.6 }}>({n})</span>
+              </button>
+            );
+          })}
       </div>
 
       {data.seguimiento.length === 0 ? (
@@ -466,10 +587,54 @@ function SeguimientoPanel({
               </tr>
             </thead>
             <tbody>
-              {data.seguimiento.map(r => {
-                const m = ESTADO_META[r.estado];
-                return (
-                  <tr key={r.sku + r.t0} style={r.alerta_stock_temprana ? { background: "var(--redBg)" } : undefined}>
+              {grouped.map((g, idx) => {
+                if (g.kind === "group") {
+                  const key = `grp-${g.motivo}-${g.promo_name}-${g.t0_min}`;
+                  const isOpen = expandedGroups.has(key);
+                  const motivoMeta = MOTIVO_TAB_META[g.motivo] ?? MOTIVO_TAB_META.sin_motivo;
+                  const liftBuenos = g.rows.filter(r => r.lift != null && r.lift >= 1.5).length;
+                  const sinLift = g.rows.filter(r => r.estado === "sin_lift").length;
+                  const enEval = g.rows.filter(r => r.estado === "en_eval").length;
+                  const alertas = g.rows.filter(r => r.alerta_stock_temprana).length;
+                  return (
+                    <>
+                      <tr key={key} style={{ background: "var(--bg3)", cursor: "pointer" }} onClick={() => toggleGroup(key)}>
+                        <td colSpan={15} style={{ padding: "8px 6px", fontSize: 12 }}>
+                          <span style={{ display: "inline-block", marginRight: 8, color: motivoMeta.color, fontWeight: 600 }}>
+                            {isOpen ? "▼" : "▶"} {motivoMeta.icon} {motivoMeta.label} · {g.promo_name}
+                          </span>
+                          <span style={{ color: "var(--txt2)" }}>
+                            {g.rows.length} SKUs ·{" "}
+                            {liftBuenos > 0 && <span style={{ color: "var(--green)" }}>{liftBuenos} con lift ≥1.5×</span>}
+                            {liftBuenos > 0 && (sinLift > 0 || enEval > 0) && " · "}
+                            {sinLift > 0 && <span style={{ color: "var(--red)" }}>{sinLift} sin lift</span>}
+                            {sinLift > 0 && enEval > 0 && " · "}
+                            {enEval > 0 && <span style={{ color: "var(--amber)" }}>{enEval} en eval</span>}
+                            {alertas > 0 && <> · <span style={{ color: "var(--red)" }}>⚠️ {alertas} stock crítico</span></>}
+                          </span>
+                          <span style={{ float: "right", fontSize: 10, color: "var(--txt3)" }}>
+                            {new Date(g.t0_min).toLocaleString("es-CL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                          </span>
+                        </td>
+                      </tr>
+                      {isOpen && g.rows.map(r => renderSeguimientoRow(r))}
+                    </>
+                  );
+                }
+                return renderSeguimientoRow(g.row, idx);
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
+  );
+}
+
+function renderSeguimientoRow(r: SeguimientoRow, idx?: number) {
+  const m = ESTADO_META[r.estado];
+  return (
+                  <tr key={r.sku + r.t0 + (idx ?? "")} style={r.alerta_stock_temprana ? { background: "var(--redBg)" } : undefined}>
                     <td>
                       <span style={{
                         display: "inline-block", padding: "2px 6px", borderRadius: 4, fontSize: 10,
@@ -552,12 +717,5 @@ function SeguimientoPanel({
                     </td>
                     <td style={{ fontSize: 10, maxWidth: 320, color: "var(--txt2)" }}>{r.recomendacion}</td>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </>
   );
 }
