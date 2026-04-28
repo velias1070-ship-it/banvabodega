@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { mlGet, logPriceChange } from "@/lib/ml";
 import { getServerSupabase } from "@/lib/supabase-server";
+import { loadActiveRuleSet, logDecision } from "@/lib/pricing-rules";
 
 export const maxDuration = 120;
 
@@ -319,6 +320,18 @@ export async function POST(req: NextRequest) {
           ejecutado_por: "admin_ui",
           contexto: { promotion_type, promotion_id, deal_price_requested: deal_price, overridden: true },
         });
+        // Audit canónico: cambios manuales también van a pricing_decision_log
+        // (Engines:80, "rerun specific request"). Trazabilidad simétrica con motor.
+        if (prevSku) {
+          const rs = await loadActiveRuleSet();
+          await logDecision({
+            sku_origen: prevSku, domain: "global", channel: "production",
+            rule_set_hash: rs?.content_hash || "FALLBACK",
+            inputs: { item_id, promotion_type, promotion_id, precio_anterior: prevPrice, deal_price_requested: deal_price },
+            decision: { accion: "manual_promo_join", applied_price: appliedPrice, status: "overridden" },
+            applied: true,
+          });
+        }
         return NextResponse.json({
           ok: true,
           result: data,
@@ -339,6 +352,16 @@ export async function POST(req: NextRequest) {
           ejecutado_por: "admin_ui",
           contexto: { promotion_type, promotion_id, deal_price_requested: deal_price },
         });
+        if (prevSku) {
+          const rs = await loadActiveRuleSet();
+          await logDecision({
+            sku_origen: prevSku, domain: "global", channel: "production",
+            rule_set_hash: rs?.content_hash || "FALLBACK",
+            inputs: { item_id, promotion_type, promotion_id, precio_anterior: prevPrice, deal_price_requested: deal_price },
+            decision: { accion: "manual_promo_join", applied_price: appliedPrice, status: "ok" },
+            applied: true,
+          });
+        }
       }
       return NextResponse.json({ ok: true, result: data });
     }
@@ -372,6 +395,16 @@ export async function POST(req: NextRequest) {
           fuente: "promo_delete", ejecutado_por: "admin_ui",
           contexto: { promotion_type: delType, promotion_id: delId },
         });
+        if (prevSku) {
+          const rs = await loadActiveRuleSet();
+          await logDecision({
+            sku_origen: prevSku, domain: "global", channel: "production",
+            rule_set_hash: rs?.content_hash || "FALLBACK",
+            inputs: { item_id, promotion_type: delType, promotion_id: delId, precio_anterior: prevPrice },
+            decision: { accion: "manual_promo_delete", applied_price: postDeletePrice, status: "ok" },
+            applied: true,
+          });
+        }
       }
       return NextResponse.json({ ok: true, result: data });
     }

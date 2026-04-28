@@ -85,7 +85,15 @@ type CacheRow = {
 
 type CuadranteRow = { cuadrante: string; margen_min_pct: number };
 
-type Senal = "caida" | "aceleracion" | "estabilidad_post_markdown";
+type Senal = "caida" | "aceleracion" | "estabilidad_post_markdown" | "en_evaluacion";
+
+// Op_Limpieza:498 ("ventana credibilidad MLC: subir precio post-markdown
+// bloqueado durante ≤30 días desde fecha_inicio") + Op_Limpieza:402
+// ("pausar profundización post-markdown"). Suprimimos sugerencias de
+// bajar/subir cuando el SKU está dentro de la ventana de evaluación.
+const VENTANA_EVAL_DIAS = 30;
+// KPI #4 (Op_Limpieza:522): Velocity Lift se mide a los 14d post-MD.
+const VENTANA_LIFT_DIAS = 14;
 
 type Sugerencia = {
   sku: string;
@@ -239,6 +247,30 @@ export async function GET(req: NextRequest) {
       costo,
     };
 
+    // ─── GATE GLOBAL: VENTANA DE EVALUACIÓN POST-MARKDOWN ───────────────
+    // Op_Limpieza:402,498 — durante 30 días post-MD no profundizar ni subir.
+    // Si el SKU tuvo bajada reciente, emitimos señal "en_evaluacion" en vez
+    // de las señales de cambio (caída/aceleración) y saltamos al siguiente SKU.
+    const ultBajadaGate = ultimaBajadaBySku.get(sku);
+    if (ultBajadaGate) {
+      const diasDesdeMd = Math.floor((hoy.getTime() - new Date(ultBajadaGate.detected_at).getTime()) / 86400000);
+      if (diasDesdeMd < VENTANA_EVAL_DIAS) {
+        const diasRestantes = VENTANA_EVAL_DIAS - diasDesdeMd;
+        const enVentanaLift = diasDesdeMd < VENTANA_LIFT_DIAS;
+        sugerencias.push({
+          ...baseSugerencia,
+          senal: "en_evaluacion",
+          delta_pct_sugerido: 0,
+          precio_propuesto: precioActual,
+          motivo: enVentanaLift
+            ? `MD aplicado hace ${diasDesdeMd}d ($${ultBajadaGate.precio_anterior.toLocaleString("es-CL")} → $${ultBajadaGate.precio.toLocaleString("es-CL")}). Ventana lift cierra en ${VENTANA_LIFT_DIAS - diasDesdeMd}d. Esperar antes de profundizar.`
+            : `MD aplicado hace ${diasDesdeMd}d. Bloqueo subir precio cierra en ${diasRestantes}d (regla credibilidad MLC 30d).`,
+          bloqueado_por: [],
+        });
+        continue;
+      }
+    }
+
     // ─── DETECTOR 1: CAÍDA DE VELOCIDAD ─────────────────────────────────
     if (v60 > 0 && v30 < v60 * cfg.caida_ratio_30d_vs_60d) {
       const bloqueadoPor: string[] = [];
@@ -307,7 +339,7 @@ export async function GET(req: NextRequest) {
   if (tipoFilter) resultado = sugerencias.filter(s => s.senal === tipoFilter);
 
   // Ordenar: caídas primero, luego aceleraciones, luego estabilidad
-  const ord: Record<Senal, number> = { caida: 0, aceleracion: 1, estabilidad_post_markdown: 2 };
+  const ord: Record<Senal, number> = { caida: 0, aceleracion: 1, estabilidad_post_markdown: 2, en_evaluacion: 3 };
   resultado.sort((a, b) => {
     if (ord[a.senal] !== ord[b.senal]) return ord[a.senal] - ord[b.senal];
     return Math.abs(b.delta_pct_sugerido) - Math.abs(a.delta_pct_sugerido);

@@ -11,7 +11,7 @@ import { useEffect, useState } from "react";
  *  - estabilidad post-markdown (azul): no revertir, nuevo baseline
  */
 
-type Senal = "caida" | "aceleracion" | "estabilidad_post_markdown";
+type Senal = "caida" | "aceleracion" | "estabilidad_post_markdown" | "en_evaluacion";
 type Sugerencia = {
   sku: string; nombre: string;
   cuadrante: string | null; abc: string | null;
@@ -55,6 +55,35 @@ const SENAL_META: Record<Senal, { titulo: string; icon: string; color: string; b
   caida:                       { titulo: "Caída de velocidad",        icon: "📉", color: "var(--red)",   bg: "var(--redBg)",   bd: "var(--redBd)" },
   aceleracion:                 { titulo: "Aceleración",                icon: "📈", color: "var(--green)", bg: "var(--greenBg)", bd: "var(--greenBd)" },
   estabilidad_post_markdown:   { titulo: "Estabilidad post-markdown",  icon: "🧊", color: "var(--cyan)",  bg: "var(--cyanBg)",  bd: "var(--cyanBd)" },
+  en_evaluacion:               { titulo: "En evaluación post-MD",      icon: "⏳", color: "var(--amber)", bg: "var(--amberBg)", bd: "var(--amberBd)" },
+};
+
+// ─── M5-B/C: estado de seguimiento ─────────────────────────────────────
+type EstadoSeg = "en_eval" | "exitoso" | "marginal" | "sin_lift" | "indeterminado" | "expirado";
+type SeguimientoRow = {
+  sku: string; titulo: string | null; cuadrante: string | null; abc: string | null;
+  precio_pre: number; precio_post: number; delta_pct: number;
+  fuente_cambio: string; ejecutado_por: string | null;
+  t0: string; dias_desde_md: number; dias_restantes_lift: number; dias_restantes_eval: number;
+  uds_pre_14d: number; uds_post_actuales: number; uds_post_14d: number | null;
+  vel_pre: number; vel_post: number | null; lift: number | null;
+  stock_al_t0: number; stock_actual: number; sell_through: number | null;
+  estado: EstadoSeg; recomendacion: string;
+  margen_pct_actual: number | null;
+};
+type SegResp = {
+  ventana_eval_dias: number; ventana_lift_dias: number;
+  total: number;
+  breakdown: Record<EstadoSeg, number>;
+  seguimiento: SeguimientoRow[];
+};
+const ESTADO_META: Record<EstadoSeg, { color: string; bg: string; bd: string; label: string; icon: string }> = {
+  en_eval:       { color: "var(--amber)", bg: "var(--amberBg)", bd: "var(--amberBd)", label: "En evaluación", icon: "⏳" },
+  exitoso:       { color: "var(--green)", bg: "var(--greenBg)", bd: "var(--greenBd)", label: "Lift ≥1.5×",     icon: "✅" },
+  marginal:      { color: "var(--cyan)",  bg: "var(--cyanBg)",  bd: "var(--cyanBd)",  label: "Marginal",        icon: "🟦" },
+  sin_lift:      { color: "var(--red)",   bg: "var(--redBg)",   bd: "var(--redBd)",   label: "Sin lift",        icon: "❌" },
+  indeterminado: { color: "var(--txt3)",  bg: "var(--bg3)",     bd: "var(--bg4)",     label: "Indeterminado",  icon: "❔" },
+  expirado:      { color: "var(--txt3)",  bg: "var(--bg3)",     bd: "var(--bg4)",     label: "Expirado",        icon: "⏹️" },
 };
 
 export default function AdminVelocitySignals() {
@@ -62,6 +91,10 @@ export default function AdminVelocitySignals() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tipoFilter, setTipoFilter] = useState<Senal | "todas">("todas");
+  const [tab, setTab] = useState<"sugerencias" | "seguimiento">("sugerencias");
+  const [seg, setSeg] = useState<SegResp | null>(null);
+  const [segLoading, setSegLoading] = useState(false);
+  const [segError, setSegError] = useState<string | null>(null);
 
   async function load() {
     setLoading(true); setError(null);
@@ -75,7 +108,19 @@ export default function AdminVelocitySignals() {
     finally { setLoading(false); }
   }
 
+  async function loadSeguimiento() {
+    setSegLoading(true); setSegError(null);
+    try {
+      const r = await fetch("/api/pricing/seguimiento");
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || "load_failed");
+      setSeg(j);
+    } catch (e: any) { setSegError(e.message); }
+    finally { setSegLoading(false); }
+  }
+
   useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [tipoFilter]);
+  useEffect(() => { if (tab === "seguimiento" && !seg) loadSeguimiento(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [tab]);
 
   if (!data && loading) return (
     <div className="card" style={{ padding: 16 }}>
@@ -100,13 +145,39 @@ export default function AdminVelocitySignals() {
         </button>
       </div>
 
-      {error && (
+      {/* Tabs */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 12, borderBottom: "1px solid var(--bg4)" }}>
+        <button onClick={() => setTab("sugerencias")}
+          style={{
+            padding: "8px 14px", border: "none", background: "transparent",
+            color: tab === "sugerencias" ? "var(--cyan)" : "var(--txt2)",
+            borderBottom: tab === "sugerencias" ? "2px solid var(--cyan)" : "2px solid transparent",
+            cursor: "pointer", fontSize: 13, fontWeight: 600,
+          }}>
+          🚦 Sugerencias activas
+        </button>
+        <button onClick={() => setTab("seguimiento")}
+          style={{
+            padding: "8px 14px", border: "none", background: "transparent",
+            color: tab === "seguimiento" ? "var(--amber)" : "var(--txt2)",
+            borderBottom: tab === "seguimiento" ? "2px solid var(--amber)" : "2px solid transparent",
+            cursor: "pointer", fontSize: 13, fontWeight: 600,
+          }}>
+          ⏳ En seguimiento {seg && seg.total > 0 ? `(${seg.total})` : ""}
+        </button>
+      </div>
+
+      {error && tab === "sugerencias" && (
         <div style={{ padding: 8, background: "var(--redBg)", border: "1px solid var(--redBd)", color: "var(--red)", borderRadius: 6, fontSize: 12 }}>
           ❌ {error}
         </div>
       )}
 
-      {data && (
+      {tab === "seguimiento" && (
+        <SeguimientoPanel data={seg} loading={segLoading} error={segError} onReload={loadSeguimiento} />
+      )}
+
+      {tab === "sugerencias" && data && (
         <>
           {/* Stats + filtros */}
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
@@ -228,5 +299,135 @@ export default function AdminVelocitySignals() {
         </>
       )}
     </div>
+  );
+}
+
+// ─── M5-C: Panel "En seguimiento" ───────────────────────────────────────
+function SeguimientoPanel({
+  data, loading, error, onReload,
+}: {
+  data: SegResp | null; loading: boolean; error: string | null; onReload: () => void;
+}) {
+  if (loading && !data) {
+    return <div style={{ padding: 16, color: "var(--txt2)", fontSize: 13 }}>Cargando seguimiento…</div>;
+  }
+  if (error) {
+    return (
+      <div style={{ padding: 8, background: "var(--redBg)", border: "1px solid var(--redBd)", color: "var(--red)", borderRadius: 6, fontSize: 12 }}>
+        ❌ {error} <button onClick={onReload} style={{ marginLeft: 8 }}>retry</button>
+      </div>
+    );
+  }
+  if (!data) return null;
+
+  return (
+    <>
+      <div style={{ fontSize: 11, color: "var(--txt3)", marginBottom: 8 }}>
+        Cambios de precio en últimos {data.ventana_eval_dias}d. Lift evaluado a {data.ventana_lift_dias}d post-MD (Op_Limpieza KPI #4).
+        <button onClick={onReload} disabled={loading}
+          style={{ marginLeft: 12, padding: "3px 8px", border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt2)", borderRadius: 6, fontSize: 11, cursor: "pointer" }}>
+          {loading ? "..." : "🔄"}
+        </button>
+      </div>
+
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+        {(["en_eval", "exitoso", "marginal", "sin_lift", "indeterminado"] as EstadoSeg[]).map(e => {
+          const m = ESTADO_META[e];
+          const n = data.breakdown[e];
+          if (!n) return null;
+          return (
+            <div key={e}
+              style={{
+                padding: "4px 8px", border: `1px solid ${m.bd}`, background: m.bg, color: m.color,
+                borderRadius: 6, fontSize: 11, display: "flex", gap: 6, alignItems: "center",
+              }}>
+              <span>{m.icon}</span><span>{m.label}</span><span style={{ opacity: 0.7 }}>({n})</span>
+            </div>
+          );
+        })}
+      </div>
+
+      {data.seguimiento.length === 0 ? (
+        <div style={{ padding: 16, textAlign: "center", color: "var(--txt3)", fontSize: 13 }}>
+          Ningún SKU con cambio de precio en los últimos {data.ventana_eval_dias} días.
+        </div>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table className="tbl" style={{ width: "100%", fontSize: 12 }}>
+            <thead>
+              <tr>
+                <th>Estado</th>
+                <th>SKU</th>
+                <th>Cambio</th>
+                <th style={{ textAlign: "right" }}>Día</th>
+                <th style={{ textAlign: "right" }}>vel pre</th>
+                <th style={{ textAlign: "right" }}>vel post</th>
+                <th style={{ textAlign: "right" }}>Lift</th>
+                <th style={{ textAlign: "right" }}>ST 14d</th>
+                <th style={{ textAlign: "right" }}>Stock</th>
+                <th style={{ textAlign: "right" }}>Margen</th>
+                <th>Recomendación</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.seguimiento.map(r => {
+                const m = ESTADO_META[r.estado];
+                return (
+                  <tr key={r.sku + r.t0}>
+                    <td>
+                      <span style={{
+                        display: "inline-block", padding: "2px 6px", borderRadius: 4, fontSize: 10,
+                        background: m.bg, color: m.color, border: `1px solid ${m.bd}`,
+                      }}>
+                        {m.icon} {m.label}
+                      </span>
+                    </td>
+                    <td>
+                      <div className="mono" style={{ fontWeight: 600 }}>{r.sku}</div>
+                      <div style={{ fontSize: 10, color: "var(--txt3)", maxWidth: 220, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.titulo || "—"}</div>
+                      <div style={{ fontSize: 10, color: "var(--txt3)" }}>{r.cuadrante || "—"} · ABC {r.abc || "—"}</div>
+                    </td>
+                    <td className="mono" style={{ fontSize: 11 }}>
+                      <div>{fmtCLP(r.precio_pre)} → {fmtCLP(r.precio_post)}</div>
+                      <div style={{ color: "var(--red)" }}>{r.delta_pct.toFixed(1)}%</div>
+                      <div style={{ fontSize: 10, color: "var(--txt3)" }}>{r.fuente_cambio} · {r.ejecutado_por || "—"}</div>
+                    </td>
+                    <td className="mono" style={{ textAlign: "right" }}>
+                      <div>d{r.dias_desde_md}</div>
+                      <div style={{ fontSize: 10, color: "var(--txt3)" }}>
+                        {r.dias_restantes_lift > 0 ? `lift en ${r.dias_restantes_lift}d` : `eval en ${r.dias_restantes_eval}d`}
+                      </div>
+                    </td>
+                    <td className="mono" style={{ textAlign: "right" }} title={`${r.uds_pre_14d} uds en 14d pre`}>{r.vel_pre.toFixed(2)}</td>
+                    <td className="mono" style={{ textAlign: "right" }} title={`${r.uds_post_actuales} uds en ${r.dias_desde_md}d post${r.uds_post_14d != null ? ` · proy 14d=${r.uds_post_14d}` : ""}`}>
+                      {r.vel_post != null ? r.vel_post.toFixed(2) : "—"}
+                    </td>
+                    <td className="mono" style={{ textAlign: "right" }}>
+                      {r.lift != null ? (
+                        <span style={{ color: r.lift >= 1.5 ? "var(--green)" : r.lift >= 1.0 ? "var(--cyan)" : "var(--red)", fontWeight: 600 }}>
+                          {r.lift.toFixed(2)}×
+                        </span>
+                      ) : "—"}
+                    </td>
+                    <td className="mono" style={{ textAlign: "right" }}>
+                      {r.sell_through != null ? `${(r.sell_through * 100).toFixed(1)}%` : "—"}
+                    </td>
+                    <td className="mono" style={{ textAlign: "right" }}>{r.stock_actual}</td>
+                    <td className="mono" style={{ textAlign: "right" }}>
+                      {r.margen_pct_actual != null ? (
+                        <span style={{ color: r.margen_pct_actual < 10 ? "var(--red)" : r.margen_pct_actual < 20 ? "var(--amber)" : "var(--green)" }}>
+                          {r.margen_pct_actual.toFixed(1)}%
+                        </span>
+                      ) : "—"}
+                    </td>
+                    <td style={{ fontSize: 10, maxWidth: 320, color: "var(--txt2)" }}>{r.recomendacion}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
   );
 }
