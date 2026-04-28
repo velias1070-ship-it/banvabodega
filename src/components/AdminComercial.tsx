@@ -772,11 +772,28 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
 
                 // Fila de familia (header del grupo)
                 if (isGroup) {
+                  const groupIds = groupItems.map(i => i.item_id);
+                  const groupSelectedCount = groupIds.filter(id => bulkSelected.has(id)).length;
+                  const allSelected = groupSelectedCount === groupIds.length && groupIds.length > 0;
+                  const someSelected = groupSelectedCount > 0 && !allSelected;
+                  const toggleGroup = () => {
+                    setBulkSelected(prev => {
+                      const next = new Set(prev);
+                      if (allSelected) { for (const id of groupIds) next.delete(id); }
+                      else { for (const id of groupIds) next.add(id); }
+                      return next;
+                    });
+                  };
                   return (<Fragment key={familyKey}>
                     <tr onClick={() => toggleFamily(familyKey)}
                       style={{ cursor: "pointer", background: expanded ? "var(--bg3)" : "transparent", borderBottom: "1px solid var(--bg4)" }}>
-                      <td style={{ padding: "10px 8px", fontSize: 14, textAlign: "center", color: "var(--cyan)" }}>
-                        {expanded ? "\u25BC" : "\u25B6"}
+                      <td style={{ padding: "10px 8px", textAlign: "center" }} onClick={e => e.stopPropagation()}>
+                        <input type="checkbox" checked={allSelected}
+                          ref={el => { if (el) el.indeterminate = someSelected; }}
+                          onChange={toggleGroup}
+                          title={allSelected ? "Quitar selecci\u00F3n del grupo" : "Seleccionar todo el grupo"}
+                          style={{ cursor: "pointer", marginRight: 6 }} />
+                        <span style={{ fontSize: 14, color: "var(--cyan)" }}>{expanded ? "\u25BC" : "\u25B6"}</span>
                       </td>
                       <td style={{ padding: "10px 4px" }}>
                         {(() => {
