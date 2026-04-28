@@ -2128,6 +2128,7 @@ export interface DBMLItemMap {
   condition: string | null;
   category_id: string | null;
   created_via: string | null;
+  family_name: string | null;
 }
 
 export async function fetchMLItemsMap(): Promise<DBMLItemMap[]> {

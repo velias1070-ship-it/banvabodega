@@ -21,6 +21,7 @@ interface MLItemMultiget {
     category_id: string;
     date_created?: string;
     start_time?: string;
+    family_name?: string;
   } | null;
 }
 
@@ -93,6 +94,7 @@ export async function GET(req: NextRequest) {
               category_id: item.category_id,
               date_created_ml: item.date_created || null,
               start_time_ml: item.start_time || null,
+              family_name: item.family_name || null,
               updated_at: new Date().toISOString(),
             }).eq("item_id", item.id);
             if (!error) updated++;
@@ -118,6 +120,7 @@ export async function GET(req: NextRequest) {
                 category_id: item.category_id,
                 date_created_ml: item.date_created || null,
                 start_time_ml: item.start_time || null,
+                family_name: item.family_name || null,
                 updated_at: new Date().toISOString(),
               }).eq("item_id", item.id);
               updated++;

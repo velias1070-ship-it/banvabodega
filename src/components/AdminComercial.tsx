@@ -594,17 +594,17 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
   // Agrupar por familia (items que comparten prefijo de título)
   const [expandedFamilies, setExpandedFamilies] = useState<Set<string>>(new Set());
   const familyGroups = useMemo(() => {
-    // Extraer familia: quitar últimas 1-2 palabras (color/diseño)
-    const getFamilyKey = (title: string) => {
+    // Fallback heurístico cuando no hay family_name (item no vinculado a ficha catálogo)
+    const fallbackKey = (title: string) => {
       const words = title.split(" ");
       if (words.length <= 3) return title;
-      // Intentar con 1 palabra menos, luego 2
       return words.slice(0, -1).join(" ");
     };
     const groups = new Map<string, DBMLItemMap[]>();
     for (const item of filtered) {
       const title = liveData.get(item.item_id)?.title || item.titulo || "—";
-      const key = getFamilyKey(title);
+      // Preferir family_name canónico de ML (cuando el item esta en ficha catálogo)
+      const key = item.family_name || fallbackKey(title);
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key)!.push(item);
     }
