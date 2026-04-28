@@ -1611,7 +1611,7 @@ export async function fetchAbcMap(skus: string[]): Promise<Record<string, "A" | 
   return out;
 }
 
-export type ConteoOrigen = "manual" | "sugerencia_abc" | "trigger_discrepancia" | "auditoria_aleatoria";
+export type ConteoOrigen = "manual" | "sugerencia_abc" | "auto_diario" | "trigger_discrepancia" | "auditoria_aleatoria";
 
 export interface ConteoSkuDisparador {
   sku: string;

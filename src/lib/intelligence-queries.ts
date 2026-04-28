@@ -251,10 +251,17 @@ export async function queryMovimientos(desdeDias: number = 400): Promise<Movimie
   // y Supabase respondía error, pero paginatedSelect ignoraba error y
   // devolvía []. Causa raíz real del bug "dias_sin_movimiento NULL en 533".
   // El motor solo usa `sku` y `created_at` — el resto estaba de más.
+  //
+  // 2026-04-27: Filtrar a motivos de VENTA real. Antes traía TODOS los
+  // movimientos (transferencias, ajustes, reasignacion_formato, recepciones).
+  // Caso ALPCMPRSQ6012: backfill v71 'reasignacion_formato' del 23-abr
+  // marcaba dias_sin_movimiento=4 cuando última venta real era 19-ene (98d).
+  // Solo señales comerciales: venta_flex, envio_full, despacho_ml.
   const data = await paginatedSelect(() =>
     sb.from("movimientos")
       .select("sku, created_at")
       .gte("created_at", desde)
+      .in("motivo", ["venta_flex", "envio_full", "despacho_ml"])
   );
   return data as unknown as MovimientoRow[];
 }
