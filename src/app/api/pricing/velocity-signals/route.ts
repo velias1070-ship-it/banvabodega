@@ -26,7 +26,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
 import { loadActiveRuleSet, readRule } from "@/lib/pricing-rules";
-import { collapseSwapBlips, type PriceHistoryRow } from "@/lib/pricing";
+import {
+  collapseSwapBlips,
+  ultimaBajadaRealPorSku,
+  VENTANA_EVAL_DIAS,
+  VENTANA_LIFT_DIAS,
+  type PriceHistoryRow,
+} from "@/lib/pricing";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -87,13 +93,9 @@ type CuadranteRow = { cuadrante: string; margen_min_pct: number };
 
 type Senal = "caida" | "aceleracion" | "estabilidad_post_markdown" | "en_evaluacion";
 
-// Op_Limpieza:498 ("ventana credibilidad MLC: subir precio post-markdown
-// bloqueado durante ≤30 días desde fecha_inicio") + Op_Limpieza:402
-// ("pausar profundización post-markdown"). Suprimimos sugerencias de
-// bajar/subir cuando el SKU está dentro de la ventana de evaluación.
-const VENTANA_EVAL_DIAS = 30;
-// KPI #4 (Op_Limpieza:522): Velocity Lift se mide a los 14d post-MD.
-const VENTANA_LIFT_DIAS = 14;
+// VENTANA_EVAL_DIAS / VENTANA_LIFT_DIAS importadas desde @/lib/pricing
+// (Op_Limpieza:498,402,522). Mismas constantes usan auto-postular y markdown-auto
+// para que los 3 motores comparten la misma definición de "ventana eval".
 
 type Sugerencia = {
   sku: string;
@@ -184,19 +186,10 @@ export async function GET(req: NextRequest) {
     console.error(`[velocity-signals] ml_price_history query failed: ${priceHistErr.message}`);
   }
   const priceHist = collapseSwapBlips((priceHistRaw || []) as PriceHistoryRow[]);
-  const ultimaBajadaBySku = new Map<string, { precio: number; precio_anterior: number; detected_at: string }>();
-  for (const h of priceHist) {
-    if (!h.sku_origen) continue;
-    if (h.delta_pct == null || h.delta_pct >= -5) continue;
-    const cur = ultimaBajadaBySku.get(h.sku_origen);
-    if (!cur || h.detected_at > cur.detected_at) {
-      ultimaBajadaBySku.set(h.sku_origen, {
-        precio: Number(h.precio),
-        precio_anterior: Number(h.precio_anterior ?? 0),
-        detected_at: h.detected_at,
-      });
-    }
-  }
+  // Threshold -5% (más estricto que el global -3%) específico para velocity-signals:
+  // queremos que solo bajadas materiales bloqueen profundización en sugerencias UI;
+  // los crons usan el threshold global -3% via evaluarVentanaEval.
+  const ultimaBajadaBySku = ultimaBajadaRealPorSku(priceHist, -5);
 
   // Evaluar cada SKU
   const sugerencias: Sugerencia[] = [];

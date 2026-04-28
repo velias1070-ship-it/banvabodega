@@ -60,6 +60,7 @@ const SENAL_META: Record<Senal, { titulo: string; icon: string; color: string; b
 
 // ─── M5-B/C: estado de seguimiento ─────────────────────────────────────
 type EstadoSeg = "en_eval" | "exitoso" | "marginal" | "sin_lift" | "indeterminado" | "expirado";
+type RecAccion = "esperar" | "mantener_baseline" | "subir_precio" | "esperar_fin_promo" | "profundizar" | "salir_deal" | "ninguna";
 type SeguimientoRow = {
   sku: string; titulo: string | null; cuadrante: string | null; abc: string | null;
   precio_pre: number; precio_post: number; delta_pct: number;
@@ -68,8 +69,11 @@ type SeguimientoRow = {
   uds_pre_14d: number; uds_post_actuales: number; uds_post_14d: number | null;
   vel_pre: number; vel_post: number | null; lift: number | null;
   stock_al_t0: number; stock_actual: number; sell_through: number | null;
-  estado: EstadoSeg; recomendacion: string;
+  estado: EstadoSeg; recomendacion: string; recomendacion_accion: RecAccion;
   margen_pct_actual: number | null;
+  tiene_promo_activa: boolean; promo_activa_nombre: string | null; promo_activa_tier: number;
+  cob_actual_dias: number | null; lead_time_dias: number | null; safety_stock_dias: number | null;
+  stock_critico: boolean; reposicion_disponible: boolean;
 };
 type SegResp = {
   ventana_eval_dias: number; ventana_lift_dias: number;
@@ -84,6 +88,16 @@ const ESTADO_META: Record<EstadoSeg, { color: string; bg: string; bd: string; la
   sin_lift:      { color: "var(--red)",   bg: "var(--redBg)",   bd: "var(--redBd)",   label: "Sin lift",        icon: "❌" },
   indeterminado: { color: "var(--txt3)",  bg: "var(--bg3)",     bd: "var(--bg4)",     label: "Indeterminado",  icon: "❔" },
   expirado:      { color: "var(--txt3)",  bg: "var(--bg3)",     bd: "var(--bg4)",     label: "Expirado",        icon: "⏹️" },
+};
+
+const ACCION_META: Record<RecAccion, { color: string; label: string }> = {
+  esperar:           { color: "var(--amber)", label: "⏳ Esperar" },
+  mantener_baseline: { color: "var(--green)", label: "✅ Mantener" },
+  subir_precio:     { color: "var(--cyan)",  label: "↑ Subir precio" },
+  esperar_fin_promo: { color: "var(--amber)", label: "⏰ Esperar fin promo" },
+  profundizar:       { color: "var(--red)",   label: "↓ Profundizar" },
+  salir_deal:        { color: "var(--red)",   label: "✗ Salir DEAL" },
+  ninguna:           { color: "var(--txt3)",  label: "—" },
 };
 
 export default function AdminVelocitySignals() {
@@ -365,7 +379,10 @@ function SeguimientoPanel({
                 <th style={{ textAlign: "right" }}>Lift</th>
                 <th style={{ textAlign: "right" }}>ST 14d</th>
                 <th style={{ textAlign: "right" }}>Stock</th>
+                <th style={{ textAlign: "right" }}>Cob</th>
+                <th>Promo</th>
                 <th style={{ textAlign: "right" }}>Margen</th>
+                <th>Acción</th>
                 <th>Recomendación</th>
               </tr>
             </thead>
@@ -412,13 +429,38 @@ function SeguimientoPanel({
                     <td className="mono" style={{ textAlign: "right" }}>
                       {r.sell_through != null ? `${(r.sell_through * 100).toFixed(1)}%` : "—"}
                     </td>
-                    <td className="mono" style={{ textAlign: "right" }}>{r.stock_actual}</td>
+                    <td className="mono" style={{ textAlign: "right" }}>
+                      {r.stock_actual}
+                      {r.reposicion_disponible && <div style={{ fontSize: 9, color: "var(--green)" }}>+ prov</div>}
+                    </td>
+                    <td className="mono" style={{ textAlign: "right" }}
+                        title={r.lead_time_dias != null ? `lead_time ${r.lead_time_dias}d + ss ${r.safety_stock_dias?.toFixed(1) ?? "—"}d` : ""}>
+                      {r.cob_actual_dias != null ? (
+                        <span style={{ color: r.stock_critico ? "var(--red)" : "var(--txt)" }}>
+                          {r.cob_actual_dias}d
+                        </span>
+                      ) : "—"}
+                      {r.stock_critico && <div style={{ fontSize: 9, color: "var(--red)" }}>crítico</div>}
+                    </td>
+                    <td style={{ fontSize: 10 }}>
+                      {r.tiene_promo_activa ? (
+                        <div title={`tier ${r.promo_activa_tier}`} style={{ color: r.promo_activa_tier >= 4 ? "var(--green)" : "var(--cyan)" }}>
+                          {r.promo_activa_nombre || "—"}
+                        </div>
+                      ) : <span style={{ color: "var(--txt3)" }}>—</span>}
+                    </td>
                     <td className="mono" style={{ textAlign: "right" }}>
                       {r.margen_pct_actual != null ? (
                         <span style={{ color: r.margen_pct_actual < 10 ? "var(--red)" : r.margen_pct_actual < 20 ? "var(--amber)" : "var(--green)" }}>
                           {r.margen_pct_actual.toFixed(1)}%
                         </span>
                       ) : "—"}
+                    </td>
+                    <td style={{ fontSize: 10 }}>
+                      {(() => {
+                        const a = ACCION_META[r.recomendacion_accion];
+                        return <span style={{ color: a.color, fontWeight: 600 }}>{a.label}</span>;
+                      })()}
                     </td>
                     <td style={{ fontSize: 10, maxWidth: 320, color: "var(--txt2)" }}>{r.recomendacion}</td>
                   </tr>

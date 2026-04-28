@@ -4,6 +4,7 @@ import {
   evaluarGates, margenPostAds, resolverPricingConfig,
   evaluarCooldown, COOLDOWN_VENTANA_HORAS, COOLDOWN_MAX_BAJADAS,
   tierVitrina, collapseSwapBlips,
+  ultimaBajadaRealPorSku, evaluarVentanaEval, VENTANA_EVAL_DIAS,
   type CanalLogistico, type PricingCuadranteConfig, type PriceHistoryRow,
 } from "@/lib/pricing";
 import { loadActiveRuleSet, logDecision } from "@/lib/pricing-rules";
@@ -242,32 +243,48 @@ export async function POST(req: NextRequest) {
   }
   const defaultCuadrante = cuadrantesConfigMap.get("_DEFAULT") || null;
 
-  // 3c. Cooldown anti race-to-the-bottom. Cargamos batch las bajadas de
-  // precio ocurridas en la ventana (24h por default) desde ml_price_history,
-  // por sku, para evaluarlo como gate por SKU sin n+1 queries.
-  // Manual: BANVA_Pricing_Investigacion_Comparada §4.1 implicacion #3.
+  // 3c. Cooldown 24h + Ventana de evaluación 30d. Una sola query a 30d cubre
+  // ambas: el cooldown 24h (gate anti race-to-the-bottom — Pricing_Investigacion_
+  // Comparada §4.1 #3) y la ventana eval 30d (Op_Limpieza:498,402 — no
+  // profundizar durante credibilidad MLC).
+  //
+  // Manual: BANVA_Pricing_Investigacion_Comparada §4.1 implicacion #3 +
+  //         BANVA_Op_Limpieza:498,402,504 (no profundizar 30d post-MD).
+  //
   // Cargamos AMPLIO (sin filtro delta_pct, todas las fuentes) para que
   // collapseSwapBlips vea el evento real + sus eco sync_diff y los colapse.
-  // Filtramos delta_pct<0 DESPUES del colapso (regla 6 inventory-policy:
-  // construir sobre fuente canónica, no sobre respuesta filtrada).
-  const cooldownDesde = new Date(Date.now() - COOLDOWN_VENTANA_HORAS * 3600_000).toISOString();
+  // Filtramos por delta DESPUES del colapso (regla 6 inventory-policy).
+  const cooldownDesde24h = new Date(Date.now() - COOLDOWN_VENTANA_HORAS * 3600_000).toISOString();
+  const ventanaEvalDesde30d = new Date(Date.now() - VENTANA_EVAL_DIAS * 86400_000).toISOString();
   const bajadasPorSku = new Map<string, number>();
+  const ultimaBajadaPorSkuVenta = new Map<string, { precio: number; precio_anterior: number; detected_at: string }>();
   if (skus.length > 0) {
     for (let i = 0; i < skus.length; i += 500) {
       const chunk = skus.slice(i, i + 500);
       const { data: bajadasRaw, error: bajadasErr } = await sb.from("ml_price_history")
         .select("item_id, sku, sku_origen, precio, precio_anterior, delta_pct, fuente, detected_at")
         .in("sku", chunk)
-        .gte("detected_at", cooldownDesde);
+        .gte("detected_at", ventanaEvalDesde30d);
       if (bajadasErr) {
-        console.error(`[auto-postular] cooldown query failed (chunk ${i}): ${bajadasErr.message}`);
+        console.error(`[auto-postular] price_history query failed (chunk ${i}): ${bajadasErr.message}`);
         continue;
       }
       const eventos = collapseSwapBlips((bajadasRaw || []) as PriceHistoryRow[]);
+      // Cooldown 24h: contar bajadas materiales (delta < 0) en últimas 24h.
       for (const e of eventos) {
         if (!e.sku) continue;
         if (e.delta_pct == null || e.delta_pct >= 0) continue;
+        if (e.detected_at < cooldownDesde24h) continue;
         bajadasPorSku.set(e.sku, (bajadasPorSku.get(e.sku) || 0) + 1);
+      }
+      // Ventana eval 30d: última bajada real (delta ≤ -3%) por SKU.
+      // ml_price_history.sku NO es sku_origen — es el sku del listing ML que
+      // coincide con productos.sku (sku_origen del catálogo BANVA). En esta
+      // ruta `skus` viene de ml_margin_cache.sku, así que el match es directo.
+      const mapPorEvento = ultimaBajadaRealPorSku(eventos);
+      for (const [k, v] of Array.from(mapPorEvento.entries())) {
+        const cur = ultimaBajadaPorSkuVenta.get(k);
+        if (!cur || v.detected_at > cur.detected_at) ultimaBajadaPorSkuVenta.set(k, v);
       }
     }
   }
@@ -423,6 +440,19 @@ export async function POST(req: NextRequest) {
       if (cooldownResult.bloqueado) {
         hardExtras.push(cooldownResult.motivo!);
       }
+      // Gate ventana de evaluación 30d (Op_Limpieza:498,402,504).
+      // Si el SKU tuvo una bajada real (delta ≤ -3%) en los últimos 30d, NO
+      // postular promos adicionales con descuento — esperar a que cierre la
+      // ventana para medir lift+sell-through. Excepción: si la promo candidata
+      // mantiene el precio igual o superior al post-MD (ej. SELLER_CAMPAIGN
+      // que solo agrega exposición sin profundizar), permitir.
+      const ventanaEval = evaluarVentanaEval(ultimaBajadaPorSkuVenta.get(row.sku) ?? null);
+      if (ventanaEval) {
+        const profundiza = precioObjetivo < ventanaEval.precio_post;
+        if (profundiza) {
+          hardExtras.push(ventanaEval.motivo);
+        }
+      }
       // Gate vitrina: si el SKU ya tiene promo activa con tier >= candidata,
       // no degradar (Manual: BANVA_Pricing_Investigacion_Comparada §4.4 — DEAL/
       // DOD/LIGHTNING dan más tráfico que SELLER_CAMPAIGN propio).
@@ -530,6 +560,11 @@ export async function POST(req: NextRequest) {
           cooldown_bajadas_24h: bajadasPorSku.get(row.sku) || 0,
           cooldown_ventana_horas: COOLDOWN_VENTANA_HORAS,
           cooldown_max_bajadas: COOLDOWN_MAX_BAJADAS,
+          ventana_eval_activa: !!ventanaEval,
+          ventana_eval_dias_desde_md: ventanaEval?.dias_desde_md ?? null,
+          ventana_eval_dias_restantes: ventanaEval?.dias_restantes ?? null,
+          ventana_eval_precio_post: ventanaEval?.precio_post ?? null,
+          ventana_eval_dias_total: VENTANA_EVAL_DIAS,
         },
       });
 

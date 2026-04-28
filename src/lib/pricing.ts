@@ -297,6 +297,98 @@ export interface CooldownResult {
 export const COOLDOWN_VENTANA_HORAS = 24;
 export const COOLDOWN_MAX_BAJADAS = 2;
 
+// Ventana de evaluación post-markdown.
+// Manual: BANVA_Op_Limpieza:498 (no profundizar antes de cerrar la ventana de
+// credibilidad MLC 30d) + Op_Limpieza:402 (pausar profundización post-MD para
+// medir lift+sell-through antes del próximo escalón).
+// VENTANA_LIFT_DIAS = 14 días: ventana mínima para medir lift = vel_post/vel_pre
+// (Op_Limpieza KPI #4). Antes de los 14d no hay señal estadística.
+// VENTANA_EVAL_DIAS = 30 días: ventana extendida que incluye sell-through
+// (Op_Limpieza KPI #3) + cierre de credibilidad MLC.
+// MIN_DELTA_PCT_BAJADA_REAL = -3%: una bajada menor a -3% se considera ruido
+// (cambio de promo cosmético, ajuste de redondeo). Solo bajadas reales gatillan
+// la ventana de evaluación.
+export const VENTANA_EVAL_DIAS = 30;
+export const VENTANA_LIFT_DIAS = 14;
+export const MIN_DELTA_PCT_BAJADA_REAL = -3;
+
+export interface VentanaEvalResult {
+  bloqueado: boolean;
+  dias_desde_md: number;
+  dias_restantes: number;
+  ult_bajada_at: string;
+  precio_pre: number;
+  precio_post: number;
+  motivo: string;
+}
+
+/**
+ * Última bajada real por SKU desde una lista de eventos ya pasada por
+ * `collapseSwapBlips`. Solo cuenta delta_pct ≤ MIN_DELTA_PCT_BAJADA_REAL
+ * para descartar ruido cosmético. Devuelve Map<sku_origen, evento más reciente>.
+ *
+ * Manual: BANVA_Op_Limpieza:498 — usar el evento real, no el ruido sync_diff.
+ */
+export function ultimaBajadaRealPorSku(
+  eventosColapsados: PriceHistoryRow[],
+  thresholdDeltaPct: number = MIN_DELTA_PCT_BAJADA_REAL,
+): Map<string, { precio: number; precio_anterior: number; detected_at: string }> {
+  const m = new Map<string, { precio: number; precio_anterior: number; detected_at: string }>();
+  for (const h of eventosColapsados) {
+    const key = h.sku_origen || h.sku;
+    if (!key) continue;
+    if (h.delta_pct == null || h.delta_pct > thresholdDeltaPct) continue;
+    const cur = m.get(key);
+    if (!cur || h.detected_at > cur.detected_at) {
+      m.set(key, {
+        precio: Number(h.precio),
+        precio_anterior: Number(h.precio_anterior ?? 0),
+        detected_at: h.detected_at,
+      });
+    }
+  }
+  return m;
+}
+
+/**
+ * Evalúa si un SKU está en ventana de evaluación post-markdown.
+ *
+ * Si el SKU tuvo una bajada real (delta ≤ -3%) en los últimos VENTANA_EVAL_DIAS,
+ * el motor NO debe profundizar (no nuevas bajadas, no nuevas postulaciones de
+ * promo con descuento adicional) hasta que cierre la ventana.
+ *
+ * Manual:
+ *   - BANVA_Op_Limpieza:498,504 (no profundizar durante credibilidad 30d)
+ *   - BANVA_Op_Limpieza:402 (pausar para medir lift)
+ *   - Engines:411 (decisiones referencian rule_set vigente)
+ *
+ * Patrón de uso:
+ *   1. Query batch a ml_price_history WHERE detected_at >= NOW() - 30d.
+ *   2. const eventos = collapseSwapBlips(rawRows).
+ *   3. const map = ultimaBajadaRealPorSku(eventos).
+ *   4. Para cada SKU: const r = evaluarVentanaEval(map.get(sku) ?? null, hoy).
+ *   5. Si r.bloqueado → no aplicar acción, loguear motivo.
+ */
+export function evaluarVentanaEval(
+  ultBajada: { precio: number; precio_anterior: number; detected_at: string } | null,
+  hoy: Date = new Date(),
+  ventanaDias: number = VENTANA_EVAL_DIAS,
+): VentanaEvalResult | null {
+  if (!ultBajada) return null;
+  const diasDesde = Math.floor((hoy.getTime() - new Date(ultBajada.detected_at).getTime()) / 86400_000);
+  if (diasDesde >= ventanaDias) return null;
+  const diasRestantes = ventanaDias - diasDesde;
+  return {
+    bloqueado: true,
+    dias_desde_md: diasDesde,
+    dias_restantes: diasRestantes,
+    ult_bajada_at: ultBajada.detected_at,
+    precio_pre: ultBajada.precio_anterior,
+    precio_post: ultBajada.precio,
+    motivo: `ventana_eval_activa: bajada $${ultBajada.precio_anterior.toLocaleString("es-CL")}→$${ultBajada.precio.toLocaleString("es-CL")} hace ${diasDesde}d, faltan ${diasRestantes}d para profundizar (Op_Limpieza:498)`,
+  };
+}
+
 /**
  * Tier de vitrina/exposición de cada tipo de promo en MercadoLibre.
  * Mapeo derivado de la investigación operativa ML Chile (sección Ofertas,

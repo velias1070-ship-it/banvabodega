@@ -18,14 +18,16 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
-import { collapseSwapBlips, type PriceHistoryRow } from "@/lib/pricing";
+import {
+  collapseSwapBlips, tierVitrina,
+  VENTANA_EVAL_DIAS, VENTANA_LIFT_DIAS,
+  type PriceHistoryRow,
+} from "@/lib/pricing";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
 
-const VENTANA_EVAL_DIAS = 30;   // bloqueo subir post-MD (Op_Limpieza:498)
-const VENTANA_LIFT_DIAS = 14;   // ventana medición lift (Op_Limpieza:522)
-const MIN_DELTA_PCT_BAJADA = -5; // bajadas significativas
+const MIN_DELTA_PCT_BAJADA = -5; // bajadas significativas (más estricto que el global -3% para sugerencias UI)
 
 type Estado = "en_eval" | "exitoso" | "marginal" | "sin_lift" | "indeterminado" | "expirado";
 
@@ -54,7 +56,17 @@ interface SeguimientoRow {
   sell_through: number | null;     // uds_post / stock_al_t0
   estado: Estado;
   recomendacion: string;
+  recomendacion_accion: "esperar" | "mantener_baseline" | "subir_precio" | "esperar_fin_promo" | "profundizar" | "salir_deal" | "ninguna";
   margen_pct_actual: number | null;
+  // Hueco 1 — contexto para recomendación ramificada:
+  tiene_promo_activa: boolean;
+  promo_activa_nombre: string | null;
+  promo_activa_tier: number;
+  cob_actual_dias: number | null;
+  lead_time_dias: number | null;
+  safety_stock_dias: number | null;
+  stock_critico: boolean;          // cob_actual < lead_time + safety_stock
+  reposicion_disponible: boolean;
 }
 
 export async function GET(req: NextRequest) {
@@ -147,23 +159,33 @@ export async function GET(req: NextRequest) {
   }
 
   // 3. Cargar margin_cache + intelligence + productos para contexto.
+  // Para Hueco 1 (recomendación ramificada en estado=exitoso) necesitamos:
+  //   - ml_margin_cache: tiene_promo, promo_type, promo_name → si hay promo
+  //     activa de tier alto (DEAL/SMART/etc.), no se puede "salir" sin perder
+  //     ranking — esperar fin de promo.
+  //   - sku_intelligence: abc, abc_ingreso, lead_time_usado_dias, safety_stock_completo,
+  //     cob_total, vel_30d, tiene_stock_prov, stock_proveedor → detectar stock
+  //     crítico que justifica subir precio (Ajuste_Plan:21).
+  type CacheFull = {
+    sku: string; titulo: string | null; stock_total: number | null; margen_pct: number | null;
+    tiene_promo: boolean | null; promo_type: string | null; promo_name: string | null;
+    price_ml: number | null; precio_venta: number | null;
+  };
+  type IntelFull = {
+    sku_origen: string; cuadrante: string | null; abc: string | null; abc_ingreso: string | null;
+    lead_time_usado_dias: number | null; safety_stock_completo: number | null;
+    cob_total: number | null; vel_30d: number | null;
+    tiene_stock_prov: boolean | null; stock_proveedor: number | null;
+  };
   const [{ data: cacheRows }, { data: intelRows }, { data: prodRows }] = await Promise.all([
-    sb.from("ml_margin_cache").select("sku, titulo, stock_total, margen_pct").in("sku", skus),
-    sb.from("sku_intelligence").select("sku_origen, cuadrante, abc").in("sku_origen", skus),
+    sb.from("ml_margin_cache").select("sku, titulo, stock_total, margen_pct, tiene_promo, promo_type, promo_name, price_ml, precio_venta").in("sku", skus),
+    sb.from("sku_intelligence").select("sku_origen, cuadrante, abc, abc_ingreso, lead_time_usado_dias, safety_stock_completo, cob_total, vel_30d, tiene_stock_prov, stock_proveedor").in("sku_origen", skus),
     sb.from("productos").select("sku, costo, costo_promedio").in("sku", skus),
   ]);
-  const cacheBySku = new Map<string, { titulo: string | null; stock_total: number; margen_pct: number | null }>();
-  for (const r of (cacheRows || []) as Array<{ sku: string; titulo: string | null; stock_total: number | null; margen_pct: number | null }>) {
-    cacheBySku.set(r.sku, {
-      titulo: r.titulo,
-      stock_total: Number(r.stock_total ?? 0),
-      margen_pct: r.margen_pct,
-    });
-  }
-  const intelBySku = new Map<string, { cuadrante: string | null; abc: string | null }>();
-  for (const r of (intelRows || []) as Array<{ sku_origen: string; cuadrante: string | null; abc: string | null }>) {
-    intelBySku.set(r.sku_origen, { cuadrante: r.cuadrante, abc: r.abc });
-  }
+  const cacheBySku = new Map<string, CacheFull>();
+  for (const r of (cacheRows || []) as CacheFull[]) cacheBySku.set(r.sku, r);
+  const intelBySku = new Map<string, IntelFull>();
+  for (const r of (intelRows || []) as IntelFull[]) intelBySku.set(r.sku_origen, r);
 
   // 4. Construir filas de seguimiento.
   const seguimiento: SeguimientoRow[] = [];
@@ -193,26 +215,75 @@ export async function GET(req: NextRequest) {
     const stockAlT0 = stockActual + udsPost; // aproximación: lo vendido post salió del stock
     const sellThrough = stockAlT0 > 0 ? udsPost / stockAlT0 : null;
 
+    // Hueco 1 — contexto para recomendación ramificada.
+    const tienePromoActiva = !!cache?.tiene_promo;
+    const promoActivaNombre = cache?.promo_name ?? null;
+    const promoActivaTier = tienePromoActiva ? tierVitrina(cache?.promo_type ?? null) : 0;
+    const ltDias = intel?.lead_time_usado_dias != null ? Number(intel.lead_time_usado_dias) : null;
+    const ssDias = intel?.safety_stock_completo != null ? Number(intel.safety_stock_completo) : null;
+    const cobActual = intel?.cob_total != null ? Number(intel.cob_total) : null;
+    const cobMinima = (ltDias ?? 0) + (ssDias ?? 0);
+    // velPost real (uds/d desde T0) es mejor proxy del régimen post-MD que vel_30d
+    // (que mezcla pre y post). Si no hay velPost (dias=0), caemos a vel_30d.
+    const velRegimenPost = velPost ?? Number(intel?.vel_30d ?? 0);
+    const cobAlVelPost = velRegimenPost > 0 ? stockActual / velRegimenPost : null;
+    const stockCritico = cobAlVelPost != null && cobMinima > 0 && cobAlVelPost < cobMinima;
+    const reposicionDisponible = !!intel?.tiene_stock_prov && (intel?.stock_proveedor ?? 0) > 0;
+    const esClaseAB = intel?.abc === "A" || intel?.abc === "B" || intel?.abc_ingreso === "A" || intel?.abc_ingreso === "B";
+
     let estado: Estado;
     let recomendacion: string;
+    let recomendacion_accion: SeguimientoRow["recomendacion_accion"] = "ninguna";
     if (diasDesdeMd >= VENTANA_EVAL_DIAS) {
       estado = "expirado";
       recomendacion = "Ventana eval cerrada. Liberado para nuevas señales.";
+      recomendacion_accion = "ninguna";
     } else if (diasDesdeMd < VENTANA_LIFT_DIAS) {
       estado = "en_eval";
       recomendacion = `Esperar ${VENTANA_LIFT_DIAS - diasDesdeMd}d más antes de evaluar lift.`;
+      recomendacion_accion = "esperar";
     } else if (velPre <= 0) {
       estado = "indeterminado";
       recomendacion = "No había base de venta en pre-period. Mantener baseline + observar otros 14d.";
+      recomendacion_accion = "esperar";
     } else if (lift != null && lift >= 1.5) {
       estado = "exitoso";
-      recomendacion = "Lift ≥1.5× — mantener nuevo baseline (Op_Limpieza KPI #4 cumple).";
+      // Hueco 1 — Ramificar exitoso según stock + promo activa:
+      //   1) Stock crítico (clase A/B y cob<lead_time+ss) sin reposición:
+      //      → Ajuste_Plan:21 prescribe SUBIR precio para desacelerar demanda.
+      //      Pero Op_Limpieza:498,504 prohíbe subir durante credibilidad MLC 30d
+      //      si hay promo activa. Solo se puede subir si NO hay promo activa.
+      //   2) Stock crítico + promo activa de tier alto (≥3, DEAL/SMART/etc.):
+      //      → no salir manualmente (perder ranking). Esperar fin de promo
+      //      y subir al siguiente listing (Op_Limpieza:504).
+      //   3) Sin stock crítico:
+      //      → mantener baseline (KPI #4 cumple).
+      if (stockCritico && esClaseAB && !reposicionDisponible) {
+        if (tienePromoActiva && promoActivaTier >= 3) {
+          recomendacion = `Lift ${lift.toFixed(2)}× cumple, PERO stock crítico (cob ${cobAlVelPost?.toFixed(1)}d < lead_time+ss ${cobMinima.toFixed(1)}d, clase ${intel?.abc || intel?.abc_ingreso}). Promo activa "${promoActivaNombre}" tier ${promoActivaTier} → NO salir (Op_Limpieza:504). Esperar fin de promo y subir al siguiente listing.`;
+          recomendacion_accion = "esperar_fin_promo";
+        } else {
+          recomendacion = `Lift ${lift.toFixed(2)}× cumple, PERO stock crítico (cob ${cobAlVelPost?.toFixed(1)}d < lead_time+ss ${cobMinima.toFixed(1)}d, clase ${intel?.abc || intel?.abc_ingreso}, sin reposición). Subir precio para desacelerar (Ajuste_Plan:21). Sin promo activa que bloquee.`;
+          recomendacion_accion = "subir_precio";
+        }
+      } else if (stockCritico && reposicionDisponible) {
+        recomendacion = `Lift ${lift.toFixed(2)}× cumple. Cob baja (${cobAlVelPost?.toFixed(1)}d) pero hay stock_proveedor disponible. Mantener baseline + acelerar reposición.`;
+        recomendacion_accion = "mantener_baseline";
+      } else {
+        recomendacion = `Lift ${lift.toFixed(2)}× ≥1.5× — mantener nuevo baseline (Op_Limpieza KPI #4 cumple).`;
+        recomendacion_accion = "mantener_baseline";
+      }
     } else if (lift != null && lift >= 1.0) {
       estado = "marginal";
-      recomendacion = "Lift entre 1.0× y 1.5× — rondar 4 sem antes de profundizar.";
+      recomendacion = `Lift ${lift.toFixed(2)}× entre 1.0× y 1.5× — rondar 4 sem antes de profundizar.`;
+      recomendacion_accion = "esperar";
     } else {
       estado = "sin_lift";
-      recomendacion = "Lift <1.0× — profundizar al siguiente escalón (E2 -25/-30%) o salir del DEAL.";
+      // Sin lift: profundizar (otro escalón) está prohibido por Op_Limpieza:498
+      // si todavía estamos en ventana eval. Solo recomendamos profundizar si la
+      // ventana ya cerró. Si todavía está abierta, esperar.
+      recomendacion = `Lift ${lift?.toFixed(2) ?? "—"}× <1.0×. Esperar cierre ventana eval (${VENTANA_EVAL_DIAS - diasDesdeMd}d restantes) antes de profundizar al siguiente escalón.`;
+      recomendacion_accion = "esperar";
     }
 
     seguimiento.push({
@@ -240,7 +311,16 @@ export async function GET(req: NextRequest) {
       sell_through: sellThrough != null ? Math.round(sellThrough * 1000) / 1000 : null,
       estado,
       recomendacion,
+      recomendacion_accion,
       margen_pct_actual: cache?.margen_pct ?? null,
+      tiene_promo_activa: tienePromoActiva,
+      promo_activa_nombre: promoActivaNombre,
+      promo_activa_tier: promoActivaTier,
+      cob_actual_dias: cobAlVelPost != null ? Math.round(cobAlVelPost * 10) / 10 : (cobActual != null ? Math.round(cobActual * 10) / 10 : null),
+      lead_time_dias: ltDias,
+      safety_stock_dias: ssDias,
+      stock_critico: stockCritico,
+      reposicion_disponible: reposicionDisponible,
     });
   }
 

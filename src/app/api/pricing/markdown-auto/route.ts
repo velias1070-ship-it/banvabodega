@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
-import { VALLE_MUERTE_MIN, VALLE_MUERTE_MAX } from "@/lib/pricing";
+import {
+  VALLE_MUERTE_MIN, VALLE_MUERTE_MAX,
+  collapseSwapBlips, ultimaBajadaRealPorSku, evaluarVentanaEval, VENTANA_EVAL_DIAS,
+  type PriceHistoryRow,
+} from "@/lib/pricing";
 import { loadActiveRuleSet, readRule, logDecision, type MarkdownLadder, type ValleMuerte } from "@/lib/pricing-rules";
 import { mlPut, logPriceChange } from "@/lib/ml";
 import { queryUltimaVentaPorSkuOrigen } from "@/lib/intelligence-queries";
@@ -158,20 +162,50 @@ async function handle(req: NextRequest) {
     }
   }
 
-  // 4. Cuadrante + datos de quiebre para gate "rampup post-quiebre"
+  // 4. Cuadrante + datos de quiebre + métricas para gates de stock y ventana eval.
+  // - rampup post-quiebre: vel_pre_quiebre, fecha_entrada_quiebre, dias_en_quiebre
+  // - stock pre-MD (Hueco 4): abc, lead_time_usado_dias, safety_stock_completo,
+  //   cob_total, vel_30d. Si el SKU es A/B y el lift esperado va a romper la
+  //   cobertura por debajo de lead_time + safety_stock, NO bajar precio
+  //   (Inventarios_Parte1:213 — A/B nunca pueden quebrar; Ajuste_Plan:21).
   type IntelRow = {
     sku_origen: string; cuadrante: string | null;
     dias_en_quiebre: number | null;
     fecha_entrada_quiebre: string | null;
     vel_pre_quiebre: number | null;
+    abc: string | null;
+    abc_ingreso: string | null;
+    lead_time_usado_dias: number | null;
+    safety_stock_completo: number | null;
+    cob_total: number | null;
+    vel_30d: number | null;
+    tiene_stock_prov: boolean | null;
+    stock_proveedor: number | null;
   };
   const intelBySku = new Map<string, IntelRow>();
   {
     const { data: intel } = await sb.from("sku_intelligence")
-      .select("sku_origen, cuadrante, dias_en_quiebre, fecha_entrada_quiebre, vel_pre_quiebre");
+      .select("sku_origen, cuadrante, dias_en_quiebre, fecha_entrada_quiebre, vel_pre_quiebre, abc, abc_ingreso, lead_time_usado_dias, safety_stock_completo, cob_total, vel_30d, tiene_stock_prov, stock_proveedor");
     for (const r of (intel || []) as IntelRow[]) {
       intelBySku.set(r.sku_origen, r);
     }
+  }
+
+  // 4b. ml_price_history 30d (con collapseSwapBlips) → gate ventana eval.
+  // Manual: BANVA_Op_Limpieza:498,402,504 — no profundizar durante credibilidad
+  // 30d post-MD. Si ya hay un MD activo, este cron no debe encadenar otro.
+  const ventanaEvalDesde = new Date(Date.now() - VENTANA_EVAL_DIAS * 86400_000).toISOString();
+  const ultimaBajadaPorSku = new Map<string, { precio: number; precio_anterior: number; detected_at: string }>();
+  {
+    const { data: hist, error: histErr } = await sb.from("ml_price_history")
+      .select("item_id, sku, sku_origen, precio, precio_anterior, delta_pct, fuente, detected_at")
+      .gte("detected_at", ventanaEvalDesde);
+    if (histErr) {
+      console.error(`[markdown-auto] price_history query failed: ${histErr.message}`);
+    }
+    const eventos = collapseSwapBlips((hist || []) as PriceHistoryRow[]);
+    const m = ultimaBajadaRealPorSku(eventos);
+    for (const [k, v] of Array.from(m.entries())) ultimaBajadaPorSku.set(k, v);
   }
 
   // 5. Evaluar cada SKU
@@ -227,6 +261,42 @@ async function handle(req: NextRequest) {
       }
     }
     if (!p.auto_postular && nivelMarkdown <= -40) bloqueadoPor.push("auto_postular=false (nivel >=120d requiere opt-in)");
+
+    // Hueco 2 — Gate ventana de evaluación 30d (Op_Limpieza:498,402,504).
+    // Si el SKU ya tuvo una bajada real en los últimos 30d (manual, motor o
+    // markdown previo), NO encadenar otro markdown — esperar lift+sell-through.
+    // Mira por sku_origen primero (canónico) y por sku como fallback.
+    const ultBajada = ultimaBajadaPorSku.get(p.sku);
+    const ventanaEval = evaluarVentanaEval(ultBajada ?? null, hoy);
+    if (ventanaEval) {
+      bloqueadoPor.push(ventanaEval.motivo);
+    }
+
+    // Hueco 4 — Gate proactivo stock pre-MD (Inventarios_Parte1:213 +
+    // Ajuste_Plan:21 + Op_Limpieza KPI #4 lift ≥1.5×).
+    // Para clase A/B: el markdown va a aumentar la velocidad. Si la cobertura
+    // resultante (stock / vel_post_estimada) cae por debajo de lead_time +
+    // safety_stock_dias, el SKU va a quebrar antes del próximo reabastecimiento.
+    // En ese caso, NO markdownear: subir precio para desacelerar (Ajuste_Plan:21)
+    // o esperar reposición. Excepción: si tiene_stock_prov=true Y stock_proveedor
+    // alto, la reposición está disponible.
+    if (intel && (intel.abc === "A" || intel.abc === "B" || intel.abc_ingreso === "A" || intel.abc_ingreso === "B")) {
+      const vel30 = Number(intel.vel_30d ?? 0);
+      const lt = Number(intel.lead_time_usado_dias ?? 0);
+      const ssDias = Number(intel.safety_stock_completo ?? 0);
+      const liftEsperado = 1.5; // Op_Limpieza KPI #4
+      const velPost = vel30 * liftEsperado;
+      if (velPost > 0 && lt > 0) {
+        const cobPostDias = stock / velPost;
+        const cobMinima = lt + ssDias;
+        const repoDisponible = !!intel.tiene_stock_prov && (intel.stock_proveedor ?? 0) > 0;
+        if (cobPostDias < cobMinima && !repoDisponible) {
+          bloqueadoPor.push(
+            `stock_pre_md_critico: cob proyectada post-lift ${cobPostDias.toFixed(1)}d < lead_time+ss ${cobMinima.toFixed(1)}d (clase ${intel.abc || intel.abc_ingreso}, vel30=${vel30}/d × lift 1.5×). Sin stock_proveedor disponible — Inventarios_Parte1:213 (A/B nunca pueden quebrar).`
+          );
+        }
+      }
+    }
 
     const factor = (100 + nivelMarkdown) / 100;
     let precioMarkdown = Math.round(precioActual * factor);
