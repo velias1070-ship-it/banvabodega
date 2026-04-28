@@ -19,7 +19,24 @@ const TIPO_DOC: Record<number, string> = {
   33: "FC", 34: "FCE", 46: "FC", 52: "GUIA", 56: "ND", 61: "NC", 71: "BHE",
 };
 
-type SubTab = "facturas" | "ncs" | "sin_factura";
+type SubTab = "facturas" | "ncs" | "sin_factura" | "proveedores";
+
+type SortDir = "asc" | "desc";
+type SortKey = "proveedor" | "facturado" | "ncs_recibidas" | "recepcionado" | "nc_esperada" | "diferencia" | "estado";
+
+interface ProveedorRow {
+  rut: string;
+  razonSocial: string;
+  facturas: { rcv: DBRcvCompra; ncEsperada: number }[];
+  ncs: DBRcvCompra[];
+  recepciones: DBRecepcion[];
+  facturadoNeto: number;
+  ncRecibidasNeto: number;
+  recepcionadoNeto: number;
+  ncEsperadaNeto: number;
+  diferencia: number;
+  estadoCuadre: "cuadrado" | "backorder" | "adelanto" | "sin_recepcion" | "sin_factura";
+}
 
 export default function AdminConciliacionDocs() {
   const [loading, setLoading] = useState(true);
@@ -36,6 +53,20 @@ export default function AdminConciliacionDocs() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [asignarModal, setAsignarModal] = useState<{ recepcion: DBRecepcion; proveedor: string; folio: string } | null>(null);
   const [asignando, setAsignando] = useState(false);
+  const [provSortKey, setProvSortKey] = useState<SortKey>("diferencia");
+  const [provSortDir, setProvSortDir] = useState<SortDir>("desc");
+  const [provFiltroEstado, setProvFiltroEstado] = useState<"todos" | "cuadrado" | "backorder" | "adelanto" | "sin_recepcion" | "sin_factura">("todos");
+  const [provExpanded, setProvExpanded] = useState<Set<string>>(new Set());
+
+  const toggleProvSort = (col: SortKey) => {
+    if (provSortKey === col) setProvSortDir(d => d === "asc" ? "desc" : "asc");
+    else { setProvSortKey(col); setProvSortDir("desc"); }
+  };
+  const toggleProvExp = (rut: string) => {
+    const next = new Set(provExpanded);
+    if (next.has(rut)) next.delete(rut); else next.add(rut);
+    setProvExpanded(next);
+  };
 
   const cargar = useCallback(async () => {
     setLoading(true);
@@ -179,6 +210,134 @@ export default function AdminConciliacionDocs() {
       return !existe;
     });
   }, [recPeriodo, rcvPeriodo]);
+
+  // Cuadre por proveedor del período: agrupa facturas SII + NCs + recepciones bodega y
+  // calcula la diferencia neta. Refleja la realidad N:M (una recepción puede tapar varias
+  // facturas; una factura puede llegar en partes). Cuadre 1:1 factura-a-recepción es ficción.
+  const proveedoresRows: ProveedorRow[] = useMemo(() => {
+    const facturasInv = rcvPeriodo.filter(r => r.tipo_doc === 33 || r.tipo_doc === 34 || r.tipo_doc === 46);
+    const ncsAll = rcvPeriodo.filter(r => r.tipo_doc === 61);
+    type Acc = { rut: string; razon: string; facturas: DBRcvCompra[]; ncs: DBRcvCompra[]; recs: DBRecepcion[] };
+    const byProv = new Map<string, Acc>();
+    const keyFor = (rut: string | null | undefined, razon: string | null | undefined): string => {
+      const r = (rut || "").trim();
+      return r || `RAZON:${normProv(razon || "")}`;
+    };
+
+    for (const f of facturasInv) {
+      const k = keyFor(f.rut_proveedor, f.razon_social);
+      let row = byProv.get(k);
+      if (!row) { row = { rut: f.rut_proveedor || "", razon: f.razon_social || "", facturas: [], ncs: [], recs: [] }; byProv.set(k, row); }
+      row.facturas.push(f);
+      if (!row.razon && f.razon_social) row.razon = f.razon_social;
+    }
+    for (const nc of ncsAll) {
+      const k = keyFor(nc.rut_proveedor, nc.razon_social);
+      let row = byProv.get(k);
+      if (!row) { row = { rut: nc.rut_proveedor || "", razon: nc.razon_social || "", facturas: [], ncs: [], recs: [] }; byProv.set(k, row); }
+      row.ncs.push(nc);
+    }
+    for (const r of recPeriodo) {
+      const provNorm = normProv(r.proveedor || "");
+      let matched: Acc | undefined;
+      const accs = Array.from(byProv.values());
+      for (const acc of accs) {
+        if (normProv(acc.razon) === provNorm) { matched = acc; break; }
+      }
+      if (!matched) {
+        const k = `REC:${provNorm}`;
+        matched = byProv.get(k);
+        if (!matched) { matched = { rut: "", razon: r.proveedor || "(sin proveedor)", facturas: [], ncs: [], recs: [] }; byProv.set(k, matched); }
+      }
+      matched.recs.push(r);
+    }
+
+    const rows: ProveedorRow[] = [];
+    const allAccs = Array.from(byProv.values());
+    for (const acc of allAccs) {
+      const facturadoNeto = acc.facturas.reduce((s: number, f: DBRcvCompra) => s + (Number(f.monto_neto) || 0), 0);
+      const ncRecibidasNeto = acc.ncs.reduce((s: number, n: DBRcvCompra) => s + (Number(n.monto_neto) || 0), 0);
+      const recepcionadoNeto = acc.recs.reduce((s: number, r: DBRecepcion) => s + (Number(r.costo_neto) || 0), 0);
+
+      // NC esperada agregada de las facturas del proveedor (helper compartido).
+      const facturasConNC: { rcv: DBRcvCompra; ncEsperada: number }[] = [];
+      let ncEsperadaNeto = 0;
+      for (const f of acc.facturas) {
+        const recIds = (recByFolio.get(`${f.nro_doc}|${normProv(f.razon_social || "")}`) || []).map(r => r.id).filter(Boolean) as string[];
+        const ds = discs.filter(d => recIds.includes(d.recepcion_id) && d.estado === "PENDIENTE");
+        const nc = calcularNCEsperadaParaDiscs({
+          proveedorRazonSocial: f.razon_social || "",
+          discrepancias: ds,
+          lineasPorLineaId,
+          catalogo,
+          productos,
+        });
+        facturasConNC.push({ rcv: f, ncEsperada: nc.neto });
+        ncEsperadaNeto += nc.neto;
+      }
+
+      // Diferencia neta: lo que el proveedor te debe documentalmente vs físico bodega.
+      // facturado − ncRecibidas − ncEsperada = neto efectivo que debería corresponder a recepciones.
+      const facturadoEfectivo = facturadoNeto - ncRecibidasNeto - ncEsperadaNeto;
+      const diferencia = facturadoEfectivo - recepcionadoNeto;
+
+      const tieneFact = acc.facturas.length > 0;
+      const tieneRec = acc.recs.length > 0;
+      const umbral = Math.max(2000, facturadoEfectivo * 0.02); // 2% o $2.000 mínimo
+      let estadoCuadre: ProveedorRow["estadoCuadre"];
+      if (!tieneFact && tieneRec) estadoCuadre = "sin_factura";
+      else if (tieneFact && !tieneRec) estadoCuadre = "sin_recepcion";
+      else if (Math.abs(diferencia) <= umbral) estadoCuadre = "cuadrado";
+      else if (diferencia > 0) estadoCuadre = "backorder";
+      else estadoCuadre = "adelanto";
+
+      rows.push({
+        rut: acc.rut,
+        razonSocial: acc.razon,
+        facturas: facturasConNC,
+        ncs: acc.ncs,
+        recepciones: acc.recs,
+        facturadoNeto,
+        ncRecibidasNeto,
+        recepcionadoNeto,
+        ncEsperadaNeto,
+        diferencia,
+        estadoCuadre,
+      });
+    }
+    return rows;
+  }, [rcvPeriodo, recPeriodo, recByFolio, discs, lineasPorLineaId, catalogo, productos]);
+
+  const proveedoresFiltered = useMemo(() => {
+    let rows = proveedoresRows;
+    if (provFiltroEstado !== "todos") rows = rows.filter(r => r.estadoCuadre === provFiltroEstado);
+    const dir = provSortDir === "asc" ? 1 : -1;
+    rows = [...rows].sort((a, b) => {
+      let va: string | number = 0; let vb: string | number = 0;
+      switch (provSortKey) {
+        case "proveedor": va = a.razonSocial.toLowerCase(); vb = b.razonSocial.toLowerCase(); break;
+        case "facturado": va = a.facturadoNeto; vb = b.facturadoNeto; break;
+        case "ncs_recibidas": va = a.ncRecibidasNeto; vb = b.ncRecibidasNeto; break;
+        case "recepcionado": va = a.recepcionadoNeto; vb = b.recepcionadoNeto; break;
+        case "nc_esperada": va = a.ncEsperadaNeto; vb = b.ncEsperadaNeto; break;
+        case "diferencia": va = Math.abs(a.diferencia); vb = Math.abs(b.diferencia); break;
+        case "estado": va = a.estadoCuadre; vb = b.estadoCuadre; break;
+      }
+      if (typeof va === "string" && typeof vb === "string") return va.localeCompare(vb) * dir;
+      return ((va as number) - (vb as number)) * dir;
+    });
+    return rows;
+  }, [proveedoresRows, provFiltroEstado, provSortKey, provSortDir]);
+
+  const proveedoresTotales = useMemo(() => {
+    return proveedoresFiltered.reduce((acc, r) => ({
+      facturado: acc.facturado + r.facturadoNeto,
+      ncRecibidas: acc.ncRecibidas + r.ncRecibidasNeto,
+      recepcionado: acc.recepcionado + r.recepcionadoNeto,
+      ncEsperada: acc.ncEsperada + r.ncEsperadaNeto,
+      diferencia: acc.diferencia + r.diferencia,
+    }), { facturado: 0, ncRecibidas: 0, recepcionado: 0, ncEsperada: 0, diferencia: 0 });
+  }, [proveedoresFiltered]);
 
   // KPIs — solo inventario (facturas/NCs ya filtradas)
   const kpis = useMemo(() => {
@@ -375,6 +534,7 @@ export default function AdminConciliacionDocs() {
       {/* Sub-tabs */}
       <div style={{ display: "flex", gap: 4, marginBottom: 10, borderBottom: "1px solid var(--bg4)" }}>
         {([
+          ["proveedores", `Por Proveedor (${proveedoresRows.length})`],
           ["facturas", `Facturas (${kpis.facturas})`],
           ["ncs", `NCs (${kpis.ncs})`],
           ["sin_factura", `Rec. sin factura (${kpis.recSinFactura})`],
@@ -388,6 +548,185 @@ export default function AdminConciliacionDocs() {
             }}>{l}</button>
         ))}
       </div>
+
+      {subTab === "proveedores" && (() => {
+        const sortArrow = (col: SortKey) => provSortKey === col ? (provSortDir === "asc" ? " ▲" : " ▼") : "";
+        const HeaderCell = ({ col, label, align }: { col: SortKey; label: string; align?: "left" | "right" }) => (
+          <th onClick={() => toggleProvSort(col)}
+            style={{ padding: "10px 12px", textAlign: align || "left", cursor: "pointer", userSelect: "none",
+              color: provSortKey === col ? "var(--cyan)" : "var(--txt2)", fontWeight: 700, fontSize: 11, whiteSpace: "nowrap" }}>
+            {label}{sortArrow(col)}
+          </th>
+        );
+        const estadoBadge = (e: ProveedorRow["estadoCuadre"]) => {
+          const cfg = {
+            cuadrado:      { bg: "var(--greenBg)",  fg: "var(--green)",  txt: "✓ Cuadrado" },
+            backorder:     { bg: "var(--amberBg)",  fg: "var(--amber)",  txt: "⏳ Backorder" },
+            adelanto:      { bg: "var(--cyanBg)",   fg: "var(--cyan)",   txt: "↑ Adelanto" },
+            sin_recepcion: { bg: "var(--redBg)",    fg: "var(--red)",    txt: "⚠ Sin recep." },
+            sin_factura:   { bg: "var(--amberBg)",  fg: "var(--amber)",  txt: "⚠ Sin factura" },
+          }[e];
+          return <span style={{ fontSize: 10, padding: "3px 8px", borderRadius: 6, background: cfg.bg, color: cfg.fg, fontWeight: 700 }}>{cfg.txt}</span>;
+        };
+
+        return (
+          <div className="card" style={{ padding: 0 }}>
+            {/* Filtros estado */}
+            <div style={{ display: "flex", gap: 6, padding: "10px 12px", borderBottom: "1px solid var(--bg4)", flexWrap: "wrap" }}>
+              {([
+                ["todos", "Todos"], ["cuadrado", "✓ Cuadrados"], ["backorder", "⏳ Backorder"],
+                ["adelanto", "↑ Adelanto"], ["sin_recepcion", "Sin recep."], ["sin_factura", "Sin factura"],
+              ] as const).map(([k, l]) => (
+                <button key={k} onClick={() => setProvFiltroEstado(k)}
+                  style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid var(--bg4)",
+                    background: provFiltroEstado === k ? "var(--cyan)" : "var(--bg3)",
+                    color: provFiltroEstado === k ? "#000" : "var(--txt2)",
+                    fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
+                  {l}
+                </button>
+              ))}
+            </div>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead style={{ background: "var(--bg3)" }}>
+                  <tr style={{ borderBottom: "2px solid var(--bg4)" }}>
+                    <th style={{ width: 24 }}></th>
+                    <HeaderCell col="proveedor" label="Proveedor" />
+                    <HeaderCell col="facturado" label="Facturado SII" align="right" />
+                    <HeaderCell col="ncs_recibidas" label="NCs recibidas" align="right" />
+                    <HeaderCell col="recepcionado" label="Recepcionado" align="right" />
+                    <HeaderCell col="nc_esperada" label="NC esperada" align="right" />
+                    <HeaderCell col="diferencia" label="Diferencia" align="right" />
+                    <HeaderCell col="estado" label="Estado" align="left" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {proveedoresFiltered.length === 0 ? (
+                    <tr><td colSpan={8} style={{ padding: 24, textAlign: "center", color: "var(--txt3)" }}>Sin proveedores con movimiento en el período.</td></tr>
+                  ) : proveedoresFiltered.map(p => {
+                    const rowKey = p.rut || `RAZON:${normProv(p.razonSocial)}`;
+                    const isExp = provExpanded.has(rowKey);
+                    const diffColor = p.estadoCuadre === "cuadrado" ? "var(--green)"
+                      : p.estadoCuadre === "backorder" ? "var(--amber)"
+                      : p.estadoCuadre === "adelanto" ? "var(--cyan)" : "var(--red)";
+                    return (
+                      <React.Fragment key={rowKey}>
+                        <tr onClick={() => toggleProvExp(rowKey)}
+                          style={{ borderBottom: "1px solid var(--bg4)", cursor: "pointer" }}>
+                          <td style={{ padding: "10px 8px", color: "var(--txt3)", textAlign: "center", fontSize: 10 }}>{isExp ? "▼" : "▶"}</td>
+                          <td style={{ padding: "10px 12px" }}>
+                            <div style={{ fontWeight: 600, color: "var(--txt)" }}>{p.razonSocial || "(sin razón social)"}</div>
+                            <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 2, display: "flex", gap: 8 }}>
+                              <span>{p.facturas.length} fact</span>
+                              {p.ncs.length > 0 && <span>{p.ncs.length} NC</span>}
+                              <span>{p.recepciones.length} recep</span>
+                            </div>
+                          </td>
+                          <td className="mono" style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600 }}>
+                            {fmtMoney(p.facturadoNeto)}
+                          </td>
+                          <td className="mono" style={{ padding: "10px 12px", textAlign: "right", color: p.ncRecibidasNeto > 0 ? "var(--amber)" : "var(--txt3)" }}>
+                            {p.ncRecibidasNeto > 0 ? `−${fmtMoney(p.ncRecibidasNeto)}` : "—"}
+                          </td>
+                          <td className="mono" style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600 }}>
+                            {fmtMoney(p.recepcionadoNeto)}
+                          </td>
+                          <td className="mono" style={{ padding: "10px 12px", textAlign: "right", color: p.ncEsperadaNeto > 0 ? "var(--cyan)" : "var(--txt3)" }}>
+                            {p.ncEsperadaNeto > 0 ? fmtMoney(p.ncEsperadaNeto) : "—"}
+                          </td>
+                          <td className="mono" style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, color: diffColor }}>
+                            {p.diferencia >= 0 ? "+" : ""}{fmtMoney(p.diferencia)}
+                          </td>
+                          <td style={{ padding: "10px 12px" }}>{estadoBadge(p.estadoCuadre)}</td>
+                        </tr>
+                        {isExp && (
+                          <tr>
+                            <td colSpan={8} style={{ padding: "12px 16px 16px 40px", background: "var(--bg3)", borderBottom: "1px solid var(--bg4)" }}>
+                              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                                <div>
+                                  <div style={{ fontSize: 10, fontWeight: 700, color: "var(--txt3)", textTransform: "uppercase", marginBottom: 6 }}>Facturas SII</div>
+                                  {p.facturas.length === 0 ? <div style={{ fontSize: 11, color: "var(--txt3)" }}>—</div> : (
+                                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                      {p.facturas.map(({ rcv, ncEsperada }) => (
+                                        <div key={rcv.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, padding: "4px 6px", background: "var(--bg2)", borderRadius: 4 }}>
+                                          <span><span className="mono" style={{ fontWeight: 600 }}>{TIPO_DOC[rcv.tipo_doc] || rcv.tipo_doc} {rcv.nro_doc}</span> · {fmtDate(rcv.fecha_docto)}</span>
+                                          <span className="mono">
+                                            {fmtMoney(rcv.monto_neto)}
+                                            {ncEsperada > 0 && <span style={{ color: "var(--cyan)", marginLeft: 6 }}>· NCe {fmtMoney(ncEsperada)}</span>}
+                                          </span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                  {p.ncs.length > 0 && (
+                                    <>
+                                      <div style={{ fontSize: 10, fontWeight: 700, color: "var(--txt3)", textTransform: "uppercase", marginTop: 10, marginBottom: 6 }}>NCs recibidas</div>
+                                      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                        {p.ncs.map(nc => (
+                                          <div key={nc.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, padding: "4px 6px", background: "var(--bg2)", borderRadius: 4 }}>
+                                            <span><span className="mono" style={{ fontWeight: 600 }}>NC {nc.nro_doc}</span> · {fmtDate(nc.fecha_docto)} {nc.factura_ref_folio && <span style={{ color: "var(--txt3)" }}>← FAC {nc.factura_ref_folio}</span>}</span>
+                                            <span className="mono" style={{ color: "var(--amber)" }}>−{fmtMoney(nc.monto_neto)}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </>
+                                  )}
+                                </div>
+                                <div>
+                                  <div style={{ fontSize: 10, fontWeight: 700, color: "var(--txt3)", textTransform: "uppercase", marginBottom: 6 }}>Recepciones bodega</div>
+                                  {p.recepciones.length === 0 ? <div style={{ fontSize: 11, color: "var(--txt3)" }}>—</div> : (
+                                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                      {p.recepciones.map(r => (
+                                        <div key={r.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, padding: "4px 6px", background: "var(--bg2)", borderRadius: 4 }}>
+                                          <span><span className="mono" style={{ fontWeight: 600 }}>{r.folio || "(sin folio)"}</span> · {fmtDate(r.created_at)} · {r.estado}</span>
+                                          <span className="mono">{fmtMoney(r.costo_neto)}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                              <div style={{ marginTop: 12, padding: 10, background: "var(--bg2)", borderRadius: 6, fontSize: 11, color: "var(--txt2)" }}>
+                                <strong style={{ color: "var(--txt) " }}>Cuadre:</strong>{" "}
+                                <span className="mono">{fmtMoney(p.facturadoNeto)}</span> facturado
+                                {" − "}<span className="mono" style={{ color: "var(--amber)" }}>{fmtMoney(p.ncRecibidasNeto)}</span> NCs recibidas
+                                {" − "}<span className="mono" style={{ color: "var(--cyan)" }}>{fmtMoney(p.ncEsperadaNeto)}</span> NC esperada
+                                {" − "}<span className="mono">{fmtMoney(p.recepcionadoNeto)}</span> recepcionado
+                                {" = "}<span className="mono" style={{ color: diffColor, fontWeight: 700 }}>{p.diferencia >= 0 ? "+" : ""}{fmtMoney(p.diferencia)}</span>
+                                <div style={{ marginTop: 6, color: "var(--txt3)", fontSize: 10 }}>
+                                  {p.estadoCuadre === "cuadrado" && "Lo facturado coincide con lo recibido (≤ 2% de diferencia)."}
+                                  {p.estadoCuadre === "backorder" && "Te facturaron más de lo que recibiste — hay mercadería pendiente de llegar o un SKU sin contar."}
+                                  {p.estadoCuadre === "adelanto" && "Recibiste más de lo facturado — entrega adelantada o factura todavía no sincronizada."}
+                                  {p.estadoCuadre === "sin_recepcion" && "Hay facturas pero ninguna recepción matchea — proveedor de servicios o recepción sin registrar."}
+                                  {p.estadoCuadre === "sin_factura" && "Hay recepciones pero el RCV no trajo facturas — proveedor no emitió o sync pendiente."}
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
+                {proveedoresFiltered.length > 0 && (
+                  <tfoot style={{ background: "var(--bg3)" }}>
+                    <tr style={{ borderTop: "2px solid var(--bg4)", fontWeight: 700 }}>
+                      <td></td>
+                      <td style={{ padding: "10px 12px", color: "var(--txt2)" }}>Total ({proveedoresFiltered.length})</td>
+                      <td className="mono" style={{ padding: "10px 12px", textAlign: "right" }}>{fmtMoney(proveedoresTotales.facturado)}</td>
+                      <td className="mono" style={{ padding: "10px 12px", textAlign: "right", color: "var(--amber)" }}>{proveedoresTotales.ncRecibidas > 0 ? `−${fmtMoney(proveedoresTotales.ncRecibidas)}` : "—"}</td>
+                      <td className="mono" style={{ padding: "10px 12px", textAlign: "right" }}>{fmtMoney(proveedoresTotales.recepcionado)}</td>
+                      <td className="mono" style={{ padding: "10px 12px", textAlign: "right", color: "var(--cyan)" }}>{proveedoresTotales.ncEsperada > 0 ? fmtMoney(proveedoresTotales.ncEsperada) : "—"}</td>
+                      <td className="mono" style={{ padding: "10px 12px", textAlign: "right" }}>{proveedoresTotales.diferencia >= 0 ? "+" : ""}{fmtMoney(proveedoresTotales.diferencia)}</td>
+                      <td></td>
+                    </tr>
+                  </tfoot>
+                )}
+              </table>
+            </div>
+          </div>
+        );
+      })()}
 
       {subTab === "facturas" && (
         <div className="card" style={{ padding: 0, overflow: "auto" }}>
