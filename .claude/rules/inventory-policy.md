@@ -6,6 +6,8 @@ Al escribir código nuevo que toque el motor de inteligencia (`src/lib/intellige
 
 Referencia cruzada: `docs/banva-bodega-inteligencia.md` §14 ("Patrones a evitar") documenta las primeras versiones de las reglas 1 y 3 con detalle técnico adicional.
 
+**Antes de tocar lógica de sell-through, exposición, o Operación Limpieza**: leer `docs/auditorias/inteligencia_vs_manuales_2026-04-28.md` §"Adendum — Consenso ST y modo de lanzamiento Operación Limpieza" (al final del archivo). Define numerador/denominador correctos, ajuste de exposición diario, gates de confounders, y la divergencia documentada entre velocidad-semanal (motor actual) y ST-diario (motor nuevo). NO derivar uno del otro. Decisión de lanzamiento: modo híbrido semi-auto (Vicente, 2026-04-28).
+
 ## Regla 1 — Nunca valores centinela numéricos
 
 **Patrón prohibido**: usar números "mágicos" (`999`, `-1`, `2071`, `0` como marcador) para representar "no sé", "no aplica" o "no hay dato".
@@ -106,6 +108,7 @@ if (error) {
 
 **Casos históricos**:
 - `stock_full_cache` (tabla, canónica) vs `ml_items_map.stock_full_cache` (columna, legado) — PR6b-pivot-I `db58f8e`. El `syncStockFull.stale_cleanup` bajaba la tabla a 0 para SKUs que ML dejaba de reportar, pero NO tocaba la columna → 14 SKUs con valores zombi durante 3-22 días. El motor lee la tabla (correcto) pero `stock-compare phase=wms` leía la columna (mostraba stock fantasma al admin). Fix: `syncStockFull` ahora espejea el cleanup a la columna + `stock-compare` migró a LEFT JOIN contra la tabla + v58 `COMMENT ON COLUMN ... DEPRECADA`.
+- `ordenes_compra_lineas.cantidad_recibida` (cache derivada) vs `recepcion_lineas.qty_recibida` (canónica) — v93 (2026-04-28). Ni `cerrarOC` (`AdminCompras.tsx:491`) ni App Etiquetas escribían el campo cache, así que quedaba en 0 (default) para siempre. La UI lo evitaba leyendo todo en runtime con un JOIN; el motor (`intelligence-queries.ts:382-384`) sí lo leía y calculaba `stock_en_transito = cantidad_pedida - cantidad_recibida`, sub-pedido constante en `pedir_proveedor`. Caso testigo OC-005 SKU `TXTPBL20200SK`: pedido 60, recibido real 30, motor lo veía como 60 en tránsito → 37 de 49 líneas con drift. Fix v93: trigger `trg_recepcion_lineas_sync_ocl` (AFTER INSERT/UPDATE/DELETE en `recepcion_lineas`) + `trg_recepciones_sync_ocl` (cuando cambia `recepciones.orden_compra_id`) llaman a `sync_ocl_cantidad_recibida(orden_id, sku_origen)` que hace SUM idempotente. Match case-insensitive UPPER(sku) = UPPER(sku_origen) (refleja la lógica que ya usaba la UI). Backfill inline para OCs no anuladas. **Regla**: NO escribir `ordenes_compra_lineas.cantidad_recibida` desde código aplicación nunca más — el trigger se desincroniza con UPDATE directo.
 - Bonus histórico (no fixeado aún): `pedidos_flex` (legacy, un registro por order+sku_venta) vs `ml_shipments` + `ml_shipment_items` (nuevo, shipment-centric). Coexisten por migración incompleta. A consolidar en sprint futuro.
 
 ## Regla 6 — Autoheal debe escanear la fuente canónica, no la respuesta parcial

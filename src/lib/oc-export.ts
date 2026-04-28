@@ -58,9 +58,9 @@ function formatFecha(fecha: string): string {
  *   Descripción, Cantidad). Una fila por evento real, ordenado por fecha.
  *
  * Recibida y Pendiente se calculan sumando los eventos de "recepciones"
- * (recepcion_lineas.qty_recibida es la fuente canónica;
- * ordenes_compra_lineas.cantidad_recibida está siempre en 0 y se ignora
- * cuando hay datos de recepciones).
+ * cuando están disponibles (recepcion_lineas.qty_recibida es la fuente
+ * canónica). Si no, se cae a ordenes_compra_lineas.cantidad_recibida, que
+ * desde v93 lo mantiene un trigger sincronizado con la canónica.
  *
  * El nombre del archivo: OC-{numero}-{proveedor}.xlsx
  */
