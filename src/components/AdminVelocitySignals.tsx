@@ -13,7 +13,7 @@ import { useEffect, useState } from "react";
 
 type Senal = "caida" | "aceleracion" | "estabilidad_post_markdown" | "en_evaluacion";
 type Sugerencia = {
-  sku: string; nombre: string;
+  sku: string; item_id: string; nombre: string;
   cuadrante: string | null; abc: string | null;
   vel_7d: number; vel_30d: number; vel_60d: number;
   tendencia_pct: number;
@@ -119,6 +119,43 @@ export default function AdminVelocitySignals() {
   const [seg, setSeg] = useState<SegResp | null>(null);
   const [segLoading, setSegLoading] = useState(false);
   const [segError, setSegError] = useState<string | null>(null);
+  const [applyingSku, setApplyingSku] = useState<string | null>(null);
+  const [appliedMap, setAppliedMap] = useState<Record<string, { ok: boolean; msg: string }>>({});
+
+  async function aplicar(s: Sugerencia) {
+    if (s.delta_pct_sugerido === 0) return;
+    const conf = window.confirm(
+      `Aplicar sugerencia para ${s.sku}?\n\n` +
+      `${fmtCLP(s.precio_actual)} → ${fmtCLP(s.precio_propuesto)} ` +
+      `(${s.delta_pct_sugerido > 0 ? "+" : ""}${s.delta_pct_sugerido}%)\n\n` +
+      `Motivo: senal_pulsos_velocidad`
+    );
+    if (!conf) return;
+    setApplyingSku(s.sku);
+    try {
+      const r = await fetch("/api/pricing/aplicar-sugerencia", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          item_id: s.item_id,
+          sku: s.sku,
+          precio_propuesto: s.precio_propuesto,
+          senal: s.senal,
+          actor: "admin",
+        }),
+      });
+      const j = await r.json();
+      if (!r.ok) {
+        setAppliedMap(m => ({ ...m, [s.sku]: { ok: false, msg: j.error || j.message || "error" } }));
+      } else {
+        setAppliedMap(m => ({ ...m, [s.sku]: { ok: true, msg: `Aplicado · ${fmtCLP(j.applied_price)} (${j.branch})` } }));
+      }
+    } catch (e: any) {
+      setAppliedMap(m => ({ ...m, [s.sku]: { ok: false, msg: e?.message || "network_error" } }));
+    } finally {
+      setApplyingSku(null);
+    }
+  }
 
   async function load() {
     setLoading(true); setError(null);
@@ -251,6 +288,7 @@ export default function AdminVelocitySignals() {
                     <th style={{ textAlign: "right" }}>Margen %</th>
                     <th style={{ textAlign: "right" }}>Sugerencia</th>
                     <th>Motivo</th>
+                    <th style={{ textAlign: "center" }}>Acción</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -306,6 +344,36 @@ export default function AdminVelocitySignals() {
                             <div style={{ marginTop: 4, color: "var(--amber)" }}>
                               ⚠ Bloqueado por: {s.bloqueado_por.join(", ")}
                             </div>
+                          )}
+                        </td>
+                        <td style={{ textAlign: "center" }}>
+                          {appliedMap[s.sku] ? (
+                            <span style={{
+                              fontSize: 10,
+                              color: appliedMap[s.sku].ok ? "var(--green)" : "var(--red)",
+                            }} title={appliedMap[s.sku].msg}>
+                              {appliedMap[s.sku].ok ? "✓ aplicado" : "✗ error"}
+                            </span>
+                          ) : s.delta_pct_sugerido === 0 || bloq ? (
+                            <span style={{ fontSize: 10, color: "var(--txt3)" }}>—</span>
+                          ) : (
+                            <button
+                              onClick={() => aplicar(s)}
+                              disabled={applyingSku === s.sku}
+                              style={{
+                                padding: "4px 8px",
+                                fontSize: 11,
+                                background: "var(--cyanBg)",
+                                color: "var(--cyan)",
+                                border: "1px solid var(--cyanBd)",
+                                borderRadius: 4,
+                                cursor: applyingSku === s.sku ? "wait" : "pointer",
+                                whiteSpace: "nowrap",
+                              }}
+                              title={`Aplicar ${fmtCLP(s.precio_propuesto)} con motivo=senal_pulsos_velocidad`}
+                            >
+                              {applyingSku === s.sku ? "..." : `Aplicar`}
+                            </button>
                           )}
                         </td>
                       </tr>

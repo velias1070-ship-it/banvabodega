@@ -99,6 +99,7 @@ type Senal = "caida" | "aceleracion" | "estabilidad_post_markdown" | "en_evaluac
 
 type Sugerencia = {
   sku: string;
+  item_id: string;
   nombre: string;
   cuadrante: string | null;
   abc: string | null;
@@ -226,6 +227,7 @@ export async function GET(req: NextRequest) {
 
     const baseSugerencia = {
       sku,
+      item_id: cache.item_id,
       nombre: prod.nombre,
       cuadrante: r.cuadrante,
       abc: r.abc,
