@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import AdminMarkdownPilot from "./AdminMarkdownPilot";
 import AdminPricingRulesEditor from "./AdminPricingRulesEditor";
+import AdminVelocitySignals from "./AdminVelocitySignals";
 
 /**
  * Pricing Config — defaults por cuadrante + overrides por SKU.
@@ -226,6 +227,9 @@ export default function AdminPricingConfig() {
 
       {/* Editor de reglas: ver/editar/publicar/promover el rule set global */}
       <AdminPricingRulesEditor />
+
+      {/* Pulsos de velocidad: detectores caída/aceleración/estabilidad post-markdown */}
+      <AdminVelocitySignals />
 
       {/* Markdown piloto SKU por SKU: dry-run + apply individual */}
       <AdminMarkdownPilot />
