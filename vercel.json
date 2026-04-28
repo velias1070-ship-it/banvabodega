@@ -95,6 +95,10 @@
     {
       "path": "/api/pricing/markdown-auto?modo=dry_run",
       "schedule": "0 8 * * *"
+    },
+    {
+      "path": "/api/conteos/auto-generar?posiciones=2",
+      "schedule": "35 11 * * 1-6"
     }
   ]
 }
