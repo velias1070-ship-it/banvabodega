@@ -13,18 +13,22 @@ interface MLItemAttrs {
 
 /**
  * POST /api/ml/bulk-attr-sync
- * Body: { item_ids: string[], action: "design_from_color" | "color_from_design" | "from_variant_name", family_prefix?: string }
+ * Body: { item_ids: string[], action: "design_from_color" | "color_from_design" | "from_variant_name" | "set_value", family_prefix?: string, attr_id?: string, value_name?: string }
  *
  * Acciones:
  * - design_from_color: copia COLOR → FABRIC_DESIGN
  * - color_from_design: copia FABRIC_DESIGN → COLOR
  * - from_variant_name: extrae nombre de variante del título y lo pone en COLOR y FABRIC_DESIGN
+ * - set_value: setea attr_id = value_name en todos los item_ids (ej: FLAT_SHEET_WIDTH = "200 cm")
  */
 export async function POST(req: NextRequest) {
   try {
-    const { item_ids, action, family_prefix } = await req.json() as { item_ids: string[]; action: string; family_prefix?: string };
+    const { item_ids, action, family_prefix, attr_id, value_name } = await req.json() as { item_ids: string[]; action: string; family_prefix?: string; attr_id?: string; value_name?: string };
     if (!item_ids?.length || !action) {
       return NextResponse.json({ error: "item_ids y action requeridos" }, { status: 400 });
+    }
+    if (action === "set_value" && !attr_id) {
+      return NextResponse.json({ error: "attr_id requerido para set_value" }, { status: 400 });
     }
 
     const results: Array<{ item_id: string; title: string; value: string; ok: boolean; error?: string }> = [];
@@ -36,7 +40,21 @@ export async function POST(req: NextRequest) {
         continue;
       }
 
-      if (action === "from_variant_name") {
+      if (action === "set_value") {
+        const newVal = (value_name || "").trim();
+        const currentVal = item.attributes?.find(a => a.id === attr_id)?.value_name || "";
+        if (currentVal === newVal) {
+          results.push({ item_id: itemId, title: item.title, value: newVal, ok: true, error: "Sin cambio" });
+          await new Promise(r => setTimeout(r, 100));
+          continue;
+        }
+        try {
+          await mlPut(`/items/${itemId}`, { attributes: [{ id: attr_id, value_name: newVal || null }] });
+          results.push({ item_id: itemId, title: item.title, value: newVal, ok: true });
+        } catch (e) {
+          results.push({ item_id: itemId, title: item.title, value: newVal, ok: false, error: e instanceof Error ? e.message : String(e) });
+        }
+      } else if (action === "from_variant_name") {
         // Primero intentar con el título del cache (Supabase) que puede tener el nombre original
         let cachedTitle = "";
         const sb = getServerSupabase();

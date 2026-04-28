@@ -2136,6 +2136,24 @@ export async function fetchMLItemsMap(): Promise<DBMLItemMap[]> {
   return (data || []) as DBMLItemMap[];
 }
 
+/** Atributos cacheados de ML (FLAT_SHEET_WIDTH, MATTRESS_SIZE, etc) por item_id. */
+export async function fetchMLAttrSnapshot(attrIds: string[]): Promise<Map<string, Record<string, string>>> {
+  const sb = getSupabase(); if (!sb) return new Map();
+  const { data, error } = await sb.from("ml_item_attr_snapshot")
+    .select("item_id, attr_id, attr_value")
+    .in("attr_id", attrIds);
+  if (error) {
+    console.error(`[fetchMLAttrSnapshot] ${error.message}`);
+    return new Map();
+  }
+  const map = new Map<string, Record<string, string>>();
+  for (const row of (data || []) as Array<{ item_id: string; attr_id: string; attr_value: string }>) {
+    if (!map.has(row.item_id)) map.set(row.item_id, {});
+    map.get(row.item_id)![row.attr_id] = row.attr_value || "";
+  }
+  return map;
+}
+
 /** Construye mapeo seller_sku → SKU físico usando ml_shipment_items + ml_items_map */
 export async function fetchSkuVentaToFisicoMap(): Promise<Record<string, string>> {
   const sb = getSupabase(); if (!sb) return {};

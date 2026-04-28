@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from "react";
-import { fetchMLItemsMap, fetchStockDisponible } from "@/lib/db";
+import { fetchMLItemsMap, fetchStockDisponible, fetchMLAttrSnapshot } from "@/lib/db";
 import type { DBMLItemMap } from "@/lib/db";
 import { getStore, skuTotal } from "@/lib/store";
 import MarginSimulatorModal from "@/components/MarginSimulatorModal";
@@ -101,6 +101,21 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
   const [refreshing, setRefreshing] = useState(false);
   const [filter, setFilter] = useState<"all" | "active" | "paused" | "closed" | "paused_with_stock">("all");
   const [search, setSearch] = useState("");
+  const [filterFlatSheetWidth, setFilterFlatSheetWidth] = useState<string>("all");
+  const [filterMattressSize, setFilterMattressSize] = useState<string>("all");
+  const [attrSnapshot, setAttrSnapshot] = useState<Map<string, Record<string, string>>>(new Map());
+  // Bulk update
+  const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set());
+  const [bulkAttrModal, setBulkAttrModal] = useState<{ attr_id: "FLAT_SHEET_WIDTH" | "MATTRESS_SIZE"; value_name: string } | null>(null);
+  const [bulkAttrRunning, setBulkAttrRunning] = useState(false);
+  const [bulkAttrResult, setBulkAttrResult] = useState<string | null>(null);
+  const toggleBulk = (itemId: string) => {
+    setBulkSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(itemId)) next.delete(itemId); else next.add(itemId);
+      return next;
+    });
+  };
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [stockDisponible, setStockDisponible] = useState<Map<string, number>>(new Map());
@@ -304,6 +319,11 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
   // Load from DB on mount (instant — cron keeps ml_items_map updated every 30 min)
   useEffect(() => { loadItems(); }, [loadItems]);
 
+  // Load attribute snapshot (FLAT_SHEET_WIDTH + MATTRESS_SIZE) — populated by /api/ml/attr-watch cron
+  useEffect(() => {
+    fetchMLAttrSnapshot(["FLAT_SHEET_WIDTH", "MATTRESS_SIZE"]).then(setAttrSnapshot);
+  }, []);
+
   const refreshLive = useCallback(async () => {
     if (items.length === 0) return;
     setRefreshing(true);
@@ -395,15 +415,23 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
 
   const [editHasFamily, setEditHasFamily] = useState(false);
   const [editDesign, setEditDesign] = useState("");
+  const [editFlatSheetWidth, setEditFlatSheetWidth] = useState("");
+  const [editMattressSize, setEditMattressSize] = useState("");
   const [editOrigColor, setEditOrigColor] = useState("");
   const [editOrigDesign, setEditOrigDesign] = useState("");
+  const [editOrigFlatSheetWidth, setEditOrigFlatSheetWidth] = useState("");
+  const [editOrigMattressSize, setEditOrigMattressSize] = useState("");
   const [editLoadingAttrs, setEditLoadingAttrs] = useState(false);
   const openEditItem = async (itemId: string, currentTitle: string) => {
     setEditTitle(currentTitle);
     setEditColor("");
     setEditDesign("");
+    setEditFlatSheetWidth("");
+    setEditMattressSize("");
     setEditOrigColor("");
     setEditOrigDesign("");
+    setEditOrigFlatSheetWidth("");
+    setEditOrigMattressSize("");
     setEditSaving(false);
     setEditHasFamily(false);
     setEditLoadingAttrs(true);
@@ -418,6 +446,8 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
           for (const a of item.attributes) {
             if (a.id === "COLOR") { setEditColor(a.value_name || ""); setEditOrigColor(a.value_name || ""); }
             if (a.id === "FABRIC_DESIGN") { setEditDesign(a.value_name || ""); setEditOrigDesign(a.value_name || ""); }
+            if (a.id === "FLAT_SHEET_WIDTH") { setEditFlatSheetWidth(a.value_name || ""); setEditOrigFlatSheetWidth(a.value_name || ""); }
+            if (a.id === "MATTRESS_SIZE") { setEditMattressSize(a.value_name || ""); setEditOrigMattressSize(a.value_name || ""); }
           }
         }
         if (item.tags?.includes("user_product_listing")) setEditHasFamily(true);
@@ -437,6 +467,8 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
       const attrs: Array<{ id: string; value_name: string | null }> = [];
       if (editColor !== editOrigColor) attrs.push({ id: "COLOR", value_name: editColor || null });
       if (editDesign !== editOrigDesign) attrs.push({ id: "FABRIC_DESIGN", value_name: editDesign || null });
+      if (editFlatSheetWidth !== editOrigFlatSheetWidth) attrs.push({ id: "FLAT_SHEET_WIDTH", value_name: editFlatSheetWidth || null });
+      if (editMattressSize !== editOrigMattressSize) attrs.push({ id: "MATTRESS_SIZE", value_name: editMattressSize || null });
       if (attrs.length > 0) updates.attributes = attrs;
       if (Object.keys(updates).length === 0) { setEditItem(null); return; }
       const res = await fetch("/api/ml/item-update", {
@@ -455,6 +487,39 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
       setActionError(`Error: ${e instanceof Error ? e.message : "desconocido"}`);
     } finally {
       setEditSaving(false);
+    }
+  };
+
+  const submitBulkAttr = async () => {
+    if (!bulkAttrModal || bulkSelected.size === 0) return;
+    const ids = Array.from(bulkSelected);
+    setBulkAttrRunning(true);
+    setBulkAttrResult(null);
+    try {
+      const res = await fetch("/api/ml/bulk-attr-sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ item_ids: ids, action: "set_value", attr_id: bulkAttrModal.attr_id, value_name: bulkAttrModal.value_name }),
+      });
+      const data = await res.json();
+      if (data.error) { setBulkAttrResult(`Error: ${data.error}`); return; }
+      setBulkAttrResult(`${data.ok}/${data.total} actualizados${data.failed ? ` · ${data.failed} fallaron` : ""}`);
+      // Refrescar snapshot local con los valores nuevos para los que pasaron
+      setAttrSnapshot(prev => {
+        const next = new Map(prev);
+        for (const r of (data.results || []) as Array<{ item_id: string; ok: boolean }>) {
+          if (r.ok) {
+            const cur = next.get(r.item_id) || {};
+            next.set(r.item_id, { ...cur, [bulkAttrModal.attr_id]: bulkAttrModal.value_name });
+          }
+        }
+        return next;
+      });
+      setBulkSelected(new Set());
+    } catch (e) {
+      setBulkAttrResult(`Error: ${e instanceof Error ? e.message : "?"}`);
+    } finally {
+      setBulkAttrRunning(false);
     }
   };
 
@@ -497,8 +562,34 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
       const itemId = item.item_id.toLowerCase();
       if (!title.includes(q) && !sku.includes(q) && !itemId.includes(q)) return false;
     }
+    if (filterFlatSheetWidth !== "all") {
+      const v = attrSnapshot.get(item.item_id)?.FLAT_SHEET_WIDTH || "";
+      if (filterFlatSheetWidth === "__empty__") { if (v) return false; } else if (v !== filterFlatSheetWidth) return false;
+    }
+    if (filterMattressSize !== "all") {
+      const v = attrSnapshot.get(item.item_id)?.MATTRESS_SIZE || "";
+      if (filterMattressSize === "__empty__") { if (v) return false; } else if (v !== filterMattressSize) return false;
+    }
     return true;
   });
+
+  // Valores únicos para los selects de filtro
+  const uniqueFlatSheetWidths = useMemo(() => {
+    const set = new Set<string>();
+    for (const item of displayItems) {
+      const v = attrSnapshot.get(item.item_id)?.FLAT_SHEET_WIDTH;
+      if (v) set.add(v);
+    }
+    return Array.from(set).sort();
+  }, [displayItems, attrSnapshot]);
+  const uniqueMattressSizes = useMemo(() => {
+    const set = new Set<string>();
+    for (const item of displayItems) {
+      const v = attrSnapshot.get(item.item_id)?.MATTRESS_SIZE;
+      if (v) set.add(v);
+    }
+    return Array.from(set).sort();
+  }, [displayItems, attrSnapshot]);
 
   // Agrupar por familia (items que comparten prefijo de título)
   const [expandedFamilies, setExpandedFamilies] = useState<Set<string>>(new Set());
@@ -578,6 +669,20 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
               <option value="paused_with_stock">Pausados con stock</option>
               <option value="closed">Cerrados</option>
             </select>
+            <select value={filterFlatSheetWidth} onChange={e => setFilterFlatSheetWidth(e.target.value)}
+              title="Filtrar por ancho sábana plana"
+              style={{ padding: "6px 10px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 12 }}>
+              <option value="all">Ancho sábana</option>
+              <option value="__empty__">Sin valor</option>
+              {uniqueFlatSheetWidths.map(v => <option key={v} value={v}>{v}</option>)}
+            </select>
+            <select value={filterMattressSize} onChange={e => setFilterMattressSize(e.target.value)}
+              title="Filtrar por tamaño cama"
+              style={{ padding: "6px 10px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 12 }}>
+              <option value="all">Tamaño cama</option>
+              <option value="__empty__">Sin valor</option>
+              {uniqueMattressSizes.map(v => <option key={v} value={v}>{v}</option>)}
+            </select>
             <button onClick={scanSinPromos} disabled={scanningPromos}
               style={{ padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: "var(--amber)", color: "#fff", border: "none", cursor: scanningPromos ? "wait" : "pointer" }}>
               {scanningPromos ? "Escaneando..." : "Sin promos"}
@@ -589,6 +694,29 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
           </div>
         </div>
       </div>
+
+      {/* Bulk action bar — visible cuando hay items seleccionados */}
+      {bulkSelected.size > 0 && (
+        <div className="card" style={{ marginBottom: 12, padding: "10px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", background: "var(--cyanBg)", border: "1px solid var(--cyanBd)" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "var(--cyan)" }}>
+            {bulkSelected.size} publicación{bulkSelected.size !== 1 ? "es" : ""} seleccionada{bulkSelected.size !== 1 ? "s" : ""}
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button onClick={() => setBulkAttrModal({ attr_id: "FLAT_SHEET_WIDTH", value_name: "" })}
+              style={{ padding: "6px 12px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: "var(--cyan)", color: "#fff", border: "none", cursor: "pointer" }}>
+              Editar ancho sábana
+            </button>
+            <button onClick={() => setBulkAttrModal({ attr_id: "MATTRESS_SIZE", value_name: "" })}
+              style={{ padding: "6px 12px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: "var(--cyan)", color: "#fff", border: "none", cursor: "pointer" }}>
+              Editar tamaño cama
+            </button>
+            <button onClick={() => setBulkSelected(new Set())}
+              style={{ padding: "6px 12px", borderRadius: 6, fontSize: 11, fontWeight: 600, background: "var(--bg3)", color: "var(--txt2)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
+              Limpiar
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* KPI */}
       {displayItems.length > 0 && (
@@ -693,12 +821,19 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                       const statusColor = STATUS_COLORS[status] || "var(--txt3)";
                       return (
                         <tr key={item.item_id} style={{ background: "var(--bg2)", borderBottom: "1px solid var(--bg4)" }}>
-                          <td></td>
+                          <td style={{ textAlign: "center" }}>
+                            <input type="checkbox" checked={bulkSelected.has(item.item_id)} onChange={() => toggleBulk(item.item_id)} style={{ cursor: "pointer" }} />
+                          </td>
                           <td style={{ padding: "8px 4px" }}>
                             {thumb ? <img src={thumb} alt="" style={{ width: 32, height: 32, borderRadius: 4, objectFit: "cover" }} /> : null}
                           </td>
                           <td style={{ padding: "8px 8px" }}>
                             <div style={{ fontWeight: 600, fontSize: 11, color: "var(--cyan)" }}>{variantName}</div>
+                            {(() => {
+                              const a = attrSnapshot.get(item.item_id);
+                              const parts = [a?.FLAT_SHEET_WIDTH, a?.MATTRESS_SIZE].filter(Boolean);
+                              return parts.length > 0 ? <div style={{ fontSize: 9, color: "var(--txt3)", marginTop: 2 }}>{parts.join(" · ")}</div> : null;
+                            })()}
                             {permalink && <a href={permalink} target="_blank" rel="noopener noreferrer" className="mono" style={{ fontSize: 9, color: "var(--txt3)", textDecoration: "none" }}>{item.item_id}</a>}
                           </td>
                           <td className="mono" style={{ fontSize: 10 }}>{item.sku}</td>
@@ -736,12 +871,19 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                 const statusColor = STATUS_COLORS[status] || "var(--txt3)";
                 return (
                   <tr key={item.item_id} style={{ borderBottom: "1px solid var(--bg4)" }}>
-                    <td></td>
+                    <td style={{ textAlign: "center" }}>
+                      <input type="checkbox" checked={bulkSelected.has(item.item_id)} onChange={() => toggleBulk(item.item_id)} style={{ cursor: "pointer" }} />
+                    </td>
                     <td style={{ padding: "8px 4px" }}>
                       {thumb ? <img src={thumb} alt="" style={{ width: 32, height: 32, borderRadius: 4, objectFit: "cover" }} /> : <div style={{ width: 32, height: 32, borderRadius: 4, background: "var(--bg3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>📦</div>}
                     </td>
                     <td style={{ padding: "8px 8px", maxWidth: 300 }}>
                       <div style={{ fontWeight: 600, fontSize: 11 }}>{title}</div>
+                      {(() => {
+                        const a = attrSnapshot.get(item.item_id);
+                        const parts = [a?.FLAT_SHEET_WIDTH, a?.MATTRESS_SIZE].filter(Boolean);
+                        return parts.length > 0 ? <div style={{ fontSize: 9, color: "var(--txt3)", marginTop: 2 }}>{parts.join(" · ")}</div> : null;
+                      })()}
                       {permalink && <a href={permalink} target="_blank" rel="noopener noreferrer" className="mono" style={{ fontSize: 9, color: "var(--txt3)", textDecoration: "none" }}>{item.item_id}</a>}
                     </td>
                     <td className="mono" style={{ fontSize: 10 }}>{item.sku}</td>
@@ -987,6 +1129,53 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
         </div>
       )}
 
+      {/* Modal Bulk Update Atributo */}
+      {bulkAttrModal && (() => {
+        const label = bulkAttrModal.attr_id === "FLAT_SHEET_WIDTH" ? "Ancho sábana plana" : "Tamaño cama";
+        const placeholder = bulkAttrModal.attr_id === "FLAT_SHEET_WIDTH" ? "Ej: 200 cm, 250 cm..." : "Ej: 1.5 plazas, 2 plazas, King...";
+        const suggestions = bulkAttrModal.attr_id === "FLAT_SHEET_WIDTH" ? uniqueFlatSheetWidths : uniqueMattressSizes;
+        return (
+          <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center" }}
+            onClick={() => !bulkAttrRunning && setBulkAttrModal(null)}>
+            <div onClick={e => e.stopPropagation()} style={{ background: "var(--bg2)", borderRadius: 12, width: "100%", maxWidth: 480, overflow: "hidden", boxShadow: "0 20px 60px rgba(0,0,0,0.15)" }}>
+              <div style={{ padding: "18px 24px", background: "var(--cyan)", color: "#fff", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontSize: 16, fontWeight: 700 }}>Bulk: {label}</span>
+                <button onClick={() => setBulkAttrModal(null)} disabled={bulkAttrRunning} style={{ background: "none", border: "none", color: "#fff", fontSize: 20, cursor: "pointer" }}>&times;</button>
+              </div>
+              <div style={{ padding: "16px 24px", display: "flex", flexDirection: "column", gap: 12 }}>
+                <div style={{ fontSize: 12, color: "var(--txt2)" }}>Aplicar a {bulkSelected.size} publicación{bulkSelected.size !== 1 ? "es" : ""}</div>
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", display: "block", marginBottom: 4 }}>Nuevo valor</label>
+                  <input value={bulkAttrModal.value_name} onChange={e => setBulkAttrModal({ ...bulkAttrModal, value_name: e.target.value })}
+                    placeholder={placeholder} disabled={bulkAttrRunning}
+                    style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt)", fontSize: 13, boxSizing: "border-box" }} />
+                  {suggestions.length > 0 && (
+                    <div style={{ marginTop: 6, display: "flex", gap: 4, flexWrap: "wrap" }}>
+                      {suggestions.map(v => (
+                        <button key={v} onClick={() => setBulkAttrModal({ ...bulkAttrModal, value_name: v })} disabled={bulkAttrRunning}
+                          style={{ padding: "3px 8px", borderRadius: 4, fontSize: 10, background: "var(--bg3)", color: "var(--txt2)", border: "1px solid var(--bg4)", cursor: "pointer" }}>{v}</button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {bulkAttrResult && <div style={{ fontSize: 11, padding: "8px 10px", borderRadius: 6, background: bulkAttrResult.startsWith("Error") ? "var(--redBg)" : "var(--greenBg)", color: bulkAttrResult.startsWith("Error") ? "var(--red)" : "var(--green)" }}>{bulkAttrResult}</div>}
+                <div style={{ fontSize: 10, color: "var(--txt3)" }}>Máximo 50 items por corrida. ML ratelimitea ~3/s.</div>
+              </div>
+              <div style={{ padding: "14px 24px", borderTop: "1px solid var(--bg4)", display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                <button onClick={() => setBulkAttrModal(null)} disabled={bulkAttrRunning}
+                  style={{ padding: "9px 20px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", background: "var(--bg3)", color: "var(--txt2)", border: "1px solid var(--bg4)" }}>
+                  Cerrar
+                </button>
+                <button onClick={submitBulkAttr} disabled={bulkAttrRunning || !bulkAttrModal.value_name.trim()}
+                  style={{ padding: "9px 20px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: bulkAttrRunning ? "wait" : "pointer", background: "var(--cyan)", color: "#fff", border: "none", opacity: bulkAttrRunning || !bulkAttrModal.value_name.trim() ? 0.5 : 1 }}>
+                  {bulkAttrRunning ? "Guardando..." : `Aplicar a ${bulkSelected.size}`}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Modal Editar Item */}
       {editItem && (
         <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center" }}
@@ -1017,6 +1206,20 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                   <label style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", display: "block", marginBottom: 4 }}>Diseño de tela</label>
                   <input value={editLoadingAttrs ? "Cargando..." : editDesign} onChange={e => setEditDesign(e.target.value)} disabled={editLoadingAttrs}
                     placeholder="Ej: Dino, Fox, Swan, Stellar..."
+                    style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt)", fontSize: 13, boxSizing: "border-box" }} />
+                </div>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", display: "block", marginBottom: 4 }}>Ancho sábana plana</label>
+                  <input value={editLoadingAttrs ? "Cargando..." : editFlatSheetWidth} onChange={e => setEditFlatSheetWidth(e.target.value)} disabled={editLoadingAttrs}
+                    placeholder="Ej: 200 cm, 250 cm..."
+                    style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt)", fontSize: 13, boxSizing: "border-box" }} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", display: "block", marginBottom: 4 }}>Tamaño cama</label>
+                  <input value={editLoadingAttrs ? "Cargando..." : editMattressSize} onChange={e => setEditMattressSize(e.target.value)} disabled={editLoadingAttrs}
+                    placeholder="Ej: 1.5 plazas, 2 plazas, King..."
                     style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt)", fontSize: 13, boxSizing: "border-box" }} />
                 </div>
               </div>
