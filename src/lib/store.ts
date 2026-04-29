@@ -1546,14 +1546,15 @@ export async function reasignarFormato(
   if (qty <= 0) return;
   if (!isConfigured()) throw new Error("Supabase no configurado");
 
-  // 2 movimientos atómicos: salida sin etiquetar + entrada con nuevo formato
+  // 2 movimientos atómicos: salida sin etiquetar + entrada con nuevo formato.
+  // Tipo restringido por movimientos_tipo_check a entrada|salida|transferencia.
   await db.registrarMovimientoStock({
-    sku, posicion: posicionId, delta: -qty, tipo: "ajuste",
+    sku, posicion: posicionId, delta: -qty, tipo: "salida",
     sku_venta: null, motivo: "reasignacion_formato", operario: "admin",
     nota: `Reasignación formato: Sin etiquetar → ${nuevoSkuVenta} (${qty} uds) [salida]`,
   });
   await db.registrarMovimientoStock({
-    sku, posicion: posicionId, delta: qty, tipo: "ajuste",
+    sku, posicion: posicionId, delta: qty, tipo: "entrada",
     sku_venta: nuevoSkuVenta, motivo: "reasignacion_formato", operario: "admin",
     nota: `Reasignación formato: Sin etiquetar → ${nuevoSkuVenta} (${qty} uds) [entrada]`,
   });
@@ -1589,7 +1590,7 @@ export async function editarStockVariante(
   // Actualizar stock + registrar movimiento atómicamente
   const etiqueta = skuVenta || "Sin etiquetar";
   await db.registrarMovimientoStock({
-    sku, posicion: posicionId, delta, tipo: "ajuste",
+    sku, posicion: posicionId, delta, tipo: delta > 0 ? "entrada" : "salida",
     sku_venta: skuVenta, motivo: delta > 0 ? "ajuste_entrada" : "ajuste_salida",
     operario: "admin",
     nota: `Ajuste manual variante [${etiqueta}]: ${actual} → ${nuevaCantidad}`,
@@ -1791,7 +1792,7 @@ export async function repararRecepcion(recepcionId: string, posicionDestino: str
       // Movements exist but stock is 0 — re-register stock with adjustment movement
       try {
         await db.registrarMovimientoStock({
-          sku: l.sku, posicion: posicionDestino, delta: l.qty_ubicada || 0, tipo: "ajuste",
+          sku: l.sku, posicion: posicionDestino, delta: l.qty_ubicada || 0, tipo: "entrada",
           motivo: "reparacion_stock", recepcion_id: recepcionId,
           operario: l.operario_ubicacion || "admin-reparacion",
           nota: `Reparación: stock era 0 pero movimientos OK — re-registrado ${l.qty_ubicada} uds`,
@@ -1930,7 +1931,7 @@ export async function aplicarReconciliacion(discrepancias: StockDiscrepancia[]):
           if (remaining <= 0) break;
           const reduce = Math.min(remaining, row.cantidad);
           await db.registrarMovimientoStock({
-            sku: d.sku, posicion: d.posicion, delta: -reduce, tipo: "ajuste",
+            sku: d.sku, posicion: d.posicion, delta: -reduce, tipo: "salida",
             sku_venta: row.sku_venta ?? null, motivo: "reconciliacion",
             operario: "admin",
             nota: `Reconciliación: stock sobra ${Math.abs(d.diferencia)} uds (variante ${row.sku_venta || "sin etiquetar"}: -${reduce})`,
@@ -1941,7 +1942,7 @@ export async function aplicarReconciliacion(discrepancias: StockDiscrepancia[]):
         // Stock falta → agregar con auto-etiquetado si tiene 1 solo sku_venta
         const autoSv = resolveAutoSkuVenta(d.sku);
         await db.registrarMovimientoStock({
-          sku: d.sku, posicion: d.posicion, delta: d.diferencia, tipo: "ajuste",
+          sku: d.sku, posicion: d.posicion, delta: d.diferencia, tipo: d.diferencia > 0 ? "entrada" : "salida",
           sku_venta: autoSv, motivo: "reconciliacion",
           operario: "admin",
           nota: `Reconciliación: stock falta ${d.diferencia} uds`,
@@ -2966,7 +2967,7 @@ export async function despickearComponente(
     const pos = comp.posicion;
     await db.registrarMovimientoStock({
       sku: comp.skuOrigen, posicion: pos && pos !== "?" ? pos : "SIN_ASIGNAR",
-      delta: comp.unidades, tipo: "ajuste",
+      delta: comp.unidades, tipo: "entrada",
       motivo: "despick", operario,
       nota: `Reversión picking: ${linea.skuVenta} ×${comp.unidades} (despick)`,
       idempotency_key: `despick-${sessionId}-${lineaId}-${compIdx}-${Date.now()}`,

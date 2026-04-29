@@ -89,13 +89,13 @@ export async function POST() {
             // Salida sin etiquetar + entrada con formato — 2 movimientos atómicos
             await sb.rpc("registrar_movimiento_stock", {
               p_sku: row.sku, p_posicion: row.posicion_id, p_delta: -qtyAsignar,
-              p_tipo: "ajuste", p_sku_venta: null, p_motivo: "reclasificacion",
+              p_tipo: "salida", p_sku_venta: null, p_motivo: "reclasificacion",
               p_operario: "sistema",
               p_nota: `Reclasificación: Sin etiquetar → ${skuVenta} (${qtyAsignar} uds) [salida]`,
             });
             await sb.rpc("registrar_movimiento_stock", {
               p_sku: row.sku, p_posicion: row.posicion_id, p_delta: qtyAsignar,
-              p_tipo: "ajuste", p_sku_venta: skuVenta, p_motivo: "reclasificacion",
+              p_tipo: "entrada", p_sku_venta: skuVenta, p_motivo: "reclasificacion",
               p_operario: "sistema",
               p_nota: `Reclasificación: Sin etiquetar → ${skuVenta} (${qtyAsignar} uds) [entrada]`,
             });
@@ -118,13 +118,13 @@ export async function POST() {
           try {
             await sb.rpc("registrar_movimiento_stock", {
               p_sku: row.sku, p_posicion: row.posicion_id, p_delta: -qtyRestante,
-              p_tipo: "ajuste", p_sku_venta: null, p_motivo: "reclasificacion",
+              p_tipo: "salida", p_sku_venta: null, p_motivo: "reclasificacion",
               p_operario: "sistema",
               p_nota: `Reclasificación auto: Sin etiquetar → ${skuVenta} (${qtyRestante} uds) [salida]`,
             });
             await sb.rpc("registrar_movimiento_stock", {
               p_sku: row.sku, p_posicion: row.posicion_id, p_delta: qtyRestante,
-              p_tipo: "ajuste", p_sku_venta: skuVenta, p_motivo: "reclasificacion",
+              p_tipo: "entrada", p_sku_venta: skuVenta, p_motivo: "reclasificacion",
               p_operario: "sistema",
               p_nota: `Reclasificación auto: Sin etiquetar → ${skuVenta} (${qtyRestante} uds) [entrada]`,
             });
