@@ -493,7 +493,13 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, folio, prov
   const [ubicarQty, setUbicarQty] = useState(0);
   const [ubicarPos, setUbicarPos] = useState("");
   // Auto-seleccionar formato desde la línea de recepción (viene de factura)
-  const [ubicarSkuVenta, setUbicarSkuVenta] = useState<string>(linea.sku_venta || "__SIN_ETIQUETAR__");
+  // Si la línea vino marcada "sin etiqueta" desde la app de etiquetas
+  // (etiqueta_impresa=false), defaultear a __SIN_ETIQUETAR__ aunque sku_venta
+  // tenga valor: en ese caso es la primera variante del array, no una decisión
+  // del operario. Caso testigo: recep #530382 SKU LICAAFVIS5746 (2026-04-29).
+  const [ubicarSkuVenta, setUbicarSkuVenta] = useState<string>(
+    linea.etiqueta_impresa === false ? "__SIN_ETIQUETAR__" : (linea.sku_venta || "__SIN_ETIQUETAR__")
+  );
   const [scanningPos, setScanningPos] = useState(false);
 
   // Build options for sku_venta format selection
