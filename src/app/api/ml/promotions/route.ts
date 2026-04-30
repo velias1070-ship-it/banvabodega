@@ -249,7 +249,7 @@ function friendlyCredibilityError(
     promo_referencia: string;
   } | null,
   rawErr: string,
-): { message: string; max_aceptable?: number; min_aceptable?: number; sugerido?: number } {
+): { message: string; max_aceptable?: number; min_aceptable?: number; sugerido?: number; sugerido_original?: number } {
   if (!hint) {
     return { message: `ML rechazó el precio. Probá un valor más bajo. (${rawErr})` };
   }
@@ -259,15 +259,21 @@ function friendlyCredibilityError(
     : `Máximo aceptable: ${fmt(hint.max_aceptable)}`;
   const sug = hint.sugerido > 0 ? ` · Sugerido: ${fmt(hint.sugerido)}` : "";
   let causa: string;
+  let sugeridoAplicable = hint.sugerido;
   if (hint.precio_solicitado > hint.max_aceptable) {
     causa = `supera el techo permitido`;
   } else if (hint.min_aceptable > 0 && hint.precio_solicitado < hint.min_aceptable) {
     causa = `cae debajo del piso permitido`;
+  } else if (hint.sugerido > 0 && Math.abs(hint.precio_solicitado - hint.sugerido) < 1) {
+    // El precio solicitado COINCIDE con el sugerido pero ML igual rechazó.
+    // El rango GET de ML es engañoso para este item — probablemente hay una
+    // regla de descuento mínimo respecto al price_ml que no aparece en el GET.
+    // No tiene sentido devolver el sugerido como recomendación (loop), mejor
+    // sugerir un precio más conservador (~80% del techo).
+    sugeridoAplicable = Math.round(hint.max_aceptable * 0.7);
+    causa = `ML rechaza incluso el sugerido (rango GET no aplica al POST). Probá ~${fmt(sugeridoAplicable)} (70% del techo)`;
   } else {
-    // El precio está adentro del rango GET pero ML igual rechaza al POST.
-    // Pasa cuando ML aplica reglas de credibility extras (descuento mínimo
-    // respecto al price_ml actual, anchor al sugerido, historial dudoso).
-    // El sugerido es la opción más segura.
+    // Precio dentro del rango pero rechazado.
     causa = hint.sugerido > 0
       ? `el rango GET de ML es engañoso, ML rechazó al POST. Postulá al sugerido ${fmt(hint.sugerido)}`
       : `ML rechazó pese a estar dentro del rango. Probá un valor distinto`;
@@ -277,7 +283,11 @@ function friendlyCredibilityError(
     message: msg,
     max_aceptable: hint.max_aceptable,
     min_aceptable: hint.min_aceptable,
-    sugerido: hint.sugerido,
+    // sugerido_aplicable: si precio_solicitado coincidía con el sugerido, este
+    // viene reducido (~70% del techo) para no caer en loop. El frontend usa
+    // este campo para auto-cargar el input.
+    sugerido: sugeridoAplicable,
+    sugerido_original: hint.sugerido,
   };
 }
 
@@ -369,6 +379,7 @@ export async function POST(req: NextRequest) {
             max_aceptable: friendly.max_aceptable,
             min_aceptable: friendly.min_aceptable,
             sugerido: friendly.sugerido,
+            sugerido_original: friendly.sugerido_original,
             variation_id,
             raw_error: errMsg,
             detail: data,
@@ -457,6 +468,7 @@ export async function POST(req: NextRequest) {
             max_aceptable: friendly.max_aceptable,
             min_aceptable: friendly.min_aceptable,
             sugerido: friendly.sugerido,
+            sugerido_original: friendly.sugerido_original,
             variation_id,
             raw_error: errMsg,
             detail: data,

@@ -489,14 +489,20 @@ export default function MarginSimulatorModal({ item, onClose, onApplied, onCache
       });
       const data = await res.json();
       if (!res.ok) {
-        // CREDIBILITY_REJECT: ML rechazó por rango. Si vino sugerido, auto-cargar
-        // el input con ese precio para que con 1 click más Vicente postule.
+        // CREDIBILITY_REJECT: ML rechazó por rango. Auto-cargar el sugerido en
+        // el input solo si es DISTINTO al que ya tenías (evita loop infinito
+        // cuando ML rechaza el mismo sugerido que reportó en el GET).
         if (data.code === "CREDIBILITY_REJECT" && typeof data.sugerido === "number" && data.sugerido > 0) {
-          setTargetPrice(String(data.sugerido));
-          setMsg({
-            type: "warn",
-            text: `${data.error} → cargué ${fmtCLP(data.sugerido)} en el input. Apretá Postular de nuevo.`,
-          });
+          if (Math.abs(data.sugerido - target) >= 1) {
+            setTargetPrice(String(data.sugerido));
+            setMsg({
+              type: "warn",
+              text: `${data.error} → cargué ${fmtCLP(data.sugerido)} en el input. Apretá de nuevo.`,
+            });
+          } else {
+            // Mismo precio → mostrar error sin auto-cargar.
+            setMsg({ type: "err", text: data.error });
+          }
           return;
         }
         const err = new Error(data.error || "Error") as Error & { detail?: unknown };
