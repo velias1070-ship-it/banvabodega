@@ -1845,6 +1845,46 @@ function PreciosYPromos() {
   const [bulkSubmitting, setBulkSubmitting] = useState(false);
   const [bulkProgress, setBulkProgress] = useState("");
 
+  // Bulk identifica la promo concreta a postular: type + opcional promotion_id.
+  // Antes solo guardaba el type, lo que ambigüaba cuando había varias DEALs
+  // (ej. "Día de la mama 2026" + "Cyber Day 2026"): el find por type tomaba
+  // la primera del array y postulaba a la equivocada.
+  const availableBulkPromos = useMemo(() => {
+    type Opt = { value: string; type: string; promotion_id?: string; label: string };
+    const seen = new Map<string, Opt>();
+    seen.set("PRICE_DISCOUNT", { value: "PRICE_DISCOUNT", type: "PRICE_DISCOUNT", label: "Descuento propio (PRICE_DISCOUNT)" });
+    for (const item of promoData) {
+      for (const p of item.promotions) {
+        if (p.status !== "candidate" && p.status !== "pending") continue;
+        if (!p.id) continue;
+        const key = `${p.type}:${p.id}`;
+        if (!seen.has(key)) {
+          seen.set(key, {
+            value: key,
+            type: p.type,
+            promotion_id: p.id,
+            label: `${p.name || p.type} (${p.type})`,
+          });
+        }
+      }
+    }
+    return Array.from(seen.values());
+  }, [promoData]);
+
+  const findBulkPromoForItem = useCallback((item: PromoItem) => {
+    if (bulkPromoType === "PRICE_DISCOUNT") {
+      // PRICE_DISCOUNT: usar el rango que ML expone como referencia. ML genera
+      // una entry virtual con type=PRICE_DISCOUNT que tiene min/max/sugerido.
+      return item.promotions.find(p => p.type === "PRICE_DISCOUNT");
+    }
+    // value es "TYPE:promotion_id" — partir y matchear exacto.
+    const [type, promoId] = bulkPromoType.split(":");
+    if (promoId) {
+      return item.promotions.find(p => p.id === promoId && p.type === type);
+    }
+    return item.promotions.find(p => p.type === type);
+  }, [bulkPromoType]);
+
   const openBulkMode = () => {
     setBulkMode(true);
     setBulkPromoType("PRICE_DISCOUNT");
@@ -1856,15 +1896,21 @@ function PreciosYPromos() {
     const prices = new Map<string, number>();
     const selected = new Set<string>();
     for (const item of promoData) {
-      const promo = item.promotions.find(p => p.type === bulkPromoType || bulkPromoType === "PRICE_DISCOUNT");
-      const maxPrice = promo?.max_discounted_price || Math.floor(item.price_ml * 0.95);
-      const minPrice = promo?.min_discounted_price || Math.floor(item.price_ml * 0.5);
-      const suggested = promo?.suggested_discounted_price || 0;
+      const promo = findBulkPromoForItem(item);
+      // Sin la promo específica para este item → no podemos postular acá.
+      if (!promo) continue;
+      const maxPrice = promo.max_discounted_price || Math.floor(item.price_ml * 0.95);
+      const minPrice = promo.min_discounted_price || Math.floor(item.price_ml * 0.5);
+      const suggested = promo.suggested_discounted_price || 0;
       let dealPrice = Math.round(item.price_ml * (1 - pct / 100));
-      // Ajustar al rango permitido
+      // Ajustar al rango permitido por ESTE item para ESTA promo específica.
       if (dealPrice > maxPrice) dealPrice = maxPrice;
       if (dealPrice < minPrice) dealPrice = minPrice;
-      if (suggested > 0 && dealPrice > maxPrice) dealPrice = suggested;
+      // Si el descuento pedido es más agresivo que el max, preferir el sugerido
+      // (más probable que ML acepte que apretar el techo justo).
+      if (suggested > 0 && Math.round(item.price_ml * (1 - pct / 100)) > maxPrice) {
+        dealPrice = suggested;
+      }
       prices.set(item.item_id, dealPrice);
       // Auto-seleccionar si el margen es positivo
       const comEst = dealPrice >= 19990 ? Math.round(dealPrice * 0.14) : Math.round(dealPrice * 0.14) + 1000;
@@ -1880,8 +1926,10 @@ function PreciosYPromos() {
     const prices = new Map<string, number>();
     const selected = new Set<string>();
     for (const item of promoData) {
-      const promo = item.promotions.find(p => p.suggested_discounted_price && p.suggested_discounted_price > 0);
-      const dealPrice = promo?.suggested_discounted_price || Math.round(item.price_ml * 0.8);
+      // Sugerido de la promo seleccionada en bulk (no la primera que encuentre).
+      const promo = findBulkPromoForItem(item);
+      if (!promo) continue;
+      const dealPrice = promo.suggested_discounted_price || Math.round(item.price_ml * 0.8);
       prices.set(item.item_id, dealPrice);
       const comEst = dealPrice >= 19990 ? Math.round(dealPrice * 0.14) : Math.round(dealPrice * 0.14) + 1000;
       const envEst = dealPrice >= 19990 ? item.costo_envio : 0;
@@ -1896,23 +1944,27 @@ function PreciosYPromos() {
   const submitBulk = async () => {
     const toSubmit = promoData.filter(i => bulkSelected.has(i.item_id));
     if (toSubmit.length === 0) return;
-    if (!confirm(`¿Postular ${toSubmit.length} items a ${bulkPromoType.replace(/_/g, " ")}?`)) return;
+    const promoLabel = availableBulkPromos.find(o => o.value === bulkPromoType)?.label || bulkPromoType;
+    if (!confirm(`¿Postular ${toSubmit.length} items a "${promoLabel}"?`)) return;
     setBulkSubmitting(true);
     let ok = 0, fail = 0;
+    const isPriceDiscount = bulkPromoType === "PRICE_DISCOUNT";
+    const [type] = bulkPromoType.split(":");
     for (const item of toSubmit) {
       const dealPrice = bulkPrices.get(item.item_id) || 0;
       if (!dealPrice) { fail++; continue; }
       setBulkProgress(`${ok + fail + 1}/${toSubmit.length} — ${item.titulo?.slice(0, 30)}...`);
       try {
-        const promo = item.promotions.find(p => p.type === bulkPromoType);
-        const action = bulkPromoType === "PRICE_DISCOUNT" ? "create_discount" : "join";
+        const promo = findBulkPromoForItem(item);
+        const action = isPriceDiscount ? "create_discount" : "join";
         const body: Record<string, unknown> = { item_id: item.item_id, action, deal_price: dealPrice };
         if (action === "create_discount") {
           body.start_date = new Date().toISOString().slice(0, 10) + "T00:00:00";
           body.finish_date = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10) + "T23:59:59";
         } else {
+          // promotion_id de ESTE item para ESTA promo (no la del primer item).
           body.promotion_id = promo?.id;
-          body.promotion_type = bulkPromoType;
+          body.promotion_type = type;
         }
         const res = await fetch("/api/ml/promotions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
         const data = await res.json();
@@ -2194,10 +2246,10 @@ function PreciosYPromos() {
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
             <select value={bulkPromoType} onChange={e => { setBulkPromoType(e.target.value); applyBulkDiscount(parseInt(bulkDiscount) || 20); }}
-              style={{ padding: "6px 10px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 12 }}>
-              <option value="PRICE_DISCOUNT">Descuento de precio</option>
-              <option value="DEAL">Deal ML (Día de la mamá)</option>
-              <option value="SELLER_CAMPAIGN">Campaña (Oferta Banva)</option>
+              style={{ padding: "6px 10px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 12, maxWidth: 320 }}>
+              {availableBulkPromos.map(opt => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
             </select>
             <span style={{ fontSize: 11, color: "var(--txt3)" }}>Descuento:</span>
             {[10, 15, 20, 25, 30].map(pct => (
