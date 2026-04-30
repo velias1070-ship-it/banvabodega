@@ -13,6 +13,13 @@ interface Pendiente {
   codigos_ml: string[];
 }
 
+// SSoT del costo: productos.costo_promedio (WAC desde recepciones).
+// productos.costo es catálogo manual y suele estar en 0 aunque el WAC sea válido.
+function costoEfectivo(p: { costo: number | null; costo_promedio: number | null } | undefined) {
+  if (!p) return 0;
+  return Math.max(p.costo_promedio || 0, p.costo || 0);
+}
+
 /**
  * GET /api/intelligence/pendientes
  * Detecta productos que requieren atencion:
@@ -26,14 +33,14 @@ export async function GET() {
   try {
     const [cacheRes, prodRes, stockRes, compRes, itemsMapRes] = await Promise.all([
       sb.from("stock_full_cache").select("sku_venta, cantidad").gt("cantidad", 0),
-      sb.from("productos").select("sku, nombre, costo"),
+      sb.from("productos").select("sku, nombre, costo, costo_promedio"),
       sb.from("stock").select("sku, cantidad, qty_reserved"),
       sb.from("composicion_venta").select("sku_venta, sku_origen"),
       sb.from("ml_items_map").select("sku, item_id, sku_venta, titulo").eq("activo", true),
     ]);
 
     const fullCache = (cacheRes.data || []) as { sku_venta: string; cantidad: number }[];
-    const productos = (prodRes.data || []) as { sku: string; nombre: string; costo: number }[];
+    const productos = (prodRes.data || []) as { sku: string; nombre: string; costo: number; costo_promedio: number | null }[];
     const stock = (stockRes.data || []) as { sku: string; cantidad: number; qty_reserved: number }[];
     const composicion = (compRes.data || []) as { sku_venta: string; sku_origen: string }[];
     const itemsMap = (itemsMapRes.data || []) as { sku: string; item_id: string; sku_venta: string | null; titulo: string | null }[];
@@ -49,9 +56,13 @@ export async function GET() {
     }
 
     // productos lookup
-    const prodBySku = new Map<string, { nombre: string; costo: number }>();
+    const prodBySku = new Map<string, { nombre: string; costo: number; costo_promedio: number }>();
     for (const p of productos) {
-      prodBySku.set(p.sku.toUpperCase(), { nombre: p.nombre, costo: p.costo || 0 });
+      prodBySku.set(p.sku.toUpperCase(), {
+        nombre: p.nombre,
+        costo: p.costo || 0,
+        costo_promedio: p.costo_promedio || 0,
+      });
     }
 
     // composicion: sku_venta → sku_origen
@@ -134,7 +145,7 @@ export async function GET() {
           costo: 0,
           codigos_ml: info.codigosML,
         });
-      } else if (prod.costo <= 0) {
+      } else if (costoEfectivo(prod) <= 0) {
         pendientes.push({
           sku: skuReal,
           titulo: prod.nombre || info.titulo,
@@ -150,7 +161,7 @@ export async function GET() {
     // 2. Productos con stock en bodega pero sin costo (sin stock Full)
     const skusYaReportados = new Set(pendientes.map(p => p.sku.toUpperCase()));
     for (const p of productos) {
-      if ((p.costo || 0) > 0) continue;
+      if (costoEfectivo(p) > 0) continue;
       const skuUp = p.sku.toUpperCase();
       if (skusYaReportados.has(skuUp)) continue;
       const stBodega = stockBodega.get(skuUp) || 0;
