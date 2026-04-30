@@ -27,7 +27,7 @@ import AdminMargenes from "@/components/AdminMargenes";
 import AdminAutoPostular from "@/components/AdminAutoPostular";
 import AdminPricingConfig from "@/components/AdminPricingConfig";
 import AdminUsuarios from "@/components/AdminUsuarios";
-import { loginAdminUser, canAccessTab, canAccessSubtab, canManageUsers, type AdminUser } from "@/lib/admin-users";
+import { loginAdminUser, canAccessTab, canAccessSubtab, canManageUsers, ADMIN_TAB_CATALOG, type AdminUser, type AdminTab } from "@/lib/admin-users";
 
 const AUTH_KEY = "banva_admin_auth_user";
 const REMEMBER_KEY = "banva_admin_auth_remember";
@@ -115,38 +115,45 @@ function LoginGate({ onLogin }: { onLogin: (pin: string, remember: boolean) => P
   );
 }
 
-type AdminTab = "dash"|"rec"|"discrepancias"|"flex"|"enviosfull"|"ops"|"inv"|"mov"|"prod"|"costoauditoria"|"reposicion"|"intel"|"semaforo"|"compras"|"eventos"|"ventasdash"|"ventasord"|"comercial"|"margenes"|"pricing"|"autopostular"|"agentes"|"timeline"|"config";
+// AdminTab se importa desde @/lib/admin-users — derivado del catalogo unico.
+// Si agregas un tab al panel, sumalo a ADMIN_TAB_CATALOG primero (TS lo exige).
 
-const MOBILE_MENU_SECTIONS = [
+// Las tuplas estan tipadas con AdminTab — TS rompe el build si la clave no
+// existe en el catalogo de admin-users.ts.
+type MenuItem = readonly [AdminTab, string, string];
+const MOBILE_MENU_SECTIONS: ReadonlyArray<{ section: string; items: ReadonlyArray<MenuItem> }> = [
   { section: "Principal", items: [
     ["dash","Dashboard","📊"],
     ["rec","Recepción","📦"],
     ["discrepancias","Discrepancias","💰"],
     ["flex","Ultima Milla","🚚"],
     ["enviosfull","Envios Full","📤"],
-  ] as const },
+  ] },
   { section: "Inventario", items: [
     ["ops","Operaciones","⚡"],
     ["inv","Inventario","📋"],
     ["mov","Movimientos","↔️"],
     ["timeline","Timeline","📈"],
     ["prod","Productos","🏷️"],
-  ] as const },
+    ["costoauditoria","Auditoría Costos","📊"],
+  ] },
   { section: "Comercial", items: [
     ["reposicion","Reposición","🔄"],
     ["intel","Inteligencia","🧠"],
+    ["semaforo","Semaforo","🚦"],
     ["compras","Compras","🛒"],
     ["eventos","Eventos","📅"],
     ["ventasdash","Ventas · Dashboard","📊"],
     ["ventasord","Ventas · Órdenes","📋"],
     ["comercial","Publicaciones","📣"],
     ["margenes","Márgenes","💹"],
+    ["pricing","Pricing Config","💰"],
     ["autopostular","Motor auto","🤖"],
-  ] as const },
+  ] },
   { section: "Sistema", items: [
     ["agentes","Agentes IA","🤖"],
     ["config","Configuración","⚙️"],
-  ] as const },
+  ] },
 ];
 
 function MobileMenu({ tab, setTab, user }: { tab: AdminTab; setTab: (t: AdminTab) => void; user: AdminUser | null }) {
@@ -217,13 +224,15 @@ export default function AdminPage() {
   // Previene deep-link a un tab bloqueado o que un ex-super_admin degradado siga viendo tabs.
   // Definido arriba del useAuth() — se usa dentro del componente principal via useEffect.
 
-  const SIDEBAR_GROUPS = [
-    {section:"OPERACIONES",icon:"⚡",items:[["rec","Recepciones","📦"],["discrepancias","Discrepancias","💰"],["flex","Ultima Milla","🚚"],["enviosfull","Envios Full","📦"],["ops","Operaciones","⚡"],["reposicion","Reposición","🔄"]] as const},
-    {section:"INVENTARIO",icon:"📦",items:[["inv","Inventario","📦"],["mov","Movimientos","📋"],["timeline","Timeline","📊"],["prod","Productos","🏷️"],["costoauditoria","Auditoría Costos","📊"]] as const},
-    {section:"INTELIGENCIA",icon:"🧠",items:[["intel","Inteligencia","🧠"],["semaforo","Semaforo","🚦"],["compras","Compras","🛒"],["eventos","Eventos","📅"]] as const},
-    {section:"COMERCIAL",icon:"🏪",items:[["ventasdash","Ventas · Dashboard","📊"],["ventasord","Ventas · Órdenes","📋"],["comercial","Publicaciones","📢"],["margenes","Márgenes","💹"],["pricing","Pricing Config","💰"],["autopostular","Motor auto","🤖"]] as const},
-    {section:"SISTEMA",icon:"⚙️",items:[["agentes","Agentes IA","🤖"],["config","Configuración","⚙️"]] as const},
-  ] as const;
+  // Items tipados como [AdminTab, label, icon] — TS rompe el build si una
+  // clave no existe en ADMIN_TAB_CATALOG (admin-users.ts).
+  const SIDEBAR_GROUPS: ReadonlyArray<{ section: string; icon: string; items: ReadonlyArray<MenuItem> }> = [
+    {section:"OPERACIONES",icon:"⚡",items:[["rec","Recepciones","📦"],["discrepancias","Discrepancias","💰"],["flex","Ultima Milla","🚚"],["enviosfull","Envios Full","📦"],["ops","Operaciones","⚡"],["reposicion","Reposición","🔄"]]},
+    {section:"INVENTARIO",icon:"📦",items:[["inv","Inventario","📦"],["mov","Movimientos","📋"],["timeline","Timeline","📊"],["prod","Productos","🏷️"],["costoauditoria","Auditoría Costos","📊"]]},
+    {section:"INTELIGENCIA",icon:"🧠",items:[["intel","Inteligencia","🧠"],["semaforo","Semaforo","🚦"],["compras","Compras","🛒"],["eventos","Eventos","📅"]]},
+    {section:"COMERCIAL",icon:"🏪",items:[["ventasdash","Ventas · Dashboard","📊"],["ventasord","Ventas · Órdenes","📋"],["comercial","Publicaciones","📢"],["margenes","Márgenes","💹"],["pricing","Pricing Config","💰"],["autopostular","Motor auto","🤖"]]},
+    {section:"SISTEMA",icon:"⚙️",items:[["agentes","Agentes IA","🤖"],["config","Configuración","⚙️"]]},
+  ];
   const [openSections, setOpenSections] = useState<Record<string,boolean>>(()=>{
     const init: Record<string,boolean> = {};
     const savedTab = (typeof window !== "undefined" ? sessionStorage.getItem("banva_admin_tab") : null) || "dash";
@@ -250,6 +259,19 @@ export default function AdminPage() {
       }
     }
   },[tab]);
+
+  // Dev-only: avisa si hay tabs en el catalogo que no estan en alguna navegacion.
+  // Garantiza que sidebar/mobile menu/permisos no se desincronicen silenciosamente.
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "development") return;
+    const inSidebar = new Set(SIDEBAR_GROUPS.flatMap(g => g.items.map(([k]) => k)));
+    const inMobile = new Set(MOBILE_MENU_SECTIONS.flatMap(s => s.items.map(([k]) => k)));
+    const topLevel = ADMIN_TAB_CATALOG.filter(t => !t.parent).map(t => t.key);
+    const missingSidebar = topLevel.filter(k => !inSidebar.has(k as AdminTab));
+    const missingMobile = topLevel.filter(k => !inMobile.has(k as AdminTab));
+    if (missingSidebar.length) console.warn("[admin-tabs] Tabs en catalogo pero NO en sidebar:", missingSidebar);
+    if (missingMobile.length) console.warn("[admin-tabs] Tabs en catalogo pero NO en mobile menu:", missingMobile);
+  }, []);
   const [,setTick] = useState(0);
   const r = useCallback(()=>setTick(t=>t+1),[]);
   const [mounted, setMounted] = useState(false);

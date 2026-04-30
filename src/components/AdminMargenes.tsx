@@ -1188,57 +1188,62 @@ export default function AdminMargenes() {
     // paralelo y chequear que el target caiga en algún rango permitido.
     // Esto anticipa el ERROR_CREDIBILITY_DISCOUNTED_PRICE que ML tira cuando
     // el precio no cumple el mínimo de credibilidad de la campaña vigente.
+    // Solo aplica a modo "promo": los rangos min/max de ML aplican al
+    // deal_price, no al precio lista. En modo "lista" se está moviendo el
+    // precio base — si la promo deja de ser válida ML la cae sola.
     setBulkApplying(mode);
     setBulkProgress({ done: 0, total: items.length, ok: 0, err: 0 });
     setBulkErrors([]);
-    type PromoLite = { min_price: number; max_price: number; activa: boolean; postulable: boolean; permite_custom_price: boolean; name: string };
-    const promosPorItem = new Map<string, PromoLite[]>();
-    const batch = 5;
-    for (let i = 0; i < items.length; i += batch) {
-      const chunk = items.slice(i, i + batch);
-      const res = await Promise.all(chunk.map(async it => {
-        try {
-          const r = await fetch(`/api/ml/item-promotions?item_id=${it.item_id}&_=${Date.now()}`, { cache: "no-store" });
-          const d = await r.json();
-          return { id: it.item_id, promos: (Array.isArray(d.promotions) ? d.promotions : []) as PromoLite[] };
-        } catch {
-          return { id: it.item_id, promos: [] as PromoLite[] };
-        }
-      }));
-      for (const row of res) promosPorItem.set(row.id, row.promos);
-    }
-
     const invalidos: Array<{ sku: string; motivo: string }> = [];
-    const aplicables: typeof items = [];
-    for (const it of items) {
-      const promos = (promosPorItem.get(it.item_id) || []).filter(p => p.permite_custom_price && (p.activa || p.postulable));
-      if (promos.length === 0) { aplicables.push(it); continue; }
-      // Si el item tiene alguna promo con rango, el target debe caer dentro de
-      // AL MENOS una de ellas (intersección con "cualquiera permite").
-      const encaja = promos.some(p =>
-        (p.min_price === 0 || target >= p.min_price) &&
-        (p.max_price === 0 || target <= p.max_price)
-      );
-      if (encaja) { aplicables.push(it); continue; }
-      const detalles = promos
-        .filter(p => p.min_price > 0 || p.max_price > 0)
-        .map(p => `${p.name}: ${fmtCLP(p.min_price)}-${fmtCLP(p.max_price)}`)
-        .join(" | ");
-      invalidos.push({ sku: it.sku, motivo: `Fuera de rango ${detalles || "(sin rango explícito)"}` });
-    }
-
-    if (invalidos.length > 0) {
-      const lista = invalidos.slice(0, 10).map(i => `• ${i.sku}: ${i.motivo}`).join("\n");
-      const extra = invalidos.length > 10 ? `\n… y ${invalidos.length - 10} más` : "";
-      if (aplicables.length === 0) {
-        setBulkApplying("none");
-        alert(`Ningún ítem acepta ${fmtCLP(target)} con sus campañas vigentes:\n\n${lista}${extra}`);
-        return;
+    let aplicables: typeof items = items;
+    if (mode === "promo") {
+      type PromoLite = { min_price: number; max_price: number; activa: boolean; postulable: boolean; permite_custom_price: boolean; name: string };
+      const promosPorItem = new Map<string, PromoLite[]>();
+      const batch = 5;
+      for (let i = 0; i < items.length; i += batch) {
+        const chunk = items.slice(i, i + batch);
+        const res = await Promise.all(chunk.map(async it => {
+          try {
+            const r = await fetch(`/api/ml/item-promotions?item_id=${it.item_id}&_=${Date.now()}`, { cache: "no-store" });
+            const d = await r.json();
+            return { id: it.item_id, promos: (Array.isArray(d.promotions) ? d.promotions : []) as PromoLite[] };
+          } catch {
+            return { id: it.item_id, promos: [] as PromoLite[] };
+          }
+        }));
+        for (const row of res) promosPorItem.set(row.id, row.promos);
       }
-      const cont = confirm(
-        `${invalidos.length} ítem${invalidos.length !== 1 ? "s" : ""} no acepta${invalidos.length !== 1 ? "n" : ""} ${fmtCLP(target)}:\n\n${lista}${extra}\n\n¿Aplicar solo a los ${aplicables.length} válidos?`
-      );
-      if (!cont) { setBulkApplying("none"); return; }
+
+      const filtrados: typeof items = [];
+      for (const it of items) {
+        const promos = (promosPorItem.get(it.item_id) || []).filter(p => p.permite_custom_price && (p.activa || p.postulable));
+        if (promos.length === 0) { filtrados.push(it); continue; }
+        const encaja = promos.some(p =>
+          (p.min_price === 0 || target >= p.min_price) &&
+          (p.max_price === 0 || target <= p.max_price)
+        );
+        if (encaja) { filtrados.push(it); continue; }
+        const detalles = promos
+          .filter(p => p.min_price > 0 || p.max_price > 0)
+          .map(p => `${p.name}: ${fmtCLP(p.min_price)}-${fmtCLP(p.max_price)}`)
+          .join(" | ");
+        invalidos.push({ sku: it.sku, motivo: `Fuera de rango ${detalles || "(sin rango explícito)"}` });
+      }
+      aplicables = filtrados;
+
+      if (invalidos.length > 0) {
+        const lista = invalidos.slice(0, 10).map(i => `• ${i.sku}: ${i.motivo}`).join("\n");
+        const extra = invalidos.length > 10 ? `\n… y ${invalidos.length - 10} más` : "";
+        if (aplicables.length === 0) {
+          setBulkApplying("none");
+          alert(`Ningún ítem acepta ${fmtCLP(target)} con sus campañas vigentes:\n\n${lista}${extra}`);
+          return;
+        }
+        const cont = confirm(
+          `${invalidos.length} ítem${invalidos.length !== 1 ? "s" : ""} no acepta${invalidos.length !== 1 ? "n" : ""} ${fmtCLP(target)}:\n\n${lista}${extra}\n\n¿Aplicar solo a los ${aplicables.length} válidos?`
+        );
+        if (!cont) { setBulkApplying("none"); return; }
+      }
     }
 
     const errors: Array<{ sku: string; error: string }> = invalidos.map(i => ({ sku: i.sku, error: i.motivo }));

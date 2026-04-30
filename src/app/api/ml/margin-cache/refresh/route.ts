@@ -368,6 +368,15 @@ async function handleRefresh(req: NextRequest) {
               promoPct = Math.round(((listaReal - activa.price) / listaReal) * 100);
             }
             priceList = listaReal;
+          } else {
+            // Sin promo activa, precioVenta debe seguir al priceList ya corregido
+            // por maxOriginal. La asignacion inicial (linea 297) usa row.price que
+            // puede estar contaminado (deal_price). Sin este reset, el cache queda
+            // inconsistente: tiene_promo=false pero precio_venta != price_ml.
+            // Caso real TXV24QLBRDN20 (2026-04-29): row.price=19980 (contaminado),
+            // maxOriginal sube priceList a 29980, sin activa el cache mostraba
+            // precio_venta=19980, price_ml=29980, tiene_promo=false.
+            precioVenta = priceList;
           }
 
           // Promos disponibles pero NO postuladas (candidate) — sirven para filtrar

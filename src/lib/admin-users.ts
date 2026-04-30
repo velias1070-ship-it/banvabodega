@@ -14,10 +14,21 @@ export interface AdminUser {
   updated_at?: string;
 }
 
-// Catalogo canonico de tabs del admin (fuente unica de verdad para permisos).
-// Al agregar tabs nuevos al panel hay que sumarlos aca para que aparezcan en
-// el editor de permisos custom.
-export const ADMIN_TAB_CATALOG: Array<{ key: string; label: string; group: string; parent?: string }> = [
+// Catalogo canonico de tabs del admin (FUENTE UNICA DE VERDAD).
+//
+// IMPORTANTE: este es el unico lugar donde se declaran tabs.
+// - El tipo `AdminTab` se DERIVA de aca (ver mas abajo).
+// - El sidebar (`SIDEBAR_GROUPS`) y el menu mobile (`MOBILE_MENU_SECTIONS`)
+//   en `src/app/admin/page.tsx` deben usar SOLO claves de este catalogo.
+// - Si agregas un tab al panel pero olvidas sumarlo aca, TypeScript rompe
+//   el build (`tab === "nuevo"` falla porque `"nuevo"` no es `AdminTab`).
+//
+// Para agregar un tab nuevo:
+//   1. Agregalo aca con su label/group (y `parent` si es subtab).
+//   2. Agregalo al sidebar y al mobile menu de page.tsx con metadata UI
+//      (icono, orden de seccion).
+//   3. Renderiza el componente en page.tsx donde corresponda.
+const ADMIN_TAB_CATALOG_INTERNAL = [
   { key: "dash", label: "Dashboard", group: "Principal" },
   { key: "rec", label: "Recepciones", group: "Operaciones" },
   { key: "discrepancias", label: "Discrepancias", group: "Operaciones" },
@@ -38,6 +49,8 @@ export const ADMIN_TAB_CATALOG: Array<{ key: string; label: string; group: strin
   { key: "ventasord", label: "Ventas - Ordenes", group: "Comercial" },
   { key: "comercial", label: "Publicaciones", group: "Comercial" },
   { key: "margenes", label: "Margenes", group: "Comercial" },
+  { key: "pricing", label: "Pricing Config", group: "Comercial" },
+  { key: "autopostular", label: "Motor auto", group: "Comercial" },
   { key: "agentes", label: "Agentes IA", group: "Sistema" },
   { key: "config", label: "Configuracion", group: "Sistema" },
   // Sub-tabs de Configuracion (granularidad fina para rol custom).
@@ -51,7 +64,22 @@ export const ADMIN_TAB_CATALOG: Array<{ key: string; label: string; group: strin
   { key: "config.carga_stock", label: "Carga Stock", group: "Sistema", parent: "config" },
   { key: "config.conteos", label: "Conteo Ciclico", group: "Sistema", parent: "config" },
   { key: "config.conciliador", label: "Conciliador", group: "Sistema", parent: "config" },
-];
+] as const satisfies ReadonlyArray<{ key: string; label: string; group: string; parent?: string }>;
+
+// Tipo derivado: SOLO los tabs top-level (sin parent). Si page.tsx usa una
+// clave que no esta aca, TypeScript falla en build.
+export type AdminTab = Exclude<typeof ADMIN_TAB_CATALOG_INTERNAL[number], { parent: string }>["key"];
+
+export type AdminTabEntry = { key: string; label: string; group: string; parent?: string };
+
+// Vista exportada con tipo amplio para iteracion en UI (acceso uniforme a `parent`).
+export const ADMIN_TAB_CATALOG: ReadonlyArray<AdminTabEntry> = ADMIN_TAB_CATALOG_INTERNAL;
+
+// Devuelve true si la clave existe en el catalogo (top-level o subtab).
+// Usar para validaciones runtime (p.ej. al leer ?tab=X de la URL).
+export function isKnownTab(key: string): boolean {
+  return ADMIN_TAB_CATALOG.some(t => t.key === key);
+}
 
 // Permisos por rol (super_admin = "*" = todo, incluyendo gestion de usuarios).
 // "admin" = todo menos "usuarios" (dentro de config). No hay tab separado

@@ -264,19 +264,19 @@ function friendlyCredibilityError(
     causa = `supera el techo permitido`;
   } else if (hint.min_aceptable > 0 && hint.precio_solicitado < hint.min_aceptable) {
     causa = `cae debajo del piso permitido`;
-  } else if (hint.sugerido > 0 && Math.abs(hint.precio_solicitado - hint.sugerido) < 1) {
-    // El precio solicitado COINCIDE con el sugerido pero ML igual rechazó.
-    // El rango GET de ML es engañoso para este item — probablemente hay una
-    // regla de descuento mínimo respecto al price_ml que no aparece en el GET.
-    // No tiene sentido devolver el sugerido como recomendación (loop), mejor
-    // sugerir un precio más conservador (~80% del techo).
-    sugeridoAplicable = Math.round(hint.max_aceptable * 0.7);
-    causa = `ML rechaza incluso el sugerido (rango GET no aplica al POST). Probá ~${fmt(sugeridoAplicable)} (70% del techo)`;
   } else {
-    // Precio dentro del rango pero rechazado.
-    causa = hint.sugerido > 0
-      ? `el rango GET de ML es engañoso, ML rechazó al POST. Postulá al sugerido ${fmt(hint.sugerido)}`
-      : `ML rechazó pese a estar dentro del rango. Probá un valor distinto`;
+    // Precio dentro del rango GET pero ML rechazó al POST. ML tiene una regla
+    // de credibility por-item no expuesta en el GET (probada empiricamente:
+    // GET dice max=$28.481, sug=$26.982 — POST acepta solo $19.780). El rango
+    // GET es ENGAÑOSO; la única vía live es probar y bajar.
+    // Estrategia: búsqueda binaria iterativa. Cada rechazo → 75% del intento.
+    // Honra el piso. Frontend lo carga al input para reintentar.
+    const next = Math.max(
+      hint.min_aceptable || 0,
+      Math.round(hint.precio_solicitado * 0.75),
+    );
+    sugeridoAplicable = next;
+    causa = `el rango GET es engañoso (ML aplica credibility por-item no expuesta). Probá ${fmt(next)} (75% de tu intento)`;
   }
   const msg = `ML rechazó ${fmt(hint.precio_solicitado)} en "${hint.promo_referencia}": ${causa}. ${rango}${sug}.`;
   return {
