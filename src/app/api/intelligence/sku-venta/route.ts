@@ -52,8 +52,8 @@ export async function GET(request: Request) {
         .eq("estado", "Pagada")
         .gte("fecha", fechaDesde)
         .order("fecha", { ascending: false })),
-      paginate(() => sb.from("productos").select("sku, costo")),
-    ]) as [Record<string, unknown>[], { sku_venta: string; sku_origen: string; unidades: number; tipo_relacion?: string }[], { sku_venta: string; cantidad: number }[], { sku_venta: string; cantidad: number; canal: string; fecha: string; subtotal: number; comision_total: number; costo_envio: number; ingreso_envio: number; total: number }[], { sku: string; costo: number }[]];
+      paginate(() => sb.from("productos").select("sku, costo, costo_promedio")),
+    ]) as [Record<string, unknown>[], { sku_venta: string; sku_origen: string; unidades: number; tipo_relacion?: string }[], { sku_venta: string; cantidad: number }[], { sku_venta: string; cantidad: number; canal: string; fecha: string; subtotal: number; comision_total: number; costo_envio: number; ingreso_envio: number; total: number }[], { sku: string; costo: number; costo_promedio: number | null }[]];
 
     // Debug log collector
     const debugLog: string[] = [];
@@ -106,8 +106,10 @@ export async function GET(request: Request) {
     const stockFullMap = new Map<string, number>();
     for (const r of cacheRows) stockFullMap.set(r.sku_venta.toUpperCase(), r.cantidad || 0);
 
+    // SSoT del costo para margen: WAC (costo_promedio), fallback a catalogo (costo).
+    // Alineado con resolverCostoVenta() en src/lib/costos.ts.
     const productoCostos = new Map<string, number>();
-    for (const p of productosRows) productoCostos.set(p.sku.toUpperCase(), p.costo || 0);
+    for (const p of productosRows) productoCostos.set(p.sku.toUpperCase(), (p.costo_promedio || 0) || (p.costo || 0));
 
     // ── Órdenes agrupadas por SKU Venta (UPPER) ──
     const hoyMs = Date.now();
