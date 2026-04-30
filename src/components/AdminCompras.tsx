@@ -189,6 +189,8 @@ export default function AdminCompras() {
   const [recibidoPorSku, setRecibidoPorSku] = useState<Map<string, number>>(new Map());
   const [lineasPorOcRec, setLineasPorOcRec] = useState<Map<string, DBRecepcionLinea[]>>(new Map());
   const [expandidoOcRec, setExpandidoOcRec] = useState<Set<string>>(new Set());
+  const [filtroLineaEstado, setFiltroLineaEstado] = useState<"todos" | "pendiente" | "parcial" | "recibida">("todos");
+  const [busquedaLinea, setBusquedaLinea] = useState("");
 
   // Modals
   const [modalEnviar, setModalEnviar] = useState(false);
@@ -662,6 +664,49 @@ export default function AdminCompras() {
           )}
         </div>
 
+        {/* Filtros líneas */}
+        {ocLineas.length > 0 && (() => {
+          const conteoEstados = ocLineas.reduce((acc, l) => {
+            const r = recibidoPorSku.get(l.sku_origen.toUpperCase()) || 0;
+            const e = r >= l.cantidad_pedida ? "recibida" : r > 0 ? "parcial" : "pendiente";
+            acc[e] = (acc[e] || 0) + 1;
+            return acc;
+          }, {} as Record<string, number>);
+          const btnStyle = (active: boolean, color: string) => ({
+            padding: "5px 10px",
+            borderRadius: 5,
+            background: active ? color + "33" : "var(--bg3)",
+            color: active ? color : "var(--txt2)",
+            fontSize: 11,
+            fontWeight: 600 as const,
+            border: `1px solid ${active ? color : "var(--bg4)"}`,
+            cursor: "pointer" as const,
+          });
+          return (
+            <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <input
+                type="text"
+                placeholder="Buscar SKU o nombre…"
+                value={busquedaLinea}
+                onChange={e => setBusquedaLinea(e.target.value)}
+                style={{ flex: "1 1 220px", minWidth: 200, padding: "6px 10px", borderRadius: 5, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 11 }}
+              />
+              <button onClick={() => setFiltroLineaEstado("todos")} style={btnStyle(filtroLineaEstado === "todos", "var(--cyan)")}>
+                Todos ({ocLineas.length})
+              </button>
+              <button onClick={() => setFiltroLineaEstado("pendiente")} style={btnStyle(filtroLineaEstado === "pendiente", "var(--txt2)")}>
+                Pendientes ({conteoEstados.pendiente || 0})
+              </button>
+              <button onClick={() => setFiltroLineaEstado("parcial")} style={btnStyle(filtroLineaEstado === "parcial", "#f97316")}>
+                Parciales ({conteoEstados.parcial || 0})
+              </button>
+              <button onClick={() => setFiltroLineaEstado("recibida")} style={btnStyle(filtroLineaEstado === "recibida", "var(--green)")}>
+                Recibidas ({conteoEstados.recibida || 0})
+              </button>
+            </div>
+          );
+        })()}
+
         {/* Líneas */}
         <div style={{ overflowX: "auto", marginBottom: 16 }}>
           <table className="tbl" style={{ minWidth: 900 }}>
@@ -681,7 +726,19 @@ export default function AdminCompras() {
               </tr>
             </thead>
             <tbody>
-              {ocLineas.map(l => {
+              {(() => {
+                const q = busquedaLinea.trim().toLowerCase();
+                const filtradas = ocLineas.filter(l => {
+                  const recibido = recibidoPorSku.get(l.sku_origen.toUpperCase()) || 0;
+                  const e = recibido >= l.cantidad_pedida ? "recibida" : recibido > 0 ? "parcial" : "pendiente";
+                  if (filtroLineaEstado !== "todos" && e !== filtroLineaEstado) return false;
+                  if (q && !l.sku_origen.toLowerCase().includes(q) && !(l.nombre || "").toLowerCase().includes(q)) return false;
+                  return true;
+                });
+                if (filtradas.length === 0) {
+                  return <tr><td colSpan={11} style={{ textAlign: "center", padding: 20, color: "var(--txt3)", fontSize: 11 }}>Sin coincidencias</td></tr>;
+                }
+                return filtradas.map(l => {
                 const recibido = recibidoPorSku.get(l.sku_origen.toUpperCase()) || 0;
                 const pendiente = Math.max(0, l.cantidad_pedida - recibido);
                 const estadoLinea = recibido >= l.cantidad_pedida ? "RECIBIDA" : recibido > 0 ? "PARCIAL" : "PENDIENTE";
@@ -705,7 +762,8 @@ export default function AdminCompras() {
                     </td>
                   </tr>
                 );
-              })}
+              });
+              })()}
             </tbody>
           </table>
         </div>
