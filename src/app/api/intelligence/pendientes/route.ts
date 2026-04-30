@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 interface Pendiente {
   sku: string;
   titulo: string;
-  tipo: "sin_producto_wms" | "sin_costo" | "sin_costo_con_full";
+  tipo: "sin_producto_wms" | "sin_costo" | "sin_costo_con_full" | "sin_catalogo";
   stock_full: number;
   stock_bodega: number;
   costo: number;
@@ -24,7 +24,9 @@ function costoEfectivo(p: { costo: number | null; costo_promedio: number | null 
  * GET /api/intelligence/pendientes
  * Detecta productos que requieren atencion:
  * 1. Stock en Full pero sin producto creado en WMS
- * 2. Producto con stock (bodega o Full) pero sin costo
+ * 2. Producto con stock (bodega o Full) sin WAC ni catalogo (margen=0)
+ * 3. Producto con WAC valido pero productos.costo=0 → catalogo sin cargar.
+ *    Deja recalcular-discrepancias ciego ante cobros indebidos del proveedor.
  */
 export async function GET() {
   const sb = getServerSupabase();
@@ -177,7 +179,34 @@ export async function GET() {
       });
     }
 
-    const orden: Record<string, number> = { sin_producto_wms: 0, sin_costo_con_full: 1, sin_costo: 2 };
+    // 3. Catalogo sin cargar: WAC valido pero productos.costo=0.
+    // Deja recalcular-discrepancias ciego: no detecta cobros indebidos del proveedor.
+    for (const p of productos) {
+      const skuUp = p.sku.toUpperCase();
+      if (skusYaReportados.has(skuUp)) continue;
+      const wac = p.costo_promedio || 0;
+      const cat = p.costo || 0;
+      if (wac <= 0 || cat > 0) continue;
+      const stFull = (() => {
+        for (const [skuReal, info] of Array.from(resolvedMap.entries())) {
+          if (skuReal === skuUp) return info.stockFull;
+        }
+        return 0;
+      })();
+      const stBodega = stockBodega.get(skuUp) || 0;
+      if (stFull <= 0 && stBodega <= 0) continue;
+      pendientes.push({
+        sku: p.sku,
+        titulo: p.nombre || p.sku,
+        tipo: "sin_catalogo",
+        stock_full: stFull,
+        stock_bodega: stBodega,
+        costo: wac,
+        codigos_ml: [],
+      });
+    }
+
+    const orden: Record<string, number> = { sin_producto_wms: 0, sin_costo_con_full: 1, sin_costo: 2, sin_catalogo: 3 };
     pendientes.sort((a, b) => orden[a.tipo] - orden[b.tipo] || b.stock_full - a.stock_full);
 
     return NextResponse.json({
@@ -186,6 +215,7 @@ export async function GET() {
         sin_producto_wms: pendientes.filter(p => p.tipo === "sin_producto_wms").length,
         sin_costo_con_full: pendientes.filter(p => p.tipo === "sin_costo_con_full").length,
         sin_costo: pendientes.filter(p => p.tipo === "sin_costo").length,
+        sin_catalogo: pendientes.filter(p => p.tipo === "sin_catalogo").length,
         total: pendientes.length,
       },
     });

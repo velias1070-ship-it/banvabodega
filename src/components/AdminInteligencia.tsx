@@ -498,7 +498,7 @@ export default function AdminInteligencia() {
 
   // Pendientes de atención
   const [pendientes, setPendientes] = useState<{ sku: string; titulo: string; tipo: string; stock_full: number; stock_bodega: number }[]>([]);
-  const [pendientesResumen, setPendientesResumen] = useState<{ sin_producto_wms: number; sin_costo_con_full: number; sin_costo: number; total: number } | null>(null);
+  const [pendientesResumen, setPendientesResumen] = useState<{ sin_producto_wms: number; sin_costo_con_full: number; sin_costo: number; sin_catalogo: number; total: number } | null>(null);
   const [pendientesOpen, setPendientesOpen] = useState(false);
 
   // Modal masivo
@@ -1590,6 +1590,7 @@ export default function AdminInteligencia() {
               {pendientesResumen.sin_producto_wms > 0 && <span style={{ padding: "2px 6px", borderRadius: 4, background: "var(--redBg)", color: "var(--red)", fontSize: 10 }}>Sin producto WMS: {pendientesResumen.sin_producto_wms}</span>}
               {pendientesResumen.sin_costo_con_full > 0 && <span style={{ padding: "2px 6px", borderRadius: 4, background: "var(--amberBg)", color: "var(--amber)", fontSize: 10, border: "1px solid var(--amberBd)" }}>Sin costo c/Full: {pendientesResumen.sin_costo_con_full}</span>}
               {pendientesResumen.sin_costo > 0 && <span style={{ padding: "2px 6px", borderRadius: 4, background: "var(--bg3)", color: "var(--txt2)", fontSize: 10 }}>Sin costo: {pendientesResumen.sin_costo}</span>}
+              {pendientesResumen.sin_catalogo > 0 && <span style={{ padding: "2px 6px", borderRadius: 4, background: "var(--bg3)", color: "var(--txt2)", fontSize: 10, border: "1px dashed var(--bg4)" }} title="WAC valido pero productos.costo=0 (catalogo sin cargar)">Sin catalogo: {pendientesResumen.sin_catalogo}</span>}
             </div>
             <span style={{ color: "var(--txt3)", fontSize: 10 }}>{pendientesOpen ? "▲" : "▼"}</span>
           </button>
@@ -1614,6 +1615,7 @@ export default function AdminInteligencia() {
                         {p.tipo === "sin_producto_wms" && <span style={{ color: "var(--red)", fontWeight: 600 }}>Sin producto en WMS</span>}
                         {p.tipo === "sin_costo_con_full" && <span style={{ color: "var(--amber)", fontWeight: 600 }}>Sin costo (con stock Full)</span>}
                         {p.tipo === "sin_costo" && <span style={{ color: "var(--txt2)" }}>Sin costo (con stock bodega)</span>}
+                        {p.tipo === "sin_catalogo" && <span style={{ color: "var(--txt2)" }} title="WAC valido pero productos.costo=0 → recalcular-discrepancias no detecta cobros indebidos">Catalogo sin cargar (con WAC)</span>}
                       </td>
                       <td className="mono" style={{ textAlign: "right", color: p.stock_full > 0 ? "var(--cyan)" : "var(--txt3)" }}>{p.stock_full}</td>
                       <td className="mono" style={{ textAlign: "right" }}>{p.stock_bodega}</td>
