@@ -255,7 +255,13 @@ function friendlyCredibilityError(
   } else if (hint.min_aceptable > 0 && hint.precio_solicitado < hint.min_aceptable) {
     causa = `cae debajo del piso permitido`;
   } else {
-    causa = `quedó fuera del rango actual`;
+    // El precio está adentro del rango GET pero ML igual rechaza al POST.
+    // Pasa cuando ML aplica reglas de credibility extras (descuento mínimo
+    // respecto al price_ml actual, anchor al sugerido, historial dudoso).
+    // El sugerido es la opción más segura.
+    causa = hint.sugerido > 0
+      ? `el rango GET de ML es engañoso, ML rechazó al POST. Postulá al sugerido ${fmt(hint.sugerido)}`
+      : `ML rechazó pese a estar dentro del rango. Probá un valor distinto`;
   }
   const msg = `ML rechazó ${fmt(hint.precio_solicitado)} en "${hint.promo_referencia}": ${causa}. ${rango}${sug}.`;
   return {
