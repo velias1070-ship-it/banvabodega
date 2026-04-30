@@ -5,11 +5,35 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 /**
- * Debug endpoint — hace GET/POST crudo a ML API y devuelve el response tal cual.
+ * Debug endpoint — hace GET/POST/DELETE crudo a ML API y devuelve el response tal cual.
  * Uso GET: /api/ml/debug?path=/user-products/MLCU3754508253/stock
  *          /api/ml/debug?refresh=1
  * Uso POST: POST /api/ml/debug?path=/seller-promotions/items/MLC123 con body JSON.
+ * Uso DELETE: DELETE /api/ml/debug?path=/seller-promotions/items/MLC123?...
  */
+export async function DELETE(req: NextRequest) {
+  const path = req.nextUrl.searchParams.get("path");
+  if (!path) return NextResponse.json({ error: "falta ?path=" }, { status: 400 });
+  try {
+    const token = await ensureValidToken();
+    if (!token) return NextResponse.json({ error: "no token" }, { status: 500 });
+    const url = `https://api.mercadolibre.com${path}`;
+    const resp = await fetch(url, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const text = await resp.text();
+    let parsed: unknown = null;
+    try { parsed = JSON.parse(text); } catch { /* not JSON */ }
+    return NextResponse.json({
+      path, url, method: "DELETE", status: resp.status, ok: resp.ok,
+      response_text: parsed ? null : text.slice(0, 1000), response: parsed,
+    });
+  } catch (err) {
+    return NextResponse.json({ path, error: String(err) }, { status: 500 });
+  }
+}
+
 export async function POST(req: NextRequest) {
   const path = req.nextUrl.searchParams.get("path");
   if (!path) return NextResponse.json({ error: "falta ?path=" }, { status: 400 });
