@@ -199,25 +199,34 @@ async function buildCredibilityHint(
       suggested_discounted_price?: number; variation_id?: number | null;
     }>>(`/seller-promotions/items/${itemId}?app_version=v2`);
     if (!promos || !Array.isArray(promos)) return null;
-    let candidates = promos.filter(p =>
-      p.status === "candidate" &&
-      typeof p.max_discounted_price === "number" && p.max_discounted_price > 0,
+    // Lista amplia: cualquier promo con rango definido. PRICE_DISCOUNT no
+    // aparece como `candidate` hasta crearse, pero ML expone su rango en otro
+    // status. Cuando el caller pasa un target específico (id/type) buscamos
+    // sobre TODO el array; si no pasa target, usamos solo candidates clásicos.
+    const conRango = promos.filter(p =>
+      typeof p.max_discounted_price === "number" && (p.max_discounted_price || 0) > 0,
     );
-    if (candidates.length === 0) return null;
-    // 1. Filtrar por variation_id si el caller la pasó. Si match es 0 a esa
-    // variation pero hay candidates "del item" (variation_id null), usar esos.
+    if (conRango.length === 0) return null;
+    let pool = conRango;
     if (targetVariationId != null) {
-      const sameVar = candidates.filter(p => p.variation_id === targetVariationId);
-      if (sameVar.length > 0) candidates = sameVar;
+      const sameVar = conRango.filter(p => p.variation_id === targetVariationId);
+      if (sameVar.length > 0) pool = sameVar;
     }
-    // 2-4. Match por id > type > primer candidate.
+    // Match por id > type. Si el caller especificó target y no hay match,
+    // devolver null en vez de caer a un candidate cualquiera — antes caía al
+    // primer candidate y mostraba el rango de OTRA promo (caso testigo:
+    // create_discount con type=PRICE_DISCOUNT devolvía hint de Cyber Day).
     let match = targetPromotionId
-      ? candidates.find(p => p.id === targetPromotionId)
+      ? pool.find(p => p.id === targetPromotionId)
       : undefined;
     if (!match && targetPromotionType) {
-      match = candidates.find(p => p.type === targetPromotionType);
+      match = pool.find(p => p.type === targetPromotionType);
     }
-    if (!match) match = candidates[0];
+    if (!match && !targetPromotionId && !targetPromotionType) {
+      // Sin target específico: fallback al primer candidate clásico (status=candidate).
+      match = pool.find(p => p.status === "candidate") || pool[0];
+    }
+    if (!match) return null;
     return {
       max_aceptable: match.max_discounted_price!,
       sugerido: match.suggested_discounted_price || 0,
