@@ -333,6 +333,15 @@ export default function MarginSimulatorModal({ item, onClose, onApplied, onCache
       });
       const data = await res.json();
       if (!res.ok) {
+        // CREDIBILITY_REJECT: auto-cargar el sugerido en el input.
+        if (data.code === "CREDIBILITY_REJECT" && typeof data.sugerido === "number" && data.sugerido > 0) {
+          setTargetPrice(String(data.sugerido));
+          setMsg({
+            type: "warn",
+            text: `${data.error} → cargué ${fmtCLP(data.sugerido)} en el input. Apretá "Aplicar como descuento (30d)" de nuevo.`,
+          });
+          return;
+        }
         const err = new Error(data.error || "Error") as Error & { detail?: unknown };
         err.detail = (data as { detail?: unknown }).detail;
         throw err;
@@ -480,6 +489,16 @@ export default function MarginSimulatorModal({ item, onClose, onApplied, onCache
       });
       const data = await res.json();
       if (!res.ok) {
+        // CREDIBILITY_REJECT: ML rechazó por rango. Si vino sugerido, auto-cargar
+        // el input con ese precio para que con 1 click más Vicente postule.
+        if (data.code === "CREDIBILITY_REJECT" && typeof data.sugerido === "number" && data.sugerido > 0) {
+          setTargetPrice(String(data.sugerido));
+          setMsg({
+            type: "warn",
+            text: `${data.error} → cargué ${fmtCLP(data.sugerido)} en el input. Apretá Postular de nuevo.`,
+          });
+          return;
+        }
         const err = new Error(data.error || "Error") as Error & { detail?: unknown };
         err.detail = (data as { detail?: unknown }).detail;
         throw err;
