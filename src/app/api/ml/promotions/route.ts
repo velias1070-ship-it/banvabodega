@@ -174,32 +174,43 @@ export async function GET(req: NextRequest) {
 
 /**
  * Para errores de credibility de ML: trae las promos candidate del item y
- * filtra a la promo que estamos postulando (matcheo por promotion_id, luego
- * por type). Antes mezclaba rangos de TODAS las candidates ("best for seller")
- * y mostraba un techo que correspondía a otra deal — caso testigo SKU
- * TXV24QLBRDN20 postulando "Día de la mama 2026" (rango ≤ $19.780) recibía
- * hint de Smart Promo (max $28.481).
+ * filtra a la promo+variation específica que estamos postulando. Match por:
+ *   1. variation_id (si el item tiene variations clásicas, cada una con su rango)
+ *   2. promotion_id (la deal exacta)
+ *   3. promotion_type (DEAL, SMART, etc.)
+ *   4. fallback al primer candidate
+ *
+ * Antes mezclaba rangos de TODAS las candidates ("best for seller") y mostraba
+ * un techo que correspondía a otra deal o a otra variant — caso testigo
+ * TXV24QLBRDN20 postulando "Día de la mama 2026" en variation X (rango ≤
+ * $19.780) recibía hint de la variation Y (max $28.481).
  */
 async function buildCredibilityHint(
   itemId: string,
   dealPriceRequested: number,
   targetPromotionId?: string,
   targetPromotionType?: string,
+  targetVariationId?: number | null,
 ) {
   try {
     const promos = await mlGet<Array<{
       id?: string; type: string; name?: string; status: string;
       min_discounted_price?: number; max_discounted_price?: number;
-      suggested_discounted_price?: number;
+      suggested_discounted_price?: number; variation_id?: number | null;
     }>>(`/seller-promotions/items/${itemId}?app_version=v2`);
     if (!promos || !Array.isArray(promos)) return null;
-    const candidates = promos.filter(p =>
+    let candidates = promos.filter(p =>
       p.status === "candidate" &&
       typeof p.max_discounted_price === "number" && p.max_discounted_price > 0,
     );
     if (candidates.length === 0) return null;
-    // Match a la promo específica que el caller estaba intentando postular.
-    // Prioridad: id exacto > type > primer candidate disponible (legacy).
+    // 1. Filtrar por variation_id si el caller la pasó. Si match es 0 a esa
+    // variation pero hay candidates "del item" (variation_id null), usar esos.
+    if (targetVariationId != null) {
+      const sameVar = candidates.filter(p => p.variation_id === targetVariationId);
+      if (sameVar.length > 0) candidates = sameVar;
+    }
+    // 2-4. Match por id > type > primer candidate.
     let match = targetPromotionId
       ? candidates.find(p => p.id === targetPromotionId)
       : undefined;
@@ -212,6 +223,7 @@ async function buildCredibilityHint(
       sugerido: match.suggested_discounted_price || 0,
       min_aceptable: match.min_discounted_price || 0,
       promo_referencia: match.name || match.type,
+      variation_id: match.variation_id ?? null,
       precio_solicitado: dealPriceRequested,
     };
   } catch {
@@ -258,6 +270,12 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const { item_id, action, deal_price, start_date, finish_date, promotion_id, promotion_type } = body;
+    // variation_id opcional: items con variations clásicas tienen rangos de
+    // credibility por variant. Sin esto ML aplica al item entero (o al primero).
+    const variationIdRaw = body.variation_id;
+    const variation_id: number | null = typeof variationIdRaw === "number"
+      ? variationIdRaw
+      : (typeof variationIdRaw === "string" && variationIdRaw ? Number(variationIdRaw) : null);
     if (!item_id || !action) {
       return NextResponse.json({ error: "item_id y action requeridos" }, { status: 400 });
     }
@@ -313,18 +331,22 @@ export async function POST(req: NextRequest) {
       if (!deal_price || !start_date || !finish_date) {
         return NextResponse.json({ error: "deal_price, start_date, finish_date requeridos" }, { status: 400 });
       }
+      const discountBody: Record<string, unknown> = {
+        promotion_type: "PRICE_DISCOUNT", deal_price, start_date, finish_date,
+      };
+      if (variation_id != null) discountBody.variation_id = variation_id;
       const resp = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${item_id}?app_version=v2`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ promotion_type: "PRICE_DISCOUNT", deal_price, start_date, finish_date }),
+        body: JSON.stringify(discountBody),
       });
       const data = await parseMlResponse(resp);
       if (!resp.ok) {
         const errMsg = (data as { message?: string }).message || `HTTP ${resp.status}`;
-        await logAction("ml_promo:create_discount_error", { deal_price, start_date, finish_date, error: errMsg });
+        await logAction("ml_promo:create_discount_error", { deal_price, variation_id, start_date, finish_date, error: errMsg });
         if (/credibility|credible|ERROR_CREDIBILITY/i.test(errMsg)) {
           // create_discount es siempre PRICE_DISCOUNT (la promo propia del seller).
-          const hint = await buildCredibilityHint(item_id, deal_price, undefined, "PRICE_DISCOUNT");
+          const hint = await buildCredibilityHint(item_id, deal_price, undefined, "PRICE_DISCOUNT", variation_id);
           const friendly = friendlyCredibilityError(hint, errMsg);
           return NextResponse.json({
             error: friendly.message,
@@ -332,13 +354,14 @@ export async function POST(req: NextRequest) {
             max_aceptable: friendly.max_aceptable,
             min_aceptable: friendly.min_aceptable,
             sugerido: friendly.sugerido,
+            variation_id,
             raw_error: errMsg,
             detail: data,
           }, { status: resp.status });
         }
         return NextResponse.json({ error: errMsg, detail: data }, { status: resp.status });
       }
-      await logAction("ml_promo:create_discount", { deal_price, start_date, finish_date, result: data });
+      await logAction("ml_promo:create_discount", { deal_price, variation_id, start_date, finish_date, result: data });
       return NextResponse.json({ ok: true, result: data });
     }
 
@@ -355,6 +378,8 @@ export async function POST(req: NextRequest) {
         joinBody.price = deal_price;
       }
       if (offer_type) joinBody.offer_type = offer_type;
+      // Items con variations clásicas: aplicar promo a la variant específica.
+      if (variation_id != null) joinBody.variation_id = variation_id;
 
       // BUG confirmado probando live: cuando un ítem ya está en un SELLER_CAMPAIGN
       // con un precio, el POST NO actualiza el precio aunque devuelva 201 Created.
@@ -405,11 +430,11 @@ export async function POST(req: NextRequest) {
 
       if (!resp.ok) {
         const errMsg = (data as { message?: string }).message || `HTTP ${resp.status}`;
-        await logAction("ml_promo:join_error", { promotion_id, promotion_type, deal_price, error: errMsg });
+        await logAction("ml_promo:join_error", { promotion_id, promotion_type, deal_price, variation_id, error: errMsg });
         if (/credibility|credible|ERROR_CREDIBILITY/i.test(errMsg)) {
           // En join sí tenemos la promo concreta — pasarla para que el hint no
-          // mezcle rangos de otras candidates.
-          const hint = await buildCredibilityHint(item_id, deal_price, promotion_id, promotion_type);
+          // mezcle rangos de otras candidates ni de otras variations.
+          const hint = await buildCredibilityHint(item_id, deal_price, promotion_id, promotion_type, variation_id);
           const friendly = friendlyCredibilityError(hint, errMsg);
           return NextResponse.json({
             error: friendly.message,
@@ -417,6 +442,7 @@ export async function POST(req: NextRequest) {
             max_aceptable: friendly.max_aceptable,
             min_aceptable: friendly.min_aceptable,
             sugerido: friendly.sugerido,
+            variation_id,
             raw_error: errMsg,
             detail: data,
           }, { status: resp.status });

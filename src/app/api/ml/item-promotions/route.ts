@@ -29,6 +29,11 @@ type RawPromo = {
   seller_percentage?: number;
   benefits?: { meli_percentage?: number; seller_percentage?: number };
   deal_id?: string;
+  // Para items con variations clásicas (un MLC con variation[]), ML emite una
+  // entry por variation con rangos propios. Si el item es User Products /
+  // multi-warehouse (variantes son items distintos compartiendo family_name),
+  // este campo viene null y todo el rango aplica al item entero.
+  variation_id?: number | null;
 };
 
 export type NormalizedPromo = {
@@ -45,10 +50,10 @@ export type NormalizedPromo = {
   suggested_price: number;      // sugerido por ML
   min_price: number;            // mínimo permitido (0 si ML no lo expone, ej. started)
   max_price: number;            // máximo permitido (0 si ML no lo expone)
-  // Rango estimado por inferencia con candidates del mismo item. Útil para
-  // promos `started`, donde ML no devuelve min/max. Asumimos que el techo de
-  // credibility es a nivel item, no por promo. `range_estimado=true` indica
-  // que esos valores no son los oficiales de esta promo.
+  // Rango estimado por inferencia: para promos `started` donde ML no expone
+  // min/max, miramos las candidates de la MISMA promo en la MISMA variation.
+  // Antes mezclábamos rangos de todas las variations del item — fallaba para
+  // items con variations donde cada una tiene su propio techo de credibility.
   min_price_estimado: number;
   max_price_estimado: number;
   range_estimado: boolean;
@@ -56,6 +61,7 @@ export type NormalizedPromo = {
   meli_pct: number;
   seller_pct: number;
   deal_id: string | null;
+  variation_id: number | null;  // null si la promo aplica al item entero
   // Flags derivados
   activa: boolean;              // status === "started"
   postulable: boolean;          // status === "candidate" o "pending"
@@ -105,20 +111,28 @@ export async function GET(req: NextRequest) {
       Infinity,
     );
 
-    // Estimación del rango de credibility a nivel item: el techo más alto
-    // entre los candidates con min/max definido. ML no expone min/max para
-    // promos `started`, pero el techo de credibility es a nivel item, así que
-    // las candidates del mismo item son una proxy útil para el seller.
-    const candidatesConRango = raw.filter(p =>
-      (p.status || "").toLowerCase() === "candidate" &&
-      typeof p.max_discounted_price === "number" && (p.max_discounted_price || 0) > 0,
-    );
-    const maxItemEstimado = candidatesConRango.length > 0
-      ? Math.max(...candidatesConRango.map(p => p.max_discounted_price || 0))
-      : 0;
-    const minItemEstimado = candidatesConRango.length > 0
-      ? Math.min(...candidatesConRango.map(p => p.min_discounted_price || 0))
-      : 0;
+    // Estimación del rango de credibility por (item, variation_id):
+    // antes mezclábamos TODAS las candidates del item ignorando que para items
+    // con variations clásicas cada variation tiene su propio techo. Ahora
+    // agrupamos por variation_id (null = item entero) y calculamos por grupo.
+    type RangoCache = { max: number; min: number };
+    const rangosPorVariation = new Map<string, RangoCache>();
+    for (const p of raw) {
+      if ((p.status || "").toLowerCase() !== "candidate") continue;
+      if (typeof p.max_discounted_price !== "number" || (p.max_discounted_price || 0) <= 0) continue;
+      const key = p.variation_id != null ? String(p.variation_id) : "_item";
+      const max = p.max_discounted_price || 0;
+      const min = p.min_discounted_price || 0;
+      const prev = rangosPorVariation.get(key);
+      if (!prev) {
+        rangosPorVariation.set(key, { max, min });
+      } else {
+        rangosPorVariation.set(key, {
+          max: Math.max(prev.max, max),
+          min: prev.min === 0 ? min : (min > 0 ? Math.min(prev.min, min) : prev.min),
+        });
+      }
+    }
 
     const normalized: NormalizedPromo[] = raw.map(p => {
       const type = (p.type || "").toUpperCase();
@@ -133,6 +147,8 @@ export async function GET(req: NextRequest) {
       const minRaw = p.min_discounted_price ?? 0;
       const maxRaw = p.max_discounted_price ?? 0;
       const tieneRangoPropio = minRaw > 0 || maxRaw > 0;
+      const variationKey = p.variation_id != null ? String(p.variation_id) : "_item";
+      const rangoEstimado = rangosPorVariation.get(variationKey) || { max: 0, min: 0 };
       return {
         id: p.id ?? null,
         type,
@@ -147,13 +163,14 @@ export async function GET(req: NextRequest) {
         suggested_price: p.suggested_discounted_price ?? 0,
         min_price: minRaw,
         max_price: maxRaw,
-        min_price_estimado: tieneRangoPropio ? minRaw : minItemEstimado,
-        max_price_estimado: tieneRangoPropio ? maxRaw : maxItemEstimado,
-        range_estimado: !tieneRangoPropio && maxItemEstimado > 0,
+        min_price_estimado: tieneRangoPropio ? minRaw : rangoEstimado.min,
+        max_price_estimado: tieneRangoPropio ? maxRaw : rangoEstimado.max,
+        range_estimado: !tieneRangoPropio && rangoEstimado.max > 0,
         top_deal_price: p.top_deal_price ?? 0,
         meli_pct: meliPct,
         seller_pct: sellerPct,
         deal_id: p.deal_id ?? null,
+        variation_id: p.variation_id ?? null,
         activa: esAplicada,
         // Las started pero no aplicadas (precio mayor) son candidatas disponibles
         postulable: status === "candidate" || status === "pending" ||

@@ -16,10 +16,18 @@ type NormalizedPromo = {
   suggested_price: number;
   min_price: number;
   max_price: number;
+  // Rango estimado por (item, variation_id) para promos started sin min/max propios.
+  min_price_estimado?: number;
+  max_price_estimado?: number;
+  range_estimado?: boolean;
   top_deal_price: number;
   meli_pct: number;
   seller_pct: number;
   deal_id: string | null;
+  // null si la promo aplica al item entero (User Products / sin variations
+  // clásicas). Si el item es viejo con variations[], cada variation puede
+  // tener su propio rango y status.
+  variation_id: number | null;
   activa: boolean;
   postulable: boolean;
   permite_custom_price: boolean;
@@ -464,6 +472,10 @@ export default function MarginSimulatorModal({ item, onClose, onApplied, onCache
           promotion_type: promo.type,
           deal_price: target,
           offer_type: promo.offer_type,
+          // Items con variations clásicas: ML calcula rango por variation,
+          // hay que postular a la específica para que el techo de credibility
+          // sea el correcto. Si la promo es a nivel item entero, viene null.
+          variation_id: promo.variation_id,
         }),
       });
       const data = await res.json();
@@ -524,6 +536,7 @@ export default function MarginSimulatorModal({ item, onClose, onApplied, onCache
           action: "delete",
           promotion_id: promo.id,
           promotion_type: promo.type,
+          variation_id: promo.variation_id,
         }),
       });
       const data = await res.json();
@@ -835,7 +848,7 @@ export default function MarginSimulatorModal({ item, onClose, onApplied, onCache
               const fechas = formatFechas(p.start_date, p.finish_date);
 
               return (
-                <div key={(p.id || "") + p.type} style={{
+                <div key={`${p.id || ""}-${p.type}-${p.variation_id ?? "item"}`} style={{
                   border: "1px solid var(--bg4)",
                   borderRadius: 8,
                   padding: "10px 12px",
@@ -846,6 +859,11 @@ export default function MarginSimulatorModal({ item, onClose, onApplied, onCache
                       <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                         <span style={{ fontSize: 12, fontWeight: 700, color: "var(--txt)" }}>{tituloPrincipal}</span>
                         <span style={{ padding: "1px 6px", borderRadius: 3, fontSize: 8, fontWeight: 700, background: badge.bg, color: badge.color, border: `1px solid ${badge.color}` }}>{badge.text}</span>
+                        {p.variation_id != null && (
+                          <span title={`Variación específica del item (variation_id ${p.variation_id})`} style={{ padding: "1px 6px", borderRadius: 3, fontSize: 9, fontWeight: 600, background: "var(--bg4)", color: "var(--cyan)", border: "1px solid var(--cyanBd)" }}>
+                            Var #{p.variation_id}
+                          </span>
+                        )}
                         {fechas && (
                           <span
                             title={`Desde ${p.start_date?.slice(0,10) || "—"} hasta ${p.finish_date?.slice(0,10) || "—"}`}
