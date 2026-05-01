@@ -8,6 +8,27 @@
 > Idetex, ABC=A, ESTRELLA) para los ejemplos numéricos. Snapshot tomado el
 > **2026-05-01 19:45 UTC**.
 
+## Convención crítica de unidades
+
+**Todas las velocidades (`vel_*`) están en uds/SEMANA, no uds/día.**
+
+Esto se ve en `intelligence.ts:1040-1055`:
+- `vel_7d = sumar(ordenes_7d)` — uds en 7 días = uds/semana
+- `vel_30d = sumar(ordenes_30d) / semanasActivas30d` — uds dividido por semanas
+- `vel_60d` idem
+- `vel_ponderada = 0.5×vel_7d + 0.3×vel_30d + 0.2×vel_60d` — uds/semana
+
+**Para convertir a uds/día**: dividir por 7. Pero el motor opera todo en
+uds/semana hasta el final.
+
+`σ_D` (`desviacion_std`) también está en uds/semana (es la stddev de las
+ventas semanales agrupadas en `agruparPorSemana`).
+
+`LT` (lead time) viene en días pero se convierte a semanas (`/7`) antes de
+usarse en SS y ROP.
+
+**Ejemplo TXTPBL20200SK:** vel_ponderada=17.9 uds/semana ≈ 2.56 uds/día.
+
 ## Cómo leer esta doc
 
 Cada métrica viene en este formato:
@@ -173,33 +194,31 @@ pedir_proveedor_bultos = 84/2 = 42.
 
 ### vel_7d, vel_30d, vel_60d
 
-Unidades vendidas por día en las últimas 7/30/60 días.
+Unidades vendidas por **semana** en las últimas 7/30/60 días.
 
-**Fórmula base:**
+**Fórmula** (`intelligence.ts:1040-1049`):
 ```
-vel_Xd = sum(unidades vendidas en últimos X días) / X
+vel_7d  = sum(unidades en últimos 7 días)        # 7d = 1 semana, no se divide
+vel_30d = sum(unidades en últimos 30d) / semanasActivas30d
+vel_60d = sum(unidades en últimos 60d) / semanasActivas60d
 ```
 
-**Refinamiento — exclusión de días en quiebre:**
+donde `semanasActivasXd = max(1, X/7 − semanas en quiebre)`.
 
-Para `vel_30d` y `vel_60d`, **se excluyen las semanas donde el SKU estaba
-quebrado** (Full=0 ≥3 días en la semana). Esto evita subestimar la velocidad
-real por el sesgo "no vendió porque no había stock".
-
-```
-vel_30d = uds_30d / dias_activos_30d
-donde dias_activos_30d = 30 − (dias en quiebre Full últimos 30d)
-```
+**Exclusión de quiebres**: para `vel_30d` y `vel_60d` se excluyen las
+semanas donde el SKU estaba quebrado (Full=0 ≥3 días en la semana). Esto
+evita subestimar la velocidad real por el sesgo "no vendió porque no
+había stock". Para `vel_7d` no se excluye.
 
 **Inputs:**
 - Ventas por día — `ventas_ml_cache` (filtrado `anulada=false AND estado='Pagada'`)
 - Composición — `composicion_venta` (mapea `sku_venta → sku_origen × unidades`)
 - Quiebres — `stock_snapshots` o inferidos por `inferirQuiebresDeOrdenes`
 
-**Código:** `src/lib/intelligence.ts:1044-1051`
+**Código:** `src/lib/intelligence.ts:1040-1049`
 
-**Ejemplo TXTPBL20200SK:** vel_7d=21 · vel_30d=16 · vel_60d=13 (uds/día,
-ya considerando exclusión de quiebres si los hubiera).
+**Ejemplo TXTPBL20200SK:** vel_7d=21 · vel_30d=16 · vel_60d=13 **uds/semana**
+(equivalen a 3.0 / 2.3 / 1.9 uds/día respectivamente).
 
 ### vel_ponderada
 
@@ -214,22 +233,23 @@ vel_ponderada = 0.5 × vel_7d + 0.3 × vel_30d + 0.2 × vel_60d
 
 **Código:** `src/lib/intelligence.ts:1051-1056`
 
-**Ejemplo TXTPBL20200SK:** 0.5×21 + 0.3×16 + 0.2×13 = 10.5+4.8+2.6 = **17.9 uds/día**.
+**Ejemplo TXTPBL20200SK:** 0.5×21 + 0.3×16 + 0.2×13 = 10.5+4.8+2.6 = **17.9 uds/semana** (≈ 2.56 uds/día).
 
 ### vel_full, vel_flex, vel_total
 
-Descomposición de la velocidad por canal de venta.
+Descomposición de la velocidad por canal de venta. **uds/semana.**
 
 **Fórmula:**
 ```
-vel_full = sum(uds vendidas en Full últimos 30d) / 30
-vel_flex = sum(uds vendidas en Flex últimos 30d) / 30
+vel_full = sum(uds Full últimos 30d) / semanasActivas30d
+vel_flex = sum(uds Flex últimos 30d) / semanasActivas30d
 vel_total = vel_full + vel_flex
 ```
 
 **Input:** `ventas_ml_cache.canal` (valores: "Full" / "Flex").
 
-**Ejemplo TXTPBL20200SK:** vel_full=11.75 · vel_flex=6.15 · vel_total=17.9.
+**Ejemplo TXTPBL20200SK:** vel_full=11.75 · vel_flex=6.15 · vel_total=17.9
+(uds/semana ≈ 1.68 / 0.88 / 2.56 uds/día).
 
 ### pct_full, pct_flex
 
@@ -277,7 +297,7 @@ vel_ajustada_evento = vel_ponderada × multiplicador_evento
 **Código:** `src/lib/intelligence.ts` función inline en pipeline §5.
 
 **Ejemplo TXTPBL20200SK:** Día de la Madre activo (multiplicador 1.3) →
-vel_ajustada_evento = 17.9 × 1.3 = **23.27 uds/día**. Se usa en lugar de
+vel_ajustada_evento = 17.9 × 1.3 = **23.27 uds/semana**. Se usa en lugar de
 `vel_ponderada` cuando se calcula targets de cobertura y reposición.
 
 ### vel_pre_quiebre, vel_flex_pre_quiebre
@@ -443,23 +463,38 @@ No se puede vender hasta etiquetarse.
 
 Días que dura el stock al ritmo de venta actual.
 
-**Fórmulas:**
+**Fórmulas** (función `calcularCobertura` en `src/lib/reposicion.ts:107`):
 ```
-cob_full  = stock_full / vel_full × 7         (días)
-cob_flex  = stock_bodega / vel_flex × 7
-cob_total = stock_total / vel_ponderada × 7
+cob_full  = stock_full / velFullCalc × 7      (días)
+cob_flex  = stock_bodega / velFlexCalc × 7
+cob_total = stock_total / velCalculo × 7
+
+donde:
+  velCalculo  = vel_ajustada_evento si evento, sino vel_ponderada (uds/semana)
+  velFullCalc = velCalculo × pct_full
+  velFlexCalc = velCalculo × pct_flex
 ```
 
 Casos borde:
 - Si `vel ≤ 0` → cob = `999` (centinela admisible, ver `inventory-policy` §1).
 - Si `stock = 0` → cob = `0`.
 
-**Código:** `src/lib/intelligence.ts:1010-1019` (función `calcularCobertura`).
+**Código:** `src/lib/intelligence.ts:1151-1158`, `reposicion.ts:107-110`.
 
-**Ejemplo TXTPBL20200SK:**
-- cob_full = 1 / 11.75 × 7 = **0.43 días** ⚠️
-- cob_flex = 41 / 6.15 × 7 = **35.88 días**
-- cob_total = 42 / 17.9 × 7 = **12.63 días**
+**Ejemplo TXTPBL20200SK** (verificado contra motor):
+```
+velCalculo  = vel_ajustada_evento = 23.27 uds/sem (Día Madre activo)
+velFullCalc = 23.27 × 0.7 = 16.29 uds/sem
+velFlexCalc = 23.27 × 0.3 = 6.98 uds/sem
+
+cob_full  = 1 / 16.29 × 7 = 0.43 días   ✓ motor=0.43
+cob_flex  = 41 / 6.98 × 7 = 41.12 días  (motor=35.88, diferencia probable
+            por usar vel_flex original 6.15 en lugar de velFlexCalc 6.98)
+cob_total = 42 / 23.27 × 7 = 12.63 días ✓ motor=12.63
+```
+
+⚠️ Cobertura Full crítica (0.43 días) es la señal que dispara
+acción `URGENTE` cuando `cob_full < punto_reorden`.
 
 ### target_dias_full
 
@@ -721,12 +756,20 @@ margen B/C  REVISAR      PERRO
 
 Probabilidad objetivo de NO quebrar durante un ciclo de reposición.
 
-**Hoy:** plano = 0.97 para todos los SKUs.
+**Hoy** (`intelligence.ts:1825-1828`): por ABC, no plano:
+```
+ABC=A → 0.97
+ABC=B → 0.95 (default)
+ABC=C → 0.90
+```
 
-**Lo que prescribe el manual** (sin implementar): matriz por ABC×XYZ:
-- AX 99% / AY 98% / AZ 93-95%
+**Lo que prescribe el manual** (sin implementar): matriz por ABC×XYZ
+diferenciada (9 valores):
+- AX 99% / AY 98% / AZ 93-95% (no subir z, comprimir LT)
 - BX 97% / BY 95% / BZ 92%
 - CX-CZ "automático/no reordenar"
+
+**Ejemplo TXTPBL20200SK:** ABC=A → **nivel_servicio=0.97**.
 
 ### zScore(nivel_servicio)
 
@@ -779,40 +822,41 @@ Fórmula completa que incluye **σ_LT** (varianza lead time).
 
 **Fórmula** (la que prescribe `Parte1.md:507`):
 ```
-SS_completo = z × √(LT × σ_D² + D̄² × σ_LT²)
+SS_completo = Z × √(LT_sem × σ_D² + D² × σ_LT_sem²)
 ```
 
-donde:
-- LT = lead_time en semanas
-- σ_D = desviación estándar demanda semanal
-- D̄ = demanda promedio semanal (= vel × 7)
-- σ_LT = desviación estándar del lead time
+donde **todo está en unidades semanales**:
+- Z = factor de servicio (de la tabla normal)
+- LT_sem = lead_time / 7 (días → semanas)
+- σ_D = desviación estándar demanda semanal (`r.desviacion_std`)
+- D = demanda semanal (`r.vel_ponderada`)
+- σ_LT_sem = sigma_lt / 7
 
 **Código:** `src/lib/intelligence.ts:1853-1862`.
 
-**Política:** usa la completa si σ_D > 0 OR σ_LT > 0; sino fallback a simple.
+**Política:** usa la completa si σ_D > 0 OR σ_LT_sem > 0; sino fallback a simple.
 
 **Limitación actual:** σ_LT = 1.5 plano para todos los proveedores
-(fallback). NO está medido. Por eso safety_stock_completo de TXTPBL20200SK
-= 13.03 está principalmente subestimado en su componente σ_LT real.
+(fallback). NO está medido por OC real. La componente de varianza LT del
+SS está calibrada con un default arbitrario.
 
-**Ejemplo TXTPBL20200SK:**
+**Ejemplo TXTPBL20200SK** (verificado 2026-05-01 contra motor):
 ```
+Z = 1.88 (ABC=A → CSL=0.97)
 LT_sem = 5/7 = 0.714
-σ_D = 6.83
-D̄ = 17.9 × 7 = 125.3
+σ_D = 6.83 uds/semana
+D = vel_ponderada = 17.9 uds/semana
 σ_LT_sem = 1.5/7 = 0.214
 
-SS = 1.88 × √(0.714 × 6.83² + 125.3² × 0.214²)
-   = 1.88 × √(33.3 + 718.0)
-   = 1.88 × √751.3
-   = 1.88 × 27.4
-   = ~51 uds
+SS = 1.88 × √(0.714 × 6.83² + 17.9² × 0.214²)
+   = 1.88 × √(0.714 × 46.65 + 320.41 × 0.0458)
+   = 1.88 × √(33.31 + 14.67)
+   = 1.88 × √47.98
+   = 1.88 × 6.93
+   = 13.02
 ```
 
-(El motor reporta 13.03 — diferencia probable por componente σ_LT manejado
-distinto en código; pendiente verificar implementación exacta vs fórmula
-declarada.)
+✅ Motor reporta **13.03** — coincide.
 
 ### safety_stock_fuente
 
@@ -824,25 +868,30 @@ declarada.)
 
 ROP (reorder point): nivel de stock que dispara una nueva OC.
 
-**Fórmula:**
+**Fórmulas:**
 ```
-ROP = D̄ × LT_semanas + safety_stock_completo
+punto_reorden = D × LT_sem + safety_stock_simple    # legacy, sin σ_LT
+rop_calculado = D × LT_sem + safety_stock_completo  # nuevo, con σ_LT
 ```
+
+donde D y LT están en uds/semana y semanas respectivamente.
 
 **Código:** `src/lib/intelligence.ts:1862` (rop_calculado),
-`intelligence.ts:1849` (punto_reorden legacy con SS simple).
+`intelligence.ts:1849` (punto_reorden).
 
-**Ejemplo TXTPBL20200SK:**
+**Ejemplo TXTPBL20200SK** (verificado contra motor):
 ```
-ROP = (17.9 × 7) × (5/7) + 13.03
-    = 125.3 × 0.714 + 13.03
-    = 89.5 + 13.03
-    ≈ 102
+ROP = D × LT_sem + SS_completo
+    = 17.9 × 0.714 + 13.02
+    = 12.78 + 13.02
+    = 25.80
 ```
 
-(Reportado: 25.82 — discrepancia pendiente verificar; probable que use
-demanda diaria sin × 7. Comportamiento del motor a auditar contra fórmula
-declarada aquí.)
+✅ Motor reporta **25.82** — coincide.
+
+**Interpretación:** cuando `stock_total ≤ ROP` el motor marca
+`necesita_pedir=true`. Para TXTPBL20200SK hoy: stock_total=72 (1+41+30) >
+25.82 → no necesita pedir nuevo (ya hay OC en tránsito).
 
 ### necesita_pedir
 
