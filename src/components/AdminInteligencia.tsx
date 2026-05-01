@@ -446,6 +446,9 @@ export default function AdminInteligencia() {
   const [catalogoPorSku, setCatalogoPorSku] = useState<Map<string, { precio_neto: number; inner_pack: number }>>(new Map());
   // Última recepción por SKU: costo_unitario de la línea más reciente (recepción no anulada)
   const [ultimaRecepcionPorSku, setUltimaRecepcionPorSku] = useState<Map<string, number>>(new Map());
+  // OCs activas que aportan a stock_en_transito por SKU (numero, fecha esperada, qty pendiente)
+  type OcEnTransitoLinea = { numero: string; estado: string; fecha_emision: string | null; fecha_esperada: string | null; pedida: number; recibida: number; pendiente: number };
+  const [ocsEnTransitoPorSku, setOcsEnTransitoPorSku] = useState<Map<string, OcEnTransitoLinea[]>>(new Map());
   const [ocCreada, setOcCreada] = useState<string | null>(null);
 
   // Envío a Full
@@ -604,6 +607,50 @@ export default function AdminInteligencia() {
     setUltimaRecepcionPorSku(map);
   }, []);
 
+  // OCs activas que componen stock_en_transito por sku_origen.
+  // Mismo filtro que `queryOrdenesCompraActivas` server-side: estado de cabecera
+  // ∈ (PENDIENTE, EN_TRANSITO, RECIBIDA_PARCIAL). Sirve para tooltip En Tránsito.
+  const cargarOcsEnTransito = useCallback(async () => {
+    const sb = getSupabase();
+    if (!sb) return;
+    const { data, error } = await sb.from("ordenes_compra_lineas")
+      .select("sku_origen, cantidad_pedida, cantidad_recibida, ordenes_compra!inner(numero, estado, fecha_emision, fecha_esperada)")
+      .in("ordenes_compra.estado", ["PENDIENTE", "EN_TRANSITO", "RECIBIDA_PARCIAL"]);
+    if (error) {
+      console.error(`[cargarOcsEnTransito] query failed: ${error.message}`);
+      return;
+    }
+    const map = new Map<string, OcEnTransitoLinea[]>();
+    for (const row of (data || []) as Array<Record<string, unknown>>) {
+      // ordenes_compra viene como array por el join Supabase; tomamos el primero
+      const ocRaw = row.ordenes_compra as Array<Record<string, unknown>> | Record<string, unknown> | undefined;
+      const oc = Array.isArray(ocRaw) ? ocRaw[0] : ocRaw;
+      if (!oc) continue;
+      const pedida = (row.cantidad_pedida as number) || 0;
+      const recibida = (row.cantidad_recibida as number) || 0;
+      const pendiente = Math.max(0, pedida - recibida);
+      if (pendiente <= 0) continue;
+      const sku = ((row.sku_origen as string) || "").toUpperCase();
+      if (!sku) continue;
+      const arr = map.get(sku) || [];
+      arr.push({
+        numero: (oc.numero as string) || "?",
+        estado: (oc.estado as string) || "?",
+        fecha_emision: (oc.fecha_emision as string | null) ?? null,
+        fecha_esperada: (oc.fecha_esperada as string | null) ?? null,
+        pedida,
+        recibida,
+        pendiente,
+      });
+      map.set(sku, arr);
+    }
+    // Ordenar por fecha esperada ascendente (la próxima en llegar primero)
+    map.forEach(arr => {
+      arr.sort((a: OcEnTransitoLinea, b: OcEnTransitoLinea) => (a.fecha_esperada || "9999").localeCompare(b.fecha_esperada || "9999"));
+    });
+    setOcsEnTransitoPorSku(map);
+  }, []);
+
   // PR4 Fase 1 — cuenta SKUs con es_estacional=true y revisión vencida.
   // Falla silenciosa: si la columna no existe (v54 sin aplicar) queda en 0.
   const cargarEstacionalesVencidos = useCallback(async () => {
@@ -621,9 +668,9 @@ export default function AdminInteligencia() {
 
   const cargar = useCallback(async () => {
     setLoading(true);
-    await Promise.all([cargarOrigen(), cargarVenta(), cargarMlMap(), cargarPendientes(), cargarCatalogo(), cargarUltimasRecepciones(), cargarEstacionalesVencidos()]);
+    await Promise.all([cargarOrigen(), cargarVenta(), cargarMlMap(), cargarPendientes(), cargarCatalogo(), cargarUltimasRecepciones(), cargarOcsEnTransito(), cargarEstacionalesVencidos()]);
     setLoading(false);
-  }, [cargarOrigen, cargarVenta, cargarMlMap, cargarPendientes, cargarCatalogo, cargarUltimasRecepciones, cargarEstacionalesVencidos]);
+  }, [cargarOrigen, cargarVenta, cargarMlMap, cargarPendientes, cargarCatalogo, cargarUltimasRecepciones, cargarOcsEnTransito, cargarEstacionalesVencidos]);
 
   useEffect(() => { cargar(); }, [cargar]);
 
@@ -2549,7 +2596,22 @@ export default function AdminInteligencia() {
                                   <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtN(item.velPonderada)}</td>
                                   <td className="mono" style={{ textAlign: "right", fontSize: 11, color: item.stockFull <= 0 ? "var(--red)" : "var(--txt)" }}>{fmtInt(item.stockFull)}</td>
                                   <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtInt(item.stockBodega)}</td>
-                                  <td className="mono" style={{ textAlign: "right", fontSize: 11, color: item.stockEnTransito > 0 ? "var(--blue)" : "var(--txt3)" }}>{item.stockEnTransito > 0 ? fmtInt(item.stockEnTransito) : "—"}</td>
+                                  <td className="mono" style={{ textAlign: "right", fontSize: 11, color: item.stockEnTransito > 0 ? "var(--blue)" : "var(--txt3)", cursor: item.stockEnTransito > 0 ? "help" : undefined }}
+                                    title={(() => {
+                                      if (item.stockEnTransito <= 0) return undefined;
+                                      const ocs = ocsEnTransitoPorSku.get(item.skuOrigen.toUpperCase()) || [];
+                                      if (ocs.length === 0) return `${item.stockEnTransito} uds en tránsito (no se encontraron OCs activas — sync stale o trigger cantidad_recibida fuera)`;
+                                      const totalPendiente = ocs.reduce((s, o) => s + o.pendiente, 0);
+                                      const lineas = ocs.map(o => {
+                                        const eta = o.fecha_esperada ? `ETA ${o.fecha_esperada}` : "ETA s/d";
+                                        const emi = o.fecha_emision ? ` · emitida ${o.fecha_emision}` : "";
+                                        const recibido = o.recibida > 0 ? ` (recibido ${o.recibida}/${o.pedida})` : ` (${o.pedida})`;
+                                        return `OC ${o.numero} [${o.estado}] · ${o.pendiente} uds${recibido} · ${eta}${emi}`;
+                                      }).join("\n");
+                                      const drift = totalPendiente !== item.stockEnTransito ? `\n\n⚠ Pendiente OC=${totalPendiente} ≠ stock_en_transito=${item.stockEnTransito} (sync stale)` : "";
+                                      return `${item.stockEnTransito} uds en tránsito en ${ocs.length} OC${ocs.length > 1 ? "s" : ""}:\n\n${lineas}${drift}`;
+                                    })()}
+                                  >{item.stockEnTransito > 0 ? fmtInt(item.stockEnTransito) : "—"}</td>
                                   <td className="mono" style={{ textAlign: "right", fontSize: 11, color: item.cobTotal < 14 ? "var(--red)" : item.cobTotal < 30 ? "var(--amber)" : "var(--green)" }}>
                                     {item.cobTotal >= 999 ? "—" : fmtN(item.cobTotal, 0) + "d"}
                                   </td>
