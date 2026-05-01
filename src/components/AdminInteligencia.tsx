@@ -2857,60 +2857,123 @@ export default function AdminInteligencia() {
       {/* ═══════════════════════════════════════════════
           VISTA EXPLICAR SKU — trazabilidad de cálculos
          ═══════════════════════════════════════════════ */}
-      {vistaExplicar && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <div style={{ padding: 12, background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 8 }}>
-            <div style={{ fontSize: 11, color: "var(--txt2)", marginBottom: 8 }}>
-              Trazabilidad: ingresa un SKU origen para ver cómo el motor calcula cada métrica de <code>sku_intelligence</code> (fuentes, fórmulas, código, verificación cálculo-vs-motor).
-            </div>
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                const v = explicarSkuInput.trim().toUpperCase();
-                if (v) setExplicarSkuActivo(v);
-              }}
-              style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}
-            >
-              <input
-                list="explicar-sku-list"
-                value={explicarSkuInput}
-                onChange={(e) => setExplicarSkuInput(e.target.value)}
-                placeholder="Ej: TXTPBL20200SK"
-                className="form-input"
-                style={{ minWidth: 240, fontFamily: "JetBrains Mono, monospace", fontSize: 12 }}
-              />
-              <datalist id="explicar-sku-list">
-                {rows.slice(0, 500).map(r => (
-                  <option key={r.sku_origen} value={r.sku_origen}>{r.nombre || ""}</option>
-                ))}
-              </datalist>
-              <button type="submit" style={{ padding: "6px 12px", borderRadius: 6, background: "var(--cyanBg)", color: "var(--cyan)", fontWeight: 600, fontSize: 11, border: "1px solid var(--cyanBd)", cursor: "pointer" }}>
-                Explicar
-              </button>
-              {explicarSkuActivo && (
-                <button
-                  type="button"
-                  onClick={() => { setExplicarSkuActivo(null); setExplicarSkuInput(""); }}
-                  style={{ padding: "6px 10px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt2)", fontSize: 11, border: "1px solid var(--bg4)", cursor: "pointer" }}
-                >
-                  Limpiar
+      {vistaExplicar && (() => {
+        const q = explicarSkuInput.trim().toLowerCase();
+        const sugerencias = q.length === 0
+          ? []
+          : rows
+              .filter(r => r.sku_origen.toLowerCase().includes(q) || (r.nombre || "").toLowerCase().includes(q))
+              .slice(0, 30);
+        const seleccionar = (sku: string, nombre: string | null) => {
+          setExplicarSkuActivo(sku);
+          setExplicarSkuInput(`${sku}${nombre ? "  ·  " + nombre : ""}`);
+        };
+        return (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <div style={{ padding: 12, background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 8 }}>
+              <div style={{ fontSize: 11, color: "var(--txt2)", marginBottom: 8 }}>
+                Trazabilidad: busca por SKU origen o por nombre del producto para ver cómo el motor calcula cada métrica de <code>sku_intelligence</code>.
+              </div>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (sugerencias.length > 0) {
+                    seleccionar(sugerencias[0].sku_origen, sugerencias[0].nombre);
+                  } else {
+                    const v = explicarSkuInput.trim().toUpperCase();
+                    if (v) setExplicarSkuActivo(v);
+                  }
+                }}
+                style={{ display: "flex", gap: 6, alignItems: "flex-start", flexWrap: "wrap", position: "relative" }}
+              >
+                <div style={{ position: "relative", minWidth: 320 }}>
+                  <input
+                    value={explicarSkuInput}
+                    onChange={(e) => setExplicarSkuInput(e.target.value)}
+                    placeholder="Ej: TXTPBL20200SK · plumon · sabana 2 plazas"
+                    className="form-input"
+                    style={{ width: "100%", fontFamily: "JetBrains Mono, monospace", fontSize: 12 }}
+                    autoComplete="off"
+                  />
+                  {sugerencias.length > 0 && (
+                    <div
+                      style={{
+                        position: "absolute",
+                        top: "100%",
+                        left: 0,
+                        right: 0,
+                        marginTop: 2,
+                        maxHeight: 280,
+                        overflowY: "auto",
+                        background: "var(--bg3)",
+                        border: "1px solid var(--bg4)",
+                        borderRadius: 6,
+                        zIndex: 100,
+                        boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
+                      }}
+                    >
+                      {sugerencias.map(s => (
+                        <button
+                          key={s.sku_origen}
+                          type="button"
+                          onMouseDown={(e) => { e.preventDefault(); seleccionar(s.sku_origen, s.nombre); }}
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            gap: 8,
+                            width: "100%",
+                            padding: "6px 10px",
+                            background: explicarSkuActivo === s.sku_origen ? "var(--cyanBg)" : "transparent",
+                            border: "none",
+                            borderBottom: "1px solid var(--bg4)",
+                            color: "var(--txt)",
+                            fontSize: 11,
+                            cursor: "pointer",
+                            textAlign: "left",
+                          }}
+                          onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg4)"; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.background = explicarSkuActivo === s.sku_origen ? "var(--cyanBg)" : "transparent"; }}
+                        >
+                          <span className="mono" style={{ color: "var(--cyan)", whiteSpace: "nowrap" }}>{s.sku_origen}</span>
+                          <span style={{ color: "var(--txt2)", fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.nombre || "—"}</span>
+                        </button>
+                      ))}
+                      {sugerencias.length === 30 && (
+                        <div style={{ padding: "4px 10px", fontSize: 9, color: "var(--txt3)", background: "var(--bg2)" }}>
+                          mostrando 30 primeros — refina la búsqueda
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <button type="submit" style={{ padding: "6px 12px", borderRadius: 6, background: "var(--cyanBg)", color: "var(--cyan)", fontWeight: 600, fontSize: 11, border: "1px solid var(--cyanBd)", cursor: "pointer" }}>
+                  Explicar
                 </button>
-              )}
-              <span style={{ fontSize: 10, color: "var(--txt3)", marginLeft: 6 }}>
-                {rows.length} SKUs origen disponibles · sugerencias en el dropdown
-              </span>
-            </form>
-          </div>
-
-          {explicarSkuActivo ? (
-            <ExplicarSkuPanel skuOrigen={explicarSkuActivo} inline />
-          ) : (
-            <div style={{ padding: 30, textAlign: "center", color: "var(--txt3)", fontSize: 12, background: "var(--bg2)", border: "1px dashed var(--bg4)", borderRadius: 8 }}>
-              Sin SKU seleccionado.
+                {explicarSkuActivo && (
+                  <button
+                    type="button"
+                    onClick={() => { setExplicarSkuActivo(null); setExplicarSkuInput(""); }}
+                    style={{ padding: "6px 10px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt2)", fontSize: 11, border: "1px solid var(--bg4)", cursor: "pointer" }}
+                  >
+                    Limpiar
+                  </button>
+                )}
+                <span style={{ fontSize: 10, color: "var(--txt3)", marginLeft: 6, alignSelf: "center" }}>
+                  {rows.length} SKUs origen · busca por código o nombre
+                </span>
+              </form>
             </div>
-          )}
-        </div>
-      )}
+
+            {explicarSkuActivo ? (
+              <ExplicarSkuPanel skuOrigen={explicarSkuActivo} inline />
+            ) : (
+              <div style={{ padding: 30, textAlign: "center", color: "var(--txt3)", fontSize: 12, background: "var(--bg2)", border: "1px dashed var(--bg4)", borderRadius: 8 }}>
+                Sin SKU seleccionado.
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* ═══════════════════════════════════════════════
           VISTA ACCURACY — forecast accuracy (PR2/3)
