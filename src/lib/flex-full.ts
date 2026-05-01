@@ -16,9 +16,19 @@
  *   - v6 (2026-04-23 final): stock_en_transito NO entra en deficit_full.
  *     Regla de Vicente: "mandar a Full solo debe ver lo que hay realmente
  *     en bodega". stock_en_transito solo sirve para pedir_proveedor (evitar
- *     sobrepedir al proveedor). Esto evita el sesgo pro-espera: antes, si
- *     OC por 60 uds estaba en camino, el motor frenaba cualquier envio a
- *     Full aunque el Full se estuviera vaciando ahora.
+ *     sobrepedir al proveedor).
+ *   - v7 (2026-05-01): INVERSION DE PRIORIDAD. La reserva Flex (v3-v6)
+ *     bloqueaba envios a Full cuando reservaFlex >= stock_bodega, aunque
+ *     Full estuviera al borde del quiebre. Caso testigo TXTPBL20200SK:
+ *     stock_full=1 (cob 0.43d), bodega=41, reservaFlex=42 (vel inflada por
+ *     evento Dia de la Madre × pct_flex × 6 semanas) → mandar_full=0.
+ *     Contradice manual oficial Parte1:577-578: "Cycle stock debe estar en
+ *     Full para cumplir promesa MELI; safety stock puede estar parcialmente
+ *     en bodega central, repuesto a Full via replenishment frecuente".
+ *     Nueva regla: cycle stock → Full primero. Bodega solo conserva
+ *     buffer_ml (piso anti-race con publicacion ML); todo lo demas esta
+ *     disponible para mandar a Full si hay deficit. Aliñado con policy
+ *     /docs/policies/inventario.md "Prioridad Full > Flex" y manual.
  *
  * Contrato:
  *   - `para_full` = lo que efectivamente se manda a Full en este ciclo
@@ -70,17 +80,16 @@ export interface FlexFullState {
 
 export function calcularEstadoFlexFull(ctx: FlexFullContext): FlexFullState {
   const udsPackVenta = ctx.unidades_pack_venta > 0 ? ctx.unidades_pack_venta : 1;
-  const pctFlex = Math.max(0, 1 - ctx.pct_full);
 
-  // Target uds por canal segun velocidad × pct × dias cobertura.
+  // Target Full por canal segun velocidad × pct × dias cobertura.
+  // (targetFlexUds dejo de ser determinante en v7 — ver comentario al tope).
   const targetFullUds = ctx.vel_ponderada * ctx.pct_full * ctx.target_dias_full / 7;
-  const targetFlexUds = ctx.vel_ponderada * pctFlex * ctx.target_dias_full / 7;
 
-  // Reserva Flex: cubrir cobertura Flex del target + piso buffer_ml.
-  // El buffer_ml actua como colchon minimo aun si targetFlexUds=0 (SKU sin
-  // historia Flex): nunca dejamos bodega expuesta al 100%.
-  const reservaFlex = Math.max(ctx.buffer_ml, Math.ceil(targetFlexUds));
-  const disponibleParaFull = Math.max(0, ctx.stock_bodega - reservaFlex);
+  // Disponible para Full: todo lo que hay en bodega menos el piso buffer_ml.
+  // El buffer_ml actua como colchon minimo anti-race con la publicacion en
+  // ML (Flex no se queda en cero fisicamente). Politica v7 (manual Parte1
+  // §577-578): cycle stock va a Full primero; safety stock minimo en bodega.
+  const disponibleParaFull = Math.max(0, ctx.stock_bodega - ctx.buffer_ml);
 
   // Deficit Full: solo considera lo que hay FISICAMENTE hoy (stock_full).
   // stock_en_transito NO se usa aca: esas uds estan en camino del proveedor,

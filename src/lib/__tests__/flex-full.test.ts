@@ -1,11 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { calcularEstadoFlexFull, type FlexFullContext } from "../flex-full";
 
-// Funcion canon de particion Full/Flex (v5, 2026-04-23).
+// Funcion canon de particion Full/Flex (v7, 2026-05-01).
 // - para_full = mandar_full (lo que efectivamente se despacha a Full en este
 //   ciclo). para_flex = stock_bodega - para_full.
-// - reservaFlex = max(buffer_ml, ceil(vel × pct_flex × target/7)). mandar_full
-//   limitado por disponibleParaFull = stock_bodega - reservaFlex.
+// - Prioridad invertida (manual Parte1 §577-578): cycle stock va a Full
+//   primero. disponibleParaFull = stock_bodega - buffer_ml. Bodega solo
+//   conserva el piso anti-race; no reserva targetFlexUds.
 // - publicar_flex = floor(max(0, para_flex - buffer_ml) / unidades_pack_venta).
 
 function ctx(overrides: Partial<FlexFullContext> = {}): FlexFullContext {
@@ -88,13 +89,13 @@ describe("calcularEstadoFlexFull — particion Full/Flex", () => {
   });
 });
 
-describe("calcularEstadoFlexFull — mandar_full con reserva Flex (v3 restaurada)", () => {
-  it("deficit Full alto, bodega sobra: mandar_full = deficit (no limitado por buffer)", () => {
+describe("calcularEstadoFlexFull — mandar_full con prioridad Full (v7)", () => {
+  it("deficit Full alto, bodega sobra: mandar_full = deficit (Flex queda con el resto)", () => {
     // stock_bodega=101, stock_full=10, vel=15.48, pct_full=0.70, target=42.
-    // targetFull = 15.48 × 0.70 × 42/7 = 65.02 → deficit = 65 - 10 - 0 = 55.02 → 56
-    // targetFlex = 15.48 × 0.30 × 42/7 = 27.86 → reservaFlex = max(2, 28) = 28
-    // disponibleParaFull = 101 - 28 = 73
-    // mandar_full = min(56, 73) = 56
+    // targetFull = 15.48 × 0.70 × 42/7 = 65.02 → deficit = 65.02 - 10 = 55.02 → 56
+    // disponibleParaFull = 101 - buffer_ml(2) = 99
+    // mandar_full = min(56, 99) = 56
+    // para_flex = 101 - 56 = 45
     const s = calcularEstadoFlexFull(ctx({
       stock_bodega: 101,
       stock_full: 10,
@@ -109,10 +110,8 @@ describe("calcularEstadoFlexFull — mandar_full con reserva Flex (v3 restaurada
 
   it("deficit Full chico: mandar_full = deficit exacto", () => {
     // stock_bodega=20, stock_full=5, vel=5, pct_full=0.8, target=28.
-    // targetFull = 5 × 0.8 × 28/7 = 16 → deficit = 16 - 5 - 0 = 11
-    // targetFlex = 5 × 0.2 × 28/7 = 4 → reservaFlex = max(2,4) = 4
-    // disponibleParaFull = 20 - 4 = 16
-    // mandar_full = min(11, 16) = 11
+    // targetFull = 5 × 0.8 × 28/7 = 16 → deficit = 16 - 5 = 11
+    // disponibleParaFull = 20 - 2 = 18 → mandar = min(11, 18) = 11
     const s = calcularEstadoFlexFull(ctx({
       stock_bodega: 20,
       stock_full: 5,
@@ -136,8 +135,7 @@ describe("calcularEstadoFlexFull — mandar_full con reserva Flex (v3 restaurada
 
   it("stock_en_transito NO cubre deficit (regla v6): transito no es bodega", () => {
     // targetFull = 10 × 1.0 × 6 = 60 → deficit_full = 60 - 5 = 55 (transito 100 NO resta)
-    // targetFlex = 0 → reservaFlex = max(2, 0) = 2 → disponibleParaFull = 10 - 2 = 8
-    // mandar_full = min(55, 8) = 8 (manda todo lo que puede desde bodega).
+    // disponibleParaFull = 10 - 2 = 8 → mandar = min(55, 8) = 8
     const s = calcularEstadoFlexFull(ctx({
       stock_bodega: 10,
       stock_full: 5,
@@ -149,10 +147,8 @@ describe("calcularEstadoFlexFull — mandar_full con reserva Flex (v3 restaurada
     expect(s.mandar_full).toBe(8);
   });
 
-  it("vel=0 (SKU sin historia): reservaFlex cae al piso buffer_ml, deficit=0 → mandar_full=0", () => {
-    // targetFlex = 0 → reservaFlex = max(2, 0) = 2 (piso buffer)
-    // disponibleParaFull = 10 - 2 = 8
-    // deficit = 0 - 0 - 0 = 0 → mandar_full=0
+  it("vel=0 (SKU sin historia): deficit=0 → mandar_full=0, bodega intacta", () => {
+    // deficit = 0 - 0 = 0 → mandar=0
     const s = calcularEstadoFlexFull(ctx({
       stock_bodega: 10,
       vel_ponderada: 0,
@@ -161,19 +157,19 @@ describe("calcularEstadoFlexFull — mandar_full con reserva Flex (v3 restaurada
     expect(s.para_flex).toBe(10);
   });
 
-  it("bodega no alcanza para cubrir reserva Flex y deficit Full: mandar_full limitado", () => {
+  it("bodega chica con deficit Full grande: manda lo que puede menos buffer (v7)", () => {
     // stock_bodega=10, vel=10, pct_full=0.5, target=42.
-    // targetFull = 10 × 0.5 × 6 = 30 → deficit = 30 - 0 - 0 = 30
-    // targetFlex = 10 × 0.5 × 6 = 30 → reservaFlex = max(2, 30) = 30
-    // disponibleParaFull = max(0, 10 - 30) = 0 → mandar_full = 0
+    // targetFull = 10 × 0.5 × 6 = 30 → deficit = 30
+    // disponibleParaFull = 10 - 2 = 8 → mandar = min(30, 8) = 8
+    // (v6 daba 0 porque reservaFlex=30 > bodega; v7 prioriza Full).
     const s = calcularEstadoFlexFull(ctx({
       stock_bodega: 10,
       vel_ponderada: 10,
       pct_full: 0.5,
       target_dias_full: 42,
     }));
-    expect(s.mandar_full).toBe(0);
-    expect(s.para_flex).toBe(10);
+    expect(s.mandar_full).toBe(8);
+    expect(s.para_flex).toBe(2);
   });
 });
 
@@ -217,9 +213,7 @@ describe("calcularEstadoFlexFull — testigos reales", () => {
 
   it("TXTPBL20200SK (post-recepcion): stock_bodega=101, stock_full=10 → mandar 56 al Full, publica 43 Flex", () => {
     // targetFull = 15.48 × 0.70 × 6 = 65.02 → deficit = 55.02 → ceil=56
-    // targetFlex = 15.48 × 0.30 × 6 = 27.86 → reservaFlex = 28
-    // disponibleParaFull = 101 - 28 = 73
-    // mandar_full = min(56, 73) = 56
+    // disponibleParaFull = 101 - 2 = 99 → mandar = min(56, 99) = 56
     // para_flex = 101 - 56 = 45 → publicable = 45 - 2 = 43
     const s = calcularEstadoFlexFull({
       sku_origen: "TXTPBL20200SK",
@@ -238,12 +232,11 @@ describe("calcularEstadoFlexFull — testigos reales", () => {
     expect(s.publicar_flex).toBe(43);
   });
 
-  it("TXTPBL20200SK (pre-recepcion, OC 60 en transito): mandar lo que se pueda YA desde bodega", () => {
+  it("TXTPBL20200SK (pre-recepcion, OC 60 en transito, v7): manda casi toda la bodega al Full", () => {
     // Hoy: stock_bodega=41, stock_full=10, transito=60
     // targetFull = 65 → deficit = 65 - 10 = 55 (transito NO resta, regla v6)
-    // targetFlex = 28 → reservaFlex = 28
-    // disponibleParaFull = 41 - 28 = 13
-    // mandar_full = min(55, 13) = 13 ← manda YA lo que puede, no espera OC
+    // disponibleParaFull = 41 - 2 = 39 → mandar = min(55, 39) = 39 (v7)
+    // (v6 daba 13 porque reservaFlex=28 > 41-28=13)
     const s = calcularEstadoFlexFull({
       sku_origen: "TXTPBL20200SK",
       stock_bodega: 41,
@@ -256,8 +249,29 @@ describe("calcularEstadoFlexFull — testigos reales", () => {
       unidades_pack_venta: 1,
       abc: "A",
     });
-    expect(s.mandar_full).toBe(13);
-    expect(s.para_flex).toBe(28);
-    expect(s.publicar_flex).toBe(26);
+    expect(s.mandar_full).toBe(39);
+    expect(s.para_flex).toBe(2);
+    expect(s.publicar_flex).toBe(0);
+  });
+
+  it("TXTPBL20200SK (caso real 2026-05-01, v7): full=1 cob 0.43d → manda lo que puede menos buffer", () => {
+    // stock_bodega=41, stock_full=1, vel_ajustada_evento=23.27 (Dia de la Madre x1.3)
+    // targetFull = 23.27 × 0.7 × 6 = 97.73 → deficit = 96.73 → 97
+    // disponibleParaFull = 41 - 2 = 39 → mandar = min(97, 39) = 39
+    // (v6 daba 0 porque reservaFlex=42 > bodega=41 — bug fix de inversion)
+    const s = calcularEstadoFlexFull({
+      sku_origen: "TXTPBL20200SK",
+      stock_bodega: 41,
+      stock_full: 1,
+      stock_en_transito: 30,
+      vel_ponderada: 23.27,
+      pct_full: 0.7,
+      target_dias_full: 42,
+      buffer_ml: 2,
+      unidades_pack_venta: 1,
+      abc: "A",
+    });
+    expect(s.mandar_full).toBe(39);
+    expect(s.para_flex).toBe(2);
   });
 });

@@ -1903,11 +1903,12 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       velParaPedir = velCalcR;
     }
 
-    // mandar_full via función canon calcularEstadoFlexFull.
-    // Política: todo SKU activo vive en Flex si stock_bodega > buffer.
-    // La función hace la partición: para_flex = max(0, stock_bodega − buffer_ml),
-    // para_full = stock_bodega − para_flex. mandar_full queda limitado por
-    // para_full (no stock_bodega completo), evitando el stock fantasma P9.
+    // mandar_full via funcion canon calcularEstadoFlexFull (v7).
+    // Politica: cycle stock va a Full primero (manual Parte1 §577-578).
+    // disponibleParaFull = stock_bodega - buffer_ml. La bodega solo conserva
+    // el piso anti-race con la publicacion ML; no reserva targetFlexUds.
+    // Inversion de v6 (2026-05-01): antes la reservaFlex bloqueaba envios a
+    // Full aunque Full estuviera al borde del quiebre. Ver flex-full.ts §v7.
     const bufferMl = sharedOrigins.has(r.sku_origen) ? 4 : 2;
     const abcCanon: "A" | "B" | "C" = (r.abc === "A" || r.abc === "B" || r.abc === "C") ? r.abc : "C";
     const flexState = calcularEstadoFlexFull({
