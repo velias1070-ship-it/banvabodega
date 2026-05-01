@@ -5,6 +5,7 @@ import { buildPickingLineasFull, crearPickingSession, skuPositions, getComponent
 import { upsertNotasOperativas, insertOrdenCompra, insertOrdenCompraLineas, nextOCNumero, insertAdminActionLog } from "@/lib/db";
 import type { DBOrdenCompra, DBOrdenCompraLinea } from "@/lib/db";
 import { exportarOCExcel } from "@/lib/oc-export";
+import ExplicarSkuPanel from "./ExplicarSkuPanel";
 
 // ============================================
 // Tipos
@@ -426,6 +427,9 @@ export default function AdminInteligencia() {
   const envioManualItemsRef = useRef(envioManualItems);
   useEffect(() => { envioManualItemsRef.current = envioManualItems; }, [envioManualItems]);
   const [vistaPedido, setVistaPedido] = useState(false);
+
+  // Panel "Explicar SKU"
+  const [explainSku, setExplainSku] = useState<string | null>(null);
 
   // Pedido a Proveedor
   const [pedidoEdits, setPedidoEdits] = useState<Map<string, number>>(new Map());
@@ -1895,6 +1899,22 @@ export default function AdminInteligencia() {
                     {esEstrellaQuiebre && <span title={`Quiebre ${r.dias_en_quiebre ?? "?"}d`} style={{ marginRight: 3 }}>*</span>}
                     {r.es_catch_up && <span title="Catch-up" style={{ marginRight: 3, color: "var(--amber)" }}>!</span>}
                     {r.sku_origen}
+                    <button
+                      onClick={() => setExplainSku(r.sku_origen)}
+                      title="Explicar cálculos de este SKU"
+                      style={{
+                        marginLeft: 4,
+                        padding: "0 4px",
+                        fontSize: 9,
+                        lineHeight: "14px",
+                        background: "var(--cyanBg)",
+                        color: "var(--cyan)",
+                        border: "1px solid var(--cyanBd)",
+                        borderRadius: 3,
+                        cursor: "pointer",
+                        fontFamily: "inherit",
+                      }}
+                    >?</button>
                   </td>
                   <td style={{ fontSize: 11, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.nombre || ""}>{r.nombre || "—"}</td>
                   <td>
@@ -2998,6 +3018,7 @@ export default function AdminInteligencia() {
         );
       })()}
 
+      {explainSku && <ExplicarSkuPanel skuOrigen={explainSku} onClose={() => setExplainSku(null)} />}
     </div>
   );
 }
