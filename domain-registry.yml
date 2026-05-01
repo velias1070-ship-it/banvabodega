@@ -1,0 +1,92 @@
+# BANVA Bodega — Domain Registry
+# Capa Domain del CDMP (Concept-Domain-Model-Physical).
+# Bounded contexts del negocio. Cada concepto y tabla pertenece a exactamente un dominio.
+# Sprint 0 (2026-05-01) — 6 dominios iniciales.
+
+version: 1
+last_updated: 2026-05-01
+
+domains:
+
+  - id: inventario
+    label: "Inventario y reposición"
+    description: "Stock físico, velocidades, clasificación ABC×XYZ, políticas, déficit Full, quiebres, movimientos."
+    owner_files:
+      - src/lib/intelligence.ts
+      - docs/policies/inventario.md
+      - docs/policies/inventario-formulas.md
+      - docs/manuales/inventarios/
+    tables:
+      - productos
+      - stock
+      - stock_full_cache
+      - sku_intelligence
+      - movimientos_stock
+      - composicion_venta
+      - policy_templates
+      - inteligencia_full (derivada en runtime)
+
+  - id: ventas
+    label: "Ventas y postulaciones ML"
+    description: "Ventas reales en ML, estados de orden, postulaciones a promociones, anulaciones."
+    owner_files:
+      - src/lib/ml/ventas.ts
+      - src/components/AdminVentas.tsx
+    tables:
+      - ventas_ml_cache
+      - ml_items_map
+      - ml_publicaciones
+      - postulaciones_ml
+      - auto_postulacion_log
+    notas:
+      - "Toda lectura analítica filtra anulada=false (per feedback_ventas_anuladas_filter)."
+
+  - id: pricing
+    label: "Pricing y promociones"
+    description: "Precios de lista, precios obligados ML, márgenes, costo, piso, beneficio operativo."
+    owner_files:
+      - pricing-config/ (parallel session, NO TOCAR desde esta sesión)
+      - docs/policies/pricing.md
+      - docs/policies/markdown.md
+    tables:
+      - "(track ads / pricing — gestionados por la otra sesión Claude)"
+    notas:
+      - "Numeración SQL track ads/pricing: v80+ (per project_banvabodega_paralelo_pricing)."
+      - "No usar SERNAC/compliance como driver (per feedback_no_sernac_justificacion)."
+
+  - id: logistica
+    label: "Logística y lanes"
+    description: "Rutas físicas (proveedor→bodega, bodega→Full), lead times, costos de transporte, σ_LT."
+    owner_files:
+      - "(Sprint 1 introduce tablas canónicas)"
+    tables:
+      - "TBD Sprint 1: lanes, proveedores"
+
+  - id: compras
+    label: "Compras y recepciones"
+    description: "Órdenes de compra, recepciones, costos de adquisición. Etiquetas impresas como fuente de verdad."
+    owner_files:
+      - src/lib/compras.ts
+      - docs/manuales/compras/
+    tables:
+      - ordenes_compra
+      - ocl_*  (líneas y triggers)
+      - rcv_compras_dedup
+    notas:
+      - "etiqueta_impresa=false invalida sku_venta de la línea (per feedback_etiqueta_impresa_fuente_verdad)."
+      - "Costos NUNCA inferidos por familia (per feedback_no_inferir_costos)."
+
+  - id: reporteria
+    label: "Reportería y observabilidad"
+    description: "Reportes operativos (ventas, márgenes, quiebres), cartolas Santander, métricas ML, logs."
+    owner_files:
+      - src/components/AdminReportes.tsx
+      - scripts/santander-empresas (puerto 3457)
+    tables:
+      - ml_metrics
+      - finanzas
+      - ml_billing
+      - "cartolas santander (sesión externa)"
+    notas:
+      - "Reportes ventas siempre traen: órdenes, unidades, bruto, neto, margen $ y %."
+      - "MP retiros = transferencias a banco; no auto-generar reportes MP."

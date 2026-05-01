@@ -1,0 +1,81 @@
+# BANVA Bodega — SSoT Registry
+# Generado en Sprint 0 (2026-05-01).
+# Cada concepto crítico tiene exactamente UN owner_table autoritativo.
+# Tablas que derivan o cachean datos lo declaran explícitamente.
+
+version: 1
+last_updated: 2026-05-01
+owner: Vicente Elías
+
+ssots:
+
+  - concept: stock_canonico
+    description: "Stock real en la bodega de BANVA. Fuente de verdad operativa para reposiciones."
+    owner_table: stock
+    write_path: "RPC registrar_movimiento_stock(...)"
+    forbidden_writes:
+      - "UPDATE stock SET cantidad ... (sin trigger de movimiento)"
+      - "INSERT INTO stock ... fuera de RPC"
+    derivable_from: null
+    rationale: "Per feedback_movimientos_stock: todo cambio debe generar movimiento. Sin excepciones."
+    consumers:
+      - intelligence.ts (cálculo de quiebre)
+      - panel reposición
+      - reportes finanzas
+
+  - concept: stock_full_ml
+    description: "Stock distribuido en bodegas Full de MercadoLibre. Cache de la API."
+    owner_table: stock_full_cache
+    write_path: "Sync ML (cron / on-demand)"
+    derivable_from: "ML API /users/me/items/stock"
+    rationale: "Cache reconstruible. No autoritativo. Refrescar si hay sospecha de stale."
+    consumers:
+      - calcularEstadoFlexFull (P-INV-1)
+      - inteligencia_full
+      - reportes Full
+
+  - concept: composicion_venta
+    description: "Mapeo SKU vendido en ML → SKU(s) físicos descontados en bodega y unidades."
+    owner_table: composicion_venta
+    write_path: "Manual + autoheal trivial (1:1, unidades=1) por syncStockFull"
+    derivable_from: null
+    rationale: "Per project_banva_sku_sync_autoheal: autoheal trivial para SKUs nuevos. Combos requieren composición manual."
+    consumers:
+      - syncStockFull
+      - cálculo de stock disponible por sku_venta
+      - reportes de unidades por sku_origen
+
+  - concept: velocidades_y_estado_sku
+    description: "Velocidades de venta (vel_7d, vel_30d, vel_60d, vel_pre_quiebre) y estado (X/Y/Z, A/B/C, días en quiebre)."
+    owner_table: sku_intelligence
+    write_path: "intelligence.ts → upsert tras cron / on-demand"
+    derivable_from: "ventas_ml_cache (anulada=false), stock, stock_full_cache, calendarios"
+    rationale: "Per inventario-formulas.md líneas 60-86: tabla canónica para todas las fórmulas. Caso testigo TXTPBL20200SK."
+    notes:
+      - "vel_30d/60d censuran semanas con ≥3 días quiebre; vel_7d no (líneas 208-211)."
+      - "skus_venta es ARRAY (dimensión de salida agregada por sku_origen)."
+    consumers:
+      - reposición (deficit_full)
+      - panel inteligencia
+      - calcularEstadoFlexFull
+
+  - concept: politica_reposicion_por_celda
+    description: "Service level, z-value, target_dias_full, action por celda ABC×XYZ. Plantilla canónica sin overrides."
+    owner_table: policy_templates
+    write_path: "Migration o ALTER directo (cambios de política son revisión humana)"
+    derivable_from: null
+    rationale: "H3+H11+H2 cerrados 2026-05-01. Sin overrides aún (Sprint 1 introducirá policy_overrides para excepciones)."
+    notes:
+      - "AZ usa reorder_lt_corto: NO subir z, reducir LT (per Lokad/Thieuleux SPM:267)."
+      - "CZ tiene service_level y z_value NULL: no se recompra."
+      - "AX z=2.05 es worked example SPM:713 (cubrecolchón impermeable 2P)."
+    consumers:
+      - Sprint 1: cálculo SS King Method por celda
+      - Sprint 2: forecast del ROP
+
+# Tablas en observación (candidatas a futuros SSoTs)
+under_observation:
+  - inteligencia_full:
+      reason: "Derivada en runtime; podría persistirse si baja la latencia o crece el volumen."
+  - forecast_accuracy:
+      reason: "Sprint 3 considerará si forecast es SSoT separado o derivado de sku_intelligence."

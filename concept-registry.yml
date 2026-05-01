@@ -1,0 +1,94 @@
+# BANVA Bodega — Concept Registry
+# Capa Concept del CDMP (Concept-Domain-Model-Physical).
+# Define qué representa cada concepto del negocio, sin amarrarlo a la implementación.
+# Sprint 0 (2026-05-01) — 11 conceptos iniciales.
+
+version: 1
+last_updated: 2026-05-01
+
+concepts:
+
+  - id: producto
+    label: "Producto / SKU origen"
+    description: "Unidad física comprada y almacenada. Identificada por un SKU canónico (UPPER+TRIM)."
+    cardinality: "Cientos a baja unidades de millar."
+    dominio: inventario
+    fisico: "productos.sku (PK)"
+
+  - id: sku_venta
+    label: "SKU de venta"
+    description: "Cómo se vende el producto en ML (puede ser combo, individual, o pack)."
+    cardinality: "≥ productos. Puede ser N:1 con producto vía composicion_venta."
+    dominio: ventas
+    fisico: "ml_items_map.sku_venta, composicion_venta.sku_venta"
+
+  - id: composicion_venta
+    label: "Composición de venta"
+    description: "Cuántas unidades de qué SKU físico se descuentan al vender un sku_venta."
+    cardinality: "1:N por sku_venta. Default trivial (1 unidad de 1 sku_origen)."
+    dominio: ventas
+    fisico: "composicion_venta (sku_venta, sku_origen, unidades)"
+
+  - id: nodo_inventario
+    label: "Nodo de inventario"
+    description: "Lugar físico donde reside stock. En el modelo target son 2: Bodega y Full ML."
+    cardinality: "2 (per Manual: 'multi-echelon, 2 nodes only'). Flex NO es nodo, es logistic_type."
+    dominio: inventario
+    fisico: "stock (bodega) + stock_full_cache (Full ML). No hay tabla 'nodos' aún (Sprint 1)."
+
+  - id: movimiento_stock
+    label: "Movimiento de stock"
+    description: "Toda variación de cantidad en stock canónico genera un movimiento auditado."
+    cardinality: "Alta — miles por mes."
+    dominio: inventario
+    fisico: "movimientos_stock vía RPC registrar_movimiento_stock(...)"
+
+  - id: velocidad_venta
+    label: "Velocidad de venta"
+    description: "Unidades vendidas por día, calculadas en ventanas (7d, 30d, 60d, pre-quiebre)."
+    cardinality: "1:1 con sku_origen."
+    dominio: inventario
+    fisico: "sku_intelligence.vel_7d, vel_30d, vel_60d, vel_pre_quiebre"
+    notas:
+      - "vel_30d/60d excluyen semanas con ≥3 días de quiebre (censoring)."
+      - "vel_pre_quiebre se mantiene durante quiebre + rampup."
+
+  - id: clasificacion_abc_xyz
+    label: "Clasificación ABC×XYZ"
+    description: "9 celdas: ABC por contribución a ventas (Pareto 70/90), XYZ por variabilidad (CV deseasonalizado, bandas 0.25/0.60)."
+    cardinality: "1:1 con sku_origen activo."
+    dominio: inventario
+    fisico: "sku_intelligence (campo cell o derivable)"
+    notas:
+      - "H1 cerrado: 70/90 (Vicente)."
+      - "H2 cerrado: 0.25/0.60 deseasonalizado."
+
+  - id: politica_reposicion
+    label: "Política de reposición"
+    description: "Service level, z, target_dias_full, action prescritos por celda ABC×XYZ."
+    cardinality: "9 (una por celda)."
+    dominio: inventario
+    fisico: "policy_templates (Sprint 0)"
+
+  - id: deficit_full
+    label: "Déficit Full"
+    description: "Unidades que faltan en Full ML para alcanzar target_dias_full × velocidad."
+    cardinality: "1:1 con sku_origen activo."
+    dominio: inventario
+    fisico: "Derivado en intelligence.ts (no persistido aún)."
+    notas:
+      - "Per P-INV-3: NO incluir stock_en_transito en deficit_full."
+
+  - id: quiebre
+    label: "Quiebre / stockout"
+    description: "Estado donde el SKU no tiene unidades disponibles para venta."
+    cardinality: "Eventual."
+    dominio: inventario
+    fisico: "sku_intelligence.dias_en_quiebre + flag derivado"
+
+  - id: lane_logistico
+    label: "Lane logístico"
+    description: "Ruta proveedor → bodega o bodega → Full, con LT y costo. Componente de King Method (LT, σ_LT)."
+    cardinality: "Decenas — uno por (proveedor, modo) o (bodega, ML inbound)."
+    dominio: logistica
+    fisico: "Aún no existe tabla canónica (Sprint 1). Hoy: leadtime fijo en composicion o constantes."

@@ -1,0 +1,57 @@
+{
+  "captured_at": "2026-05-01T23:40:00Z",
+  "purpose": "Snapshot of all SKU-bearing rows whose stored value differs from UPPER(TRIM(value)). Pre-Sprint-0 cleanup. Use for rollback or human merge of detected case-insensitive duplicates.",
+  "tables": {
+    "productos": [
+      {"id": "39a3cf42-5e8f-4561-bc25-f37aaa8c2239", "sku": "BAR-VIR-DUB-Bitter", "nombre": "Chocolate Pistacho Barra Viral Dubai Delart Chocolat Bitter"},
+      {"id": "88a58c50-09d0-488f-9647-64895bb9e0f8", "sku": "BAR-VIR-DUB-Leche", "nombre": "Chocolate Pistacho Barra Viral Dubai Delart Chocolat Leche"},
+      {"id": "8053bbfb-95b3-45a9-be4d-e4b1ad121559", "sku": "SetNiñaRosado", "nombre": "Set De Regalo Niña Entre 6 A 10 Años - Ideal Navidad"},
+      {"id": "1a16ef03-23cd-40f5-8197-14336f3e32f1", "sku": "PACK-NIÑA-Celeste", "nombre": "Set De Regalo Niña Celeste Entre 6 A 10 Años - Ideal Navidad"},
+      {"id": "262bdda8-fc1b-47e3-b92a-44742eb4cf86", "sku": "La-La-14", "nombre": "La Biblia Catolica Para Jovenes (con Cierre)"},
+      {"id": "f4cce314-1fce-456d-9501-754ade3b97ba", "sku": "Lim-Per-45", "nombre": "Limpiapiés Choapino Perro 45cm X 75cm"},
+      {"id": "6f7b42e1-cc34-4cfc-9326-8bd2b5bb7206", "sku": "ALPCMPRLfalso", "nombre": "Alfombra Limpia Pies Exterior Choapino Entrada 60x120 Leaves 1.2 M 60 Cm Leaves"}
+    ],
+    "stock_full_cache": [
+      {"sku_venta": "BAR-VIR-DUB-Bitter", "cantidad": 0, "updated_at": "2026-05-01T23:32:12.32+00:00", "nombre": null, "fuente": "ml_distributed"},
+      {"sku_venta": "BAR-VIR-DUB-Leche", "cantidad": 0, "updated_at": "2026-05-01T23:32:12.319+00:00", "nombre": null, "fuente": "ml_distributed"},
+      {"sku_venta": "PACK-NIÑA-Celeste", "cantidad": 0, "updated_at": "2026-05-01T23:32:12.32+00:00", "nombre": null, "fuente": "ml_distributed"},
+      {"sku_venta": "Lim-Per-45", "cantidad": 0, "updated_at": "2026-05-01T23:32:12.32+00:00", "nombre": null, "fuente": "ml_distributed"},
+      {"sku_venta": "La-La-14", "cantidad": 0, "updated_at": "2026-05-01T23:32:12.32+00:00", "nombre": null, "fuente": "ml_distributed"},
+      {"sku_venta": "SetNiñaRosado", "cantidad": 0, "updated_at": "2026-05-01T23:32:12.32+00:00", "nombre": null, "fuente": "ml_distributed"},
+      {"sku_venta": "ALPCMPRLfalso", "cantidad": 0, "updated_at": "2026-05-01T23:32:12.319+00:00", "nombre": null, "fuente": "ml_distributed"}
+    ],
+    "composicion_venta": [
+      {"id": "fa778ac6-7cad-4f16-876b-c79f5a65d952", "sku_venta": "PACK-NIÑA-Celeste", "codigo_ml": "", "sku_origen": "PACK-NIÑA-Celeste", "unidades": 1, "tipo_relacion": "componente"},
+      {"id": "bb90839f-6f69-403b-9a7b-780c213b0397", "sku_venta": "La-La-14", "codigo_ml": "", "sku_origen": "La-La-14", "unidades": 1, "tipo_relacion": "componente"},
+      {"id": "944501c7-1aec-4126-b987-be1852889fc3", "sku_venta": "Lim-Per-45", "codigo_ml": "", "sku_origen": "Lim-Per-45", "unidades": 1, "tipo_relacion": "componente"},
+      {"id": "13b3d30d-a54f-4e2d-837a-40ebd332107e", "sku_venta": "SetNiñaRosado", "codigo_ml": "", "sku_origen": "SetNiñaRosado", "unidades": 1, "tipo_relacion": "componente"},
+      {"id": "554a1abd-4d50-4fbe-b70c-6c8f2578d238", "sku_venta": "ALPCMPRLfalso", "codigo_ml": "", "sku_origen": "ALPCMPRLfalso", "unidades": 1, "tipo_relacion": "componente"},
+      {"id": "ee85e1db-84a0-46b6-b689-4197cc755374", "sku_venta": "BAR-VIR-DUB-Leche", "codigo_ml": "", "sku_origen": "BAR-VIR-DUB-Leche", "unidades": 1, "tipo_relacion": "componente"},
+      {"id": "e0b927b8-a0c1-4044-a785-aae565154039", "sku_venta": "BAR-VIR-DUB-Bitter", "codigo_ml": "", "sku_origen": "BAR-VIR-DUB-Bitter", "unidades": 1, "tipo_relacion": "componente"}
+    ],
+    "ml_items_map": [
+      {"id": "697d9fa7-5c4d-4b5c-a42b-c160b6e8a0a9", "item_id": "MLC1769209109", "sku": "BAR-VIR-DUB-Leche", "sku_venta": "BAR-VIR-DUB-Leche", "sku_origen": "BAR-VIR-DUB-Leche"},
+      {"id": "76285a26-c763-4c55-acfa-fcaf08dee578", "item_id": "MLC2799781924", "sku": "PACK-NIÑA-Celeste", "sku_venta": "PACK-NIÑA-Celeste", "sku_origen": "PACK-NIÑA-Celeste"},
+      {"id": "452b5e6f-7ccd-4bfe-825b-d6954eb217a1", "item_id": "MLC2949530008", "sku": "ALPCMPRLfalso", "sku_venta": "ALPCMPRLfalso", "sku_origen": "ALPCMPRLfalso"},
+      {"id": "c6ae6ac4-42dc-41b4-9ef9-ef72b82900b0", "item_id": "MLC3366724634", "sku": "BAR-VIR-DUB-Bitter", "sku_venta": "BAR-VIR-DUB-Bitter", "sku_origen": "BAR-VIR-DUB-Bitter"},
+      {"id": "a269638e-2c88-4102-ba2b-891f2cb5d351", "item_id": "MLC2911851324", "sku": "La-La-14", "sku_venta": "La-La-14", "sku_origen": "La-La-14"},
+      {"id": "fea747a0-d1c2-4645-a5b2-a4beb00ed0e6", "item_id": "MLC2799084314", "sku": "SetNiñaRosado", "sku_venta": "SetNiñaRosado", "sku_origen": "SetNiñaRosado"},
+      {"id": "d1517abd-7970-40ee-bd9e-02f331f1c04a", "item_id": "MLC1618810851", "sku": "Lim-Per-45", "sku_venta": "Lim-Per-45", "sku_origen": "Lim-Per-45"}
+    ]
+  },
+  "collisions_detected": {
+    "productos.sku": ["BAR-VIR-DUB-Bitter <-> BAR-VIR-DUB-BITTER", "BAR-VIR-DUB-Leche <-> BAR-VIR-DUB-LECHE"],
+    "stock_full_cache.sku_venta": [
+      "ALPCMPRLfalso (2026-05-01) <-> ALPCMPRLFALSO (2026-03-16)",
+      "BAR-VIR-DUB-Bitter <-> BAR-VIR-DUB-BITTER",
+      "BAR-VIR-DUB-Leche <-> BAR-VIR-DUB-LECHE",
+      "La-La-14 <-> LA-LA-14",
+      "Lim-Per-45 <-> LIM-PER-45",
+      "PACK-NIÑA-Celeste <-> PACK-NIÑA-CELESTE",
+      "SetNiñaRosado <-> SETNIÑAROSADO"
+    ],
+    "composicion_venta": "0 collisions on (sku_venta, sku_origen)",
+    "ml_items_map": "0 collisions on (sku, item_id)"
+  },
+  "migration_strategy": "UPPER non-colliding rows in-place; for productos collisions create _sprint0_dup_skus tracking table for human merge; for stock_full_cache collisions delete the non-UPPER row (cantidad=0 in all cases, cache rebuilds on next ML sync)."
+}
