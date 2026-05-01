@@ -428,8 +428,10 @@ export default function AdminInteligencia() {
   useEffect(() => { envioManualItemsRef.current = envioManualItems; }, [envioManualItems]);
   const [vistaPedido, setVistaPedido] = useState(false);
 
-  // Panel "Explicar SKU"
-  const [explainSku, setExplainSku] = useState<string | null>(null);
+  // Vista "Explicar SKU" — sección dedicada
+  const [vistaExplicar, setVistaExplicar] = useState(false);
+  const [explicarSkuInput, setExplicarSkuInput] = useState("");
+  const [explicarSkuActivo, setExplicarSkuActivo] = useState<string | null>(null);
 
   // Pedido a Proveedor
   const [pedidoEdits, setPedidoEdits] = useState<Map<string, number>>(new Map());
@@ -1532,23 +1534,26 @@ export default function AdminInteligencia() {
         </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
           <div style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--bg4)" }}>
-            <button onClick={() => { setVistaOrigen(false); setVistaEnvio(false); setVistaPedido(false); setVistaProveedorAgotado(false); setVistaAccuracy(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: !vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy ? "var(--cyan)" : "var(--bg3)", color: !vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+            <button onClick={() => { setVistaOrigen(false); setVistaEnvio(false); setVistaPedido(false); setVistaProveedorAgotado(false); setVistaAccuracy(false); setVistaExplicar(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: !vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar ? "var(--cyan)" : "var(--bg3)", color: !vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
               SKU Venta
             </button>
-            <button onClick={() => { setVistaOrigen(true); setVistaEnvio(false); setVistaPedido(false); setVistaProveedorAgotado(false); setVistaAccuracy(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy ? "var(--cyan)" : "var(--bg3)", color: vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+            <button onClick={() => { setVistaOrigen(true); setVistaEnvio(false); setVistaPedido(false); setVistaProveedorAgotado(false); setVistaAccuracy(false); setVistaExplicar(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar ? "var(--cyan)" : "var(--bg3)", color: vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
               SKU Origen
             </button>
-            <button onClick={() => { setVistaEnvio(true); setVistaOrigen(false); setVistaPedido(false); setVistaProveedorAgotado(false); setVistaAccuracy(false); setPickingCreado(null); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaEnvio ? "var(--blue)" : "var(--bg3)", color: vistaEnvio ? "#fff" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+            <button onClick={() => { setVistaEnvio(true); setVistaOrigen(false); setVistaPedido(false); setVistaProveedorAgotado(false); setVistaAccuracy(false); setVistaExplicar(false); setPickingCreado(null); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaEnvio ? "var(--blue)" : "var(--bg3)", color: vistaEnvio ? "#fff" : "var(--txt3)", border: "none", cursor: "pointer" }}>
               Envio a Full
             </button>
-            <button onClick={() => { setVistaPedido(true); setVistaEnvio(false); setVistaOrigen(false); setVistaProveedorAgotado(false); setVistaAccuracy(false); setOcCreada(null); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaPedido ? "var(--amber)" : "var(--bg3)", color: vistaPedido ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+            <button onClick={() => { setVistaPedido(true); setVistaEnvio(false); setVistaOrigen(false); setVistaProveedorAgotado(false); setVistaAccuracy(false); setVistaExplicar(false); setOcCreada(null); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaPedido ? "var(--amber)" : "var(--bg3)", color: vistaPedido ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
               Pedido a Proveedor
             </button>
-            <button onClick={() => { setVistaProveedorAgotado(true); setVistaEnvio(false); setVistaOrigen(false); setVistaPedido(false); setVistaAccuracy(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaProveedorAgotado ? "var(--red)" : "var(--bg3)", color: vistaProveedorAgotado ? "#fff" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+            <button onClick={() => { setVistaProveedorAgotado(true); setVistaEnvio(false); setVistaOrigen(false); setVistaPedido(false); setVistaAccuracy(false); setVistaExplicar(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaProveedorAgotado ? "var(--red)" : "var(--bg3)", color: vistaProveedorAgotado ? "#fff" : "var(--txt3)", border: "none", cursor: "pointer" }}>
               Ventana Proveedor
             </button>
-            <button onClick={() => { setVistaAccuracy(true); setVistaOrigen(false); setVistaEnvio(false); setVistaPedido(false); setVistaProveedorAgotado(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaAccuracy ? "var(--cyan)" : "var(--bg3)", color: vistaAccuracy ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }} title="Forecast accuracy — mide el error de vel_ponderada">
+            <button onClick={() => { setVistaAccuracy(true); setVistaOrigen(false); setVistaEnvio(false); setVistaPedido(false); setVistaProveedorAgotado(false); setVistaExplicar(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaAccuracy ? "var(--cyan)" : "var(--bg3)", color: vistaAccuracy ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }} title="Forecast accuracy — mide el error de vel_ponderada">
               📊 Accuracy
+            </button>
+            <button onClick={() => { setVistaExplicar(true); setVistaOrigen(false); setVistaEnvio(false); setVistaPedido(false); setVistaProveedorAgotado(false); setVistaAccuracy(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaExplicar ? "var(--cyan)" : "var(--bg3)", color: vistaExplicar ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }} title="Trazabilidad: cómo el motor calcula cada métrica de un SKU">
+              🔎 Explicar SKU
             </button>
           </div>
           <button onClick={recalcular} disabled={recalculando} style={{ padding: "6px 12px", borderRadius: 6, background: "var(--cyanBg)", color: "var(--cyan)", fontWeight: 600, fontSize: 11, border: "1px solid var(--cyanBd)", cursor: "pointer" }}>
@@ -1668,7 +1673,7 @@ export default function AdminInteligencia() {
       )}
 
       {/* ═══ 3.5. CHIPS DE RED DE SEGURIDAD: SKUs sin costo, stale, sin LT, bajo MOQ ═══ */}
-      {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && (() => {
+      {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar && (() => {
         const sinCosto = activeRows.filter((r: AnyRow) => (r.alertas || []).includes("sin_costo"));
         const costoStale = activeRows.filter((r: AnyRow) => (r.alertas || []).includes("costo_posiblemente_obsoleto"));
         const sinLt = activeRows.filter((r: AnyRow) => "lead_time_fuente" in r && r.lead_time_fuente === "fallback_default" && (r.vel_ponderada || 0) > 0);
@@ -1705,7 +1710,7 @@ export default function AdminInteligencia() {
       })()}
 
       {/* ═══ 4. FILTROS ═══ */}
-      {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+      {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar && <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
         <input
           type="text"
           placeholder="Buscar SKU, nombre o ML..."
@@ -1760,12 +1765,12 @@ export default function AdminInteligencia() {
         </select>
       </div>}
 
-      {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 6 }}>
+      {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar && <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 6 }}>
         {filtered.length} de {vistaOrigen ? totalSkus : totalVentas} {vistaOrigen ? "SKUs Origen" : "SKUs Venta"}
       </div>}
 
       {/* ═══ 5. TABLA SKU VENTA ═══ */}
-      {!vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && (
+      {!vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar && (
         <div style={{ overflowX: "auto" }}>
           <table className="tbl" style={{ minWidth: 1500 }}>
             <thead>
@@ -1864,7 +1869,7 @@ export default function AdminInteligencia() {
       )}
 
       {/* ═══ 5b. TABLA SKU ORIGEN ═══ */}
-      {vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && (
+      {vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar && (
         <div style={{ overflowX: "auto" }}>
           <table className="tbl" style={{ minWidth: 1500 }}>
             <thead>
@@ -1899,22 +1904,6 @@ export default function AdminInteligencia() {
                     {esEstrellaQuiebre && <span title={`Quiebre ${r.dias_en_quiebre ?? "?"}d`} style={{ marginRight: 3 }}>*</span>}
                     {r.es_catch_up && <span title="Catch-up" style={{ marginRight: 3, color: "var(--amber)" }}>!</span>}
                     {r.sku_origen}
-                    <button
-                      onClick={() => setExplainSku(r.sku_origen)}
-                      title="Explicar cálculos de este SKU"
-                      style={{
-                        marginLeft: 4,
-                        padding: "0 4px",
-                        fontSize: 9,
-                        lineHeight: "14px",
-                        background: "var(--cyanBg)",
-                        color: "var(--cyan)",
-                        border: "1px solid var(--cyanBd)",
-                        borderRadius: 3,
-                        cursor: "pointer",
-                        fontFamily: "inherit",
-                      }}
-                    >?</button>
                   </td>
                   <td style={{ fontSize: 11, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.nombre || ""}>{r.nombre || "—"}</td>
                   <td>
@@ -2863,7 +2852,65 @@ export default function AdminInteligencia() {
         </div>
       )}
 
-      {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && filtered.length === 0 && <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>No hay datos. Ejecuta &quot;Recalcular&quot; para generar.</div>}
+      {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar && filtered.length === 0 && <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>No hay datos. Ejecuta &quot;Recalcular&quot; para generar.</div>}
+
+      {/* ═══════════════════════════════════════════════
+          VISTA EXPLICAR SKU — trazabilidad de cálculos
+         ═══════════════════════════════════════════════ */}
+      {vistaExplicar && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ padding: 12, background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 8 }}>
+            <div style={{ fontSize: 11, color: "var(--txt2)", marginBottom: 8 }}>
+              Trazabilidad: ingresa un SKU origen para ver cómo el motor calcula cada métrica de <code>sku_intelligence</code> (fuentes, fórmulas, código, verificación cálculo-vs-motor).
+            </div>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                const v = explicarSkuInput.trim().toUpperCase();
+                if (v) setExplicarSkuActivo(v);
+              }}
+              style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}
+            >
+              <input
+                list="explicar-sku-list"
+                value={explicarSkuInput}
+                onChange={(e) => setExplicarSkuInput(e.target.value)}
+                placeholder="Ej: TXTPBL20200SK"
+                className="form-input"
+                style={{ minWidth: 240, fontFamily: "JetBrains Mono, monospace", fontSize: 12 }}
+              />
+              <datalist id="explicar-sku-list">
+                {rows.slice(0, 500).map(r => (
+                  <option key={r.sku_origen} value={r.sku_origen}>{r.nombre || ""}</option>
+                ))}
+              </datalist>
+              <button type="submit" style={{ padding: "6px 12px", borderRadius: 6, background: "var(--cyanBg)", color: "var(--cyan)", fontWeight: 600, fontSize: 11, border: "1px solid var(--cyanBd)", cursor: "pointer" }}>
+                Explicar
+              </button>
+              {explicarSkuActivo && (
+                <button
+                  type="button"
+                  onClick={() => { setExplicarSkuActivo(null); setExplicarSkuInput(""); }}
+                  style={{ padding: "6px 10px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt2)", fontSize: 11, border: "1px solid var(--bg4)", cursor: "pointer" }}
+                >
+                  Limpiar
+                </button>
+              )}
+              <span style={{ fontSize: 10, color: "var(--txt3)", marginLeft: 6 }}>
+                {rows.length} SKUs origen disponibles · sugerencias en el dropdown
+              </span>
+            </form>
+          </div>
+
+          {explicarSkuActivo ? (
+            <ExplicarSkuPanel skuOrigen={explicarSkuActivo} inline />
+          ) : (
+            <div style={{ padding: 30, textAlign: "center", color: "var(--txt3)", fontSize: 12, background: "var(--bg2)", border: "1px dashed var(--bg4)", borderRadius: 8 }}>
+              Sin SKU seleccionado.
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ═══════════════════════════════════════════════
           VISTA ACCURACY — forecast accuracy (PR2/3)
@@ -3018,7 +3065,6 @@ export default function AdminInteligencia() {
         );
       })()}
 
-      {explainSku && <ExplicarSkuPanel skuOrigen={explainSku} onClose={() => setExplainSku(null)} />}
     </div>
   );
 }

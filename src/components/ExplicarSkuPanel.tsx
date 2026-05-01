@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 
 interface InputCrudo {
   nombre: string;
@@ -215,7 +215,7 @@ function MetricaCard({
   );
 }
 
-export default function ExplicarSkuPanel({ skuOrigen, onClose }: { skuOrigen: string; onClose: () => void }) {
+export default function ExplicarSkuPanel({ skuOrigen, onClose, inline = false }: { skuOrigen: string; onClose?: () => void; inline?: boolean }) {
   const [data, setData] = useState<ExplainResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [openMap, setOpenMap] = useState<Record<string, boolean>>({});
@@ -253,9 +253,16 @@ export default function ExplicarSkuPanel({ skuOrigen, onClose }: { skuOrigen: st
     }, 50);
   };
 
-  return (
-    <div
-      style={{
+  const wrapperStyle: React.CSSProperties = inline
+    ? {
+        background: "var(--bg2)",
+        border: "1px solid var(--bg4)",
+        borderRadius: 8,
+        display: "flex",
+        flexDirection: "column",
+        maxHeight: "calc(100vh - 220px)",
+      }
+    : {
         position: "fixed",
         top: 0,
         right: 0,
@@ -267,8 +274,10 @@ export default function ExplicarSkuPanel({ skuOrigen, onClose }: { skuOrigen: st
         display: "flex",
         flexDirection: "column",
         boxShadow: "-4px 0 20px rgba(0,0,0,0.5)",
-      }}
-    >
+      };
+
+  return (
+    <div style={wrapperStyle}>
       <div style={{ padding: 14, borderBottom: "1px solid var(--bg4)", display: "flex", alignItems: "center", gap: 10 }}>
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 11, color: "var(--txt3)" }}>Explicación de cálculos</div>
@@ -282,12 +291,14 @@ export default function ExplicarSkuPanel({ skuOrigen, onClose }: { skuOrigen: st
             </div>
           )}
         </div>
-        <button
-          onClick={onClose}
-          style={{ background: "var(--bg3)", border: "1px solid var(--bg4)", color: "var(--txt)", padding: "6px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}
-        >
-          Cerrar ✕
-        </button>
+        {onClose && (
+          <button
+            onClick={onClose}
+            style={{ background: "var(--bg3)", border: "1px solid var(--bg4)", color: "var(--txt)", padding: "6px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}
+          >
+            Cerrar ✕
+          </button>
+        )}
       </div>
 
       <div style={{ flex: 1, overflowY: "auto", padding: 12 }}>
