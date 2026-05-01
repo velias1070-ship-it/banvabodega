@@ -4,37 +4,68 @@
 > (interna vs externa). Hecha sobre el snapshot de `sku_intelligence_history`
 > y los registros de OCs / recepciones / ventas.
 
-## TL;DR
+## TL;DR (revisado tras descartar OCs anuladas como ruido)
 
-**8 de 9 quiebres son falla nuestra.** La causa dominante es **una brecha de
-33 días entre OCs activas (24-mar → 28-abr)** combinada con que el motor
-v6 de `flex-full.ts` no proponía mandar al Full cuando bodega ≤ reservaFlex.
-Solo 1 SKU (JSAFAB415P20W) tiene componente externo real (quiebre de Idetex).
+Las únicas OCs reales a Idetex en este período son **OC-005 (20-abr, llegó 23-abr,
+3 días LT)** y **OC-006 (28-abr, esperada 11-may, 13 días LT, en curso)**. Las
+OC-002/003/004 anuladas el 18-24 mar nunca se ejecutaron y no son comparables
+con un pipeline real.
 
-**Y un gap de tracking grave: NO guardamos las decisiones del motor.**
+**Causas reales del quiebre, en orden de impacto:**
+
+1. **Bug v6 `flex-full.ts`** — bodega disponible no se mandaba al Full porque
+   reservaFlex la consumía. Motor decía PLANIFICAR cuando debía decir MANDAR.
+   ✅ fixeado en commit `34c53e8`.
+2. **Catch-22 vel_pre_quiebre** — JSAFAB436 quebrado desde marzo, OC-005 le
+   pidió solo 4 uds porque vel medida había caído a 1.0 (Flex residual). Lead
+   time cubría 6 días → re-quiebre inmediato.
+3. **OC-005 dejó fuera 8 de 9 SKUs porque ese día no estaban en alerta**. El
+   motor recién los marcó AGOTADO/MANDAR/URGENTE entre 23-29 abril → entraron
+   en OC-006. Esa semana de demora fue donde se vaciaron del Full.
+4. **OC-005 llegó parcial: 509/663 = 77%**. Idetex no entregó 154 uds. Falla
+   externa.
+5. **JSAFAB415**: 30-abr `bodega=0` real, Idetex sin stock confirmado por flag
+   `es_quiebre_proveedor=true`. Falla externa puntual.
+
+**Gap de tracking grave: NO guardamos las decisiones del motor.**
 `sku_intelligence_history` no almacena `mandar_full`, `pedir_proveedor`,
-`pedir_proveedor_sin_rampup`. Solo guardamos el **estado** (stock, vel, abc) y
-la **etiqueta** (`accion`). Eso impide auditar después qué cantidades
-recomendaba el motor cada día.
+`pedir_proveedor_sin_rampup`, `factor_rampup_aplicado`. Solo guardamos el
+**estado** (stock, vel, abc) y la **etiqueta** (`accion`). Eso impide auditar
+después qué cantidades recomendaba el motor cada día. Esta auditoría tuvo que
+reconstruir las decisiones aplicando la fórmula al estado.
 
-## Cronología de OCs a Idetex (proveedor único de los 9 SKUs)
+## Pipeline real de OCs a Idetex (anuladas excluidas)
 
-| OC | Emisión | Esperada | Estado | Pedidas | Recibidas | Lead time |
-|----|---------|----------|--------|---------|-----------|-----------|
-| OC-002 | 2026-03-18 | — | **ANULADA** | 1 543 | 0 | — |
-| OC-003 | 2026-03-18 | — | **ANULADA** | 726 | 0 | — |
-| OC-004 | 2026-03-24 | — | **ANULADA** | 1 016 | 0 | — |
-| OC-005 | 2026-04-20 | 2026-04-23 | RECIBIDA_PARCIAL | 663 | 509 (77%) | ~3 días promedio |
-| OC-006 | 2026-04-28 | 2026-05-11 | RECIBIDA_PARCIAL | 1 399 | 162 (12%) | en curso |
+| OC | Emisión | Esperada | Real | Estado | Pedidas | Recibidas |
+|----|---------|----------|------|--------|---------|-----------|
+| OC-005 | 2026-04-20 | 2026-04-23 (3d) | parcial 22-23 abr | RECIBIDA_PARCIAL | 663 | 509 (77%) |
+| OC-006 | 2026-04-28 | 2026-05-11 (13d) | en curso | RECIBIDA_PARCIAL | 1 399 | 162 (12%) |
 
-**Brecha crítica:** del 24-mar al 20-abr (27 días) **no hubo OC activa a
-Idetex**. Las 3 OCs del 18-24 marzo se anularon (motivo no registrado en
-`notas`). La siguiente OC útil recién entró el 20-abr. Para SKUs ABC=A con
-cycle stock de 3-6 semanas, eso garantizaba el quiebre.
+**Tiempo de respuesta humano (alerta motor → emisión OC):**
 
-Las recepciones de Idetex en abril (folios 525*-527* en `recepciones`) **no
-estaban vinculadas a OC** (`orden_compra_id IS NULL`) — eran entregas
-inerciales del proveedor sin OC formal en banvabodega.
+| SKU | Primera alerta | OC | Días alerta→OC |
+|-----|----------------|----|----------------:|
+| TXV23QLAT25GR | 27-Abr URGENTE | OC-006 28-Abr | **1d** ✅ |
+| JSECBQ006P20A | 26-Abr MANDAR_FULL | OC-006 | 2d ✅ |
+| JSAFAB440P20W | 26-Abr | OC-006 | 2d ✅ |
+| JSAFAB415P20W | 24-Abr URGENTE | OC-006 | 4d ✅ |
+| JSAFAB436P20W | 16-Abr AGOTADO_PEDIR | OC-005 20-Abr | 4d ✅ |
+| JSAFAB441P20W | 23-Abr | OC-006 | 5d ⚠️ |
+| JSAFAB437P20W | 16-Abr AGOTADO_PEDIR | OC-006 28-Abr | **12d** ❌ |
+| JSAFAB435/439 | 29-Abr | OC-006 | -1d (preemptiva) ✅ |
+
+**Falla específica: JSAFAB437P20W estuvo 12 días en AGOTADO_PEDIR antes de
+entrar a OC.** Se quedó fuera de OC-005 a pesar de estar en el mismo estado
+que JSAFAB436 (que sí entró). Hipótesis: vel reportada=0.19 (ruido por
+quiebre prolongado) lo dejó debajo del umbral de pedido al armar OC-005.
+
+**Falla por cantidad: OC-005 pidió solo 4 uds de JSAFAB436P20W** con demanda
+real ~2/día y LT 3d. Cubrió 6 días, después re-quebró. Causa: vel_pre_quiebre
+no estaba poblada cuando se armó OC-005 (la regla rampup del intelligence
+recién se aplicó después).
+
+**Falla externa: OC-005 entregó 77%.** Las 154 uds faltantes son
+responsabilidad de Idetex, no del WMS.
 
 ## Cronología SKU por SKU
 
@@ -103,39 +134,44 @@ proveedor=0`. Es **falla mixta**:
 | 28-30 Abr | 1 | 0 | EN_TRANSITO |
 | 01-May | 0 | 16 | MANDAR_FULL=12 ✅ (recepción 16 uds) |
 
-**Diagnóstico:** SKU pasó **TODO marzo** sin stock (desde el 16-mar al menos).
-Bodega=0 + Full=0 desde abril. La OC-005 (20-abr, 4 uds pedidas) llegó parcial.
-Las 16 uds del 1-may son OC-006. **Falla compuesta:**
-- OC-002/003 anuladas el 18-mar pidieron este SKU → si no se anulaban, llegaba
-  a tiempo.
-- OC-005 (20-abr) pidió solo 4 uds (motor estimaba `vel=1.0` por estar
-  quebrado — clásico catch-22 de quiebre prolongado).
+**Diagnóstico:** SKU venía quebrado desde marzo (no tenemos histórico antes
+del 16-abr para confirmar inicio exacto). OC-005 (20-abr, 4 uds, recibidas
+4) cubrió 6 días de demanda. Re-quebró. OC-006 ya pidió 16 uds.
+**Falla:** cantidad pedida en OC-005 muy chica por vel degradada
+(catch-22 vel_pre_quiebre). El humano pidió correctamente lo que el motor
+recomendó; el motor recomendó mal.
 
 ### JSAFAB435/437/439/440/441P20W — Resto de Sarah/familia
 
 Todos del mismo proveedor (Idetex), todos en cuadrante REVISAR. Patrón:
-- Marzo: quebraron por anulación de OC-002/003.
-- Abril: motor osciló entre EXCESO (cuando había 2-3 uds y vel=0.1) y
-  AGOTADO_PEDIR/PLANIFICAR.
-- Día Madre activado el ~25-abr disparó velocidades; cobertura cayó a 0 en
-  pocos días.
-- 1-May llegan recepciones y motor propone mandar al Full.
+- Antes del 16-abr: sin histórico (probablemente OK).
+- 16-22 abr: oscilación EXCESO/PLANIFICAR con vel reportada muy baja
+  (0.1-0.5) por venta esporádica.
+- 23-29 abr: cobertura cayó a 0; motor pasó a AGOTADO_PEDIR / MANDAR_FULL.
+  Día de la Madre activado el ~25-abr disparó velocidades x1.3.
+- **JSAFAB437 caso especial**: 12 días en AGOTADO_PEDIR antes de entrar a
+  OC. Quedó fuera de OC-005 a pesar de estar en el mismo estado que
+  JSAFAB436. Razón probable: vel=0.19 lo dejó debajo del umbral de pedido.
+- 28-abr: OC-006 los cubre a todos.
+- 1-May: recepción + motor propone MANDAR_FULL.
 
-## Causas raíz consolidadas
+## Causas raíz consolidadas (revisadas)
 
 | # | Causa | Impacto | Tipo |
 |---|-------|---------|------|
-| 1 | OC-002, OC-003, OC-004 anuladas (mar 18-24) sin OC de reemplazo | 33d sin pipeline a Idetex | **Interno operacional** |
-| 2 | Motor `flex-full.ts v6` reservaba targetFlexUds antes de `mandar_full` | 8 SKUs no recibieron MANDAR aunque tenían bodega disponible | **Interno técnico** (fixeado en commit `34c53e8`) |
-| 3 | Motor solo manda al Full cuando Full=0; nunca proactivo si cob_full > 0 | SKUs llegaban a 0 antes de gatillar acción | **Interno técnico** (sin fix aún) |
-| 4 | Día de la Madre infló velocidad x1.3 | Aceleró quiebre, motor reactivo no alcanzó | Externo amplificado por #3 |
-| 5 | Idetex sin stock JSAFAB415 | 1 SKU 30-abr tocó cero total | **Externo** (1 caso) |
-| 6 | OCs en quiebre piden cantidad muy chica (vel degradada) | OC-005 pidió 4 uds de JSAFAB436 con vel real ~2 uds/día | **Interno técnico** (catch-22 vel_pre_quiebre, parcialmente cubierto por `feedback_dual_route_sync` y rampup) |
-| 7 | ABC oscilando día a día (C↔A↔B en 24h) | Inestabilidad de `target_dias_full` y `pct_full` | **Interno técnico** (memoria `project_banva_abc_xyz_state` lo documenta) |
+| 1 | Motor `flex-full.ts v6` reservaba targetFlexUds antes de `mandar_full` | Bodega disponible no se mandaba al Full → Full se vaciaba | **Interno técnico** (fixeado en commit `34c53e8`) |
+| 2 | Catch-22 `vel_pre_quiebre`: SKU quebrado → vel medida cae → OC pide poco → re-quiebra | OC-005 pidió 4 uds de JSAFAB436 con demanda real ~2/día | **Interno técnico** (parcialmente cubierto por rampup PR #261-264, pero JSAFAB436 no lo recibió en OC-005) |
+| 3 | JSAFAB437P20W quedó fuera de OC-005 a pesar de estar AGOTADO_PEDIR junto a JSAFAB436 | 12 días en quiebre antes de OC-006 | **Interno técnico** (umbral de pedido cuando vel reportada < 0.2) |
+| 4 | Motor solo gatilla MANDAR_FULL cuando Full=0; no es proactivo con cob bajando | SKUs caían 5→4→3→2→1→0 sin acción intermedia | **Interno técnico** (sin fix aún) |
+| 5 | Día de la Madre infló velocidad x1.3 | Aceleró quiebre desde 25-abr | **Externo amplificado por #4** |
+| 6 | OC-005 entregó 77% (Idetex 154 uds short) | Algunos SKUs llegaron menos uds de lo esperado | **Externo** (Idetex) |
+| 7 | JSAFAB415: 30-abr Idetex sin stock confirmado | 1 SKU 30-abr `bodega=0 + proveedor=0` | **Externo** (1 caso, 1 día) |
+| 8 | ABC oscilando día a día (C↔A↔B en 24h) | Inestabilidad de `target_dias_full` y `pct_full` | **Interno técnico** (memoria `project_banva_abc_xyz_state` lo documenta) |
 
-**Nota sobre OCs anuladas:** los 3 registros tienen el mismo texto `Anulada: `
-en `notas` (sin razón). No hay log de quién anuló, cuándo, ni por qué. Esto
-también es un gap de auditoría.
+**Nota sobre OCs anuladas (OC-002/003/004 mar-18/24):** Vicente confirma que
+no se cuentan como pipeline real — nunca se ejecutaron. Probablemente fueron
+borradores armados desde inteligencia que se descartaron. El cálculo del
+"tiempo sin OC" parte desde la primera OC real (OC-005 20-abr).
 
 ## Gap de tracking — qué NO guardamos hoy
 
