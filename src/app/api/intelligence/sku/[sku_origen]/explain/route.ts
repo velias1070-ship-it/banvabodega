@@ -121,7 +121,26 @@ function explicarMetricas(r: IntelRow): Record<string, MetricaExplicada> {
   const mandarFullCalc = Math.min(deficitFull, disponibleParaFull);
 
   // ── pedir_proveedor (sin rampup) ──
-  const demandaCiclo = velCalculo * targetDias / 7;
+  // El motor reemplaza vel_actual por vel_pre_quiebre cuando hay quiebre
+  // prolongado protegido (intelligence.ts:33-46 esQuiebreProlongadoProtegido).
+  // Si no se hace, pediríamos basado en vel deprimida y nunca recuperaríamos
+  // las ventas históricas. Réplica de las 3 ramas del motor:
+  const velPreQuiebre = num(r.vel_pre_quiebre);
+  const diasEnQuiebre = num(r.dias_en_quiebre);
+  const esQuiebreProveedor = r.es_quiebre_proveedor as boolean;
+  const enQuiebreProlongadoProtegido = (() => {
+    if (stockFull !== 0) return false;
+    if (velPreQuiebre <= 0) return false;
+    // Rama 1: Zara genérica
+    if (diasEnQuiebre >= 14 && velPreQuiebre > 2 && velPonderada > 0) return true;
+    // Rama 2: ESTRELLA/CASHCOW con caída
+    if (diasEnQuiebre >= 7 && (cuadrante === "ESTRELLA" || cuadrante === "CASHCOW") && velPreQuiebre > velPonderada * 2) return true;
+    // Rama 3: quiebre proveedor con caída
+    if (esQuiebreProveedor && velPreQuiebre > velPonderada * 2) return true;
+    return false;
+  })();
+  const velParaPedir = enQuiebreProlongadoProtegido ? velPreQuiebre : velCalculo;
+  const demandaCiclo = velParaPedir * targetDias / 7;
   const cantidadObjetivo = demandaCiclo + safetyCompleto;
   const stockTotalParaPedir = stockFull + stockBodega + stockEnTransito;
   const pedirSinRampupCalc = Math.max(0, Math.ceil(cantidadObjetivo - stockTotalParaPedir));
@@ -659,8 +678,11 @@ function explicarMetricas(r: IntelRow): Record<string, MetricaExplicada> {
       valor: pedirSinRampup,
       unidad: "uds",
       formula: "max(0, ceil(cantidad_objetivo − stock_total_pedido))",
-      codigo: "src/lib/intelligence.ts:1882-1939",
+      codigo: "src/lib/intelligence.ts:1934-1939",
       doc: "/docs/policies/inventario-formulas.md#pedir_proveedor",
+      nota: enQuiebreProlongadoProtegido
+        ? `Quiebre prolongado protegido: usa vel_pre_quiebre (${velPreQuiebre}) en vez de vel actual (${velCalculo}). Si no, pediríamos sobre vel deprimida y nunca recuperaríamos demanda histórica.`
+        : undefined,
       verificacion: {
         calculado: pedirSinRampupCalc,
         motor: pedirSinRampup,
@@ -668,6 +690,22 @@ function explicarMetricas(r: IntelRow): Record<string, MetricaExplicada> {
         delta: pedirSinRampupCalc - pedirSinRampup,
       },
       inputs: [
+        {
+          nombre: "vel_para_pedir",
+          valor: round2(velParaPedir),
+          tipo: "derivado",
+          formula: enQuiebreProlongadoProtegido
+            ? "vel_pre_quiebre (quiebre prolongado protegido)"
+            : "velCalculo (vel_ajustada_evento si mult>1, sino vel_ponderada)",
+          inputs: [
+            { nombre: "vel_ponderada", valor: velPonderada, tipo: "metrica", ref: "vel_ponderada" },
+            { nombre: "vel_pre_quiebre", valor: velPreQuiebre, tipo: "fuente", fuente: "sku_intelligence.vel_pre_quiebre" },
+            { nombre: "dias_en_quiebre", valor: diasEnQuiebre, tipo: "fuente", fuente: "sku_intelligence.dias_en_quiebre" },
+            { nombre: "es_quiebre_proveedor", valor: esQuiebreProveedor ? "true" : "false", tipo: "fuente", fuente: "sku_intelligence.es_quiebre_proveedor" },
+            { nombre: "cuadrante", valor: cuadrante, tipo: "metrica", ref: "cuadrante" },
+            { nombre: "en_quiebre_prolongado_protegido", valor: enQuiebreProlongadoProtegido ? "true" : "false", tipo: "derivado", formula: "ver intelligence.ts:33-46 (3 ramas)" },
+          ],
+        },
         {
           nombre: "cantidad_objetivo",
           valor: round2(cantidadObjetivo),
@@ -678,7 +716,7 @@ function explicarMetricas(r: IntelRow): Record<string, MetricaExplicada> {
               nombre: "demanda_ciclo",
               valor: round2(demandaCiclo),
               tipo: "derivado",
-              formula: "velCalculo × target_dias_full / 7",
+              formula: "vel_para_pedir × target_dias_full / 7",
             },
             { nombre: "safety_stock_completo", valor: safetyCompleto, tipo: "metrica", ref: "safety_stock_completo" },
           ],
