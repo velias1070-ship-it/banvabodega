@@ -15,6 +15,8 @@
 //   atlas schema diff --env prod
 //
 // Ver runbook completo en /docs/atlas-runbook.md.
+//
+// 2026-05-02: workflow naming check rewrite (path filter trigger).
 
 env "prod" {
   // URL de la DB live de Supabase (banvabodega project: qaircihuiafgnnrwcjls).
