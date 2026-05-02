@@ -7,6 +7,7 @@
 
 import { useEffect, useState, useMemo } from "react";
 import Link from "next/link";
+import SkuExplainPanel from "@/components/admin/SkuExplainPanel";
 
 type Row = {
   sku_origen: string;
@@ -84,6 +85,9 @@ export default function ReposicionSuggestionsPage() {
 
   // Selección para "Copiar para OC"
   const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  // Sprint 4.2 — panel "¿De dónde sale este número?"
+  const [explainSku, setExplainSku] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -312,6 +316,7 @@ export default function ReposicionSuggestionsPage() {
             <thead style={{ position: "sticky", top: 0, background: "var(--bg3)" }}>
               <tr>
                 <Th label="" />
+                <Th label="" />
                 <Th label="Alerta" k="nivel_alerta" sortKey={sortKey} sortAsc={sortAsc} onClick={setSort} />
                 <Th label="SKU" k="sku_origen" sortKey={sortKey} sortAsc={sortAsc} onClick={setSort} />
                 <Th label="Nombre" k="nombre" sortKey={sortKey} sortAsc={sortAsc} onClick={setSort} />
@@ -345,6 +350,23 @@ export default function ReposicionSuggestionsPage() {
                       checked={selected.has(r.sku_origen)}
                       onChange={() => toggleSel(r.sku_origen)}
                     />
+                  </td>
+                  <td style={{ padding: 4 }}>
+                    <button
+                      onClick={() => setExplainSku(r.sku_origen)}
+                      title="¿De dónde sale este número?"
+                      style={{
+                        background: "transparent",
+                        border: "1px solid var(--bg4)",
+                        color: "var(--cyan)",
+                        borderRadius: 4,
+                        padding: "1px 6px",
+                        cursor: "pointer",
+                        fontSize: 12,
+                      }}
+                    >
+                      ⓘ
+                    </button>
                   </td>
                   <td style={{ padding: 4 }}>
                     <span
@@ -389,7 +411,7 @@ export default function ReposicionSuggestionsPage() {
               ))}
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={20} style={{ padding: 20, textAlign: "center", color: "var(--txt3)" }}>
+                  <td colSpan={21} style={{ padding: 20, textAlign: "center", color: "var(--txt3)" }}>
                     Sin resultados con los filtros actuales.
                   </td>
                 </tr>
@@ -398,6 +420,8 @@ export default function ReposicionSuggestionsPage() {
           </table>
         </div>
       )}
+
+      <SkuExplainPanel sku={explainSku} onClose={() => setExplainSku(null)} />
     </div>
   );
 }
