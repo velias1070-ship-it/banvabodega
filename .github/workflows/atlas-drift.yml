@@ -38,18 +38,51 @@ jobs:
         with:
           version: latest
 
-      - name: Lint last 5 migrations
-        # Lint local — chequea sintaxis, naming, destructivas.
-        # No requiere conexión a prod.
+      - name: Validate migration hashes (atlas migrate validate)
+        # Community Edition. `atlas migrate lint` pasó a Pro-only en v0.38;
+        # `validate` sigue libre y chequea consistencia hash + parse SQL.
         run: |
           if [ -d "supabase/migrations" ] && [ "$(ls -A supabase/migrations 2>/dev/null)" ]; then
-            atlas migrate lint \
-              --dir "file://supabase/migrations" \
-              --dev-url "docker://postgres/15/dev" \
-              --latest 5
+            atlas migrate validate --dir "file://supabase/migrations"
           else
-            echo "No migrations in supabase/migrations/ yet — skipping lint."
+            echo "No migrations in supabase/migrations/ yet — skipping validate."
           fi
+
+      - name: Naming convention check (snake_case)
+        # CONVENTIONS.md §1 — tablas/columnas en snake_case. Replazo simple
+        # del naming check de `atlas migrate lint`.
+        run: |
+          set -euo pipefail
+          if [ ! -d "supabase/migrations" ]; then exit 0; fi
+
+          BAD=""
+          # Buscar patrones CREATE TABLE / ALTER TABLE ADD COLUMN con identificadores
+          # mayúsculas/camelCase. Ignora identificadores entre comillas dobles
+          # (intencionalmente permitidos) y columnas pre-existentes (sólo flagueamos
+          # archivos modificados en el PR si estamos en un PR).
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            FILES=$(git diff --name-only --diff-filter=AM origin/${{ github.base_ref }}...HEAD -- 'supabase/migrations/' || true)
+          else
+            FILES=$(ls supabase/migrations/*.sql 2>/dev/null || true)
+          fi
+
+          for f in $FILES; do
+            [ -f "$f" ] || continue
+            # Identificadores en CREATE TABLE / ADD COLUMN sin comillas con mayúscula
+            if grep -nEi 'CREATE[[:space:]]+(TABLE|TYPE|INDEX|VIEW|MATERIALIZED[[:space:]]+VIEW)[[:space:]]+([a-z_]+\.)?[A-Z][A-Za-z0-9_]*[[:space:]]' "$f" > /dev/null 2>&1; then
+              BAD="$BAD\n$f"
+            fi
+            if grep -nEi 'ADD[[:space:]]+COLUMN[[:space:]]+[A-Z][A-Za-z0-9_]*[[:space:]]' "$f" > /dev/null 2>&1; then
+              BAD="$BAD\n$f"
+            fi
+          done
+
+          if [ -n "$BAD" ]; then
+            echo "::error::snake_case violation. Identificadores nuevos deben ser ^[a-z][a-z0-9_]*$ (CONVENTIONS.md §1)."
+            echo -e "Files: $BAD"
+            exit 1
+          fi
+          echo "Naming OK."
 
       - name: Validate destructive migrations have justification tag
         # Sólo en PRs. Si el diff toca supabase/migrations/ con DROP/ALTER TYPE,

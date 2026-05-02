@@ -20,7 +20,7 @@
 
 | Trigger | Qué corre | Bloqueante |
 |---|---|---|
-| **PR que toca `supabase/migrations/` o `atlas.hcl`** | `atlas migrate lint` (últimas 5) + validación tag `[non-reversible:reason]` para destructivas | Sí (falla CI) |
+| **PR que toca `supabase/migrations/` o `atlas.hcl`** | `atlas migrate validate` (hash + SQL parse) + naming snake_case check (bash grep) + validación tag `[non-reversible:reason]` para destructivas | Sí (falla CI) |
 | **Push a `main` que toca migrations** | Drift check repo ↔ prod | No bloquea (warning) |
 | **Cron diario 11:30 UTC** (08:30 Chile) | Drift check programado, alerta a Slack si encuentra diff | No bloquea |
 | **Manual `workflow_dispatch`** | Drift check on-demand | No bloquea |
@@ -84,9 +84,13 @@ Atlas requiere Docker disponible para `--dev-url docker://...` (DB efímera para
 # Ver migrations conocidas (lee atlas.sum)
 atlas migrate hash --dir "file://supabase/migrations"
 
-# Lint últimas 5 migrations contra una DB Postgres efímera
-atlas migrate lint --dir "file://supabase/migrations" \
-  --dev-url "docker://postgres/15/dev" --latest 5
+# Validar consistencia hash + parse SQL (Community Edition)
+atlas migrate validate --dir "file://supabase/migrations"
+
+# `atlas migrate lint` requiere Atlas Pro (cambió en v0.38). Si querés
+# correr el linter completo localmente: `atlas login` y luego `atlas migrate lint
+# --dev-url docker://postgres/15/dev --latest 5`. En CI usamos validate +
+# naming check propio en bash.
 
 # Comparar repo vs prod (necesita BANVA_PROD_DB_URL)
 export BANVA_PROD_DB_URL="postgres://atlas_readonly:<pwd>@db.<project>.supabase.co:5432/postgres?sslmode=require"
