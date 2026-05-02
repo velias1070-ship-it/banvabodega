@@ -1142,15 +1142,65 @@ decisions:
     notas:
       - "blocked_no_cost respeta feedback_no_inferir_costos (no rellenar con promedio de familia)."
 
+  - id: margen_neto_30d_imputed
+    label: "Flag de imputación de margen_neto_30d"
+    domain: inventario
+    grain: "(sku_origen)"
+    unit: bool
+    formula_text: |
+      enQuiebreImputable := dias_en_quiebre>=14 AND vel_pre_quiebre>2 AND margen_unitario_pre_quiebre>0
+      IF enQuiebreImputable:
+        imputado := vel_pre_quiebre × margen_unitario_pre_quiebre × 4.3
+        margen_neto_30d := MAX(margen_real, imputado)
+        margen_neto_30d_imputed := (imputado > margen_real)
+      ELSE:
+        margen_neto_30d_imputed := false
+    materialized_in:
+      - sku_intelligence.margen_neto_30d_imputed
+      - sku_intelligence_history.margen_neto_30d_imputed
+    computed_in: "intelligence.ts:1683-1693 (Sprint 3)"
+    consumed_by:
+      - "Sprint 4 Reposición v2 (descontar peso de margen imputado)"
+      - "Sprint 6 Pricing v2 (filtrar imputed=false para elasticidad observada)"
+    fuente_doctrina: "Sprint 3 (2026-05-03). I9 trazabilidad de imputación."
+    notas:
+      - "Backfill Sprint 3: 22 SKUs vivos + 37 snapshots históricos marcados via stock_snapshots (>=15 días en quiebre en ventana 30d)."
+      - "Diferencia criterio: runtime (dias_en_quiebre>=14, vel_pq>2) vs backfill (>=15 días en stock_snapshots) — aceptable porque son fuentes y momentos distintos."
+
+  - id: vel_objetivo_validation
+    label: "Validación pre-write de vel_objetivo"
+    domain: inventario
+    grain: "(sku_origen)"
+    unit: enum
+    enum_values: [ok, null_aceptable, negativo_no_permitido, demasiado_alto_vs_vel_real, sku_no_existe]
+    formula_text: |
+      validate_vel_objetivo_input(p_sku_origen, p_vel_objetivo) RETURNS:
+        IF sku_origen no existe        → (false, sku_no_existe)
+        IF p_vel_objetivo IS NULL      → (true,  null_aceptable)
+        IF p_vel_objetivo < 0          → (false, negativo_no_permitido)
+        IF vel_ponderada > 0
+           AND p_vel_objetivo > 100×vel_ponderada → (false, demasiado_alto_vs_vel_real)
+        ELSE                           → (true,  ok)
+      Acompañado por CHECK constraint sku_intelligence_vel_objetivo_sane
+      que rechaza UPDATE de valores absurdos a nivel DB.
+    materialized_in: "RPC pública + CHECK constraint"
+    computed_in: "Migration 20260503150000 (Sprint 3)"
+    consumed_by:
+      - "Sprint 4+ UI vel_objetivo (llamar RPC antes de UPDATE)"
+    fuente_doctrina: "Sprint 3 (2026-05-03). I6 guardrails."
+    notas:
+      - "Pre-deploy: 509 SKUs con vel_objetivo=0 (sin uso real). Cero outliers."
+      - "RPC es STABLE: solo lee. UI puede llamarla en blur del input sin penalty."
+
 # ============================================================================
 # METADATA DEL REGISTRY
 # ============================================================================
 
 registry_metadata:
-  total_metrics: 44  # +5 Sprint 2; +1 Sprint 2.5 (seasonal_match_source)
+  total_metrics: 46  # +5 Sprint 2; +1 Sprint 2.5; +2 Sprint 3 (margen_neto_30d_imputed, vel_objetivo_validation)
   total_decisions: 6
   domain_coverage:
-    inventario: 37  # +5 Sprint 2; +1 Sprint 2.5
+    inventario: 39  # +5 Sprint 2; +1 Sprint 2.5; +2 Sprint 3
     ventas: 3
     pricing: 1
     logistica: 5

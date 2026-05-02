@@ -195,6 +195,7 @@ export interface SkuIntelRow {
   ingreso_30d: number;
   pct_ingreso_acumulado: number;
   margen_neto_30d: number;            // margen bruto últimos 30d (input del Pareto)
+  margen_neto_30d_imputed: boolean;   // I9 Sprint 3: true cuando max(real, imputado) tomó imputado (en quiebre)
   pct_margen_acumulado: number;
   uds_30d: number;
   pct_unidades_acumulado: number;
@@ -1541,6 +1542,7 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       ingreso_30d: round2(ingreso30d),
       pct_ingreso_acumulado: 0,
       margen_neto_30d: 0,        // se asigna en paso 11 desde input.margenPorSku
+      margen_neto_30d_imputed: false, // I9: se setea en paso 11 si imputado>real
       pct_margen_acumulado: 0,
       uds_30d: 0,                // se asigna en paso 11 desde input.unidadesPorSku
       pct_unidades_acumulado: 0,
@@ -1681,10 +1683,13 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     if (enQuiebreImputable) {
       const imputado = r.vel_pre_quiebre * r.margen_unitario_pre_quiebre * 4.3;
       r.margen_neto_30d = round2(Math.max(margenReal, imputado));
+      r.margen_neto_30d_imputed = imputado > margenReal;
     } else if (margenReal > 0) {
       r.margen_neto_30d = round2(margenReal);
+      r.margen_neto_30d_imputed = false;
     } else {
       r.margen_neto_30d = round2(margenReal); // 0 o negativo
+      r.margen_neto_30d_imputed = false;
     }
     // Unidades reales desde ventas_ml_cache, con fallback imputado.
     // Mismo fix que margen: en quiebre prolongado tomar max(real, imputado)
@@ -2265,6 +2270,7 @@ export function generarHistoryRows(
       accion: r.accion,
       alertas: r.alertas,
       margen_neto_30d: r.margen_neto_30d,
+      margen_neto_30d_imputed: r.margen_neto_30d_imputed,
       margen_unitario_pre_quiebre: r.margen_unitario_pre_quiebre,
       lead_time_usado_dias: r.lead_time_usado_dias,
       safety_stock_completo: r.safety_stock_completo,

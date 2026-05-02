@@ -3,8 +3,8 @@
 # Cada concepto crítico tiene exactamente UN owner_table autoritativo.
 # Tablas que derivan o cachean datos lo declaran explícitamente.
 
-version: 5
-last_updated: 2026-05-02
+version: 6
+last_updated: 2026-05-03
 owner: Vicente Elías
 sprints:
   - sprint_0:   "5 SSoTs operativos iniciales (2026-05-01)"
@@ -12,6 +12,7 @@ sprints:
   - sprint_1:   "+2 SSoTs multi-bodega: politica_reposicion_por_sku_nodo, stock_unificado_por_nodo (2026-05-02)"
   - sprint_2:   "politica_reposicion_por_sku_nodo poblada (snapshot model, 974 rows) + seasonal_categories (mitigación H2) (2026-05-02)"
   - sprint_2_5: "name fallback (camino C híbrido) — sku_node_policy.seasonal_match_source + regla 6b regex sobre productos.nombre (2026-05-02)"
+  - sprint_3:   "trazabilidad I9 (margen_neto_30d_imputed) + guardrails I6 (CHECK vel_objetivo_sane + RPC validate_vel_objetivo_input) + I4 anulada unificado + lint CI (2026-05-03)"
 
 ssots:
 
@@ -213,6 +214,64 @@ ssots:
       - agente_reposicion + agente_inventario
     notes: "Decisión final = ceil(cantidad_objetivo - stock_total) × factor_rampup. Sprint 1 leerá policy_templates."
     last_audited: 2026-05-02
+
+  - concept: trazabilidad_imputacion_margen
+    description: "Flag por (sku_origen) que distingue margen_neto_30d observado vs imputado por quiebre prolongado."
+    domain: inventario
+    owner_table: sku_intelligence  # columna margen_neto_30d_imputed
+    derived_from:
+      - "intelligence.ts:enQuiebreImputable (dias_en_quiebre>=14 + vel_pre_quiebre>2 + margen_unitario_pre_quiebre>0)"
+      - "Math.max(margenReal, vel_pre_quiebre × margen_unitario × 4.3)"
+    write_path: "intelligence.ts:1686 (recalc); recalcular/route.ts:499 (persist)"
+    rationale: |
+      Sprint 3 (2026-05-03). Cuando un SKU está >=14 días en quiebre y la
+      imputación supera al observado, margen_neto_30d guarda el imputado.
+      Sin flag, no era posible distinguir margen real de margen proyectado.
+      Sprint 4 Reposición v2 puede usar este flag para descontar el peso
+      de margen imputado en decisiones de compra.
+    notes:
+      - "Backfill Sprint 3: 22 SKUs vivos + 37 snapshots históricos marcados (criterio: >=15 días en quiebre en ventana 30d previa al snapshot)."
+      - "También en sku_intelligence_history.margen_neto_30d_imputed para trazabilidad histórica."
+      - "Diferencia entre criterio runtime (dias_en_quiebre>=14 + vel_pq>2) y backfill (15 días en stock_snapshots): aceptable porque backfill usa heurística sobre datos históricos, runtime usa estado vivo."
+    consumers:
+      - "Sprint 4: agente_reposicion v2 (reducir peso de margen imputado)"
+      - "Sprint 6: pricing v2 (filtrar imputed=false para elasticidad observada)"
+    last_audited: 2026-05-03
+
+  - concept: guardrails_vel_objetivo
+    description: "CHECK constraint + RPC para validar vel_objetivo antes de UPDATE."
+    domain: inventario
+    owner_table: sku_intelligence  # CHECK sku_intelligence_vel_objetivo_sane
+    rpc: validate_vel_objetivo_input
+    rationale: |
+      Sprint 3 (2026-05-03). vel_objetivo aceptaba cualquier numérico:
+      negativos, valores 1000x velocidad real, etc. UI o RPC podían
+      contaminar el dato y propagarlo a sku_intelligence_history.
+      CHECK rechaza negativos y >100x vel_ponderada. RPC retorna razones
+      claras (negativo_no_permitido | demasiado_alto_vs_vel_real |
+      sku_no_existe | null_aceptable | ok) para que la UI muestre feedback.
+    notes:
+      - "Pre-deploy: 509 SKUs con vel_objetivo=0 (sin uso real). Cero outliers, nada reseteado."
+      - "Permite NULL (no input) y permite cualquier valor cuando vel_ponderada IS NULL or 0 (defensivo: sin baseline no se compara)."
+    consumers:
+      - "Sprint 4+ UI vel_objetivo (debe llamar RPC antes de UPDATE)"
+    last_audited: 2026-05-03
+
+  - concept: lint_patrones_prohibidos
+    description: "Registry de patrones de código prohibidos en src/. Lint en CI bloquea PRs que los reintroducen."
+    domain: codebase
+    owner_table: lint_forbidden_patterns
+    enforcement_path: ".github/workflows/lint-banned-patterns.yml + scripts/lint-banned-patterns.sh"
+    rationale: |
+      Sprint 3 (2026-05-03). I4 unificación filtro anulada. H27 cerrada
+      Sprint 0.5 dictó .eq(anulada, false) como única forma. Sin lint, una
+      regresión por copy-paste futuro reintroduciría .neq divergente.
+    notes:
+      - "Patrones registrados Sprint 3: .neq(\"anulada\", true), .neq('anulada', true)"
+      - "Tabla en DB es solo registry (NO se consulta en runtime). Lint en CI lee patrones hardcodeados en el script bash. Mantener tabla y script sincronizados."
+    consumers:
+      - "GitHub Actions lint-banned-patterns workflow"
+    last_audited: 2026-05-03
 
   - concept: rentabilidad_sku
     description: "margen_full/flex_*, gmroi, dio, costo_inventario_total, precio_promedio."
