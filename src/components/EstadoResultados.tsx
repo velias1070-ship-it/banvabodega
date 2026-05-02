@@ -214,6 +214,40 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [empresa.id, periodo]);
 
+  // ---- Updates optimistas: mutamos el state local inmediato y persistimos en background.
+  // Evita el flash "Cargando..." al cambiar periodo o cuenta de un documento.
+  const handleChangePeriodo = async (d: DrillDoc, val: string | null) => {
+    if (!d.id || !d.tabla) return;
+    if (d.tabla === "rcv_compras") {
+      setComprasExt(prev => prev.map(c => c.id === d.id ? { ...c, periodo_devengo: val } : c));
+    } else {
+      setMovBancoExt(prev => prev.map(m => m.id === d.id ? { ...m, periodo_devengo: val } : m));
+    }
+    try {
+      if (d.tabla === "movimientos_banco") await setPeriodoDevengoMovimiento(d.id, val);
+      else await setPeriodoDevengoCompra(d.id, val);
+    } catch (e) {
+      console.error("[handleChangePeriodo]", e);
+      void reload();
+    }
+  };
+
+  const handleChangeCuenta = async (d: DrillDoc, cuentaId: string) => {
+    if (!d.id || !d.tabla || !cuentaId) return;
+    if (d.tabla === "rcv_compras") {
+      setComprasExt(prev => prev.map(c => c.id === d.id ? { ...c, categoria_cuenta_id: cuentaId } : c));
+    } else {
+      setMovBancoExt(prev => prev.map(m => m.id === d.id ? { ...m, categoria_cuenta_id: cuentaId } : m));
+    }
+    try {
+      if (d.tabla === "rcv_compras") await setCategoriaCuentaCompra(d.id, cuentaId);
+      else await categorizarMovimiento(d.id, cuentaId);
+    } catch (e) {
+      console.error("[handleChangeCuenta]", e);
+      void reload();
+    }
+  };
+
   // Mapas auxiliares para resolver periodo efectivo y cuenta efectiva
   const planCuentasMap = useMemo(() => new Map(planCuentas.map(c => [c.id!, c])), [planCuentas]);
   const provCuentaInfo = useMemo(
@@ -668,12 +702,10 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
               <td>
                 {d.tabla && d.id ? (
                   movePeriodoId === `${d.tabla}_${d.id}` ? (
-                    <select autoFocus defaultValue={d.periodoDevengo || ""} onChange={async (e) => {
+                    <select autoFocus defaultValue={d.periodoDevengo || ""} onChange={(e) => {
                       const val = e.target.value || null;
-                      if (d.tabla === "movimientos_banco") await setPeriodoDevengoMovimiento(d.id!, val);
-                      else if (d.tabla === "rcv_compras") await setPeriodoDevengoCompra(d.id!, val);
                       setMovePeriodoId(null);
-                      await reload();
+                      void handleChangePeriodo(d, val);
                     }} onBlur={() => setTimeout(() => setMovePeriodoId(null), 200)}
                       style={{ padding: "2px 4px", fontSize: 9, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 3 }}>
                       <option value="">— auto —</option>
@@ -695,13 +727,11 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
               </td>
               <td>
                 {isAssigning ? (
-                  <select autoFocus value="" onChange={async (e) => {
-                    if (!e.target.value || !d.id) return;
+                  <select autoFocus value="" onChange={(e) => {
+                    if (!e.target.value) return;
                     const newCuentaId = e.target.value;
-                    if (d.tabla === "rcv_compras") await setCategoriaCuentaCompra(d.id, newCuentaId);
-                    else if (d.tabla === "movimientos_banco") await categorizarMovimiento(d.id, newCuentaId);
                     setAssigningId(null);
-                    await reload();
+                    void handleChangeCuenta(d, newCuentaId);
                   }} onBlur={() => setTimeout(() => setAssigningId(null), 200)}
                     style={{ padding: "2px 4px", fontSize: 9, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 3, maxWidth: 140 }}>
                     <option value="">Mover a...</option>
@@ -822,18 +852,19 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
                   onClick={() => !vistaDetallada && canExpand && setExpandedRow(isExpanded ? null : l.id)}
                   onDragOver={l.esHoja && !l.esSubtotal ? (e) => { e.preventDefault(); setDropTarget(l.id); } : undefined}
                   onDragLeave={l.esHoja ? () => setDropTarget(null) : undefined}
-                  onDrop={l.esHoja && !l.esSubtotal ? async (e) => {
+                  onDrop={l.esHoja && !l.esSubtotal ? (e) => {
                     e.preventDefault();
                     setDropTarget(null);
-                    if (!dragItem || !l.id || !dragItem.id) return;
-                    // Override por línea
-                    if (dragItem.tabla === "rcv_compras") {
-                      await setCategoriaCuentaCompra(dragItem.id, l.id);
-                    } else if (dragItem.tabla === "movimientos_banco") {
-                      await categorizarMovimiento(dragItem.id, l.id);
-                    }
+                    if (!dragItem || !l.id || !dragItem.id || !dragItem.tabla) return;
+                    const dragDoc: DrillDoc = {
+                      id: dragItem.id, tabla: dragItem.tabla,
+                      periodoDevengo: null, tipo: "", doc: "", nro: dragItem.nro,
+                      rut: dragItem.rut, razon: dragItem.razon, fecha: "",
+                      monto: 0, nota: "", conciliada: dragItem.conciliada,
+                      fechaPago: null, bancoPago: null,
+                    };
                     setDragItem(null);
-                    await reload();
+                    void handleChangeCuenta(dragDoc, l.id);
                   } : undefined}
                   style={{
                     cursor: !vistaDetallada && canExpand ? "pointer" : "default",
@@ -898,19 +929,14 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
                     <option value="">— Cuenta —</option>
                     {cuentasHoja.map(c => <option key={c.id} value={c.id!}>{c.codigo} — {c.nombre}</option>)}
                   </select>
-                  <button disabled={!assignCuenta} onClick={async () => {
+                  <button disabled={!assignCuenta} onClick={() => {
                     if (!assignCuenta) return;
-                    // Override por línea para todos los docs del drilldown
-                    for (const d of drillDocs) {
-                      if (!d.id || !d.tabla) continue;
-                      if (d.tabla === "rcv_compras") {
-                        await setCategoriaCuentaCompra(d.id, assignCuenta);
-                      } else if (d.tabla === "movimientos_banco") {
-                        await categorizarMovimiento(d.id, assignCuenta);
-                      }
-                    }
+                    const cuentaId = assignCuenta;
+                    const docsToAssign = [...drillDocs];
                     setAssignCuenta("");
-                    await reload();
+                    for (const d of docsToAssign) {
+                      void handleChangeCuenta(d, cuentaId);
+                    }
                   }}
                     style={{ padding: "3px 10px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: assignCuenta ? "var(--greenBg)" : "var(--bg3)", color: assignCuenta ? "var(--green)" : "var(--txt3)", border: `1px solid ${assignCuenta ? "var(--greenBd)" : "var(--bg4)"}`, cursor: assignCuenta ? "pointer" : "not-allowed" }}>
                     Asignar todo
@@ -959,12 +985,10 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
                     <td>
                       {d.tabla && d.id ? (
                         movePeriodoId === `${d.tabla}_${d.id}` ? (
-                          <select autoFocus defaultValue={d.periodoDevengo || ""} onChange={async (e) => {
+                          <select autoFocus defaultValue={d.periodoDevengo || ""} onChange={(e) => {
                             const val = e.target.value || null;
-                            if (d.tabla === "movimientos_banco") await setPeriodoDevengoMovimiento(d.id!, val);
-                            else if (d.tabla === "rcv_compras") await setPeriodoDevengoCompra(d.id!, val);
                             setMovePeriodoId(null);
-                            await reload();
+                            void handleChangePeriodo(d, val);
                           }} onBlur={() => setTimeout(() => setMovePeriodoId(null), 200)}
                             style={{ padding: "2px 4px", fontSize: 9, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 3 }}>
                             <option value="">— auto —</option>
@@ -986,17 +1010,11 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
                     </td>
                     <td>
                       {isAssigning ? (
-                        <select autoFocus value="" onChange={async (e) => {
-                          if (!e.target.value || !d.id) return;
+                        <select autoFocus value="" onChange={(e) => {
+                          if (!e.target.value) return;
                           const newCuentaId = e.target.value;
-                          // Override por línea: escribe en la fila concreta sin alterar el default del proveedor
-                          if (d.tabla === "rcv_compras") {
-                            await setCategoriaCuentaCompra(d.id, newCuentaId);
-                          } else if (d.tabla === "movimientos_banco") {
-                            await categorizarMovimiento(d.id, newCuentaId);
-                          }
                           setAssigningId(null);
-                          await reload();
+                          void handleChangeCuenta(d, newCuentaId);
                         }}
                           onBlur={() => setTimeout(() => setAssigningId(null), 200)}
                           style={{ padding: "2px 4px", fontSize: 9, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 3, maxWidth: 140 }}>
