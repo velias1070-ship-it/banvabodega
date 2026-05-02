@@ -23,7 +23,7 @@
 # Total entradas: 38 métricas + 6 decisiones binarias.
 
 version: 1
-last_updated: 2026-05-02
+last_updated: 2026-05-04  # Sprint 4.3a — agregadas target_dias_flex, reserva_flex_target, flex_priority
 last_audited: 2026-05-02
 owner_human: vicente
 sprint_origen: sprint-0.5
@@ -707,6 +707,55 @@ metrics:
     ssot_table: sku_intelligence
     fuente_doctrina: "H11 cerrado, policy_templates.target_dias_full"
 
+  - name: target_dias_flex
+    description: "Días objetivo de reserva Flex en bodega por celda ABC×XYZ. Sprint 4.3a."
+    domain: inventario
+    formula_text: |
+      Lookup en policy_templates.target_dias_flex por celda:
+        AX=7, AY=5, AZ=3
+        BX=5, BY=3, BZ=2
+        CX=3, CY=2, CZ=0
+      Override por SKU vía sku_node_policy.target_dias_flex (backfill auto).
+    input_tables: [policy_templates, sku_node_policy]
+    grain: [sku_origen]
+    unit: dias
+    consumed_by: ["reserva_flex_target", "stock_objetivo (v_compras_pendientes)"]
+    ssot_table: sku_node_policy
+    fuente_doctrina: "Sprint 4.3a — separar cobertura Full vs reserva Flex multi-canal"
+
+  - name: reserva_flex_target
+    description: "Unidades reservadas en bodega para venta Flex multi-canal. Sprint 4.3a."
+    domain: inventario
+    formula_sql: |
+      ROUND((d_avg_sem_efectivo / 7.0) * snp.target_dias_flex)
+    formula_text: |
+      d_avg_sem_efectivo = velocidad efectiva post elección de motor:
+        IF es_quiebre_proveedor AND vel_pre_quiebre > vel_ponderada × 2 THEN vel_pre_quiebre
+        ELIF multiplicador_evento > 1 THEN vel_ponderada × multiplicador_evento
+        ELSE vel_ponderada
+        × factor_rampup_aplicado
+      reserva_flex_target = round(d_avg_dia × target_dias_flex)
+    input_tables: [v_safety_stock, sku_node_policy]
+    grain: [sku_origen]
+    unit: unidades
+    materialized_in: [v_safety_stock.reserva_flex_target, v_reposicion_explain.reserva_flex_target]
+    consumed_by: ["stock_objetivo", "v_compras_pendientes", "SkuExplainPanel multi-canal"]
+    ssot_table: v_safety_stock
+    fuente_doctrina: "Sprint 4.3a — importar lógica del motor viejo + target_dias_flex separado"
+
+  - name: flex_priority
+    description: "Política de prioridad de canal por SKU. Sprint 4.3a (UI-only por ahora)."
+    domain: inventario
+    formula_text: |
+      Enum: 'default' | 'only_flex' | 'only_full' | 'manual_split'
+      Hoy todos los SKUs en 'default'. Override admin pendiente Sprint 4.4+.
+    input_tables: [sku_node_policy]
+    grain: [sku_origen]
+    unit: enum
+    consumed_by: ["SkuExplainPanel multi-canal", "v_reposicion_explain"]
+    ssot_table: sku_node_policy
+    fuente_doctrina: "Sprint 4.3a — política multi-canal expuesta, override en backlog"
+
   - name: necesita_pedir
     description: "Decisión binaria reactiva: stock por debajo del ROP."
     domain: inventario
@@ -1252,12 +1301,14 @@ decisions:
     unit: unidades
     formula_text: |
       GREATEST(0, stock_objetivo - stock_total - in_transit_bodega)
-      stock_objetivo = cycle_stock + safety_stock + pre_full_target
+      stock_objetivo (Sprint 4.3a) = safety_stock + pre_full_target + reserva_flex_target
+      cycle_stock NO se suma (implícito en pre_full_target cuando LT_supplier ≤ target_dias_full).
     materialized_in: [v_compras_pendientes.qty_a_comprar]
-    computed_in: "view v_compras_pendientes (Sprint 4)"
+    computed_in: "view v_compras_pendientes (Sprint 4 → 4.3a)"
     consumed_by:
       - "/admin/reposicion-suggestions (UI humana, Sprint 4)"
-    fuente_doctrina: "Sprint 4 Camino 1."
+      - "SkuExplainPanel.tsx (sección Cálculos del motor)"
+    fuente_doctrina: "Sprint 4 Camino 1 + Sprint 4.3a (importar lógica motor viejo + multi-canal)."
 
   - id: dias_cobertura_actual
     label: "Días de cobertura con stock actual"
@@ -1275,10 +1326,10 @@ decisions:
 # ============================================================================
 
 registry_metadata:
-  total_metrics: 52  # +5 Sprint 2; +1 Sprint 2.5; +2 Sprint 3; +6 Sprint 4
+  total_metrics: 55  # +5 Sprint 2; +1 Sprint 2.5; +2 Sprint 3; +6 Sprint 4; +3 Sprint 4.3a (target_dias_flex, reserva_flex_target, flex_priority)
   total_decisions: 7  # +1 Sprint 4 (Camino 1)
   domain_coverage:
-    inventario: 44  # +5 SP2; +1 SP2.5; +2 SP3; +5 SP4
+    inventario: 47  # +5 SP2; +1 SP2.5; +2 SP3; +5 SP4; +3 SP4.3a
     ventas: 3
     pricing: 1
     logistica: 5

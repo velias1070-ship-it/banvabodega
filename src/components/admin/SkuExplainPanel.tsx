@@ -17,6 +17,7 @@ type ExplainData = {
   sl_template: number | null;
   z_template: number | null;
   target_dias_template: number | null;
+  target_dias_flex_template: number | null;
   template_fuente: string | null;
   vel_decl_sem: number | null;
   vel_7d_decl: number | null;
@@ -44,6 +45,7 @@ type ExplainData = {
   safety_stock: number | null;
   reorder_point: number | null;
   pre_full_target: number | null;
+  reserva_flex_target: number | null;
   xyz_confidence: string | null;
   stock_bodega: number;
   stock_full: number;
@@ -68,6 +70,20 @@ type ExplainData = {
   clp_estimado: number | null;
   dias_cobertura_actual: number | null;
   bajo_rop: boolean | null;
+  // Sprint 4.3a — motor viejo importado
+  accion: string | null;
+  es_quiebre_proveedor: boolean | null;
+  vel_pre_quiebre: number | null;
+  factor_rampup_aplicado: number | null;
+  rampup_motivo: string | null;
+  evento_activo: boolean | null;
+  multiplicador_evento: number | null;
+  mandar_full: number | null;
+  pedir_proveedor_motor_viejo: number | null;
+  pedir_proveedor_sin_rampup: number | null;
+  target_dias_flex: number | null;
+  flex_priority: string | null;
+  d_avg_sem_efectivo: number | null;
   sku_intelligence_updated_at: string | null;
   policy_updated_at: string | null;
 };
@@ -278,12 +294,87 @@ export default function SkuExplainPanel({ sku, onClose }: Props) {
               </button>
             </Section>
 
+            {/* 3.5 INTELIGENCIA OPERATIVA (Sprint 4.3a) */}
+            <Section title="🧠 Inteligencia operativa (motor)">
+              <KV
+                label="Acción del motor"
+                value={<AccionBadge accion={data.accion} />}
+              />
+              <Formula
+                label="Velocidad efectiva (d_avg_sem)"
+                value={`${fmtNum(data.d_avg_sem_efectivo ?? data.d_avg_sem, 2)} uds/sem`}
+                detail={(() => {
+                  if (data.es_quiebre_proveedor && data.vel_pre_quiebre && data.vel_pre_quiebre > 0 && data.vel_pre_quiebre > (data.vel_decl_sem || 0) * 2) {
+                    return `Usa vel_pre_quiebre=${fmtNum(data.vel_pre_quiebre, 2)} (proveedor en quiebre, vel histórica > 2× actual). El motor protege la velocidad pre-quiebre para no subdimensionar la reposición.`;
+                  }
+                  if ((data.multiplicador_evento || 1) > 1) {
+                    return `Usa vel_ponderada × multiplicador_evento = ${fmtNum(data.vel_decl_sem, 2)} × ${fmtNum(data.multiplicador_evento, 2)} (evento activo).`;
+                  }
+                  return `Usa vel_ponderada = ${fmtNum(data.vel_decl_sem, 2)} uds/sem. Sin protección de quiebre ni evento activo.`;
+                })()}
+              />
+              {(data.factor_rampup_aplicado != null && data.factor_rampup_aplicado !== 1) && (
+                <Formula
+                  label={`Factor rampup aplicado: ${fmtNum(data.factor_rampup_aplicado, 2)}×`}
+                  value={data.rampup_motivo || "—"}
+                  detail={`Ajusta vel × ${fmtNum(data.factor_rampup_aplicado, 2)} por contexto de rampa post-quiebre o cuadrante. Sin rampup pediría ${fmtNum(data.pedir_proveedor_sin_rampup, 0)} uds.`}
+                />
+              )}
+              {data.evento_activo === true && (
+                <Formula
+                  label="Evento estacional activo"
+                  value={`× ${fmtNum(data.multiplicador_evento, 2)}`}
+                  detail="Multiplicador de evento aplicado a la velocidad para anticipar demanda estacional."
+                />
+              )}
+              <Formula
+                label="mandar_full (push WMS → Full)"
+                value={data.mandar_full != null ? `${fmtNum(data.mandar_full, 0)} uds` : "—"}
+                detail="Cantidad que el motor sugiere enviar de bodega a Full ML para cubrir target_dias_full. Calculado por intelligence.ts."
+              />
+              <Formula
+                label="Comparación motor viejo vs dashboard nuevo"
+                value={`viejo=${fmtNum(data.pedir_proveedor_motor_viejo, 0)} · nuevo=${fmtNum(data.qty_a_comprar, 0)}`}
+                detail={(() => {
+                  const viejo = data.pedir_proveedor_motor_viejo || 0;
+                  const nuevo = data.qty_a_comprar || 0;
+                  const delta = nuevo - viejo;
+                  if (Math.abs(delta) <= 2) return `Coinciden (Δ=${delta}). Dashboard reproduce el motor viejo.`;
+                  if (delta > 0) return `Dashboard sugiere ${delta} más. Diferencia probablemente por reserva_flex_target=${fmtNum(data.reserva_flex_target, 0)} (multi-canal Sprint 4.3a) o redondeo.`;
+                  return `Dashboard sugiere ${Math.abs(delta)} menos. Revisar — el motor viejo (intelligence.ts) es el oráculo en quiebre proveedor.`;
+                })()}
+              />
+            </Section>
+
+            {/* 3.6 MULTI-CANAL FULL/FLEX (Sprint 4.3a) */}
+            <Section title="🚚 Multi-canal Full / Flex">
+              <KV
+                label="Prioridad de canal"
+                value={<FlexPriorityBadge priority={data.flex_priority} />}
+              />
+              <Formula
+                label="Cobertura objetivo Full ML"
+                value={`${fmtNum(data.target_dias_template, 0)} días → ${fmtNum(data.pre_full_target, 0)} uds`}
+                detail={`pre_full_target = round(vel_dia × target_dias_full) = round(${fmtNum(data.vel_decl_dia, 3)} × ${fmtNum(data.target_dias_template, 0)}) = ${fmtNum(data.pre_full_target, 0)} uds pre-posicionados en Full.`}
+              />
+              <Formula
+                label="Cobertura objetivo Flex (bodega)"
+                value={`${fmtNum(data.target_dias_flex_template ?? data.target_dias_flex, 0)} días → ${fmtNum(data.reserva_flex_target, 0)} uds`}
+                detail={`reserva_flex_target = round(vel_dia × target_dias_flex) = round(${fmtNum(data.vel_decl_dia, 3)} × ${fmtNum(data.target_dias_flex_template ?? data.target_dias_flex, 0)}) = ${fmtNum(data.reserva_flex_target, 0)} uds reservados en bodega para venta Flex (no se mandan a Full).`}
+              />
+              <Formula
+                label="Desglose stock_objetivo"
+                value={`${fmtNum((data.safety_stock || 0) + (data.pre_full_target || 0) + (data.reserva_flex_target || 0), 0)} uds`}
+                detail={`= safety(${fmtNum(data.safety_stock, 0)}) + pre_full(${fmtNum(data.pre_full_target, 0)}) + reserva_flex(${fmtNum(data.reserva_flex_target, 0)}). cycle_stock(${fmtNum(data.cycle_stock, 0)}) ya está cubierto dentro de target_dias_full (LT supplier ≤ target_dias_full), por eso no se suma para evitar doble conteo.`}
+              />
+            </Section>
+
             {/* 4. CÁLCULOS DEL MOTOR */}
             <Section title="Cálculos del motor">
               <Formula
-                label="cycle_stock"
+                label="cycle_stock (informativo)"
                 value={`${fmtNum(data.cycle_stock, 0)} uds`}
-                detail={`= round(vel_dia × LT) = round(${fmtNum(data.vel_decl_dia, 3)} × ${fmtNum(data.lt_decl, 0)}) = ${fmtNum(data.cycle_stock, 0)}. Cubre demanda durante el LT.`}
+                detail={`= round(vel_dia × LT) = round(${fmtNum(data.vel_decl_dia, 3)} × ${fmtNum(data.lt_decl, 0)}) = ${fmtNum(data.cycle_stock, 0)}. Cubre demanda durante el LT del proveedor. Ya implícito en target_dias_full → NO se suma a stock_objetivo (Sprint 4.3a evita doble conteo).`}
               />
               <Formula
                 label="safety_stock"
@@ -298,17 +389,22 @@ export default function SkuExplainPanel({ sku, onClose }: Props) {
               <Formula
                 label="pre_full_target"
                 value={`${fmtNum(data.pre_full_target, 0)} uds`}
-                detail={`= round(vel_dia × target_dias_full) = round(${fmtNum(data.vel_decl_dia, 3)} × ${fmtNum(data.target_dias_template, 0)}) = ${fmtNum(data.pre_full_target, 0)}. Lo que hay que pre-posicionar en Full ML. Sprint 4.1: ahora se suma al stock_objetivo de bodega.`}
+                detail={`= round(vel_dia × target_dias_full) = round(${fmtNum(data.vel_decl_dia, 3)} × ${fmtNum(data.target_dias_template, 0)}) = ${fmtNum(data.pre_full_target, 0)}. Lo que hay que pre-posicionar en Full ML.`}
+              />
+              <Formula
+                label="reserva_flex_target"
+                value={`${fmtNum(data.reserva_flex_target, 0)} uds`}
+                detail={`= round(vel_dia × target_dias_flex) = round(${fmtNum(data.vel_decl_dia, 3)} × ${fmtNum(data.target_dias_flex_template ?? data.target_dias_flex, 0)}) = ${fmtNum(data.reserva_flex_target, 0)}. Reserva en bodega para venta Flex multi-canal (Sprint 4.3a).`}
               />
               <Formula
                 label="stock_objetivo"
-                value={`${fmtNum((data.cycle_stock || 0) + (data.safety_stock || 0) + (data.pre_full_target || 0), 0)} uds`}
-                detail="= cycle_stock + safety_stock + pre_full_target. Lo que debería haber siempre disponible (bodega + Full)."
+                value={`${fmtNum((data.safety_stock || 0) + (data.pre_full_target || 0) + (data.reserva_flex_target || 0), 0)} uds`}
+                detail={`= safety_stock + pre_full_target + reserva_flex_target = ${fmtNum(data.safety_stock, 0)} + ${fmtNum(data.pre_full_target, 0)} + ${fmtNum(data.reserva_flex_target, 0)}. Sprint 4.3a: cycle_stock NO se suma (implícito en pre_full_target cuando LT ≤ target_dias_full).`}
               />
               <Formula
                 label="qty_a_comprar"
                 value={`${fmtNum(data.qty_a_comprar, 0)} uds`}
-                detail={`= max(0, stock_objetivo − stock_total − in_transit) = max(0, ${(data.cycle_stock || 0) + (data.safety_stock || 0) + (data.pre_full_target || 0)} − ${fmtNum(data.stock_total, 0)} − ${fmtNum(data.in_transit_bodega, 0)}) = ${fmtNum(data.qty_a_comprar, 0)}.`}
+                detail={`= max(0, stock_objetivo − stock_total − in_transit) = max(0, ${(data.safety_stock || 0) + (data.pre_full_target || 0) + (data.reserva_flex_target || 0)} − ${fmtNum(data.stock_total, 0)} − ${fmtNum(data.in_transit_bodega, 0)}) = ${fmtNum(data.qty_a_comprar, 0)}.`}
               />
             </Section>
 
@@ -460,6 +556,62 @@ function Formula({ label, value, detail }: { label: string; value: string; detai
       </div>
       <div className="mono" style={{ color: "var(--txt3)", fontSize: 11, marginTop: 3, lineHeight: 1.5 }}>{detail}</div>
     </div>
+  );
+}
+
+function AccionBadge({ accion }: { accion: string | null }) {
+  if (!accion) return <span style={{ color: "var(--txt3)" }}>—</span>;
+  const map: Record<string, { color: string; bg: string; label: string }> = {
+    AGOTADO_SIN_PROVEEDOR: { color: "#ef4444", bg: "#ef444415", label: "🔴 AGOTADO SIN PROVEEDOR" },
+    PEDIR_PROVEEDOR: { color: "#f59e0b", bg: "#f59e0b15", label: "🟠 PEDIR PROVEEDOR" },
+    MANDAR_FULL: { color: "#3b82f6", bg: "#3b82f615", label: "🔵 MANDAR FULL" },
+    OK: { color: "#10b981", bg: "#10b98115", label: "✓ OK" },
+  };
+  const info = map[accion] || { color: "#64748b", bg: "#64748b15", label: accion };
+  return (
+    <span
+      className="mono"
+      style={{
+        display: "inline-block",
+        padding: "3px 10px",
+        borderRadius: 4,
+        background: info.bg,
+        border: `1px solid ${info.color}40`,
+        color: info.color,
+        fontSize: 11,
+        fontWeight: 600,
+      }}
+    >
+      {info.label}
+    </span>
+  );
+}
+
+function FlexPriorityBadge({ priority }: { priority: string | null }) {
+  if (!priority) return <span style={{ color: "var(--txt3)" }}>—</span>;
+  const map: Record<string, { color: string; label: string }> = {
+    default: { color: "#64748b", label: "default — multi-canal balanceado" },
+    only_flex: { color: "#f59e0b", label: "only_flex — solo bodega/Flex" },
+    only_full: { color: "#3b82f6", label: "only_full — solo Full ML" },
+    manual_split: { color: "#a855f7", label: "manual_split — split definido por admin" },
+  };
+  const info = map[priority] || { color: "#64748b", label: priority };
+  return (
+    <span
+      className="mono"
+      style={{
+        display: "inline-block",
+        padding: "2px 8px",
+        borderRadius: 4,
+        background: `${info.color}15`,
+        border: `1px solid ${info.color}40`,
+        color: info.color,
+        fontSize: 11,
+        fontWeight: 600,
+      }}
+    >
+      {info.label}
+    </span>
   );
 }
 

@@ -515,6 +515,63 @@ ABC=C → 14 días
 
 **Ejemplo TXTPBL20200SK:** ABC=A → **target_dias_full=42**.
 
+**Sprint 4.3a:** además del valor hardcoded en `intel_config`, el
+template `policy_templates(cell)` lo expone por celda ABC×XYZ
+(AX=42, AY=21, AZ=14, BX=28, BY=14, BZ=7, CX=14, CY=7, CZ=0). El
+dashboard de reposición (`v_compras_pendientes`) usa el valor del
+template, no el de `intel_config`. Cuando ambos divergen, gana el
+template (más fino que el viejo split por sólo ABC).
+
+### target_dias_flex
+
+**Sprint 4.3a (2026-05-04).** Días objetivo de cobertura en bodega
+para venta Flex multi-canal. Independiente de `target_dias_full`.
+
+| Cell | target_dias_flex | Cell | target_dias_flex | Cell | target_dias_flex |
+|---|---|---|---|---|---|
+| AX | 7 | BX | 5 | CX | 3 |
+| AY | 5 | BY | 3 | CY | 2 |
+| AZ | 3 | BZ | 2 | CZ | 0 |
+
+Fórmula derivada:
+```
+reserva_flex_target = round(d_avg_dia × target_dias_flex)
+```
+
+donde `d_avg_dia = d_avg_sem_efectivo / 7` (la velocidad efectiva
+post-elección de motor: vel_pre_quiebre, vel_evento o vel_ponderada,
+× factor_rampup).
+
+**Fuente:** `policy_templates.target_dias_flex` (override por SKU vía
+`sku_node_policy.target_dias_flex` — backfill auto desde template).
+
+**Rationale:** Sprint 4.3a separa la cobertura Full (target_dias_full)
+de la reserva en bodega para Flex. Antes el dashboard suponía que la
+bodega cubría sólo cycle_stock (LT_supplier días). Ahora reserva
+explícitamente días adicionales para no quedar sin stock Flex cuando
+Full está pre-posicionado pero los pedidos Flex llegan al mismo
+tiempo.
+
+**Ejemplo TXV23QLAT20NG (AY, 1.51 uds/día):**
+`reserva_flex_target = round(1.51 × 5) = 8 uds`.
+
+### flex_priority
+
+**Sprint 4.3a (2026-05-04).** Política de prioridad de canal por SKU.
+
+| Valor | Significado |
+|---|---|
+| `default` | Multi-canal balanceado (Full + reserva Flex). Default. |
+| `only_flex` | SKU sólo se vende Flex (no se manda a Full). |
+| `only_full` | SKU sólo se vende Full (no reserva Flex). |
+| `manual_split` | Admin define el split manualmente. |
+
+Hoy todas las filas son `default` — la política está expuesta en la
+UI (`SkuExplainPanel`) pero no hay endpoint de override aún. Roadmap
+Sprint 4.4+.
+
+**Fuente:** `sku_node_policy.flex_priority`.
+
 ### dias_sin_stock_full
 
 Días corridos contando desde que `stock_full = 0` por última vez.
