@@ -9,150 +9,185 @@ const addDays = (d: Date, n: number) => {
   return r;
 };
 
-describe("resolverDiasEnQuiebre (PR5 — fix contador incorrecto)", () => {
-  it("SKU en quiebre 3 días: dias_en_quiebre=3 sin importar cuántos recálculos hubo", () => {
-    const ancla = iso("2026-04-15");
+describe("resolverDiasEnQuiebre (PR5 + Sprint 4.2.1)", () => {
+  it("SKU en quiebre 3 días: dias=3 desde último día con stock + 1", () => {
+    // ultimoDiaConStockFull = hace 4 días → fecha_entrada = hace 3 días → dias=3
     const hoy = iso("2026-04-18");
-    // Caso: primera pasada — no había fecha previa, primerQuiebre=ancla.
+    const ultimoConStock = iso("2026-04-14"); // 4 días antes
+    const r = resolverDiasEnQuiebre({
+      enQuiebreAhora: true,
+      prevFechaEntradaQuiebre: null,
+      ultimoDiaConStockFull: ultimoConStock,
+      primerSnapshotDisponible: iso("2026-04-01"),
+      hoy,
+    });
+    expect(r.dias_en_quiebre).toBe(3);
+    expect(r.fecha_entrada_quiebre).toBe("2026-04-15");
+  });
+
+  it("Idempotencia: la fecha previa no afecta cuando hay evidencia en snapshots", () => {
+    const hoy = iso("2026-04-18");
+    const ultimoConStock = iso("2026-04-14");
     const r1 = resolverDiasEnQuiebre({
       enQuiebreAhora: true,
       prevFechaEntradaQuiebre: null,
-      primerQuiebre: ancla,
+      ultimoDiaConStockFull: ultimoConStock,
+      primerSnapshotDisponible: iso("2026-04-01"),
       hoy,
     });
-    expect(r1.dias_en_quiebre).toBe(3);
-    expect(r1.fecha_entrada_quiebre).toBe("2026-04-15");
-
-    // Caso: 50 pasadas más en el mismo día → no cambia (idempotente).
     const r2 = resolverDiasEnQuiebre({
       enQuiebreAhora: true,
       prevFechaEntradaQuiebre: "2026-04-15",
-      primerQuiebre: ancla,
+      ultimoDiaConStockFull: ultimoConStock,
+      primerSnapshotDisponible: iso("2026-04-01"),
       hoy,
     });
-    expect(r2.dias_en_quiebre).toBe(3);
-    expect(r2.fecha_entrada_quiebre).toBe("2026-04-15");
+    expect(r2).toEqual(r1);
   });
 
-  it("SKU se repone (!enQuiebreAhora): reset a 0 y fecha a NULL aunque haya historial previo", () => {
+  it("SKU se repone (!enQuiebreAhora): reset a 0/null aunque haya historial", () => {
     const r = resolverDiasEnQuiebre({
       enQuiebreAhora: false,
       prevFechaEntradaQuiebre: "2026-03-01",
-      primerQuiebre: iso("2026-03-01"),
+      ultimoDiaConStockFull: iso("2026-04-15"),
+      primerSnapshotDisponible: iso("2026-03-01"),
       hoy: iso("2026-04-18"),
     });
     expect(r.dias_en_quiebre).toBe(0);
     expect(r.fecha_entrada_quiebre).toBeNull();
   });
 
-  it("SKU vuelve a quebrar después de estar repuesto: cuenta desde cero, no hereda fecha vieja", () => {
-    // Ciclo 1: estuvo en quiebre antiguo, se repuso, prev.fecha=null.
-    // Ciclo 2: entra en quiebre de nuevo. primerQuiebre ya no tiene sentido
-    // (viene de snapshots viejos), pero si está presente lo usamos — en
-    // caso real queda acotado a día actual si la fecha es anómala.
+  it("Off-by-one fix: si último día con stock fue HOY (snapshot pre-quiebre), fecha=HOY, dias=0", () => {
+    // Caso testigo TXTPBL20200SK: snapshot del 2026-05-02 (HOY) tenía stock_full=1,
+    // ahora stock_full=0 (acaba de quebrar). fecha_entrada debe ser HOY, no HOY+1.
+    const hoy = iso("2026-05-02");
+    const ultimoConStock = iso("2026-05-02"); // snapshot de HOY tenía stock
+    const r = resolverDiasEnQuiebre({
+      enQuiebreAhora: true,
+      prevFechaEntradaQuiebre: null,
+      ultimoDiaConStockFull: ultimoConStock,
+      primerSnapshotDisponible: iso("2026-04-16"),
+      hoy,
+    });
+    expect(r.fecha_entrada_quiebre).toBe("2026-05-02");
+    expect(r.dias_en_quiebre).toBe(0);
+  });
+
+  it("FÓSIL Sprint 4.2.1: prev<primerSnapshot sin evidencia de stock → resetear a hoy", () => {
+    // Caso TXTPBL20200SK pre-fix: fecha_entrada_quiebre=2026-03-28 persistida,
+    // stock_snapshots arrancó 2026-04-16 sin ningún registro de stock_full>0
+    // (snapshot diario nunca capturó stock>0 para este SKU porque siempre
+    // se quedaba en 0 al momento del cron).
+    // ultimoDiaConStockFull=null porque no hay evidencia.
+    // prev=2026-03-28 < primerSnapshot=2026-04-16 → FÓSIL → resetear a HOY.
+    const hoy = iso("2026-05-02");
+    const r = resolverDiasEnQuiebre({
+      enQuiebreAhora: true,
+      prevFechaEntradaQuiebre: "2026-03-28",
+      ultimoDiaConStockFull: null,
+      primerSnapshotDisponible: iso("2026-04-16"),
+      hoy,
+    });
+    expect(r.fecha_entrada_quiebre).toBe("2026-05-02"); // reset a hoy
+    expect(r.dias_en_quiebre).toBe(0);
+  });
+
+  it("prev >= primerSnapshot, sin evidencia de stock: preservar prev", () => {
+    // SKU que entró en quiebre dentro del rango trackeable y nunca volvió a
+    // tener stock>0 según snapshots.
+    const hoy = iso("2026-05-02");
+    const r = resolverDiasEnQuiebre({
+      enQuiebreAhora: true,
+      prevFechaEntradaQuiebre: "2026-04-25",
+      ultimoDiaConStockFull: null,
+      primerSnapshotDisponible: iso("2026-04-16"),
+      hoy,
+    });
+    expect(r.fecha_entrada_quiebre).toBe("2026-04-25");
+    expect(r.dias_en_quiebre).toBe(7);
+  });
+
+  it("Sin prev y sin snapshots: fecha=hoy, dias=0", () => {
     const hoy = iso("2026-04-18");
     const r = resolverDiasEnQuiebre({
       enQuiebreAhora: true,
       prevFechaEntradaQuiebre: null,
-      primerQuiebre: null, // limpio
+      ultimoDiaConStockFull: null,
+      primerSnapshotDisponible: null,
       hoy,
     });
-    // Sin ancla previa ni primerQuiebre → arranca HOY.
-    expect(r.dias_en_quiebre).toBe(0);
     expect(r.fecha_entrada_quiebre).toBe("2026-04-18");
-  });
-
-  it("SKU con accion saludable (EXCESO / MANDAR_FULL): reset aunque stock_full=0", () => {
-    // En el motor, !enQuiebreAhora = (stFull>0) O (velPonderada==0).
-    // MANDAR_FULL típicamente stFull=0 + vel>0 → SÍ está en quiebre.
-    // EXCESO con vel=0 → !enQuiebreAhora → reset.
-    // Este test simula vel=0 (por eso enQuiebreAhora=false).
-    const r = resolverDiasEnQuiebre({
-      enQuiebreAhora: false, // vel_ponderada==0, aunque stFull pueda ser 0
-      prevFechaEntradaQuiebre: "2024-12-01", // fósil heredado del bug
-      primerQuiebre: null,
-      hoy: iso("2026-04-18"),
-    });
     expect(r.dias_en_quiebre).toBe(0);
-    expect(r.fecha_entrada_quiebre).toBeNull();
   });
 
-  it("Idempotencia al cambiar de día UTC: dos recálculos en el mismo día dan el mismo resultado", () => {
-    const ancla = iso("2026-04-10");
+  it("Idempotencia al cambiar de día UTC: dos recálculos en mismo día dan el mismo resultado", () => {
+    const ultimoConStock = iso("2026-04-09");
     const hoy = iso("2026-04-18");
     const r1 = resolverDiasEnQuiebre({
       enQuiebreAhora: true,
       prevFechaEntradaQuiebre: "2026-04-10",
-      primerQuiebre: ancla,
+      ultimoDiaConStockFull: ultimoConStock,
+      primerSnapshotDisponible: iso("2026-04-01"),
       hoy,
     });
     const r2 = resolverDiasEnQuiebre({
       enQuiebreAhora: true,
       prevFechaEntradaQuiebre: r1.fecha_entrada_quiebre,
-      primerQuiebre: ancla,
+      ultimoDiaConStockFull: ultimoConStock,
+      primerSnapshotDisponible: iso("2026-04-01"),
       hoy,
     });
     expect(r2).toEqual(r1);
-    expect(r1.dias_en_quiebre).toBe(8); // 2026-04-10 → 2026-04-18 = 8 días
+    expect(r1.dias_en_quiebre).toBe(8);
   });
 
-  it("SKU en quiebre a las 23:59 + recálculo al día siguiente a las 00:01: incrementa 1, no 2", () => {
-    // El cálculo usa solo la porción de fecha (YYYY-MM-DD) en UTC, no la hora.
-    const ancla = iso("2026-04-15");
-    // Ambos recálculos corren en días UTC distintos (17 y 18).
+  it("Cambio de día UTC: incrementa exactamente 1, no 2", () => {
+    const ultimoConStock = iso("2026-04-14");
     const hoyDia17 = new Date("2026-04-17T23:59:00.000Z");
     const hoyDia18 = new Date("2026-04-18T00:01:00.000Z");
     const r1 = resolverDiasEnQuiebre({
       enQuiebreAhora: true,
-      prevFechaEntradaQuiebre: "2026-04-15",
-      primerQuiebre: ancla,
+      prevFechaEntradaQuiebre: null,
+      ultimoDiaConStockFull: ultimoConStock,
+      primerSnapshotDisponible: iso("2026-04-01"),
       hoy: hoyDia17,
     });
     const r2 = resolverDiasEnQuiebre({
       enQuiebreAhora: true,
-      prevFechaEntradaQuiebre: "2026-04-15",
-      primerQuiebre: ancla,
+      prevFechaEntradaQuiebre: null,
+      ultimoDiaConStockFull: ultimoConStock,
+      primerSnapshotDisponible: iso("2026-04-01"),
       hoy: hoyDia18,
     });
     expect(r1.dias_en_quiebre).toBe(2);
     expect(r2.dias_en_quiebre).toBe(3);
-    // Delta = 1 día calendario, no 2 (idempotente dentro de cada día).
     expect(r2.dias_en_quiebre - r1.dias_en_quiebre).toBe(1);
   });
 
-  it("Fecha previa anómala (< 2025-01-01): se descarta y arranca fresh", () => {
+  it("Fecha previa anómala (< 2025-01-01) sin evidencia: resetea a hoy", () => {
+    const hoy = iso("2026-04-18");
     const r = resolverDiasEnQuiebre({
       enQuiebreAhora: true,
-      prevFechaEntradaQuiebre: "2020-05-15", // fósil corrupto
-      primerQuiebre: null,
-      hoy: iso("2026-04-18"),
+      prevFechaEntradaQuiebre: "2020-05-15", // fósil corrupto pre-MIN_ISO
+      ultimoDiaConStockFull: null,
+      primerSnapshotDisponible: null,
+      hoy,
     });
     expect(r.fecha_entrada_quiebre).toBe("2026-04-18");
     expect(r.dias_en_quiebre).toBe(0);
   });
 
-  it("Cap a 365 días: aunque la ancla sea de hace 2 años, no pasa de 365", () => {
+  it("Cap a 365 días: ancla legítima de hace 2 años → cap, no más", () => {
     const hoy = iso("2026-04-18");
-    const anclaLejos = iso("2023-04-18"); // 3 años atrás — no debería pasar del MIN_ISO filter
     const r = resolverDiasEnQuiebre({
       enQuiebreAhora: true,
-      prevFechaEntradaQuiebre: "2023-04-18", // antes del MIN_ISO 2025-01-01
-      primerQuiebre: anclaLejos,
-      hoy,
-    });
-    // Como ancla es < 2025, se descarta. primerQuiebre también < 2025 → fallback hoy.
-    expect(r.fecha_entrada_quiebre).toBe("2026-04-18");
-    expect(r.dias_en_quiebre).toBe(0);
-
-    // Ahora caso con ancla de 2025-01-01 (400+ días): cap se aplica.
-    const r2 = resolverDiasEnQuiebre({
-      enQuiebreAhora: true,
       prevFechaEntradaQuiebre: "2025-01-01",
-      primerQuiebre: null,
+      ultimoDiaConStockFull: null,
+      primerSnapshotDisponible: iso("2025-01-01"), // misma fecha → preserva prev
       hoy,
     });
-    expect(r2.fecha_entrada_quiebre).toBe("2025-01-01");
+    expect(r.fecha_entrada_quiebre).toBe("2025-01-01");
     // 2025-01-01 → 2026-04-18 = ~472 días, cap a 365.
-    expect(r2.dias_en_quiebre).toBe(365);
+    expect(r.dias_en_quiebre).toBe(365);
   });
 });

@@ -51,6 +51,14 @@ type ExplainData = {
   in_transit_bodega: number;
   fecha_entrada_quiebre: string | null;
   dias_en_quiebre: number | null;
+  // Sprint 4.2.1 — quiebre por nodo
+  quiebre_bodega_estado: "OK" | "EN_QUIEBRE";
+  quiebre_bodega_fecha: string | null;
+  quiebre_bodega_dias: number | null;
+  quiebre_full_estado: "OK" | "EN_QUIEBRE";
+  quiebre_full_fecha: string | null;
+  quiebre_full_dias: number | null;
+  alerta_operativa: string | null;
   costo_promedio: number | null;
   manual_override: boolean | null;
   policy_status: string | null;
@@ -317,13 +325,68 @@ export default function SkuExplainPanel({ sku, onClose }: Props) {
               <KV label="¿Bajo ROP?" value={data.bajo_rop ? "SÍ" : "NO"} />
             </Section>
 
-            {/* 6. QUIEBRE */}
-            {(data.dias_en_quiebre != null || data.fecha_entrada_quiebre) && (
-              <Section title="Quiebre">
-                <KV label="Fecha entrada quiebre" value={fmtDate(data.fecha_entrada_quiebre)} />
-                <KV label="Días en quiebre" value={data.dias_en_quiebre != null ? `${data.dias_en_quiebre} días` : "—"} />
-              </Section>
-            )}
+            {/* 6. QUIEBRE POR NODO (Sprint 4.2.1) */}
+            <Section title="⚠️ Estado de quiebre">
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                {/* Bodega */}
+                <div style={{ borderLeft: "2px solid var(--bg4)", paddingLeft: 10 }}>
+                  <div style={{ color: "var(--txt2)", fontSize: 12, marginBottom: 4 }}>Bodega central</div>
+                  <QuiebreBadge estado={data.quiebre_bodega_estado} />
+                  {data.quiebre_bodega_estado === "EN_QUIEBRE" && (
+                    <div style={{ marginTop: 6, fontSize: 11, color: "var(--txt3)" }}>
+                      <div className="mono">Desde: {fmtDate(data.quiebre_bodega_fecha)}</div>
+                      <div className="mono">Días: {data.quiebre_bodega_dias ?? "—"}</div>
+                    </div>
+                  )}
+                </div>
+                {/* Full ML */}
+                <div style={{ borderLeft: "2px solid var(--bg4)", paddingLeft: 10 }}>
+                  <div style={{ color: "var(--txt2)", fontSize: 12, marginBottom: 4 }}>Full ML</div>
+                  <QuiebreBadge estado={data.quiebre_full_estado} />
+                  {data.quiebre_full_estado === "EN_QUIEBRE" && (
+                    <div style={{ marginTop: 6, fontSize: 11, color: "var(--txt3)" }}>
+                      <div className="mono">Desde: {fmtDate(data.quiebre_full_fecha)}</div>
+                      <div className="mono">Días: {data.quiebre_full_dias ?? "—"}</div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Alerta operativa contextual */}
+              {data.alerta_operativa && (
+                <div
+                  style={{
+                    marginTop: 10,
+                    padding: "8px 10px",
+                    borderRadius: 6,
+                    background: "#f59e0b15",
+                    border: "1px solid #f59e0b40",
+                    color: "#fbbf24",
+                    fontSize: 12,
+                  }}
+                >
+                  <strong style={{ marginRight: 6 }}>💡 Acción sugerida:</strong>
+                  {data.alerta_operativa}
+                </div>
+              )}
+
+              {/* Legacy quiebre (deprecado, se muestra solo si hay valor — debug) */}
+              {(data.dias_en_quiebre != null || data.fecha_entrada_quiebre) && (
+                <details style={{ marginTop: 10 }}>
+                  <summary style={{ cursor: "pointer", color: "var(--txt3)", fontSize: 11 }}>
+                    Legacy (sku_intelligence.fecha_entrada_quiebre)
+                  </summary>
+                  <div style={{ paddingLeft: 12, marginTop: 6, fontSize: 11, color: "var(--txt3)" }}>
+                    <div className="mono">Fecha: {fmtDate(data.fecha_entrada_quiebre)}</div>
+                    <div className="mono">Días: {data.dias_en_quiebre ?? "—"}</div>
+                    <div style={{ marginTop: 4, fontStyle: "italic" }}>
+                      Sprint 4.2.1 reemplazó este cálculo con quiebre por nodo. Este campo se
+                      preserva por compat hasta que el cron lo recalcule.
+                    </div>
+                  </div>
+                </details>
+              )}
+            </Section>
 
             {/* 7. POLÍTICA */}
             <Section title="Política activa">
@@ -397,6 +460,26 @@ function Formula({ label, value, detail }: { label: string; value: string; detai
       </div>
       <div className="mono" style={{ color: "var(--txt3)", fontSize: 11, marginTop: 3, lineHeight: 1.5 }}>{detail}</div>
     </div>
+  );
+}
+
+function QuiebreBadge({ estado }: { estado: "OK" | "EN_QUIEBRE" }) {
+  const ok = estado === "OK";
+  return (
+    <span
+      style={{
+        display: "inline-block",
+        padding: "2px 8px",
+        borderRadius: 4,
+        background: ok ? "#10b98115" : "#ef444415",
+        border: `1px solid ${ok ? "#10b98140" : "#ef444440"}`,
+        color: ok ? "#10b981" : "#ef4444",
+        fontSize: 11,
+        fontWeight: 600,
+      }}
+    >
+      {ok ? "✓ OK" : "⚠ EN QUIEBRE"}
+    </span>
   );
 }
 

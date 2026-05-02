@@ -574,25 +574,34 @@ export function esAccionNuevo(params: {
 }
 
 /**
- * PR5 — resuelve `dias_en_quiebre` y `fecha_entrada_quiebre` a partir de
- * ancla temporal persistida (no un contador que se incrementa por recálculo).
+ * PR5 + Sprint 4.2.1 — resuelve `dias_en_quiebre` y `fecha_entrada_quiebre`
+ * a partir de evidencia en stock_snapshots, no del valor previo persistido.
  *
  * Reglas:
- *   - Si NO está en quiebre ahora → ambos NULL/0. Aunque haya valor heredado,
- *     se limpia (eso arregla los SKUs EXCESO/MANDAR_FULL con fósiles heredados).
- *   - Si está en quiebre ahora y ya tenía fecha previa → preservar fecha y
- *     derivar `dias = floor((hoy − fecha) / día)` en UTC.
- *   - Si está en quiebre ahora y NO tenía fecha previa (acaba de entrar):
- *     usar `primerQuiebre` del historial (stock_snapshots) si existe y es
- *     posterior al 2025-01-01 (evita fósiles pre-2020). Si no, usar `hoy`.
+ *   - Si NO está en quiebre ahora → ambos NULL/0. Limpia fósiles heredados.
+ *   - Si está en quiebre ahora:
+ *       a) Si hay evidencia en stock_snapshots de un día con stock_full > 0:
+ *          fecha = LEAST(ultimoDiaConStockFull + 1, hoy). Cubre el caso
+ *          "quebró post-snapshot del día actual" (el snapshot de hoy tenía
+ *          stock>0; ahora 0 → fecha entrada = hoy, no mañana).
+ *       b) Si NO hay evidencia (ningún snapshot con stock>0):
+ *          - Si prevFechaEntradaQuiebre >= primerSnapshotDisponible →
+ *            preservar prev (la fecha ya está dentro del rango trackeable).
+ *          - Si prevFechaEntradaQuiebre < primerSnapshotDisponible → FÓSIL.
+ *            La fecha persistida es pre-snapshots, no podemos validarla.
+ *            Resetear a hoy como nueva fecha de entrada (el SKU está
+ *            quebrando ahora, no hace 35-56 días).
+ *          - Sin prev y sin snapshots → hoy.
  *   - Cap a 365 días: ningún SKU legítimamente necesita más.
  *   - Idempotencia: misma entrada → misma salida.
  */
 export function resolverDiasEnQuiebre(params: {
   enQuiebreAhora: boolean;
   prevFechaEntradaQuiebre: string | null;
-  /** PrimerQuiebre desde stock_snapshots (primera fecha explícita con en_quiebre_full=true). */
-  primerQuiebre: Date | null;
+  /** Último día en stock_snapshots donde stock_full > 0 (= !en_quiebre_full). */
+  ultimoDiaConStockFull: Date | null;
+  /** Primer snapshot disponible para el SKU (MIN(fecha) en stock_snapshots). */
+  primerSnapshotDisponible: Date | null;
   hoy: Date;
 }): { dias_en_quiebre: number; fecha_entrada_quiebre: string | null } {
   const MS_DIA = 86_400_000;
@@ -604,23 +613,40 @@ export function resolverDiasEnQuiebre(params: {
   }
 
   const hoyUtcIso = params.hoy.toISOString().slice(0, 10);
+  const hoyMs = new Date(hoyUtcIso + "T00:00:00.000Z").getTime();
 
-  // Elegir fecha ancla (prioridad: persistida > snapshot histórico > hoy)
+  // Caso a) Hay evidencia de un día con stock → fecha = ese día + 1, capped a hoy.
+  if (params.ultimoDiaConStockFull) {
+    const ultimoMs = params.ultimoDiaConStockFull.getTime();
+    const candMs = Math.min(ultimoMs + MS_DIA, hoyMs);
+    const ancla = new Date(candMs).toISOString().slice(0, 10);
+    const dias = Math.min(CAP, Math.max(0, Math.floor((hoyMs - candMs) / MS_DIA)));
+    return { dias_en_quiebre: dias, fecha_entrada_quiebre: ancla };
+  }
+
+  // Caso b) Sin evidencia. Decidir entre preservar prev, resetear fósil, o usar hoy.
   let ancla: string;
-  if (params.prevFechaEntradaQuiebre && params.prevFechaEntradaQuiebre >= MIN_ISO) {
-    ancla = params.prevFechaEntradaQuiebre;
-  } else if (params.primerQuiebre) {
-    const pqIso = params.primerQuiebre.toISOString().slice(0, 10);
-    ancla = pqIso >= MIN_ISO ? pqIso : hoyUtcIso;
+  const prev = params.prevFechaEntradaQuiebre;
+  const primer = params.primerSnapshotDisponible
+    ? params.primerSnapshotDisponible.toISOString().slice(0, 10)
+    : null;
+
+  if (prev && prev >= MIN_ISO) {
+    if (primer && prev < primer) {
+      // Fósil pre-snapshots — la fecha persistida no se puede validar
+      // contra evidencia. Resetear a hoy.
+      ancla = hoyUtcIso;
+    } else {
+      // Preservar prev (dentro de rango trackeable o sin snapshots para
+      // contradecirlo).
+      ancla = prev;
+    }
   } else {
     ancla = hoyUtcIso;
   }
 
   const anclaMs = new Date(ancla + "T00:00:00.000Z").getTime();
-  const hoyMs = new Date(hoyUtcIso + "T00:00:00.000Z").getTime();
-  const diasCalc = Math.floor((hoyMs - anclaMs) / MS_DIA);
-  const dias = Math.min(CAP, Math.max(0, diasCalc));
-
+  const dias = Math.min(CAP, Math.max(0, Math.floor((hoyMs - anclaMs) / MS_DIA)));
   return { dias_en_quiebre: dias, fecha_entrada_quiebre: ancla };
 }
 
@@ -1272,6 +1298,25 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       : 0;
     const semanasQuiebre = semanasEnQuiebre.size;
 
+    // Sprint 4.2.1 — derivar inputs de evidencia para resolverDiasEnQuiebre:
+    //   - ultimoDiaConStockFull: MAX(fecha) del SKU con !en_quiebre_full
+    //     (= snapshot que registró stock_full > 0).
+    //   - primerSnapshotDisponible: MIN(fecha) de cualquier snapshot del SKU
+    //     (sea o no quiebre). Si prev < este → fósil, resetear.
+    const fechasConStockValidas = quiebresDelSku
+      .filter(q => q.en_quiebre_full === false && q.fecha)
+      .map(q => new Date(q.fecha))
+      .filter(d => !Number.isNaN(d.getTime()) && d.getFullYear() >= 2020)
+      .sort((a, b) => a.getTime() - b.getTime());
+    const ultimoDiaConStockFull = fechasConStockValidas.length > 0
+      ? fechasConStockValidas[fechasConStockValidas.length - 1]
+      : null;
+    const fechasTodosSnapshots = quiebresDelSku
+      .map(q => q.fecha ? new Date(q.fecha) : null)
+      .filter((d): d is Date => d !== null && !Number.isNaN(d.getTime()) && d.getFullYear() >= 2020)
+      .sort((a, b) => a.getTime() - b.getTime());
+    const primerSnapshotDisponible = fechasTodosSnapshots[0] ?? null;
+
     // ── PASO 14b: Quiebre prolongado ──
     const prev = prevIntelligence.get(skuOrigen);
     let velPreQuiebre = prev?.vel_pre_quiebre || 0;
@@ -1299,13 +1344,16 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     // "quiebre crónico de A's requiere reconstruir vel histórica").
     const velHistorica = Math.max(vel60d, velPonderada);
 
-    // PR5 — resolver dias_en_quiebre desde ancla temporal persistida.
-    // Si !enQuiebreAhora → limpia ambos a 0/null (arregla EXCESO/MANDAR_FULL
-    // con fósiles heredados del bug previo).
+    // PR5 + Sprint 4.2.1 — resolver dias_en_quiebre desde evidencia en
+    // stock_snapshots. Detecta fósiles (prev < primer snapshot disponible)
+    // y los resetea. Caso testigo: TXTPBL20200SK persistía 2026-03-28
+    // como entrada en quiebre cuando snapshots arrancaron 2026-04-16
+    // y nunca registraron quiebre full.
     const quiebreInfo = resolverDiasEnQuiebre({
       enQuiebreAhora,
       prevFechaEntradaQuiebre: prev?.fecha_entrada_quiebre ?? null,
-      primerQuiebre,
+      ultimoDiaConStockFull,
+      primerSnapshotDisponible,
       hoy,
     });
     diasEnQuiebre = quiebreInfo.dias_en_quiebre;
@@ -2014,23 +2062,32 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
   // se resetea al volver a publicar con venta en la ventana de 30d.
   // Ancla temporal: se deriva con resolverDiasEnQuiebre (reutilizando la misma
   // funcion que Full) — misma semantica, limpia fosiles al salir de quiebre.
-  const primerQuiebreFlexPorSku = new Map<string, Date>();
+  // Sprint 4.2.1: derivamos ultimoDiaConStockFlex (= último día !en_quiebre_flex)
+  // + primerSnapshotPorSku para detectar fósiles flex análogos a los de full.
+  const ultimoDiaConFlexPorSku = new Map<string, Date>();
+  const primerSnapshotPorSku = new Map<string, Date>();
   for (const q of quiebres) {
-    if (!q.en_quiebre_flex || !q.fecha) continue;
+    if (!q.fecha) continue;
     const d = new Date(q.fecha);
     if (Number.isNaN(d.getTime()) || d.getFullYear() < 2020) continue;
-    const prev = primerQuiebreFlexPorSku.get(q.sku_origen);
-    if (!prev || d < prev) primerQuiebreFlexPorSku.set(q.sku_origen, d);
+    const prevFirst = primerSnapshotPorSku.get(q.sku_origen);
+    if (!prevFirst || d < prevFirst) primerSnapshotPorSku.set(q.sku_origen, d);
+    if (q.en_quiebre_flex === false) {
+      const prevLast = ultimoDiaConFlexPorSku.get(q.sku_origen);
+      if (!prevLast || d > prevLast) ultimoDiaConFlexPorSku.set(q.sku_origen, d);
+    }
   }
   for (const r of rows) {
     const enQuiebreFlexAhora = r.publicar_flex === 0 && (r.vel_flex > 0 || r.vel_flex_pre_quiebre > 0);
     const prev = prevIntelligence.get(r.sku_origen);
-    const primerQuiebreFlex = primerQuiebreFlexPorSku.get(r.sku_origen) || null;
+    const ultimoDiaConFlex = ultimoDiaConFlexPorSku.get(r.sku_origen) || null;
+    const primerSnapshotFlex = primerSnapshotPorSku.get(r.sku_origen) || null;
 
     const quiebreFlexInfo = resolverDiasEnQuiebre({
       enQuiebreAhora: enQuiebreFlexAhora,
       prevFechaEntradaQuiebre: prev?.fecha_entrada_quiebre_flex ?? null,
-      primerQuiebre: primerQuiebreFlex,
+      ultimoDiaConStockFull: ultimoDiaConFlex,  // semánticamente "último con publicar_flex>0"
+      primerSnapshotDisponible: primerSnapshotFlex,
       hoy,
     });
     r.dias_en_quiebre_flex = enQuiebreFlexAhora ? quiebreFlexInfo.dias_en_quiebre : null;
