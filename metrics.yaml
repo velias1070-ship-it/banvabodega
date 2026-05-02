@@ -1100,12 +1100,31 @@ decisions:
     unit: enum
     enum_values: [high, low_confidence_seasonal]
     formula_text: |
-      IF productos.categoria IN seasonal_categories(active=true)
-         AND xyz IN ('Y','Z')
+      v_match_category := productos.categoria IN seasonal_categories(active=true)
+      v_match_name     := productos.nombre ~* '\m(plumon|plumón|frazada|frazadas|manta|mantas|s[aá]bana\s+t[eé]rmica)\M'  -- Sprint 2.5
+      IF (v_match_category OR v_match_name) AND xyz IN ('Y','Z')
       THEN 'low_confidence_seasonal'
       ELSE 'high'
     materialized_in: [sku_node_policy.xyz_confidence]
-    fuente_doctrina: "H2 mitigation (Sprint 2). Sprint 7+ deriva de CV52 deseasonalizada."
+    fuente_doctrina: "H2 mitigation (Sprint 2 + 2.5 name fallback). Sprint 7+ deriva de CV52 deseasonalizada."
+
+  - id: seasonal_match_source
+    label: "Fuente de match seasonal por SKU×Nodo"
+    domain: inventario
+    grain: "(sku_origen, node_id)"
+    unit: enum
+    enum_values: [category, name_pattern, manual, none]
+    formula_text: |
+      IF productos.categoria IN seasonal_categories(active=true) THEN 'category'
+      ELIF productos.nombre ~* '\m(plumon|plumón|frazada|frazadas|manta|mantas|s[aá]bana\s+t[eé]rmica)\M' THEN 'name_pattern'
+      ELSE 'none'
+      -- 'manual' reserved para overrides UI futuros (Sprint 4+)
+    materialized_in: [sku_node_policy.seasonal_match_source]
+    consumed_by: ["Audit cobertura H2: % por category vs name_pattern"]
+    fuente_doctrina: "Sprint 2.5 (2026-05-02). Camino C híbrido: cobertura via categoría + fallback regex sobre productos.nombre."
+    notas:
+      - "Prioridad attribution: category > name_pattern > none."
+      - "Permite rastrear qué heurística captura cuántos SKUs sin tocar xyz_confidence."
 
   - id: policy_status
     label: "Estado de política por SKU×Nodo"
@@ -1128,10 +1147,10 @@ decisions:
 # ============================================================================
 
 registry_metadata:
-  total_metrics: 43  # +5 en Sprint 2 (z_efectivo, target_dias_full_aplicado, policy_action_per_sku, xyz_confidence, policy_status)
+  total_metrics: 44  # +5 Sprint 2; +1 Sprint 2.5 (seasonal_match_source)
   total_decisions: 6
   domain_coverage:
-    inventario: 36  # +5 en Sprint 2
+    inventario: 37  # +5 Sprint 2; +1 Sprint 2.5
     ventas: 3
     pricing: 1
     logistica: 5

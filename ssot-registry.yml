@@ -3,7 +3,7 @@
 # Cada concepto crítico tiene exactamente UN owner_table autoritativo.
 # Tablas que derivan o cachean datos lo declaran explícitamente.
 
-version: 4
+version: 5
 last_updated: 2026-05-02
 owner: Vicente Elías
 sprints:
@@ -11,6 +11,7 @@ sprints:
   - sprint_0_5: "+6 SSoTs de métricas (2026-05-02)"
   - sprint_1:   "+2 SSoTs multi-bodega: politica_reposicion_por_sku_nodo, stock_unificado_por_nodo (2026-05-02)"
   - sprint_2:   "politica_reposicion_por_sku_nodo poblada (snapshot model, 974 rows) + seasonal_categories (mitigación H2) (2026-05-02)"
+  - sprint_2_5: "name fallback (camino C híbrido) — sku_node_policy.seasonal_match_source + regla 6b regex sobre productos.nombre (2026-05-02)"
 
 ssots:
 
@@ -100,6 +101,7 @@ ssots:
       - "974 rows post-Sprint 2 (487 SKUs activos × 2 nodos)."
       - "policy_status: active | blocked_no_cost | blocked_no_history | blocked_no_template."
       - "xyz_confidence ∈ {high, low_confidence_seasonal}. low_confidence → z=1.88 fallback."
+      - "seasonal_match_source ∈ {category, name_pattern, manual, none, NULL} (Sprint 2.5). category > name_pattern > none."
       - "Lookup descrito en /docs/policies/frontera-reposicion-pricing.md §3."
       - "NUNCA leer markdown_*: sigue en sku_intelligence hasta Sprint 6."
     consumers:
@@ -120,9 +122,10 @@ ssots:
     notes:
       - "Categoría seedeada que matchea hoy: 'quilt' (101 productos). Otras (plumones, frazadas, etc.) son aspiracionales hasta que productos.categoria se refine."
       - "is_active=false marca aspiracionales que no matchean nada todavía."
+      - "Sprint 2.5 (2026-05-02): regla 6b agrega fallback por nombre con word boundaries — captura 12 SKUs (plumones/mantas/frazadas) escondidos en categorías agregadas (textil/otros/textil-infantil)."
       - "Sprint 7+ (~2027-04, cuando ≥80% del catálogo tenga 52 semanas): reemplaza esta tabla por v_cv_52sem deseasonalizada + xyz_confidence derivado."
     consumers:
-      - "calc_sku_node_policy_row → xyz_confidence + z_value fallback"
+      - "calc_sku_node_policy_row → xyz_confidence + z_value fallback (regla 1 categoría + regla 2 name regex Sprint 2.5)"
     last_audited: 2026-05-02
 
   - concept: stock_unificado_por_nodo
