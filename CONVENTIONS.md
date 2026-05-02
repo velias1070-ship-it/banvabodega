@@ -64,6 +64,7 @@ Reglas:
 - **Composición ventas**: `composicion_venta` con default trivial sku_venta=sku_origen,unidades=1.
 - **Velocidades**: `sku_intelligence` (vel_30d, vel_60d, vel_pre_quiebre, etc.). Calculadas en `intelligence.ts`.
 - **Estados Full**: `inteligencia_full` derivada vía `calcularEstadoFlexFull` v7 (P-INV-1).
+- **Política de inventario**: `policy_templates` es la fuente canónica por celda ABC×XYZ (9 celdas, immutable). `sku_node_policy` es el snapshot instanciado por SKU×Nodo, derivado de `policy_templates × sku_intelligence × productos × seasonal_categories`. Drift entre ambos visible en `v_sku_policy_diff`. Cron weekly `/api/policy/sync-from-templates` (lunes 11:30 UTC) resincroniza salvo `manual_override=true`. Detalle en `/docs/policies/frontera-reposicion-pricing.md` (vinculante).
 
 Toda tabla nueva con potencial de conflicto SSoT debe:
 1. Aparecer en `ssot-registry.yml` con `owner_table` y `derivable_from`.

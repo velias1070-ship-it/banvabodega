@@ -3,11 +3,12 @@
 # Bounded contexts del negocio. Cada concepto y tabla pertenece a exactamente un dominio.
 # Sprint 0 (2026-05-01) — 6 dominios iniciales.
 
-version: 2
+version: 3
 last_updated: 2026-05-02
 sprints:
   - sprint_0: "6 dominios iniciales (2026-05-01)"
   - sprint_1: "logistica gana tablas canónicas (nodes, lanes); inventario gana sku_node_policy + 2 vistas (2026-05-02)"
+  - sprint_2: "inventario gana seasonal_categories + v_sku_policy_diff (2026-05-02)"
 
 domains:
 
@@ -27,12 +28,15 @@ domains:
       - movimientos_stock
       - composicion_venta
       - policy_templates
-      - sku_node_policy            # Sprint 1
+      - sku_node_policy            # Sprint 1 schema, Sprint 2 poblada (snapshot)
+      - seasonal_categories        # Sprint 2 (mitigación H2)
       - v_stock_por_nodo (VIEW)    # Sprint 1
       - v_in_transit_por_nodo (VIEW) # Sprint 1
+      - v_sku_policy_diff (VIEW)   # Sprint 2 (auditoría)
       - inteligencia_full (derivada en runtime)
     notas:
       - "Sprint 1 introduce capa multi-bodega. Frontera Reposición/Pricing en /docs/policies/frontera-reposicion-pricing.md (vinculante, H5 Camino C)."
+      - "Sprint 2 (2026-05-02): sku_node_policy redefinida como snapshot completo (974 rows), refresh weekly /api/policy/sync-from-templates lunes 11:30 UTC."
 
   - id: ventas
     label: "Ventas y postulaciones ML"

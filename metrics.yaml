@@ -1051,14 +1051,87 @@ decisions:
     consumed_by: ["evaluación forecast", "experimentos A/B"]
 
 # ============================================================================
+# Política aplicada por SKU×Nodo (Sprint 2, 2026-05-02)
+# Snapshot derivado de policy_templates × clasificación; ver
+# /docs/sprints/sprint-2-populate-policy.md.
+# ============================================================================
+
+  - id: z_efectivo
+    label: "Z efectivo (Service Stock)"
+    domain: inventario
+    grain: "(sku_origen, node_id)"
+    unit: dimensionless
+    formula_text: |
+      IF xyz_confidence='low_confidence_seasonal' THEN 1.88
+      ELSE policy_templates.z_value WHERE cell = abc_unidades || xyz
+    inputs: [sku_intelligence.abc_unidades, sku_intelligence.xyz, productos.categoria, seasonal_categories]
+    materialized_in: [sku_node_policy.z_value]
+    computed_in: "calc_sku_node_policy_row (función SQL pura, Sprint 2)"
+    consumed_by: ["Sprint 4: agente_reposicion v2 (King Method SS)"]
+    fuente_doctrina: "H3 + H2 mitigation (Sprint 2)"
+    notas:
+      - "Fallback 1.88 evita undershoot en SKUs estacionales mal clasificados (AZ falso-positivo)."
+      - "Sprint 7+ reemplaza el flag estacional por v_cv_52sem deseasonalizada."
+
+  - id: target_dias_full_aplicado
+    label: "Target días Full aplicado por SKU×Nodo"
+    domain: inventario
+    grain: "(sku_origen, node_id)"
+    unit: dias
+    formula_text: "policy_templates.target_dias_full WHERE cell = abc_unidades || xyz"
+    inputs: [policy_templates.target_dias_full, sku_intelligence.abc_unidades, sku_intelligence.xyz]
+    materialized_in: [sku_node_policy.target_dias_full]
+    fuente_doctrina: "H11 (target diferencial por celda, 2026-05-01)"
+
+  - id: policy_action_per_sku
+    label: "Acción de política por SKU×Nodo"
+    domain: inventario
+    grain: "(sku_origen, node_id)"
+    unit: enum
+    enum_values: [reorder_normal, reorder_lt_corto, reorder_periodic, reorder_bulk, reorder_minimo, no_reorder]
+    formula_text: "policy_templates.action por cell. CZ siempre no_reorder."
+    materialized_in: [sku_node_policy.action]
+    consumed_by: ["Sprint 4: agente_reposicion (filtro de SKUs eligibles)"]
+
+  - id: xyz_confidence
+    label: "Confianza de la clasificación XYZ"
+    domain: inventario
+    grain: "(sku_origen, node_id)"
+    unit: enum
+    enum_values: [high, low_confidence_seasonal]
+    formula_text: |
+      IF productos.categoria IN seasonal_categories(active=true)
+         AND xyz IN ('Y','Z')
+      THEN 'low_confidence_seasonal'
+      ELSE 'high'
+    materialized_in: [sku_node_policy.xyz_confidence]
+    fuente_doctrina: "H2 mitigation (Sprint 2). Sprint 7+ deriva de CV52 deseasonalizada."
+
+  - id: policy_status
+    label: "Estado de política por SKU×Nodo"
+    domain: inventario
+    grain: "(sku_origen, node_id)"
+    unit: enum
+    enum_values: [active, blocked_no_cost, blocked_no_history, blocked_no_template]
+    formula_text: |
+      IF productos.costo_promedio IS NULL OR 0 THEN 'blocked_no_cost'
+      ELIF sku_intelligence.abc_unidades IS NULL OR sku_intelligence.xyz IS NULL THEN 'blocked_no_history'
+      ELIF policy_templates lookup fails THEN 'blocked_no_template'
+      ELSE 'active'
+    materialized_in: [sku_node_policy.policy_status]
+    consumed_by: ["Sprint 4: agente_reposicion (skip blocked); panel admin (mostrar bloqueos)"]
+    notas:
+      - "blocked_no_cost respeta feedback_no_inferir_costos (no rellenar con promedio de familia)."
+
+# ============================================================================
 # METADATA DEL REGISTRY
 # ============================================================================
 
 registry_metadata:
-  total_metrics: 38
+  total_metrics: 43  # +5 en Sprint 2 (z_efectivo, target_dias_full_aplicado, policy_action_per_sku, xyz_confidence, policy_status)
   total_decisions: 6
   domain_coverage:
-    inventario: 31
+    inventario: 36  # +5 en Sprint 2
     ventas: 3
     pricing: 1
     logistica: 5
