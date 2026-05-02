@@ -1,0 +1,150 @@
+name: Atlas Schema Drift Detection
+
+# Sprint 0.7 (2026-05-02). Detecta drift entre supabase/migrations/ (versionado)
+# y la DB de producción. Bloquea PRs con migrations destructivas sin tag
+# [non-reversible:reason]. Cron diario revisa drift programado.
+# Runbook: /docs/atlas-runbook.md.
+
+on:
+  pull_request:
+    paths:
+      - 'supabase/migrations/**'
+      - 'atlas.hcl'
+      - '.github/workflows/atlas-drift.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/migrations/**'
+      - 'atlas.hcl'
+  schedule:
+    # 11:30 UTC = 08:30 Chile. Post-cron de motor recalcular (11:00 UTC).
+    - cron: '30 11 * * *'
+  workflow_dispatch: {}  # disparo manual desde la UI
+
+jobs:
+  drift-detection:
+    name: Detect Schema Drift
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Necesitamos historial para git diff origin/main...HEAD
+          fetch-depth: 0
+
+      - name: Setup Atlas
+        uses: ariga/setup-atlas@v0
+        with:
+          version: latest
+
+      - name: Lint last 5 migrations
+        # Lint local — chequea sintaxis, naming, destructivas.
+        # No requiere conexión a prod.
+        run: |
+          if [ -d "supabase/migrations" ] && [ "$(ls -A supabase/migrations 2>/dev/null)" ]; then
+            atlas migrate lint \
+              --dir "file://supabase/migrations" \
+              --dev-url "docker://postgres/15/dev" \
+              --latest 5
+          else
+            echo "No migrations in supabase/migrations/ yet — skipping lint."
+          fi
+
+      - name: Validate destructive migrations have justification tag
+        # Sólo en PRs. Si el diff toca supabase/migrations/ con DROP/ALTER TYPE,
+        # exigir [non-reversible:reason] en algún commit message del PR.
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+
+          # Archivos cambiados en supabase/migrations/ en este PR
+          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD -- 'supabase/migrations/' || true)
+
+          if [ -z "$CHANGED" ]; then
+            echo "No migrations touched — skipping destructive check."
+            exit 0
+          fi
+
+          # Buscar patrones destructivos en archivos NUEVOS o MODIFICADOS
+          DESTRUCTIVE=""
+          for f in $CHANGED; do
+            if [ -f "$f" ]; then
+              if grep -qE 'DROP[[:space:]]+(TABLE|COLUMN|CONSTRAINT|INDEX|TYPE|FUNCTION|VIEW|MATERIALIZED|TRIGGER)|ALTER[[:space:]]+TABLE.*ALTER[[:space:]]+COLUMN.*TYPE|ALTER[[:space:]]+TABLE.*DROP|ALTER[[:space:]]+TABLE.*RENAME' "$f"; then
+                DESTRUCTIVE="$DESTRUCTIVE $f"
+              fi
+            fi
+          done
+
+          if [ -z "$DESTRUCTIVE" ]; then
+            echo "✅ No destructive operations in this PR."
+            exit 0
+          fi
+
+          echo "::warning::Destructive ops detected in:$DESTRUCTIVE"
+
+          # Validar tag en commits del PR
+          if git log --format=%B "origin/${{ github.base_ref }}..HEAD" | grep -qE '\[non-reversible:[^]]+\]'; then
+            echo "✅ [non-reversible:reason] tag presente en al menos un commit del PR."
+          else
+            echo "::error::Migration destructiva sin tag [non-reversible:reason] en commit message del PR."
+            echo "Files: $DESTRUCTIVE"
+            echo ""
+            echo "Solución: agregá al commit message un tag explícito, p. ej."
+            echo "  [non-reversible:column-deprecated-since-vN-zero-reads-confirmed]"
+            echo ""
+            echo "Ver /docs/atlas-runbook.md sección 'Caso 2: PR bloqueado por destructiva sin tag'."
+            exit 1
+          fi
+
+      - name: Detect drift between repo and prod
+        # Sólo en push a main, cron diario, o workflow_dispatch.
+        # PRs no tocan prod, no tiene sentido chequear drift desde un PR.
+        id: drift
+        if: github.event_name != 'pull_request'
+        run: |
+          set +e
+          mkdir -p reports
+          atlas schema diff \
+            --from "$BANVA_PROD_DB_URL" \
+            --to "file://supabase/migrations?format=atlas" \
+            --dev-url "docker://postgres/15/dev" \
+            --exclude "audit_log,ml_webhook_log,admin_actions_log,agent_runs,agent_insights,agent_snapshots,_sprint0_*,_audit_*,_deprecated_*" \
+            > reports/drift-report.txt 2>&1
+          ATLAS_RC=$?
+          set -e
+
+          if [ ! -s reports/drift-report.txt ] || grep -q "Schemas are synced" reports/drift-report.txt; then
+            echo "drift_detected=false" >> "$GITHUB_OUTPUT"
+            echo "✅ Sin drift entre repo y prod."
+          else
+            echo "drift_detected=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Schema drift detectado. Ver artifact drift-report."
+            head -100 reports/drift-report.txt
+          fi
+        env:
+          BANVA_PROD_DB_URL: ${{ secrets.BANVA_PROD_DB_URL }}
+
+      - name: Upload drift report
+        if: always() && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: drift-report
+          path: reports/drift-report.txt
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Notify Slack on drift detected (cron)
+        # Sólo en cron diario; PRs y main pushes muestran el estado en la UI.
+        if: |
+          steps.drift.outputs.drift_detected == 'true' &&
+          github.event_name == 'schedule'
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_DRIFT }}
+          SLACK_TITLE: "Schema drift detectado en BANVA Bodega"
+          SLACK_MESSAGE: |
+            Diferencia detectada entre supabase/migrations/ y prod DB.
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            Runbook: ${{ github.server_url }}/${{ github.repository }}/blob/main/docs/atlas-runbook.md
+          SLACK_COLOR: warning
