@@ -2937,6 +2937,7 @@ export interface DBProveedorCuenta {
   categoria_cuenta_id: string | null;
   plazo_dias?: number | null;
   cuenta_variable?: boolean;
+  excluir_eerr?: boolean;
   direccion?: string | null;
   comuna?: string | null;
   contacto?: string | null;

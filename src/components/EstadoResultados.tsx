@@ -84,6 +84,13 @@ function cuentaIdDeCompra(c: DBRcvCompra, provCuentaInfo: Map<string, DBProveedo
   return pc.categoria_cuenta_id || undefined;
 }
 
+// True si el proveedor está marcado como "excluir del EERR" (caso típico: ML por
+// periodo de facturación 27→26 que no cuadra con calendario contable).
+function compraExcluidaDeEERR(c: DBRcvCompra, provCuentaInfo: Map<string, DBProveedorCuenta>): boolean {
+  const pc = c.rut_proveedor ? provCuentaInfo.get(c.rut_proveedor) : undefined;
+  return !!pc?.excluir_eerr;
+}
+
 // Periodo efectivo de una compra RCV (override > regla cuenta efectiva > periodo SII)
 function periodoEfectivoCompra(c: DBRcvCompra, provCuentaInfo: Map<string, DBProveedorCuenta>, planCuentasMap: Map<string, DBPlanCuentas>): string {
   if (c.periodo_devengo) return c.periodo_devengo;
@@ -180,6 +187,7 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
   const [dragItem, setDragItem] = useState<{ id: string | null; tabla: "rcv_compras" | "movimientos_banco" | null; rut: string; razon: string; nro: string; conciliada: boolean } | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [vistaDetallada, setVistaDetallada] = useState(false);
+  const [verExcluidos, setVerExcluidos] = useState(false);
 
   const pAnt = periodoAnterior(periodo);
   const rangoExt = periodoRangeExt(periodo, 2);
@@ -264,13 +272,19 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
     () => movBancoExt.filter(m => periodoEfectivoMov(m, planCuentasMap) === pAnt),
     [movBancoExt, planCuentasMap, pAnt]
   );
+  // Compras del período que SI computan en el EERR (excluye proveedores marcados como excluir_eerr).
   const comprasAct = useMemo(
-    () => comprasExt.filter(c => periodoEfectivoCompra(c, provCuentaInfo, planCuentasMap) === periodo),
+    () => comprasExt.filter(c => periodoEfectivoCompra(c, provCuentaInfo, planCuentasMap) === periodo && !compraExcluidaDeEERR(c, provCuentaInfo)),
     [comprasExt, provCuentaInfo, planCuentasMap, periodo]
   );
   const comprasAnt = useMemo(
-    () => comprasExt.filter(c => periodoEfectivoCompra(c, provCuentaInfo, planCuentasMap) === pAnt),
+    () => comprasExt.filter(c => periodoEfectivoCompra(c, provCuentaInfo, planCuentasMap) === pAnt && !compraExcluidaDeEERR(c, provCuentaInfo)),
     [comprasExt, provCuentaInfo, planCuentasMap, pAnt]
+  );
+  // Compras excluidas (solo del periodo actual) para mostrar en sección de auditoría.
+  const comprasExcluidas = useMemo(
+    () => comprasExt.filter(c => periodoEfectivoCompra(c, provCuentaInfo, planCuentasMap) === periodo && compraExcluidaDeEERR(c, provCuentaInfo)),
+    [comprasExt, provCuentaInfo, planCuentasMap, periodo]
   );
 
   // Construir las líneas del reporte
@@ -1041,6 +1055,55 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
               </tfoot>
             </table>
           </div>
+        </div>
+      )}
+
+      {/* Sección de auditoría: docs SII excluidos del cómputo del EERR (típicamente ML por período 27→26). */}
+      {comprasExcluidas.length > 0 && (
+        <div className="card" style={{ marginTop: 12, padding: 12 }}>
+          <button onClick={() => setVerExcluidos(v => !v)}
+            style={{ width: "100%", textAlign: "left", background: "transparent", border: "none", cursor: "pointer", padding: 0, color: "var(--txt2)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <span style={{ fontSize: 11, color: "var(--txt3)" }}>{verExcluidos ? "▼" : "▶"}</span>{" "}
+                <span style={{ fontSize: 13, fontWeight: 600 }}>Excluidos del EERR</span>
+                <span style={{ fontSize: 11, color: "var(--txt3)", marginLeft: 8 }}>
+                  ({comprasExcluidas.length} docs · {fmtMoney(comprasExcluidas.reduce((s, c) => s + montoCompra(c), 0))})
+                </span>
+              </div>
+              <span style={{ fontSize: 10, color: "var(--txt3)", fontStyle: "italic" }}>
+                Margen ML se gestiona desde ventas_ml_cache (período 27→26 ≠ calendario)
+              </span>
+            </div>
+          </button>
+          {verExcluidos && (
+            <div style={{ marginTop: 10, maxHeight: 400, overflowY: "auto" }}>
+              <table className="tbl" style={{ fontSize: 11 }}>
+                <thead>
+                  <tr><th>Doc</th><th>N°</th><th>Proveedor</th><th>Fecha</th><th style={{ textAlign: "right" }}>Monto</th><th>Ref</th></tr>
+                </thead>
+                <tbody>
+                  {comprasExcluidas
+                    .slice()
+                    .sort((a, b) => (b.fecha_docto || "").localeCompare(a.fecha_docto || ""))
+                    .map(c => (
+                      <tr key={c.id}>
+                        <td style={{ fontSize: 10, color: "var(--txt3)" }}>{TIPO_DOC[c.tipo_doc] || c.tipo_doc}</td>
+                        <td className="mono" style={{ fontWeight: 600 }}>{c.nro_doc || "—"}</td>
+                        <td style={{ maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.razon_social || c.rut_proveedor || "—"}</td>
+                        <td className="mono">{c.fecha_docto || "—"}</td>
+                        <td className="mono" style={{ textAlign: "right", fontWeight: 600, color: montoCompra(c) < 0 ? "var(--green)" : "var(--txt)" }}>
+                          {fmtMoney(montoCompra(c))}
+                        </td>
+                        <td className="mono" style={{ fontSize: 10, color: "var(--txt3)" }}>
+                          {c.factura_ref_folio ? `→ ${c.factura_ref_folio}` : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
     </div>
