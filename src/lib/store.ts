@@ -1202,7 +1202,7 @@ export async function congelarCostoDiscrepancia(
     .select("order_id, sku_venta, cantidad, fecha, subtotal, total_neto, costo_producto, margen, ads_cost_asignado")
     .in("sku_venta", Array.from(skuVentas))
     .gte("fecha", cutoff)
-    .neq("anulada", true);
+    .eq("anulada", false);
   const ventas = (ventasRaw || []) as Array<{ order_id: string; sku_venta: string; cantidad: number; fecha: string; subtotal: number; total_neto: number; costo_producto: number; margen: number; ads_cost_asignado: number }>;
 
   const detalles: CongelarCostoPreview["detalles"] = [];

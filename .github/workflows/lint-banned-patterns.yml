@@ -1,0 +1,25 @@
+name: Lint Banned Patterns
+
+# Sprint 3 (2026-05-03) — I4: prevenir reintroducción de .neq("anulada", true).
+# Registry canónico de patrones prohibidos en tabla _lint_forbidden_patterns.
+# Script: scripts/lint-banned-patterns.sh.
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'scripts/lint-banned-patterns.sh'
+      - '.github/workflows/lint-banned-patterns.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+
+jobs:
+  lint:
+    name: Banned Patterns
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run banned-patterns lint
+        run: bash scripts/lint-banned-patterns.sh
