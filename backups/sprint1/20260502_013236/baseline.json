@@ -1,0 +1,20 @@
+{
+  "captured_at": "2026-05-02T01:32:36Z",
+  "purpose": "Sprint 1 pre-migration baseline (multi-bodega foundation: nodes + lanes + sku_node_policy + views).",
+  "migration": "20260502120000_sprint1_nodes_lanes_policy.sql",
+  "note": "Migration es aditiva (sólo CREATE TYPE/TABLE/VIEW/INSERT seeds + COMMENT). No modifica filas existentes. Backups son row-counts de tablas referenciadas por los nuevos views.",
+  "row_counts": {
+    "stock": 285,
+    "stock_full_cache": 747,
+    "composicion_venta": 507,
+    "ml_items_map": 664,
+    "productos": 509,
+    "ordenes_compra": 6,
+    "ordenes_compra_lineas": 386
+  },
+  "ordenes_compra_estados_actuales": {
+    "ANULADA": 4,
+    "RECIBIDA_PARCIAL": 2
+  },
+  "rollback": "DROP VIEW v_in_transit_por_nodo; DROP VIEW v_stock_por_nodo; DROP TABLE sku_node_policy, lanes, nodes; DROP TYPE lane_type_enum, node_type_enum;"
+}

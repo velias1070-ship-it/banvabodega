@@ -3,8 +3,11 @@
 # Bounded contexts del negocio. Cada concepto y tabla pertenece a exactamente un dominio.
 # Sprint 0 (2026-05-01) — 6 dominios iniciales.
 
-version: 1
-last_updated: 2026-05-01
+version: 2
+last_updated: 2026-05-02
+sprints:
+  - sprint_0: "6 dominios iniciales (2026-05-01)"
+  - sprint_1: "logistica gana tablas canónicas (nodes, lanes); inventario gana sku_node_policy + 2 vistas (2026-05-02)"
 
 domains:
 
@@ -24,7 +27,12 @@ domains:
       - movimientos_stock
       - composicion_venta
       - policy_templates
+      - sku_node_policy            # Sprint 1
+      - v_stock_por_nodo (VIEW)    # Sprint 1
+      - v_in_transit_por_nodo (VIEW) # Sprint 1
       - inteligencia_full (derivada en runtime)
+    notas:
+      - "Sprint 1 introduce capa multi-bodega. Frontera Reposición/Pricing en /docs/policies/frontera-reposicion-pricing.md (vinculante, H5 Camino C)."
 
   - id: ventas
     label: "Ventas y postulaciones ML"
@@ -58,9 +66,15 @@ domains:
     label: "Logística y lanes"
     description: "Rutas físicas (proveedor→bodega, bodega→Full), lead times, costos de transporte, σ_LT."
     owner_files:
-      - "(Sprint 1 introduce tablas canónicas)"
+      - supabase/migrations/20260502120000_sprint1_nodes_lanes_policy.sql
+      - docs/sprints/sprint-1-nodes-lanes-policy.md
     tables:
-      - "TBD Sprint 1: lanes, proveedores"
+      - nodes              # Sprint 1: 3 seeds (bodega_central, full_ml, supplier_generic)
+      - lanes              # Sprint 1: 2 seeds (supplier_to_bodega LT 21d, bodega_to_full LT 5d)
+      - proveedores
+    notas:
+      - "Sprint 1 (2026-05-02) introduce el grafo logístico canónico. Sprint 4+ usará lanes.cost_factor."
+      - "Override de lead time por SKU: sku_node_policy.lead_time_override_days (dominio inventario)."
 
   - id: compras
     label: "Compras y recepciones"

@@ -4,8 +4,12 @@
 # Sprint 0 (2026-05-01) — 11 conceptos iniciales.
 # Sprint 0.5 (2026-05-02) — agregados 7 meta-conceptos de métricas (capa derivada).
 
-version: 2
+version: 3
 last_updated: 2026-05-02
+sprints:
+  - sprint_0:   "11 conceptos iniciales (2026-05-01)"
+  - sprint_0_5: "+7 meta-conceptos de métricas (2026-05-02)"
+  - sprint_1:   "+3 conceptos multi-bodega: nodo_logistico, lane_logistica, politica_sku_nodo (2026-05-02)"
 
 concepts:
 
@@ -35,7 +39,10 @@ concepts:
     description: "Lugar físico donde reside stock. En el modelo target son 2: Bodega y Full ML."
     cardinality: "2 (per Manual: 'multi-echelon, 2 nodes only'). Flex NO es nodo, es logistic_type."
     dominio: inventario
-    fisico: "stock (bodega) + stock_full_cache (Full ML). No hay tabla 'nodos' aún (Sprint 1)."
+    fisico: "stock (bodega) + stock_full_cache (Full ML). Sprint 1 (2026-05-02) agrega tabla canónica `nodes` con seeds bodega_central + full_ml + supplier_generic."
+    superseded_by: nodo_logistico
+    notas:
+      - "Sprint 1 introdujo el concepto generalizado `nodo_logistico` (incluye supplier_ref). nodo_inventario sigue siendo válido para describir el subset que tiene stock propio (warehouse + fulfillment)."
 
   - id: movimiento_stock
     label: "Movimiento de stock"
@@ -92,7 +99,61 @@ concepts:
     description: "Ruta proveedor → bodega o bodega → Full, con LT y costo. Componente de King Method (LT, σ_LT)."
     cardinality: "Decenas — uno por (proveedor, modo) o (bodega, ML inbound)."
     dominio: logistica
-    fisico: "Aún no existe tabla canónica (Sprint 1). Hoy: leadtime fijo en composicion o constantes."
+    fisico: "Tabla `lanes` (Sprint 1, 2026-05-02). Seeds: supplier_to_bodega (LT 21d), bodega_to_full (LT 5d). Override por SKU vía sku_node_policy.lead_time_override_days."
+
+# ============================================================================
+# Multi-bodega foundation (Sprint 1, 2026-05-02)
+# ============================================================================
+
+  - id: nodo_logistico
+    label: "Nodo logístico"
+    description: "Punto del grafo logístico. Generaliza nodo_inventario para incluir referencias a proveedores (supplier_ref) que no tienen stock propio."
+    cardinality: "3 inicial (bodega_central, full_ml, supplier_generic). Crece con Sprint N: full_ml_split, bodega_outlet, etc."
+    dominio: logistica
+    fisico: "nodes (id text PK, node_type ENUM warehouse|fulfillment|supplier_ref)"
+    notas:
+      - "Sprint 1 sólo crea la tabla. Sprint 2 (Reposición v2) lo consume."
+      - "Coexiste con nodo_inventario: nodo_inventario es subset (warehouse + fulfillment)."
+
+  - id: lane_logistica
+    label: "Lane / Arco logístico"
+    description: "Arco del grafo entre dos nodos. Captura lead time típico y cost factor (este último reservado Sprint 4+)."
+    cardinality: "2 seeds. Crece con cada nuevo lane operativo."
+    dominio: logistica
+    fisico: "lanes (id text PK, from/to FK nodes, lane_type ENUM inbound|transfer|outbound, lead_time_days int)"
+    constraints:
+      - "from_node_id <> to_node_id (no loops)"
+      - "lead_time_days >= 0"
+
+  - id: politica_sku_nodo
+    label: "Política por SKU×Nodo"
+    description: "Override puntual de policy_templates a nivel (sku, node). Sin filas = el motor usa el template canónico de la celda ABC×XYZ."
+    cardinality: "Esperada baja — sólo SKUs con razón documentada de desviarse de su celda."
+    dominio: inventario
+    fisico: "sku_node_policy (PK compuesta sku_origen + node_id, FK productos + nodes)"
+    notas:
+      - "Frontera Reposición/Pricing (H5 Camino C): esta tabla es escritura autoritativa de Reposición. Pricing escribe en sku_intelligence.markdown_*."
+      - "Sprint 2 implementa el lookup política_aplicada(sku, node) descrito en /docs/policies/frontera-reposicion-pricing.md §3."
+
+  - id: stock_unificado_por_nodo
+    label: "Stock unificado por nodo"
+    description: "Vista derivada de stock + stock_full_cache que entrega stock por (sku_origen, node_id). Lee SOLO fuentes canónicas — NO ml_items_map.stock_full_cache (deprecada v58)."
+    cardinality: "1:N por sku_origen (1 fila por nodo donde tiene stock)."
+    dominio: inventario
+    fisico: "v_stock_por_nodo (VIEW)"
+    notas:
+      - "Composición trivial expandida a sku_origen ponderada por unidades."
+      - "SKUs Full sin composición se cuentan como sku_origen=sku_venta (defensivo, no debería suceder post-PR6c)."
+
+  - id: in_transit_por_nodo
+    label: "Stock en tránsito por nodo"
+    description: "Vista derivada de ordenes_compra_lineas que entrega saldo de OCs abiertas por (sku_origen, to_node_id)."
+    cardinality: "1:N por sku_origen (mientras tenga OCs abiertas)."
+    dominio: inventario
+    fisico: "v_in_transit_por_nodo (VIEW)"
+    notas:
+      - "Estados canónicos: PENDIENTE, EN_TRANSITO, RECIBIDA_PARCIAL (alineado con intelligence-queries.ts:384)."
+      - "earliest_eta de fecha_esperada (nullable). Sprint 2 podrá derivar de fecha_emision + lane.lead_time_days."
 
 # ============================================================================
 # Meta-conceptos de MÉTRICAS (Sprint 0.5, 2026-05-02)

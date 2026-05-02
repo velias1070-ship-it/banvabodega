@@ -3,9 +3,13 @@
 # Cada concepto crítico tiene exactamente UN owner_table autoritativo.
 # Tablas que derivan o cachean datos lo declaran explícitamente.
 
-version: 2
+version: 3
 last_updated: 2026-05-02
 owner: Vicente Elías
+sprints:
+  - sprint_0:   "5 SSoTs operativos iniciales (2026-05-01)"
+  - sprint_0_5: "+6 SSoTs de métricas (2026-05-02)"
+  - sprint_1:   "+2 SSoTs multi-bodega: politica_reposicion_por_sku_nodo, stock_unificado_por_nodo (2026-05-02)"
 
 ssots:
 
@@ -64,14 +68,62 @@ ssots:
     owner_table: policy_templates
     write_path: "Migration o ALTER directo (cambios de política son revisión humana)"
     derivable_from: null
-    rationale: "H3+H11+H2 cerrados 2026-05-01. Sin overrides aún (Sprint 1 introducirá policy_overrides para excepciones)."
+    rationale: "H3+H11+H2 cerrados 2026-05-01. Overrides puntuales viven en sku_node_policy (Sprint 1, 2026-05-02)."
     notes:
       - "AZ usa reorder_lt_corto: NO subir z, reducir LT (per Lokad/Thieuleux SPM:267)."
       - "CZ tiene service_level y z_value NULL: no se recompra."
       - "AX z=2.05 es worked example SPM:713 (cubrecolchón impermeable 2P)."
     consumers:
-      - Sprint 1: cálculo SS King Method por celda
-      - Sprint 2: forecast del ROP
+      - Sprint 2: cálculo SS King Method por celda + lookup política_aplicada(sku, node)
+      - Sprint 3: forecast del ROP
+
+  - concept: politica_reposicion_por_sku_nodo
+    description: "Overrides puntuales de policy_templates a nivel (sku_origen, node_id). Sin filas = el motor usa el template de la celda."
+    domain: inventario
+    owner_table: sku_node_policy
+    write_path: "Sprint 2: panel admin reposición (UI). Sprint 1: tabla vacía, escritura solo manual via SQL."
+    derivable_from: null
+    rationale: "Frontera Reposición/Pricing — H5 Camino C (2026-05-02). Tabla autoritativa de Reposición. Pricing/markdown sigue en sku_intelligence hasta Sprint 6."
+    notes:
+      - "Composite PK (sku_origen, node_id). FK a productos + nodes."
+      - "Override columns nullable: NULL = usar template. override_reason obligatorio si hay al menos un override no-NULL (validación a nivel app)."
+      - "Lookup descrito en /docs/policies/frontera-reposicion-pricing.md §3."
+    consumers:
+      - Sprint 2: intelligence.ts:resolverPedirProveedor + resolverMandarFull
+      - Sprint 4+: agente_reposicion autónomo
+    last_audited: 2026-05-02
+
+  - concept: stock_unificado_por_nodo
+    description: "Stock por (sku_origen, node_id) leído SOLO de fuentes canónicas (stock + stock_full_cache). Composición trivial expandida a sku_origen."
+    domain: inventario
+    owner_table: null  # es VIEW, no tabla
+    derived_view: v_stock_por_nodo
+    write_path: "No-write (es vista derivada). Refresh = lectura directa."
+    derivable_from: "stock + stock_full_cache + composicion_venta"
+    rationale: "Sprint 1 (2026-05-02). Reemplaza queries ad-hoc del motor que mezclaban fuentes (Regla 5 inventory-policy.md). NO lee ml_items_map.stock_full_cache (DEPRECADA v58)."
+    notes:
+      - "qty_reserved=0 para Full (ML lo gestiona)."
+      - "SKUs Full sin composición se cuentan como sku_origen=sku_venta (defensivo)."
+      - "Composición con unidades>1 expande legítimamente (combos)."
+    consumers:
+      - Sprint 2: Reposición v2
+      - Panel admin (Sprint 2+)
+    last_audited: 2026-05-02
+
+  - concept: stock_in_transit_por_nodo
+    description: "Saldo de OCs abiertas por (sku_origen, to_node_id). Sólo líneas con cantidad_pedida > cantidad_recibida."
+    domain: inventario
+    owner_table: null  # VIEW
+    derived_view: v_in_transit_por_nodo
+    write_path: "No-write."
+    derivable_from: "ordenes_compra + ordenes_compra_lineas (estados PENDIENTE/EN_TRANSITO/RECIBIDA_PARCIAL)"
+    rationale: "Sprint 1. Estados alineados con intelligence-queries.ts:384. earliest_eta de fecha_esperada."
+    notes:
+      - "Si fecha_esperada NULL, Sprint 2 podrá derivar earliest_eta de fecha_emision + lane.lead_time_days."
+    consumers:
+      - Sprint 2: cobertura efectiva
+      - Panel admin (Sprint 2+)
+    last_audited: 2026-05-02
 
 # ============================================================================
 # SSoTs de MÉTRICAS (Sprint 0.5, 2026-05-02)
