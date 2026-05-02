@@ -42,6 +42,18 @@
 - v51-v79: pricing/billing (parallel session, NO TOCAR).
 - v80+: track ads/reposición.
 
+### Validación automática (Atlas en CI, Sprint 0.7)
+
+Cada migration nueva pasa por:
+
+1. **Lint en cada PR** que toca `supabase/migrations/` o `atlas.hcl`. Atlas valida sintaxis, naming snake_case y marca destructivas (DROP, ALTER TYPE, RENAME) — éstas requieren tag `[non-reversible:reason]` en algún commit del PR.
+2. **Drift detection** en cada push a `main` y diariamente a las 11:30 UTC (cron). Compara `supabase/migrations/` ↔ DB de prod vía usuario `atlas_readonly`.
+3. **Alerta a Slack** si el cron diario detecta drift sin resolver.
+
+Ver runbook completo en `/docs/atlas-runbook.md`. Workflow en `/.github/workflows/atlas-drift.yml`. Configuración Atlas en `/atlas.hcl`.
+
+Atlas **coexiste** con Supabase CLI: ambos leen el mismo folder `supabase/migrations/`. Supabase CLI deploya, Atlas valida. No se reemplazan.
+
 ## 3. SSoT (Single Source of Truth)
 
 Cada concepto crítico debe tener exactamente UN dueño en `ssot-registry.yml`.
