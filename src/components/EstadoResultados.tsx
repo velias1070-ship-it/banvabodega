@@ -101,6 +101,17 @@ const TIPO_DOC: Record<number | string, string> = {
   46: "Fact. Compra", 52: "Guía Desp.", 56: "Nota Débito", 61: "Nota Crédito",
 };
 
+// Signo de la compra para EERR: NC (61) reduce el gasto/costo (devolución del proveedor),
+// el resto suma. Las guías de despacho (52) tampoco son gasto financiero, pero
+// se ignoran a nivel filtro porque no tienen monto en el RCV.
+function signoCompra(tipoDoc: number | string): 1 | -1 {
+  const td = typeof tipoDoc === "string" ? parseInt(tipoDoc) : tipoDoc;
+  return td === 61 ? -1 : 1;
+}
+function montoCompra(c: DBRcvCompra): number {
+  return (c.monto_total || 0) * signoCompra(c.tipo_doc);
+}
+
 // Color por tipo de cuenta
 const TIPO_STYLE: Record<string, { color: string; bg: string; label: string; signo: string }> = {
   ingreso:           { color: "var(--green)", bg: "var(--greenBg)", label: "INGRESOS",           signo: "+" },
@@ -264,14 +275,16 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
     let sinCatCostosAct = 0, sinCatCostosAnt = 0;
 
     // ---- Compras RCV: override por factura > default del proveedor (si no es variable) ----
+    // NC (61) entran con signo negativo (reducen el gasto). Resto suma.
     const procesarCompras = (compras: DBRcvCompra[], key: "act" | "ant") => {
       for (const c of compras) {
         const cuentaId = cuentaIdDeCompra(c, provCuentaInfo);
+        const m = montoCompra(c);
         if (cuentaId && planCuentasMap.get(cuentaId)) {
-          addMonto(cuentaId, key, c.monto_total || 0);
+          addMonto(cuentaId, key, m);
         } else {
-          if (key === "act") sinCatCostosAct += c.monto_total || 0;
-          else sinCatCostosAnt += c.monto_total || 0;
+          if (key === "act") sinCatCostosAct += m;
+          else sinCatCostosAnt += m;
         }
       }
     };
@@ -429,7 +442,7 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
         tipo: "Compra", doc: TIPO_DOC[c.tipo_doc] || String(c.tipo_doc),
         nro: c.nro_doc || "—", rut: c.rut_proveedor || "—",
         razon: c.razon_social || "", fecha: c.fecha_docto || "—",
-        monto: c.monto_total || 0, nota: c.notas || conc?.notas || "",
+        monto: montoCompra(c), nota: c.notas || conc?.notas || "",
         conciliada: !!conc,
         fechaPago: movPago?.fecha || null,
         bancoPago: movPago?.banco || null,
@@ -520,7 +533,7 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
         tipo: "Compra", doc: TIPO_DOC[c.tipo_doc] || String(c.tipo_doc),
         nro: c.nro_doc || "—", rut: c.rut_proveedor || "—",
         razon: c.razon_social || "", fecha: c.fecha_docto || "—",
-        monto: c.monto_total || 0, nota: c.notas || conc?.notas || "",
+        monto: montoCompra(c), nota: c.notas || conc?.notas || "",
         conciliada: !!conc,
         fechaPago: movPago?.fecha || null,
         bancoPago: movPago?.banco || null,
