@@ -811,6 +811,162 @@ function explicarMetricas(r: IntelRow): Record<string, MetricaExplicada> {
   };
 }
 
+interface SkuVentaVinc {
+  sku_venta: string;
+  unidades: number;
+  tipo_relacion: string;
+  stock_full_uds_venta: number;
+  stock_full_uds_origen: number;
+}
+
+interface AlternativoVinc {
+  sku_origen: string;
+  nombre: string | null;
+  stock_bodega: number;
+  stock_total: number;
+  pedir_proveedor: number;
+  via: "explicito" | "auto_detectado";
+}
+
+async function buildVinculaciones(
+  sb: ReturnType<typeof getServerSupabase>,
+  skuOrigen: string,
+): Promise<{ skus_venta: SkuVentaVinc[]; alternativos: AlternativoVinc[]; agrupacion: string }> {
+  if (!sb) return { skus_venta: [], alternativos: [], agrupacion: "individual" };
+  const skuUp = skuOrigen.toUpperCase();
+
+  // 1. SKUs venta vinculados (componentes principales de este sku_origen)
+  const { data: compsThis } = await sb
+    .from("composicion_venta")
+    .select("sku_venta, unidades, tipo_relacion")
+    .eq("sku_origen", skuUp);
+
+  const compsThisRows = (compsThis || []) as { sku_venta: string; unidades: number; tipo_relacion: string | null }[];
+  const skusVentaList = compsThisRows
+    .filter(c => (c.tipo_relacion || "componente") === "componente")
+    .map(c => ({ sku_venta: c.sku_venta.toUpperCase(), unidades: c.unidades, tipo_relacion: c.tipo_relacion || "componente" }));
+
+  // 2. Stock full por sku_venta
+  const skuVentaUps = skusVentaList.map(s => s.sku_venta);
+  let stockFullMap = new Map<string, number>();
+  if (skuVentaUps.length > 0) {
+    const { data: sfData } = await sb
+      .from("stock_full_cache")
+      .select("sku, cantidad")
+      .in("sku", skuVentaUps);
+    for (const row of (sfData || []) as { sku: string; cantidad: number }[]) {
+      stockFullMap.set(row.sku.toUpperCase(), row.cantidad);
+    }
+  }
+
+  const skus_venta: SkuVentaVinc[] = skusVentaList.map(s => {
+    const sfVenta = stockFullMap.get(s.sku_venta) || 0;
+    return {
+      sku_venta: s.sku_venta,
+      unidades: s.unidades,
+      tipo_relacion: s.tipo_relacion,
+      stock_full_uds_venta: sfVenta,
+      stock_full_uds_origen: sfVenta * s.unidades,
+    };
+  });
+
+  // 3. Alternativos: explicitos (tipo_relacion='alternativo' apuntando a este o este apuntando a un principal)
+  const alternativosSet = new Set<string>();
+  const viaMap = new Map<string, "explicito" | "auto_detectado">();
+
+  // 3a. Si yo soy alternativo de algun principal
+  const { data: yoAlt } = await sb
+    .from("composicion_venta")
+    .select("sku_venta, sku_origen, tipo_relacion")
+    .eq("sku_origen", skuUp)
+    .eq("tipo_relacion", "alternativo");
+  for (const row of (yoAlt || []) as { sku_venta: string }[]) {
+    // Buscar el principal de ese sku_venta
+    const { data: prin } = await sb
+      .from("composicion_venta")
+      .select("sku_origen")
+      .eq("sku_venta", row.sku_venta.toUpperCase())
+      .or("tipo_relacion.eq.componente,tipo_relacion.is.null");
+    for (const p of (prin || []) as { sku_origen: string }[]) {
+      const pUp = p.sku_origen.toUpperCase();
+      if (pUp !== skuUp) { alternativosSet.add(pUp); viaMap.set(pUp, "explicito"); }
+    }
+  }
+
+  // 3b. Si otro sku_origen es alternativo de uno de mis sku_venta
+  if (skuVentaUps.length > 0) {
+    const { data: altsOf } = await sb
+      .from("composicion_venta")
+      .select("sku_venta, sku_origen, tipo_relacion")
+      .in("sku_venta", skuVentaUps)
+      .eq("tipo_relacion", "alternativo");
+    for (const row of (altsOf || []) as { sku_origen: string }[]) {
+      const aUp = row.sku_origen.toUpperCase();
+      if (aUp !== skuUp) { alternativosSet.add(aUp); viaMap.set(aUp, "explicito"); }
+    }
+  }
+
+  // 3c. Auto-detectados: para cada sku_venta mio, otros sku_origen "componente" con MISMAS unidades
+  if (skuVentaUps.length > 0) {
+    const { data: compsSiblings } = await sb
+      .from("composicion_venta")
+      .select("sku_venta, sku_origen, unidades, tipo_relacion")
+      .in("sku_venta", skuVentaUps);
+    const compsBySv = new Map<string, { sku_origen: string; unidades: number; tipo_relacion: string | null }[]>();
+    for (const r of (compsSiblings || []) as { sku_venta: string; sku_origen: string; unidades: number; tipo_relacion: string | null }[]) {
+      const sv = r.sku_venta.toUpperCase();
+      if (!compsBySv.has(sv)) compsBySv.set(sv, []);
+      compsBySv.get(sv)!.push(r);
+    }
+    for (const rows of Array.from(compsBySv.values())) {
+      const componentes = rows.filter(r => (r.tipo_relacion || "componente") === "componente");
+      if (componentes.length < 2) continue;
+      const mio = componentes.find(c => c.sku_origen.toUpperCase() === skuUp);
+      if (!mio) continue;
+      for (const c of componentes) {
+        const cUp = c.sku_origen.toUpperCase();
+        if (cUp === skuUp) continue;
+        if (c.unidades !== mio.unidades) continue;
+        if (!alternativosSet.has(cUp)) {
+          alternativosSet.add(cUp);
+          viaMap.set(cUp, "auto_detectado");
+        }
+      }
+    }
+  }
+
+  // 4. Datos de los alternativos (stock_bodega, stock_total, pedir_proveedor)
+  const alternativos: AlternativoVinc[] = [];
+  if (alternativosSet.size > 0) {
+    const altList = Array.from(alternativosSet);
+    const { data: altIntel } = await sb
+      .from("sku_intelligence")
+      .select("sku_origen, nombre, stock_bodega, stock_total, pedir_proveedor")
+      .in("sku_origen", altList);
+    for (const a of (altIntel || []) as { sku_origen: string; nombre: string | null; stock_bodega: number; stock_total: number; pedir_proveedor: number }[]) {
+      alternativos.push({
+        sku_origen: a.sku_origen,
+        nombre: a.nombre,
+        stock_bodega: a.stock_bodega,
+        stock_total: a.stock_total,
+        pedir_proveedor: a.pedir_proveedor,
+        via: viaMap.get(a.sku_origen.toUpperCase()) || "explicito",
+      });
+    }
+  }
+
+  const agrupacion = (() => {
+    const multi = skus_venta.length > 1;
+    const conAlt = alternativos.length > 0;
+    if (multi && conAlt) return "multi_venta_con_alternativos";
+    if (multi) return "multi_venta";
+    if (conAlt) return "con_alternativos";
+    return "individual";
+  })();
+
+  return { skus_venta, alternativos, agrupacion };
+}
+
 export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ sku_origen: string }> },
@@ -829,6 +985,7 @@ export async function GET(
   if (!intel) return NextResponse.json({ error: "SKU no encontrado" }, { status: 404 });
 
   const metricas = explicarMetricas(intel as IntelRow);
+  const vinculaciones = await buildVinculaciones(sb, sku_origen);
 
   // Stats de verificacion
   let totalVerificadas = 0;
@@ -855,6 +1012,7 @@ export async function GET(
       match_ok: matchOk,
       discrepancias,
     },
+    vinculaciones,
     metricas,
     docs: {
       maestro: "/docs/policies/inventario-formulas.md",
