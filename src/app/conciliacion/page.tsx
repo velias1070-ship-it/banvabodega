@@ -721,6 +721,15 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
     return venc && venc.diasRestantes < 0;
   });
 
+  // Clasificacion por proveedor (cuenta asignada o "Sin clasificar")
+  // Definida acá (antes del filter) para evitar TDZ en línea por_clasificar.
+  const getClasificacion = (c: DBRcvCompra) => {
+    const pc = provCuentas.find(x => x.rut_proveedor === (c.rut_proveedor || ""));
+    if (!pc?.categoria_cuenta_id) return null;
+    const cuenta = cuentasHoja.find(x => x.id === pc.categoria_cuenta_id);
+    return cuenta ? `${empresa.razon_social || "Empresa"} / ${cuenta.nombre}` : null;
+  };
+
   // Filtrar por texto, tipo, proveedor y estado conciliación
   // "todos" usa data (período actual). Los filtros de estado usan comprasAnio (todo el año).
   let filtered: DBRcvCompra[] = concFilter === "todos" ? data : comprasAnio;
@@ -783,14 +792,6 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const totalExento = filtered.reduce((s, c) => s + (c.monto_exento || 0), 0);
   const totalIva = filtered.reduce((s, c) => s + (c.monto_iva || 0), 0);
   const total = filtered.reduce((s, c) => s + (c.monto_total || 0), 0);
-
-  // Clasificacion por proveedor (cuenta asignada o "Sin clasificar")
-  const getClasificacion = (c: DBRcvCompra) => {
-    const pc = provCuentas.find(x => x.rut_proveedor === (c.rut_proveedor || ""));
-    if (!pc?.categoria_cuenta_id) return null;
-    const cuenta = cuentasHoja.find(x => x.id === pc.categoria_cuenta_id);
-    return cuenta ? `${empresa.razon_social || "Empresa"} / ${cuenta.nombre}` : null;
-  };
 
   const sinClasificar = data.filter(c => !getClasificacion(c));
   const pctConciliado = data.length > 0 ? Math.round((totalPagadas / data.length) * 100) : 0;

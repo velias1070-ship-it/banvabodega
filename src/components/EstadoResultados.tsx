@@ -143,7 +143,14 @@ interface DrillDoc {
 
 // ==================== COMPONENTE ====================
 
-export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpresa; periodo: string }) {
+export default function EstadoResultados({ empresa, periodo: periodoRaw }: { empresa: DBEmpresa; periodo: string }) {
+  // El EERR solo soporta periodos mensuales (YYYYMM). Si llega anual (YYYY)
+  // u otro formato, normalizamos al primer mes para no romper periodoAnterior/periodoOffset.
+  const periodo = periodoRaw.length === 6 && /^\d{6}$/.test(periodoRaw)
+    ? periodoRaw
+    : periodoRaw.length === 4 && /^\d{4}$/.test(periodoRaw)
+      ? `${periodoRaw}01`
+      : periodoRaw;
   const [ventasAct, setVentasAct] = useState<DBRcvVenta[]>([]);
   const [comprasExt, setComprasExt] = useState<DBRcvCompra[]>([]);
   const [ventasAnt, setVentasAnt] = useState<DBRcvVenta[]>([]);
