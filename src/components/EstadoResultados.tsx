@@ -139,6 +139,8 @@ interface DrillDoc {
   monto: number;
   nota: string;
   conciliada: boolean;
+  fechaPago: string | null;   // fecha del mov banco conciliado (cuando se pagó)
+  bancoPago: string | null;   // banco/cuenta donde salió el pago
 }
 
 // ==================== COMPONENTE ====================
@@ -413,9 +415,13 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
         compraByMovId.set(c.movimiento_banco_id, c.rcv_compra_id);
       }
     }
+    // mov banco indexado por id para resolver fecha/banco del pago
+    const movById = new Map<string, DBMovimientoBanco>();
+    for (const m of movBancoExt) if (m.id) movById.set(m.id, m);
 
     const mapCompra = (c: DBRcvCompra): DrillDoc => {
       const conc = concByCompraId.get(c.id!);
+      const movPago = conc?.movimiento_banco_id ? movById.get(conc.movimiento_banco_id) : undefined;
       return {
         id: c.id || null, tabla: "rcv_compras",
         periodoDevengo: c.periodo_devengo || null,
@@ -424,6 +430,8 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
         razon: c.razon_social || "", fecha: c.fecha_docto || "—",
         monto: c.monto_total || 0, nota: c.notas || conc?.notas || "",
         conciliada: !!conc,
+        fechaPago: movPago?.fecha || null,
+        bancoPago: movPago?.banco || null,
       };
     };
 
@@ -435,6 +443,8 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
         tipo: "Banco", doc: m.banco, nro: m.referencia || "—", rut: "",
         razon: m.descripcion || "", fecha: m.fecha, monto: Math.abs(m.monto),
         nota: conc?.notas || "", conciliada: !!conc,
+        fechaPago: m.fecha,
+        bancoPago: m.banco,
       };
     };
 
@@ -445,6 +455,7 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
         tipo: "Venta", doc: TIPO_DOC[v.tipo_doc] || String(v.tipo_doc),
         nro: v.folio || v.nro || "—", rut: v.rut_emisor || "—",
         razon: "", fecha: v.fecha_docto || "—", monto: v.monto_total || 0, nota: "", conciliada: false,
+        fechaPago: null, bancoPago: null,
       }));
     }
     if (expandedRow === "cos_sin_cat") {
@@ -467,6 +478,7 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
         tipo: "Venta", doc: TIPO_DOC[v.tipo_doc] || String(v.tipo_doc),
         nro: v.folio || v.nro || "—", rut: v.rut_emisor || "—",
         razon: "", fecha: v.fecha_docto || "—", monto: v.monto_total || 0, nota: "", conciliada: false,
+        fechaPago: null, bancoPago: null,
       }));
     }
 
@@ -697,7 +709,18 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
                     <td style={{ fontSize: 10, color: "var(--txt2)", fontStyle: d.nota ? "italic" : "normal", maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.nota || "—"}</td>
                     <td>
                       {d.conciliada ? (
-                        <span style={{ fontSize: 9, fontWeight: 600, padding: "1px 5px", borderRadius: 3, background: "var(--greenBg)", color: "var(--green)" }}>PAGADA</span>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
+                          {d.fechaPago && (
+                            <span className="mono" style={{ fontSize: 9, color: "var(--txt3)" }}>{d.fechaPago}</span>
+                          )}
+                          <span title={d.bancoPago || ""}
+                            style={{ fontSize: 9, fontWeight: 600, padding: "1px 5px", borderRadius: 3, background: "var(--greenBg)", color: "var(--green)" }}>
+                            PAGADA
+                          </span>
+                          {d.bancoPago && (
+                            <span style={{ fontSize: 9, color: "var(--txt3)", maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.bancoPago}</span>
+                          )}
+                        </div>
                       ) : (
                         <span style={{ fontSize: 9, fontWeight: 600, padding: "1px 5px", borderRadius: 3, background: "var(--amberBg)", color: "var(--amber)" }}>PEND.</span>
                       )}
