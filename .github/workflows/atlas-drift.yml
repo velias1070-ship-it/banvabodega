@@ -66,15 +66,31 @@ jobs:
             FILES=$(ls supabase/migrations/*.sql 2>/dev/null || true)
           fi
 
+          # Extraer nombres de identificadores y validarlos contra el patrón
+          # canónico snake_case (CONVENTIONS.md §1: ^[a-z][a-z0-9_]*$).
+          # Approach extract-then-validate evita falsos positivos del regex inline
+          # cuando IF NOT EXISTS u otras keywords se mezclan en la captura.
           for f in $FILES; do
             [ -f "$f" ] || continue
-            # Identificadores en CREATE TABLE / ADD COLUMN sin comillas con mayúscula
-            if grep -nEi 'CREATE[[:space:]]+(TABLE|TYPE|INDEX|VIEW|MATERIALIZED[[:space:]]+VIEW)[[:space:]]+([a-z_]+\.)?[A-Z][A-Za-z0-9_]*[[:space:]]' "$f" > /dev/null 2>&1; then
-              BAD="$BAD\n$f"
-            fi
-            if grep -nEi 'ADD[[:space:]]+COLUMN[[:space:]]+[A-Z][A-Za-z0-9_]*[[:space:]]' "$f" > /dev/null 2>&1; then
-              BAD="$BAD\n$f"
-            fi
+            # CREATE TABLE / TYPE / INDEX / VIEW / MATERIALIZED VIEW
+            # Devuelve los identificadores (sin prefijo schema).
+            ids=$(sed -nE 's/^[[:space:]]*CREATE[[:space:]]+(OR[[:space:]]+REPLACE[[:space:]]+)?(TABLE|TYPE|INDEX|VIEW|MATERIALIZED[[:space:]]+VIEW)[[:space:]]+(IF[[:space:]]+NOT[[:space:]]+EXISTS[[:space:]]+)?([a-zA-Z_][a-zA-Z0-9_]*\.)?([a-zA-Z_][a-zA-Z0-9_]*).*/\5/Ip' "$f")
+            # ALTER TABLE … ADD COLUMN <ident>
+            ids="$ids
+$(sed -nE 's/^[[:space:]]*ALTER[[:space:]]+TABLE[[:space:]]+[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]+ADD[[:space:]]+(COLUMN[[:space:]]+)?(IF[[:space:]]+NOT[[:space:]]+EXISTS[[:space:]]+)?([a-zA-Z_][a-zA-Z0-9_]*).*/\3/Ip' "$f")"
+            for id in $ids; do
+              [ -z "$id" ] && continue
+              # Skip keywords/SQL reserved words que el sed pudo capturar
+              # accidentalmente en sintaxis exótica (CONSTRAINT, PRIMARY, etc.).
+              case "$(echo "$id" | tr '[:upper:]' '[:lower:]')" in
+                if|or|replace|view|table|type|index|column|constraint|primary|foreign|key|references|using|with|on) continue ;;
+              esac
+              # snake_case canónico OR uno de los prefijos legacy permitidos por
+              # CONVENTIONS.md §1 (_sprint{N}_*, _audit_*, _deprecated_*).
+              if ! echo "$id" | grep -qE '^([a-z][a-z0-9_]*|_(sprint[0-9]+|audit|deprecated)_[a-z0-9_]+)$'; then
+                BAD="$BAD\n$f: identificador '$id' viola snake_case"
+              fi
+            done
           done
 
           if [ -n "$BAD" ]; then
