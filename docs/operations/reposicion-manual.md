@@ -83,12 +83,42 @@ UPDATE sku_node_policy
 El cron weekly (`/api/policy/sync-from-templates`) NO sobreescribe filas
 con `manual_override = true` (Sprint 2 garantiza esa invariante).
 
+## Cómo se calcula `qty_a_comprar`
+
+```
+stock_objetivo = cycle_stock + safety_stock + pre_full_target_full_ml
+qty_a_comprar  = max(0, stock_objetivo − stock_total − in_transit_bodega)
+```
+
+Donde:
+
+- `cycle_stock` = `vel_diaria × LT_proveedor` — cubre el ciclo entre
+  pedidos a proveedor.
+- `safety_stock` = `z × σ_dia × √LT × 1.075` (σ_LT < 2) o fórmula
+  combinada (σ_LT ≥ 2). Margen 7.5% por return rate.
+- `pre_full_target_full_ml` = `vel_diaria × target_dias_full` del nodo
+  `full_ml` (definido en `policy_templates`: 42d para AX, 28d para
+  AY/BX, 28d AZ, 15d BY/CX, 7d BZ/CY, 0d CZ).
+- `stock_total` = stock en bodega + stock en Full.
+- `in_transit_bodega` = lo que ya viene en OC abierta a bodega.
+
+**La OC entra a bodega y después transferís a Full** según la política
+de cada SKU. Es por eso que `qty_a_comprar` incluye `pre_full_target`:
+no compramos solo lo que falta en bodega, compramos lo que falta para
+mantener bodega + lo que hay que mandar a Full.
+
+> Sprint 4.1 (2026-05-03) corrigió un bug donde `pre_full_target` quedaba
+> en 0 en la vista de compras → la sugerencia subestimaba ~8× para SKUs
+> A/B en Full. Caso testigo: LITAF400G4PCL pasó de qty=4 a qty=33.
+
 ## Estructura de las vistas (Sprint 4)
 
 - **`v_safety_stock`** — SS, cycle_stock, ROP, pre_full_target por (SKU, Nodo).
   Excluye `policy_status != 'active'` y `action = 'no_reorder'` (CZ).
 - **`v_compras_pendientes`** — solo `bodega_central`, solo bajo ROP.
-  `clp_estimado=NULL` cuando sin costo (no inferimos).
+  `clp_estimado=NULL` cuando sin costo (no inferimos). Sprint 4.1 fix:
+  `pre_full_target` viene del nodo `full_ml` via CTE, no de la fila
+  bodega (que siempre era 0).
 - **`v_alertas_quiebre`** — solo bajo ROP, con nivel y prioridad.
 - **`v_reposicion_dashboard`** — master. La UI sólo lee esta vista.
 
