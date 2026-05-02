@@ -2,9 +2,10 @@
 # Capa Concept del CDMP (Concept-Domain-Model-Physical).
 # Define qué representa cada concepto del negocio, sin amarrarlo a la implementación.
 # Sprint 0 (2026-05-01) — 11 conceptos iniciales.
+# Sprint 0.5 (2026-05-02) — agregados 7 meta-conceptos de métricas (capa derivada).
 
-version: 1
-last_updated: 2026-05-01
+version: 2
+last_updated: 2026-05-02
 
 concepts:
 
@@ -92,3 +93,76 @@ concepts:
     cardinality: "Decenas — uno por (proveedor, modo) o (bodega, ML inbound)."
     dominio: logistica
     fisico: "Aún no existe tabla canónica (Sprint 1). Hoy: leadtime fijo en composicion o constantes."
+
+# ============================================================================
+# Meta-conceptos de MÉTRICAS (Sprint 0.5, 2026-05-02)
+# Cada uno agrupa N sub-métricas concretas; las fórmulas viven en /metrics.yaml.
+# ============================================================================
+
+  - id: velocidad
+    label: "Velocidad de venta"
+    description: "Tasa de salida del SKU en unidades por semana, en distintas ventanas y contextos."
+    cardinality: "1:N por sku_origen (varias ventanas)."
+    dominio: inventario
+    sub_metrics: [vel_7d, vel_30d, vel_60d, vel_ponderada, vel_full, vel_flex, vel_total, vel_ajustada_evento, vel_pre_quiebre, vel_flex_pre_quiebre, vel_objetivo, vel_ponderada_tsb]
+    materialized_in: [sku_intelligence]
+    defined_in: /metrics.yaml
+    fisico: "sku_intelligence.vel_* (12 columnas)"
+
+  - id: cobertura
+    label: "Cobertura"
+    description: "Días de stock disponible al ritmo de venta actual (por canal o consolidado)."
+    cardinality: "1:N por sku_origen (3 canales: full, flex, total)."
+    dominio: inventario
+    sub_metrics: [cob_full, cob_flex, cob_total]
+    materialized_in: [sku_intelligence]
+    defined_in: /metrics.yaml
+    notas:
+      - "Centinela 999 admisible cuando velocidad ≤ 0 (excepción inventory-policy regla 1, adendum)."
+
+  - id: clasificacion
+    label: "Clasificación de productos"
+    description: "Etiquetas que ordenan el portfolio: ABC (importancia), XYZ (variabilidad), cuadrante BCG (matriz), celda combinada."
+    cardinality: "1:N por sku_origen (5 ejes simultáneos)."
+    dominio: inventario
+    sub_metrics: [abc_margen, abc_ingreso, abc_unidades, xyz, cv, cuadrante, celda]
+    materialized_in: [sku_intelligence]
+    defined_in: /metrics.yaml
+    fuente_doctrina: "H1 (70/90), H2 (XYZ 0.25/0.60), policy_templates (9 celdas)"
+
+  - id: rentabilidad
+    label: "Rentabilidad"
+    description: "Métricas que combinan margen, costo y stock para evaluar eficiencia económica."
+    cardinality: "1:N por sku_origen + canal."
+    dominio: inventario
+    sub_metrics: [margen_full_30d, margen_flex_30d, margen_neto_30d, margen_unitario_pre_quiebre, gmroi, dio, costo_neto, costo_bruto, costo_inventario_total, precio_promedio]
+    materialized_in: [sku_intelligence, ventas_ml_cache]
+    defined_in: /metrics.yaml
+
+  - id: quiebre_metrics
+    label: "Métricas de quiebre"
+    description: "Profundidad y costo del agotamiento de stock."
+    cardinality: "1:N por sku_origen (separado por canal Full vs Flex)."
+    dominio: inventario
+    sub_metrics: [dias_en_quiebre, dias_en_quiebre_flex, venta_perdida_uds, venta_perdida_pesos, ingreso_perdido]
+    materialized_in: [sku_intelligence]
+    defined_in: /metrics.yaml
+    fuente_doctrina: "PR5 (ancla temporal), PR264 (rampup post-quiebre)"
+
+  - id: decision_reposicion
+    label: "Decisiones de reposición"
+    description: "Outputs accionables del motor: cuánto pedir al proveedor, cuánto mandar a Full."
+    cardinality: "1:1 por sku_origen."
+    dominio: inventario
+    sub_metrics: [pedir_proveedor, pedir_proveedor_sin_rampup, pedir_proveedor_bultos, factor_rampup_aplicado, mandar_full, target_dias_full, necesita_pedir, liquidacion_accion]
+    materialized_in: [sku_intelligence]
+    defined_in: /metrics.yaml
+
+  - id: ads_metrics
+    label: "Publicidad"
+    description: "Costo de ads, ACOS, ROAS, atribución a ventas."
+    cardinality: "1:N por sku_origen + campaña + día."
+    dominio: ventas
+    sub_metrics: [ads_cost_asignado, acos, roas]
+    materialized_in: [ml_ads_daily_cache, ventas_ml_cache]
+    defined_in: /metrics.yaml

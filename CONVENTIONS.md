@@ -57,6 +57,16 @@ Toda tabla nueva con potencial de conflicto SSoT debe:
 1. Aparecer en `ssot-registry.yml` con `owner_table` y `derivable_from`.
 2. Documentar si es snapshot, cache, o canónica.
 
+### Tres artefactos SSoT por capa
+
+| Artefacto | Qué documenta | Cuándo actualizar |
+|---|---|---|
+| `COMMENT ON COLUMN/TABLE` | El propósito de un campo físico, edge cases, contratos. | Toda migration que toca esa columna. |
+| `ssot-registry.yml` | Para cada concepto crítico: tabla canónica, función SSoT, consumers, derivable_from. | Cuando aparece un concepto nuevo o cambia el owner. |
+| `metrics.yaml` (Sprint 0.5) | Catálogo central de métricas: fórmula exacta, inputs, filters, grain, unit, consumed_by, fuente_doctrina. | Cuando se agrega una métrica al motor o cambia su fórmula. |
+
+Regla: una métrica nueva en `intelligence.ts` (o cualquier `src/lib/*.ts`) debe llegar a `/metrics.yaml` en el mismo PR. Sin entrada en metrics.yaml = no hay merge.
+
 ## 4. CDMP (Concept-Domain-Model-Physical)
 
 Capas de la información:

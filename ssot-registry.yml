@@ -3,8 +3,8 @@
 # Cada concepto crítico tiene exactamente UN owner_table autoritativo.
 # Tablas que derivan o cachean datos lo declaran explícitamente.
 
-version: 1
-last_updated: 2026-05-01
+version: 2
+last_updated: 2026-05-02
 owner: Vicente Elías
 
 ssots:
@@ -73,9 +73,113 @@ ssots:
       - Sprint 1: cálculo SS King Method por celda
       - Sprint 2: forecast del ROP
 
+# ============================================================================
+# SSoTs de MÉTRICAS (Sprint 0.5, 2026-05-02)
+# Las fórmulas concretas viven en /metrics.yaml. Aquí se registra la SSoT real
+# (función pura) y la tabla cache que la persiste.
+# ============================================================================
+
+  - concept: velocidad_sku
+    description: "Velocidades vel_7d / 30d / 60d / ponderada / pre_quiebre / ajustada_evento por SKU."
+    domain: inventario
+    owner_table: sku_intelligence  # CACHE
+    write_path: "intelligence.ts:agregarOrdenes + calcVelPonderada (función pura, llamada en recalc)"
+    ssot_function: "intelligence.ts:1040-1124"
+    defined_in: /metrics.yaml
+    consumers:
+      - agente_reposicion
+      - agente_inventario
+      - agente_rentabilidad
+      - panel inteligencia
+    notes: "sku_intelligence es CACHE. SSoT real es la función pura. Sprint 3 valida y refactoriza."
+    last_audited: 2026-05-02
+
+  - concept: clasificacion_abc_xyz
+    description: "ABC (3 ejes: margen/ingreso/unidades), XYZ (CV), cuadrante BCG, celda combinada."
+    domain: inventario
+    owner_table: sku_intelligence  # CACHE
+    write_path: "intelligence.ts:paretoABC + cálculo CV inline"
+    ssot_function: "intelligence.ts:1192-1196 (xyz), 1650-1742 (Pareto), 1781-1792 (cuadrante)"
+    defined_in: /metrics.yaml
+    consumers:
+      - policy_templates lookup (Sprint 1)
+      - protección quiebre prolongado rama 2
+      - panel inteligencia
+    notes: |
+      INCONSISTENCIA documentada (I1): bandas xyz código (0.5/1.0) vs decisión H2 (0.25/0.60).
+      Sprint 3 alinea código con H2.
+    last_audited: 2026-05-02
+
+  - concept: decision_reposicion
+    description: "pedir_proveedor / mandar_full / pedir_bultos derivados con SS+target_dias+rampup."
+    domain: inventario
+    owner_table: sku_intelligence  # CACHE
+    write_path: "intelligence.ts:1906-2003 (composición de varias funciones)"
+    ssot_function: "intelligence.ts:resolverPedirProveedor + resolverMandarFull"
+    defined_in: /metrics.yaml
+    consumers:
+      - panel reposición
+      - /api/ml/picking
+      - agente_reposicion + agente_inventario
+    notes: "Decisión final = ceil(cantidad_objetivo - stock_total) × factor_rampup. Sprint 1 leerá policy_templates."
+    last_audited: 2026-05-02
+
+  - concept: rentabilidad_sku
+    description: "margen_full/flex_*, gmroi, dio, costo_inventario_total, precio_promedio."
+    domain: inventario
+    owner_table: sku_intelligence  # CACHE de la fórmula
+    write_path: "reposicion.ts:calcMargenIntel (función pura) + intelligence.ts:1248-1252 (gmroi/dio)"
+    ssot_function: "reposicion.ts:184-199 (margen) + intelligence.ts (gmroi/dio)"
+    defined_in: /metrics.yaml
+    consumers:
+      - agente_rentabilidad
+      - panel rentabilidad
+      - canal_mas_rentable derivado
+    last_audited: 2026-05-02
+
+  - concept: quiebre_metrics_sku
+    description: "dias_en_quiebre, fecha_entrada_quiebre, venta_perdida_uds/pesos, ingreso_perdido."
+    domain: inventario
+    owner_table: sku_intelligence  # CACHE temporal con preservación
+    write_path: "intelligence.ts:resolverDiasEnQuiebre + venta_perdida cálculo"
+    ssot_function: "intelligence.ts:1290-1391"
+    defined_in: /metrics.yaml
+    consumers:
+      - alertas (agotado_full, agotado_riesgo_venta_perdida)
+      - rampup matrix
+      - panel reposición
+    notes: |
+      Preservación entre recalcs: vel_pre_quiebre + fecha_entrada_quiebre se mantienen mientras stock_full=0.
+      Reset cuando stock_full > 0 AND vel_30d > 0.
+    last_audited: 2026-05-02
+
+  - concept: ads_attribution
+    description: "ads_cost_asignado por venta vía pro-rata (ads.ts:69-104). ACOS/ROAS lectura directa ML."
+    domain: ventas
+    owner_table: ventas_ml_cache  # ads_cost_asignado columna
+    cache_table: ml_ads_daily_cache  # cache de la API ML
+    write_path: "ads.ts:asignarCostoAds (función pura)"
+    ssot_function: "ads.ts:69-104"
+    defined_in: /metrics.yaml
+    consumers:
+      - margen_neto cálculo
+      - ROAS panel
+      - ml_campaigns_monthly_summary (vista SQL)
+    last_audited: 2026-05-02
+
 # Tablas en observación (candidatas a futuros SSoTs)
 under_observation:
   - inteligencia_full:
       reason: "Derivada en runtime; podría persistirse si baja la latencia o crece el volumen."
   - forecast_accuracy:
       reason: "Sprint 3 considerará si forecast es SSoT separado o derivado de sku_intelligence."
+
+# ============================================================================
+# Pointers de fuentes externas relevantes
+# ============================================================================
+external_references:
+  metrics_catalog: /metrics.yaml
+  inconsistencies: /docs/metrics-inconsistencies-2026-05-02.md
+  conventions: /CONVENTIONS.md
+  policies: /docs/policies/  # vinculantes
+  manuales: /docs/manuales/  # referencia, no autoritativo

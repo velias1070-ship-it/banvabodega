@@ -1,0 +1,1072 @@
+# BANVA Bodega — Catálogo central de métricas
+#
+# Registry SSoT de TODAS las métricas que el motor de inteligencia, los agentes
+# (reposición / inventario / rentabilidad / observador / orquestador / chat) y la
+# UI consumen. Cada métrica tiene una sola fórmula canónica documentada aquí.
+#
+# Sprint 0.5 (2026-05-02). Este archivo NO modifica fórmulas existentes — sólo
+# las inventaria. Las inconsistencias detectadas se resuelven en Sprint 3 con
+# decisión humana (ver docs/metrics-inconsistencies-2026-05-02.md).
+#
+# Convenciones por entrada:
+#   name: snake_case, mismo nombre de la columna en sku_intelligence cuando aplica.
+#   formula_sql / formula_text: la fórmula real. SQL si es expresable; texto si
+#     es procedural (TSB, Pareto cumsum, rampup matrix).
+#   input_tables: tablas reales que se leen para producir la métrica.
+#   filters: filtros aplicados en la query (.eq/.neq/.gte/.lte).
+#   grain: granularidad output (sku_origen, sku_origen+canal, sku_origen+semana).
+#   ssot_table: dónde vive el valor persistido (CACHE — la fórmula es el SSoT real).
+#   ssot_function: función pura que la calcula. ES la fuente de verdad.
+#   fuente_doctrina: manual + página + policy + hallazgo asociado.
+#   consumed_by: rutas/agentes/UI que la leen.
+#
+# Total entradas: 38 métricas + 6 decisiones binarias.
+
+version: 1
+last_updated: 2026-05-02
+last_audited: 2026-05-02
+owner_human: vicente
+sprint_origen: sprint-0.5
+
+# ============================================================================
+# CATEGORÍA: VELOCIDAD (8 métricas core + 4 derivadas por canal/contexto)
+# ============================================================================
+
+metrics:
+
+  - name: vel_7d
+    description: "Unidades vendidas en los últimos 7 días, sin censoring de quiebre."
+    domain: inventario
+    owner_human: vicente
+    owner_agent: agente_reposicion
+    formula_sql: "SUM(cantidad) WHERE fecha_date >= today-7 AND anulada=false"
+    formula_text: "Suma directa de unidades vendidas últimos 7 días, antes de dividir por 1 (= 1 semana)."
+    input_tables: [ventas_ml_cache, composicion_venta]
+    filters: ["anulada = false"]
+    grain: [sku_origen]
+    time_grain: rolling_7d
+    unit: unidades_por_semana
+    consumed_by:
+      - "intelligence.ts:1040 (cálculo principal)"
+      - "tendencia_vel + es_pico (intelligence.ts:1110-1113)"
+      - "vel_ponderada (peso 0.5)"
+    ssot_table: sku_intelligence
+    ssot_function: "intelligence.ts:agregarOrdenes"
+    censoring: "NO excluye semanas con quiebre. Decisión documentada (ver inventario-formulas.md:208-211)."
+    fuente_doctrina: "inventario-formulas.md:206-211"
+    notas: "vel_7d intencionalmente sin censoring para detectar reactivación post-quiebre."
+
+  - name: vel_30d
+    description: "Velocidad de venta promedio diaria en ventana 30d, censurada por semanas en quiebre Full ML."
+    domain: inventario
+    owner_human: vicente
+    owner_agent: agente_reposicion
+    formula_sql: "SUM(uds_30d) / NULLIF(semanasActivas_30d, 0)"
+    formula_text: |
+      semanasActivas_30d = max(1, 4.3 − semanas_en_quiebre)
+      vel_30d = sum(unidades últimos 30d) / semanasActivas_30d
+    input_tables: [ventas_ml_cache, composicion_venta, stock_snapshots]
+    filters: ["anulada = false", "fecha_date >= today-30"]
+    grain: [sku_origen]
+    time_grain: rolling_30d
+    unit: unidades_por_semana
+    consumed_by:
+      - "intelligence.ts:1042"
+      - "vel_ponderada (peso 0.3)"
+      - "abc_unidades input (uds_30d)"
+      - "agente_reposicion (lectura cache)"
+    ssot_table: sku_intelligence
+    ssot_function: "intelligence.ts:agregarOrdenes"
+    censoring: "Excluye semanas con stock_full=0 ≥3 días."
+    fuente_doctrina: "inventario-formulas.md:206-211"
+
+  - name: vel_60d
+    description: "Velocidad ventana 60d, censurada por quiebre análogo a vel_30d."
+    domain: inventario
+    owner_agent: agente_reposicion
+    formula_sql: "SUM(uds_60d) / NULLIF(semanasActivas_60d, 0)"
+    formula_text: |
+      semanasActivas_60d = max(1, 8.6 − semanas_en_quiebre)
+      vel_60d = sum(unidades últimos 60d) / semanasActivas_60d
+    input_tables: [ventas_ml_cache, stock_snapshots]
+    filters: ["anulada = false", "fecha_date >= today-60"]
+    grain: [sku_origen]
+    time_grain: rolling_60d
+    unit: unidades_por_semana
+    consumed_by: ["intelligence.ts:1044", "vel_ponderada (peso 0.2)"]
+    ssot_table: sku_intelligence
+    ssot_function: "intelligence.ts:agregarOrdenes"
+    fuente_doctrina: "inventario-formulas.md:206-211"
+
+  - name: vel_ponderada
+    description: "Promedio móvil ponderado de las 3 ventanas (favorece reciente)."
+    domain: inventario
+    owner_agent: agente_reposicion
+    formula_sql: "0.5*vel_7d + 0.3*vel_30d + 0.2*vel_60d"
+    input_tables: ["(deriva de vel_7d, vel_30d, vel_60d)"]
+    grain: [sku_origen]
+    unit: unidades_por_semana
+    consumed_by:
+      - "intelligence.ts:1051-1055 (cálculo)"
+      - "cob_full, dio, gmroi, pedir_proveedor (denominador)"
+      - "agente_reposicion + agente_inventario + agente_rentabilidad (lectura)"
+    ssot_table: sku_intelligence
+    ssot_function: "intelligence.ts:calcVelPonderada"
+    fuente_doctrina: "inventario-formulas.md (sección velocidades)"
+    notas: "Ver vel_ponderada_tsb (shadow): activación condicional Fase C."
+
+  - name: vel_full
+    description: "Componente de vel_ponderada atribuible al canal Full ML."
+    domain: inventario
+    formula_sql: "vel_ponderada * pct_full"
+    input_tables: ["(deriva de vel_ponderada y pct_full)"]
+    grain: [sku_origen]
+    unit: unidades_por_semana
+    consumed_by: ["intelligence.ts:1107", "cob_full", "mandar_full target"]
+    ssot_table: sku_intelligence
+    ssot_function: "intelligence.ts (cálculo inline)"
+    fuente_doctrina: "inventario-formulas.md (split por canal)"
+
+  - name: vel_flex
+    description: "Componente de vel_ponderada atribuible al canal Flex."
+    domain: inventario
+    formula_sql: "vel_ponderada * pct_flex"
+    input_tables: ["(deriva de vel_ponderada y pct_flex)"]
+    grain: [sku_origen]
+    unit: unidades_por_semana
+    consumed_by: ["intelligence.ts:1108", "cob_flex"]
+    ssot_table: sku_intelligence
+    ssot_function: "intelligence.ts (cálculo inline)"
+
+  - name: vel_total
+    description: "Suma de vel_full + vel_flex (≈ vel_ponderada modulo redondeos)."
+    domain: inventario
+    formula_sql: "vel_full + vel_flex"
+    grain: [sku_origen]
+    unit: unidades_por_semana
+    ssot_table: sku_intelligence
+    notas: "Numéricamente == vel_ponderada cuando pct_full + pct_flex == 1. Útil para exhibir composición."
+
+  - name: vel_ajustada_evento
+    description: "vel_ponderada modulada por multiplicador de evento estacional/promo activo."
+    domain: inventario
+    owner_agent: agente_reposicion
+    formula_sql: "vel_ponderada * multiplicador_evento"
+    formula_text: |
+      multiplicador_evento = max(1.0, multiplicadores de eventos activos sobre el SKU)
+      vel_ajustada_evento = vel_ponderada × multiplicador_evento
+    input_tables: [eventos, productos]
+    filters: ["evento.estado = 'activo'", "evento aplica al SKU vía categoría o lista directa"]
+    grain: [sku_origen]
+    unit: unidades_por_semana
+    consumed_by: ["intelligence.ts:1116-1124", "pedir_proveedor (vel_calculo)", "mandar_full"]
+    ssot_table: sku_intelligence
+    ssot_function: "intelligence.ts:aplicarMultiplicadorEvento"
+
+  - name: vel_pre_quiebre
+    description: "Snapshot de vel_ponderada al entrar en quiebre Full. Preservado durante quiebre + rampup post-restock."
+    domain: inventario
+    owner_agent: agente_reposicion
+    formula_text: |
+      Si hoy entra en quiebre (stock_full=0 && vel_ponderada>0 && previo no estaba en quiebre):
+        vel_pre_quiebre = vel_ponderada (al momento del flip)
+      Mientras el quiebre persiste: vel_pre_quiebre se conserva.
+      Al salir de quiebre con confirmación (stock_full>0 && vel_30d>0): se reset.
+    input_tables: [sku_intelligence]
+    grain: [sku_origen]
+    unit: unidades_por_semana
+    consumed_by:
+      - "intelligence.ts:33-46 (esQuiebreProlongadoProtegido)"
+      - "pedir_proveedor (rama protección)"
+      - "venta_perdida_uds, ingreso_perdido"
+      - "abc_pre_quiebre, margen_unitario_pre_quiebre (snapshots paralelos)"
+    ssot_table: sku_intelligence
+    ssot_function: "intelligence.ts:preservarPreQuiebre"
+    fuente_doctrina: "PR264 quiebre prolongado protegido"
+
+  - name: vel_flex_pre_quiebre
+    description: "Snapshot de vel_flex al entrar en quiebre Flex (canal independiente del Full)."
+    domain: inventario
+    formula_text: "Análogo a vel_pre_quiebre pero sobre vel_flex y fecha_entrada_quiebre_flex."
+    grain: [sku_origen]
+    unit: unidades_por_semana
+    ssot_table: sku_intelligence
+    fuente_doctrina: "v60 quiebre flex"
+
+  - name: vel_objetivo
+    description: "Velocidad target seteada manualmente por el operador (override). Permite gap_vel_pct."
+    domain: inventario
+    formula_sql: "(set vía PATCH /api/intelligence/sku/[sku]/vel-objetivo)"
+    grain: [sku_origen]
+    unit: unidades_por_semana
+    consumed_by: ["gap_vel_pct", "AdminInteligencia (UI)"]
+    ssot_table: sku_intelligence
+    ssot_function: "(override manual, no función pura)"
+    notas: "Sin guardrails de rango actualmente — Sprint 3 evalúa validación 0 < vel_objetivo < 100×vel_ponderada."
+
+  - name: vel_ponderada_tsb
+    description: "Forecast TSB (Teunter-Syntetos-Babai) para detectar obsolescencia/intermitencia. SHADOW MODE."
+    domain: inventario
+    owner_agent: agente_observador
+    formula_text: |
+      z_t = α·y_t + (1-α)·z_{t-1}   (sólo si y_t > 0)
+      p_t = β·I(y_t>0) + (1-β)·p_{t-1}   (siempre)
+      forecast = z_t · p_t
+      α, β auto-calibrados por grid search 0.1-0.4 minimizando MSE.
+    input_tables: [ventas_ml_cache]
+    filters: ["últimas 9-12 semanas", "min 8 semanas de historia"]
+    grain: [sku_origen]
+    unit: unidades_por_semana
+    consumed_by: ["NADIE en producción aún (shadow)", "Fase C: reemplazará vel_ponderada para SKUs xyz='Z'"]
+    ssot_table: sku_intelligence
+    ssot_function: "tsb.ts:calcTSB"
+    notas: "Activación condicional: sólo SKUs con xyz='Z' y forecast_es_confiable_8s=true."
+    fuente_doctrina: "tsb.ts:163-186"
+
+# ============================================================================
+# CATEGORÍA: STOCK (7 métricas)
+# ============================================================================
+
+  - name: stock_full
+    description: "Stock distribuido en bodegas Full de MercadoLibre. Cache reconstruible."
+    domain: inventario
+    formula_sql: "SUM(stock_full_cache.cantidad * composicion_venta.unidades) GROUP BY sku_origen"
+    input_tables: [stock_full_cache, composicion_venta]
+    grain: [sku_origen]
+    unit: unidades
+    consumed_by: ["cob_full", "mandar_full", "pedir_proveedor", "calcularEstadoFlexFull (P-INV-1)"]
+    ssot_table: stock_full_cache  # CACHE de ML
+    ssot_function: "intelligence.ts:agregarStockFull (suma por composición)"
+    fuente_doctrina: "ssot-registry.yml:stock_full_ml"
+
+  - name: stock_bodega
+    description: "Stock físico real en bodega BANVA, suma de SKU principal + alternativos."
+    domain: inventario
+    formula_sql: "SUM(stock.cantidad) FILTER (sku=p.sku OR sku in alternatives)"
+    input_tables: [stock, composicion_venta]
+    grain: [sku_origen]
+    unit: unidades
+    consumed_by: ["stock_total", "mandar_full disponible", "pedir_proveedor"]
+    ssot_table: stock  # CANÓNICA
+    ssot_function: "intelligence.ts:agregarStockBodega"
+    fuente_doctrina: "ssot-registry.yml:stock_canonico (P-INV-1, registrar_movimiento_stock)"
+
+  - name: stock_total
+    description: "Suma simple de stock disponible en todos los nodos: bodega + Full."
+    domain: inventario
+    formula_sql: "stock_full + stock_bodega"
+    grain: [sku_origen]
+    unit: unidades
+    consumed_by: ["dio", "gmroi (denominador costo_inventario)", "necesita_pedir"]
+    ssot_table: sku_intelligence
+    ssot_function: "intelligence.ts (suma)"
+
+  - name: stock_en_transito
+    description: "Stock comprado al proveedor pero aún no recibido en bodega."
+    domain: inventario
+    formula_text: "Suma de unidades en órdenes de compra activas (estado != 'recibida_total' && != 'cancelada') del SKU + alternativos."
+    input_tables: [ordenes_compra, ordenes_compra_lineas]
+    filters: ["oc.estado IN ('confirmada', 'parcial')"]
+    grain: [sku_origen]
+    unit: unidades
+    consumed_by: ["stock_proyectado", "vista_oc"]
+    ssot_table: sku_intelligence
+    ssot_function: "intelligence.ts:queryOrdenesCompraActivas"
+    notas: "NO se usa en deficit_full (per P-INV-3). Sí se usa en pedir_proveedor (stock_total denominador)."
+
+  - name: stock_proyectado
+    description: "Stock total + en tránsito. Vista forward."
+    domain: inventario
+    formula_sql: "stock_total + stock_en_transito"
+    grain: [sku_origen]
+    unit: unidades
+    consumed_by: ["v_stock_proyectado (vista SQL)", "panel reposición (informativo)"]
+    ssot_table: sku_intelligence
+
+  - name: stock_proveedor
+    description: "Stock declarado por el proveedor que tiene listo para enviar (informativo)."
+    domain: compras
+    formula_text: "Suma de proveedor_catalogo.stock_disponible filtrado por SKU."
+    input_tables: [proveedor_catalogo]
+    grain: [sku_origen]
+    unit: unidades
+    consumed_by: ["alerta_agotado_con_proveedor"]
+    ssot_table: sku_intelligence
+
+  - name: stock_sin_etiquetar
+    description: "Stock que llegó del proveedor pero aún no se etiquetó (no listo para Full)."
+    domain: inventario
+    formula_text: "Diferencia entre recepciones y unidades etiquetadas."
+    grain: [sku_origen]
+    unit: unidades
+    ssot_table: sku_intelligence
+    fuente_doctrina: "feedback_etiqueta_impresa_fuente_verdad (etiqueta_impresa=false invalida sku_venta)"
+
+# ============================================================================
+# CATEGORÍA: COBERTURA (3)
+# ============================================================================
+
+  - name: cob_full
+    description: "Días de stock Full al ritmo de venta Full actual."
+    domain: inventario
+    formula_sql: "CASE WHEN vel_full > 0 THEN ROUND((stock_full / vel_full) * 7, 2) ELSE 999 END"
+    formula_text: "(stock_full / vel_full_calc) × 7  → días"
+    grain: [sku_origen]
+    unit: dias
+    consumed_by: ["alertas agotado_full", "panel inteligencia"]
+    ssot_table: sku_intelligence
+    ssot_function: "intelligence.ts:1944"
+    notas: "Centinela 999 cuando vel_full ≤ 0 (excepción a inventory-policy.md regla 1, adendum)."
+    fuente_doctrina: "inventory-policy.md regla 1 + adendum centinela"
+
+  - name: cob_flex
+    description: "Días de cobertura del canal Flex."
+    domain: inventario
+    formula_sql: "CASE WHEN vel_flex > 0 THEN ROUND((stock_bodega_disponible / vel_flex) * 7, 2) ELSE 999 END"
+    grain: [sku_origen]
+    unit: dias
+    ssot_table: sku_intelligence
+
+  - name: cob_total
+    description: "Días de cobertura sobre stock_total y vel_ponderada."
+    domain: inventario
+    formula_sql: "CASE WHEN vel_ponderada > 0 THEN ROUND((stock_total / vel_ponderada) * 7, 2) ELSE 999 END"
+    grain: [sku_origen]
+    unit: dias
+    ssot_table: sku_intelligence
+
+# ============================================================================
+# CATEGORÍA: CLASIFICACIÓN (5 metricas + 1 derivada de policy_templates)
+# ============================================================================
+
+  - name: abc_margen
+    description: "Pareto sobre margen bruto 30d. PRINCIPAL — dispara decisiones operativas."
+    domain: inventario
+    formula_text: |
+      Para cada SKU con margen_neto_30d > 0:
+        ordenar desc por margen_neto_30d
+        cumsum_pct = cumsum(margen) / total(margen) × 100
+      A: cumsum_pct ≤ 70   # H1 cerrado por Vicente
+      B: 70 < cumsum_pct ≤ 90
+      C: cumsum_pct > 90
+    input_tables: [ventas_ml_cache, sku_intelligence]
+    filters: ["margen_neto_30d > 0"]
+    grain: [sku_origen]
+    unit: enum [A, B, C]
+    consumed_by:
+      - "cuadrante (eje X)"
+      - "policy_templates lookup"
+      - "lead_time fallback"
+      - "agentes (lectura)"
+    ssot_table: sku_intelligence
+    ssot_function: "intelligence.ts:paretoABC con getVal=margen_neto_30d"
+    fuente_doctrina: "Pareto 70/90 (H1 cerrado por Vicente). SPM:255-265."
+    notas: "Imputación quiebre prolongado: margen_neto_30d = max(real, vel_pre × margen_unitario_pre × 4.3) para SKUs ≥14d quiebre + vel_pre>2."
+
+  - name: abc_ingreso
+    description: "Pareto sobre ingreso 30d. Secundario."
+    domain: inventario
+    formula_text: "Análogo a abc_margen con getVal=ingreso_30d."
+    grain: [sku_origen]
+    unit: enum [A, B, C]
+    ssot_table: sku_intelligence
+
+  - name: abc_unidades
+    description: "Pareto sobre unidades 30d. Define eje Y del cuadrante BCG."
+    domain: inventario
+    formula_text: "Análogo a abc_margen con getVal=uds_30d."
+    grain: [sku_origen]
+    unit: enum [A, B, C]
+    consumed_by: ["cuadrante (eje Y)"]
+    ssot_table: sku_intelligence
+
+  - name: xyz
+    description: "Clasificación por variabilidad de demanda. Bandas CV crudo (sin deseasonalización)."
+    domain: inventario
+    formula_text: |
+      σ_demanda_semanal = stddev(ventas_semana últimas 9-12 semanas, sólo sin quiebre)
+      μ_demanda_semanal = mean(ventas_semana últimas 9-12 semanas, sólo sin quiebre)
+      CV = σ / μ
+      X: CV < 0.5
+      Y: 0.5 ≤ CV < 1.0
+      Z: CV ≥ 1.0
+    input_tables: [ventas_ml_cache, stock_snapshots]
+    filters: ["semanas sin quiebre (excluye semanasEnQuiebre Set)"]
+    grain: [sku_origen]
+    unit: enum [X, Y, Z]
+    consumed_by: ["tsb_modelo_usado (Z → candidato TSB)", "celda derivada"]
+    ssot_table: sku_intelligence
+    ssot_function: "intelligence.ts:1192-1196"
+    censoring: "Excluye semanas con stock_full=0 ≥3 días (tracked en stock_snapshots)."
+    fuente_doctrina: "intelligence.ts:1194-1196"
+    notas: |
+      INCONSISTENCIA: H2 cerrado 2026-05-01 prescribe bandas 0.25/0.60 deseasonalizadas (textil hogar);
+      el código usa 0.5/1.0 CV crudo. Sprint 3 alinea código con decisión H2.
+      Ver docs/metrics-inconsistencies-2026-05-02.md hallazgo I1.
+
+  - name: cv
+    description: "Coefficient of Variation de demanda semanal. Input bruto de XYZ."
+    domain: inventario
+    formula_sql: "STDDEV(ventas_semana) / NULLIF(AVG(ventas_semana), 0)"
+    grain: [sku_origen]
+    unit: ratio_adimensional
+    ssot_table: sku_intelligence
+    ssot_function: "intelligence.ts:1193"
+
+  - name: cuadrante
+    description: "BCG matrix 2×2 sobre abc_margen × abc_unidades."
+    domain: inventario
+    formula_text: |
+      abc_margen=A, abc_unidades=A  → ESTRELLA
+      abc_margen=A, abc_unidades≠A → CASHCOW
+      abc_margen≠A, abc_unidades=A → VOLUMEN
+      otro                          → REVISAR
+    grain: [sku_origen]
+    unit: enum [ESTRELLA, CASHCOW, VOLUMEN, REVISAR]
+    consumed_by: ["esQuiebreProlongadoProtegido rama 2 (intelligence.ts:33-46)", "agente_inventario priorización"]
+    ssot_table: sku_intelligence
+    ssot_function: "intelligence.ts:1781-1792"
+
+  - name: celda
+    description: "Concatenación abc_margen + xyz → 9 valores ABC×XYZ. Lookup a policy_templates."
+    domain: inventario
+    formula_sql: "abc_margen || xyz"
+    grain: [sku_origen]
+    unit: enum [AX, AY, AZ, BX, BY, BZ, CX, CY, CZ]
+    consumed_by: ["policy_templates lookup (Sprint 1)"]
+    ssot_table: "(derivable, no persistido aún)"
+    notas: "Sprint 1 evalúa persistir como columna sku_intelligence.celda."
+
+# ============================================================================
+# CATEGORÍA: MARGEN / RENTABILIDAD (8)
+# ============================================================================
+
+  - name: margen_full_30d
+    description: "Margen bruto unitario promedio canal Full últimos 30d."
+    domain: inventario
+    formula_text: |
+      ingreso_unit  = SUM(subtotal_30d_full) / SUM(cantidad_30d_full)
+      comision_unit = SUM(comision_30d_full) / SUM(cantidad_30d_full)
+      envio_unit    = SUM(costo_envio_30d_full) / SUM(cantidad_30d_full)
+      margen_full_30d = ingreso_unit − comision_unit − envio_unit − costo_producto
+    input_tables: [ventas_ml_cache]
+    filters: ["anulada = false", "channel = 'full'", "fecha_date >= today-30"]
+    grain: [sku_origen]
+    unit: pesos_clp
+    consumed_by: ["gmroi", "canal_mas_rentable", "pct_full ajuste"]
+    ssot_table: sku_intelligence
+    ssot_function: "reposicion.ts:calcMargenIntel:184-199"
+    fuente_doctrina: "reposicion.ts (función pura)"
+
+  - name: margen_flex_30d
+    description: "Margen unitario canal Flex 30d. Diferencia clave: costo_envio_real = COSTO_ENVIO_FLEX (3320 CLP) − ingreso_envio_promedio."
+    domain: inventario
+    formula_text: |
+      costo_envio_real = COSTO_ENVIO_FLEX (3320) − (SUM(ingreso_envio) / SUM(cantidad))
+      margen_flex_30d = ingreso_unit − comision_unit − costo_envio_real − costo_producto
+    input_tables: [ventas_ml_cache]
+    filters: ["anulada = false", "channel = 'flex'", "fecha_date >= today-30"]
+    grain: [sku_origen]
+    unit: pesos_clp
+    ssot_table: sku_intelligence
+    ssot_function: "reposicion.ts:calcMargenIntel"
+
+  - name: margen_unitario_pre_quiebre
+    description: "Snapshot del margen unitario al entrar en quiebre. Usado para imputar margen_neto_30d en SKUs en quiebre prolongado."
+    domain: inventario
+    formula_text: "Snapshot = (margen_full_30d × pct_full_pre + margen_flex_30d × pct_flex_pre) al momento de entrar en quiebre."
+    grain: [sku_origen]
+    unit: pesos_clp
+    ssot_table: sku_intelligence  # con COMMENT existente
+
+  - name: margen_neto_30d
+    description: "Margen bruto acumulado 30d desde ventas_ml_cache.margen (sin restar ads). Input del Pareto abc_margen."
+    domain: inventario
+    formula_sql: "SUM(margen) WHERE fecha_date >= today-30 AND anulada=false"
+    input_tables: [ventas_ml_cache]
+    filters: ["anulada = false"]
+    grain: [sku_origen]
+    unit: pesos_clp
+    consumed_by: ["abc_margen (input Pareto)"]
+    ssot_table: sku_intelligence  # con COMMENT existente
+    ssot_function: "intelligence-queries.ts:queryMargenPorSku"
+
+  - name: gmroi
+    description: "Gross Margin Return on Investment anualizado. Eficiencia del capital invertido en stock."
+    domain: inventario
+    owner_agent: agente_rentabilidad
+    formula_text: |
+      margen_prom = margen_full_30d × pct_full + margen_flex_30d × pct_flex
+      margen_bruto_anual = margen_prom × vel_ponderada × 52
+      costo_inventario_total = costo_bruto × stock_total
+      gmroi = margen_bruto_anual / costo_inventario_total   (0 si costo_inventario=0)
+    grain: [sku_origen]
+    unit: ratio_adimensional
+    consumed_by: ["agente_rentabilidad", "panel rentabilidad"]
+    ssot_table: sku_intelligence
+    ssot_function: "intelligence.ts:1248-1252"
+
+  - name: dio
+    description: "Days Inventory Outstanding. Días equivalentes de stock total."
+    domain: inventario
+    formula_sql: "CASE WHEN vel_ponderada > 0 THEN (stock_total / vel_ponderada) * 7 ELSE 999 END"
+    grain: [sku_origen]
+    unit: dias
+    consumed_by: ["agente_rentabilidad", "panel rentabilidad"]
+    ssot_table: sku_intelligence
+    notas: "Centinela 999 igual que cob_full."
+
+  - name: precio_promedio
+    description: "Precio promedio de venta últimos 30d (ingreso bruto unitario)."
+    domain: ventas
+    formula_sql: "SUM(subtotal_30d) / SUM(cantidad_30d)"
+    input_tables: [ventas_ml_cache]
+    filters: ["anulada = false"]
+    grain: [sku_origen]
+    unit: pesos_clp
+    consumed_by: ["ingreso_perdido fallback (margen_estimado)", "panel pricing"]
+    ssot_table: sku_intelligence
+
+  - name: costo_neto
+    description: "Costo neto unitario (sin IVA) del SKU. Cascada de fuentes."
+    domain: inventario
+    formula_text: |
+      Cascada: costo_promedio (WAC) > costo (catálogo manual) > 0
+      (NO inferir desde promedio de familia — feedback_no_inferir_costos)
+    input_tables: [productos]
+    grain: [sku_origen]
+    unit: pesos_clp
+    ssot_table: sku_intelligence
+    ssot_function: "costos.ts (cascada)"
+    fuente_doctrina: "feedback_no_inferir_costos"
+
+  - name: costo_bruto
+    description: "Costo neto + IVA. Usado en valor de inventario."
+    domain: inventario
+    formula_sql: "costo_neto * 1.19"
+    grain: [sku_origen]
+    unit: pesos_clp
+    ssot_table: sku_intelligence
+
+  - name: costo_inventario_total
+    description: "Valor total del stock al costo bruto."
+    domain: inventario
+    formula_sql: "costo_bruto * stock_total"
+    grain: [sku_origen]
+    unit: pesos_clp
+    consumed_by: ["gmroi (denominador)"]
+    ssot_table: sku_intelligence
+
+# ============================================================================
+# CATEGORÍA: QUIEBRE / PÉRDIDA (5)
+# ============================================================================
+
+  - name: dias_en_quiebre
+    description: "Días continuos con stock_full=0 y demanda > 0. Ancla temporal."
+    domain: inventario
+    formula_text: |
+      Si stock_full=0 && vel_ponderada>0:
+        Si previo tenía fecha_entrada_quiebre: dias = floor((hoy − fecha_entrada) / 1d)
+        Else: dias=0, fecha_entrada_quiebre=hoy
+      Else (stock_full > 0): dias=null, reset fecha_entrada_quiebre
+    input_tables: [sku_intelligence (snapshot previo)]
+    grain: [sku_origen]
+    unit: dias
+    consumed_by:
+      - "esQuiebreProlongadoProtegido (≥14d, ≥7d cuadrante ESTRELLA/CASHCOW)"
+      - "venta_perdida_uds"
+      - "rampup_motivo"
+    ssot_table: sku_intelligence
+    ssot_function: "intelligence.ts:resolverDiasEnQuiebre:1290-1320"
+    fuente_doctrina: "PR5 ancla temporal"
+
+  - name: dias_en_quiebre_flex
+    description: "Días continuos con quiebre Flex específicamente."
+    domain: inventario
+    formula_text: "Análogo a dias_en_quiebre pero ancla en fecha_entrada_quiebre_flex y vel_flex."
+    grain: [sku_origen]
+    unit: dias
+    ssot_table: sku_intelligence  # con COMMENT existente
+    fuente_doctrina: "v60 quiebre flex"
+
+  - name: venta_perdida_uds
+    description: "Unidades estimadas no vendidas durante el quiebre prolongado."
+    domain: inventario
+    formula_sql: "CASE WHEN dias_en_quiebre >= 14 AND vel_pre_quiebre > 2 THEN vel_pre_quiebre * dias_en_quiebre / 7 ELSE 0 END"
+    grain: [sku_origen]
+    unit: unidades
+    consumed_by: ["ingreso_perdido", "alertas agotado_riesgo_venta_perdida"]
+    ssot_table: sku_intelligence
+    ssot_function: "intelligence.ts:1350-1365"
+
+  - name: venta_perdida_pesos
+    description: "Pesos estimados perdidos durante quiebre."
+    domain: inventario
+    formula_sql: "venta_perdida_uds * precio_promedio"
+    grain: [sku_origen]
+    unit: pesos_clp
+    ssot_table: sku_intelligence
+
+  - name: ingreso_perdido
+    description: "Margen estimado perdido durante quiebre. Usa fallback 25% precio si margen real = 0."
+    domain: inventario
+    formula_text: |
+      margen_estimado = max(margen_full_30d × pct_full + margen_flex_30d × pct_flex, precio_promedio × 0.25)
+      ingreso_perdido = venta_perdida_uds × margen_estimado
+    grain: [sku_origen]
+    unit: pesos_clp
+    consumed_by: ["panel reposición", "agente_rentabilidad"]
+    ssot_table: sku_intelligence
+    ssot_function: "intelligence.ts:1380-1391"
+    fuente_doctrina: "oportunidad_perdida_es_estimacion flag"
+    notas: "Ver oportunidad_perdida_es_estimacion para distinguir margen real vs imputado."
+
+# ============================================================================
+# CATEGORÍA: REPOSICIÓN / DECISIONES (8)
+# ============================================================================
+
+  - name: pedir_proveedor
+    description: "Unidades a comprar al proveedor. Decisión proactiva con SS+target_dias_full."
+    domain: inventario
+    owner_agent: agente_reposicion
+    formula_text: |
+      vel_calculo = vel_ajustada_evento si evento_activo else vel_ponderada
+      vel_para_pedir = (esQuiebreProlongadoProtegido) ? vel_pre_quiebre : vel_calculo
+      demanda_ciclo = vel_para_pedir × target_dias_full / 7
+      cantidad_objetivo = demanda_ciclo + safety_stock_completo
+      pedir_sin_rampup = max(0, ceil(cantidad_objetivo − stock_total))
+      pedir_proveedor = round(pedir_sin_rampup × factor_rampup_aplicado)
+      Deduplicación: si SKU en grupo de alternativas y stock_grupo ≥ demanda_grupo → pedir=0.
+    input_tables: [sku_intelligence, composicion_venta]
+    grain: [sku_origen]
+    unit: unidades
+    consumed_by: ["panel reposición", "OC sugerida", "agente_reposicion"]
+    ssot_table: sku_intelligence
+    ssot_function: "intelligence.ts:1934-2003"
+
+  - name: pedir_proveedor_sin_rampup
+    description: "Reorden sin aplicar factor rampup. Usado para auditar la decisión."
+    domain: inventario
+    formula_sql: "max(0, ceil(cantidad_objetivo - stock_total))"
+    grain: [sku_origen]
+    unit: unidades
+    ssot_table: sku_intelligence
+
+  - name: factor_rampup_aplicado
+    description: "Multiplicador aplicado al reorden post-quiebre para protegerse de demanda reprimida."
+    domain: inventario
+    formula_text: "Lookup en rampup.ts según dias_en_quiebre, es_quiebre_proveedor, abc_pre_quiebre."
+    grain: [sku_origen]
+    unit: ratio_adimensional
+    ssot_table: sku_intelligence
+    ssot_function: "rampup.ts:calcularFactorRampup"
+    fuente_doctrina: "PR264 rampup post-quiebre"
+
+  - name: pedir_proveedor_bultos
+    description: "pedir_proveedor convertido a bultos enteros (inner_pack)."
+    domain: inventario
+    formula_sql: "CEIL(pedir_proveedor / NULLIF(inner_pack, 0))"
+    grain: [sku_origen]
+    unit: bultos
+    ssot_table: sku_intelligence
+
+  - name: mandar_full
+    description: "Unidades a mover de bodega a Full. Decisión picking diaria."
+    domain: inventario
+    owner_agent: agente_inventario
+    formula_text: |
+      target_uds_full = vel_calculo × pct_full × target_dias_full / 7
+      deficit = max(0, ceil(target_uds_full − stock_full))
+      buffer_ml = 4 si shared_origins(sku) else 2
+      disponible = max(0, stock_bodega − buffer_ml)
+      mandar_full = min(deficit, disponible)
+      Caso SKU nuevo (vel=0, vel_pre=0, stock_full=0, en_transito=0, bodega>0):
+        mandar_full = min(max(inner_pack, 2), stock_bodega)
+    input_tables: [sku_intelligence, composicion_venta]
+    grain: [sku_origen]
+    unit: unidades
+    consumed_by: ["/api/ml/picking", "panel picking", "agente_inventario"]
+    ssot_table: sku_intelligence
+    ssot_function: "intelligence.ts:1906-1932"
+    fuente_doctrina: "BANVA_Bodega_Parte1.md:577-578 (Cycle stock → Full primero)"
+
+  - name: target_dias_full
+    description: "Días objetivo de cobertura Full por celda ABC×XYZ."
+    domain: inventario
+    formula_text: |
+      Lookup en policy_templates.target_dias_full por celda.
+      Hoy (legacy): cascada por abc:
+        A → 40d, B → 30d, C → 14d (intel_config)
+      Sprint 1: refactor a policy_templates per H11 (A=42d, B=28d, CX=15, CY=7, CZ=0).
+    input_tables: [policy_templates, intel_config]
+    grain: [sku_origen]
+    unit: dias
+    consumed_by: ["pedir_proveedor", "mandar_full"]
+    ssot_table: sku_intelligence
+    fuente_doctrina: "H11 cerrado, policy_templates.target_dias_full"
+
+  - name: necesita_pedir
+    description: "Decisión binaria reactiva: stock por debajo del ROP."
+    domain: inventario
+    formula_sql: "stock_total <= rop_calculado AND vel_ponderada > 0"
+    grain: [sku_origen]
+    unit: boolean
+    consumed_by: ["alerta reponer_reactivo", "panel inteligencia"]
+    ssot_table: sku_intelligence
+
+  - name: liquidacion_accion
+    description: "Acción sugerida sobre el SKU si está sobre-stockeado o slow-mover."
+    domain: pricing
+    formula_text: "(lógica markdown — frontera Reposición/Pricing pendiente, H5)"
+    grain: [sku_origen]
+    unit: enum
+    ssot_table: sku_intelligence
+    notas: "H5 pendiente: Camino A/B/C. NO modificar hasta cierre H5."
+
+# ============================================================================
+# CATEGORÍA: SAFETY STOCK / ROP (4)
+# ============================================================================
+
+  - name: safety_stock_completo
+    description: "King Method: incorpora variabilidad de demanda y de lead time."
+    domain: inventario
+    formula_text: |
+      D̄ = vel_ponderada (u/semana)
+      σ_D = desviacion_std (u/semana)
+      LT = lead_time_usado_dias / 7  (semanas)
+      σ_LT = lead_time_real_sigma / 7  (o 1.5/7 fallback)
+      Z = z_value(nivel_servicio): A=1.88(0.97), B=1.65(0.95), C=1.28(0.90)
+      SS = Z × √(LT × σ_D² + D̄² × σ_LT²)
+    input_tables: [sku_intelligence (vel, σ), proveedores (LT, σ_LT)]
+    grain: [sku_origen]
+    unit: unidades
+    consumed_by: ["rop_calculado", "pedir_proveedor"]
+    ssot_table: sku_intelligence
+    ssot_function: "intelligence.ts:1846"
+    fuente_doctrina: "King Method (SPM:631-720 worked example cubrecolchón impermeable 2P SS=28)"
+    notas: "Sprint 1 reemplaza Z hard-coded por lookup en policy_templates.z_value (per H3)."
+
+  - name: safety_stock_simple
+    description: "Versión legacy sin σ_LT. Mantenida para comparación."
+    domain: inventario
+    formula_sql: "Z * desviacion_std * SQRT(lead_time_dias / 7)"
+    grain: [sku_origen]
+    unit: unidades
+    ssot_table: sku_intelligence
+    notas: "Será deprecada en Sprint 1 si safety_stock_completo cubre todos los casos."
+
+  - name: rop_calculado
+    description: "Reorder Point: nivel de stock al que disparar reorden."
+    domain: inventario
+    formula_sql: "vel_ponderada * (lead_time_usado_dias / 7) + safety_stock_completo"
+    grain: [sku_origen]
+    unit: unidades
+    consumed_by: ["necesita_pedir"]
+    ssot_table: sku_intelligence
+    ssot_function: "intelligence.ts:1862"
+    fuente_doctrina: "SPM:631-720 worked example ROP=138"
+
+  - name: nivel_servicio
+    description: "Probabilidad target de no quiebre durante LT. Por celda ABC×XYZ (Sprint 1)."
+    domain: inventario
+    formula_text: |
+      Hoy (legacy): cascada por abc → A=0.97, B=0.95, C=0.90.
+      Sprint 1: lookup en policy_templates.service_level por celda (9 valores per H3).
+    grain: [sku_origen]
+    unit: probabilidad_0_1
+    ssot_table: policy_templates  # post-Sprint-1
+    fuente_doctrina: "H3 cerrado: 9 service_levels distintos por celda ABC×XYZ"
+
+# ============================================================================
+# CATEGORÍA: LEAD TIME (5)
+# ============================================================================
+
+  - name: lead_time_usado_dias
+    description: "Lead time efectivo aplicado. Resultado de cascada."
+    domain: logistica
+    formula_text: |
+      Cascada (en orden):
+        1. lead_time_real_dias (oc_real, si lt_muestras ≥ 3)
+        2. proveedores.lead_time_dias (manual_proveedor)
+        3. productos.lead_time_dias (manual_producto, si ≠ 7 default)
+        4. fallback 5 días
+    input_tables: [proveedores, productos, ordenes_compra]
+    grain: [sku_origen]
+    unit: dias
+    consumed_by: ["safety_stock_completo", "rop_calculado", "demanda_ciclo"]
+    ssot_table: sku_intelligence
+    ssot_function: "intelligence.ts cascada lead_time"
+
+  - name: lead_time_real_dias
+    description: "Promedio de LT observado en OCs reales del proveedor (≥3 muestras)."
+    domain: logistica
+    formula_sql: "AVG(fecha_recepcion - fecha_emision) FILTER (oc.estado='recibida_total')"
+    input_tables: [ordenes_compra]
+    grain: [proveedor]  # NO sku_origen
+    unit: dias
+    ssot_table: sku_intelligence  # snapshot derivado por SKU
+    fuente_doctrina: "lead_time_fuente='oc_real'"
+
+  - name: lead_time_real_sigma
+    description: "Desviación estándar del LT observado. Input de safety_stock_completo (σ_LT)."
+    domain: logistica
+    formula_sql: "STDDEV(fecha_recepcion - fecha_emision) FILTER (oc.estado='recibida_total')"
+    grain: [proveedor]
+    unit: dias
+    ssot_table: sku_intelligence
+
+  - name: lead_time_fuente
+    description: "Indicador de qué nivel de cascada se aplicó."
+    domain: logistica
+    formula_sql: "(determinado por la cascada)"
+    grain: [sku_origen]
+    unit: enum [oc_real, manual_proveedor, manual_producto_legacy, fallback]
+    ssot_table: sku_intelligence
+
+  - name: lt_muestras
+    description: "N de OCs cerradas usadas para lead_time_real."
+    domain: logistica
+    formula_sql: "COUNT(*) FILTER (oc.estado='recibida_total')"
+    grain: [proveedor]
+    unit: integer
+    ssot_table: sku_intelligence
+
+# ============================================================================
+# CATEGORÍA: ADS (3)
+# ============================================================================
+
+  - name: ads_cost_asignado
+    description: "Costo de ads atribuido a una venta específica vía pro-rata por dirección de atribución."
+    domain: ventas
+    formula_text: |
+      Si itemId existe y direct_amount > 0:
+        share = min(subtotal_venta, direct_amount) / direct_amount
+        ads_cost_asignado = cost_neto × 1.19 × share   (con IVA)
+        atribucion = "direct"
+      Si no → atribucion = "organic", ads_cost = 0
+      Si sin data del día → atribucion = "sin_datos", ads_cost = 0
+    input_tables: [ml_ads_daily_cache]
+    filters: ["item_id × fecha_date"]
+    grain: [order_id, item_id]
+    unit: pesos_clp
+    consumed_by: ["margen_neto (ads.ts:111)", "ROAS calculado in-app"]
+    ssot_table: ventas_ml_cache  # columna ads_cost_asignado
+    ssot_function: "ads.ts:69-104"
+
+  - name: acos
+    description: "Advertising Cost of Sale. Lectura directa de ML API (no calculada localmente)."
+    domain: ventas
+    formula_sql: "(ad_spend / revenue_attributed) * 100"
+    input_tables: [ml_ads_daily_cache]
+    grain: [campaign, day]
+    unit: porcentaje
+    consumed_by: ["panel ads", "ml_campaigns_monthly_summary (vista)"]
+    ssot_table: ml_ads_daily_cache  # cache de ML API
+    ssot_function: "(provisto por ML API /ads/)"
+    fuente_doctrina: "ml-metrics.ts:416"
+
+  - name: roas
+    description: "Return on Ad Spend. Inverso de ACOS. Lectura directa ML API."
+    domain: ventas
+    formula_sql: "revenue_attributed / NULLIF(ad_spend, 0)"
+    grain: [campaign, day]
+    unit: ratio_adimensional
+    ssot_table: ml_ads_daily_cache
+    fuente_doctrina: "ml-metrics.ts:425"
+
+# ============================================================================
+# CATEGORÍA: TENDENCIAS / EVENTOS (5)
+# ============================================================================
+
+  - name: tendencia_vel
+    description: "Etiqueta de movimiento de velocidad reciente vs base."
+    domain: inventario
+    formula_text: |
+      Si vel_30d = 0: 'estable'
+      Si vel_7d > vel_30d × 1.1: 'subiendo'
+      Si vel_7d < vel_30d × 0.9: 'bajando'
+      Else: 'estable'
+    grain: [sku_origen]
+    unit: enum [estable, subiendo, bajando]
+    ssot_table: sku_intelligence
+    ssot_function: "intelligence.ts:1111"
+
+  - name: tendencia_vel_pct
+    description: "Magnitud porcentual del cambio de velocidad."
+    domain: inventario
+    formula_sql: "(vel_7d - vel_30d) / NULLIF(vel_30d, 0) * 100"
+    grain: [sku_origen]
+    unit: porcentaje
+    ssot_table: sku_intelligence
+
+  - name: es_pico
+    description: "Detección de pico de demanda reciente."
+    domain: inventario
+    formula_sql: "vel_30d > 0 AND vel_7d > vel_30d * 1.5"
+    grain: [sku_origen]
+    unit: boolean
+    consumed_by: ["alertas pico_demanda", "ajuste_estacional sugerido"]
+    ssot_table: sku_intelligence
+    ssot_function: "intelligence.ts:1112"
+
+  - name: pico_magnitud
+    description: "Ratio vel_7d / vel_30d. Útil cuando es_pico=true."
+    domain: inventario
+    formula_sql: "vel_7d / NULLIF(vel_30d, 0)"
+    grain: [sku_origen]
+    unit: ratio_adimensional
+    ssot_table: sku_intelligence
+
+  - name: multiplicador_evento
+    description: "Coeficiente activo de evento estacional/promo aplicable al SKU."
+    domain: inventario
+    formula_text: "max(1.0, multiplicador de eventos.estado='activo' que aplican a la categoría/SKU)"
+    input_tables: [eventos]
+    filters: ["evento.estado = 'activo'"]
+    grain: [sku_origen]
+    unit: ratio_adimensional
+    ssot_table: sku_intelligence
+    consumed_by: ["vel_ajustada_evento"]
+
+# ============================================================================
+# CATEGORÍA: FORECAST QUALITY (4)
+# ============================================================================
+
+  - name: forecast_wmape_8s
+    description: "Weighted Mean Absolute Percentage Error últimas 8 semanas. Calidad del forecast TSB."
+    domain: inventario
+    formula_text: "WMAPE = sum(|actual - forecast|) / sum(actual) sobre últimas 8 semanas evaluadas."
+    input_tables: [forecast_accuracy, ventas_ml_cache]
+    grain: [sku_origen]
+    unit: porcentaje
+    ssot_table: sku_intelligence
+    fuente_doctrina: "forecast-accuracy-queries.ts"
+
+  - name: forecast_bias_8s
+    description: "Bias firmado: tendencia a sobre/sub-estimar. Cercano a 0 = no sesgado."
+    domain: inventario
+    formula_sql: "AVG(forecast - actual) últimas 8 semanas"
+    grain: [sku_origen]
+    unit: unidades_por_semana
+    ssot_table: sku_intelligence
+
+  - name: forecast_tracking_signal_8s
+    description: "(Σ bias) / MAD. Detecta si bias acumulado es estructural."
+    domain: inventario
+    formula_text: "bias acumulado dividido por mean absolute deviation."
+    grain: [sku_origen]
+    unit: ratio_adimensional
+    ssot_table: sku_intelligence
+
+  - name: forecast_es_confiable_8s
+    description: "Flag derivado: WMAPE bajo + bias bajo + tracking ok."
+    domain: inventario
+    formula_text: "WMAPE ≤ X% AND |bias| ≤ Y AND |tracking| ≤ Z (umbrales en forecast-accuracy)."
+    grain: [sku_origen]
+    unit: boolean
+    consumed_by: ["tsb activación condicional Fase C"]
+    ssot_table: sku_intelligence
+
+# ============================================================================
+# CATEGORÍA: ACTIVIDAD / DEAD STOCK (3)
+# ============================================================================
+
+  - name: dias_sin_movimiento
+    description: "Días calendario desde el último movimiento de stock. NULL si no hay historial."
+    domain: inventario
+    formula_sql: "EXTRACT(DAY FROM today - max(movimientos.fecha))"
+    input_tables: [movimientos]
+    grain: [sku_origen]
+    unit: dias
+    consumed_by: ["alerta dead_stock", "agente_observador"]
+    ssot_table: sku_intelligence  # con COMMENT existente
+    fuente_doctrina: "PR6a, comment en columna"
+    notas: "NO usa centinela 999 — NULL es válido (ver inventory-policy.md regla 1)."
+
+  - name: dias_sin_conteo
+    description: "Días calendario desde el último conteo cíclico cerrado. NULL si nunca contado."
+    domain: inventario
+    formula_sql: "EXTRACT(DAY FROM today - max(conteos.fecha_cierre)) FILTER (estado='cerrado')"
+    input_tables: [conteos]
+    grain: [sku_origen]
+    unit: dias
+    consumed_by: ["alerta SKU vencido conteo", "v_skus_vencidos_conteo"]
+    ssot_table: sku_intelligence  # con COMMENT existente
+
+  - name: primera_venta
+    description: "Fecha de la primera venta histórica del SKU."
+    domain: ventas
+    formula_sql: "MIN(fecha_date) FROM ventas_ml_cache WHERE anulada=false"
+    grain: [sku_origen]
+    unit: fecha
+    consumed_by: ["dias_desde_primera_venta", "esStockNuevo decisión mandar_full"]
+    ssot_table: sku_intelligence
+
+# ============================================================================
+# DECISIONES BINARIAS (alertas / flags), 6
+# ============================================================================
+
+decisions:
+
+  - name: en_quiebre_full
+    description: "stock_full = 0 con demanda > 0 en Full."
+    formula_sql: "stock_full = 0 AND vel_full > 0"
+    domain: inventario
+    consumed_by: ["alerta agotado_full"]
+    fuente: "intelligence.ts:2291"
+
+  - name: dead_stock
+    description: "Stock disponible pero sin demanda."
+    formula_sql: "vel_ponderada = 0 AND stock_total > 0"
+    domain: inventario
+    consumed_by: ["alerta dead_stock", "agente_observador"]
+    fuente: "intelligence.ts:2129"
+
+  - name: requiere_ajuste_precio
+    description: "Flag derivado de margen + cobertura para sugerir markdown."
+    domain: pricing
+    formula_text: "(definición concreta en H5 — pending Vicente)"
+    consumed_by: ["panel pricing"]
+    fuente: "Pendiente H5 Camino A/B/C"
+
+  - name: es_quiebre_proveedor
+    description: "El proveedor reporta stock 0 al momento de quiebre. No es problema de demanda nuestra."
+    formula_text: "Snapshot al entrar en quiebre + flag manual + auto-detect (proveedor_catalogo.stock=0)"
+    domain: compras
+    consumed_by: ["esQuiebreProlongadoProtegido rama 3", "rampup matrix"]
+
+  - name: es_estacional
+    description: "Flag manual: SKU con patrón estacional que NO debe usar TSB."
+    formula_text: "Set manual via UI; revisar cada 6 meses."
+    domain: inventario
+    consumed_by: ["tsb_modelo_usado (excluye TSB)", "agente_observador"]
+    fuente: "sku_intelligence.es_estacional (con COMMENT)"
+
+  - name: es_holdout
+    description: "SKU asignado a holdout para validar forecast/decisiones (test set)."
+    domain: inventario
+    formula_text: "Manual o asignación por hash determinista. Set en holdout_asignado_at."
+    consumed_by: ["evaluación forecast", "experimentos A/B"]
+
+# ============================================================================
+# METADATA DEL REGISTRY
+# ============================================================================
+
+registry_metadata:
+  total_metrics: 38
+  total_decisions: 6
+  domain_coverage:
+    inventario: 31
+    ventas: 3
+    pricing: 1
+    logistica: 5
+    compras: 1
+  agent_consumers:
+    agente_reposicion: ["vel_ponderada", "pedir_proveedor", "vel_pre_quiebre", "lead_time_usado_dias"]
+    agente_inventario: ["mandar_full", "stock_total", "abc_unidades"]
+    agente_rentabilidad: ["gmroi", "dio", "margen_neto_30d", "ingreso_perdido"]
+    agente_observador: ["dead_stock", "es_estacional", "vel_ponderada_tsb", "forecast_es_confiable_8s"]
+    agente_orquestador: ["(coordina, no consume métricas raw)"]
+    agente_chat: ["(lectura via agents-data.ts:32 select)"]
+  inconsistencies_doc: docs/metrics-inconsistencies-2026-05-02.md
+  next_audit: 2026-08-02  # trimestral
