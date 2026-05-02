@@ -101,6 +101,10 @@ atlas schema diff \
 
 # Generar visualización del schema actual
 atlas schema inspect --env prod --visualize > schema.html
+
+# Ver últimas corridas del cron desde terminal (gh CLI)
+gh run list --workflow=atlas-drift.yml --limit=10
+gh run view <run-id> --log
 ```
 
 > Si el binario `atlas` no está en `$PATH`, instalarlo:
@@ -137,6 +141,7 @@ Si en 6 meses (ETA revisión: **2026-11**) cumple alguno:
 - Setup mantenimiento > 1 hora/mes → simplificar (ej: sólo lint en PR, sin drift contra prod).
 - Migración a otro stack (Drizzle, Prisma) → re-evaluar herramienta.
 - Atlas Cloud paid features ya no son gratis → quedarse en CLI local.
+- Drift inexplicable (sin git log, sin Studio access, sin agente activo) → investigar acceso no autorizado a Supabase. Tratar como incidente de seguridad, no de proceso.
 
 ---
 
@@ -162,6 +167,7 @@ GRANT SELECT ON ALL TABLES IN SCHEMA public TO atlas_readonly;
 GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO atlas_readonly;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO atlas_readonly;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON SEQUENCES TO atlas_readonly;
+GRANT pg_read_all_stats TO atlas_readonly;
 -- pg_catalog y information_schema están accesibles por default
 ```
 
