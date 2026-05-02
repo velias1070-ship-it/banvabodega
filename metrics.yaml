@@ -398,11 +398,13 @@ metrics:
     ssot_table: sku_intelligence
     ssot_function: "intelligence.ts:1192-1196"
     censoring: "Excluye semanas con stock_full=0 ≥3 días (tracked en stock_snapshots)."
-    fuente_doctrina: "intelligence.ts:1194-1196"
+    fuente_doctrina: "intelligence.ts:1194-1196 + H2 cerrado 2026-05-01 (status quo confirmado)"
     notas: |
-      INCONSISTENCIA: H2 cerrado 2026-05-01 prescribe bandas 0.25/0.60 deseasonalizadas (textil hogar);
-      el código usa 0.5/1.0 CV crudo. Sprint 3 alinea código con decisión H2.
-      Ver docs/metrics-inconsistencies-2026-05-02.md hallazgo I1.
+      H2 cerró ratificando el status quo (bandas 0.5/1.0, CV crudo, deseasonalización al backlog).
+      Backlog Sprint 7+ (~2027-04, cuando ≥80% del catálogo tenga 52 semanas):
+        - vista v_cv_52sem deseasonalizada (STL o naive mensual)
+        - columna xyz_confidence en sku_intelligence (alta/media/baja según N de semanas)
+      Ver docs/metrics-inconsistencies-2026-05-02.md sección "Alineadas (false positives)" — I1.
 
   - name: cv
     description: "Coefficient of Variation de demanda semanal. Input bruto de XYZ."

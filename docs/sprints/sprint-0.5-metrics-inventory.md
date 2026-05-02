@@ -87,11 +87,11 @@ Sprint 3 evalúa migrar las vistas más costosas (v_timeline_sku, v_evolucion_sk
 
 ## Inconsistencias detectadas
 
-**Total: 10** (`docs/metrics-inconsistencies-2026-05-02.md` tiene el detalle).
+**Total activas: 9** (revisión 2026-05-02 movió I1 a "Alineadas — false positives").
+`docs/metrics-inconsistencies-2026-05-02.md` tiene el detalle de cada hallazgo.
 
 | ID | Métrica | Tipo | Sprint que resuelve |
 |---|---|---|---|
-| I1 | `xyz` (bandas 0.5/1.0 vs 0.25/0.60 H2) | Divergencia código ↔ decisión | **3** |
 | I2 | `cob_*` y `dio` centinela 999 | Excepción admitida sin documentar columna | 4 |
 | I3 | `stock_full` doble fuente | Legacy column ↔ tabla canónica | 3 |
 | I4 | Filtro `anulada` divergente (`.eq` vs `.neq`) | Normalización | 3 |
@@ -103,8 +103,13 @@ Sprint 3 evalúa migrar las vistas más costosas (v_timeline_sku, v_evolucion_sk
 | I10 | `vel_ponderada_tsb` shadow | No consumida aún | 5 (Fase C) |
 
 **Bloquean Sprint 1:** I7, I8 (consumir `policy_templates`).
-**Bloquean Sprint 3:** I1, I3, I4, I6, I9.
+**Bloquean Sprint 3:** I3, I4, I6, I9.
 **Backlog:** I2, I5, I10.
+
+**Alineadas (false positive, sin acción operativa requerida):**
+- **I1 — `xyz` bandas 0.5/1.0 CV crudo**: H2 ratificó el status quo. Backlog independiente
+  para Sprint 7+ (~2027-04): `v_cv_52sem` deseasonalizada + flag `xyz_confidence`.
+  No bloquea ningún sprint.
 
 Ninguna inconsistencia es production-breaking hoy. Ninguna requiere hotfix.
 
@@ -112,7 +117,7 @@ Ninguna inconsistencia es production-breaking hoy. Ninguna requiere hotfix.
 
 ## Métricas que no tenían fórmula clara (dependencia de cache only)
 
-- **`xyz`** (I1) — fórmula existe en `intelligence.ts:1192-1196` pero **diverge** de decisión H2. Documentar en YAML la real (con nota explícita) y resolver en Sprint 3.
+- **`xyz`** — fórmula presente en `intelligence.ts:1192-1196` (bandas 0.5/1.0 CV crudo), alineada con H2 (status quo confirmado). Sin acción operativa hoy; backlog Sprint 7+ para deseasonalización.
 - **`stock_proveedor`** — agregación implícita, no se vio fórmula explícita en grep. Documentado en YAML como "suma de proveedor_catalogo.stock_disponible filtrado por SKU"; Sprint 3 verifica.
 - **`stock_sin_etiquetar`** — concepto claro pero implementación dispersa. Documentado a alto nivel en YAML; Sprint 3 unifica.
 - **`liquidacion_accion`** — pendiente cierre H5 (Camino A/B/C). Marcada en YAML como "no modificar".
@@ -170,9 +175,10 @@ Sección SSoT actualizada para mencionar `metrics.yaml` como tercer artefacto SS
 |---|---|---|
 | **1** | Consumir `policy_templates` en intelligence.ts (z, service_level, target_dias_full por celda) | I7, I8 |
 | **2** | (placeholder) ROP forecasting integration | — |
-| **3** | Refactor de velocidades + alineación XYZ con H2 + filtros uniformes + guardrails vel_objetivo | I1, I3, I4, I6, I9 |
+| **3** | Refactor de velocidades + filtros uniformes + guardrails vel_objetivo | I3, I4, I6, I9 |
 | **4** | Cleanup centinelas → NULL (cob_*, dio) | I2 |
 | **5** | Monitor stock_en_transito + Fase C TSB activación condicional | I5, I10 |
+| **7+** | `v_cv_52sem` deseasonalizada + `xyz_confidence` (cuando ≥80% catálogo tenga 52 semanas, ETA ~2027-04) | (backlog desde I1 alineada) |
 
 ---
 

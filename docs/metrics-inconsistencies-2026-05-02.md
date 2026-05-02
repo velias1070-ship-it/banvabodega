@@ -2,42 +2,16 @@
 
 **Fecha:** 2026-05-02
 **Generado por:** Sprint 0.5 — Inventario de métricas
-**Estado:** Documentado, sin resolver. Resolución prevista en Sprint 3 con decisión humana.
+**Última revisión:** 2026-05-02 (post-confirmación owner sobre H2)
+**Estado:** Documentado, sin resolver. Resolución prevista en Sprints 1, 3, 4, 5 según prioridad.
 
 Cada hallazgo tiene un ID `I<n>`. Sprint que resuelve está indicado al final de cada entrada.
 
----
-
-## I1 — XYZ: bandas en código (0.5/1.0 CV crudo) divergen de la decisión H2 (0.25/0.60 deseasonalizado)
-
-**Métrica afectada:** `xyz`
-
-**Sitio A — código actual:** `src/lib/intelligence.ts:1192-1196`
-```typescript
-const cv = mean > 0 ? std / mean : 0;
-let xyz: ClaseXYZ = "Z";
-if (cv < 0.5) xyz = "X";
-else if (cv < 1.0) xyz = "Y";
-```
-
-**Sitio B — decisión cerrada Sprint 0:** H2 (auditoría 2026-04-28, cerrada por Vicente 2026-05-01).
-> Bandas XYZ deseasonalizadas 0.25 / 0.60 (textil hogar)
-
-**Diff:**
-| Aspecto | Código | H2 |
-|---|---|---|
-| Banda X/Y | 0.5 | 0.25 |
-| Banda Y/Z | 1.0 | 0.60 |
-| Deseasonalización | NO (CV crudo sobre semanas sin quiebre) | SÍ (residuales post-decomposición estacional) |
-| Censoring quiebre | SÍ | (no especificado, asumir SÍ) |
-
-**Recomendación canónica:** H2 prevalece (es la decisión vinculante). Sprint 3 actualiza `intelligence.ts:1192-1196` con bandas 0.25/0.60 y agrega deseasonalización (probablemente STL o naive mensual).
-
-**Razón:** El cierre H2 vino de Vicente vía manual SPM:255-265 + experiencia textil hogar. CV 0.5/1.0 es default genérico que no refleja la baja variabilidad típica de productos repetidos.
-
-**Sprint que resuelve:** **3** (refactor de velocidades).
-
-**Riesgo de no resolver:** Sub-clasificación (más SKUs caen en "Z" que la realidad), inflando los candidatos a TSB y pudiendo distorsionar la matriz ABC×XYZ que alimentará policy_templates.
+> **Revisión 2026-05-02:** I1 originalmente flagueada como divergencia código ↔ H2.
+> Vicente confirmó (revisión post-Sprint-0) que H2 cerró ratificando el **status quo**:
+> bandas 0.5 / 1.0, CV crudo, deseasonalización al backlog, flag `xyz_confidence` pendiente.
+> El código actual está alineado con la decisión vinculante. I1 movido a sección
+> "Alineadas (false positives)" abajo. **Total inconsistencias reales: 9.**
 
 ---
 
@@ -194,11 +168,10 @@ const nivel_servicio = abc === "A" ? 0.97 : abc === "C" ? 0.90 : 0.95;
 
 ---
 
-## Tabla resumen
+## Tabla resumen — inconsistencias activas
 
 | ID | Métrica | Tipo | Sprint |
 |---|---|---|---|
-| I1 | `xyz` (bandas 0.5/1.0 vs 0.25/0.60) | Divergencia código ↔ decisión | **3** |
 | I2 | `cob_*` y `dio` centinela 999 | Excepción admitida sin documentar columna | 4 (cleanup) |
 | I3 | `stock_full` doble fuente | Legacy column ↔ tabla canónica | 3 |
 | I4 | Filtro `anulada` divergente | `.eq` vs `.neq` ↔ NULLs | 3 |
@@ -209,9 +182,55 @@ const nivel_servicio = abc === "A" ? 0.97 : abc === "C" ? 0.90 : 0.95;
 | I9 | Imputación `margen_neto_30d` quiebre | Sin marker explícito | 3 |
 | I10 | `vel_ponderada_tsb` shadow | No consumida aún | 5 (Fase C) |
 
-**Conteo:** 10 inconsistencias.
+**Conteo activas:** 9 inconsistencias.
 **Bloquean Sprint 1:** I7, I8 (consumo de `policy_templates`).
-**Bloquean Sprint 3:** I1, I3, I4, I6, I9.
+**Bloquean Sprint 3:** I3, I4, I6, I9.
 **Backlog:** I2, I5, I10.
 
 Ninguna inconsistencia es production-breaking hoy. Ninguna requiere hotfix. Todas se resuelven en orden cuando el sprint correspondiente lo dicte.
+
+---
+
+## Alineadas (false positives)
+
+Hallazgos que en la primera pasada del Sprint 0.5 se clasificaron como divergencia
+y resultaron ser status quo intencional (decisión owner). Se mantienen documentados
+acá para que un futuro lector no vuelva a re-flaguearlos.
+
+### I1 — Alineamiento: bandas xyz crudo (status quo confirmado H2)
+
+**Métrica afectada:** `xyz`.
+
+**Sitio A — código actual:** `src/lib/intelligence.ts:1192-1196`
+```typescript
+const cv = mean > 0 ? std / mean : 0;
+let xyz: ClaseXYZ = "Z";
+if (cv < 0.5) xyz = "X";
+else if (cv < 1.0) xyz = "Y";
+```
+
+**Sitio B — decisión cerrada H2:** Vicente revisó las dos opciones (CV crudo 0.5/1.0
+vs CV deseasonalizado 0.25/0.60) y cerró H2 manteniendo el **status quo del código**:
+- Bandas 0.5 / 1.0
+- CV crudo sobre semanas sin quiebre
+- Deseasonalización **NO** se adopta ahora
+- Flag `xyz_confidence` queda pendiente como item de backlog
+
+**Estado:** El código y la decisión coinciden. **NO es inconsistencia operativa.**
+
+**Razón del cierre status quo:**
+- Sin 52 semanas de historia para el ≥80% del catálogo, una decomposición STL/naive es ruidosa.
+- BANVA es relativamente joven; muchos SKUs no tienen un ciclo anual completo aún.
+- Cambiar las bandas sin tener confianza en la deseasonalización movería SKUs a Z/Y por ruido, no por variabilidad real.
+
+**Backlog real (NO es I1, es un sprint futuro distinto):**
+- Implementar vista materializada `v_cv_52sem` que calcule CV sobre 52 semanas
+  con deseasonalización (STL o estacionalidad mensual naive).
+- Agregar columna `xyz_confidence` a `sku_intelligence` derivada del N de semanas
+  disponibles (alta si ≥52, media 26-51, baja <26).
+- **Sprint estimado: 7+** (cuando ≥80 % del catálogo tenga 52 semanas, ETA aprox. **2027-04**).
+- **Bloqueante:** historia de ventas. No depende del motor.
+
+**Sprint que resuelve:** N/A (no requiere resolución hoy). Backlog Sprint 7+.
+
+---
