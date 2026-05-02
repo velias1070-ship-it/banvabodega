@@ -2346,6 +2346,7 @@ export interface DBRcvCompra {
   factura_ref_folio?: string | null;
   factura_ref_id?: string | null;
   periodo_devengo?: string | null;
+  incluir_eerr?: boolean | null;
   created_at?: string;
 }
 
@@ -2905,6 +2906,12 @@ export async function setPeriodoDevengoCompra(id: string, periodo: string | null
 export async function setCategoriaCuentaCompra(id: string, categoriaId: string | null): Promise<void> {
   const sb = getSupabase(); if (!sb) return;
   await sb.from("rcv_compras").update({ categoria_cuenta_id: categoriaId }).eq("id", id);
+}
+
+// Override del flag excluir_eerr a nivel documento. null = usar default del proveedor.
+export async function setIncluirEerrCompra(id: string, incluir: boolean | null): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("rcv_compras").update({ incluir_eerr: incluir }).eq("id", id);
 }
 
 export async function setReglaDevengoCuenta(id: string, regla: "mes_actual" | "mes_anterior"): Promise<void> {

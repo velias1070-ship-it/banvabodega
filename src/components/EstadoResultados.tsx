@@ -7,7 +7,7 @@ import {
   categorizarMovimiento,
   fetchPlanCuentasHojas,
   setPeriodoDevengoMovimiento, setPeriodoDevengoCompra,
-  setCategoriaCuentaCompra,
+  setCategoriaCuentaCompra, setIncluirEerrCompra,
 } from "@/lib/db";
 import type { DBEmpresa, DBRcvCompra, DBRcvVenta, DBPlanCuentas, DBMovimientoBanco, DBProveedorCuenta, DBConciliacion } from "@/lib/db";
 import { exportToExcel, fmtMoneyExcel } from "@/lib/exportExcel";
@@ -84,9 +84,14 @@ function cuentaIdDeCompra(c: DBRcvCompra, provCuentaInfo: Map<string, DBProveedo
   return pc.categoria_cuenta_id || undefined;
 }
 
-// True si el proveedor está marcado como "excluir del EERR" (caso típico: ML por
-// periodo de facturación 27→26 que no cuadra con calendario contable).
+// True si el doc se excluye del cómputo del EERR. Prioridad:
+//   1. Override por documento (rcv_compras.incluir_eerr): true=incluir, false=excluir
+//   2. Default del proveedor (proveedor_cuenta.excluir_eerr)
+// Caso típico: ML por periodo 27→26 está excluido por proveedor; una factura
+// específica de compra real a ML se "rescata" con incluir_eerr=true.
 function compraExcluidaDeEERR(c: DBRcvCompra, provCuentaInfo: Map<string, DBProveedorCuenta>): boolean {
+  if (c.incluir_eerr === true) return false;
+  if (c.incluir_eerr === false) return true;
   const pc = c.rut_proveedor ? provCuentaInfo.get(c.rut_proveedor) : undefined;
   return !!pc?.excluir_eerr;
 }
@@ -236,6 +241,18 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
       else await setPeriodoDevengoCompra(d.id, val);
     } catch (e) {
       console.error("[handleChangePeriodo]", e);
+      void reload();
+    }
+  };
+
+  // Toggle incluir_eerr de un doc del RCV. Optimistic update.
+  const handleToggleIncluirEerr = async (compraId: string, incluir: boolean | null) => {
+    if (!compraId) return;
+    setComprasExt(prev => prev.map(c => c.id === compraId ? { ...c, incluir_eerr: incluir } : c));
+    try {
+      await setIncluirEerrCompra(compraId, incluir);
+    } catch (e) {
+      console.error("[handleToggleIncluirEerr]", e);
       void reload();
     }
   };
@@ -1080,7 +1097,7 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
             <div style={{ marginTop: 10, maxHeight: 400, overflowY: "auto" }}>
               <table className="tbl" style={{ fontSize: 11 }}>
                 <thead>
-                  <tr><th>Doc</th><th>N°</th><th>Proveedor</th><th>Fecha</th><th style={{ textAlign: "right" }}>Monto</th><th>Ref</th></tr>
+                  <tr><th>Doc</th><th>N°</th><th>Proveedor</th><th>Fecha</th><th style={{ textAlign: "right" }}>Monto</th><th>Ref</th><th></th></tr>
                 </thead>
                 <tbody>
                   {comprasExcluidas
@@ -1097,6 +1114,13 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
                         </td>
                         <td className="mono" style={{ fontSize: 10, color: "var(--txt3)" }}>
                           {c.factura_ref_folio ? `→ ${c.factura_ref_folio}` : "—"}
+                        </td>
+                        <td>
+                          <button onClick={() => c.id && void handleToggleIncluirEerr(c.id, true)}
+                            title="Incluir este documento en el EERR (compra real, no comisión)"
+                            style={{ padding: "2px 8px", borderRadius: 3, fontSize: 10, fontWeight: 600, background: "var(--cyanBg)", color: "var(--cyan)", border: "1px solid var(--cyanBd)", cursor: "pointer", whiteSpace: "nowrap" }}>
+                            + Incluir
+                          </button>
                         </td>
                       </tr>
                     ))}
