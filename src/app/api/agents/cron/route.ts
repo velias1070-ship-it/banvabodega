@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { fetchAgentTriggersServer, updateAgentTriggerServer, DBAgentTrigger } from "@/lib/agents-db";
 import { getBaseUrl } from "@/lib/base-url";
 
+// DEPRECATED Sprint 4 (2026-05-03): Agentes AI deshabilitados, operación Camino 1
+// (humanos + dashboards). Endpoint mantenido para reactivación futura. Si recibes
+// este endpoint en log, alguien está llamándolo manualmente o quedó un cron sin remover.
+// Ver /docs/operations/reposicion-manual.md.
+console.warn("[deprecated] /api/agents/cron llamado — debería estar inactivo desde Sprint 4");
+
 const CRON_SECRET = process.env.AGENTS_CRON_SECRET || "";
 
 // Mapeo de días en español a números (0=dom, 1=lun, ..., 6=sab)

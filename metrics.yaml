@@ -1192,19 +1192,97 @@ decisions:
       - "Pre-deploy: 509 SKUs con vel_objetivo=0 (sin uso real). Cero outliers."
       - "RPC es STABLE: solo lee. UI puede llamarla en blur del input sin penalty."
 
+  - id: safety_stock
+    label: "Stock de seguridad por SKU x Nodo"
+    domain: inventario
+    grain: "(sku_origen, node_id)"
+    unit: unidades
+    formula_text: |
+      sigma_lt < 2  → z × sigma_dia × sqrt(LT) × 1.075
+      sigma_lt >= 2 → z × sqrt(LT × sigma_dia^2 + d_avg_dia^2 × sigma_lt^2) × 1.075
+      sigma_dia = sigma_sem / sqrt(7); margen 7.5% por return rate.
+    materialized_in: [v_safety_stock.safety_stock]
+    computed_in: "view v_safety_stock (Sprint 4, 2026-05-03)"
+    fuente_doctrina: "Sprint 4 Camino 1 (humanos)."
+    notas:
+      - "Lee desviacion_std semanal de sku_intelligence; fallback 30% de vel_ponderada."
+      - "Excluye policy_status != active y action = no_reorder (CZ)."
+
+  - id: cycle_stock
+    label: "Cycle stock = velocidad_dia × LT"
+    domain: inventario
+    grain: "(sku_origen, node_id)"
+    unit: unidades
+    formula_text: "round((vel_ponderada / 7) × lt_dias)"
+    materialized_in: [v_safety_stock.cycle_stock]
+    computed_in: "view v_safety_stock (Sprint 4)"
+
+  - id: reorder_point
+    label: "Punto de reorden (ROP)"
+    domain: inventario
+    grain: "(sku_origen, node_id)"
+    unit: unidades
+    formula_text: |
+      round(d_avg_dia × LT + z × sigma_dia × sqrt(LT))
+      Sin margen 7.5% (a diferencia de SS).
+    materialized_in: [v_safety_stock.reorder_point]
+    computed_in: "view v_safety_stock (Sprint 4)"
+    consumed_by:
+      - "v_compras_pendientes (filtro: stock + transit < ROP)"
+      - "v_alertas_quiebre (bajo_rop=true)"
+    fuente_doctrina: "Sprint 4 Camino 1."
+
+  - id: pre_full_target
+    label: "Stock objetivo pre-posicionado en Full"
+    domain: inventario
+    grain: "(sku_origen, node_id=full_ml)"
+    unit: unidades
+    formula_text: |
+      IF node_id = 'full_ml':
+        round((vel_ponderada / 7) × target_dias_full)
+      ELSE 0
+    materialized_in: [v_safety_stock.pre_full_target]
+    computed_in: "view v_safety_stock (Sprint 4)"
+    fuente_doctrina: "Sprint 1 H11 (target_dias_full por celda) + Sprint 4 materialización."
+
+  - id: qty_a_comprar
+    label: "Cantidad sugerida a comprar a proveedor"
+    domain: compras
+    grain: "(sku_origen)"
+    unit: unidades
+    formula_text: |
+      GREATEST(0, stock_objetivo - stock_total - in_transit_bodega)
+      stock_objetivo = cycle_stock + safety_stock + pre_full_target
+    materialized_in: [v_compras_pendientes.qty_a_comprar]
+    computed_in: "view v_compras_pendientes (Sprint 4)"
+    consumed_by:
+      - "/admin/reposicion-suggestions (UI humana, Sprint 4)"
+    fuente_doctrina: "Sprint 4 Camino 1."
+
+  - id: dias_cobertura_actual
+    label: "Días de cobertura con stock actual"
+    domain: inventario
+    grain: "(sku_origen)"
+    unit: dias
+    formula_text: "ROUND(stock_total / d_avg_dia) (NULL cuando d_avg_dia = 0)"
+    materialized_in: [v_compras_pendientes.dias_cobertura_actual]
+    computed_in: "view v_compras_pendientes (Sprint 4)"
+    consumed_by:
+      - "Banner /admin/reposicion-suggestions (clasificar QUIEBRE/CRITICO/URGENTE/ATENCION)"
+
 # ============================================================================
 # METADATA DEL REGISTRY
 # ============================================================================
 
 registry_metadata:
-  total_metrics: 46  # +5 Sprint 2; +1 Sprint 2.5; +2 Sprint 3 (margen_neto_30d_imputed, vel_objetivo_validation)
-  total_decisions: 6
+  total_metrics: 52  # +5 Sprint 2; +1 Sprint 2.5; +2 Sprint 3; +6 Sprint 4
+  total_decisions: 7  # +1 Sprint 4 (Camino 1)
   domain_coverage:
-    inventario: 39  # +5 Sprint 2; +1 Sprint 2.5; +2 Sprint 3
+    inventario: 44  # +5 SP2; +1 SP2.5; +2 SP3; +5 SP4
     ventas: 3
     pricing: 1
     logistica: 5
-    compras: 1
+    compras: 2  # +1 SP4 (qty_a_comprar)
   agent_consumers:
     agente_reposicion: ["vel_ponderada", "pedir_proveedor", "vel_pre_quiebre", "lead_time_usado_dias"]
     agente_inventario: ["mandar_full", "stock_total", "abc_unidades"]

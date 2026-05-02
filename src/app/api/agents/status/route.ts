@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
 
+// DEPRECATED Sprint 4 (2026-05-03): Agentes AI deshabilitados, operación Camino 1
+// (humanos + dashboards). Endpoint mantenido para reactivación futura. Si recibes
+// este endpoint en log, alguien está llamándolo manualmente o quedó un cron sin remover.
+// Ver /docs/operations/reposicion-manual.md.
+console.warn("[deprecated] /api/agents/status llamado — debería estar inactivo desde Sprint 4");
+
 export async function GET(_req: NextRequest) {
   try {
     const sb = getServerSupabase();
