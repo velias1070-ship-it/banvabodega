@@ -451,12 +451,19 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
 
     const mapMov = (m: DBMovimientoBanco): DrillDoc => {
       const conc = conciliaciones.find(c => c.movimiento_banco_id === m.id && c.estado === "confirmado");
+      const meta = (conc?.metadata || {}) as Record<string, unknown>;
+      const provManual = typeof meta.proveedor === "string" ? meta.proveedor.trim() : "";
+      const descManual = typeof meta.descripcion === "string" ? meta.descripcion.trim() : "";
+      const docManual = typeof meta.num_documento === "string" ? meta.num_documento.trim() : "";
+      const tipoManual = typeof meta.tipo === "string" ? meta.tipo.trim() : "";
+      const notaPartes = [conc?.notas, descManual, docManual ? `Doc: ${docManual}` : "", tipoManual ? `(${tipoManual})` : ""]
+        .filter((s): s is string => !!s && s.length > 0);
       return {
         id: m.id || null, tabla: "movimientos_banco",
         periodoDevengo: m.periodo_devengo || null,
         tipo: "Banco", doc: m.banco, nro: m.referencia || "—", rut: "",
-        razon: m.descripcion || "", fecha: m.fecha, monto: Math.abs(m.monto),
-        nota: conc?.notas || "", conciliada: !!conc,
+        razon: provManual || m.descripcion || "", fecha: m.fecha, monto: Math.abs(m.monto),
+        nota: notaPartes.join(" — "), conciliada: !!conc,
         fechaPago: m.fecha,
         bancoPago: m.banco,
       };
@@ -542,12 +549,19 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
 
     const mapMov = (m: DBMovimientoBanco): DrillDoc => {
       const conc = conciliaciones.find(c => c.movimiento_banco_id === m.id && c.estado === "confirmado");
+      const meta = (conc?.metadata || {}) as Record<string, unknown>;
+      const provManual = typeof meta.proveedor === "string" ? meta.proveedor.trim() : "";
+      const descManual = typeof meta.descripcion === "string" ? meta.descripcion.trim() : "";
+      const docManual = typeof meta.num_documento === "string" ? meta.num_documento.trim() : "";
+      const tipoManual = typeof meta.tipo === "string" ? meta.tipo.trim() : "";
+      const notaPartes = [conc?.notas, descManual, docManual ? `Doc: ${docManual}` : "", tipoManual ? `(${tipoManual})` : ""]
+        .filter((s): s is string => !!s && s.length > 0);
       return {
         id: m.id || null, tabla: "movimientos_banco",
         periodoDevengo: m.periodo_devengo || null,
         tipo: "Banco", doc: m.banco, nro: m.referencia || "—", rut: "",
-        razon: m.descripcion || "", fecha: m.fecha, monto: Math.abs(m.monto),
-        nota: conc?.notas || "", conciliada: !!conc,
+        razon: provManual || m.descripcion || "", fecha: m.fecha, monto: Math.abs(m.monto),
+        nota: notaPartes.join(" — "), conciliada: !!conc,
         fechaPago: m.fecha,
         bancoPago: m.banco,
       };
