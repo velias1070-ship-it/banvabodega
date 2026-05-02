@@ -108,8 +108,8 @@ SELECT 'T09_backfill_consistente' AS test,
          || ' marcados=' || (SELECT COUNT(*) FROM sku_intelligence WHERE margen_neto_30d_imputed = true)
   END AS result;
 
--- T10 — _lint_forbidden_patterns tiene los 2 patrones registrados
+-- T10 — lint_forbidden_patterns tiene los 2 patrones registrados
 SELECT 'T10_lint_registry' AS test,
   CASE WHEN COUNT(*) = 2 THEN 'PASS (' || COUNT(*) || ')' ELSE 'FAIL: ' || COUNT(*) END AS result
-FROM _lint_forbidden_patterns
+FROM lint_forbidden_patterns
 WHERE pattern IN ('.neq(''anulada'', true)', '.neq("anulada", true)');

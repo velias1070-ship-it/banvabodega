@@ -27,7 +27,7 @@ posteriores (Reposición v2, Pricing v2) tengan datos confiables.
 - **Anti-regresión:** workflow `lint-banned-patterns.yml` corre script
   `scripts/lint-banned-patterns.sh` en cada PR que toque `src/**`. Falla
   con `::error::` si reaparece `.neq("anulada", true)` o variante con
-  comilla simple. Registry canónico: tabla `_lint_forbidden_patterns`.
+  comilla simple. Registry canónico: tabla `lint_forbidden_patterns`.
 
 ### I6 — `vel_objetivo` sin guardrails
 
@@ -79,12 +79,12 @@ posteriores (Reposición v2, Pricing v2) tengan datos confiables.
 | T07 | RPC retorna `null_aceptable` para NULL | PASS |
 | T08 | RPC retorna `sku_no_existe` para SKU inválido | PASS |
 | T09 | Backfill consistente (22 SKUs marcados = 22 con >=15 días quiebre) | PASS |
-| T10 | `_lint_forbidden_patterns` tiene los 2 patrones registrados | PASS |
+| T10 | `lint_forbidden_patterns` tiene los 2 patrones registrados | PASS |
 
 ## Coordinación con sesión paralela pricing
 
 Sin conflicto:
-- Sprint 3 toca `sku_intelligence` (ADD COLUMN + CHECK), `sku_intelligence_history` (ADD COLUMN), tabla nueva `_lint_forbidden_patterns`, RPC nuevo `validate_vel_objetivo_input`, `intelligence.ts` márgen imputed wiring (sin tocar P17), `store.ts:1205`.
+- Sprint 3 toca `sku_intelligence` (ADD COLUMN + CHECK), `sku_intelligence_history` (ADD COLUMN), tabla nueva `lint_forbidden_patterns`, RPC nuevo `validate_vel_objetivo_input`, `intelligence.ts` márgen imputed wiring (sin tocar P17), `store.ts:1205`.
 - Sprint 3 NO toca: `pricing.ts`, `pricing-config/`, P17 de `intelligence.ts`, fórmulas de velocidad, agente Reposición, motor ABC/XYZ.
 - Numeración migration: `20260503150000` (track main, +2h sobre Sprint 2.5).
 
@@ -112,6 +112,6 @@ Sin conflicto:
 - Tests: `tests/sprint3_validation.sql`
 - Lint script: `scripts/lint-banned-patterns.sh`
 - CI workflow: `.github/workflows/lint-banned-patterns.yml`
-- Registry SQL: `_lint_forbidden_patterns` (no usar en runtime)
+- Registry SQL: `lint_forbidden_patterns` (no usar en runtime)
 - Adendum A.2.2 (granularidad semanal/diaria, decisión owner)
 - H27 (filtro anulada unificado, Sprint 0.5)

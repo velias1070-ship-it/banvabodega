@@ -260,7 +260,7 @@ ssots:
   - concept: lint_patrones_prohibidos
     description: "Registry de patrones de código prohibidos en src/. Lint en CI bloquea PRs que los reintroducen."
     domain: codebase
-    owner_table: _lint_forbidden_patterns
+    owner_table: lint_forbidden_patterns
     enforcement_path: ".github/workflows/lint-banned-patterns.yml + scripts/lint-banned-patterns.sh"
     rationale: |
       Sprint 3 (2026-05-03). I4 unificación filtro anulada. H27 cerrada

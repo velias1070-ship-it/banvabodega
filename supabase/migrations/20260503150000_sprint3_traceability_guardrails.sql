@@ -11,7 +11,7 @@
 -- (Reposición v2 y Pricing v2) puedan basarse en datos confiables.
 --
 -- I4 — Filtro anulada divergente:
---      Tabla _lint_forbidden_patterns (lint en CI grep) + cambio en store.ts.
+--      Tabla lint_forbidden_patterns (lint en CI grep) + cambio en store.ts.
 -- I6 — vel_objetivo sin guardrails:
 --      CHECK constraint + RPC validate_vel_objetivo_input.
 -- I9 — margen_neto_30d imputado en quiebre sin marker:
@@ -192,17 +192,17 @@ UPDATE sku_intelligence si
 
 
 -- =============================================================================
--- I4 — STEP 6: Tabla _lint_forbidden_patterns para CI lint
+-- I4 — STEP 6: Tabla lint_forbidden_patterns para CI lint
 -- =============================================================================
 
-CREATE TABLE IF NOT EXISTS _lint_forbidden_patterns (
+CREATE TABLE IF NOT EXISTS lint_forbidden_patterns (
   pattern         text PRIMARY KEY,
   reason          text NOT NULL,
   introduced_in   text,
   detected_in_files int DEFAULT 0
 );
 
-INSERT INTO _lint_forbidden_patterns (pattern, reason, introduced_in) VALUES
+INSERT INTO lint_forbidden_patterns (pattern, reason, introduced_in) VALUES
   ('.neq(''anulada'', true)',
    'I4 unificación: usar .eq(''anulada'', false). H27 cerrada Sprint 0.5.',
    '2026-05-03 Sprint 3'),
@@ -211,5 +211,5 @@ INSERT INTO _lint_forbidden_patterns (pattern, reason, introduced_in) VALUES
    '2026-05-03 Sprint 3')
 ON CONFLICT (pattern) DO NOTHING;
 
-COMMENT ON TABLE _lint_forbidden_patterns IS
+COMMENT ON TABLE lint_forbidden_patterns IS
   'I4 — Sprint 3: patrones prohibidos por lint en CI. El workflow lint-banned-patterns en GitHub Actions chequea grep en src/** y falla si encuentra match. NO se usa en runtime — es solo registry leído por scripts/lint-banned-patterns.sh.';
