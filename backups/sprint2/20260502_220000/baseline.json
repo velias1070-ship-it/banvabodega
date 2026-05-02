@@ -1,0 +1,27 @@
+{
+  "captured_at": "2026-05-02T22:00:00-04:00",
+  "purpose": "Sprint 2 baseline (populate sku_node_policy desde policy_templates × clasificación SKU).",
+  "migration": "20260503090000_sprint2_populate_sku_node_policy.sql",
+  "design_change": "sku_node_policy pasa de override-only (Sprint 1) a full-snapshot (Sprint 2). Tabla está vacía (0 rows) — re-shape de columnas es safe.",
+  "row_counts_pre": {
+    "sku_node_policy": 0,
+    "productos_total": 509,
+    "productos_activos": 487,
+    "productos_sin_costo": 86,
+    "sku_intelligence": 509,
+    "policy_templates": 9
+  },
+  "abc_xyz_distribution": {
+    "AX": 21, "AY": 70, "AZ": 16,
+    "BX": 1,  "BY": 42, "BZ": 45,
+    "CX": 0,  "CY": 11, "CZ": 303
+  },
+  "categorias_reales": ["textil (228)", "quilt (101)", "otros (99)", "alfombras (49)", "textil - infantil (32)"],
+  "expected_after_backfill": {
+    "sku_node_policy_rows": 974,
+    "blocked_no_cost_aprox": 172,
+    "active_aprox": 802,
+    "low_confidence_seasonal_aprox": 202
+  },
+  "rollback": "TRUNCATE sku_node_policy; DROP VIEW v_sku_policy_diff; DROP FUNCTION refresh_sku_node_policy_from_templates(); DROP FUNCTION calc_sku_node_policy_row(text,text); DROP TABLE seasonal_categories; ALTER TABLE sku_node_policy ADD back los _override columns (Sprint 1 schema)."
+}

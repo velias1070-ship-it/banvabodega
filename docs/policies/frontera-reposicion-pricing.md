@@ -30,7 +30,7 @@ La frontera es **lógica**, no física. Ambas pueden tocar `sku_intelligence` en
 |---|---|---|
 | Stock canónico | `stock` | RPC `registrar_movimiento_stock` (única vía). |
 | Política reposición por celda | `policy_templates` | Migration manual (revisión humana). |
-| Override SKU×Nodo (reposición) | `sku_node_policy` | Sprint 2: panel admin reposición. Sprint 1: vacía. |
+| Snapshot SKU×Nodo (reposición) | `sku_node_policy` | Cron weekly `/api/policy/sync-from-templates` (Sprint 2). UI admin reposición Sprint 4 escribe `manual_override=true`. |
 | Cache cálculos reposición | `sku_intelligence` (campos `pedir_*`, `mandar_full`, `dias_*`) | `intelligence.ts:recalcularTodo`. Cache reconstruible. |
 | Cache pricing/markdown | `sku_intelligence` (campos `accion_pricing`, `markdown_*`) | `pricing.ts` + crons pricing. **No tocar desde Reposición.** |
 
@@ -39,26 +39,31 @@ La frontera es **lógica**, no física. Ambas pueden tocar `sku_intelligence` en
 - **Reposición v2** (Sprint 2+) puede leer cualquier campo de `sku_intelligence`, pero **no puede escribir** los campos de pricing/markdown.
 - **Pricing** puede leer `sku_intelligence` y los nuevos views (`v_stock_por_nodo`, `v_in_transit_por_nodo`) si los necesita para informar markdown decisions, pero **no puede escribir** `sku_node_policy` ni `policy_templates`.
 
-### 3. Resolución de overrides (Reposición v2)
+### 3. Resolución de política (Reposición v2)
 
-Cuando Sprint 2 calcule la política aplicable a un (sku, node_id):
+**Cambio Sprint 2 (2026-05-02):** `sku_node_policy` pasó de **override-only** (vacía por default + columnas `*_override` nullables) a **snapshot completo** (una fila por cada `(sku, node)` activo, valores concretos copiados del template). El cambio se hizo porque la tabla quedó vacía durante semanas en Sprint 1 (proceso "escribir override sólo cuando hay razón" no escaló) y porque agentes downstream (Sprint 4) necesitan un read consistente sin tener que aplicar la lógica de fallback en cada query.
 
-```
-política_aplicada(sku, node_id):
-  override = SELECT * FROM sku_node_policy WHERE sku_origen=sku AND node_id=node_id;
-  template = SELECT * FROM policy_templates WHERE celda = sku.celda_abc_xyz AND aplica_a = node_type;
-  return {
-    service_level: override.service_level_override ?? template.service_level,
-    z_value:       override.z_value_override       ?? template.z_value,
-    target_dias:   override.target_dias_override   ?? template.target_dias_full,
-    action:        override.reorder_action_override?? template.reorder_action,
-    lead_time:     override.lead_time_override_days?? lane(node_type).lead_time_days,
-    rampup:        override.rampup_factor_override ?? rampup_default(sku.celda),
-  }
+Lookup actual:
+
+```sql
+SELECT cell, service_level, z_value, target_dias_full, action,
+       xyz_confidence, policy_status, manual_override
+  FROM sku_node_policy
+ WHERE sku_origen=$1 AND node_id=$2;
 ```
 
-**Sin override** = usar template canónico.
-**Con override** = `override_reason` debe ser no-NULL (validación a nivel app, Sprint 2).
+Estados de fila:
+
+| `policy_status` | Significado |
+|---|---|
+| `active` | Política aplicable. Lookup ya resolvió template + mitigaciones. |
+| `blocked_no_cost` | Falta `costo_promedio`. No reordenar hasta cargar costo (per `feedback_no_inferir_costos`). |
+| `blocked_no_history` | Falta clasificación ABC×XYZ. Sprint 3 puede mejorar este branch. |
+| `blocked_no_template` | Celda inválida (no debería ocurrir con seed Sprint 0). |
+
+Mitigación H2 (estacionalidad): si la categoría está en `seasonal_categories` (active) y `xyz IN ('Y','Z')`, `xyz_confidence='low_confidence_seasonal'` y `z_value=1.88` (conservador) en lugar del z bajo de la celda. Sprint 7+ reemplaza por CV52 deseasonalizado.
+
+**Cron weekly** `/api/policy/sync-from-templates` (lunes 11:30 UTC) recalcula la tabla preservando filas con `manual_override=true`.
 
 ### 4. Sprint 6 — Migración Pricing fuera de `sku_intelligence`
 

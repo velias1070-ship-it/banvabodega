@@ -4,12 +4,13 @@
 # Sprint 0 (2026-05-01) — 11 conceptos iniciales.
 # Sprint 0.5 (2026-05-02) — agregados 7 meta-conceptos de métricas (capa derivada).
 
-version: 3
+version: 4
 last_updated: 2026-05-02
 sprints:
   - sprint_0:   "11 conceptos iniciales (2026-05-01)"
   - sprint_0_5: "+7 meta-conceptos de métricas (2026-05-02)"
   - sprint_1:   "+3 conceptos multi-bodega: nodo_logistico, lane_logistica, politica_sku_nodo (2026-05-02)"
+  - sprint_2:   "politica_sku_nodo redefinido como snapshot (poblada 974 rows); +categoria_estacional concepto (mitigación H2) (2026-05-02)"
 
 concepts:
 
@@ -127,13 +128,24 @@ concepts:
 
   - id: politica_sku_nodo
     label: "Política por SKU×Nodo"
-    description: "Override puntual de policy_templates a nivel (sku, node). Sin filas = el motor usa el template canónico de la celda ABC×XYZ."
-    cardinality: "Esperada baja — sólo SKUs con razón documentada de desviarse de su celda."
+    description: "Snapshot completo de política aplicable por (sku_origen, node_id), derivado de policy_templates × clasificación. Una fila por cada SKU activo × nodo. manual_override=true preserva contra cron."
+    cardinality: "974 al 2026-05-02 (487 SKUs activos × 2 nodos)."
     dominio: inventario
-    fisico: "sku_node_policy (PK compuesta sku_origen + node_id, FK productos + nodes)"
+    fisico: "sku_node_policy (snapshot, Sprint 2). PK compuesta (sku_origen, node_id). Schema: cell, service_level, z_value, target_dias_full, action, velocidad_observada, xyz_confidence, policy_status, manual_override."
     notas:
-      - "Frontera Reposición/Pricing (H5 Camino C): esta tabla es escritura autoritativa de Reposición. Pricing escribe en sku_intelligence.markdown_*."
-      - "Sprint 2 implementa el lookup política_aplicada(sku, node) descrito en /docs/policies/frontera-reposicion-pricing.md §3."
+      - "Sprint 1 lo creó como override-only (vacía); Sprint 2 lo redefinió como snapshot poblado por cron."
+      - "Frontera Reposición/Pricing (H5 Camino C): tabla autoritativa de Reposición. Pricing escribe en sku_intelligence.markdown_* hasta Sprint 6."
+      - "Refresh weekly via /api/policy/sync-from-templates (lunes 11:30 UTC)."
+
+  - id: categoria_estacional
+    label: "Categoría estacional"
+    description: "Categoría textil con estacionalidad fuerte (pico invierno, valle verano) cuyo CV crudo agregado infla y empuja la clasificación XYZ a Y/Z falsos."
+    cardinality: "Sprint 2: 1 activa (quilt) + 5 aspiracionales."
+    dominio: inventario
+    fisico: "seasonal_categories (PK category, FK lógica a productos.categoria via LOWER)"
+    notas:
+      - "Mitigación H2 sin esperar a v_cv_52sem deseasonalizado (Sprint 7+)."
+      - "Productos en estas categorías con xyz IN (Y,Z) reciben xyz_confidence=low_confidence_seasonal y z=1.88 (conservador)."
 
   - id: stock_unificado_por_nodo
     label: "Stock unificado por nodo"

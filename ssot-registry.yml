@@ -3,13 +3,14 @@
 # Cada concepto crítico tiene exactamente UN owner_table autoritativo.
 # Tablas que derivan o cachean datos lo declaran explícitamente.
 
-version: 3
+version: 4
 last_updated: 2026-05-02
 owner: Vicente Elías
 sprints:
   - sprint_0:   "5 SSoTs operativos iniciales (2026-05-01)"
   - sprint_0_5: "+6 SSoTs de métricas (2026-05-02)"
   - sprint_1:   "+2 SSoTs multi-bodega: politica_reposicion_por_sku_nodo, stock_unificado_por_nodo (2026-05-02)"
+  - sprint_2:   "politica_reposicion_por_sku_nodo poblada (snapshot model, 974 rows) + seasonal_categories (mitigación H2) (2026-05-02)"
 
 ssots:
 
@@ -78,19 +79,50 @@ ssots:
       - Sprint 3: forecast del ROP
 
   - concept: politica_reposicion_por_sku_nodo
-    description: "Overrides puntuales de policy_templates a nivel (sku_origen, node_id). Sin filas = el motor usa el template de la celda."
+    description: "Snapshot por SKU×Nodo derivado de policy_templates × clasificación ABC×XYZ. Una fila por cada (sku activo, node)."
     domain: inventario
     owner_table: sku_node_policy
-    write_path: "Sprint 2: panel admin reposición (UI). Sprint 1: tabla vacía, escritura solo manual via SQL."
-    derivable_from: null
-    rationale: "Frontera Reposición/Pricing — H5 Camino C (2026-05-02). Tabla autoritativa de Reposición. Pricing/markdown sigue en sku_intelligence hasta Sprint 6."
+    derived_from:
+      - "policy_templates (canónico por celda, 9 celdas)"
+      - "sku_intelligence (abc_unidades, xyz, vel_ponderada)"
+      - "productos (estado_sku, costo_promedio, categoria)"
+      - "seasonal_categories (mitigación H2)"
+    write_path: "RPC refresh_sku_node_policy_from_templates (cron weekly /api/policy/sync-from-templates lunes 11:30 UTC, Sprint 2). UI admin reposición Sprint 4: escribe manual_override=true."
+    refresh_mechanism: "Vercel cron lunes 11:30 UTC + manual via ?run=1"
+    override_mechanism: "manual_override=true preserva la fila contra el cron"
+    rationale: |
+      Frontera Reposición/Pricing — H5 Camino C (2026-05-02). Sprint 2 cambió
+      de override-only (Sprint 1, vacía) a snapshot completo. Razón: agentes
+      downstream necesitan un read consistente sin replicar lógica de fallback.
+      Pricing/markdown sigue en sku_intelligence hasta Sprint 6.
     notes:
-      - "Composite PK (sku_origen, node_id). FK a productos + nodes."
-      - "Override columns nullable: NULL = usar template. override_reason obligatorio si hay al menos un override no-NULL (validación a nivel app)."
+      - "PK compuesto (sku_origen, node_id). FK productos + nodes."
+      - "974 rows post-Sprint 2 (487 SKUs activos × 2 nodos)."
+      - "policy_status: active | blocked_no_cost | blocked_no_history | blocked_no_template."
+      - "xyz_confidence ∈ {high, low_confidence_seasonal}. low_confidence → z=1.88 fallback."
       - "Lookup descrito en /docs/policies/frontera-reposicion-pricing.md §3."
+      - "NUNCA leer markdown_*: sigue en sku_intelligence hasta Sprint 6."
     consumers:
-      - Sprint 2: intelligence.ts:resolverPedirProveedor + resolverMandarFull
-      - Sprint 4+: agente_reposicion autónomo
+      - "Sprint 4: agente_reposicion v2 (intelligence.ts:resolverPedirProveedor + resolverMandarFull)"
+      - "Sprint 4: panel admin Reposición — columna 'Política aplicada'"
+    last_audited: 2026-05-02
+
+  - concept: categorias_estacionales
+    description: "Lista de categorías textil hogar Chile con estacionalidad fuerte. Mitigación H2 (status quo CV crudo)."
+    domain: inventario
+    owner_table: seasonal_categories
+    write_path: "Migration (Sprint 2). Cambios manuales con review."
+    rationale: |
+      H2 cerrado 2026-05-01: bandas xyz 0.5/1.0 + CV crudo. Pero categorías
+      seasonal (quilts en BANVA) clasifican AZ/BZ por CV inflado en agregado
+      anual cuando deberían ser AY/BY. Esta tabla flagea esos casos para que
+      sku_node_policy use z conservador (1.88) en lugar de z bajo de la celda.
+    notes:
+      - "Categoría seedeada que matchea hoy: 'quilt' (101 productos). Otras (plumones, frazadas, etc.) son aspiracionales hasta que productos.categoria se refine."
+      - "is_active=false marca aspiracionales que no matchean nada todavía."
+      - "Sprint 7+ (~2027-04, cuando ≥80% del catálogo tenga 52 semanas): reemplaza esta tabla por v_cv_52sem deseasonalizada + xyz_confidence derivado."
+    consumers:
+      - "calc_sku_node_policy_row → xyz_confidence + z_value fallback"
     last_audited: 2026-05-02
 
   - concept: stock_unificado_por_nodo
