@@ -527,7 +527,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
     setSyncMsg(null);
     try {
       if (isAnual) {
-        // Sync mes a mes
+        // Sync mes a mes — sin solo_registro para que SÍ inserte en rcv_compras
         let totalC = 0, errores = 0;
         for (let mes = 1; mes <= 12; mes++) {
           const per = `${periodo}${String(mes).padStart(2, "0")}`;
@@ -536,7 +536,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
             const res = await fetch("/api/sii/sync", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ periodo: per, tipo: "compras", solo_registro: true }),
+              body: JSON.stringify({ periodo: per, tipo: "compras" }),
             });
             const data = await res.json();
             if (!data.error) totalC += data.compras || 0;
