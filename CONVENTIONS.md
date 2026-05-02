@@ -135,3 +135,17 @@ Cuando un concepto cambia significativamente:
 | Filtro anulada=false en ventas_ml_cache | H27 | 2026-04 (per feedback) |
 | Modelo 3 nodos (Bodega + Full + Flex obsoleto) | — | 2026-04 (Vicente self-closed) |
 | Op Limpieza modo híbrido | Adendum A | 2026-04-28 |
+| Camino 1 (humanos + dashboards, agentes AI off) | — | 2026-05-03 (Sprint 4) |
+
+## 9. Operación
+
+BANVA opera **Camino 1** (humanos + fórmulas + dashboards). Agentes AI
+deshabilitados desde Sprint 4 (2026-05-03). Reactivación documentada en
+[`/docs/operations/reposicion-manual.md`](docs/operations/reposicion-manual.md).
+
+Vista canónica para reposición: `v_reposicion_dashboard` consumida por
+[`/admin/reposicion-suggestions`](src/app/admin/reposicion-suggestions/page.tsx).
+
+Endpoints de agentes (`src/app/api/agents/*/route.ts`) marcados
+`DEPRECATED Sprint 4` con `console.warn`. Si aparece el warn en logs,
+alguien está llamándolos manualmente — investigar.

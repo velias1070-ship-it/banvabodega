@@ -7,6 +7,12 @@ import {
 import { prepararDatos } from "@/lib/agents-data";
 import { upsertSnapshot } from "@/lib/agents-db";
 
+// DEPRECATED Sprint 4 (2026-05-03): Agentes AI deshabilitados, operación Camino 1
+// (humanos + dashboards). Endpoint mantenido para reactivación futura. Si recibes
+// este endpoint en log, alguien está llamándolo manualmente o quedó un cron sin remover.
+// Ver /docs/operations/reposicion-manual.md.
+console.warn("[deprecated] /api/agents/run llamado — debería estar inactivo desde Sprint 4");
+
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 
 interface InsightRaw {

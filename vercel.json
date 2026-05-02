@@ -13,10 +13,6 @@
       "schedule": "*/5 * * * *"
     },
     {
-      "path": "/api/agents/cron",
-      "schedule": "0 8 * * *"
-    },
-    {
       "path": "/api/ml/metrics-sync",
       "schedule": "0 */4 * * *"
     },
