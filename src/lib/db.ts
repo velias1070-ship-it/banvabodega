@@ -2345,6 +2345,7 @@ export interface DBRcvCompra {
   factura_ref_tipo?: number | null;
   factura_ref_folio?: string | null;
   factura_ref_id?: string | null;
+  periodo_devengo?: string | null;
   created_at?: string;
 }
 
@@ -2387,6 +2388,7 @@ export interface DBMovimientoBanco {
   metadata?: unknown;
   notas?: string | null;
   monto_conciliado?: number;
+  periodo_devengo?: string | null;
   created_at?: string;
 }
 
@@ -2447,6 +2449,7 @@ export interface DBPlanCuentas {
   nivel: number;
   es_hoja: boolean;
   activa: boolean;
+  regla_devengo?: "mes_actual" | "mes_anterior";
   created_at?: string;
 }
 
@@ -2885,6 +2888,28 @@ export async function syncEstadoConciliacion(movId: string, montoMov: number): P
 export async function categorizarMovimiento(id: string, categoriaId: string): Promise<void> {
   const sb = getSupabase(); if (!sb) return;
   await sb.from("movimientos_banco").update({ categoria_cuenta_id: categoriaId }).eq("id", id);
+}
+
+// Override manual del periodo de devengo de un movimiento (YYYYMM o null para limpiar)
+export async function setPeriodoDevengoMovimiento(id: string, periodo: string | null): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("movimientos_banco").update({ periodo_devengo: periodo }).eq("id", id);
+}
+
+export async function setPeriodoDevengoCompra(id: string, periodo: string | null): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("rcv_compras").update({ periodo_devengo: periodo }).eq("id", id);
+}
+
+// Override de categoría contable a nivel factura (gana sobre el default del proveedor)
+export async function setCategoriaCuentaCompra(id: string, categoriaId: string | null): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("rcv_compras").update({ categoria_cuenta_id: categoriaId }).eq("id", id);
+}
+
+export async function setReglaDevengoCuenta(id: string, regla: "mes_actual" | "mes_anterior"): Promise<void> {
+  const sb = getSupabase(); if (!sb) return;
+  await sb.from("plan_cuentas").update({ regla_devengo: regla }).eq("id", id);
 }
 
 // Actualizar estado_pago de compra o venta
