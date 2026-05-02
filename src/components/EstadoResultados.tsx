@@ -4,8 +4,10 @@ import {
   fetchRcvVentas, fetchRcvCompras,
   fetchPlanCuentas, fetchMovimientosBanco,
   fetchProveedorCuentas, fetchConciliaciones,
-  upsertProveedorCuenta, categorizarMovimiento,
+  categorizarMovimiento,
   fetchPlanCuentasHojas,
+  setPeriodoDevengoMovimiento, setPeriodoDevengoCompra,
+  setCategoriaCuentaCompra,
 } from "@/lib/db";
 import type { DBEmpresa, DBRcvCompra, DBRcvVenta, DBPlanCuentas, DBMovimientoBanco, DBProveedorCuenta, DBConciliacion } from "@/lib/db";
 import { exportToExcel, fmtMoneyExcel } from "@/lib/exportExcel";
@@ -39,6 +41,60 @@ function periodoRange(p: string): { desde: string; hasta: string } {
   };
 }
 
+// Suma N meses al periodo (negativo retrocede)
+function periodoOffset(p: string, n: number): string {
+  const y = parseInt(p.slice(0, 4));
+  const m = parseInt(p.slice(4, 6));
+  const total = y * 12 + (m - 1) + n;
+  const ny = Math.floor(total / 12);
+  const nm = (total % 12) + 1;
+  return `${ny}${String(nm).padStart(2, "0")}`;
+}
+
+// Rango ampliado: trae N meses antes y después para captar overrides y reglas de devengo
+function periodoRangeExt(p: string, marginMonths: number): { desde: string; hasta: string } {
+  const before = periodoOffset(p, -marginMonths);
+  const after = periodoOffset(p, marginMonths);
+  const a = periodoRange(before);
+  const b = periodoRange(after);
+  return { desde: a.desde, hasta: b.hasta };
+}
+
+// Convierte fecha YYYY-MM-DD a periodo YYYYMM
+function fechaAPeriodo(fecha: string | null | undefined): string {
+  if (!fecha) return "";
+  return fecha.replace(/-/g, "").slice(0, 6);
+}
+
+// Periodo efectivo de un movimiento de banco (override > regla cuenta > mes de la fecha)
+function periodoEfectivoMov(m: DBMovimientoBanco, planCuentasMap: Map<string, DBPlanCuentas>): string {
+  if (m.periodo_devengo) return m.periodo_devengo;
+  const ym = fechaAPeriodo(m.fecha);
+  if (!ym) return "";
+  const cuenta = m.categoria_cuenta_id ? planCuentasMap.get(m.categoria_cuenta_id) : undefined;
+  if (cuenta?.regla_devengo === "mes_anterior") return periodoAnterior(ym);
+  return ym;
+}
+
+// Cuenta efectiva de una compra: override por factura > default del proveedor (si no es variable)
+function cuentaIdDeCompra(c: DBRcvCompra, provCuentaInfo: Map<string, DBProveedorCuenta>): string | undefined {
+  if (c.categoria_cuenta_id) return c.categoria_cuenta_id;
+  const pc = c.rut_proveedor ? provCuentaInfo.get(c.rut_proveedor) : undefined;
+  if (!pc || pc.cuenta_variable) return undefined;
+  return pc.categoria_cuenta_id || undefined;
+}
+
+// Periodo efectivo de una compra RCV (override > regla cuenta efectiva > periodo SII)
+function periodoEfectivoCompra(c: DBRcvCompra, provCuentaInfo: Map<string, DBProveedorCuenta>, planCuentasMap: Map<string, DBPlanCuentas>): string {
+  if (c.periodo_devengo) return c.periodo_devengo;
+  const baseYM = c.periodo || fechaAPeriodo(c.fecha_docto);
+  if (!baseYM) return "";
+  const cuentaId = cuentaIdDeCompra(c, provCuentaInfo);
+  const cuenta = cuentaId ? planCuentasMap.get(cuentaId) : undefined;
+  if (cuenta?.regla_devengo === "mes_anterior") return periodoAnterior(baseYM);
+  return baseYM;
+}
+
 // Tipo de documento legible
 const TIPO_DOC: Record<number | string, string> = {
   33: "Factura", 34: "Fact. Exenta", 39: "Boleta", 41: "Boleta Ex.",
@@ -69,16 +125,30 @@ interface LineaER {
   esSeparador?: boolean;
 }
 
+// Documento del drill-down
+interface DrillDoc {
+  id: string | null;
+  tabla: "rcv_compras" | "movimientos_banco" | null;
+  periodoDevengo: string | null;
+  tipo: string;
+  doc: string;
+  nro: string;
+  rut: string;
+  razon: string;
+  fecha: string;
+  monto: number;
+  nota: string;
+  conciliada: boolean;
+}
+
 // ==================== COMPONENTE ====================
 
 export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpresa; periodo: string }) {
   const [ventasAct, setVentasAct] = useState<DBRcvVenta[]>([]);
-  const [comprasAct, setComprasAct] = useState<DBRcvCompra[]>([]);
+  const [comprasExt, setComprasExt] = useState<DBRcvCompra[]>([]);
   const [ventasAnt, setVentasAnt] = useState<DBRcvVenta[]>([]);
-  const [comprasAnt, setComprasAnt] = useState<DBRcvCompra[]>([]);
   const [planCuentas, setPlanCuentas] = useState<DBPlanCuentas[]>([]);
-  const [movBanco, setMovBanco] = useState<DBMovimientoBanco[]>([]);
-  const [movBancoAnt, setMovBancoAnt] = useState<DBMovimientoBanco[]>([]);
+  const [movBancoExt, setMovBancoExt] = useState<DBMovimientoBanco[]>([]);
   const [provCuentas, setProvCuentas] = useState<DBProveedorCuenta[]>([]);
   const [conciliaciones, setConciliaciones] = useState<DBConciliacion[]>([]);
   const [cuentasHoja, setCuentasHoja] = useState<DBPlanCuentas[]>([]);
@@ -86,36 +156,67 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
   const [assigningId, setAssigningId] = useState<string | null>(null);
   const [assignCuenta, setAssignCuenta] = useState("");
-  const [dragItem, setDragItem] = useState<{ rut: string; razon: string; nro: string; conciliada: boolean } | null>(null);
+  const [movePeriodoId, setMovePeriodoId] = useState<string | null>(null);
+  const [dragItem, setDragItem] = useState<{ id: string | null; tabla: "rcv_compras" | "movimientos_banco" | null; rut: string; razon: string; nro: string; conciliada: boolean } | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
 
   const pAnt = periodoAnterior(periodo);
-  const rangoAct = periodoRange(periodo);
-  const rangoAnt = periodoRange(pAnt);
+  const rangoExt = periodoRangeExt(periodo, 2);
+
+  const reload = async () => {
+    const empresaId = empresa.id;
+    if (!empresaId) return;
+    setLoading(true);
+    const [va, vant, pc, mbExt, prc, conc, cHojas] = await Promise.all([
+      fetchRcvVentas(empresaId, periodo),
+      fetchRcvVentas(empresaId, pAnt),
+      fetchPlanCuentas(),
+      fetchMovimientosBanco(empresaId, { desde: rangoExt.desde, hasta: rangoExt.hasta }),
+      fetchProveedorCuentas(),
+      fetchConciliaciones(empresaId),
+      fetchPlanCuentasHojas(),
+    ]);
+    // Compras: traer ventana extendida (cubre overrides y regla mes_anterior)
+    const comprasPorPeriodo = await Promise.all(
+      [-2, -1, 0, 1, 2].map(off => fetchRcvCompras(empresaId, periodoOffset(periodo, off)))
+    );
+    setVentasAct(va); setVentasAnt(vant);
+    setPlanCuentas(pc); setMovBancoExt(mbExt);
+    setProvCuentas(prc); setConciliaciones(conc); setCuentasHoja(cHojas);
+    setComprasExt(comprasPorPeriodo.flat());
+    setLoading(false);
+  };
 
   useEffect(() => {
-    if (!empresa.id) return;
-    setLoading(true);
     setExpandedRow(null);
-    Promise.all([
-      fetchRcvVentas(empresa.id, periodo),
-      fetchRcvCompras(empresa.id, periodo),
-      fetchRcvVentas(empresa.id, pAnt),
-      fetchRcvCompras(empresa.id, pAnt),
-      fetchPlanCuentas(),
-      fetchMovimientosBanco(empresa.id, { desde: rangoAct.desde, hasta: rangoAct.hasta }),
-      fetchMovimientosBanco(empresa.id, { desde: rangoAnt.desde, hasta: rangoAnt.hasta }),
-      fetchProveedorCuentas(),
-      fetchConciliaciones(empresa.id),
-      fetchPlanCuentasHojas(),
-    ]).then(([va, ca, vant, cant, pc, mb, mbAnt, prc, conc, cHojas]) => {
-      setVentasAct(va); setComprasAct(ca);
-      setVentasAnt(vant); setComprasAnt(cant);
-      setPlanCuentas(pc); setMovBanco(mb); setMovBancoAnt(mbAnt);
-      setProvCuentas(prc); setConciliaciones(conc); setCuentasHoja(cHojas);
-      setLoading(false);
-    });
+    void reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [empresa.id, periodo]);
+
+  // Mapas auxiliares para resolver periodo efectivo y cuenta efectiva
+  const planCuentasMap = useMemo(() => new Map(planCuentas.map(c => [c.id!, c])), [planCuentas]);
+  const provCuentaInfo = useMemo(
+    () => new Map(provCuentas.map(p => [p.rut_proveedor, p])),
+    [provCuentas]
+  );
+
+  // Filtrado por periodo efectivo
+  const movBanco = useMemo(
+    () => movBancoExt.filter(m => periodoEfectivoMov(m, planCuentasMap) === periodo),
+    [movBancoExt, planCuentasMap, periodo]
+  );
+  const movBancoAnt = useMemo(
+    () => movBancoExt.filter(m => periodoEfectivoMov(m, planCuentasMap) === pAnt),
+    [movBancoExt, planCuentasMap, pAnt]
+  );
+  const comprasAct = useMemo(
+    () => comprasExt.filter(c => periodoEfectivoCompra(c, provCuentaInfo, planCuentasMap) === periodo),
+    [comprasExt, provCuentaInfo, planCuentasMap, periodo]
+  );
+  const comprasAnt = useMemo(
+    () => comprasExt.filter(c => periodoEfectivoCompra(c, provCuentaInfo, planCuentasMap) === pAnt),
+    [comprasExt, provCuentaInfo, planCuentasMap, pAnt]
+  );
 
   // Construir las líneas del reporte
   const lineas = useMemo((): LineaER[] => {
@@ -124,28 +225,94 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
     // Totales por tipo
     const totalIngresosAct = ventasAct.reduce((s, v) => s + (v.monto_total || 0), 0);
     const totalIngresosAnt = ventasAnt.reduce((s, v) => s + (v.monto_total || 0), 0);
-    const totalCostosAct = comprasAct.reduce((s, c) => s + (c.monto_total || 0), 0);
-    const totalCostosAnt = comprasAnt.reduce((s, c) => s + (c.monto_total || 0), 0);
 
-    // Gastos operacionales clasificados (mov banco con categoria_cuenta_id de tipo gasto_operacional)
-    const cuentasGastoOp = new Set(planCuentas.filter(c => c.tipo === "gasto_operacional" && c.es_hoja).map(c => c.id));
-    const cuentasGastoNoOp = new Set(planCuentas.filter(c => c.tipo === "gasto_no_op" && c.es_hoja).map(c => c.id));
+    // === Mapas auxiliares ===
+    const cuentaTipoOf = (cuentaId: string | null | undefined): string | null => {
+      if (!cuentaId) return null;
+      return planCuentasMap.get(cuentaId)?.tipo || null;
+    };
 
-    const gastosOpAct = movBanco.filter(m => m.monto < 0 && m.categoria_cuenta_id && cuentasGastoOp.has(m.categoria_cuenta_id));
-    const gastosOpAnt = movBancoAnt.filter(m => m.monto < 0 && m.categoria_cuenta_id && cuentasGastoOp.has(m.categoria_cuenta_id));
-    const gastosNoOpAct = movBanco.filter(m => m.monto < 0 && m.categoria_cuenta_id && cuentasGastoNoOp.has(m.categoria_cuenta_id));
-    const gastosNoOpAnt = movBancoAnt.filter(m => m.monto < 0 && m.categoria_cuenta_id && cuentasGastoNoOp.has(m.categoria_cuenta_id));
+    // Conciliaciones: compra → mov banco. Permite evitar doble conteo.
+    const movByCompraId = new Map<string, string>(); // rcv_compra_id → movimiento_banco_id
+    const compraByMovId = new Map<string, string>(); // movimiento_banco_id → rcv_compra_id
+    for (const c of conciliaciones) {
+      if (c.estado === "confirmado" && c.rcv_compra_id && c.movimiento_banco_id) {
+        movByCompraId.set(c.rcv_compra_id, c.movimiento_banco_id);
+        compraByMovId.set(c.movimiento_banco_id, c.rcv_compra_id);
+      }
+    }
 
-    const totalGastosOpAct = Math.abs(gastosOpAct.reduce((s, m) => s + m.monto, 0));
-    const totalGastosOpAnt = Math.abs(gastosOpAnt.reduce((s, m) => s + m.monto, 0));
-    const totalGastosNoOpAct = Math.abs(gastosNoOpAct.reduce((s, m) => s + m.monto, 0));
-    const totalGastosNoOpAnt = Math.abs(gastosNoOpAnt.reduce((s, m) => s + m.monto, 0));
+    // === Acumuladores por cuenta hoja (act/ant) ===
+    const montoPorCuenta = new Map<string, { act: number; ant: number }>();
+    const addMonto = (cuentaId: string, key: "act" | "ant", monto: number) => {
+      const prev = montoPorCuenta.get(cuentaId) || { act: 0, ant: 0 };
+      prev[key] += monto;
+      montoPorCuenta.set(cuentaId, prev);
+    };
+
+    // Compras "sin categorizar" (sin cuenta del proveedor) → asumidas como costo de mercadería
+    let sinCatCostosAct = 0, sinCatCostosAnt = 0;
+
+    // ---- Compras RCV: override por factura > default del proveedor (si no es variable) ----
+    const procesarCompras = (compras: DBRcvCompra[], key: "act" | "ant") => {
+      for (const c of compras) {
+        const cuentaId = cuentaIdDeCompra(c, provCuentaInfo);
+        if (cuentaId && planCuentasMap.get(cuentaId)) {
+          addMonto(cuentaId, key, c.monto_total || 0);
+        } else {
+          if (key === "act") sinCatCostosAct += c.monto_total || 0;
+          else sinCatCostosAnt += c.monto_total || 0;
+        }
+      }
+    };
+    procesarCompras(comprasAct, "act");
+    procesarCompras(comprasAnt, "ant");
+
+    // ---- Movimientos banco: solo los NO conciliados con factura ya contada ----
+    // (si un mov está conciliado a una compra que ya sumó por su cuenta de proveedor, no sumar de nuevo)
+    const procesarMovs = (movs: DBMovimientoBanco[], key: "act" | "ant") => {
+      for (const m of movs) {
+        if (m.monto >= 0) continue;
+        const compraId = m.id ? compraByMovId.get(m.id) : undefined;
+        if (compraId) continue; // ya contada vía la compra
+        if (m.categoria_cuenta_id) {
+          addMonto(m.categoria_cuenta_id, key, Math.abs(m.monto));
+        }
+        // sin categoría se trata aparte (línea sin_cat)
+      }
+    };
+    procesarMovs(movBanco, "act");
+    procesarMovs(movBancoAnt, "ant");
+
+    const sinCatGastosAct = movBanco.reduce(
+      (s, m) => s + (m.monto < 0 && !m.categoria_cuenta_id && (!m.id || !compraByMovId.has(m.id)) ? Math.abs(m.monto) : 0),
+      0,
+    );
+    const sinCatGastosAnt = movBancoAnt.reduce(
+      (s, m) => s + (m.monto < 0 && !m.categoria_cuenta_id && (!m.id || !compraByMovId.has(m.id)) ? Math.abs(m.monto) : 0),
+      0,
+    );
+
+    const cuentasHojaActivas = planCuentas.filter(c => c.es_hoja && c.activa)
+      .sort((a, b) => a.codigo.localeCompare(b.codigo));
+    const cuentasIngreso  = cuentasHojaActivas.filter(c => c.tipo === "ingreso");
+    const cuentasCosto    = cuentasHojaActivas.filter(c => c.tipo === "costo");
+    const cuentasGOp      = cuentasHojaActivas.filter(c => c.tipo === "gasto_operacional");
+    const cuentasGNoOp    = cuentasHojaActivas.filter(c => c.tipo === "gasto_no_op");
+
+    const sumaSeccion = (cuentas: DBPlanCuentas[], key: "act" | "ant") =>
+      cuentas.reduce((s, c) => s + (montoPorCuenta.get(c.id!)?.[key] || 0), 0);
+
+    const totalCostosAct = sumaSeccion(cuentasCosto, "act") + sinCatCostosAct;
+    const totalCostosAnt = sumaSeccion(cuentasCosto, "ant") + sinCatCostosAnt;
+    const totalGastosOpAct = sumaSeccion(cuentasGOp, "act") + sinCatGastosAct;
+    const totalGastosOpAnt = sumaSeccion(cuentasGOp, "ant") + sinCatGastosAnt;
+    const totalGastosNoOpAct = sumaSeccion(cuentasGNoOp, "act");
+    const totalGastosNoOpAnt = sumaSeccion(cuentasGNoOp, "ant");
 
     // === INGRESOS ===
     result.push({ id: "sec_ing", codigo: "(+)", nombre: "INGRESOS", tipo: "ingreso", esHoja: false, nivel: 0, montoActual: totalIngresosAct, montoAnterior: totalIngresosAnt, esSeparador: true });
 
-    // Cuentas hoja de tipo ingreso
-    const cuentasIngreso = planCuentas.filter(c => c.tipo === "ingreso" && c.es_hoja && c.activa).sort((a, b) => a.codigo.localeCompare(b.codigo));
     for (const cuenta of cuentasIngreso) {
       // Por ahora, todo va a la primera cuenta de ingreso (Ventas ML)
       result.push({
@@ -159,52 +326,21 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
       result.push({ id: "ing_total", codigo: "", nombre: "Ventas totales", tipo: "ingreso", esHoja: true, nivel: 1, montoActual: totalIngresosAct, montoAnterior: totalIngresosAnt });
     }
 
-    // === COSTOS (agrupados por cuenta del proveedor) ===
+    // === COSTOS ===
     result.push({ id: "sec_cos", codigo: "(-)", nombre: "COSTOS", tipo: "costo", esHoja: false, nivel: 0, montoActual: totalCostosAct, montoAnterior: totalCostosAnt, esSeparador: true });
 
-    // Mapa RUT proveedor → cuenta contable
-    const provCuentaMap = new Map(provCuentas.filter(p => p.categoria_cuenta_id).map(p => [p.rut_proveedor, p.categoria_cuenta_id!]));
-
-    // Agrupar compras por cuenta contable
-    const costosPorCuenta = new Map<string, { act: number; ant: number }>();
-    let sinCuentaCostosAct = 0, sinCuentaCostosAnt = 0;
-
-    for (const c of comprasAct) {
-      const cuentaId = provCuentaMap.get(c.rut_proveedor || "");
-      if (cuentaId) {
-        const prev = costosPorCuenta.get(cuentaId) || { act: 0, ant: 0 };
-        prev.act += c.monto_total || 0;
-        costosPorCuenta.set(cuentaId, prev);
-      } else {
-        sinCuentaCostosAct += c.monto_total || 0;
-      }
-    }
-    for (const c of comprasAnt) {
-      const cuentaId = provCuentaMap.get(c.rut_proveedor || "");
-      if (cuentaId) {
-        const prev = costosPorCuenta.get(cuentaId) || { act: 0, ant: 0 };
-        prev.ant += c.monto_total || 0;
-        costosPorCuenta.set(cuentaId, prev);
-      } else {
-        sinCuentaCostosAnt += c.monto_total || 0;
-      }
-    }
-
-    // Mostrar cuentas de costo con montos
-    const cuentasCosto = planCuentas.filter(c => c.tipo === "costo" && c.es_hoja && c.activa).sort((a, b) => a.codigo.localeCompare(b.codigo));
     for (const cuenta of cuentasCosto) {
-      const montos = costosPorCuenta.get(cuenta.id!) || { act: 0, ant: 0 };
+      const m = montoPorCuenta.get(cuenta.id!) || { act: 0, ant: 0 };
       result.push({
         id: cuenta.id!, codigo: cuenta.codigo, nombre: cuenta.nombre, tipo: "costo",
-        esHoja: true, nivel: 1, montoActual: montos.act, montoAnterior: montos.ant,
+        esHoja: true, nivel: 1, montoActual: m.act, montoAnterior: m.ant,
       });
     }
-    // Compras sin cuenta asignada
-    if (sinCuentaCostosAct > 0 || sinCuentaCostosAnt > 0) {
-      result.push({ id: "cos_sin_cat", codigo: "", nombre: "Sin categorizar", tipo: "costo", esHoja: true, nivel: 1, montoActual: sinCuentaCostosAct, montoAnterior: sinCuentaCostosAnt });
+    if (sinCatCostosAct > 0 || sinCatCostosAnt > 0) {
+      result.push({ id: "cos_sin_cat", codigo: "", nombre: "Sin categorizar", tipo: "costo", esHoja: true, nivel: 1, montoActual: sinCatCostosAct, montoAnterior: sinCatCostosAnt });
     }
-    if (cuentasCosto.length === 0 && sinCuentaCostosAct === 0 && sinCuentaCostosAnt === 0) {
-      result.push({ id: "cos_total", codigo: "", nombre: "Compras totales", tipo: "costo", esHoja: true, nivel: 1, montoActual: totalCostosAct, montoAnterior: totalCostosAnt });
+    if (cuentasCosto.length === 0 && sinCatCostosAct === 0 && sinCatCostosAnt === 0) {
+      result.push({ id: "cos_total", codigo: "", nombre: "Compras totales", tipo: "costo", esHoja: true, nivel: 1, montoActual: 0, montoAnterior: 0 });
     }
 
     // === MARGEN BRUTO ===
@@ -215,21 +351,15 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
     // === GASTOS OPERACIONALES ===
     result.push({ id: "sec_gop", codigo: "(-)", nombre: "GASTOS OPERACIONALES", tipo: "gasto_operacional", esHoja: false, nivel: 0, montoActual: totalGastosOpAct, montoAnterior: totalGastosOpAnt, esSeparador: true });
 
-    const cuentasGOp = planCuentas.filter(c => c.tipo === "gasto_operacional" && c.es_hoja && c.activa).sort((a, b) => a.codigo.localeCompare(b.codigo));
     for (const cuenta of cuentasGOp) {
-      const act = Math.abs(gastosOpAct.filter(m => m.categoria_cuenta_id === cuenta.id).reduce((s, m) => s + m.monto, 0));
-      const ant = Math.abs(gastosOpAnt.filter(m => m.categoria_cuenta_id === cuenta.id).reduce((s, m) => s + m.monto, 0));
+      const m = montoPorCuenta.get(cuenta.id!) || { act: 0, ant: 0 };
       result.push({
         id: cuenta.id!, codigo: cuenta.codigo, nombre: cuenta.nombre, tipo: "gasto_operacional",
-        esHoja: true, nivel: 1, montoActual: act, montoAnterior: ant,
+        esHoja: true, nivel: 1, montoActual: m.act, montoAnterior: m.ant,
       });
     }
-
-    // Gastos no clasificados
-    const sinClasificarAct = Math.abs(movBanco.filter(m => m.monto < 0 && !m.categoria_cuenta_id).reduce((s, m) => s + m.monto, 0));
-    const sinClasificarAnt = Math.abs(movBancoAnt.filter(m => m.monto < 0 && !m.categoria_cuenta_id).reduce((s, m) => s + m.monto, 0));
-    if (sinClasificarAct > 0 || sinClasificarAnt > 0) {
-      result.push({ id: "sin_cat", codigo: "", nombre: "Sin categorizar", tipo: "gasto_operacional", esHoja: true, nivel: 1, montoActual: sinClasificarAct, montoAnterior: sinClasificarAnt });
+    if (sinCatGastosAct > 0 || sinCatGastosAnt > 0) {
+      result.push({ id: "sin_cat", codigo: "", nombre: "Sin categorizar", tipo: "gasto_operacional", esHoja: true, nivel: 1, montoActual: sinCatGastosAct, montoAnterior: sinCatGastosAnt });
     }
 
     // === RESULTADO OPERACIONAL ===
@@ -238,24 +368,23 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
     result.push({ id: "res_op", codigo: "(=)", nombre: "RESULTADO OPERACIONAL", tipo: "ingreso", esHoja: false, nivel: 0, montoActual: resOpAct, montoAnterior: resOpAnt, esSubtotal: true });
 
     // === GASTOS NO OPERACIONALES ===
-    if (totalGastosNoOpAct > 0 || totalGastosNoOpAnt > 0 || planCuentas.some(c => c.tipo === "gasto_no_op" && c.es_hoja && c.activa)) {
+    if (totalGastosNoOpAct > 0 || totalGastosNoOpAnt > 0 || cuentasGNoOp.length > 0) {
       result.push({ id: "sec_gnop", codigo: "(-)", nombre: "GASTOS NO OPERACIONALES", tipo: "gasto_no_op", esHoja: false, nivel: 0, montoActual: totalGastosNoOpAct, montoAnterior: totalGastosNoOpAnt, esSeparador: true });
 
-      const cuentasGNoOp = planCuentas.filter(c => c.tipo === "gasto_no_op" && c.es_hoja && c.activa).sort((a, b) => a.codigo.localeCompare(b.codigo));
       for (const cuenta of cuentasGNoOp) {
-        const act = Math.abs(gastosNoOpAct.filter(m => m.categoria_cuenta_id === cuenta.id).reduce((s, m) => s + m.monto, 0));
-        const ant = Math.abs(gastosNoOpAnt.filter(m => m.categoria_cuenta_id === cuenta.id).reduce((s, m) => s + m.monto, 0));
-        result.push({ id: cuenta.id!, codigo: cuenta.codigo, nombre: cuenta.nombre, tipo: "gasto_no_op", esHoja: true, nivel: 1, montoActual: act, montoAnterior: ant });
+        const m = montoPorCuenta.get(cuenta.id!) || { act: 0, ant: 0 };
+        result.push({ id: cuenta.id!, codigo: cuenta.codigo, nombre: cuenta.nombre, tipo: "gasto_no_op", esHoja: true, nivel: 1, montoActual: m.act, montoAnterior: m.ant });
       }
 
-      // === RESULTADO NETO ===
       const resNetoAct = resOpAct - totalGastosNoOpAct;
       const resNetoAnt = resOpAnt - totalGastosNoOpAnt;
       result.push({ id: "res_neto", codigo: "(=)", nombre: "RESULTADO NETO", tipo: "ingreso", esHoja: false, nivel: 0, montoActual: resNetoAct, montoAnterior: resNetoAnt, esSubtotal: true });
     }
 
+    // Suprimir warning de unused (cuentaTipoOf reservado para refactor futuro de drill-down)
+    void cuentaTipoOf;
     return result;
-  }, [ventasAct, comprasAct, ventasAnt, comprasAnt, planCuentas, movBanco, movBancoAnt]);
+  }, [ventasAct, comprasAct, ventasAnt, comprasAnt, planCuentas, planCuentasMap, provCuentaInfo, movBanco, movBancoAnt, conciliaciones]);
 
   // Mapa de conciliaciones: compra_id → conciliación
   const concByCompraId = useMemo(() => {
@@ -267,13 +396,22 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
   }, [conciliaciones]);
 
   // Documentos para drill-down
-  const drillDocs = useMemo(() => {
+  const drillDocs = useMemo((): DrillDoc[] => {
     if (!expandedRow) return [];
-    const cuenta = planCuentas.find(c => c.id === expandedRow);
 
-    const mapCompra = (c: DBRcvCompra) => {
+    // Mapas conciliación
+    const compraByMovId = new Map<string, string>();
+    for (const c of conciliaciones) {
+      if (c.estado === "confirmado" && c.rcv_compra_id && c.movimiento_banco_id) {
+        compraByMovId.set(c.movimiento_banco_id, c.rcv_compra_id);
+      }
+    }
+
+    const mapCompra = (c: DBRcvCompra): DrillDoc => {
       const conc = concByCompraId.get(c.id!);
       return {
+        id: c.id || null, tabla: "rcv_compras",
+        periodoDevengo: c.periodo_devengo || null,
         tipo: "Compra", doc: TIPO_DOC[c.tipo_doc] || String(c.tipo_doc),
         nro: c.nro_doc || "—", rut: c.rut_proveedor || "—",
         razon: c.razon_social || "", fecha: c.fecha_docto || "—",
@@ -282,60 +420,62 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
       };
     };
 
-    if (!cuenta) {
-      if (expandedRow === "ing_total") return ventasAct.map(v => ({ tipo: "Venta", doc: TIPO_DOC[v.tipo_doc] || String(v.tipo_doc), nro: v.folio || v.nro || "—", rut: v.rut_emisor || "—", razon: "", fecha: v.fecha_docto || "—", monto: v.monto_total || 0, nota: "", conciliada: false }));
-      if (expandedRow === "cos_total" || expandedRow === "cos_sin_cat") {
-        const sinCuentaRuts = new Set(provCuentas.filter(p => p.categoria_cuenta_id).map(p => p.rut_proveedor));
-        const filteredCompras = expandedRow === "cos_sin_cat"
-          ? comprasAct.filter(c => !sinCuentaRuts.has(c.rut_proveedor || ""))
-          : comprasAct;
-        return filteredCompras.map(mapCompra);
-      }
-      // Gastos operacionales sin categorizar
-      if (expandedRow === "sin_cat") {
-        const movsSinCat = movBanco.filter(m => m.monto < 0 && !m.categoria_cuenta_id);
-        return movsSinCat.map(m => {
-          const conc = conciliaciones.find(c => c.movimiento_banco_id === m.id && c.estado === "confirmado");
-          if (conc?.rcv_compra_id) {
-            const compra = comprasAct.find(c => c.id === conc.rcv_compra_id) || comprasAnt.find(c => c.id === conc.rcv_compra_id);
-            if (compra) {
-              return { tipo: "Compra", doc: TIPO_DOC[compra.tipo_doc] || String(compra.tipo_doc), nro: compra.nro_doc || "—", rut: compra.rut_proveedor || "", razon: compra.razon_social || "", fecha: compra.fecha_docto || "—", monto: Math.abs(m.monto), nota: conc.notas || compra.notas || "", conciliada: true };
-            }
-          }
-          return { tipo: "Banco", doc: m.banco, nro: m.referencia || "—", rut: "", razon: m.descripcion || "", fecha: m.fecha, monto: Math.abs(m.monto), nota: conc?.notas || "", conciliada: !!conc };
-        });
-      }
-      return [];
+    const mapMov = (m: DBMovimientoBanco): DrillDoc => {
+      const conc = conciliaciones.find(c => c.movimiento_banco_id === m.id && c.estado === "confirmado");
+      return {
+        id: m.id || null, tabla: "movimientos_banco",
+        periodoDevengo: m.periodo_devengo || null,
+        tipo: "Banco", doc: m.banco, nro: m.referencia || "—", rut: "",
+        razon: m.descripcion || "", fecha: m.fecha, monto: Math.abs(m.monto),
+        nota: conc?.notas || "", conciliada: !!conc,
+      };
+    };
+
+    // Casos especiales (sin cuenta hoja):
+    if (expandedRow === "ing_total") {
+      return ventasAct.map(v => ({
+        id: v.id || null, tabla: null, periodoDevengo: null,
+        tipo: "Venta", doc: TIPO_DOC[v.tipo_doc] || String(v.tipo_doc),
+        nro: v.folio || v.nro || "—", rut: v.rut_emisor || "—",
+        razon: "", fecha: v.fecha_docto || "—", monto: v.monto_total || 0, nota: "", conciliada: false,
+      }));
+    }
+    if (expandedRow === "cos_sin_cat") {
+      // Compras sin cuenta efectiva (variables sin override, o proveedor sin mapeo)
+      const sinCuenta = comprasAct.filter(c => !cuentaIdDeCompra(c, provCuentaInfo));
+      return sinCuenta.map(mapCompra);
+    }
+    if (expandedRow === "sin_cat") {
+      // Movs banco sin categoría AND sin compra conciliada
+      const movsSinCat = movBanco.filter(m => m.monto < 0 && !m.categoria_cuenta_id && (!m.id || !compraByMovId.has(m.id)));
+      return movsSinCat.map(mapMov);
     }
 
+    const cuenta = planCuentas.find(c => c.id === expandedRow);
+    if (!cuenta) return [];
+
     if (cuenta.tipo === "ingreso") {
-      return ventasAct.map(v => ({ tipo: "Venta", doc: TIPO_DOC[v.tipo_doc] || String(v.tipo_doc), nro: v.folio || v.nro || "—", rut: v.rut_emisor || "—", razon: "", fecha: v.fecha_docto || "—", monto: v.monto_total || 0, nota: "", conciliada: false }));
+      return ventasAct.map(v => ({
+        id: v.id || null, tabla: null, periodoDevengo: null,
+        tipo: "Venta", doc: TIPO_DOC[v.tipo_doc] || String(v.tipo_doc),
+        nro: v.folio || v.nro || "—", rut: v.rut_emisor || "—",
+        razon: "", fecha: v.fecha_docto || "—", monto: v.monto_total || 0, nota: "", conciliada: false,
+      }));
     }
-    if (cuenta.tipo === "costo") {
-      const provRuts = provCuentas.filter(p => p.categoria_cuenta_id === cuenta.id).map(p => p.rut_proveedor);
-      const rutsSet = new Set(provRuts);
-      const filteredCompras = rutsSet.size > 0 ? comprasAct.filter(c => rutsSet.has(c.rut_proveedor || "")) : comprasAct;
-      return filteredCompras.map(mapCompra);
+
+    // Gastos/costos: unión de compras (vía cuenta efectiva) + movs banco categorizados sin compra ya contada
+    const docs: DrillDoc[] = [];
+    for (const c of comprasAct) {
+      if (cuentaIdDeCompra(c, provCuentaInfo) === cuenta.id) docs.push(mapCompra(c));
     }
-    // Gastos: movimientos banco — mostrar factura vinculada si existe
-    const movs = movBanco.filter(m => m.monto < 0 && m.categoria_cuenta_id === cuenta.id);
-    return movs.map(m => {
-      const conc = conciliaciones.find(c => c.movimiento_banco_id === m.id && c.estado === "confirmado");
-      // Si está conciliado con una factura de compra, mostrar datos de la factura
-      if (conc?.rcv_compra_id) {
-        const compra = comprasAct.find(c => c.id === conc.rcv_compra_id) || comprasAnt.find(c => c.id === conc.rcv_compra_id);
-        if (compra) {
-          return {
-            tipo: "Compra", doc: TIPO_DOC[compra.tipo_doc] || String(compra.tipo_doc),
-            nro: compra.nro_doc || "—", rut: compra.rut_proveedor || "",
-            razon: compra.razon_social || "", fecha: compra.fecha_docto || "—",
-            monto: Math.abs(m.monto), nota: conc.notas || compra.notas || "", conciliada: true,
-          };
-        }
-      }
-      return { tipo: "Banco", doc: m.banco, nro: m.referencia || "—", rut: "", razon: m.descripcion || "", fecha: m.fecha, monto: Math.abs(m.monto), nota: conc?.notas || "", conciliada: !!conc };
-    });
-  }, [expandedRow, ventasAct, comprasAct, movBanco, planCuentas, concByCompraId, provCuentas, conciliaciones]);
+    for (const m of movBanco) {
+      if (m.monto >= 0) continue;
+      if (m.categoria_cuenta_id !== cuenta.id) continue;
+      if (m.id && compraByMovId.has(m.id)) continue; // ya contada vía la compra
+      docs.push(mapMov(m));
+    }
+    return docs;
+  }, [expandedRow, ventasAct, comprasAct, movBanco, planCuentas, concByCompraId, provCuentaInfo, conciliaciones]);
 
   // Exportar Excel
   const handleExport = () => {
@@ -446,34 +586,15 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
                   onDrop={l.esHoja && !l.esSubtotal ? async (e) => {
                     e.preventDefault();
                     setDropTarget(null);
-                    if (!dragItem || !l.id) return;
-                    // Reasignar proveedor a esta cuenta
-                    if (dragItem.rut) {
-                      const pc = provCuentas.find(p => p.rut_proveedor === dragItem.rut);
-                      if (!pc?.cuenta_variable) {
-                        await upsertProveedorCuenta(dragItem.rut, l.id, dragItem.razon);
-                      }
-                    }
-                    // Actualizar movimiento si conciliado
-                    if (dragItem.conciliada && dragItem.nro) {
-                      const conc = conciliaciones.find(c => c.estado === "confirmado" && c.rcv_compra_id &&
-                        comprasAct.find(comp => comp.id === c.rcv_compra_id && comp.nro_doc === dragItem.nro));
-                      if (conc?.movimiento_banco_id) await categorizarMovimiento(conc.movimiento_banco_id, l.id);
+                    if (!dragItem || !l.id || !dragItem.id) return;
+                    // Override por línea
+                    if (dragItem.tabla === "rcv_compras") {
+                      await setCategoriaCuentaCompra(dragItem.id, l.id);
+                    } else if (dragItem.tabla === "movimientos_banco") {
+                      await categorizarMovimiento(dragItem.id, l.id);
                     }
                     setDragItem(null);
-                    // Recargar
-                    setLoading(true);
-                    const [va2, ca2, vant2, cant2, pc2, mb2, mbAnt2, prc2, conc2, cH2] = await Promise.all([
-                      fetchRcvVentas(empresa.id!, periodo), fetchRcvCompras(empresa.id!, periodo),
-                      fetchRcvVentas(empresa.id!, pAnt), fetchRcvCompras(empresa.id!, pAnt),
-                      fetchPlanCuentas(), fetchMovimientosBanco(empresa.id!, { desde: rangoAct.desde, hasta: rangoAct.hasta }),
-                      fetchMovimientosBanco(empresa.id!, { desde: rangoAnt.desde, hasta: rangoAnt.hasta }),
-                      fetchProveedorCuentas(), fetchConciliaciones(empresa.id!), fetchPlanCuentasHojas(),
-                    ]);
-                    setVentasAct(va2); setComprasAct(ca2); setVentasAnt(vant2); setComprasAnt(cant2);
-                    setPlanCuentas(pc2); setMovBanco(mb2); setMovBancoAnt(mbAnt2);
-                    setProvCuentas(prc2); setConciliaciones(conc2); setCuentasHoja(cH2);
-                    setLoading(false);
+                    await reload();
                   } : undefined}
                   style={{
                     cursor: canExpand ? "pointer" : "default",
@@ -529,38 +650,17 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
                   </select>
                   <button disabled={!assignCuenta} onClick={async () => {
                     if (!assignCuenta) return;
-                    // Asignar cuenta a todos los proveedores sin cuenta que aparecen aquí
-                    const rutsVistos = new Set<string>();
+                    // Override por línea para todos los docs del drilldown
                     for (const d of drillDocs) {
-                      if (!d.rut || rutsVistos.has(d.rut)) continue;
-                      rutsVistos.add(d.rut);
-                      const pc = provCuentas.find(p => p.rut_proveedor === d.rut);
-                      if (!pc?.categoria_cuenta_id) {
-                        await upsertProveedorCuenta(d.rut, assignCuenta, d.razon);
+                      if (!d.id || !d.tabla) continue;
+                      if (d.tabla === "rcv_compras") {
+                        await setCategoriaCuentaCompra(d.id, assignCuenta);
+                      } else if (d.tabla === "movimientos_banco") {
+                        await categorizarMovimiento(d.id, assignCuenta);
                       }
                     }
-                    // Asignar cuenta a movimientos conciliados sin cuenta
-                    for (const d of drillDocs) {
-                      if (!d.conciliada) continue;
-                      const conc = conciliaciones.find(c => c.rcv_compra_id && c.estado === "confirmado" &&
-                        comprasAct.find(comp => comp.id === c.rcv_compra_id && comp.nro_doc === d.nro));
-                      if (conc?.movimiento_banco_id) {
-                        await categorizarMovimiento(conc.movimiento_banco_id, assignCuenta);
-                      }
-                    }
-                    // Recargar
-                    setLoading(true);
-                    const [va, ca, vant, cant, pc2, mb, mbAnt, prc, concs, cH] = await Promise.all([
-                      fetchRcvVentas(empresa.id!, periodo), fetchRcvCompras(empresa.id!, periodo),
-                      fetchRcvVentas(empresa.id!, pAnt), fetchRcvCompras(empresa.id!, pAnt),
-                      fetchPlanCuentas(), fetchMovimientosBanco(empresa.id!, { desde: rangoAct.desde, hasta: rangoAct.hasta }),
-                      fetchMovimientosBanco(empresa.id!, { desde: rangoAnt.desde, hasta: rangoAnt.hasta }),
-                      fetchProveedorCuentas(), fetchConciliaciones(empresa.id!), fetchPlanCuentasHojas(),
-                    ]);
-                    setVentasAct(va); setComprasAct(ca); setVentasAnt(vant); setComprasAnt(cant);
-                    setPlanCuentas(pc2); setMovBanco(mb); setMovBancoAnt(mbAnt);
-                    setProvCuentas(prc); setConciliaciones(concs); setCuentasHoja(cH);
-                    setLoading(false); setAssignCuenta("");
+                    setAssignCuenta("");
+                    await reload();
                   }}
                     style={{ padding: "3px 10px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: assignCuenta ? "var(--greenBg)" : "var(--bg3)", color: assignCuenta ? "var(--green)" : "var(--txt3)", border: `1px solid ${assignCuenta ? "var(--greenBd)" : "var(--bg4)"}`, cursor: assignCuenta ? "pointer" : "not-allowed" }}>
                     Asignar todo
@@ -572,14 +672,14 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
           <div style={{ maxHeight: 400, overflowY: "auto" }}>
             <table className="tbl" style={{ fontSize: 11 }}>
               <thead>
-                <tr><th>Doc</th><th>N°</th><th>Proveedor</th><th>Fecha</th><th style={{ textAlign: "right" }}>Monto</th><th>Nota</th><th>Pago</th><th>Cuenta</th></tr>
+                <tr><th>Doc</th><th>N°</th><th>Proveedor</th><th>Fecha</th><th style={{ textAlign: "right" }}>Monto</th><th>Nota</th><th>Pago</th><th>Periodo</th><th>Cuenta</th></tr>
               </thead>
               <tbody>
                 {drillDocs.map((d, i) => {
                   const isAssigning = assigningId === `${d.nro}_${i}`;
                   return (
                   <tr key={i} draggable
-                    onDragStart={() => setDragItem({ rut: d.rut, razon: d.razon, nro: d.nro, conciliada: d.conciliada })}
+                    onDragStart={() => setDragItem({ id: d.id, tabla: d.tabla, rut: d.rut, razon: d.razon, nro: d.nro, conciliada: d.conciliada })}
                     onDragEnd={() => { setDragItem(null); setDropTarget(null); }}
                     style={{ cursor: "grab" }}>
                     <td style={{ fontSize: 10, color: "var(--txt3)" }}>{d.doc}</td>
@@ -596,32 +696,46 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
                       )}
                     </td>
                     <td>
+                      {d.tabla && d.id ? (
+                        movePeriodoId === `${d.tabla}_${d.id}` ? (
+                          <select autoFocus defaultValue={d.periodoDevengo || ""} onChange={async (e) => {
+                            const val = e.target.value || null;
+                            if (d.tabla === "movimientos_banco") await setPeriodoDevengoMovimiento(d.id!, val);
+                            else if (d.tabla === "rcv_compras") await setPeriodoDevengoCompra(d.id!, val);
+                            setMovePeriodoId(null);
+                            await reload();
+                          }} onBlur={() => setTimeout(() => setMovePeriodoId(null), 200)}
+                            style={{ padding: "2px 4px", fontSize: 9, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 3 }}>
+                            <option value="">— auto —</option>
+                            {[-3,-2,-1,0,1,2].map(off => {
+                              const p = periodoOffset(periodo, off);
+                              return <option key={p} value={p}>{formatPeriodo(p)}</option>;
+                            })}
+                          </select>
+                        ) : (
+                          <button onClick={() => setMovePeriodoId(`${d.tabla}_${d.id}`)}
+                            style={{ padding: "1px 6px", borderRadius: 3, fontSize: 9, fontWeight: 600, background: d.periodoDevengo ? "var(--cyanBg)" : "var(--bg3)", color: d.periodoDevengo ? "var(--cyan)" : "var(--txt3)", border: `1px solid ${d.periodoDevengo ? "var(--cyanBd)" : "var(--bg4)"}`, cursor: "pointer" }}
+                            title={d.periodoDevengo ? `Override: ${d.periodoDevengo}` : "Mes derivado de la fecha/regla"}>
+                            {d.periodoDevengo ? formatPeriodo(d.periodoDevengo).slice(0,3) : "auto"}
+                          </button>
+                        )
+                      ) : (
+                        <span style={{ fontSize: 9, color: "var(--txt3)" }}>—</span>
+                      )}
+                    </td>
+                    <td>
                       {isAssigning ? (
                         <select autoFocus value="" onChange={async (e) => {
-                          if (!e.target.value) return;
+                          if (!e.target.value || !d.id) return;
                           const newCuentaId = e.target.value;
-                          // Actualizar proveedor si tiene RUT y no es variable
-                          if (d.rut) {
-                            const pc = provCuentas.find(p => p.rut_proveedor === d.rut);
-                            if (!pc?.cuenta_variable) {
-                              await upsertProveedorCuenta(d.rut, newCuentaId, d.razon);
-                              setProvCuentas(prev => {
-                                const idx = prev.findIndex(p => p.rut_proveedor === d.rut);
-                                const u = { rut_proveedor: d.rut, razon_social: d.razon, categoria_cuenta_id: newCuentaId, plazo_dias: pc?.plazo_dias ?? null };
-                                if (idx >= 0) { const n = [...prev]; n[idx] = u; return n; }
-                                return [...prev, u];
-                              });
-                            }
-                          }
-                          // Actualizar movimiento banco si conciliado
-                          if (d.conciliada) {
-                            const conc = conciliaciones.find(c => c.estado === "confirmado" && (
-                              (c.rcv_compra_id && comprasAct.find(comp => comp.id === c.rcv_compra_id && comp.nro_doc === d.nro)) ||
-                              (c.movimiento_banco_id && movBanco.find(m => m.id === c.movimiento_banco_id && m.referencia === d.nro))
-                            ));
-                            if (conc?.movimiento_banco_id) await categorizarMovimiento(conc.movimiento_banco_id, newCuentaId);
+                          // Override por línea: escribe en la fila concreta sin alterar el default del proveedor
+                          if (d.tabla === "rcv_compras") {
+                            await setCategoriaCuentaCompra(d.id, newCuentaId);
+                          } else if (d.tabla === "movimientos_banco") {
+                            await categorizarMovimiento(d.id, newCuentaId);
                           }
                           setAssigningId(null);
+                          await reload();
                         }}
                           onBlur={() => setTimeout(() => setAssigningId(null), 200)}
                           style={{ padding: "2px 4px", fontSize: 9, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 3, maxWidth: 140 }}>
@@ -641,8 +755,9 @@ export default function EstadoResultados({ empresa, periodo }: { empresa: DBEmpr
               </tbody>
               <tfoot>
                 <tr style={{ fontWeight: 700, background: "var(--bg3)" }}>
-                  <td colSpan={5}>TOTAL</td>
+                  <td colSpan={4}>TOTAL</td>
                   <td className="mono" style={{ textAlign: "right" }}>{fmtMoney(drillDocs.reduce((s, d) => s + d.monto, 0))}</td>
+                  <td colSpan={4}></td>
                 </tr>
               </tfoot>
             </table>
