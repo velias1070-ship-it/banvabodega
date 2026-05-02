@@ -72,12 +72,14 @@ jobs:
           # cuando IF NOT EXISTS u otras keywords se mezclan en la captura.
           for f in $FILES; do
             [ -f "$f" ] || continue
-            # CREATE TABLE / TYPE / INDEX / VIEW / MATERIALIZED VIEW
-            # Devuelve los identificadores (sin prefijo schema).
-            ids=$(sed -nE 's/^[[:space:]]*CREATE[[:space:]]+(OR[[:space:]]+REPLACE[[:space:]]+)?(TABLE|TYPE|INDEX|VIEW|MATERIALIZED[[:space:]]+VIEW)[[:space:]]+(IF[[:space:]]+NOT[[:space:]]+EXISTS[[:space:]]+)?([a-zA-Z_][a-zA-Z0-9_]*\.)?([a-zA-Z_][a-zA-Z0-9_]*).*/\5/Ip' "$f")
-            # ALTER TABLE … ADD COLUMN <ident>
-            ids="$ids
-$(sed -nE 's/^[[:space:]]*ALTER[[:space:]]+TABLE[[:space:]]+[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]+ADD[[:space:]]+(COLUMN[[:space:]]+)?(IF[[:space:]]+NOT[[:space:]]+EXISTS[[:space:]]+)?([a-zA-Z_][a-zA-Z0-9_]*).*/\3/Ip' "$f")"
+            # Extraer identificadores (sin prefijo schema) de:
+            #   CREATE [OR REPLACE] TABLE/TYPE/INDEX/VIEW/MATERIALIZED VIEW [IF NOT EXISTS] <ident>
+            #   ALTER TABLE <x> ADD [COLUMN] [IF NOT EXISTS] <ident>
+            # Ambas seds escriben a stdout; $() concatena.
+            ids=$(
+              sed -nE 's/^[[:space:]]*CREATE[[:space:]]+(OR[[:space:]]+REPLACE[[:space:]]+)?(TABLE|TYPE|INDEX|VIEW|MATERIALIZED[[:space:]]+VIEW)[[:space:]]+(IF[[:space:]]+NOT[[:space:]]+EXISTS[[:space:]]+)?([a-zA-Z_][a-zA-Z0-9_]*\.)?([a-zA-Z_][a-zA-Z0-9_]*).*/\5/Ip' "$f"
+              sed -nE 's/^[[:space:]]*ALTER[[:space:]]+TABLE[[:space:]]+[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]+ADD[[:space:]]+(COLUMN[[:space:]]+)?(IF[[:space:]]+NOT[[:space:]]+EXISTS[[:space:]]+)?([a-zA-Z_][a-zA-Z0-9_]*).*/\3/Ip' "$f"
+            )
             for id in $ids; do
               [ -z "$id" ] && continue
               # Skip keywords/SQL reserved words que el sed pudo capturar
