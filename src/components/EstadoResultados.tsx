@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, Fragment } from "react";
 import {
   fetchRcvVentas, fetchRcvCompras,
   fetchPlanCuentas, fetchMovimientosBanco,
@@ -168,6 +168,7 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
   const [movePeriodoId, setMovePeriodoId] = useState<string | null>(null);
   const [dragItem, setDragItem] = useState<{ id: string | null; tabla: "rcv_compras" | "movimientos_banco" | null; rut: string; razon: string; nro: string; conciliada: boolean } | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
+  const [vistaDetallada, setVistaDetallada] = useState(false);
 
   const pAnt = periodoAnterior(periodo);
   const rangoExt = periodoRangeExt(periodo, 2);
@@ -494,7 +495,94 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
       docs.push(mapMov(m));
     }
     return docs;
-  }, [expandedRow, ventasAct, comprasAct, movBanco, planCuentas, concByCompraId, provCuentaInfo, conciliaciones]);
+  }, [expandedRow, ventasAct, comprasAct, movBanco, movBancoExt, planCuentas, concByCompraId, provCuentaInfo, conciliaciones]);
+
+  // Para la vista detallada: pre-calcular docs para todas las cuentas hoja a la vez.
+  const docsPorCuentaTodas = useMemo((): Map<string, DrillDoc[]> => {
+    const out = new Map<string, DrillDoc[]>();
+    if (!vistaDetallada) return out;
+
+    const compraByMovId = new Map<string, string>();
+    for (const c of conciliaciones) {
+      if (c.estado === "confirmado" && c.rcv_compra_id && c.movimiento_banco_id) {
+        compraByMovId.set(c.movimiento_banco_id, c.rcv_compra_id);
+      }
+    }
+    const movById = new Map<string, DBMovimientoBanco>();
+    for (const m of movBancoExt) if (m.id) movById.set(m.id, m);
+
+    const mapCompra = (c: DBRcvCompra): DrillDoc => {
+      const conc = concByCompraId.get(c.id!);
+      const movPago = conc?.movimiento_banco_id ? movById.get(conc.movimiento_banco_id) : undefined;
+      return {
+        id: c.id || null, tabla: "rcv_compras",
+        periodoDevengo: c.periodo_devengo || null,
+        tipo: "Compra", doc: TIPO_DOC[c.tipo_doc] || String(c.tipo_doc),
+        nro: c.nro_doc || "—", rut: c.rut_proveedor || "—",
+        razon: c.razon_social || "", fecha: c.fecha_docto || "—",
+        monto: c.monto_total || 0, nota: c.notas || conc?.notas || "",
+        conciliada: !!conc,
+        fechaPago: movPago?.fecha || null,
+        bancoPago: movPago?.banco || null,
+      };
+    };
+
+    const mapMov = (m: DBMovimientoBanco): DrillDoc => {
+      const conc = conciliaciones.find(c => c.movimiento_banco_id === m.id && c.estado === "confirmado");
+      return {
+        id: m.id || null, tabla: "movimientos_banco",
+        periodoDevengo: m.periodo_devengo || null,
+        tipo: "Banco", doc: m.banco, nro: m.referencia || "—", rut: "",
+        razon: m.descripcion || "", fecha: m.fecha, monto: Math.abs(m.monto),
+        nota: conc?.notas || "", conciliada: !!conc,
+        fechaPago: m.fecha,
+        bancoPago: m.banco,
+      };
+    };
+
+    const cuentasHojaActivas = planCuentas.filter(c => c.es_hoja && c.activa);
+    const cuentasIngreso = cuentasHojaActivas.filter(c => c.tipo === "ingreso");
+
+    const ventasAsDocs: DrillDoc[] = ventasAct.map(v => ({
+      id: v.id || null, tabla: null, periodoDevengo: null,
+      tipo: "Venta", doc: TIPO_DOC[v.tipo_doc] || String(v.tipo_doc),
+      nro: v.folio || v.nro || "—", rut: v.rut_emisor || "—",
+      razon: "", fecha: v.fecha_docto || "—", monto: v.monto_total || 0, nota: "", conciliada: false,
+      fechaPago: null, bancoPago: null,
+    }));
+    if (cuentasIngreso.length > 0) {
+      out.set(cuentasIngreso[0].id!, ventasAsDocs);
+    } else if (ventasAsDocs.length > 0) {
+      out.set("ing_total", ventasAsDocs);
+    }
+
+    const sinCuentaCompras = comprasAct.filter(c => !cuentaIdDeCompra(c, provCuentaInfo));
+    if (sinCuentaCompras.length > 0) {
+      out.set("cos_sin_cat", sinCuentaCompras.map(mapCompra));
+    }
+
+    const movsSinCat = movBanco.filter(m => m.monto < 0 && !m.categoria_cuenta_id && (!m.id || !compraByMovId.has(m.id)));
+    if (movsSinCat.length > 0) {
+      out.set("sin_cat", movsSinCat.map(mapMov));
+    }
+
+    for (const cuenta of cuentasHojaActivas) {
+      if (cuenta.tipo === "ingreso") continue;
+      const docs: DrillDoc[] = [];
+      for (const c of comprasAct) {
+        if (cuentaIdDeCompra(c, provCuentaInfo) === cuenta.id) docs.push(mapCompra(c));
+      }
+      for (const m of movBanco) {
+        if (m.monto >= 0) continue;
+        if (m.categoria_cuenta_id !== cuenta.id) continue;
+        if (m.id && compraByMovId.has(m.id)) continue;
+        docs.push(mapMov(m));
+      }
+      if (docs.length > 0) out.set(cuenta.id!, docs);
+    }
+
+    return out;
+  }, [vistaDetallada, ventasAct, comprasAct, movBanco, movBancoExt, planCuentas, concByCompraId, provCuentaInfo, conciliaciones]);
 
   // Exportar Excel
   const handleExport = () => {
@@ -517,6 +605,101 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
       nombreArchivo: `estado_resultados_${periodo}.xlsx`,
     });
   };
+
+  // Helper: renderiza la tabla de docs de un grupo (compartido entre drilldown click-to-expand y vista detallada).
+  const renderDocsTable = (docs: DrillDoc[], keyPrefix: string) => (
+    <table className="tbl" style={{ fontSize: 11, width: "100%" }}>
+      <thead>
+        <tr><th>Doc</th><th>N°</th><th>Proveedor</th><th>Fecha</th><th style={{ textAlign: "right" }}>Monto</th><th>Nota</th><th>Pago</th><th>Periodo</th><th>Cuenta</th></tr>
+      </thead>
+      <tbody>
+        {docs.map((d, i) => {
+          const rowKey = `${keyPrefix}_${d.nro}_${i}`;
+          const isAssigning = assigningId === rowKey;
+          return (
+            <tr key={rowKey} draggable
+              onDragStart={() => setDragItem({ id: d.id, tabla: d.tabla, rut: d.rut, razon: d.razon, nro: d.nro, conciliada: d.conciliada })}
+              onDragEnd={() => { setDragItem(null); setDropTarget(null); }}
+              style={{ cursor: "grab" }}>
+              <td style={{ fontSize: 10, color: "var(--txt3)" }}>{d.doc}</td>
+              <td className="mono" style={{ fontWeight: 600 }}>{d.nro}</td>
+              <td style={{ maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.razon || d.rut || "—"}</td>
+              <td className="mono">{d.fecha}</td>
+              <td className="mono" style={{ textAlign: "right", fontWeight: 600 }}>{fmtMoney(d.monto)}</td>
+              <td style={{ fontSize: 10, color: "var(--txt2)", fontStyle: d.nota ? "italic" : "normal", maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.nota || "—"}</td>
+              <td>
+                {d.conciliada ? (
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
+                    {d.fechaPago && (<span className="mono" style={{ fontSize: 9, color: "var(--txt3)" }}>{d.fechaPago}</span>)}
+                    <span title={d.bancoPago || ""} style={{ fontSize: 9, fontWeight: 600, padding: "1px 5px", borderRadius: 3, background: "var(--greenBg)", color: "var(--green)" }}>PAGADA</span>
+                    {d.bancoPago && (<span style={{ fontSize: 9, color: "var(--txt3)", maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.bancoPago}</span>)}
+                  </div>
+                ) : (
+                  <span style={{ fontSize: 9, fontWeight: 600, padding: "1px 5px", borderRadius: 3, background: "var(--amberBg)", color: "var(--amber)" }}>PEND.</span>
+                )}
+              </td>
+              <td>
+                {d.tabla && d.id ? (
+                  movePeriodoId === `${d.tabla}_${d.id}` ? (
+                    <select autoFocus defaultValue={d.periodoDevengo || ""} onChange={async (e) => {
+                      const val = e.target.value || null;
+                      if (d.tabla === "movimientos_banco") await setPeriodoDevengoMovimiento(d.id!, val);
+                      else if (d.tabla === "rcv_compras") await setPeriodoDevengoCompra(d.id!, val);
+                      setMovePeriodoId(null);
+                      await reload();
+                    }} onBlur={() => setTimeout(() => setMovePeriodoId(null), 200)}
+                      style={{ padding: "2px 4px", fontSize: 9, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 3 }}>
+                      <option value="">— auto —</option>
+                      {[-3,-2,-1,0,1,2].map(off => {
+                        const p = periodoOffset(periodo, off);
+                        return <option key={p} value={p}>{formatPeriodo(p)}</option>;
+                      })}
+                    </select>
+                  ) : (
+                    <button onClick={() => setMovePeriodoId(`${d.tabla}_${d.id}`)}
+                      style={{ padding: "1px 6px", borderRadius: 3, fontSize: 9, fontWeight: 600, background: d.periodoDevengo ? "var(--cyanBg)" : "var(--bg3)", color: d.periodoDevengo ? "var(--cyan)" : "var(--txt3)", border: `1px solid ${d.periodoDevengo ? "var(--cyanBd)" : "var(--bg4)"}`, cursor: "pointer" }}
+                      title={d.periodoDevengo ? `Override: ${d.periodoDevengo}` : "Mes derivado de la fecha/regla"}>
+                      {d.periodoDevengo ? formatPeriodo(d.periodoDevengo).slice(0,3) : "auto"}
+                    </button>
+                  )
+                ) : (
+                  <span style={{ fontSize: 9, color: "var(--txt3)" }}>—</span>
+                )}
+              </td>
+              <td>
+                {isAssigning ? (
+                  <select autoFocus value="" onChange={async (e) => {
+                    if (!e.target.value || !d.id) return;
+                    const newCuentaId = e.target.value;
+                    if (d.tabla === "rcv_compras") await setCategoriaCuentaCompra(d.id, newCuentaId);
+                    else if (d.tabla === "movimientos_banco") await categorizarMovimiento(d.id, newCuentaId);
+                    setAssigningId(null);
+                    await reload();
+                  }} onBlur={() => setTimeout(() => setAssigningId(null), 200)}
+                    style={{ padding: "2px 4px", fontSize: 9, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 3, maxWidth: 140 }}>
+                    <option value="">Mover a...</option>
+                    {cuentasHoja.map(c => <option key={c.id} value={c.id!}>{c.codigo} — {c.nombre}</option>)}
+                  </select>
+                ) : (
+                  <button onClick={() => setAssigningId(rowKey)}
+                    style={{ padding: "1px 6px", borderRadius: 3, fontSize: 9, fontWeight: 600, background: "var(--bg3)", color: "var(--cyan)", border: "1px solid var(--bg4)", cursor: "pointer" }}>
+                    Mover
+                  </button>
+                )}
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+      <tfoot>
+        <tr style={{ fontWeight: 700, background: "var(--bg3)" }}>
+          <td colSpan={4}>TOTAL</td>
+          <td className="mono" style={{ textAlign: "right" }}>{fmtMoney(docs.reduce((s, d) => s + d.monto, 0))}</td>
+          <td colSpan={4}></td>
+        </tr>
+      </tfoot>
+    </table>
+  );
 
   if (loading) return <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>Cargando...</div>;
 
@@ -548,9 +731,17 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
           <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>Estado de Resultados</h2>
           <div style={{ fontSize: 12, color: "var(--txt3)", marginTop: 2 }}>{formatPeriodo(periodo)} vs {formatPeriodo(pAnt)}</div>
         </div>
-        <button onClick={handleExport} className="scan-btn blue" style={{ padding: "6px 16px", fontSize: 12 }}>
-          Exportar Excel
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={() => { setVistaDetallada(v => !v); setExpandedRow(null); }}
+            className="scan-btn"
+            style={{ padding: "6px 16px", fontSize: 12, background: vistaDetallada ? "var(--cyanBg)" : "var(--bg3)", color: vistaDetallada ? "var(--cyan)" : "var(--txt2)", border: `1px solid ${vistaDetallada ? "var(--cyanBd)" : "var(--bg4)"}` }}
+            title="Expande todas las cuentas con sus documentos para auditoría">
+            {vistaDetallada ? "✓ Vista detallada" : "Vista detallada"}
+          </button>
+          <button onClick={handleExport} className="scan-btn blue" style={{ padding: "6px 16px", fontSize: 12 }}>
+            Exportar Excel
+          </button>
+        </div>
       </div>
 
       {/* KPIs resumen */}
@@ -595,11 +786,13 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
               const tipoStyle = TIPO_STYLE[l.tipo] || TIPO_STYLE.ingreso;
               const isExpanded = expandedRow === l.id;
               const canExpand = l.esHoja && (l.montoActual !== 0 || l.montoAnterior !== 0);
+              const docsInline = vistaDetallada && l.esHoja ? docsPorCuentaTodas.get(l.id) : undefined;
 
               const isDropTarget = dropTarget === l.id && dragItem;
               return (
-                <tr key={l.id}
-                  onClick={() => canExpand && setExpandedRow(isExpanded ? null : l.id)}
+                <Fragment key={l.id}>
+                <tr
+                  onClick={() => !vistaDetallada && canExpand && setExpandedRow(isExpanded ? null : l.id)}
                   onDragOver={l.esHoja && !l.esSubtotal ? (e) => { e.preventDefault(); setDropTarget(l.id); } : undefined}
                   onDragLeave={l.esHoja ? () => setDropTarget(null) : undefined}
                   onDrop={l.esHoja && !l.esSubtotal ? async (e) => {
@@ -616,7 +809,7 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
                     await reload();
                   } : undefined}
                   style={{
-                    cursor: canExpand ? "pointer" : "default",
+                    cursor: !vistaDetallada && canExpand ? "pointer" : "default",
                     background: isDropTarget ? "var(--cyanBg)" : l.esSubtotal ? "var(--bg3)" : l.esSeparador ? tipoStyle.bg : isExpanded ? "var(--cyanBg)" : "transparent",
                     fontWeight: l.esSubtotal || l.esSeparador ? 700 : 400,
                     outline: isDropTarget ? "2px dashed var(--cyan)" : "none",
@@ -632,7 +825,8 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
                       <span>
                         <span className="mono" style={{ color: "var(--cyan)", marginRight: 8, fontSize: 10 }}>{l.codigo}</span>
                         {l.nombre}
-                        {canExpand && <span style={{ marginLeft: 6, fontSize: 10, color: "var(--txt3)" }}>{isExpanded ? "▼" : "▶"}</span>}
+                        {canExpand && !vistaDetallada && <span style={{ marginLeft: 6, fontSize: 10, color: "var(--txt3)" }}>{isExpanded ? "▼" : "▶"}</span>}
+                        {docsInline && <span style={{ marginLeft: 6, fontSize: 10, color: "var(--txt3)" }}>({docsInline.length})</span>}
                       </span>
                     )}
                   </td>
@@ -647,6 +841,16 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
                     {l.montoAnterior === 0 ? "—" : `${varPct >= 0 ? "+" : ""}${varPct.toFixed(1)}%`}
                   </td>
                 </tr>
+                {docsInline && docsInline.length > 0 && (
+                  <tr>
+                    <td colSpan={5} style={{ padding: 0, background: "var(--bg)", borderLeft: `3px solid ${tipoStyle.color}` }}>
+                      <div style={{ padding: "8px 16px 12px 32px" }}>
+                        {renderDocsTable(docsInline, l.id)}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               );
             })}
           </tbody>
