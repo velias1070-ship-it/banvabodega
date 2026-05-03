@@ -149,3 +149,35 @@ Vista canónica para reposición: `v_reposicion_dashboard` consumida por
 Endpoints de agentes (`src/app/api/agents/*/route.ts`) marcados
 `DEPRECATED Sprint 4` con `console.warn`. Si aparece el warn en logs,
 alguien está llamándolos manualmente — investigar.
+
+## 10. Feature flags
+
+Para migraciones graduales (motor viejo → motor nuevo, vista A → vista B,
+etc.) usar `src/lib/feature-flags.ts`.
+
+**Resolución (orden de precedencia, primero gana):**
+
+1. `localStorage["banva_ff_<flagName>"]` — override por usuario en el browser.
+   Útil para que el owner valide en producción sin afectar a otros usuarios.
+2. `process.env.NEXT_PUBLIC_<flagName>` — default global (deploy-wide). Se
+   inlinea en el build. Cambiar requiere redeploy en Vercel.
+3. Fallback hardcoded `false` — default seguro mientras la feature está en
+   construcción.
+
+**Reglas:**
+
+- **Default siempre `false`**. Una feature flag NO se mergea ya prendida.
+- **Catálogo centralizado** en `FEATURE_FLAGS` (constante exportada). No usar
+  strings sueltos en el resto del código.
+- **El override por localStorage solo aplica client-side**. El server (RSC,
+  route handlers) resuelve únicamente por env var. Si una feature requiere
+  que el endpoint v2 responda diferente al v1, el override es por endpoint
+  separado, no por flag server-side.
+- **Documentar el rollout en `docs/sprints/<sprint>.md`** con: cómo prender,
+  cómo apagar, qué validar antes de promover env var, qué borrar en sprint
+  siguiente (cleanup).
+- **Vida útil corta**. Feature flags son temporales. Cuando la feature está
+  validada, el sprint siguiente borra el flag y consolida el código en una
+  sola rama.
+
+Convención agregada: 2026-05-04 (Sprint 5).

@@ -87,6 +87,10 @@ Hasta Sprint 6 los campos siguen donde están.
 - **Q: ¿Qué pasa con `inteligencia_full` (estado FlexFull)?**
   R: Se mantiene como cache derivada de stock + composición + estado pricing. Lectura libre, escritura sólo desde `calcularEstadoFlexFull` (P-INV-1).
 
+## Hitos de migración (cronológico)
+
+**Sprint 5 (2026-05-04)**: Migración de lecturas de /inteligencia (tab 'intel' en /admin) al motor nuevo via v_reposicion_explain. Endpoint v2 en /api/intelligence/sku-venta-v2. Feature flag INTEL_USE_NEW_ENGINE controla rollout. Escrituras (vel_objetivo, _bulk, recalcular cron) siguen escribiendo a sku_intelligence per scope reducido. Sprint 6 migrará escrituras.
+
 ## Casos históricos relacionados
 
 - **2026-04-28 (Adendum A — Op Limpieza híbrida)**: precedente de coexistencia velocidad-semanal vs ST-diario sin colapsar uno en el otro. Misma lógica acá: dos motores conviven sin escribir el mismo cache.

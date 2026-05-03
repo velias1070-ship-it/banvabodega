@@ -5,6 +5,7 @@ import { buildPickingLineasFull, crearPickingSession, skuPositions, getComponent
 import { upsertNotasOperativas, insertOrdenCompra, insertOrdenCompraLineas, nextOCNumero, insertAdminActionLog } from "@/lib/db";
 import type { DBOrdenCompra, DBOrdenCompraLinea } from "@/lib/db";
 import { exportarOCExcel } from "@/lib/oc-export";
+import { isFeatureEnabled, FEATURE_FLAGS } from "@/lib/feature-flags";
 import ExplicarSkuPanel from "./ExplicarSkuPanel";
 
 // ============================================
@@ -516,15 +517,91 @@ export default function AdminInteligencia() {
   const cargarOrigen = useCallback(async () => {
     const sb = getSupabase();
     if (!sb) return;
-    const { data } = await sb.from("sku_intelligence")
-      .select("*")
-      .or("vel_ponderada.gt.0,stock_total.gt.0")
-      .order("prioridad", { ascending: true })
-      .limit(500);
-    const r = (data || []) as IntelRow[];
-    setRows(r);
-    if (r.length > 0) setLastUpdate(r[0].updated_at);
-    // Último sync stock Full
+
+    // Sprint 5 — feature flag: motor nuevo (v_reposicion_explain) vs viejo (sku_intelligence).
+    // Default: false. Override via env NEXT_PUBLIC_INTEL_USE_NEW_ENGINE o localStorage.
+    // Doc: docs/sprints/sprint-5-migracion-inteligencia.md
+    const useNewEngine = isFeatureEnabled(FEATURE_FLAGS.INTEL_USE_NEW_ENGINE);
+
+    if (useNewEngine) {
+      // Lee del motor nuevo + parallel-fetch de campos caso C (clasificación, márgenes,
+      // accuracy, vel_objetivo, etc.) que aún viven en sku_intelligence per frontera-policy.
+      const [explainRes, casoCRes] = await Promise.all([
+        sb.from("v_reposicion_explain")
+          .select("sku_origen, nombre, categoria, proveedor_nombre, cell, cell_efectiva, cell_original, " +
+                  "target_dias_template, target_dias_flex, " +
+                  "vel_decl_sem, vel_7d_decl, vel_30d_decl, vel_60d_decl, " +
+                  "stock_bodega, stock_full, stock_total, in_transit_bodega, " +
+                  "cycle_stock, safety_stock, reorder_point, pre_full_target, reserva_flex_target, " +
+                  "qty_a_comprar, clp_estimado, dias_cobertura_actual, bajo_rop, " +
+                  "es_quiebre_proveedor, vel_pre_quiebre, dias_en_quiebre, " +
+                  "factor_rampup_aplicado, rampup_motivo, evento_activo, multiplicador_evento, " +
+                  "mandar_full, pedir_proveedor_motor_viejo, pedir_proveedor_sin_rampup, " +
+                  "tendencia, promocion_activa, promocion_motivo, " +
+                  "sku_intelligence_updated_at"),
+        sb.from("sku_intelligence")
+          .select("sku_origen, abc, xyz, cuadrante, accion, prioridad, alertas, alertas_count, " +
+                  "abc_pre_quiebre, gmroi, dio, vel_objetivo, gap_vel_pct, " +
+                  "venta_perdida_pesos, oportunidad_perdida_es_estimacion, liquidacion_accion, " +
+                  "liquidacion_descuento_sugerido, es_catch_up, vel_full, vel_flex, pct_full, pct_flex, " +
+                  "margen_full_30d, margen_flex_30d, canal_mas_rentable, precio_promedio, " +
+                  "costo_neto, costo_bruto, ingreso_30d, dias_sin_stock_full, inner_pack, " +
+                  "stock_proveedor, tiene_stock_prov, " +
+                  "forecast_wmape_8s, forecast_bias_8s, forecast_tracking_signal_8s, forecast_semanas_evaluadas_8s, forecast_es_confiable_8s, forecast_calculado_at, " +
+                  "skus_venta, multiplicador_evento, updated_at"),
+      ]);
+      const casoCMap = new Map<string, Record<string, unknown>>();
+      for (const row of ((casoCRes.data || []) as unknown) as Array<Record<string, unknown>>) {
+        casoCMap.set((row.sku_origen as string).toUpperCase(), row);
+      }
+      const merged: IntelRow[] = [];
+      for (const explain of ((explainRes.data || []) as unknown) as Array<Record<string, unknown>>) {
+        const skuKey = (explain.sku_origen as string).toUpperCase();
+        const casoC = casoCMap.get(skuKey) || {};
+        // Merge con renames para mantener compatibilidad con IntelRow (shape v1).
+        merged.push({
+          ...(casoC as Partial<IntelRow>),
+          ...(explain as Partial<IntelRow>),
+          sku_origen: explain.sku_origen as string,
+          nombre: (explain.nombre as string) ?? null,
+          categoria: (explain.categoria as string) ?? null,
+          proveedor: (explain.proveedor_nombre as string) ?? null,
+          cuadrante: (casoC.cuadrante as string) ?? "",
+          // renames motor nuevo → shape v1
+          vel_ponderada: Number(explain.vel_decl_sem) || 0,
+          vel_7d: Number(explain.vel_7d_decl) || 0,
+          vel_30d: Number(explain.vel_30d_decl) || 0,
+          vel_60d: Number(explain.vel_60d_decl) || 0,
+          target_dias_full: Number(explain.target_dias_template) || 0,
+          stock_en_transito: Number(explain.in_transit_bodega) || 0,
+          stock_seguridad: Number(explain.safety_stock) || 0,
+          punto_reorden: Number(explain.reorder_point) || 0,
+          pedir_proveedor: Number(explain.qty_a_comprar) || 0,
+          rop_calculado: Number(explain.reorder_point) || 0,
+          updated_at: (explain.sku_intelligence_updated_at as string) || (casoC.updated_at as string),
+          // necesita_pedir derivado de bajo_rop
+          necesita_pedir: explain.bajo_rop as boolean,
+        } as IntelRow);
+      }
+      // Filtro equivalente al .or("vel_ponderada.gt.0,stock_total.gt.0") + sort por prioridad.
+      const filtered = merged.filter(r => (r.vel_ponderada || 0) > 0 || (r.stock_total || 0) > 0);
+      filtered.sort((a, b) => (a.prioridad || 99) - (b.prioridad || 99));
+      const limited = filtered.slice(0, 500);
+      setRows(limited);
+      if (limited.length > 0) setLastUpdate(limited[0].updated_at);
+    } else {
+      // Default: motor viejo (sku_intelligence).
+      const { data } = await sb.from("sku_intelligence")
+        .select("*")
+        .or("vel_ponderada.gt.0,stock_total.gt.0")
+        .order("prioridad", { ascending: true })
+        .limit(500);
+      const r = (data || []) as IntelRow[];
+      setRows(r);
+      if (r.length > 0) setLastUpdate(r[0].updated_at);
+    }
+
+    // Último sync stock Full (siempre desde stock_full_cache, no cambia con el flag)
     const { data: sfData } = await sb.from("stock_full_cache")
       .select("updated_at")
       .order("updated_at", { ascending: false })
@@ -534,7 +611,10 @@ export default function AdminInteligencia() {
 
   const cargarVenta = useCallback(async () => {
     try {
-      const res = await fetch("/api/intelligence/sku-venta");
+      // Sprint 5 — endpoint v2 (motor nuevo) detrás del mismo flag que cargarOrigen.
+      const useNewEngine = isFeatureEnabled(FEATURE_FLAGS.INTEL_USE_NEW_ENGINE);
+      const endpoint = useNewEngine ? "/api/intelligence/sku-venta-v2" : "/api/intelligence/sku-venta";
+      const res = await fetch(endpoint);
       if (res.ok) {
         const json = await res.json();
         const vRows = (json.rows || []) as VentaRow[];
