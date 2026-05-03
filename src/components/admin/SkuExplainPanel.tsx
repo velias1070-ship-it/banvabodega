@@ -84,6 +84,20 @@ type ExplainData = {
   target_dias_flex: number | null;
   flex_priority: string | null;
   d_avg_sem_efectivo: number | null;
+  // Sprint 4.3b — tendencia + promoción
+  tendencia: string | null;
+  cell_original: string | null;
+  cell_efectiva: string | null;
+  promocion_activa: boolean | null;
+  promocion_motivo: string | null;
+  tendencia_updated_at: string | null;
+  vel_28d_recent: number | null;
+  vel_28d_previous: number | null;
+  vel_baseline_90d: number | null;
+  ratio_recent_vs_previous: number | null;
+  ratio_recent_vs_baseline: number | null;
+  uds_ultimas_4_semanas: number | null;
+  uds_4_semanas_previas: number | null;
   sku_intelligence_updated_at: string | null;
   policy_updated_at: string | null;
 };
@@ -292,6 +306,81 @@ export default function SkuExplainPanel({ sku, onClose }: Props) {
               >
                 ✏️ Editar lead time (Sprint 4.3)
               </button>
+            </Section>
+
+            {/* 3.4 TENDENCIA (Sprint 4.3b) */}
+            <Section title="📈 Tendencia">
+              <KV
+                label="Estado"
+                value={<TendenciaBadge tendencia={data.tendencia} />}
+              />
+              <Formula
+                label="Velocidad últimas 4 sem (28d)"
+                value={`${fmtNum(data.vel_28d_recent, 2)} uds/sem`}
+                detail={`= ${fmtNum(data.uds_ultimas_4_semanas, 0)} uds en 28 días / 4 sem.`}
+              />
+              <Formula
+                label="Velocidad 4 sem previas (29-56d)"
+                value={`${fmtNum(data.vel_28d_previous, 2)} uds/sem`}
+                detail={`= ${fmtNum(data.uds_4_semanas_previas, 0)} uds en días 29-56 / 4 sem. Comparación reciente vs previa detecta cambios en 4-7 días.`}
+              />
+              <Formula
+                label="Velocidad baseline (90d)"
+                value={`${fmtNum(data.vel_baseline_90d, 2)} uds/sem`}
+                detail="Promedio últimos 90 días. Punto de referencia histórico para confirmar aceleración real."
+              />
+              <Formula
+                label="Ratio reciente vs previa"
+                value={data.ratio_recent_vs_previous != null ? `${fmtNum(data.ratio_recent_vs_previous, 2)}×` : "—"}
+                detail={(() => {
+                  const r = data.ratio_recent_vs_previous;
+                  if (r == null) return "Sin previas (28d previas = 0).";
+                  if (r >= 2.0) return "≥ 2.0× → acelerando_fuerte (si uds_28d ≥ 5).";
+                  if (r >= 1.5) return "≥ 1.5× → posible aceleración (necesita ratio_baseline ≥ 1.3 para confirmar).";
+                  if (r <= 0.3) return "≤ 0.3× → desacelerando_fuerte (si previas ≥ 5).";
+                  if (r <= 0.5) return "≤ 0.5× → posible desaceleración (necesita ratio_baseline ≤ 0.7).";
+                  return "Estable: cambio dentro de banda 0.5×–1.5×.";
+                })()}
+              />
+              <Formula
+                label="Ratio reciente vs baseline 90d"
+                value={data.ratio_recent_vs_baseline != null ? `${fmtNum(data.ratio_recent_vs_baseline, 2)}×` : "—"}
+                detail="Confirma que la aceleración no es un rebote sobre 4 semanas anómalas. Aceleración requiere ambos ratios alineados."
+              />
+              {data.promocion_activa === true && (
+                <div
+                  style={{
+                    marginTop: 8,
+                    padding: "10px 12px",
+                    borderRadius: 8,
+                    background: "#10b98120",
+                    border: "1px solid #10b98155",
+                    color: "#10b981",
+                    fontSize: 12,
+                  }}
+                >
+                  <div style={{ fontWeight: 700, marginBottom: 6, fontSize: 13 }}>
+                    ⭐ POLÍTICA PROMOVIDA POR ACELERACIÓN
+                  </div>
+                  <div className="mono" style={{ marginBottom: 4 }}>
+                    Celda original: {data.cell_original ?? "—"} → efectiva: {data.cell_efectiva ?? "—"}
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--txt2)", marginBottom: 4 }}>
+                    {data.promocion_motivo}
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--txt2)", lineHeight: 1.5 }}>
+                    El sistema detectó que el SKU está acelerando y aplica política de{" "}
+                    <span className="mono">{data.cell_efectiva}</span> (más agresiva: más z y más
+                    días de cobertura Full) en lugar de{" "}
+                    <span className="mono">{data.cell_original}</span>. Cuando se desacelere o
+                    el cron mensual lo reclasifique oficialmente, se vuelve a la celda original.
+                  </div>
+                </div>
+              )}
+              <KV
+                label="Última actualización"
+                value={<span className="mono" style={{ fontSize: 11 }}>{fmtDateTime(data.tendencia_updated_at)}</span>}
+              />
             </Section>
 
             {/* 3.5 INTELIGENCIA OPERATIVA (Sprint 4.3a) */}
@@ -556,6 +645,36 @@ function Formula({ label, value, detail }: { label: string; value: string; detai
       </div>
       <div className="mono" style={{ color: "var(--txt3)", fontSize: 11, marginTop: 3, lineHeight: 1.5 }}>{detail}</div>
     </div>
+  );
+}
+
+function TendenciaBadge({ tendencia }: { tendencia: string | null }) {
+  if (!tendencia) return <span style={{ color: "var(--txt3)" }}>—</span>;
+  const map: Record<string, { color: string; bg: string; label: string }> = {
+    acelerando_fuerte: { color: "#10b981", bg: "#10b98120", label: "🚀 ACELERANDO FUERTE (≥2×)" },
+    acelerando: { color: "#10b981", bg: "#10b98115", label: "🟢 ACELERANDO (≥1.5×)" },
+    estable: { color: "#94a3b8", bg: "#94a3b815", label: "🟡 ESTABLE" },
+    desacelerando: { color: "#f59e0b", bg: "#f59e0b15", label: "🟠 DESACELERANDO (≤0.5×)" },
+    desacelerando_fuerte: { color: "#ef4444", bg: "#ef444415", label: "🔴 DESACELERANDO FUERTE (≤0.3×)" },
+    insuficiente_data: { color: "#64748b", bg: "#64748b15", label: "⚪ INSUFICIENTE DATA (<5 uds en 90d)" },
+  };
+  const info = map[tendencia] || { color: "#64748b", bg: "#64748b15", label: tendencia };
+  return (
+    <span
+      className="mono"
+      style={{
+        display: "inline-block",
+        padding: "3px 10px",
+        borderRadius: 4,
+        background: info.bg,
+        border: `1px solid ${info.color}40`,
+        color: info.color,
+        fontSize: 11,
+        fontWeight: 600,
+      }}
+    >
+      {info.label}
+    </span>
   );
 }
 

@@ -37,6 +37,10 @@
       "schedule": "30 11 * * 1"
     },
     {
+      "path": "/api/policy/sync-trend-detection",
+      "schedule": "0 12 * * *"
+    },
+    {
       "path": "/api/ml/ads-daily-sync",
       "schedule": "0 */6 * * *"
     },

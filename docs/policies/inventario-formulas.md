@@ -572,6 +572,87 @@ Sprint 4.4+.
 
 **Fuente:** `sku_node_policy.flex_priority`.
 
+### Detección de tendencia (Sprint 4.3b)
+
+**Problema:** la reclasificación oficial ABC×XYZ del motor viejo usa
+ventana 90 días. Un SKU C que acelera en la última semana tarda 30+
+días en moverse a B. Mientras tanto la política de C lo subdimensiona.
+
+**Solución:** overlay temporal en SQL que detecta cambios en 4-7 días
+sin modificar el motor viejo.
+
+#### Velocidades por ventana
+
+```
+vel_recent_sem    = round(uds_28d / 4, 2)         -- últimas 4 semanas
+vel_previous_sem  = round(uds_28d_previas / 4, 2) -- 4 semanas previas (días 29-56)
+vel_baseline_sem  = round(uds_90d / (90/7), 2)    -- baseline 90 días
+```
+
+donde `uds_X = SUM(ventas_ml_cache.cantidad × composicion_venta.unidades)`
+filtrando `anulada = false` y la ventana correspondiente.
+
+**Fuente:** `v_trend_detection`.
+
+#### Ratios
+
+```
+ratio_recent_vs_previous = vel_recent_sem / NULLIF(vel_previous_sem, 0)
+ratio_recent_vs_baseline = vel_recent_sem / NULLIF(vel_baseline_sem, 0)
+```
+
+#### Clasificación de tendencia
+
+| Tendencia | Regla | Acción de policy |
+|---|---|---|
+| `acelerando_fuerte` | `ratio_prev ≥ 2.0` AND `uds_28d ≥ 5` | Promueve celda ABC |
+| `acelerando` | `ratio_prev ≥ 1.5` AND `ratio_baseline ≥ 1.3` AND `uds_28d ≥ 3` | Promueve celda ABC |
+| `desacelerando` | `ratio_prev ≤ 0.5` AND `ratio_baseline ≤ 0.7` AND `uds_28d_previas ≥ 3` | Sólo flag |
+| `desacelerando_fuerte` | `ratio_prev ≤ 0.3` AND `uds_28d_previas ≥ 5` | Sólo flag |
+| `insuficiente_data` | `uds_90d < 5` | Sólo flag |
+| `estable` | default | Sin cambio |
+
+**Por qué dos ratios para `acelerando`:** evita falsos positivos donde
+las 4 semanas previas eran anómalamente bajas (cold start o rebote
+post-quiebre). El baseline 90d filtra eso.
+
+**Por qué desacelerando NO degrada automáticamente:** ir a `CZ` activa
+política `no_reorder`. Una desaceleración temporal (estacionalidad,
+quiebre upstream) podría congelar compras justo cuando se va a recuperar.
+Decisión humana.
+
+**Fuente:** `v_trend_detection.tendencia`.
+
+### cell_efectiva (overlay de promoción)
+
+**Sprint 4.3b.** Cuando un SKU acelera, su celda efectiva se promueve
+una letra ABC arriba; XYZ se preserva (la variabilidad relativa no
+cambia con el volumen).
+
+```
+calc_cell_efectiva(cell, tendencia):
+  IF tendencia IN ('acelerando', 'acelerando_fuerte') THEN
+    CX | CY | CZ → BX | BY | BZ
+    BX | BY | BZ → AX | AY | AZ
+    AX | AY | AZ → sin cambio
+  ELSE cell
+```
+
+`v_safety_stock` usa `cell_efectiva` para resolver `z` y
+`target_dias_full` desde `policy_templates`:
+- BZ→AZ: `target_dias_full` 7 → 14 (pre_full_target se duplica).
+- BY→AY: `target_dias_full` 14 → 21.
+- BX→AX: `target_dias_full` 28 → 42.
+
+`target_dias_flex` queda como override per-SKU (no se promueve), porque
+la cobertura Flex es decisión operativa, no derivada de la celda.
+
+**Fuente:** `sku_node_policy.cell_efectiva` (refrescada por cron diario
+`/api/policy/sync-trend-detection` 12:00 UTC).
+
+**Trazabilidad:** `cell_original` (siempre = `cell` del motor viejo) +
+`cell_efectiva` + `promocion_activa` + `promocion_motivo`.
+
 ### dias_sin_stock_full
 
 Días corridos contando desde que `stock_full = 0` por última vez.

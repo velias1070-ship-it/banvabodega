@@ -23,7 +23,7 @@
 # Total entradas: 38 métricas + 6 decisiones binarias.
 
 version: 1
-last_updated: 2026-05-04  # Sprint 4.3a — agregadas target_dias_flex, reserva_flex_target, flex_priority
+last_updated: 2026-05-04  # Sprint 4.3b — agregadas vel_recent_sem, vel_previous_sem, vel_baseline_sem, ratios, tendencia, cell_efectiva
 last_audited: 2026-05-02
 owner_human: vicente
 sprint_origen: sprint-0.5
@@ -756,6 +756,104 @@ metrics:
     ssot_table: sku_node_policy
     fuente_doctrina: "Sprint 4.3a — política multi-canal expuesta, override en backlog"
 
+  - name: vel_recent_sem
+    description: "Velocidad uds/sem últimas 4 semanas (28d). Sprint 4.3b (trend detection)."
+    domain: inventario
+    formula_sql: |
+      ROUND(SUM(cantidad * unidades) FILTER (WHERE fecha_date >= CURRENT_DATE - 28d) / 4.0, 2)
+    input_tables: [ventas_ml_cache, composicion_venta]
+    filters: ["anulada = false"]
+    grain: [sku_origen]
+    time_grain: rolling_28d
+    unit: unidades_por_semana
+    materialized_in: [v_trend_detection.vel_recent_sem]
+    consumed_by: ["v_trend_detection.tendencia", "v_reposicion_explain.vel_28d_recent", "SkuExplainPanel sección Tendencia"]
+    ssot_table: v_trend_detection
+    fuente_doctrina: "Sprint 4.3b — detectar aceleración en 4-7 días (vs 30d del cron mensual)"
+
+  - name: vel_previous_sem
+    description: "Velocidad uds/sem en días 29-56 (4 semanas previas a la actual). Sprint 4.3b."
+    domain: inventario
+    formula_sql: |
+      ROUND(SUM(cantidad * unidades) FILTER (WHERE fecha_date BETWEEN CURRENT_DATE - 56d AND CURRENT_DATE - 28d) / 4.0, 2)
+    input_tables: [ventas_ml_cache, composicion_venta]
+    grain: [sku_origen]
+    unit: unidades_por_semana
+    materialized_in: [v_trend_detection.vel_previous_sem]
+    consumed_by: ["ratio_recent_vs_previous"]
+    ssot_table: v_trend_detection
+    fuente_doctrina: "Sprint 4.3b"
+
+  - name: vel_baseline_sem
+    description: "Velocidad uds/sem promediada en 90d (baseline histórico para confirmar tendencia)."
+    domain: inventario
+    formula_sql: |
+      ROUND(SUM(cantidad * unidades) FILTER (WHERE fecha_date >= CURRENT_DATE - 90d) / (90.0/7.0), 2)
+    input_tables: [ventas_ml_cache, composicion_venta]
+    grain: [sku_origen]
+    unit: unidades_por_semana
+    materialized_in: [v_trend_detection.vel_baseline_sem]
+    consumed_by: ["ratio_recent_vs_baseline"]
+    ssot_table: v_trend_detection
+    fuente_doctrina: "Sprint 4.3b — filtra falsos positivos donde 28d previas eran anómalas"
+
+  - name: ratio_recent_vs_previous
+    description: "Ratio velocidad reciente (28d) vs previa (29-56d). >=1.5 → posible aceleración."
+    domain: inventario
+    formula_sql: "ROUND(vel_recent_sem / NULLIF(vel_previous_sem, 0), 2)"
+    grain: [sku_origen]
+    unit: ratio
+    materialized_in: [v_trend_detection.ratio_recent_vs_previous]
+    consumed_by: ["tendencia"]
+    ssot_table: v_trend_detection
+    fuente_doctrina: "Sprint 4.3b umbrales: >=2.0 fuerte, >=1.5 con confirmación, <=0.3 desacel fuerte, <=0.5 desacel."
+
+  - name: ratio_recent_vs_baseline
+    description: "Ratio velocidad reciente (28d) vs baseline 90d. Confirma aceleración real."
+    domain: inventario
+    formula_sql: "ROUND(vel_recent_sem / NULLIF(vel_baseline_sem, 0), 2)"
+    grain: [sku_origen]
+    unit: ratio
+    materialized_in: [v_trend_detection.ratio_recent_vs_baseline]
+    consumed_by: ["tendencia"]
+    ssot_table: v_trend_detection
+    fuente_doctrina: "Sprint 4.3b — necesario para clasificar 'acelerando' (>=1.3)"
+
+  - name: tendencia
+    description: "Clasificación de tendencia de velocidad. Sprint 4.3b."
+    domain: inventario
+    formula_text: |
+      acelerando_fuerte: ratio_recent_vs_previous >= 2.0 AND uds_28d >= 5
+      acelerando: ratio_recent_vs_previous >= 1.5 AND ratio_recent_vs_baseline >= 1.3 AND uds_28d >= 3
+      desacelerando_fuerte: ratio_recent_vs_previous <= 0.3 AND uds_28d_previas >= 5
+      desacelerando: ratio_recent_vs_previous <= 0.5 AND ratio_recent_vs_baseline <= 0.7 AND uds_28d_previas >= 3
+      insuficiente_data: uds_90d < 5
+      estable: default
+    grain: [sku_origen]
+    unit: enum
+    materialized_in: [v_trend_detection.tendencia, sku_node_policy.tendencia]
+    consumed_by: ["calc_cell_efectiva", "SkuExplainPanel badge", "promocion_activa"]
+    ssot_table: v_trend_detection
+    fuente_doctrina: "Sprint 4.3b — overlay temporal sobre reclasificación oficial ABC×XYZ"
+
+  - name: cell_efectiva
+    description: "Celda ABC×XYZ efectiva post-promoción por aceleración. Sprint 4.3b."
+    domain: inventario
+    formula_text: |
+      calc_cell_efectiva(cell, tendencia):
+        IF tendencia IN ('acelerando','acelerando_fuerte') THEN
+          C* → B* (mantiene XYZ)
+          B* → A* (mantiene XYZ)
+          A* → A* (no cambia)
+        ELSE cell
+    input_tables: [sku_node_policy, v_trend_detection]
+    grain: [sku_origen, node_id]
+    unit: enum
+    materialized_in: [sku_node_policy.cell_efectiva]
+    consumed_by: ["v_safety_stock (z + target_dias_full vienen de pt por cell_efectiva)"]
+    ssot_table: sku_node_policy
+    fuente_doctrina: "Sprint 4.3b — z y target_dias_full siguen a la celda promovida; XYZ no cambia (preserva semántica de variabilidad)"
+
   - name: necesita_pedir
     description: "Decisión binaria reactiva: stock por debajo del ROP."
     domain: inventario
@@ -1326,10 +1424,10 @@ decisions:
 # ============================================================================
 
 registry_metadata:
-  total_metrics: 55  # +5 Sprint 2; +1 Sprint 2.5; +2 Sprint 3; +6 Sprint 4; +3 Sprint 4.3a (target_dias_flex, reserva_flex_target, flex_priority)
+  total_metrics: 62  # +5 SP2; +1 SP2.5; +2 SP3; +6 SP4; +3 SP4.3a; +7 SP4.3b (vel_recent/previous/baseline_sem, 2 ratios, tendencia, cell_efectiva)
   total_decisions: 7  # +1 Sprint 4 (Camino 1)
   domain_coverage:
-    inventario: 47  # +5 SP2; +1 SP2.5; +2 SP3; +5 SP4; +3 SP4.3a
+    inventario: 54  # +5 SP2; +1 SP2.5; +2 SP3; +5 SP4; +3 SP4.3a; +7 SP4.3b
     ventas: 3
     pricing: 1
     logistica: 5
