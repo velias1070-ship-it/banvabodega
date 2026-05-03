@@ -98,6 +98,14 @@ type ExplainData = {
   ratio_recent_vs_baseline: number | null;
   uds_ultimas_4_semanas: number | null;
   uds_4_semanas_previas: number | null;
+  // Sprint 4.3b.1 — censura quiebre
+  ratio_recent_vs_pre_quiebre: number | null;
+  dias_stock_recent: number | null;
+  dias_stock_previous: number | null;
+  dias_quiebre_recent: number | null;
+  dias_quiebre_previous: number | null;
+  dias_total_recent: number | null;
+  dias_total_previous: number | null;
   sku_intelligence_updated_at: string | null;
   policy_updated_at: string | null;
 };
@@ -347,6 +355,41 @@ export default function SkuExplainPanel({ sku, onClose }: Props) {
                 value={data.ratio_recent_vs_baseline != null ? `${fmtNum(data.ratio_recent_vs_baseline, 2)}×` : "—"}
                 detail="Confirma que la aceleración no es un rebote sobre 4 semanas anómalas. Aceleración requiere ambos ratios alineados."
               />
+              {data.tendencia === "recuperacion_post_quiebre" && (
+                <div
+                  style={{
+                    marginTop: 8,
+                    padding: "10px 12px",
+                    borderRadius: 8,
+                    background: "#f59e0b15",
+                    border: "1px solid #f59e0b55",
+                    color: "#fbbf24",
+                    fontSize: 12,
+                  }}
+                >
+                  <div style={{ fontWeight: 700, marginBottom: 6, fontSize: 13 }}>
+                    ⚠️ EN RECUPERACIÓN POST-QUIEBRE — NO PROMOVIDO
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--txt2)", marginBottom: 6, lineHeight: 1.5 }}>
+                    El SKU vendió "rápido" en el último período pero estuvo en quiebre y la
+                    velocidad reciente refleja recuperación, no aceleración real. La promoción
+                    queda bloqueada hasta sostener 4 semanas con stock continuo.
+                  </div>
+                  <div className="mono" style={{ fontSize: 11, color: "var(--txt2)", lineHeight: 1.6 }}>
+                    {data.es_quiebre_proveedor === true && data.fecha_entrada_quiebre && (
+                      <>Quiebre proveedor activo desde {fmtDate(data.fecha_entrada_quiebre)}.<br /></>
+                    )}
+                    Días con stock recientes: {data.dias_stock_recent ?? "—"}/28
+                    {data.dias_quiebre_recent != null && data.dias_quiebre_recent > 0
+                      ? ` (${data.dias_quiebre_recent} días en quiebre total)`
+                      : ""}
+                    .
+                    {data.dias_quiebre_previous != null && data.dias_quiebre_previous > 0 && (
+                      <><br />Ventana previa: {data.dias_quiebre_previous} días en quiebre total.</>
+                    )}
+                  </div>
+                </div>
+              )}
               {data.promocion_activa === true && (
                 <div
                   style={{
@@ -377,6 +420,37 @@ export default function SkuExplainPanel({ sku, onClose }: Props) {
                   </div>
                 </div>
               )}
+              {/* Censura aplicada — Sprint 4.3b.1 */}
+              <details style={{ marginTop: 8 }}>
+                <summary style={{ cursor: "pointer", color: "var(--txt2)", fontSize: 12 }}>
+                  Censura por quiebre aplicada
+                </summary>
+                <div style={{ paddingLeft: 12, marginTop: 6, fontSize: 11, color: "var(--txt3)", lineHeight: 1.6 }}>
+                  <div className="mono">
+                    Días con stock recent: {data.dias_stock_recent ?? "—"}/28
+                    {" · "}previous: {data.dias_stock_previous ?? "—"}/28
+                  </div>
+                  <div className="mono">
+                    Días en quiebre total recent: {data.dias_quiebre_recent ?? 0}
+                    {" · "}previous: {data.dias_quiebre_previous ?? 0}
+                  </div>
+                  <div className="mono">
+                    Snapshots disponibles recent: {data.dias_total_recent ?? 0}/28
+                    {" · "}previous: {data.dias_total_previous ?? 0}/28
+                  </div>
+                  {data.ratio_recent_vs_pre_quiebre != null && (
+                    <div className="mono" style={{ marginTop: 4 }}>
+                      Ratio vs vel_pre_quiebre: {fmtNum(data.ratio_recent_vs_pre_quiebre, 2)}× — la
+                      velocidad reciente es {data.ratio_recent_vs_pre_quiebre >= 1 ? "≥" : "<"} la
+                      velocidad pre-quiebre del motor viejo.
+                    </div>
+                  )}
+                  <div style={{ marginTop: 4, fontStyle: "italic" }}>
+                    Fórmula: vel = uds × 7 / GREATEST(7, 28 − días_quiebre). Sin quiebre, divisor
+                    = 28 → no infla. Quiebre TOTAL = en_quiebre_full AND en_quiebre_bodega.
+                  </div>
+                </div>
+              </details>
               <KV
                 label="Última actualización"
                 value={<span className="mono" style={{ fontSize: 11 }}>{fmtDateTime(data.tendencia_updated_at)}</span>}
@@ -657,6 +731,7 @@ function TendenciaBadge({ tendencia }: { tendencia: string | null }) {
     desacelerando: { color: "#f59e0b", bg: "#f59e0b15", label: "🟠 DESACELERANDO (≤0.5×)" },
     desacelerando_fuerte: { color: "#ef4444", bg: "#ef444415", label: "🔴 DESACELERANDO FUERTE (≤0.3×)" },
     insuficiente_data: { color: "#64748b", bg: "#64748b15", label: "⚪ INSUFICIENTE DATA (<5 uds en 90d)" },
+    recuperacion_post_quiebre: { color: "#f59e0b", bg: "#f59e0b20", label: "⚠️ RECUPERACIÓN POST-QUIEBRE (no promueve)" },
   };
   const info = map[tendencia] || { color: "#64748b", bg: "#64748b15", label: tendencia };
   return (
