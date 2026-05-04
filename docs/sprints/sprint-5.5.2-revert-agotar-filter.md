@@ -152,6 +152,32 @@ todo se puede rehacer en otra dirección.
 
 ---
 
+## Adendum 2026-05-04 PM (post Sprint 5.5.4)
+
+La corrección AM dejó intacta una copia espejo del mismo filtro en la vista
+`v_trend_detection`. Resultado: los 22 SKUs `agotar` reincorporados a
+`sku_node_policy` esta mañana quedaron con `tendencia/cell_efectiva = NULL`
+hasta que el cron diario los marcase `'insuficiente_data'` (mentira) mañana
+12:00 UTC.
+
+Detectado por discovery operativo (motor viejo vs motor nuevo) y completado
+en Sprint 5.5.4 (`docs/sprints/sprint-5.5.4-revert-trend-agotar.md`) el mismo
+día PM aplicando Regla 2 inventory-policy.
+
+Adicionalmente Sprint 5.5.4 detectó **un tercer espejo del mismo filtro** en
+`v_safety_stock` (CTE `supplier_lt`) que NO fue corregido (instrucción explícita
+del scope del sprint). Pendiente para Sprint 5.5.5: los 22 SKUs `agotar` están
+recibiendo LT default (14d) en lugar del LT real del proveedor (5d para
+Idetex), inflando safety_stock y reorder_point.
+
+**Lección**: cuando se revierte un filtro de tabla, hacer grep de
+`pg_get_viewdef` por la misma firma `estado_sku = 'activo' OR IS NULL` ANTES
+de cerrar el sprint padre. En este caso el filtro estaba en 4 superficies:
+1 RPC (corregido AM) + 2 vistas (corregidas PM) + 1 vista pendiente.
+
+---
+
 *Sprint ejecutado por Claude Opus 4.7 (1M context) el 2026-05-04 PM bajo
 `feedback_banvabodega_autonomy`. Revierte sprint 5.5.1 mismo día AM por
-clarificación owner sobre la semántica de `agotar`.*
+clarificación owner sobre la semántica de `agotar`. Adendum agregado tras
+Sprint 5.5.4 mismo día PM.*
