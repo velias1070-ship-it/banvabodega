@@ -240,16 +240,65 @@ metrics:
     fuente_doctrina: "ssot-registry.yml:stock_full_ml"
 
   - name: stock_bodega
-    description: "Stock físico real en bodega BANVA, suma de SKU principal + alternativos."
+    description: |
+      Stock DISPONIBLE en bodega BANVA (no bruto). Motor viejo y motor nuevo
+      (post Sprint 5.5 v3) usan la misma definición: cantidad - qty_reserved.
+      qty_reserved agrega los 3 tipos de compromiso: picking_full + picking_flex
+      + residuales (PICKEADO sin liberar). v_compras_pendientes y v_reposicion_explain
+      lo exponen separado de stock_bruto_bodega y qty_reserved_bodega para trazabilidad.
     domain: inventario
-    formula_sql: "SUM(stock.cantidad) FILTER (sku=p.sku OR sku in alternatives)"
+    formula_sql: "SUM(stock.cantidad - COALESCE(stock.qty_reserved, 0)) GROUP BY sku"
     input_tables: [stock, composicion_venta]
     grain: [sku_origen]
     unit: unidades
-    consumed_by: ["stock_total", "mandar_full disponible", "pedir_proveedor"]
+    consumed_by: ["stock_total", "mandar_full disponible", "pedir_proveedor", "v_compras_pendientes", "v_reposicion_explain"]
     ssot_table: stock  # CANÓNICA
-    ssot_function: "intelligence.ts:agregarStockBodega"
-    fuente_doctrina: "ssot-registry.yml:stock_canonico (P-INV-1, registrar_movimiento_stock)"
+    ssot_function: "intelligence.ts:agregarStockBodega + v_stock_por_nodo"
+    fuente_doctrina: "ssot-registry.yml:stock_canonico (P-INV-1, registrar_movimiento_stock); Sprint 5.5 v3 (2026-05-04)"
+
+  - name: stock_bruto_bodega
+    description: |
+      Stock FÍSICO en bodega (sin descontar reservados). Trazabilidad pura, no
+      usar para decisiones. Usar stock_bodega (disponible) en su lugar.
+    domain: inventario
+    formula_sql: "SUM(stock.cantidad)"
+    input_tables: [stock]
+    grain: [sku_origen]
+    unit: unidades
+    consumed_by: ["UI trazabilidad"]
+    ssot_table: stock
+    fuente_doctrina: "Sprint 5.5 v3"
+
+  - name: qty_reserved_bodega
+    description: |
+      Unidades en bodega comprometidas (suma de picking_full + picking_flex +
+      residuales). Liberada por RPC reconciliar_reservas cuando se pickea un
+      componente. Se descuenta de stock_bruto para obtener stock_bodega disponible.
+    domain: inventario
+    formula_sql: "SUM(COALESCE(stock.qty_reserved, 0))"
+    input_tables: [stock, picking_sessions]
+    grain: [sku_origen]
+    unit: unidades
+    consumed_by: ["stock_bodega (resta)"]
+    ssot_table: stock
+    fuente_doctrina: "Sprint 5.5 v3 + reconciliar_reservas RPC"
+
+  - name: in_transit_picking_full
+    description: |
+      Unidades reservadas en bodega que se van a Full ML pronto. Suma de
+      componentes (estado != PICKEADO/OMITIDO) en picking_sessions tipo='envio_full'
+      ABIERTA/EN_PROCESO. Replica queryEnviosFullPendientes (motor viejo).
+      v_in_transit_por_nodo lo expone como to_node_id='full_ml' lane='bodega_to_full'.
+    domain: inventario
+    formula_sql: |
+      SUM((componente->>'unidades')::int) WHERE componente.estado IS NULL OR
+      componente.estado NOT IN ('PICKEADO','OMITIDO')
+    input_tables: [picking_sessions]
+    grain: [sku_origen]
+    unit: unidades
+    consumed_by: ["v_compras_pendientes.in_transit_bodega (total)"]
+    ssot_table: picking_sessions
+    fuente_doctrina: "Sprint 5.5 v3; intelligence-queries.ts:401-426"
 
   - name: stock_total
     description: "Suma simple de stock disponible en todos los nodos: bodega + Full."
