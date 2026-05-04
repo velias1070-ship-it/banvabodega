@@ -88,9 +88,7 @@ export type AccionIntel =
   | "PLANIFICAR"
   | "OK"
   | "EXCESO"
-  | "NUEVO"
-  | "AGOTAR_NO_RECOMPRA"
-  | "DESCONTINUADO";
+  | "NUEVO";
 
 export type TendenciaVel = "subiendo" | "bajando" | "estable";
 export type ClaseABC = "A" | "B" | "C";
@@ -2054,22 +2052,6 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       r.pedir_proveedor_bultos = ipR > 1 && r.pedir_proveedor > 0
         ? Math.ceil(r.pedir_proveedor / ipR)
         : r.pedir_proveedor;
-    }
-  }
-
-  // ── PASO 10c: Override por estado_sku (alineación con doctrina) ──
-  // estado_sku es decisión humana (ver docs/policies/estados-sku.md). Si el
-  // dueño marcó 'agotar' o 'descontinuado', no se debe sugerir comprar al
-  // proveedor — independientemente de lo que digan velocidad / quiebre / ROP.
-  // Motor nuevo lo hace via filtro en sync-from-templates (excluye policy);
-  // motor viejo se alinea acá. Override final post-rampup, idempotente.
-  for (const r of rows) {
-    const estadoSku = prodMap.get(r.sku_origen)?.estado_sku;
-    if (estadoSku === "agotar" || estadoSku === "descontinuado") {
-      r.pedir_proveedor = 0;
-      r.pedir_proveedor_bultos = 0;
-      r.pedir_proveedor_sin_rampup = 0;
-      r.accion = estadoSku === "agotar" ? "AGOTAR_NO_RECOMPRA" : "DESCONTINUADO";
     }
   }
 
