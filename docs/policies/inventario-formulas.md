@@ -155,6 +155,28 @@ Metadata del producto.
 **Fuente:** `productos.nombre`, `productos.categoria`, `productos.proveedor`
 (text legible). El FK `proveedor_id` es el canónico (ver `policies/supabase`).
 
+### estado_sku
+
+Estado operacional del SKU (`activo` / `agotar` / `descontinuado` / NULL).
+Setea humano vía `/admin → Inventario`. **Modula el comportamiento del motor,
+publicación a ML, y participación en `sku_node_policy`.**
+
+| Estado | Motor viejo | Motor nuevo | Pricing | Buffer Flex |
+|---|---|---|---|---|
+| `activo` / NULL | calcula | calcula | aplica | 2 default / 4 shared |
+| **`agotar`** | calcula (gap conocido) | **excluido** (no entra a `sku_node_policy`) | aplica | **0 (publica todo)** |
+| `descontinuado` | excluido | excluido | excluido | no publica |
+
+**Doctrina completa**: `/docs/policies/estados-sku.md` (vinculante, formalizada
+2026-05-04). Distribución actual: 414 NULL, 73 activo, 22 agotar.
+
+**Fuente:** `productos.estado_sku` (text). Cambios registrados en
+`audit_log.accion='estado_sku_change'`.
+
+**Código:** `src/lib/intelligence.ts:797` (filtro descontinuado),
+`src/app/api/ml/stock-sync/route.ts:175` (buffer agotar=0),
+`supabase/migrations/.../sprint43a_target_dias_flex.sql:214` (filtro cron policy).
+
 ### costo_neto, costo_bruto, costo_fuente
 
 Costo unitario del SKU. `costo_bruto = costo_neto × 1.19` (IVA 19%).
