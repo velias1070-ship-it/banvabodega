@@ -675,6 +675,61 @@ la cobertura Flex es decisión operativa, no derivada de la celda.
 **Trazabilidad:** `cell_original` (siempre = `cell` del motor viejo) +
 `cell_efectiva` + `promocion_activa` + `promocion_motivo`.
 
+### Convención: `pre_full_target` solo en fila `full_ml`
+
+`pre_full_target` se calcula EXCLUSIVAMENTE en la fila `node_id='full_ml'`
+de `v_safety_stock`. La fila `bodega_central` tiene `pre_full_target=0`
+por diseño (Sprint 4.1, migration `20260503210000_sprint41_fix_pre_full.sql`).
+
+**Cláusula vigente** en `v_safety_stock`:
+
+```sql
+CASE
+  WHEN pe.node_id = 'full_ml' 
+    THEN ROUND(d_avg_sem / 7.0 * COALESCE(target_dias_full, 0))::int
+  ELSE 0
+END AS pre_full_target
+```
+
+**Para consumirlo desde otras vistas/queries**, hacer LEFT JOIN específico:
+
+```sql
+LEFT JOIN (
+  SELECT sku_origen, pre_full_target 
+  FROM v_safety_stock 
+  WHERE node_id = 'full_ml'
+) pre_full ON pre_full.sku_origen = ...
+```
+
+Patrón usado por `v_compras_pendientes`, `v_reposicion_explain`, y
+todas las vistas de reposición / dashboard / alertas.
+
+**Razón del diseño:** `pre_full_target` representa "stock que la bodega
+central debe mantener para alimentar Full sin quiebre". Conceptualmente
+pertenece al lane Central→Full. Vive en la fila del nodo destino
+(`full_ml`) porque el target dimensiona cuántos días de cobertura debe
+tener ese nodo. La fila `bodega_central` queda en 0 porque el target de
+ese nodo ya está cubierto por `cycle_stock + safety_stock` (LT proveedor),
+sin colchón adicional para Full — el colchón Full vive en su propia fila.
+
+**Antipatrón a evitar**: consultar `v_safety_stock WHERE node_id =
+'bodega_central'` y leer `pre_full_target` directamente. Va a dar 0
+universalmente. Eso NO es bug — es la convención del view. Si querés
+el valor real, filtrá por `full_ml` o usá `v_compras_pendientes`
+(que ya lo propaga).
+
+**Casos legítimos de `pre_full_target=0` en `full_ml`:**
+
+- `cell_efectiva` mapea a un template con `target_dias_full=0` (típicamente
+  `CZ`, donde el template explícita "no acumular stock para Full").
+  Si un SKU tiene `cell_original=BZ` pero `cell_efectiva=CZ` por
+  desaceleración, el view usa el target de CZ → 0.
+- Velocidad tan baja que `d_avg_dia × target_dias_full` redondea a 0
+  (e.g. `vel=0.43 uds/sem × 7 días / 7 = 0.43 → ROUND = 0`).
+
+Snapshot 2026-05-04 PM: 4/204 SKUs en `full_ml` con `pre_full=0`
+(3 con `cell_efectiva=CZ`, 1 con vel sub-0.5/día) — todos legítimos.
+
 ### dias_sin_stock_full
 
 Días corridos contando desde que `stock_full = 0` por última vez.
