@@ -1,9 +1,9 @@
 ---
 sprint: 7
-title: Cerrar deuda Sprint 6 + protección Flex + DIO (Fase 0 + Fase 1 + Fase 2)
+title: Cerrar deuda Sprint 6 + protección Flex + DIO + Liquidación
 date: 2026-05-05
 owner: Vicente Elías
-tags: [batch:20260505-sprint-7-fase0] [batch:20260505-sprint-7-fase1] [batch:20260505-sprint-7-fase2] [sprint:7] [feature]
+tags: [batch:20260505-sprint-7-fase0] [batch:20260505-sprint-7-fase1] [batch:20260505-sprint-7-fase2] [batch:20260505-sprint-7-fase3] [sprint:7] [feature]
 related:
   - docs/sprints/sprint-6-cerrar-gap-viejo-nuevo.md
   - docs/policies/proteccion-flex.md
@@ -17,13 +17,16 @@ related:
   - supabase/migrations/20260505115127_sprint7_fase2_dio_motor_nuevo.sql
   - supabase/migrations/20260505115214_sprint7_fase2_recreate_compras_pendientes.sql
   - supabase/migrations/20260505115320_sprint7_fase2_recreate_reposicion_explain.sql
+  - supabase/migrations/20260505122055_sprint7_fase3_markdown_policy_table.sql
+  - supabase/migrations/20260505122254_sprint7_fase3_calc_row_with_liquidacion.sql
+  - supabase/migrations/20260505122414_sprint7_fase3_recreate_reposicion_explain_with_liquidacion.sql
 ---
 
-# Sprint 7 — Fase 0 + Fase 1
+# Sprint 7 — Fase 0 + Fase 1 + Fase 2 + Fase 3
 
 ## TL;DR
 
-Dos bloques (~9.5 h) que cierran deuda Sprint 6 + bug crítico mandar_full_uds:
+Cuatro bloques (~14 h) que cierran deuda Sprint 6 + bug crítico mandar_full_uds + DIO + liquidación P17:
 
 | Bloque | Cambio | Impacto |
 |---|---|---|
@@ -32,6 +35,7 @@ Dos bloques (~9.5 h) que cierran deuda Sprint 6 + bug crítico mandar_full_uds:
 | **1.1** | URGENTE override por cobertura cruda: `stock_total < vel_pond_semanal` (paridad motor viejo Bug B Sprint 6). | ALPCMPRBO4575 (vel=5.97, stock=4) y TXSBAF144VT20 (vel=2.04, stock=1) → URGENTE. Motor nuevo: 11 URGENTE total. |
 | **1.2** | Cell default + bypass blocked_no_cost para `is_new_sku`: SKUs nuevos sin costo/historia ABC×XYZ → `cell='BY'` + `policy_status='active'`. | 4 huérfanos (JSCNAE190P15W, JSCNAE190P20W, SPAFE30E10W26, SPAFE40O15W26) ahora visibles en `v_compras_pendientes`. |
 | **2** | DIO en motor nuevo: `dio = stock_total / d_avg_dia` (centinela 999 si vel=0). Expuesto en `v_safety_stock` y `v_reposicion_explain`. | Caso testigo JSAFAB422P20S: 2.5 días paridad exacta. Paridad masiva 91.6% en SKUs con stock alineado. |
+| **3** | Liquidación portada de P17 motor viejo a tabla `markdown_policy` parametrizable (9 cells × 3 thresholds = 27 rows). 4 columnas nuevas en `sku_node_policy`: `dias_extra`, `liquidacion_accion`, `liquidacion_descuento_sugerido`, `liquidacion_override`. | Filtro elegibilidad: `abc=C` o `cuadrante=REVISAR` + `vel>0`. Lookup automático en cron sync. Owner override por SKU. Paridad 93.6% (132/141) vs motor viejo. |
 
 ---
 
@@ -205,6 +209,64 @@ Stock alineado     : 251 (99.2%)
 Match DIO ≤0.5d    : 230 (91.6% sobre alineados)
 Stock drift (cache): 2 (deuda motor viejo)
 ```
+
+---
+
+## Fase 3 — Liquidación + markdown_policy
+
+### Doctrina P17 portada
+
+Motor viejo (`intelligence.ts:2121-2137`) tenía hardcodeado:
+
+```
+diasExtra = MAX(0, ROUND(dio - target_dias_full))
+> 30 días → descuento_10, 10%
+> 60 días → liquidar_activa, 25%
+> 90 días → precio_costo, 40%
+```
+
+Ahora vive en tabla `markdown_policy(cell, dias_extra_threshold, descuento_pct, liquidacion_accion)` con 27 rows seedeadas (9 cells × 3 thresholds). Lookup: `WHERE cell=X AND dias_extra > threshold ORDER BY threshold DESC LIMIT 1`.
+
+### Filtro de elegibilidad
+
+`calc_sku_node_policy_row` aplica liquidación solo cuando:
+
+```sql
+(v_abc = 'C' OR v_cuadrante = 'REVISAR') AND COALESCE(v_vel_pond, 0) > 0
+```
+
+Excluye DEAD_STOCK (vel=0) y SKUs A/B con cuadrante operativo.
+
+### Override del owner
+
+`sku_node_policy.liquidacion_override` (default NULL). Si NOT NULL, ignora cálculo automático y usa el valor forzado. Ad-hoc por SKU sin tocar la doctrina general.
+
+### Casos testigo
+
+```
+JSAFAB436P10W: cell=CZ, dio=360, target=14, dias_extra=350 → precio_costo (0.40)
+TXS2CTBO135ST: cell=CZ, dio=911, target=14, dias_extra=913 → precio_costo (0.40)
+ALPCMPRPA6012: cell=CZ, dio=98,  target=14, dias_extra=97  → precio_costo (0.40)
+```
+
+### Paridad motor viejo
+
+```
+Total comparables : 141 SKUs
+Match exacto      : 132 (93.6%)
+Solo viejo        : 0
+Solo nuevo        : 4 (SKUs no marcados antes; motor nuevo recalcula con DIO efectivo)
+Accion distinta   : 5 (ej. descuento_10 viejo → liquidar_activa nuevo)
+```
+
+Discrepancias remanentes son por divergencia de `target_dias_full`: la celda `CZ` en `policy_templates` tiene `target_dias_full=0` (action=no_reorder), mientras motor viejo usa `target=14` o `28` desde otra fuente inline. Esto está alineado con la nota de spec ("target_dias_full distinto si cell_efectiva != cell").
+
+### Fuera de scope (Sprint 7)
+
+- ❌ Cambiar precios automáticos vía `pricing_rule_sets` (decisión Sprint 8+)
+- ❌ Eliminar P17 del código viejo (mantener `@deprecated`)
+- ❌ UI nueva (post-cleanup)
+- ❌ Liquidaciones por campaña con fecha_inicio/fin
 
 ---
 
