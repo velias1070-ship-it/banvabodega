@@ -216,6 +216,43 @@ is_new_sku := dias_de_vida < 60
 post-validación 24h en producción. Probable migración:
 `refresh_sku_node_policy_from_templates` o `calc_sku_node_policy_row`.
 
+### Sub-issue P1.6 — Trend detector con confianza estadística mínima
+
+**Detectado mientras Vicente validaba P1 con caso testigo `JSAFAB437P20W`:**
+
+```
+Edad: 33 días (NUEVO, is_new_sku=true)
+Quiebre: 11 días (es_quiebre_proveedor=true)
+Vel pre-quiebre: 1.03/sem (era B)
+Últimos 28d: 2 ventas en 18 días con stock disponibles
+Vel actual: 0.78/sem (ajustada por exposure)
+cell_efectiva: BY → CZ (degradado por trend detector)
+```
+
+**Problema:** el trend detector degrada `cell_efectiva` mirando velocidad
+absoluta + ratios. Pero NO pondera confianza estadística: con 2 ventas
+en 18 días un par de órdenes más vuelven al SKU a B. La degradación
+está al borde del ruido.
+
+**Impacto operativo:** SKU nuevo + quiebre + venta marginal cae a
+no_reorder. Vicente lo deja agotar y NO lo recompra → SKU se
+descontinúa por inercia, aún cuando puede ser un winner futuro.
+
+**Regla propuesta:**
+```
+Bloquear degradación de cell_efectiva si:
+  (uds_28d < N_min  OR  dias_stock_recent < X_dias)
+  AND (es SKU nuevo OR viene de quiebre reciente)
+```
+Valores tentativos: N_min=10, X_dias=20. Calibrar contra fixture.
+
+**Dimensión adicional:** considerar usar `vel_pre_quiebre` como floor
+de la cell_efectiva durante los primeros 30 días post-quiebre.
+
+**No bloqueante de Sprint 9 P1.** Abrir como sub-issue separado
+porque toca lógica de `v_trend_detection`, no de
+`refresh_trend_in_sku_node_policy` (que es lo que P1.5 propone).
+
 ## Prioridad 2 — Gap 2: política CZ + alertas operativas
 
 ### Problema
