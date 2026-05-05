@@ -526,29 +526,34 @@ export default function AdminInteligencia() {
     if (useNewEngine) {
       // Lee del motor nuevo + parallel-fetch de campos caso C (clasificación, márgenes,
       // accuracy, vel_objetivo, etc.) que aún viven en sku_intelligence per frontera-policy.
+      // Sprint 8.5 — Query A canónica del motor nuevo. Aliases mandar_full
+      // y prioridad al shape v1 que consume IntelRow.
       const [explainRes, casoCRes] = await Promise.all([
         sb.from("v_reposicion_explain")
           .select("sku_origen, nombre, categoria, proveedor_nombre, cell, cell_efectiva, cell_original, " +
                   "target_dias_template, target_dias_flex, " +
                   "vel_decl_sem, vel_7d_decl, vel_30d_decl, vel_60d_decl, " +
-                  "stock_bodega, stock_full, stock_total, in_transit_bodega, " +
+                  "stock_bodega, stock_full, stock_total, in_transit_bodega, in_transit_picking_full, " +
                   "cycle_stock, safety_stock, reorder_point, pre_full_target, reserva_flex_target, " +
                   "qty_a_comprar, clp_estimado, dias_cobertura_actual, bajo_rop, " +
                   "es_quiebre_proveedor, vel_pre_quiebre, dias_en_quiebre, " +
                   "factor_rampup_aplicado, rampup_motivo, evento_activo, multiplicador_evento, " +
-                  "mandar_full, pedir_proveedor_motor_viejo, pedir_proveedor_sin_rampup, " +
+                  "mandar_full:mandar_full_uds, accion, prioridad:prioridad_nueva, " +
+                  "liquidacion_accion, liquidacion_descuento_sugerido, dio, " +
+                  "alertas, alertas_count, is_new_sku, inner_pack, d_avg_sem, " +
+                  "deficit_full, disponible_para_full, " +
                   "tendencia, promocion_activa, promocion_motivo, " +
                   "sku_intelligence_updated_at"),
         sb.from("sku_intelligence")
-          .select("sku_origen, abc, xyz, cuadrante, accion, prioridad, alertas, alertas_count, " +
-                  "abc_pre_quiebre, gmroi, dio, vel_objetivo, gap_vel_pct, " +
-                  "venta_perdida_pesos, oportunidad_perdida_es_estimacion, liquidacion_accion, " +
-                  "liquidacion_descuento_sugerido, es_catch_up, vel_full, vel_flex, pct_full, pct_flex, " +
+          .select("sku_origen, abc, xyz, cuadrante, " +
+                  "abc_pre_quiebre, gmroi, vel_objetivo, gap_vel_pct, " +
+                  "venta_perdida_pesos, oportunidad_perdida_es_estimacion, " +
+                  "es_catch_up, vel_full, vel_flex, pct_full, pct_flex, " +
                   "margen_full_30d, margen_flex_30d, canal_mas_rentable, precio_promedio, " +
-                  "costo_neto, costo_bruto, ingreso_30d, dias_sin_stock_full, inner_pack, " +
+                  "costo_neto, costo_bruto, ingreso_30d, dias_sin_stock_full, " +
                   "stock_proveedor, tiene_stock_prov, " +
                   "forecast_wmape_8s, forecast_bias_8s, forecast_tracking_signal_8s, forecast_semanas_evaluadas_8s, forecast_es_confiable_8s, forecast_calculado_at, " +
-                  "skus_venta, multiplicador_evento, updated_at"),
+                  "skus_venta, updated_at"),
       ]);
       const casoCMap = new Map<string, Record<string, unknown>>();
       for (const row of ((casoCRes.data || []) as unknown) as Array<Record<string, unknown>>) {
@@ -581,6 +586,10 @@ export default function AdminInteligencia() {
           updated_at: (explain.sku_intelligence_updated_at as string) || (casoC.updated_at as string),
           // necesita_pedir derivado de bajo_rop
           necesita_pedir: explain.bajo_rop as boolean,
+          // Sprint 8.5: motor nuevo guarda descuento como decimal 0..1; UI espera entero 0..100.
+          liquidacion_descuento_sugerido: explain.liquidacion_descuento_sugerido != null
+            ? Math.round(Number(explain.liquidacion_descuento_sugerido) * 100)
+            : null,
         } as IntelRow);
       }
       // Filtro equivalente al .or("vel_ponderada.gt.0,stock_total.gt.0") + sort por prioridad.

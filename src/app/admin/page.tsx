@@ -7660,10 +7660,13 @@ function ProductoBadges({ sku }: { sku: string }) {
   useEffect(() => {
     (async () => {
       const sb = getSupabase(); if (!sb) return;
-      const [p, m, i, v] = await Promise.all([
+      // Sprint 8.5: split — motor viejo para vel_30d/dias_sin_movimiento/abc/stock
+      // (Tier 1 no portado todavía); motor nuevo para accion (Sprint 6 Fase 2).
+      const [p, m, i, iNuevo, v] = await Promise.all([
         sb.from("productos").select("costo_promedio, created_at").eq("sku", sku).maybeSingle(),
         sb.from("ml_items_map").select("status_ml, activo, date_created_ml").eq("sku", sku).eq("activo", true).order("updated_at",{ascending:false}).limit(1).maybeSingle(),
-        sb.from("sku_intelligence").select("vel_30d, dias_sin_movimiento, abc, accion, stock_full, stock_bodega").eq("sku_origen", sku).maybeSingle(),
+        sb.from("sku_intelligence").select("vel_30d, dias_sin_movimiento, abc, stock_full, stock_bodega").eq("sku_origen", sku).maybeSingle(),
+        sb.from("v_reposicion_explain").select("accion").eq("sku_origen", sku).maybeSingle(),
         sb.from("ventas_ml_cache").select("fecha_date").eq("sku_venta", sku).order("fecha_date",{ascending:false}).limit(1).maybeSingle(),
       ]);
       const ultimaVenta = v.data?.fecha_date as string | null;
@@ -7677,7 +7680,7 @@ function ProductoBadges({ sku }: { sku: string }) {
         vel_30d: i.data?.vel_30d ?? null,
         dias_sin_venta: dsv,
         abc: i.data?.abc ?? null,
-        accion: i.data?.accion ?? null,
+        accion: (iNuevo.data?.accion as string | null) ?? null,
         costo_promedio: p.data?.costo_promedio ?? null,
         created_at: p.data?.created_at ?? null,
       });
@@ -11383,23 +11386,32 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
         const sb = (await import("@/lib/supabase")).getSupabase();
         if (!sb) return;
 
-        // 1. Fetch all data sources — use sku_intelligence as single source of truth
-        const [stockDispRes, compsRes, prodRes, intelRes] = await Promise.all([
+        // 1. Fetch all data sources — Sprint 8.5: motor nuevo (v_reposicion_explain)
+        //    como SSoT para vel_ponderada/stock/cobertura/mandar_full/accion.
+        //    vel_full (split por canal) sigue en motor viejo — Tier 1 no portado.
+        const [stockDispRes, compsRes, prodRes, intelRes, intelLegacyRes] = await Promise.all([
           sb.from("v_stock_disponible").select("*"),
           sb.from("composicion_venta").select("sku_venta, sku_origen, unidades"),
           sb.from("productos").select("sku, inner_pack"),
-          sb.from("sku_intelligence").select("sku_origen, vel_ponderada, vel_full, stock_full, cob_full, mandar_full, accion"),
+          sb.from("v_reposicion_explain").select("sku_origen, vel_ponderada:vel_decl_sem, stock_full, dias_cobertura_actual, mandar_full:mandar_full_uds, accion"),
+          sb.from("sku_intelligence").select("sku_origen, vel_full"),
         ]);
 
         const dispMap = new Map<string, {on_hand:number;reserved:number;disponible:number}>();
         for (const r of (stockDispRes.data || []) as {sku:string;on_hand:number;reserved:number;disponible:number}[]) dispMap.set(r.sku, r);
 
-        // fullMap keyed by sku_origen — from sku_intelligence (same source as Inteligencia)
+        // velFullMap: vel_full (canal Full only) viene del motor viejo hasta Sprint 9.
+        const velFullMap = new Map<string, number>();
+        for (const r of (intelLegacyRes.data || []) as {sku_origen:string;vel_full:number|null}[]) {
+          velFullMap.set(r.sku_origen, r.vel_full || 0);
+        }
+
+        // fullMap keyed by sku_origen — motor nuevo (v_reposicion_explain) + vel_full legacy.
         const fullMap = new Map<string, {cantidad:number;vel:number;mandarFullIntel:number}>();
-        for (const r of (intelRes.data || []) as {sku_origen:string;vel_ponderada:number|null;vel_full:number|null;stock_full:number|null;mandar_full:number|null}[]) {
+        for (const r of (intelRes.data || []) as {sku_origen:string;vel_ponderada:number|null;stock_full:number|null;mandar_full:number|null}[]) {
           fullMap.set(r.sku_origen, {
             cantidad: r.stock_full || 0,
-            vel: r.vel_full || r.vel_ponderada || 0,
+            vel: velFullMap.get(r.sku_origen) || r.vel_ponderada || 0,
             mandarFullIntel: r.mandar_full || 0,
           });
         }

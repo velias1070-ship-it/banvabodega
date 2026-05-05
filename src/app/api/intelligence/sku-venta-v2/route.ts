@@ -57,23 +57,28 @@ export async function GET(request: Request) {
 
     // ── Fetch paralelo: motor nuevo + caso C campos + composición + ventas + costos ──
     const [explainRows, casoCRows, composicion, cacheRows, ordenes, productosRows] = await Promise.all([
+      // Sprint 8.5 — Query A canónica del motor nuevo. Aliases mandar_full
+      // y prioridad al shape v1 que consume el response.
       paginate(() => sb.from("v_reposicion_explain").select(
         "sku_origen, nombre, categoria, proveedor_nombre, cell, cell_original, cell_efectiva, " +
         "policy_action, target_dias_template, target_dias_flex, " +
         "vel_decl_sem, vel_7d_decl, vel_30d_decl, vel_60d_decl, " +
-        "stock_bodega, stock_full, stock_total, in_transit_bodega, " +
+        "stock_bodega, stock_full, stock_total, in_transit_bodega, in_transit_picking_full, " +
         "cycle_stock, safety_stock, reorder_point, pre_full_target, reserva_flex_target, " +
         "qty_a_comprar, clp_estimado, dias_cobertura_actual, bajo_rop, " +
         "es_quiebre_proveedor, vel_pre_quiebre, dias_en_quiebre, fecha_entrada_quiebre, " +
         "factor_rampup_aplicado, rampup_motivo, evento_activo, multiplicador_evento, " +
-        "mandar_full, pedir_proveedor_motor_viejo, pedir_proveedor_sin_rampup, " +
+        "mandar_full:mandar_full_uds, accion, prioridad:prioridad_nueva, " +
+        "liquidacion_accion, liquidacion_descuento_sugerido, dio, " +
+        "alertas, alertas_count, is_new_sku, inner_pack, d_avg_sem, " +
+        "deficit_full, disponible_para_full, " +
         "tendencia, promocion_activa, promocion_motivo, alerta_operativa, " +
         "sku_intelligence_updated_at"
       )),
       paginate(() => sb.from("sku_intelligence").select(
-        "sku_origen, abc, xyz, cuadrante, accion, prioridad, alertas, alertas_count, " +
-        "abc_pre_quiebre, gmroi, dio, vel_objetivo, gap_vel_pct, " +
-        "venta_perdida_pesos, oportunidad_perdida_es_estimacion, liquidacion_accion, " +
+        "sku_origen, abc, xyz, cuadrante, " +
+        "abc_pre_quiebre, gmroi, vel_objetivo, gap_vel_pct, " +
+        "venta_perdida_pesos, oportunidad_perdida_es_estimacion, " +
         "es_catch_up, updated_at"
       )),
       paginate(() => sb.from("composicion_venta").select("sku_venta, sku_origen, unidades, tipo_relacion")),
@@ -324,6 +329,10 @@ export async function GET(request: Request) {
           venta_perdida_pesos: intel.venta_perdida_pesos,
           oportunidad_perdida_es_estimacion: intel.oportunidad_perdida_es_estimacion ?? false,
           liquidacion_accion: intel.liquidacion_accion,
+          // Sprint 8.5: motor nuevo guarda descuento como decimal 0..1; UI espera entero 0..100.
+          liquidacion_descuento_sugerido: intel.liquidacion_descuento_sugerido != null
+            ? Math.round(Number(intel.liquidacion_descuento_sugerido) * 100)
+            : null,
           vel_objetivo: num(intel.vel_objetivo),
           gap_vel_pct: intel.gap_vel_pct ?? null,
           gmroi: num(intel.gmroi),
