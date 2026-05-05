@@ -1,7 +1,7 @@
 "use client";
 import React, { useState, useEffect, useCallback, useMemo } from "react";
-import { fetchDiscrepanciasGlobal, fetchProductos, fetchRecepciones, fetchRcvCompras, fetchEmpresaDefault } from "@/lib/db";
-import type { DBDiscrepanciaCosto, DBProduct, DBRecepcion, DBRcvCompra } from "@/lib/db";
+import { fetchDiscrepanciasGlobal, fetchProductos, fetchRecepciones, fetchRcvCompras, fetchEmpresaDefault, getSupabase } from "@/lib/db";
+import type { DBDiscrepanciaCosto, DBProduct, DBRecepcion, DBRcvCompra, DBRecepcionLinea } from "@/lib/db";
 import { aprobarNuevoCosto, rechazarNuevoCosto, marcarPendienteNC, congelarCostoDiscrepancia } from "@/lib/store";
 import type { CongelarCostoPreview } from "@/lib/store";
 
@@ -58,6 +58,7 @@ export default function AdminDiscrepancias() {
   const [discs, setDiscs] = useState<DBDiscrepanciaCosto[]>([]);
   const [productos, setProductos] = useState<Map<string, DBProduct>>(new Map());
   const [recepciones, setRecepciones] = useState<Map<string, DBRecepcion>>(new Map());
+  const [lineas, setLineas] = useState<Map<string, DBRecepcionLinea>>(new Map()); // key = linea_id
   const [loading, setLoading] = useState(true);
   const [actioning, setActioning] = useState<string | null>(null);
   const [congelarModal, setCongelarModal] = useState<{ row: Row; preview: CongelarCostoPreview | null; costoInput: string } | null>(null);
@@ -82,6 +83,20 @@ export default function AdminDiscrepancias() {
       setDiscs(d);
       setProductos(new Map(p.map(x => [x.sku.toUpperCase().trim(), x])));
       setRecepciones(new Map(r.map(x => [x.id!, x])));
+      // Traer líneas de recepción de las discrepancias para calcular Δ esperado real
+      const lineaIds = Array.from(new Set(d.map(x => x.linea_id).filter(Boolean))) as string[];
+      if (lineaIds.length > 0) {
+        const sb = getSupabase();
+        if (sb) {
+          const lineasMap = new Map<string, DBRecepcionLinea>();
+          for (let i = 0; i < lineaIds.length; i += 500) {
+            const { data: lns } = await sb.from("recepcion_lineas")
+              .select("*").in("id", lineaIds.slice(i, i + 500));
+            for (const l of (lns || []) as DBRecepcionLinea[]) lineasMap.set(l.id!, l);
+          }
+          setLineas(lineasMap);
+        }
+      }
       if (empresa?.id) {
         const rcv = await fetchRcvCompras(empresa.id);
         setNcs(rcv.filter(x => x.tipo_doc === 61));
@@ -406,7 +421,14 @@ export default function AdminDiscrepancias() {
             <span style={{ fontSize: 10, color: "var(--txt3)" }}>Match automático rcv_compras ↔ recepciones</span>
           </div>
           {ncsLinkables.map(m => {
-            const deltaEsperado = m.discrepancias.reduce((s, d) => s + Math.abs(d.diferencia || 0), 0);
+            // Δ esperado = Σ (diferencia_unitaria × qty_recibida) × 1.19 (IVA)
+            // para comparar contra NC.monto_total (bruto del SII).
+            const deltaNeto = m.discrepancias.reduce((s, d) => {
+              const linea = lineas.get(d.linea_id);
+              const qty = linea?.qty_recibida || 0;
+              return s + Math.abs((d.diferencia || 0) * qty);
+            }, 0);
+            const deltaEsperado = Math.round(deltaNeto * 1.19);
             const ncMonto = Number(m.nc.monto_total) || 0;
             const coincide = Math.abs(deltaEsperado - ncMonto) < 100;
             const isWorking = actioning === (m.nc.id || m.recepcionId);
