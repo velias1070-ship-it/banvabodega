@@ -43,7 +43,10 @@ function readEnv(name: string): boolean {
   // explícitamente porque process.env[`NEXT_PUBLIC_${name}`] no se resuelve.
   switch (name) {
     case FEATURE_FLAGS.INTEL_USE_NEW_ENGINE:
-      return process.env.NEXT_PUBLIC_INTEL_USE_NEW_ENGINE === "true";
+      // Sprint 8 Fase 1 (2026-05-05): motor nuevo es el default.
+      // Apagar globalmente: NEXT_PUBLIC_INTEL_USE_NEW_ENGINE=false en Vercel.
+      // Apagar local: localStorage.setItem("banva_ff_INTEL_USE_NEW_ENGINE", "false")
+      return process.env.NEXT_PUBLIC_INTEL_USE_NEW_ENGINE !== "false";
     default:
       return false;
   }
