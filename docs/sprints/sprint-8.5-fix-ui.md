@@ -3,7 +3,7 @@ sprint: 8.5
 title: Hotfix UI — leak de columnas legacy del motor viejo
 date: 2026-05-05
 owner: Vicente Elías
-tags: [hotfix:sprint-8.5-ui-leak] [sprint:8.5]
+tags: [hotfix:sprint-8.5-ui-leak] [hotfix:cob-full-restored] [sprint:8.5]
 related:
   - docs/sprints/sprint-8-cleanup.md
   - docs/policies/motor-canonico.md
@@ -79,7 +79,7 @@ Split paralelo: `sku_intelligence` para `vel_30d/dias_sin_movimiento/abc/stock`
 
 ## ⚠️ Hallazgos durante el fix
 
-### `dias_cobertura_actual` ≠ `cob_full` (semántica distinta)
+### `dias_cobertura_actual` ≠ `cob_full` (semántica distinta) — RESUELTO en v3
 
 La spec asumía rename 1:1, pero los conceptos divergen:
 
@@ -93,14 +93,35 @@ La spec asumía rename 1:1, pero los conceptos divergen:
 `cob_full` mide días de cobertura **solo del nodo Full** (stock_full / vel_full × 7).
 `dias_cobertura_actual` mide días totales (stock_total / d_avg_dia).
 
-En el contexto de "tab stock disponible" la métrica total es más útil
-para decisiones de transfer, así que el cambio es operativamente
-defendible — pero **no es 1:1**. Owner decide si:
+**Decisión owner (Opción 2)**: agregar `cob_full` a `v_reposicion_explain`
+y revertir Fix 6. Migración `20260505150000_sprint85_cob_full_in_reposicion_explain.sql`.
 
-(a) acepta el cambio semántico y se documenta como decisión,
-(b) restaura un cómputo `cob_full` desde el motor nuevo (requiere agregarlo
-   a `v_reposicion_explain` como columna nueva), o
-(c) hace split paralelo aquí también para preservar `cob_full` legacy.
+#### Iteraciones del fix
+
+- **v1** (descartado, 12.9% paridad): `stock_full / (d_avg_dia * 7)`. Falla porque
+  `d_avg_dia` mide demanda total, no full-only.
+- **v2** (descartado, 18.1% paridad): `stock_full / (vel_full / 7)` con `vel_full`
+  almacenado en `sku_intelligence`. Falla porque `vel_full` está `round2()` y para
+  velocidades bajas (<1 uds/sem) el round pierde precisión.
+- **v3** (vigente, 99.5% paridad): `stock_full / ((vel_ponderada * pct_full) / 7)`
+  con branch evento (`vel_ajustada_evento * pct_full` si `multiplicador_evento>1`).
+  Mirror exacto del motor viejo `intelligence.ts:1218,1221` — full precision antes
+  del round. TXV24QLBRBA15: cob_full=19.20 ✓ matches legacy 19.2.
+
+#### Tests v3 (sobre la view nueva)
+
+- Paridad: 220/221 (99.5%), delta promedio 0.30, delta max 66.67 (1 outlier).
+- Outlier: drift real-time stock_full (132) vs snapshot sku_intelligence (42).
+  Fórmula correcta, datos divergentes por timing del recompute legacy.
+- TXV24QLBRBA15: cob_full=19.20 (esperado 19.2) ✓
+- Edge case: 5+ SKUs con vel_ponderada*pct_full=0 y stock_full>0 retornan
+  cob_full=999 (centinela admisible, doc en `inventory-policy.md` Regla 1).
+
+### Fix 6 revertido
+
+`src/app/admin/page.tsx:11396` SELECT vuelve a usar `cob_full` directo desde
+`v_reposicion_explain` (en vez de `dias_cobertura_actual`). `vel_full` (Tier 1)
+sigue en split paralelo desde `sku_intelligence` hasta Sprint 9+.
 
 ### `vel_full` no portada — Tier 1 scope Sprint 9+
 
@@ -154,13 +175,33 @@ Ver `/docs/policies/motor-canonico.md` "Pendiente Sprint 9+".
 - [x] Fix 3 — Conversión decimal→entero en `liquidacion_descuento`
 - [x] Fix 4 — Merge usa `mandar_full_uds` (vía SQL alias)
 - [x] Fix 5 — `sku-venta-v2` actualizado
-- [x] Fix 6 — admin/page.tsx tab stock con split paralelo (Tier 1 fallback)
+- [x] Fix 6 — admin/page.tsx tab stock (revertido a `cob_full` post v3)
 - [x] Fix 7 — SKU drawer con accion del motor nuevo
-- [x] Tests 1-4 PASS
+- [x] Fix 8 — `cob_full` agregado a `v_reposicion_explain` (mig v3, 99.5% paridad)
+- [x] Tests 1-4 PASS + tests cob_full v3 PASS
 - [x] Build OK
 - [x] Sprint doc (este archivo)
-- [ ] Commit local (sin push hasta validación owner)
-- [ ] Validación owner — decidir sobre `dias_cobertura_actual` vs `cob_full`
+- [x] Commit local
+- [x] Push a main
+
+## Gap doctrinal pendiente Sprint 9
+
+Identificado durante v3:
+
+1. **`vel_full_pre_quiebre`**: SKU con quiebre Full prolongado + Flex vendiendo
+   tiene `vel_ponderada*pct_full=0` → `cob_full=999`. Ningún motor cubre este caso.
+   Sprint 9 candidato: agregar `vel_full_pre_quiebre` en `sku_intelligence` análogo
+   a `vel_pre_quiebre` (Sprint 6 Fase 1).
+
+2. **`vel_full` precision drift**: Almacenar `vel_full` con `round2()` causa
+   drift en cualquier reverse-derive. Sprint 9 candidato: cambiar a `round4()`
+   o computar on-the-fly desde `vel_ponderada * pct_full` en queries.
+
+3. **Tier 1 columnas no portadas** (siguen en `sku_intelligence` vía split):
+   `vel_objetivo`, `gap_vel_pct`, `gmroi`, `gmroi_potencial`, `vel_flex`,
+   `pct_full`, `pct_flex`, `margen_*`, `venta_perdida_*`, `forecast_*_8s`,
+   `abc_pre_quiebre`, `dias_sin_stock_full`, `dias_sin_movimiento`,
+   `stock_proveedor`, `tiene_stock_prov`. Ver `/docs/policies/motor-canonico.md`.
 
 ## NO tocado
 

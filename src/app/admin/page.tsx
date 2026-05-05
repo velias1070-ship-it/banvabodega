@@ -11393,7 +11393,7 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
           sb.from("v_stock_disponible").select("*"),
           sb.from("composicion_venta").select("sku_venta, sku_origen, unidades"),
           sb.from("productos").select("sku, inner_pack"),
-          sb.from("v_reposicion_explain").select("sku_origen, vel_ponderada:vel_decl_sem, stock_full, dias_cobertura_actual, mandar_full:mandar_full_uds, accion"),
+          sb.from("v_reposicion_explain").select("sku_origen, vel_ponderada:vel_decl_sem, stock_full, cob_full, mandar_full:mandar_full_uds, accion"),
           sb.from("sku_intelligence").select("sku_origen, vel_full"),
         ]);
 
