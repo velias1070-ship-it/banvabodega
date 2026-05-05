@@ -14,6 +14,7 @@
 --   • S7 Fase 2     — DIO en motor nuevo (paridad masiva ≥90%)
 --   • S7 Fase 3     — Liquidación + tabla markdown_policy
 --   • S7 Fase 4     — Alertas autónomas mínimas (5 alertas)
+--   • S7 Fase 6     — Sistema de explicación SQL (narrativa por SKU)
 -- Pre-requisito: SELECT * FROM refresh_sku_node_policy_from_templates();
 -- =============================================================================
 
@@ -277,3 +278,65 @@ SELECT 'T22_reposicion_explain_alertas_no_null' AS test,
        ELSE FORMAT('FAIL: %s rows con NULL en alertas/alertas_count',
                    COUNT(*) FILTER (WHERE alertas IS NULL OR alertas_count IS NULL)) END AS result
 FROM v_reposicion_explain;
+
+-- T23 — S7 Fase 6: cobertura masiva v_sku_explanation (todos los SKUs con narrativa)
+SELECT 'T23_explanation_cobertura' AS test,
+  CASE WHEN COUNT(*) = COUNT(*) FILTER (WHERE explicacion_texto IS NOT NULL AND length(explicacion_texto) > 50)
+       THEN FORMAT('PASS: %s/%s con narrativa', COUNT(*) FILTER (WHERE explicacion_texto IS NOT NULL), COUNT(*))
+       ELSE FORMAT('FAIL: %s/%s con narrativa',
+                   COUNT(*) FILTER (WHERE explicacion_texto IS NOT NULL AND length(explicacion_texto) > 50),
+                   COUNT(*)) END AS result
+FROM v_sku_explanation;
+
+-- T24 — S7 Fase 6: caso testigo JSAFAB422P20S (operativo normal con OC)
+-- Debe contener: vel actual, drift, cell AY, días en quiebre, OC en tránsito, alerta flex
+SELECT 'T24_explanation_jsafab422p20s' AS test,
+  CASE WHEN explicacion_texto LIKE '%vel=0.30/d%declarada 0.40/d%'
+        AND explicacion_texto LIKE '%cell AY (target 42d Full, 5d Flex)%'
+        AND explicacion_texto LIKE '%3 días en quiebre. Causa: proveedor%'
+        AND explicacion_texto LIKE '%in_transit OC proveedor: 8 uds%ETA%'
+        AND explicacion_texto LIKE '%Alertas activas: flex_no_publicado%'
+       THEN 'PASS: narrativa completa JSAFAB422P20S'
+       ELSE FORMAT('FAIL: faltan secciones — %s', LEFT(explicacion_texto, 200)) END AS result
+FROM v_sku_explanation
+WHERE sku_origen = 'JSAFAB422P20S';
+
+-- T25 — S7 Fase 6: caso testigo TXV23QLAT20AQ (quiebre prolongado → vel_pre_quiebre)
+-- Debe activar la rama "vel pre-quiebre X/d > vel actual Y/d porque N días en quiebre prolongado"
+SELECT 'T25_explanation_txv23qlat20aq_pre_quiebre' AS test,
+  CASE WHEN explicacion_texto LIKE '%vel pre-quiebre%/d > vel actual%/d porque 15 días en quiebre prolongado%motor usa el mayor%'
+        AND explicacion_texto LIKE '%15 días en quiebre. Causa: proveedor%'
+        AND explicacion_texto LIKE '%picking activo de 3 uds hacia Full%'
+        AND explicacion_texto LIKE '%Redondeado a inner_pack 8%'
+        AND explicacion_texto LIKE '%sin_stock_proveedor, flex_no_publicado%'
+       THEN 'PASS: narrativa pre_quiebre activada en TXV23QLAT20AQ'
+       ELSE FORMAT('FAIL: rama pre_quiebre no activada — %s', LEFT(explicacion_texto, 300)) END AS result
+FROM v_sku_explanation
+WHERE sku_origen = 'TXV23QLAT20AQ';
+
+-- T26 — S7 Fase 6: liquidación expuesta cuando aplica (50 SKUs esperados)
+SELECT 'T26_explanation_liquidacion' AS test,
+  CASE WHEN COUNT(*) FILTER (WHERE explicacion ? 'liquidacion') > 0
+        AND COUNT(*) FILTER (WHERE explicacion ? 'liquidacion')
+            = (SELECT COUNT(*) FROM v_reposicion_explain WHERE liquidacion_accion IS NOT NULL)
+       THEN FORMAT('PASS: %s SKUs con sección liquidación (paridad con v_reposicion_explain)',
+                   COUNT(*) FILTER (WHERE explicacion ? 'liquidacion'))
+       ELSE FORMAT('FAIL: %s en explanation vs %s en reposicion_explain',
+                   COUNT(*) FILTER (WHERE explicacion ? 'liquidacion'),
+                   (SELECT COUNT(*) FROM v_reposicion_explain WHERE liquidacion_accion IS NOT NULL)) END AS result
+FROM v_sku_explanation;
+
+-- T27 — S7 Fase 6: secciones siempre obligatorias (velocidad/celda/compromisos/decision)
+-- en JSON. Las opcionales (quiebre/liquidación/alertas) pueden ser NULL → strip_nulls las quita.
+SELECT 'T27_explanation_secciones_obligatorias' AS test,
+  CASE WHEN COUNT(*) FILTER (
+              WHERE NOT (explicacion ? 'velocidad' AND explicacion ? 'celda'
+                         AND explicacion ? 'compromisos' AND explicacion ? 'decision')
+            ) = 0
+       THEN FORMAT('PASS: %s SKUs con 4 secciones obligatorias', COUNT(*))
+       ELSE FORMAT('FAIL: %s SKUs sin alguna sección obligatoria',
+                   COUNT(*) FILTER (
+                     WHERE NOT (explicacion ? 'velocidad' AND explicacion ? 'celda'
+                                AND explicacion ? 'compromisos' AND explicacion ? 'decision')
+                   )) END AS result
+FROM v_sku_explanation;

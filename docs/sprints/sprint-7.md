@@ -1,9 +1,9 @@
 ---
 sprint: 7
-title: Cerrar deuda Sprint 6 + protección Flex + DIO + Liquidación + Alertas
+title: Cerrar deuda Sprint 6 + protección Flex + DIO + Liquidación + Alertas + Explicación
 date: 2026-05-05
 owner: Vicente Elías
-tags: [batch:20260505-sprint-7-fase0] [batch:20260505-sprint-7-fase1] [batch:20260505-sprint-7-fase2] [batch:20260505-sprint-7-fase3] [batch:20260505-sprint-7-fase4] [sprint:7] [feature]
+tags: [batch:20260505-sprint-7-fase0] [batch:20260505-sprint-7-fase1] [batch:20260505-sprint-7-fase2] [batch:20260505-sprint-7-fase3] [batch:20260505-sprint-7-fase4] [batch:20260505-sprint-7-fase6] [sprint:7] [feature]
 related:
   - docs/sprints/sprint-6-cerrar-gap-viejo-nuevo.md
   - docs/policies/proteccion-flex.md
@@ -22,9 +22,10 @@ related:
   - supabase/migrations/20260505122414_sprint7_fase3_recreate_reposicion_explain_with_liquidacion.sql
   - supabase/migrations/20260505130958_sprint7_fase4_v_sku_alertas.sql
   - supabase/migrations/20260505131104_sprint7_fase4_recreate_reposicion_explain_with_alertas.sql
+  - supabase/migrations/20260505140000_sprint7_fase6_v_sku_explanation.sql
 ---
 
-# Sprint 7 — Fase 0 + Fase 1 + Fase 2 + Fase 3 + Fase 4
+# Sprint 7 — Fase 0 + Fase 1 + Fase 2 + Fase 3 + Fase 4 + Fase 6
 
 ## TL;DR
 
@@ -39,6 +40,7 @@ Cuatro bloques (~14 h) que cierran deuda Sprint 6 + bug crítico mandar_full_uds
 | **2** | DIO en motor nuevo: `dio = stock_total / d_avg_dia` (centinela 999 si vel=0). Expuesto en `v_safety_stock` y `v_reposicion_explain`. | Caso testigo JSAFAB422P20S: 2.5 días paridad exacta. Paridad masiva 91.6% en SKUs con stock alineado. |
 | **3** | Liquidación portada de P17 motor viejo a tabla `markdown_policy` parametrizable (9 cells × 3 thresholds = 27 rows). 4 columnas nuevas en `sku_node_policy`: `dias_extra`, `liquidacion_accion`, `liquidacion_descuento_sugerido`, `liquidacion_override`. | Filtro elegibilidad: `abc=C` o `cuadrante=REVISAR` + `vel>0`. Lookup automático en cron sync. Owner override por SKU. Paridad 93.6% (132/141) vs motor viejo. |
 | **4** | Alertas autónomas mínimas: 5 condiciones bloqueantes/excepcionales en `v_sku_alertas`. 17 alertas motor viejo se reducen a 5 (doctrina autónoma). Expuestas en `v_reposicion_explain` como `alertas text[]` + `alertas_count int`. | 89 SKUs con 1 alerta + 14 con 2 (vs 406 sin alerta). Pirámide saludable. flex_no_publicado=76, sin_stock_proveedor=41, stock_danado_full=0, sin_costo=0, quiebre_largo=0. |
+| **6** | Sistema de explicación: `v_sku_explanation` con narrativa estructurada por SKU (7 secciones: velocidad, celda, quiebre, compromisos, decision, liquidación, alertas). JSONB + texto plano. Fórmulas y motivos explícitos. | 253/253 SKUs con narrativa. Auditoría puntual via SQL directo. Sin UI nueva. Detecta vel_pre_quiebre activado, cell promovida/degradada, ETA OC abierta. |
 
 ---
 
@@ -369,6 +371,80 @@ Distribución: `flex_no_publicado=76`, `sin_stock_proveedor=41`, `stock_danado_f
 
 ---
 
+## Fase 6 — Auditoría vía v_sku_explanation
+
+### Cambio
+
+`v_sku_explanation` genera narrativa estructurada por SKU, en 7 secciones:
+
+| Sección | Contenido |
+|---|---|
+| `velocidad` | vel real/d, declarada/d, drift %. Detecta vel_pre_quiebre activado y multiplicador evento. |
+| `celda` | cell + target Full/Flex + z. Detecta override manual, promoción (cell ORIGINAL → EFECTIVA por trend), degradación. |
+| `quiebre` | NULL si stock OK. Si quiebre: días + causa (proveedor/propio) + factor rampup + motivo. |
+| `compromisos` | stock bruto - reservado, picking activo hacia Full, in_transit OC + ETA + número OC. |
+| `decision` | Fórmula deficit_full y disponible_para_full → mandar_full_uds. Fórmula qty_a_comprar + redondeo a inner_pack. |
+| `liquidación` | NULL si no aplica. Si aplica: dias_extra, DIO, target, acción, descuento sugerido %, override owner. |
+| `alertas` | NULL si no hay. Si hay: lista corta de alertas activas. |
+
+Output: dos columnas — `explicacion jsonb` (estructurado, `jsonb_strip_nulls`) y `explicacion_texto text` (plano para grep/logs).
+
+### Doctrina autónoma
+
+Bajo paradigma autónomo, el sistema decide solo. La explicación NO es UI operativa: existe para que el owner audite un SKU específico cuando lo necesite, vía SQL directo. Si una UI visual se necesita más adelante, se construye sobre esta vista.
+
+### Fuente de inputs
+
+`v_reposicion_explain` (single source) + `oc_eta` LATERAL para fecha emisión OC más reciente con pendiente > 0. Heurística arquitectural: motor usa `vel_pre_quiebre` cuando `dias_en_quiebre >= 14 AND vel_pre_quiebre > vel_decl_sem` (refleja la divergencia documentada en Fase 2).
+
+### Caso testigo — JSAFAB422P20S (operativo normal)
+
+```
+vel=0.30/d (declarada 0.40/d, drift -25.0%)
+cell AY (target 42d Full, 5d Flex), z=1.75
+3 días en quiebre. Causa: proveedor. Rampup factor: 1.00 (quiebre_proveedor_fresco).
+stock_bodega 1 = bruto 1 - reservado 0. in_transit OC proveedor: 8 uds (ETA 2026-05-03, OC-006).
+deficit Full = pre_full_target 17 - stock_full 0 - in_transit 0 = 17. Disponible para Full = stock_bodega 1 - reserva_flex 2 = 0. mandar_full_uds = 0.
+qty_a_comprar = MAX(0, ROP 4 - stock_total 1 - in_transit_oc 8) = 12.
+Alertas activas: flex_no_publicado.
+```
+
+### Caso testigo — TXV23QLAT20AQ (quiebre prolongado, vel_pre_quiebre activado)
+
+```
+vel pre-quiebre 0.55/d > vel actual 0.20/d porque 15 días en quiebre prolongado, motor usa el mayor para SS y ROP
+cell AY (target 42d Full, 5d Flex), z=1.75
+15 días en quiebre. Causa: proveedor. Rampup factor: 1.00 (quiebre_proveedor_fresco).
+stock_bodega 0 = bruto 0 - reservado 0 (picking activo de 3 uds hacia Full). in_transit OC proveedor: 0 uds.
+deficit Full = pre_full_target 23 - stock_full 0 - in_transit 3 = 20. Disponible para Full = stock_bodega 0 - reserva_flex 3 = 0. mandar_full_uds = 0.
+qty_a_comprar = MAX(0, ROP 7 - stock_total 0 - in_transit_oc 0) = 28. Redondeado a inner_pack 8: 32.
+Alertas activas: sin_stock_proveedor, flex_no_publicado.
+```
+
+### Validación masiva
+
+```
+253 SKUs con narrativa (100%)
+ 50 con liquidación
+ 23 con quiebre activo
+ 76 con alertas
+```
+
+### Fuera de scope (Sprint 7)
+
+- ❌ UI nueva (botón "Explicar SKU", modal, tooltips).
+- ❌ Tab dedicado en `/admin`.
+- ❌ Endpoint `/api/intelligence/sku-explain` (consumo SQL directo basta).
+- ❌ Audit log histórico de explicaciones.
+
+### Reglas para agentes
+
+- **No agregar campos a la narrativa sin pasar por `v_reposicion_explain` primero.** Si falta un dato, agregarlo a la vista madre y luego exponerlo aquí.
+- **No traducir a inglés.** La narrativa va al owner (Vicente, español chileno).
+- **Si se agrega una rama nueva al CASE de velocidad/celda/quiebre, agregar caso testigo correspondiente** en regression suite (T23-T27).
+
+---
+
 ## Regresión Sprint 6
 
 `tests/sql/regression_sprint6_patches.sql` (12 tests) cubre paridad motor viejo→nuevo + protecciones nuevas:
@@ -399,3 +475,76 @@ Pre-requisito: `SELECT * FROM refresh_sku_node_policy_from_templates();`
 3. **Si introducís un nuevo lane** a `v_in_transit_por_nodo`, debe sumar a `in_transit_picking_full` o a un campo nuevo, nunca al `in_transit_oc_bodega` original.
 4. **Si cambiás el filtro de pickings activos**, recordá que `stock_bodega` ya descontó los componentes PICKEADOS — sumar PENDIENTES sería double-counting.
 5. **Si extendés `calc_sku_node_policy_row`**, mantener el orden: `is_new_sku` bypass → `blocked_no_cost` → `blocked_no_history` (cell=CY default) → cell=abc||xyz.
+
+---
+
+## Cierre Sprint 7
+
+### Fases completadas
+
+6 fases entregadas (Fase 5 colapsada en Fase 4 bajo paradigma autónomo — la "alertas avanzadas" planificadas eran innecesarias una vez aplicada la doctrina autónoma de 5 alertas mínimas):
+
+| Fase | Bloque | Migraciones |
+|---|---|---|
+| **0.A** | Lane bodega_to_full PICKEADO | `20260505111532`, `20260505111737` |
+| **0.B** | mandar_full_uds protege Flex | `20260505111957` |
+| **1.1** | URGENTE cobertura cruda | `20260505113243` |
+| **1.2** | Cell default + bypass blocked_no_cost | `20260505113416`, `20260505113543` |
+| **2** | DIO en motor nuevo | `20260505115127`, `20260505115214`, `20260505115320` |
+| **3** | Liquidación + markdown_policy | `20260505122055`, `20260505122254`, `20260505122414` |
+| **4** | Alertas autónomas mínimas (5) | `20260505130958`, `20260505131104` |
+| ~~5~~ | ~~Alertas avanzadas~~ | **Colapsada en Fase 4** (innecesaria post-doctrina) |
+| **6** | Sistema de explicación SQL | `20260505140000` |
+
+**Total**: 14 migraciones aplicadas + 1 vista de auditoría + 27 tests regresión.
+
+### Tiempo real vs estimado
+
+| Spec inicial | Estimado | Real | Delta |
+|---|---|---|---|
+| Fase 0.A | 1.5h | 1.5h | 0 |
+| Fase 0.B | 2h | 2h | 0 |
+| Fase 1 | 3h | 2.5h | -0.5h |
+| Fase 2 | 1.5h | 2h | +0.5h |
+| Fase 3 | 4h | 3.5h | -0.5h |
+| Fase 4 | 0.5h | 0.5h | 0 |
+| Fase 5 | 1h | 0h | **-1h (colapsada)** |
+| Fase 6 | 3-4h | 1.5h | **-2h (scope acotado funcionó)** |
+| **Total** | **~16h** | **~13.5h** | **-2.5h** |
+
+### Estado del motor nuevo
+
+**Paridad operativa lograda** vs motor viejo en las áreas críticas:
+
+- ✅ **Acciones**: 11 URGENTE (vs 9 pre-Fase 1), 427 policies activas, distribución coherente.
+- ✅ **DIO**: 91.6% paridad masiva. Divergencia restante es arquitectural intencional (motor nuevo usa `d_avg_sem efectivo` en SKUs con quiebre prolongado — más correcto operativamente).
+- ✅ **Liquidación**: 93.6% paridad (132/141). Remanentes por divergencia `target_dias_full` documentada.
+- ✅ **Flex protegido**: TXTPBL20200SK ya no rompe Flex; 11 SKUs con `reserva_flex_target` respetado.
+- ✅ **Lane bodega_to_full**: 426 uds PICKEADOS visibles (antes invisibles).
+- ✅ **is_new_sku visible en pipeline**: 4 huérfanos rescatados (`cell=BY` + `policy_status=active`).
+- ✅ **Alertas**: 5 doctrinales autónomas (vs 17 motor viejo). Pirámide saludable 406/89/14.
+- ✅ **Auditoría**: `v_sku_explanation` con narrativa por SKU para los 253 SKUs activos.
+
+**Decisión arquitectural confirmada**: motor nuevo es la SSoT operativa. Motor viejo (`intelligence.ts`) sigue vivo solo para escritura `sku_intelligence` (cron) y como referencia legacy. Siguiente sprint promueve a default y empieza el cleanup.
+
+### Items pendientes para Sprint 8 (cleanup)
+
+1. **Matar `/admin/reposicion-suggestions`** (UI vieja basada en `intelligence.ts`). Reemplazar lecturas por `v_reposicion_explain` + `v_sku_explanation`.
+2. **Promover motor nuevo a default** en todas las UIs operativas (panel admin, sidebar Inteligencia, exportes).
+3. **Consolidar crons**: `cronRecalcInteligencia` + `cronRefreshSkuNodePolicy` deberían convertirse en un solo job ordenado (motor viejo escribe sku_intelligence → motor nuevo lee y refresca políticas).
+4. **Marcar `@deprecated`** las funciones del motor viejo que duplican lógica del nuevo: `calcularLiquidacion` (P17), `evaluarAlertas` (P19), `calcularDIO`, `evaluarUrgente`.
+5. **Eliminar `pedir_proveedor_motor_viejo`** de `v_reposicion_explain` cuando UIs migren completamente.
+6. **LT real por SKU**: poblar `ordenes_compra.lead_time_real` en RECIBIDA_PARCIAL (hoy 0/185 SKUs). Sprint 4.2 lo expone, Sprint 8 lo arregla.
+7. **Documentar contrato `v_sku_explanation`** en `docs/codebase/04_datos.md` para que apps externas (banva1, Viki) lo consuman.
+
+### Definition of done — Sprint 7 ✓
+
+- [x] Sprint 6 deuda cerrada (Bug A + Bug B + Patches 1+2 + huérfanos)
+- [x] Protección Flex implementada y testeada
+- [x] DIO portado al motor nuevo
+- [x] Liquidación parametrizada en `markdown_policy` con override owner
+- [x] 5 alertas autónomas en `v_sku_alertas` + `v_reposicion_explain`
+- [x] Sistema de auditoría narrativa `v_sku_explanation`
+- [x] 27 tests de regresión PASS
+- [x] Sprint doc completo + reglas para agentes
+- [x] Atlas hashed + push autorizado por owner
