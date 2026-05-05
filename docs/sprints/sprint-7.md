@@ -1,9 +1,9 @@
 ---
 sprint: 7
-title: Cerrar deuda Sprint 6 + protección Flex + DIO + Liquidación
+title: Cerrar deuda Sprint 6 + protección Flex + DIO + Liquidación + Alertas
 date: 2026-05-05
 owner: Vicente Elías
-tags: [batch:20260505-sprint-7-fase0] [batch:20260505-sprint-7-fase1] [batch:20260505-sprint-7-fase2] [batch:20260505-sprint-7-fase3] [sprint:7] [feature]
+tags: [batch:20260505-sprint-7-fase0] [batch:20260505-sprint-7-fase1] [batch:20260505-sprint-7-fase2] [batch:20260505-sprint-7-fase3] [batch:20260505-sprint-7-fase4] [sprint:7] [feature]
 related:
   - docs/sprints/sprint-6-cerrar-gap-viejo-nuevo.md
   - docs/policies/proteccion-flex.md
@@ -20,9 +20,11 @@ related:
   - supabase/migrations/20260505122055_sprint7_fase3_markdown_policy_table.sql
   - supabase/migrations/20260505122254_sprint7_fase3_calc_row_with_liquidacion.sql
   - supabase/migrations/20260505122414_sprint7_fase3_recreate_reposicion_explain_with_liquidacion.sql
+  - supabase/migrations/20260505130958_sprint7_fase4_v_sku_alertas.sql
+  - supabase/migrations/20260505131104_sprint7_fase4_recreate_reposicion_explain_with_alertas.sql
 ---
 
-# Sprint 7 — Fase 0 + Fase 1 + Fase 2 + Fase 3
+# Sprint 7 — Fase 0 + Fase 1 + Fase 2 + Fase 3 + Fase 4
 
 ## TL;DR
 
@@ -36,6 +38,7 @@ Cuatro bloques (~14 h) que cierran deuda Sprint 6 + bug crítico mandar_full_uds
 | **1.2** | Cell default + bypass blocked_no_cost para `is_new_sku`: SKUs nuevos sin costo/historia ABC×XYZ → `cell='BY'` + `policy_status='active'`. | 4 huérfanos (JSCNAE190P15W, JSCNAE190P20W, SPAFE30E10W26, SPAFE40O15W26) ahora visibles en `v_compras_pendientes`. |
 | **2** | DIO en motor nuevo: `dio = stock_total / d_avg_dia` (centinela 999 si vel=0). Expuesto en `v_safety_stock` y `v_reposicion_explain`. | Caso testigo JSAFAB422P20S: 2.5 días paridad exacta. Paridad masiva 91.6% en SKUs con stock alineado. |
 | **3** | Liquidación portada de P17 motor viejo a tabla `markdown_policy` parametrizable (9 cells × 3 thresholds = 27 rows). 4 columnas nuevas en `sku_node_policy`: `dias_extra`, `liquidacion_accion`, `liquidacion_descuento_sugerido`, `liquidacion_override`. | Filtro elegibilidad: `abc=C` o `cuadrante=REVISAR` + `vel>0`. Lookup automático en cron sync. Owner override por SKU. Paridad 93.6% (132/141) vs motor viejo. |
+| **4** | Alertas autónomas mínimas: 5 condiciones bloqueantes/excepcionales en `v_sku_alertas`. 17 alertas motor viejo se reducen a 5 (doctrina autónoma). Expuestas en `v_reposicion_explain` como `alertas text[]` + `alertas_count int`. | 89 SKUs con 1 alerta + 14 con 2 (vs 406 sin alerta). Pirámide saludable. flex_no_publicado=76, sin_stock_proveedor=41, stock_danado_full=0, sin_costo=0, quiebre_largo=0. |
 
 ---
 
@@ -267,6 +270,102 @@ Discrepancias remanentes son por divergencia de `target_dias_full`: la celda `CZ
 - ❌ Eliminar P17 del código viejo (mantener `@deprecated`)
 - ❌ UI nueva (post-cleanup)
 - ❌ Liquidaciones por campaña con fecha_inicio/fin
+
+---
+
+## Fase 4 — Alertas autónomas mínimas
+
+### Cambio
+
+Vista `v_sku_alertas` con 5 alertas (text[] + count). Expuestas en `v_reposicion_explain` como `alertas` y `alertas_count`. El motor viejo tenía 17 alertas en `intelligence.ts` (P19); el motor nuevo expone solo 5.
+
+```sql
+ARRAY_REMOVE(ARRAY[
+  CASE WHEN vel_ponderada > 0 AND (costo_promedio IS NULL OR costo_promedio = 0)
+    THEN 'sin_costo' END,
+  CASE WHEN tiene_stock_prov = false
+    THEN 'sin_stock_proveedor' END,
+  CASE WHEN dias_en_quiebre > 30
+    THEN 'quiebre_largo' END,
+  CASE WHEN publicar_flex = 0 AND (vel_flex > 0 OR vel_flex_pre_quiebre > 0)
+    THEN 'flex_no_publicado' END,
+  CASE WHEN uds_danado > 0 OR uds_perdido > 0
+    THEN 'stock_danado_full' END
+], NULL)
+```
+
+### Fuentes de datos
+
+| Alerta | Fuente | Condición |
+|---|---|---|
+| `sin_costo` | `productos.costo_promedio` | `vel>0 AND (costo IS NULL OR costo=0)` |
+| `sin_stock_proveedor` | `sku_intelligence.tiene_stock_prov` | `tiene_stock_prov=false` |
+| `quiebre_largo` | `sku_intelligence.dias_en_quiebre` | `dias_en_quiebre > 30` |
+| `flex_no_publicado` | `stock_snapshots.publicar_flex` (latest) | `publicar_flex=0 AND (vel_flex>0 OR vel_flex_pre_quiebre>0)` |
+| `stock_danado_full` | `stock_full_cache.stock_danado/stock_perdido` | sumado por sku_origen vía `composicion_venta` |
+
+### Doctrina autónoma — por qué se eliminaron 14 alertas del catálogo viejo
+
+La pregunta para conservar una alerta era: **¿el sistema puede actuar solo, o necesita un humano?** Si el sistema puede, no es alerta — es comportamiento del motor.
+
+**Eliminadas porque ya viven como `accion`** (10 redundantes):
+
+- `urgente`, `agotado_full`, `necesita_pedir`, `reponer_proactivo`, `dead_stock`, `exceso`, `liquidar`, `nuevo_con_stock`, `pedido_bajo_moq`, `proveedor_agotado_con_cola_full`. Todas estas son ramas del decision tree que generan `accion` + `prioridad`. Mostrarlas como alerta duplica información ya visible en la columna `accion`.
+
+**Eliminadas porque las computa o auto-resuelve el motor** (4):
+
+- `en_transito` → `in_transit_oc_bodega` y `in_transit_picking_full` ya están en la vista; el motor descuenta de `deficit_full` automáticamente.
+- `pico_demanda`, `caida_demanda`, `evento_activo` → ya se reflejan en `multiplicador_evento`, `factor_rampup_aplicado`, `vel_drift_status`. La velocidad efectiva absorbe el cambio sin necesidad de alertar.
+- `catch_up_post_quiebre` → cubierto por `factor_rampup_aplicado` + `rampup_motivo`.
+
+**Eliminadas porque son metas/observabilidad, no anomalías** (3):
+
+- `bajo_meta`, `sobre_meta` → comparativos con metas que el operador ya ve en el panel comercial.
+- `proveedor_volvio_stock` → es una transición positiva; no requiere acción humana excepcional, solo recálculo (que ya hace el cron).
+
+**Eliminadas porque son agregaciones de otras alertas** (2):
+
+- `estrella_quiebre_prolongado`, `quiebre_flex_prolongado` → son `quiebre_largo` + filtros derivables. Mantener una sola alerta canónica.
+
+**Eliminadas porque eran metadata de modelo, no de SKU** (4):
+
+- `forecast_*` (4 variantes) → metadata de calidad del forecast, no requiere acción operativa por SKU.
+
+### Las 5 que sí quedaron
+
+Cada una pasa el filtro **(1) bloquea el pipeline OR (2) anomalía no auto-resoluble OR (3) acción humana excepcional**:
+
+- `sin_costo` — vel>0 sin costo bloquea cálculo de margen, ROP, qty_a_comprar. **Bloquea**.
+- `sin_stock_proveedor` — el sistema no puede generar OC. **Bloquea**.
+- `quiebre_largo` — `dias_en_quiebre > 30` requiere decisión humana (insistir, sustituir SKU, descontinuar). **Decisión**.
+- `flex_no_publicado` — ML requiere acción manual en panel; el motor no puede reactivar. **Acción humana**.
+- `stock_danado_full` — anomalía física en bodega ML, requiere reconciliación humana. **Anomalía**.
+
+### Caso testigo
+
+```
+JSAFAB422P20S: dias_en_quiebre=3, vel_ponderada=2.8, costo=ok, publicar_flex=0
+  → ['flex_no_publicado'], count=1
+  → NO 'quiebre_largo' (3 < 30) ✓
+```
+
+### Pirámide saludable
+
+```
+406 SKUs sin alerta (~80%)
+ 89 SKUs con 1 alerta
+ 14 SKUs con 2 alertas
+  0 SKUs con 3+ alertas
+```
+
+Distribución: `flex_no_publicado=76`, `sin_stock_proveedor=41`, `stock_danado_full=0`, `sin_costo=0`, `quiebre_largo=0`.
+
+### Fuera de scope (Sprint 7)
+
+- ❌ Eliminar P19 del motor viejo (mantener vivo, marcar `@deprecated` en sprint posterior).
+- ❌ UI de gestión de alertas (post-cleanup).
+- ❌ Severidad/prioridad por alerta (todas son binarias).
+- ❌ Notificaciones push.
 
 ---
 

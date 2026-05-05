@@ -1,5 +1,5 @@
 -- =============================================================================
--- Regresión Patches Sprint 6 + Fase 1 Sprint 7 (12 tests)
+-- Regresión Patches Sprint 6 + Sprint 7 completo (22 tests)
 -- =============================================================================
 -- Cubre todos los bugfixes de paridad motor viejo→nuevo aplicados en S6 y S7:
 --   • S6 Fase 1     — umbral vel_pre_quiebre (desbloqueo NUEVOs)
@@ -11,6 +11,9 @@
 --   • S7 Fase 0.B   — mandar_full_uds protege reserva_flex_target
 --   • S7 Fase 1.1   — URGENTE por cobertura cruda <7d
 --   • S7 Fase 1.2   — cell default + bypass blocked_no_cost para is_new_sku
+--   • S7 Fase 2     — DIO en motor nuevo (paridad masiva ≥90%)
+--   • S7 Fase 3     — Liquidación + tabla markdown_policy
+--   • S7 Fase 4     — Alertas autónomas mínimas (5 alertas)
 -- Pre-requisito: SELECT * FROM refresh_sku_node_policy_from_templates();
 -- =============================================================================
 
@@ -225,3 +228,52 @@ SELECT 'T18_precio_costo_caso_testigo' AS test,
 FROM sku_node_policy
 WHERE liquidacion_accion = 'precio_costo'
   AND node_id = 'bodega_central';
+
+-- T19 — S7 Fase 4: pirámide saludable de alertas (mayoría sin alerta, pocos con 2+)
+SELECT 'T19_piramide_alertas' AS test,
+  CASE WHEN COUNT(*) FILTER (WHERE alertas_count = 0) > COUNT(*) FILTER (WHERE alertas_count > 0)
+        AND COUNT(*) FILTER (WHERE alertas_count >= 4) = 0
+       THEN FORMAT('PASS: 0=%s 1=%s 2=%s 3+=%s (saludable)',
+                   COUNT(*) FILTER (WHERE alertas_count = 0),
+                   COUNT(*) FILTER (WHERE alertas_count = 1),
+                   COUNT(*) FILTER (WHERE alertas_count = 2),
+                   COUNT(*) FILTER (WHERE alertas_count >= 3))
+       ELSE FORMAT('FAIL: pirámide invertida o saturada — 0=%s 1=%s 2=%s 3+=%s',
+                   COUNT(*) FILTER (WHERE alertas_count = 0),
+                   COUNT(*) FILTER (WHERE alertas_count = 1),
+                   COUNT(*) FILTER (WHERE alertas_count = 2),
+                   COUNT(*) FILTER (WHERE alertas_count >= 3)) END AS result
+FROM v_sku_alertas;
+
+-- T20 — S7 Fase 4: caso testigo JSAFAB422P20S → solo flex_no_publicado
+-- (dias_en_quiebre=3 NO dispara quiebre_largo, costo OK NO dispara sin_costo)
+SELECT 'T20_jsafab422p20s_alertas' AS test,
+  CASE WHEN alertas = ARRAY['flex_no_publicado'] AND alertas_count = 1
+       THEN 'PASS: JSAFAB422P20S → [flex_no_publicado] (count=1)'
+       ELSE FORMAT('FAIL: alertas=%s count=%s', alertas, alertas_count) END AS result
+FROM v_sku_alertas
+WHERE sku_origen = 'JSAFAB422P20S';
+
+-- T21 — S7 Fase 4: ninguna alerta inválida (todas vienen del catálogo de 5)
+WITH dist AS (
+  SELECT unnest(alertas) AS alerta FROM v_sku_alertas
+)
+SELECT 'T21_alertas_solo_catalogo_valido' AS test,
+  CASE WHEN COUNT(*) FILTER (
+         WHERE alerta NOT IN ('sin_costo','sin_stock_proveedor','quiebre_largo','flex_no_publicado','stock_danado_full')
+       ) = 0
+       THEN FORMAT('PASS: solo alertas del catálogo (n=%s distintas)', COUNT(DISTINCT alerta))
+       ELSE FORMAT('FAIL: %s alertas fuera de catálogo',
+                   COUNT(*) FILTER (
+                     WHERE alerta NOT IN ('sin_costo','sin_stock_proveedor','quiebre_largo','flex_no_publicado','stock_danado_full')
+                   )) END AS result
+FROM dist;
+
+-- T22 — S7 Fase 4: v_reposicion_explain expone alertas + alertas_count consistentes
+-- (todos los SKUs tienen las columnas pobladas — NULL imposible por COALESCE en la vista)
+SELECT 'T22_reposicion_explain_alertas_no_null' AS test,
+  CASE WHEN COUNT(*) FILTER (WHERE alertas IS NULL OR alertas_count IS NULL) = 0
+       THEN FORMAT('PASS: %s rows con alertas/alertas_count poblados', COUNT(*))
+       ELSE FORMAT('FAIL: %s rows con NULL en alertas/alertas_count',
+                   COUNT(*) FILTER (WHERE alertas IS NULL OR alertas_count IS NULL)) END AS result
+FROM v_reposicion_explain;
