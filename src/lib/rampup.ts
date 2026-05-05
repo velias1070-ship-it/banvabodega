@@ -1,4 +1,11 @@
 /**
+ * @deprecated since Sprint 7. El factor rampup vive en
+ *   sku_intelligence.factor_rampup_aplicado (escrito por el cron
+ *   recalcular del motor viejo) y se consume en v_safety_stock vía
+ *   d_avg_sem efectivo. NO portar lógica nueva de rampup a motor
+ *   nuevo — sigue siendo responsabilidad del motor viejo escribir
+ *   este campo. Borrar tras Sprint 9+ cooldown.
+ *
  * Ramp-up factor para pedir_proveedor post-quiebre.
  *
  * Matriz (dias_en_quiebre × es_quiebre_proveedor):

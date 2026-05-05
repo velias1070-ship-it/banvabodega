@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/ml/sync",
-      "schedule": "* * * * *"
+      "schedule": "*/5 * * * *"
     },
     {
       "path": "/api/ml/stock-sync",

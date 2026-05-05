@@ -1,4 +1,33 @@
 /**
+ * MOTOR VIEJO (legacy)
+ * ====================
+ *
+ * Estado: en deprecación gradual desde Sprint 7. Sprint 8 Fase 1 (2026-05-05)
+ * promovió el motor nuevo a default operativo en /admin tab Inteligencia.
+ * SSoT actual de las decisiones operativas: sku_node_policy + vistas SQL del
+ * motor nuevo (v_safety_stock, v_compras_pendientes, v_reposicion_explain,
+ * v_sku_alertas, v_sku_explanation).
+ *
+ * Este archivo sigue ejecutándose vía /api/intelligence/recalcular para
+ * alimentar columnas legacy de sku_intelligence aún consumidas:
+ *   - forecast_accuracy (Sprint 9+ no portado)
+ *   - margen_full_30d / margen_flex_30d (Sprint 9+ posible vista)
+ *   - vel_objetivo + bajo_meta/sobre_meta (input humano)
+ *   - dias_sin_conteo (operación bodega)
+ *   - stock_danado_full (alerta no portada)
+ *   - gmroi (Sprint 9+ derivable)
+ *
+ * Las funciones / bloques marcados @deprecated tienen equivalente en motor
+ * nuevo y se mantienen vivos solo para alimentar campos espejo de
+ * sku_intelligence. NO modificar — esperar Sprint 9+ donde se decide qué
+ * borrar tras cooldown.
+ *
+ * Doctrina canónica: /docs/policies/motor-canonico.md
+ * Sprint cierre 7: /docs/sprints/sprint-7.md
+ * Sprint cleanup 8: /docs/sprints/sprint-8-cleanup.md
+ *
+ * ─────────────────────────────────────────────────────────────────────
+ *
  * Motor de Inteligencia de Inventario — Lógica pura de cálculo.
  * Sin dependencias de React, DOM, Next.js, ni Supabase.
  * Todas las funciones son puras: reciben datos, retornan resultados.
@@ -1140,6 +1169,10 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
     const picoMagnitud = vel30d > 0 ? vel7d / vel30d : 0;
 
     // ── PASO 4: Eventos estacionales ──
+    /** @deprecated since Sprint 7. Eventos viven en sku_intelligence
+     *  (multiplicador_evento, evento_activo) y se consumen en
+     *  v_safety_stock vía d_avg_sem efectivo. NO portar lógica nueva
+     *  acá — usar el dato persistido. */
     let multiplicadorEvento = 1.0;
     let eventoActivo: string | null = null;
     for (const ev of eventosActivos) {
@@ -1483,6 +1516,12 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
       mandarFull = Math.min(loteInicial, stBodega);
     }
 
+    /** @deprecated since Sprint 7. La accion operativa ahora vive en
+     *  sku_node_policy.accion (escrita por refresh_sku_node_policy_from_templates
+     *  y leída por v_reposicion_explain.accion_nueva). Este bloque sigue
+     *  alimentando sku_intelligence.accion para compat con consumidores
+     *  legacy. NO modificar — replicar cualquier cambio de doctrina en
+     *  calc_sku_node_policy_row del motor nuevo. */
     let accion: AccionIntel;
     let prioridad: number;
     if (velPonderada === 0 && velPreQuiebre === 0 && stTotal === 0) { accion = "INACTIVO"; prioridad = 99; }
@@ -2038,6 +2077,11 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
   // ── Aplicar factor ramp-up post-quiebre sobre pedir_proveedor ──
   // Matriz en src/lib/rampup.ts. Distingue quiebre propio vs proveedor y
   // modula por duración (Manual Inv. Parte 3 Error #5, Parte 2 §7.4).
+  /** @deprecated since Sprint 7. Rampup vive en sku_intelligence
+   *  (factor_rampup_aplicado, rampup_motivo) y se consume en
+   *  v_safety_stock vía d_avg_sem efectivo. Sigue siendo responsabilidad
+   *  del cron recalcular escribir estos campos — NO portar cálculo a
+   *  motor nuevo. */
   for (const r of rows) {
     const rampup = calcularFactorRampup(r.dias_en_quiebre, r.es_quiebre_proveedor);
     const pedirSinRampup = r.pedir_proveedor;
@@ -2119,6 +2163,11 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
   }
 
   // ── PASO 17: Protocolo de liquidación ──
+  /** @deprecated since Sprint 7 Fase 3. Doctrina markdown vive en tabla
+   *  parametrizable markdown_policy + sku_node_policy.liquidacion_accion
+   *  (con override owner via liquidacion_override). Este bloque sigue
+   *  alimentando sku_intelligence.liquidacion_accion para compat con
+   *  pricing.ts (path legítimo hasta Sprint 9+). */
   for (const r of rows) {
     if (r.abc !== "C" && r.cuadrante !== "REVISAR") continue;
     if (r.vel_ponderada <= 0) continue;
@@ -2137,6 +2186,14 @@ export function recalcularTodo(input: RecalculoInput): { rows: SkuIntelRow[]; de
   }
 
   // ── PASO 19: Alertas ──
+  /** @deprecated since Sprint 7 Fase 4. 5 alertas autónomas portadas a
+   *  v_sku_alertas (sin_costo, sin_stock_proveedor, quiebre_largo,
+   *  flex_no_publicado, stock_danado_full). 14 alertas eliminadas bajo
+   *  doctrina autónoma — son redundantes con accion o el motor las
+   *  resuelve solo (multiplicador_evento, factor_rampup, in_transit).
+   *  Este bloque sigue calculando alertas legacy en sku_intelligence
+   *  (forecast_*, costo_posiblemente_obsoleto, etc.) que NO se portaron.
+   *  Catálogo completo y razones en /docs/sprints/sprint-7.md. */
   // Staleness de costo: 90 días sin update de productos.updated_at para SKUs
   // cuya fuente de costo es manual/proveedor (no costo_promedio que se actualiza con recepciones).
   const limiteStale = new Date(hoy);

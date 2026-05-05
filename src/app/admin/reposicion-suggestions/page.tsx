@@ -8,6 +8,7 @@
 import { useEffect, useState, useMemo } from "react";
 import Link from "next/link";
 import SkuExplainPanel from "@/components/admin/SkuExplainPanel";
+import DebugBanner from "@/components/admin/DebugBanner";
 
 type Row = {
   sku_origen: string;
@@ -215,6 +216,10 @@ export default function ReposicionSuggestionsPage() {
 
   return (
     <div className="app-admin" style={{ padding: 16 }}>
+      <DebugBanner
+        id="reposicion-suggestions-legacy"
+        message="⚠️ Vista interna de debug. Para operación diaria usar /admin tab Inteligencia. Esta página queda como referencia post-mortem del motor nuevo."
+      />
       <div className="topbar" style={{ marginBottom: 12, display: "flex", alignItems: "center", gap: 12 }}>
         <Link href="/admin" style={{ color: "var(--cyan)", textDecoration: "none" }}>
           ← Admin

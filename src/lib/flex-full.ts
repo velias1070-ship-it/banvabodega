@@ -1,4 +1,12 @@
 /**
+ * @deprecated since Sprint 7. Lógica portada a
+ *   v_compras_pendientes.mandar_full_uds con protección Flex
+ *   parametrizable (reserva_flex_target = vel × target_dias_flex / 7)
+ *   y descuento de in_transit_picking_full para evitar double-shipping.
+ *   Este archivo sigue alimentando sku_intelligence.mandar_full
+ *   para compat con consumidores legacy.
+ *   Doctrina: /docs/policies/proteccion-flex.md
+ *
  * Funcion canon de particion Full/Flex.
  *
  * Evolucion del calculo mandar_full:

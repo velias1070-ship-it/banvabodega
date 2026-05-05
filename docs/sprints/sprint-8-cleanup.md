@@ -28,11 +28,12 @@ Promover motor nuevo a default operativo, marcar motor viejo como deprecated, co
 | Fase | Tarea | Estado |
 |---|---|---|
 | 0 | Validación pre-promoción top 50 SKUs | ✅ APROBADA (50/50 OK, 9 diff documentadas) |
-| 1 | Promover motor nuevo a default | ⏳ pendiente OK kill-switch |
-| 2 | `/admin/reposicion-suggestions` cleanup | — |
-| 3 | `@deprecated` en motor viejo | — |
-| 4 | Consolidación crons | — |
-| 5 | Documentación final | — |
+| 1 | Promover motor nuevo a default | ✅ desplegado 2026-05-05 |
+| 2 | `/admin/reposicion-suggestions` cleanup | ✅ DebugBanner amarillo, vista legacy viva como referencia |
+| 3 | `@deprecated` en motor viejo | ✅ JSDoc en `intelligence.ts`, `flex-full.ts`, `rampup.ts` + 5 bloques internos |
+| 4 | Consolidación crons | ✅ audit read-only (50 jobs identificados) |
+| 4.bis | Cleanup crons aprobado | ✅ 2 one-shots Viki eliminados + `/api/ml/sync` 1min→5min |
+| 5 | Documentación final | ✅ motor-canonico.md + uso-motor-nuevo.md + README |
 
 ---
 
@@ -188,3 +189,108 @@ Solo después de validar PASOs 1-3 OK, cambiar el default en `feature-flags.ts` 
 ### Stop tras Fase 1
 
 Mínimo **24h** con motor nuevo activo en producción antes de avanzar a Fase 2. Si surge issue operativo, `/admin/reposicion-suggestions` sigue funcionando como vista alternativa de debug.
+
+---
+
+## Fase 2 — Cleanup `/admin/reposicion-suggestions` ✅
+
+**Decisión:** vista legacy del motor viejo se **mantiene viva como referencia post-mortem**, no se borra. Razón: útil para contraste manual cuando una `accion` del motor nuevo sorprende al owner.
+
+**Cambio aplicado:**
+- Componente `src/components/admin/DebugBanner.tsx` (nuevo): banner sticky amarillo, dismissable con `localStorage["banva_debug_banner_dismissed_<id>"]`.
+- `src/app/admin/reposicion-suggestions/page.tsx`: render del banner con id `reposicion-suggestions-legacy` y mensaje "Vista legacy del motor viejo. Canónica: /admin tab Inteligencia".
+
+**Borrar:** Sprint 9+ junto con `intelligence.ts`.
+
+---
+
+## Fase 3 — `@deprecated` en motor viejo ✅
+
+JSDoc `@deprecated since Sprint 7/8` aplicado en:
+
+| Archivo | Header | Bloques internos |
+|---|---|---|
+| `src/lib/intelligence.ts` | sí | PASO 4 Eventos (~1146), bloque `accion` (~1490), aplicación rampup (~2050), PASO 17 markdown (~2130), PASO 19 alertas (~2150) |
+| `src/lib/flex-full.ts` | sí (lógica portada a `v_compras_pendientes.mandar_full_uds`) | — |
+| `src/lib/rampup.ts` | sí (factor consumido vía `sku_intelligence.factor_rampup_aplicado` por `v_safety_stock.d_avg_sem`) | — |
+
+**No se borra código.** Cooldown 30d hasta Sprint 9+.
+
+---
+
+## Fase 4 — Audit crons (read-only) ✅
+
+50 jobs identificados:
+
+| Origen | Cantidad | Notas |
+|---|---|---|
+| Vercel `vercel.json` | 26 | el grueso del pipeline (ML sync, intelligence, pricing, ads). |
+| pg_cron (Supabase) | 0 | no hay crons SQL agendados. |
+| Viki (droplet 146.190.55.201) | 22 | alertas WhatsApp + reportes. |
+| GitHub Actions | 2 | atlas migrate hash check + lint. |
+
+**Findings principales:**
+- 2 one-shots Viki vencidos (`watch-dormidos.sh`, `sync-phases-validation.sh`) → eliminados en Fase 4.bis.
+- `/api/ml/sync` corre cada minuto. Confirmado **no redundante** con webhook ML (es la única vía para detectar shipment terminal status y ejecutar `reconciliar_reservas`). Reducido a cada 5 min en Fase 4.bis.2.
+- Sin overlap horario problemático entre los 50 jobs.
+
+---
+
+## Fase 4.bis — Cleanup crons aprobado ✅
+
+**Cambios aplicados:**
+
+1. **Viki crontab**: 22 → 20 jobs. Eliminados con `awk` script:
+   - `watch-dormidos.sh` (one-shot vencido).
+   - `sync-phases-validation.sh` (one-shot vencido).
+2. **`vercel.json`**: `/api/ml/sync` schedule `* * * * *` → `*/5 * * * *`.
+   - **Impacto**: 80% menos requests a la API ML para este endpoint.
+   - **Justificación**: el polling de 1 min era heredado de antes del webhook. El webhook cubre la mayoría de eventos en tiempo real; el polling solo sirve de red de seguridad para shipment terminal status. 5 min es suficiente.
+   - **Riesgo**: latencia adicional ≤4 min en detección de eventos no-webhook. Aceptable según owner.
+
+---
+
+## Fase 5 — Documentación final ✅
+
+**Creados:**
+
+1. **`/docs/policies/motor-canonico.md`** — doctrina vinculante:
+   - P-MOT-1: tabla SSoT por dominio (acción, cobertura, velocidad, safety stock, mandar Full, reserva Flex, alertas, narrativa, política por nodo).
+   - P-MOT-2: doctrina autónoma (5 alertas mínimas, no hardcoded en TypeScript, overrides trazables).
+   - P-MOT-3: cómo cambiar una política (override por SKU vs migración global).
+   - P-MOT-4: métricas de salud, revisión cada 3 meses (próxima 2026-08-05).
+
+2. **`/docs/guides/uso-motor-nuevo.md`** — guía operativa:
+   - Diccionario de columnas de la UI Inteligencia.
+   - Acciones (`URGENTE`, `MANDAR_FULL`, `PEDIR_PROVEEDOR`, etc.) y qué hacer en cada caso.
+   - Cómo abrir narrativa ⓘ y leer las 7 secciones de `v_sku_explanation`.
+   - Override manual via `sku_node_policy.{*_override}`.
+   - FAQ operativo (kill-switch, divergencias viejo→nuevo, motor viejo en cooldown).
+
+3. **`README.md`** — agregada sección "Estado del refactor" con links a doctrina, guía y sprint docs.
+
+---
+
+## Cierre Sprint 8 — Resumen
+
+**5 fases completadas** + Fase 4.bis cleanup adicional. Motor nuevo es default operativo en producción desde 2026-05-05.
+
+### Cambios aplicados (consolidado)
+
+| Categoría | Cambios |
+|---|---|
+| Código | Default flag invertido a `true` (`src/lib/feature-flags.ts`); JSDoc `@deprecated` en `intelligence.ts`, `flex-full.ts`, `rampup.ts`; nuevo `DebugBanner` en `reposicion-suggestions`. |
+| Crons | Viki 22→20 jobs (2 one-shots vencidos); `/api/ml/sync` 1min→5min en `vercel.json`. |
+| Docs | `motor-canonico.md`, `uso-motor-nuevo.md`, README "Estado del refactor", este sprint doc cerrado. |
+
+### Pendiente Sprint 9+ (cooldown)
+
+- **Borrar `src/lib/intelligence.ts`** (~2.2k LOC) tras 30d cooldown sin issues. Junto con `flex-full.ts` y `rampup.ts` (también deprecated).
+- **Portar columnas legacy** que hoy alimenta el cron viejo (`gmroi`, `margen_*`, `forecast_accuracy`, `dias_sin_conteo`, `stock_danado_full`) a vistas o a un job dedicado.
+- **Reconciliación periódica** `picking_sessions` ↔ `ml_shipments` (gap identificado en Sprint 7 cierre).
+- **Refactor `/api/intelligence/recalcular`** para que no contenga lógica de inteligencia, solo refresco de campos derivados.
+- **`ordenes_compra.lead_time_real`**: 0/185 SKUs poblados en prod. Sprint 4.2 lo expone, falta arreglar el flujo de captura.
+
+### Tags de cierre
+
+`[milestone:sprint-8-completo][milestone:motor-nuevo-default]`
