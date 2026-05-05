@@ -32,7 +32,10 @@ function readLocalStorage(name: string): boolean | null {
   try {
     const raw = window.localStorage.getItem(`${LS_PREFIX}${name}`);
     if (raw === null) return null;
-    return raw === "true" || raw === "1";
+    // Blacklist alineada con readEnv: solo "false"/"0" desactiva, cualquier
+    // otro valor presente activa. Evita asimetría de encoding entre fuentes.
+    if (raw === "false" || raw === "0") return false;
+    return true;
   } catch {
     return null;
   }

@@ -2,6 +2,11 @@
  * MOTOR VIEJO (legacy)
  * ====================
  *
+ * @deprecated since Sprint 7. SSoT actual: sku_node_policy + vistas SQL del
+ *   motor nuevo (v_safety_stock, v_compras_pendientes, v_reposicion_explain,
+ *   v_sku_alertas, v_sku_explanation). Doctrina canónica:
+ *   /docs/policies/motor-canonico.md. Borrar tras Sprint 9+ cooldown.
+ *
  * Estado: en deprecación gradual desde Sprint 7. Sprint 8 Fase 1 (2026-05-05)
  * promovió el motor nuevo a default operativo en /admin tab Inteligencia.
  * SSoT actual de las decisiones operativas: sku_node_policy + vistas SQL del
