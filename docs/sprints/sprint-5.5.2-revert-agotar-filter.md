@@ -164,16 +164,26 @@ Detectado por discovery operativo (motor viejo vs motor nuevo) y completado
 en Sprint 5.5.4 (`docs/sprints/sprint-5.5.4-revert-trend-agotar.md`) el mismo
 día PM aplicando Regla 2 inventory-policy.
 
-Adicionalmente Sprint 5.5.4 detectó **un tercer espejo del mismo filtro** en
-`v_safety_stock` (CTE `supplier_lt`) que NO fue corregido (instrucción explícita
-del scope del sprint). Pendiente para Sprint 5.5.5: los 22 SKUs `agotar` están
-recibiendo LT default (14d) en lugar del LT real del proveedor (5d para
-Idetex), inflando safety_stock y reorder_point.
+Sprint 5.5.5 cerró el barrido completo: 4 sub-sprints completaron el revert:
+
+| Sprint | Hora | Superficie |
+|---|---|---|
+| 5.5.2 | AM | `refresh_sku_node_policy_from_templates()` |
+| 5.5.4 | PM | `v_trend_detection` |
+| 5.5.5 | PM | `v_safety_stock` (CTE supplier_lt) |
+| ✓ | PM | Auditoría grep + Postgres prod confirmó 0 ocurrencias remanentes |
+
+Impacto neto del barrido:
+- 22 SKUs `agotar` reincorporados a `sku_node_policy` con tendencia/cell_efectiva.
+- LT real del proveedor (5d) en lugar de default (14d) → -23 unidades en cola
+  de OC (de 179 a 156 totales para los 22 agotar).
 
 **Lección**: cuando se revierte un filtro de tabla, hacer grep de
 `pg_get_viewdef` por la misma firma `estado_sku = 'activo' OR IS NULL` ANTES
-de cerrar el sprint padre. En este caso el filtro estaba en 4 superficies:
-1 RPC (corregido AM) + 2 vistas (corregidas PM) + 1 vista pendiente.
+de cerrar el sprint padre. En este caso el filtro estaba en 4 superficies y
+solo se detectaron las 3 restantes por discovery operativo posterior. La
+lección queda documentada en sprint 5.5.5 con regla canónica de filtro
+(`IS DISTINCT FROM 'descontinuado'`) y recomendación de lint CI.
 
 ---
 
