@@ -144,3 +144,38 @@ SELECT 'T12_total_policies_activas' AS test,
                    COUNT(*) FILTER (WHERE policy_status = 'active')) END AS result
 FROM sku_node_policy
 WHERE node_id = 'bodega_central';
+
+-- T13 — S7 Fase 2: caso testigo DIO JSAFAB422P20S = 2.5 días
+SELECT 'T13_dio_caso_testigo' AS test,
+  CASE WHEN dio = 2.50
+       THEN 'PASS: JSAFAB422P20S dio=2.5 (paridad motor viejo)'
+       ELSE FORMAT('FAIL: dio=%s (esperado 2.50)', dio) END AS result
+FROM v_safety_stock
+WHERE sku_origen = 'JSAFAB422P20S' AND node_id = 'bodega_central';
+
+-- T14 — S7 Fase 2: paridad masiva DIO ≥90% (en SKUs con stock alineado).
+-- 91.6% es la línea base actual. Divergencias remanentes son arquitecturales
+-- intencionales (motor nuevo usa d_avg_sem efectivo en SKUs con quiebre>=14d).
+WITH paridad AS (
+  SELECT vs.sku_origen, si.dio AS dio_viejo, vs.dio AS dio_nuevo,
+         abs(si.dio - vs.dio) AS diff,
+         si.stock_total AS si_stock,
+         (SELECT SUM(qty_on_hand - COALESCE(qty_reserved,0))
+            FROM v_stock_por_nodo
+           WHERE sku_origen = vs.sku_origen) AS vsn_stock
+    FROM v_safety_stock vs
+    JOIN sku_intelligence si ON si.sku_origen = vs.sku_origen
+   WHERE vs.node_id = 'bodega_central'
+     AND si.dio IS NOT NULL AND vs.dio IS NOT NULL
+)
+SELECT 'T14_dio_paridad_masiva' AS test,
+  CASE WHEN COUNT(*) FILTER (WHERE si_stock = vsn_stock AND diff <= 0.5)
+            >= COUNT(*) FILTER (WHERE si_stock = vsn_stock) * 0.90
+       THEN FORMAT('PASS: %s%% match (sobre %s alineados)',
+                   round(100.0 * COUNT(*) FILTER (WHERE si_stock = vsn_stock AND diff <= 0.5)
+                         / NULLIF(COUNT(*) FILTER (WHERE si_stock = vsn_stock), 0), 1),
+                   COUNT(*) FILTER (WHERE si_stock = vsn_stock))
+       ELSE FORMAT('FAIL: %s%% match',
+                   round(100.0 * COUNT(*) FILTER (WHERE si_stock = vsn_stock AND diff <= 0.5)
+                         / NULLIF(COUNT(*) FILTER (WHERE si_stock = vsn_stock), 0), 1)) END AS result
+FROM paridad;

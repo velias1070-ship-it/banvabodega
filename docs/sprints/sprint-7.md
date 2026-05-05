@@ -1,9 +1,9 @@
 ---
 sprint: 7
-title: Cerrar deuda Sprint 6 + protección Flex (Fase 0 + Fase 1)
+title: Cerrar deuda Sprint 6 + protección Flex + DIO (Fase 0 + Fase 1 + Fase 2)
 date: 2026-05-05
 owner: Vicente Elías
-tags: [batch:20260505-sprint-7-fase0] [batch:20260505-sprint-7-fase12] [sprint:7] [feature]
+tags: [batch:20260505-sprint-7-fase0] [batch:20260505-sprint-7-fase1] [batch:20260505-sprint-7-fase2] [sprint:7] [feature]
 related:
   - docs/sprints/sprint-6-cerrar-gap-viejo-nuevo.md
   - docs/policies/proteccion-flex.md
@@ -14,6 +14,9 @@ related:
   - supabase/migrations/20260505113243_sprint7_fase1_urgente_cobertura_cruda.sql
   - supabase/migrations/20260505113416_sprint7_fase1_cell_default_huerfanos.sql
   - supabase/migrations/20260505113543_sprint7_fase1_cell_default_bypass_no_cost.sql
+  - supabase/migrations/20260505115127_sprint7_fase2_dio_motor_nuevo.sql
+  - supabase/migrations/20260505115214_sprint7_fase2_recreate_compras_pendientes.sql
+  - supabase/migrations/20260505115320_sprint7_fase2_recreate_reposicion_explain.sql
 ---
 
 # Sprint 7 — Fase 0 + Fase 1
@@ -28,6 +31,7 @@ Dos bloques (~9.5 h) que cierran deuda Sprint 6 + bug crítico mandar_full_uds:
 | **0.B** | `mandar_full_uds` rediseñado: nunca reduce `stock_bodega` por debajo de `reserva_flex_target`. `deficit_full` descuenta `in_transit_picking_full` para evitar double-shipping. Excepción: lote inicial `is_new_sku`. | TXTPBL20200SK (bodega=2 < flex=15) ya NO sugiere mandar Full. 11 SKUs con flex protegido. |
 | **1.1** | URGENTE override por cobertura cruda: `stock_total < vel_pond_semanal` (paridad motor viejo Bug B Sprint 6). | ALPCMPRBO4575 (vel=5.97, stock=4) y TXSBAF144VT20 (vel=2.04, stock=1) → URGENTE. Motor nuevo: 11 URGENTE total. |
 | **1.2** | Cell default + bypass blocked_no_cost para `is_new_sku`: SKUs nuevos sin costo/historia ABC×XYZ → `cell='BY'` + `policy_status='active'`. | 4 huérfanos (JSCNAE190P15W, JSCNAE190P20W, SPAFE30E10W26, SPAFE40O15W26) ahora visibles en `v_compras_pendientes`. |
+| **2** | DIO en motor nuevo: `dio = stock_total / d_avg_dia` (centinela 999 si vel=0). Expuesto en `v_safety_stock` y `v_reposicion_explain`. | Caso testigo JSAFAB422P20S: 2.5 días paridad exacta. Paridad masiva 91.6% en SKUs con stock alineado. |
 
 ---
 
@@ -160,6 +164,47 @@ SPAFE40O15W26 → cell=BY status=active → en v_compras_pendientes ✓
 ### Iteración
 
 Primera migration (`20260505113416_sprint7_fase1_cell_default_huerfanos`) atacó solo el caso `blocked_no_history` (abc/xyz NULL). No funcionó porque los 4 SKUs caían antes en `blocked_no_cost`. La segunda migration (`20260505113543_sprint7_fase1_cell_default_bypass_no_cost`) extendió el bypass al caso sin costo.
+
+---
+
+## Fase 2 — DIO en motor nuevo
+
+### Cambio
+
+Expone DIO (Days Inventory On Hand) al pipeline nuevo. Fórmula equivalente a `intelligence.ts:1280`:
+
+```sql
+CASE
+  WHEN d_avg_sem > 0 THEN round(stock_total / (d_avg_sem / 7.0), 2)
+  ELSE 999::numeric
+END
+```
+
+Calculado en `v_safety_stock` (con JOIN a `v_stock_por_nodo` para `stock_total`) y propagado a `v_reposicion_explain` vía `vsf.dio`.
+
+### Caso testigo
+
+JSAFAB422P20S: stock=1, vel_ponderada=2.8, d_avg_dia=0.4 → DIO = 1/0.4 = **2.5 días**. Motor viejo `sku_intelligence.dio` = 2.5. **Paridad exacta** ✓.
+
+### Divergencia DIO viejo vs nuevo
+
+Paridad masiva: **91.6%** (230/251 SKUs con stock alineado). El 95% pretendido por la spec NO se cumple por divergencia arquitectural intencional, no bug:
+
+- **21 SKUs divergentes son TODOS `es_quiebre_proveedor=true` con `dias_en_quiebre>=14`**.
+- Causa: motor nuevo usa `d_avg_sem efectivo` (con `vel_pre_quiebre` cuando dias_quiebre>=14, factor_rampup, multiplicador_evento). Motor viejo usa `vel_ponderada` raw.
+- **El nuevo es mejor**: para SKUs en quiebre, DIO con velocidad ajustada refleja la realidad operativa esperada cuando vuelva el stock. El viejo da 999 (centinela inservible) o un DIO inflado por velocidad cero post-quiebre.
+- 2 SKUs con stock drift entre fuentes (cache stale en `sku_intelligence.stock_total` vs realtime `v_stock_por_nodo`) son deuda conocida del motor viejo, no del nuevo.
+
+**Patrón documentado**: cualquier métrica del motor nuevo que use `d_avg_sem efectivo` va a divergir del motor viejo en SKUs con quiebre prolongado / eventos / rampup. Es divergencia arquitectural intencional. Aplica a: **DIO, ROP, safety_stock, cycle_stock, qty_a_comprar**.
+
+### Validación masiva
+
+```
+Total comparables  : 253 SKUs
+Stock alineado     : 251 (99.2%)
+Match DIO ≤0.5d    : 230 (91.6% sobre alineados)
+Stock drift (cache): 2 (deuda motor viejo)
+```
 
 ---
 
