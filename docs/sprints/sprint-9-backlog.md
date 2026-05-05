@@ -174,6 +174,48 @@ WHERE substring(snp.cell_efectiva,1,1) < substring(snp.cell,1,1)
 Pin a 0. Si en el futuro el trend degrada/promueve un SKU y el sync se
 rompe, los tests fallan inmediatamente.
 
+### Cierre P1 (2026-05-05, commit 58d17f2)
+
+Aplicado en migración `20260505190000_sprint9_p1_v_safety_stock_resolve_cell_efectiva.sql`:
+
+- `v_safety_stock.politica_efectiva` resuelve `action`/`z_value`/`target_dias_full` vía
+  `policy_templates` por `COALESCE(snp.cell_efectiva, snp.cell)`.
+- `v_compras_pendientes` agrega CTE `pol_efectiva_compras` + filtro
+  `WHERE action_efectiva <> 'no_reorder'` para garantizar T28 incluso
+  cuando `is_new_sku=true` rescata visibilidad en `v_safety_stock`.
+- T28: 24 → 0 PASS · T29: 4 → 0 PASS.
+- 4 casos testigo verificados (TXSB144IUN15P, ALPCMPRCA4060 visibles;
+  JSAFAB437P20W, JSAFAB433P10W invisibles en compras).
+- `docs/policies/motor-canonico.md` P-MOT-1 declara
+  `policy_templates.action` resuelto vía `cell_efectiva` como SSoT.
+
+### Sub-issue P1.5 — Rescate is_new_sku para SKUs degradados
+
+**Problema detectado durante validación P1:** la condición Sprint 8.5 P2
+`is_new_sku := dias_de_vida<60 AND uds_90d<15` activa el rescate en SKUs
+que NO son nuevos (191 días de vida) pero vendieron poco últimamente.
+Si además el trend los degrada, el motor les da lote inicial — comportamiento
+opuesto al deseado (lote inicial es para acelerar SKUs con poca data, no
+para los que están perdiendo velocidad).
+
+Caso testigo: `JSAFAB437P20W` (191 días, BY→CZ degradado) entra en
+`v_safety_stock` por `is_new_sku=true` y recibiría lote inicial vía
+`mandar_full_uds` (rama de `is_new_sku=true AND stock_full=0 AND stock_bodega>0`).
+P1 hace que NO aparezca en `v_compras_pendientes` (filtro action_efectiva).
+Pero queda visible en panel y la rama `mandar_full_uds` puede activarse.
+
+**Regla propuesta:**
+```
+is_new_sku := dias_de_vida < 60
+              AND uds_90d < 15
+              AND substring(cell_efectiva,1,1) <= substring(cell,1,1)
+```
+(o equivalente: `cell_efectiva NOT WORSE THAN cell`).
+
+**No bloqueante de Sprint 9 P1.** Abrir como sub-issue para resolver
+post-validación 24h en producción. Probable migración:
+`refresh_sku_node_policy_from_templates` o `calc_sku_node_policy_row`.
+
 ## Prioridad 2 — Gap 2: política CZ + alertas operativas
 
 ### Problema
