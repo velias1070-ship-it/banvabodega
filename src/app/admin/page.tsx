@@ -3767,6 +3767,13 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
           ? { ...l, ...patchPicked }
           : l),
       }));
+      // En envio_full: cambiar qty cambia la reserva — reconciliar y re-sync ML para que
+      // el disponible publicado refleje el nuevo qty_reserved (si no, ML queda stale).
+      if (isFull) {
+        const skuOrigen = linea.componentes[0]?.skuOrigen;
+        try { await reconciliarReservas(); } catch { /* no bloquear */ }
+        if (skuOrigen) enqueueAndSync([skuOrigen]);
+      }
       setSaving(false);
       showToast(`Cantidad ajustada a ${newQty}`);
     } else {
@@ -3817,6 +3824,13 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
         ...s,
         lineas: s.lineas.map(l => l.id === lineaId ? { ...l, ...patch, id: l.id } : l),
       }));
+      // En envio_full: cambiar qty cambia la reserva — reconciliar y re-sync ML para que
+      // el disponible publicado refleje el nuevo qty_reserved (si no, ML queda stale).
+      if (isFull) {
+        const skuOrigen = rebuilt.componentes[0]?.skuOrigen || linea.componentes[0]?.skuOrigen;
+        try { await reconciliarReservas(); } catch { /* no bloquear */ }
+        if (skuOrigen) enqueueAndSync([skuOrigen]);
+      }
       setSaving(false);
       showToast("Cantidad actualizada");
       if (result.errors.length > 0) alert("Advertencias:\n" + result.errors.join("\n"));
