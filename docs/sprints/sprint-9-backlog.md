@@ -253,6 +253,48 @@ de la cell_efectiva durante los primeros 30 días post-quiebre.
 porque toca lógica de `v_trend_detection`, no de
 `refresh_trend_in_sku_node_policy` (que es lo que P1.5 propone).
 
+### Sub-issue P1.7 — `vel_drift_high` no gatilla acción operativa
+
+**Detectado durante validación P1 con caso `XYCMN405` "Botella Kit Niña Manualidades" (Container):**
+
+```
+vel_real_sem:           4.90  (últimos 30d real, 21 uds en 21 órdenes)
+vel_decl_sem:           3.23  (declarada motor viejo, ponderada)
+vel_drift_pct:         +51.7%  drift_high
+stock_bodega:           0      ⚠️
+stock_full:             28
+es_quiebre_proveedor:   true
+vel_pre_quiebre:        0     (otro gap: memoria pre-quiebre se perdió)
+qty_a_comprar:          0     (motor dice "stock_total 28 > objetivo 26")
+```
+
+**Problema:** el motor calcula `vel_drift_pct` y lo etiqueta `drift_high`,
+pero **NO usa esa señal para nada operativo**. La columna queda solo
+informativa en el panel "Explicar SKU". El cálculo de targets sigue
+confiando ciegamente en `vel_decl_sem`.
+
+**Resultado:** SKU con vel real +51% que la declarada, bodega en 0,
+quiebre proveedor activo, y el motor lo deja pasar silenciosamente.
+
+**Regla propuesta:**
+```
+Si vel_drift_status = 'drift_high'
+   AND vel_real_sem > vel_decl_sem
+   AND (stock_bodega = 0 OR es_quiebre_proveedor = true)
+THEN
+  - Generar alerta visible en panel
+  - O recalcular targets con vel_real (opt-in)
+  - O al menos forzar inclusión en lista de revisión
+```
+
+Caso testigo: `XYCMN405` debería aparecer en pedido a proveedor con
+qty ~13 (calculado con vel real). Hoy queda invisible por confiar
+en vel declarada.
+
+**No bloqueante.** Toca el cálculo en `sku_intelligence` (motor viejo)
+o agrega CTE en `v_safety_stock` para usar `vel_real_sem` cuando
+drift_high.
+
 ## Prioridad 2 — Gap 2: política CZ + alertas operativas
 
 ### Problema
