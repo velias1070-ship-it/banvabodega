@@ -5719,7 +5719,6 @@ function Inventario() {
   const [selectedSku, setSelectedSku] = useState<string|null>(null);
   const [mlRefresh, setMlRefresh] = useState(0);
   const [viewMode, setViewMode] = useState<"fisico"|"ml">("fisico");
-  const [mlSyncErrors, setMlSyncErrors] = useState<{sku:string;item_id:string;consecutive_sync_failures:number;last_sync_error:string|null;last_sync_error_at:string|null}[]>([]);
   const [soloSinEtiquetar, setSoloSinEtiquetar] = useState(false);
   const [soloComprometidos, setSoloComprometidos] = useState(false);
   const [soloSinFlex, setSoloSinFlex] = useState(false);
@@ -5812,29 +5811,9 @@ function Inventario() {
     return () => { cancelled = true; };
   }, [expanded, selectedSku]);
 
-  // SKUs con fallas consecutivas de PUT a ML (v99). Vacío si todo OK.
-  // Solo se rellena cuando viewMode==='ml' para no querear de gusto.
-  useEffect(() => {
-    if (viewMode !== "ml") return;
-    let cancelled = false;
-    (async () => {
-      const sb = (await import("@/lib/supabase")).getSupabase();
-      if (!sb) return;
-      const { data, error } = await sb.from("ml_items_map")
-        .select("sku, item_id, consecutive_sync_failures, last_sync_error, last_sync_error_at")
-        .gt("consecutive_sync_failures", 0)
-        .order("consecutive_sync_failures", { ascending: false })
-        .limit(50);
-      if (cancelled) return;
-      if (error) { console.error("[mlSyncErrors] fetch failed", error.message); return; }
-      setMlSyncErrors((data || []) as typeof mlSyncErrors);
-    })();
-    return () => { cancelled = true; };
-  }, [viewMode, mlRefresh]);
-
   // ML canal data para vista SKU (publicado Flex + stock Full)
   const [mlSkuData, setMlSkuData] = useState<{
-    flexItems: {sku:string;sku_venta:string|null;stock_flex_cache:number|null;cache_updated_at:string|null;status_ml:string|null;item_id:string}[];
+    flexItems: {sku:string;sku_venta:string|null;stock_flex_cache:number|null;cache_updated_at:string|null;status_ml:string|null;item_id:string;consecutive_sync_failures:number|null;last_sync_error:string|null;last_sync_error_at:string|null}[];
     fullRows: {sku_venta:string;cantidad:number;updated_at:string|null}[];
     loading: boolean;
   }>({flexItems:[],fullRows:[],loading:false});
@@ -5848,10 +5827,10 @@ function Inventario() {
         const sb = (await import("@/lib/supabase")).getSupabase();
         if (!sb) return;
         const { data: items } = await sb.from("ml_items_map")
-          .select("sku, sku_venta, sku_origen, stock_flex_cache, cache_updated_at, status_ml, item_id")
+          .select("sku, sku_venta, sku_origen, stock_flex_cache, cache_updated_at, status_ml, item_id, consecutive_sync_failures, last_sync_error, last_sync_error_at")
           .or(`sku_origen.eq.${selectedSku},sku.eq.${selectedSku}`)
           .eq("activo", true);
-        const flexItems = (items || []) as {sku:string;sku_venta:string|null;sku_origen:string|null;stock_flex_cache:number|null;cache_updated_at:string|null;status_ml:string|null;item_id:string}[];
+        const flexItems = (items || []) as {sku:string;sku_venta:string|null;sku_origen:string|null;stock_flex_cache:number|null;cache_updated_at:string|null;status_ml:string|null;item_id:string;consecutive_sync_failures:number|null;last_sync_error:string|null;last_sync_error_at:string|null}[];
         const skuVentas = Array.from(new Set([
           ...flexItems.map(i => i.sku_venta).filter(Boolean) as string[],
           ...flexItems.map(i => i.sku),
@@ -6502,18 +6481,35 @@ function Inventario() {
             <div className="card-title">Publicaciones ML — {sku}</div>
             <table className="tbl">
               <thead><tr><th>Item ID</th><th>SKU Venta</th><th>Status</th><th style={{textAlign:"right"}}>Flex (publicado)</th><th style={{textAlign:"right"}}>Full</th><th>Ultimo sync</th></tr></thead>
-              <tbody>{mlSkuData.flexItems.map(i => {
+              <tbody>{mlSkuData.flexItems.flatMap(i => {
                 const fullRow = mlSkuData.fullRows.find(r => r.sku_venta === (i.sku_venta || i.sku));
-                return (
-                  <tr key={i.item_id}>
+                const fallas = i.consecutive_sync_failures || 0;
+                const tieneError = fallas > 0;
+                const rows = [
+                  <tr key={i.item_id} style={tieneError ? {background:"var(--redBg)"} : undefined}>
                     <td className="mono" style={{fontSize:11}}>{i.item_id}</td>
                     <td className="mono" style={{fontSize:11,color:"var(--cyan)"}}>{i.sku_venta || i.sku}</td>
                     <td><span style={{padding:"2px 6px",borderRadius:4,fontSize:9,fontWeight:700,background:i.status_ml==="active"?"var(--greenBg)":"var(--bg3)",color:i.status_ml==="active"?"var(--green)":"var(--txt3)"}}>{i.status_ml||"—"}</span></td>
-                    <td className="mono" style={{textAlign:"right",fontWeight:700,color:(i.stock_flex_cache||0)>0?"var(--cyan)":"var(--txt3)"}}>{i.stock_flex_cache ?? "—"}</td>
+                    <td className="mono" style={{textAlign:"right",fontWeight:700,color:tieneError?"var(--red)":(i.stock_flex_cache||0)>0?"var(--cyan)":"var(--txt3)"}}>
+                      {i.stock_flex_cache ?? "—"}
+                      {tieneError && <span style={{fontSize:9,marginLeft:4,color:"var(--red)"}}>⚠</span>}
+                    </td>
                     <td className="mono" style={{textAlign:"right",fontWeight:700,color:(fullRow?.cantidad||0)>0?"var(--blue)":"var(--txt3)"}}>{fullRow?.cantidad ?? "—"}</td>
                     <td style={{fontSize:10,color:"var(--txt3)"}}>{i.cache_updated_at ? `${fmtDate(i.cache_updated_at)} ${fmtTime(i.cache_updated_at)}` : "—"}</td>
-                  </tr>
-                );
+                  </tr>,
+                ];
+                if (tieneError) {
+                  rows.push(
+                    <tr key={`${i.item_id}-err`} style={{background:"var(--redBg)"}}>
+                      <td colSpan={6} style={{padding:"6px 12px",borderTop:"1px dashed var(--redBd)"}}>
+                        <div style={{fontSize:10,color:"var(--red)",fontWeight:700,marginBottom:2}}>⚠ Sync ML falló {fallas} {fallas===1?"vez":"veces"} seguida{fallas===1?"":"s"} — cache puede estar desfasado vs ML real</div>
+                        <div style={{fontSize:10,color:"var(--txt2)",fontFamily:"monospace",wordBreak:"break-word"}}>{i.last_sync_error || ""}</div>
+                        {i.last_sync_error_at && <div style={{fontSize:9,color:"var(--txt3)",marginTop:2}}>último intento: {fmtDate(i.last_sync_error_at)} {fmtTime(i.last_sync_error_at)}</div>}
+                      </td>
+                    </tr>
+                  );
+                }
+                return rows;
               })}</tbody>
             </table>
           </div>
@@ -6829,34 +6825,6 @@ function Inventario() {
       {viewMode === "ml" ? (
         /* ===== ML PUBLICATIONS VIEW ===== */
         <>
-          {mlSyncErrors.length > 0 && (
-            <div className="card" style={{padding:12,marginBottom:8,background:"var(--redBg)",border:"1px solid var(--redBd)"}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-                <div style={{fontSize:13,fontWeight:700,color:"var(--red)"}}>
-                  ⚠ {mlSyncErrors.length} SKU{mlSyncErrors.length!==1?"s":""} con PUT a ML fallando
-                </div>
-                <div style={{fontSize:10,color:"var(--txt3)"}}>cache local puede estar desfasado vs ML real</div>
-              </div>
-              <div style={{maxHeight:180,overflowY:"auto"}}>
-                <table className="tbl" style={{margin:0}}>
-                  <thead><tr>
-                    <th>SKU</th><th>Item ML</th><th style={{textAlign:"right"}}>Fallas</th><th>Último error</th><th>Último intento</th>
-                  </tr></thead>
-                  <tbody>
-                    {mlSyncErrors.map(e => (
-                      <tr key={`${e.sku}-${e.item_id}`} style={{cursor:"pointer"}} onClick={()=>setSelectedSku(e.sku)}>
-                        <td className="mono" style={{fontWeight:700,fontSize:12}}>{e.sku}</td>
-                        <td className="mono" style={{fontSize:11,color:"var(--amber)"}}>{e.item_id}</td>
-                        <td className="mono" style={{textAlign:"right",fontWeight:700,color:"var(--red)"}}>{e.consecutive_sync_failures}</td>
-                        <td style={{fontSize:10,color:"var(--txt2)",maxWidth:400,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={e.last_sync_error || ""}>{e.last_sync_error || "—"}</td>
-                        <td style={{fontSize:10,color:"var(--txt3)"}}>{e.last_sync_error_at ? `${fmtDate(e.last_sync_error_at)} ${fmtTime(e.last_sync_error_at)}` : "—"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
           <div className="desktop-only">
             <div className="card" style={{padding:0,overflow:"hidden"}}>
               <table className="tbl">
