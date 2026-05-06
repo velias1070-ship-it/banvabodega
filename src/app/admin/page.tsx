@@ -14,6 +14,7 @@ import { getSupabase } from "@/lib/supabase";
 import Link from "next/link";
 import SheetSync from "@/components/SheetSync";
 import AdminReposicion from "@/components/AdminReposicion";
+import RecepcionDiscBanner from "@/components/RecepcionDiscBanner";
 import AdminAgentes from "@/components/AdminAgentes";
 import AdminInteligencia from "@/components/AdminInteligencia";
 import AdminSemaforo from "@/components/AdminSemaforo";
@@ -1746,6 +1747,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
               <tbody>{lineas.map(l => {
                 const lockInfo = isLineaBloqueada(l, "__admin__");
                 const disc = discrepancias.find(d => d.linea_id === l.id && d.estado === "PENDIENTE");
+                const discResolvable = discrepancias.find(d => d.linea_id === l.id && (d.estado === "PENDIENTE" || d.estado === "APROBADO"));
                 const discQty = discrepanciasQty.find(d => d.linea_id === l.id && d.estado === "PENDIENTE");
                 const isEd = editLineaId === l.id;
                 const inputStyle = {width:58,textAlign:"right" as const,padding:"3px 6px",borderRadius:4,border:"1px solid var(--cyan)",background:"var(--bg)",color:"var(--txt1)",fontSize:11,fontFamily:"inherit"};
@@ -1870,6 +1872,18 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                   </td>}
                 </tr>
                 );
+              })}
+              {/* Banner inline de discrepancias bajo cada línea (Chunk 6) */}
+              {lineas.flatMap(l => {
+                const dRes = discrepancias.find(d => d.linea_id === l.id && (d.estado === "PENDIENTE" || d.estado === "APROBADO"));
+                if (!dRes) return [];
+                return [(
+                  <tr key={`disc-${l.id}`}>
+                    <td colSpan={isEditable ? 10 : 9} style={{padding:"4px 8px"}}>
+                      <RecepcionDiscBanner disc={dRes} onResuelto={refreshDetail} />
+                    </td>
+                  </tr>
+                )];
               })}</tbody>
             </table>
           </div>

@@ -3511,165 +3511,91 @@ export async function crearDiscrepanciaPendienteParaUbicar(opts: {
 }
 
 /**
- * Pausa una línea por discrepancia de costo (Chunk 5, plan §6.1.1).
+ * Estimación pre-aprobación de impacto: cuántas ventas se recomputarán y
+ * delta agregado de costo (Chunk 6, modal Aprobar con preview).
  *
- * - UPDATE recepcion_lineas con pausada_at/por/motivo/estado.
- * - Encola notificación WhatsApp a Vicente con el formato exacto del plan.
- * - audit_log.
+ * Estimación lineal: por cada venta posterior a la recepción, compara el
+ * `costo_producto` snapshotteado con el `nuevoCosto` (para SKU origen
+ * directo; para packs aplica `unidades` × delta).
  *
- * NO ubica. NO crea disc (la disc se crea cuando alguien resuelve, ya sea
- * vía "Ubicar con acordado" o vía aprobación de admin).
+ * No persiste nada — solo lectura.
  */
-export async function pausarLineaPorDiscrepancia(opts: {
-  lineaId: string;
-  sku: string;
-  costoFacturado: number;
-  precioAcordado: number;
-  abc: ABCClase;
-  recepcionId: string;
-  folio: string;
-  operario: string;
-  notaExtra?: string;
-}): Promise<void> {
+export async function calcularPreviewImpactoAprobacion(opts: {
+  discId: string;
+  nuevoCosto: number;
+}): Promise<{
+  ventasAfectadas: number;
+  costoTotalDelta: number; // suma de (nuevoCosto - costoActual) * unidades sobre todas las ventas
+  cutoffISO: string | null;
+}> {
   const sb = getSupabase();
-  if (!sb) throw new Error("Sin conexión a Supabase");
-  const ahora = new Date().toISOString();
+  if (!sb) return { ventasAfectadas: 0, costoTotalDelta: 0, cutoffISO: null };
 
-  // 1. UPDATE recepcion_lineas
-  await db.updateRecepcionLinea(opts.lineaId, {
-    pausada_at: ahora,
-    pausada_por: opts.operario,
-    pausada_motivo: "discrepancia_costo",
-    pausada_estado: "PAUSADA",
-  });
+  const { data: discRow } = await sb.from("discrepancias_costo")
+    .select("recepcion_id, sku").eq("id", opts.discId).maybeSingle();
+  const disc = discRow as { recepcion_id: string; sku: string } | null;
+  if (!disc) return { ventasAfectadas: 0, costoTotalDelta: 0, cutoffISO: null };
 
-  // 2. Crear disc PENDIENTE (para que admin la pueda resolver desde su panel)
-  await crearDiscrepanciaPendienteParaUbicar({
-    lineaId: opts.lineaId, sku: opts.sku,
-    costoFacturado: opts.costoFacturado,
-    precioAcordado: opts.precioAcordado,
-    recepcionId: opts.recepcionId,
-  });
+  const skuUp = (disc.sku || "").toUpperCase();
+  const { data: recRow } = await sb.from("recepciones")
+    .select("created_at").eq("id", disc.recepcion_id).maybeSingle();
+  const cutoff = (recRow as { created_at: string } | null)?.created_at;
+  if (!cutoff) return { ventasAfectadas: 0, costoTotalDelta: 0, cutoffISO: null };
 
-  // 3. Notificar Vicente vía outbox
-  const diff = opts.costoFacturado - opts.precioAcordado;
-  const pct = opts.precioAcordado > 0
-    ? ((diff / opts.precioAcordado) * 100).toFixed(1)
-    : "—";
-  const signo = diff >= 0 ? "+" : "";
+  // SKUs de venta que pueden involucrar este SKU origen (directo + packs)
+  const { data: compRows } = await sb.from("composicion_venta")
+    .select("sku_venta, sku_origen, unidades").eq("sku_origen", skuUp);
+  const comps = (compRows || []) as Array<{ sku_venta: string; sku_origen: string; unidades: number }>;
+  const skuVentas = new Set<string>([skuUp, ...comps.map(c => (c.sku_venta || "").toUpperCase())]);
+  const unidadesPorVenta = new Map<string, number>();
+  unidadesPorVenta.set(skuUp, 1);
+  for (const c of comps) unidadesPorVenta.set(c.sku_venta.toUpperCase(), c.unidades || 1);
+
+  if (skuVentas.size === 0) return { ventasAfectadas: 0, costoTotalDelta: 0, cutoffISO: cutoff };
+
+  const { data: ventasRaw } = await sb.from("ventas_ml_cache")
+    .select("order_id, sku_venta, cantidad, costo_producto")
+    .in("sku_venta", Array.from(skuVentas))
+    .gte("fecha", cutoff)
+    .eq("anulada", false);
+  const ventas = (ventasRaw || []) as Array<{ order_id: string; sku_venta: string; cantidad: number; costo_producto: number | null }>;
+
+  let totalDelta = 0;
+  for (const v of ventas) {
+    const factorUnidades = unidadesPorVenta.get((v.sku_venta || "").toUpperCase()) || 1;
+    const costoNuevoLinea = opts.nuevoCosto * factorUnidades * (v.cantidad || 0);
+    const costoActualLinea = (v.costo_producto || 0) * (v.cantidad || 0);
+    totalDelta += (costoNuevoLinea - costoActualLinea);
+  }
+  return {
+    ventasAfectadas: ventas.length,
+    costoTotalDelta: totalDelta,
+    cutoffISO: cutoff,
+  };
+}
+
+/**
+ * Notifica a Vicente cuando una línea no se puede ubicar porque le falta
+ * info de costo (sin catálogo y sin costo facturado). Caso D del nuevo
+ * Chunk 5: el operador no decide, solo se entera y avisa.
+ */
+export async function notificarFaltaCostoEnLinea(opts: {
+  sku: string; recepcionId: string; folio: string; operario: string;
+}): Promise<void> {
   const lines = [
-    "⚠️ Línea pausada",
+    "⚠️ Falta costo en línea de recepción",
     `SKU: ${opts.sku}`,
-    `Costo acordado: $${Math.round(opts.precioAcordado).toLocaleString("es-CL")}`,
-    `Factura: $${Math.round(opts.costoFacturado).toLocaleString("es-CL")}`,
-    `Diferencia: ${signo}${pct}%`,
-    `Operario: ${opts.operario}`,
     `Recepción: ${opts.folio}`,
-    "Acción: Resolver discrepancia para que el operador pueda ubicar.",
+    `Operario: ${opts.operario}`,
+    "Acción: completar costo en /admin/recepciones para que pueda ubicarse.",
   ];
-  if (opts.notaExtra) lines.push(`Nota operario: ${opts.notaExtra}`);
   try {
     const mod = await import("./notifications");
     await mod.enqueueNotification("whatsapp", "56991655931@s.whatsapp.net", {
       text: lines.join("\n"),
     });
   } catch (e) {
-    console.error("[pausarLineaPorDiscrepancia] notify error:", e);
-  }
-
-  // 4. Audit log
-  await sb.from("audit_log").insert({
-    accion: "linea_pausada_discrepancia",
-    entidad: "recepcion_lineas",
-    entidad_id: opts.lineaId,
-    operario: opts.operario,
-    params: {
-      sku: opts.sku, costo_facturado: opts.costoFacturado,
-      precio_acordado: opts.precioAcordado, abc: opts.abc,
-      recepcion_id: opts.recepcionId, nota_extra: opts.notaExtra || null,
-    },
-    resultado: { estado: "PAUSADA" },
-  });
-}
-
-/**
- * Marca como ABANDONADA todas las líneas PAUSADA con pausada_at más viejo
- * que `cutoffMs` (default 24h). Helper compartido entre el cron diario
- * y los tests E10.
- *
- * Devuelve la lista de líneas afectadas (id, sku, recepcion_id, pausada_at, pausada_por).
- */
-export async function marcarLineasPausadasComoAbandonadas(opts?: {
-  cutoffMs?: number;
-}): Promise<Array<{ id: string; sku: string; recepcion_id: string; pausada_at: string; pausada_por: string | null }>> {
-  const sb = getSupabase();
-  if (!sb) return [];
-  const cutoffMs = opts?.cutoffMs ?? 24 * 60 * 60 * 1000;
-  const cutoffISO = new Date(Date.now() - cutoffMs).toISOString();
-
-  const { data } = await sb.from("recepcion_lineas")
-    .select("id, sku, recepcion_id, pausada_at, pausada_por")
-    .eq("pausada_estado", "PAUSADA");
-  const all = (data || []) as Array<{ id: string; sku: string; recepcion_id: string; pausada_at: string; pausada_por: string | null }>;
-  const stale = all.filter(r => r.pausada_at && r.pausada_at < cutoffISO);
-
-  for (const row of stale) {
-    await sb.from("recepcion_lineas")
-      .update({ pausada_estado: "ABANDONADA" })
-      .eq("id", row.id);
-    await sb.from("audit_log").insert({
-      accion: "linea_pausada_abandonada",
-      entidad: "recepcion_lineas",
-      entidad_id: row.id,
-      operario: "cron",
-      params: { sku: row.sku, recepcion_id: row.recepcion_id, pausada_at: row.pausada_at },
-      resultado: { estado: "ABANDONADA" },
-    });
-  }
-  return stale;
-}
-
-/**
- * Reactiva todas las líneas PAUSADA de una recepción para un SKU dado.
- * Llamado desde aprobarNuevoCosto / rechazarNuevoCosto cuando se resuelve
- * la discrepancia. Notifica al operario que originalmente pausó.
- */
-async function reactivarLineasPausadasDeRecepcion(
-  recepcionId: string, sku: string, operarioAdmin: string,
-): Promise<void> {
-  const sb = getSupabase();
-  if (!sb) return;
-  const skuUp = (sku || "").toUpperCase().trim();
-  const { data: filas } = await sb.from("recepcion_lineas")
-    .select("id, pausada_por")
-    .eq("recepcion_id", recepcionId)
-    .eq("sku", skuUp)
-    .eq("pausada_estado", "PAUSADA");
-  const lineas = (filas || []) as Array<{ id: string; pausada_por: string | null }>;
-  if (lineas.length === 0) return;
-
-  for (const l of lineas) {
-    await db.updateRecepcionLinea(l.id, {
-      pausada_estado: "REACTIVADA",
-    });
-    await sb.from("audit_log").insert({
-      accion: "linea_reactivada_discrepancia",
-      entidad: "recepcion_lineas",
-      entidad_id: l.id,
-      operario: operarioAdmin,
-      params: { sku: skuUp, recepcion_id: recepcionId, pausada_por: l.pausada_por },
-      resultado: { estado: "REACTIVADA" },
-    });
-    if (l.pausada_por) {
-      try {
-        const mod = await import("./notifications");
-        await mod.enqueueNotification("whatsapp", "56991655931@s.whatsapp.net", {
-          text: `✅ Línea reactivada (${skuUp}). ${l.pausada_por}, podés ubicarla.`,
-        });
-      } catch (e) {
-        console.error("[reactivarLineasPausadas] notify error:", e);
-      }
-    }
+    console.error("[notificarFaltaCostoEnLinea] notify error:", e);
   }
 }
 
@@ -3791,9 +3717,6 @@ export async function aprobarNuevoCosto(
   // 5. Recompute ventas_ml_cache para órdenes posteriores a la recepción
   await recomputarVentasPosterioresRecepcion(disc.recepcion_id, skuUp, "aprobacion_disc");
 
-  // 5b. Reactivar líneas pausadas (Chunk 5 §6.1.1)
-  await reactivarLineasPausadasDeRecepcion(disc.recepcion_id, skuUp, operario);
-
   // 6. UPDATE discrepancia con estado, es_puntual y snapshot
   const updateDisc: Record<string, unknown> = {
     estado: "APROBADO",
@@ -3882,11 +3805,6 @@ export async function rechazarNuevoCosto(
 ) {
   const sb = getSupabase();
   if (!sb) throw new Error("Sin conexión a Supabase");
-  // Buscar la disc para saber recepción + sku (para reactivar líneas pausadas)
-  const { data: discRow } = await sb.from("discrepancias_costo")
-    .select("recepcion_id, sku").eq("id", discId).maybeSingle();
-  const disc = discRow as { recepcion_id: string; sku: string } | null;
-
   await db.updateDiscrepancia(discId, {
     estado: "RECHAZADO", resuelto_por: operario, resuelto_at: new Date().toISOString(),
     notas: notas || "Rechazado - error de proveedor",
@@ -3899,12 +3817,6 @@ export async function rechazarNuevoCosto(
     params: { sub_accion: subAccion || "sin_subaccion", notas },
     resultado: { estado: "RECHAZADO" },
   });
-
-  // Reactivar líneas pausadas — al rechazar, la línea queda igualmente desbloqueada
-  // (el operador puede ubicar con el costo facturado o esperar siguiente flujo).
-  if (disc) {
-    await reactivarLineasPausadasDeRecepcion(disc.recepcion_id, disc.sku, operario);
-  }
 }
 
 /**

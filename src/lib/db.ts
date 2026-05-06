@@ -146,10 +146,16 @@ export interface DBRecepcionLinea {
   etiqueta_impresa?: boolean;
   tiene_variantes?: boolean;
   sku_venta?: string;
-  // v100: lifecycle pausa por discrepancia de costo (Chunk 5)
+  /** @deprecated Schema v100 reservó estos campos para un lifecycle de pausa
+   *  por discrepancia de costo. El owner descartó ese diseño (operador no
+   *  debe ver discrepancias). Las columnas siguen en DB pero no se escriben.
+   *  Quedan tipados para no romper queries existentes. */
   pausada_at?: string | null;
+  /** @deprecated ver pausada_at */
   pausada_por?: string | null;
+  /** @deprecated ver pausada_at */
   pausada_motivo?: string | null;
+  /** @deprecated ver pausada_at */
   pausada_estado?: "PAUSADA" | "REACTIVADA" | "ABANDONADA" | null;
 }
 

@@ -2,7 +2,8 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { fetchDiscrepanciasGlobal, fetchProductos, fetchRecepciones, fetchRcvCompras, fetchEmpresaDefault, getSupabase } from "@/lib/db";
 import type { DBDiscrepanciaCosto, DBProduct, DBRecepcion, DBRcvCompra, DBRecepcionLinea } from "@/lib/db";
-import { aprobarNuevoCosto, rechazarNuevoCosto } from "@/lib/store";
+import { aprobarNuevoCosto } from "@/lib/store";
+import DiscrepanciaActionsModal from "./DiscrepanciaActionsModal";
 
 // Normaliza nombre de proveedor/razon social para match flexible
 const normProv = (s: string): string => (s || "").toUpperCase().trim()
@@ -60,7 +61,7 @@ export default function AdminDiscrepancias() {
   const [lineas, setLineas] = useState<Map<string, DBRecepcionLinea>>(new Map()); // key = linea_id
   const [loading, setLoading] = useState(true);
   const [actioning, setActioning] = useState<string | null>(null);
-  const [congelarModal, setCongelarModal] = useState<{ row: Row; costoInput: string } | null>(null);
+  const [actionModal, setActionModal] = useState<{ row: Row; modo: "aprobar" | "rechazar" | "revertir" } | null>(null);
   const [ncs, setNcs] = useState<DBRcvCompra[]>([]);
   const [ncBulkOpen, setNcBulkOpen] = useState<string | null>(null); // nc.id abierto para confirmar cierre
 
@@ -174,139 +175,9 @@ export default function AdminDiscrepancias() {
     };
   }, [rows]);
 
-  const doAprobar = async (row: Row) => {
-    const prod = productos.get(row.sku);
-    const wacActual = prod?.costo_promedio || 0;
-    const costoCatalogo = prod?.costo || 0;
-    // Default: WAC actual si refleja una corrección previa (congelar/marcarNC), sino el facturado
-    const sugerido = wacActual > 0 && wacActual !== row.costo_factura ? wacActual : row.costo_factura;
-    const nuevo = prompt(
-      `Aprobar costo final para ${row.sku}\n\n`
-      + `Diccionario original: ${fmtMoney(row.costo_diccionario)}\n`
-      + `Facturado (en duda):  ${fmtMoney(row.costo_factura)}\n`
-      + `Catálogo actual:      ${fmtMoney(costoCatalogo)}\n`
-      + `WAC actual:           ${fmtMoney(wacActual)}\n\n`
-      + `Ingrese el costo final aprobado (sugerido: el WAC actual si ya congelaste; si no, el facturado):`,
-      String(sugerido),
-    );
-    if (nuevo === null) return;
-    const n = Number(nuevo);
-    if (!Number.isFinite(n) || n <= 0) {
-      alert("Costo inválido");
-      return;
-    }
-    // Si el costo aprobado difiere del WAC actual, advertir que conviene congelar antes
-    if (wacActual > 0 && Math.abs(n - wacActual) > 1) {
-      const ok = window.confirm(
-        `El costo aprobado ($${fmtInt(n)}) es distinto al WAC actual ($${fmtInt(wacActual)}).\n\n`
-        + `Aprobar NO recomputa WAC ni ventas pasadas. Si querés que las ventas reflejen este costo, primero cerrá este diálogo y usá 🔒 Congelar con ${fmtMoney(n)}.\n\n`
-        + `¿Continuar y solo actualizar el catálogo?`
-      );
-      if (!ok) return;
-    }
-    setActioning(row.id!);
-    try {
-      await aprobarNuevoCosto(row.id!, row.sku, n);
-      await cargar();
-    } catch (e) {
-      alert("Error al aprobar: " + (e instanceof Error ? e.message : e));
-    } finally {
-      setActioning(null);
-    }
-  };
-
-  const doRechazar = async (row: Row) => {
-    const nota = prompt(
-      `Rechazar discrepancia de ${row.sku}\n\nMotivo del rechazo (factura mal emitida, esperando NC, etc):`,
-      "Error de proveedor - reclamar",
-    );
-    if (nota === null) return;
-    setActioning(row.id!);
-    try {
-      await rechazarNuevoCosto(row.id!, nota);
-      await cargar();
-    } catch (e) {
-      alert("Error al rechazar: " + (e instanceof Error ? e.message : e));
-    } finally {
-      setActioning(null);
-    }
-  };
-
-  const doPendienteNC = async (row: Row) => {
-    const sugerido = row.costo_diccionario && row.costo_diccionario > 0
-      ? String(row.costo_diccionario)
-      : String(Math.round((row.costo_factura || 0) / 2));
-    const costo = prompt(
-      `⏳ Esperando NC del proveedor — ${row.sku}\n\n`
-      + `Costo facturado (incorrecto): ${fmtMoney(row.costo_factura)}\n`
-      + `Costo histórico (referencia): ${fmtMoney(row.costo_diccionario)}\n\n`
-      + `Ingrese el costo REAL esperado luego de la NC:`,
-      sugerido,
-    );
-    if (costo === null) return;
-    const n = Number(costo);
-    if (!Number.isFinite(n) || n <= 0) {
-      alert("Costo inválido");
-      return;
-    }
-    const notas = prompt(
-      `Notas obligatorias (qué pasó, cuándo confirmó el proveedor la NC):`,
-      `Idetex confirmó NC por diferencia de ${fmtMoney((row.costo_factura || 0) - n)}/ud el ${new Date().toLocaleDateString("es-CL")}. Esperando emisión.`,
-    );
-    if (!notas || notas.trim().length === 0) {
-      alert("Las notas son obligatorias");
-      return;
-    }
-    const diffPorUnidad = (row.costo_factura || 0) - n;
-    const confirma = window.confirm(
-      `Confirmar acción:\n\n`
-      + `• Marca discrepancia como PENDIENTE_NC\n`
-      + `• Override WAC: ${fmtMoney(row.costo_factura)} → ${fmtMoney(n)}\n`
-      + `• Diferencia esperada: ${fmtMoney(diffPorUnidad)}/ud\n`
-      + `• Audit log con motivo override_pre_nc\n\n`
-      + `¿Continuar?`
-    );
-    if (!confirma) return;
-    setActioning(row.id!);
-    try {
-      const res = await aprobarNuevoCosto(row.id!, row.sku, n, { esPuntual: true, notas });
-      alert(`WAC recalculado: ${fmtMoney(res.precio_anterior_snapshot)} → ${fmtMoney(res.wac_nuevo)}`);
-      await cargar();
-    } catch (e) {
-      alert("Error: " + (e instanceof Error ? e.message : e));
-    } finally {
-      setActioning(null);
-    }
-  };
-
-  const abrirCongelar = async (row: Row) => {
-    const sugerido = row.costo_diccionario && row.costo_diccionario > 0 ? row.costo_diccionario : 0;
-    setCongelarModal({ row, costoInput: String(sugerido) });
-  };
-
-  const confirmarCongelar = async () => {
-    if (!congelarModal) return;
-    const n = Number(congelarModal.costoInput);
-    if (!Number.isFinite(n) || n <= 0) { alert("Costo inválido"); return; }
-    if (!window.confirm(
-      `Aplicar costo ${fmtMoney(n)} a ${congelarModal.row.sku}?\n\n`
-      + `• Actualiza catálogo proveedor (es_principal)\n`
-      + `• Recalcula WAC running\n`
-      + `• Recomputa margen de ventas posteriores\n`
-      + `• Estado: APROBADO`
-    )) return;
-    setActioning(congelarModal.row.id!);
-    try {
-      const res = await aprobarNuevoCosto(congelarModal.row.id!, congelarModal.row.sku, n, { esPuntual: false });
-      setCongelarModal(null);
-      await cargar();
-      alert(`Aplicado. WAC: ${fmtMoney(res.precio_anterior_snapshot)} → ${fmtMoney(res.wac_nuevo)}`);
-    } catch (e) {
-      alert("Error: " + (e instanceof Error ? e.message : e));
-    } finally {
-      setActioning(null);
-    }
-  };
+  // Acciones unificadas (Chunk 6): abren el modal compartido
+  const abrir = (row: Row, modo: "aprobar" | "rechazar" | "revertir") =>
+    setActionModal({ row, modo });
 
   // Cross-match NCs ↔ recepciones con discrepancias PENDIENTES
   const ncsLinkables = useMemo(() => {
@@ -584,40 +455,35 @@ export default function AdminDiscrepancias() {
                       {row.notas || (row.resuelto_at ? fmtDate(row.resuelto_at) : "—")}
                     </td>
                     <td style={{ padding: "8px 10px", textAlign: "center", whiteSpace: "nowrap" }}>
-                      {row.estado === "PENDIENTE" ? (
+                      {row.estado === "PENDIENTE" && (
                         <>
                           <button
                             disabled={isWorking}
-                            onClick={() => doAprobar(row)}
+                            onClick={() => abrir(row, "aprobar")}
                             style={{ padding: "4px 10px", borderRadius: 4, background: "var(--green)", color: "#0a0e17", fontSize: 10, fontWeight: 700, border: "none", marginRight: 4, cursor: isWorking ? "wait" : "pointer", opacity: isWorking ? 0.5 : 1 }}
                           >
-                            Aprobar
+                            ✅ Aprobar
                           </button>
                           <button
                             disabled={isWorking}
-                            onClick={() => doPendienteNC(row)}
-                            title="Esperando NC del proveedor: corrige WAC al costo real esperado y deja la discrepancia abierta"
-                            style={{ padding: "4px 10px", borderRadius: 4, background: "var(--bg3)", color: "var(--cyan)", fontSize: 10, fontWeight: 700, border: "1px solid var(--cyan)", marginRight: 4, cursor: isWorking ? "wait" : "pointer", opacity: isWorking ? 0.5 : 1 }}
-                          >
-                            ⏳ Esperando NC
-                          </button>
-                          <button
-                            disabled={isWorking}
-                            onClick={() => abrirCongelar(row)}
-                            title="Congela el WAC al costo del diccionario (o uno manual) y recomputa márgenes de ventas post-recepción. La discrepancia queda PENDIENTE."
-                            style={{ padding: "4px 10px", borderRadius: 4, background: "var(--bg3)", color: "var(--blue)", fontSize: 10, fontWeight: 700, border: "1px solid var(--blue)", marginRight: 4, cursor: isWorking ? "wait" : "pointer", opacity: isWorking ? 0.5 : 1 }}
-                          >
-                            🔒 Congelar
-                          </button>
-                          <button
-                            disabled={isWorking}
-                            onClick={() => doRechazar(row)}
+                            onClick={() => abrir(row, "rechazar")}
                             style={{ padding: "4px 10px", borderRadius: 4, background: "var(--bg3)", color: "var(--red)", fontSize: 10, fontWeight: 700, border: "1px solid var(--red)", cursor: isWorking ? "wait" : "pointer", opacity: isWorking ? 0.5 : 1 }}
                           >
-                            Rechazar
+                            ❌ Rechazar
                           </button>
                         </>
-                      ) : (
+                      )}
+                      {row.estado === "APROBADO" && (
+                        <button
+                          disabled={isWorking}
+                          onClick={() => abrir(row, "revertir")}
+                          title="Restaura el precio_neto al snapshot, recalcula WAC y deja la disc en PENDIENTE."
+                          style={{ padding: "4px 10px", borderRadius: 4, background: "var(--bg3)", color: "var(--amber)", fontSize: 10, fontWeight: 700, border: "1px solid var(--amberBd)", cursor: isWorking ? "wait" : "pointer", opacity: isWorking ? 0.5 : 1 }}
+                        >
+                          ↩ Revertir aprobación
+                        </button>
+                      )}
+                      {row.estado !== "PENDIENTE" && row.estado !== "APROBADO" && (
                         <span style={{ fontSize: 10, color: "var(--txt3)" }}>
                           {row.resuelto_por ? `${row.resuelto_por}` : ""}
                         </span>
@@ -631,47 +497,16 @@ export default function AdminDiscrepancias() {
         </div>
       )}
 
-      {congelarModal && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
-          onClick={() => !actioning && setCongelarModal(null)}>
-          <div style={{ background: "var(--bg2)", borderRadius: 12, border: "1px solid var(--bg4)", padding: 24, maxWidth: 720, width: "100%", maxHeight: "85vh", overflow: "auto" }}
-            onClick={e => e.stopPropagation()}>
-            <h3 style={{ margin: "0 0 4px", fontSize: 16, fontWeight: 700 }}>🔒 Congelar costo — {congelarModal.row.sku}</h3>
-            <p style={{ fontSize: 11, color: "var(--txt3)", marginBottom: 14 }}>
-              Aplica un costo &quot;confiable&quot; al WAC (override de movimientos) y recomputa márgenes de ventas posteriores a la recepción. La discrepancia queda PENDIENTE.
-            </p>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 14, fontSize: 11 }}>
-              <div style={{ padding: 8, background: "var(--bg3)", borderRadius: 6 }}>
-                <div style={{ color: "var(--txt3)", fontSize: 10 }}>Diccionario</div>
-                <div className="mono" style={{ fontWeight: 700 }}>{fmtMoney(congelarModal.row.costo_diccionario)}</div>
-              </div>
-              <div style={{ padding: 8, background: "var(--bg3)", borderRadius: 6 }}>
-                <div style={{ color: "var(--txt3)", fontSize: 10 }}>Facturado (en duda)</div>
-                <div className="mono" style={{ fontWeight: 700, color: "var(--amber)" }}>{fmtMoney(congelarModal.row.costo_factura)}</div>
-              </div>
-              <div style={{ padding: 8, background: "var(--bg3)", borderRadius: 6 }}>
-                <div style={{ color: "var(--txt3)", fontSize: 10 }}>Recepción</div>
-                <div className="mono" style={{ fontWeight: 600 }}>{congelarModal.row._folio || "—"}</div>
-              </div>
-            </div>
-            <div style={{ marginBottom: 12 }}>
-              <label style={{ fontSize: 11, color: "var(--txt2)", display: "block", marginBottom: 4 }}>Costo a aplicar al WAC (neto, sin IVA)</label>
-              <input type="number" value={congelarModal.costoInput}
-                onChange={e => setCongelarModal({ ...congelarModal, costoInput: e.target.value })}
-                style={{ width: "100%", padding: "8px 12px", borderRadius: 6, background: "var(--bg3)", border: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 14 }} />
-            </div>
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button onClick={() => setCongelarModal(null)} disabled={!!actioning}
-                style={{ padding: "8px 14px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt3)", fontSize: 11, fontWeight: 600, border: "1px solid var(--bg4)", cursor: "pointer" }}>
-                Cancelar
-              </button>
-              <button onClick={confirmarCongelar} disabled={!!actioning}
-                style={{ padding: "8px 14px", borderRadius: 6, background: "var(--blue)", color: "#0a0e17", fontSize: 11, fontWeight: 700, border: "none", cursor: "pointer" }}>
-                {actioning ? "Aplicando…" : "Aplicar y recomputar"}
-              </button>
-            </div>
-          </div>
-        </div>
+      {actionModal && (
+        <DiscrepanciaActionsModal
+          modo={actionModal.modo}
+          discId={actionModal.row.id!}
+          sku={actionModal.row.sku}
+          costoFactura={actionModal.row.costo_factura}
+          costoCatalogo={actionModal.row.costo_diccionario}
+          onCerrar={() => setActionModal(null)}
+          onResuelto={cargar}
+        />
       )}
     </div>
   );

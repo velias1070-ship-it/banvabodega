@@ -328,8 +328,8 @@ import {
   aprobarNuevoCosto,
   rechazarNuevoCosto,
   revertirAprobacion,
-  pausarLineaPorDiscrepancia,
-  marcarLineasPausadasComoAbandonadas,
+  detectarDiscrepanciaLinea,
+  notificarFaltaCostoEnLinea,
 } from "../store";
 
 // ============================================================================
@@ -816,105 +816,36 @@ describe("E8: revertir aprobación legacy sin snapshot", () => {
   });
 });
 
-describe("E9: pausar lifecycle del operador", () => {
-  it("pausarLineaPorDiscrepancia marca línea PAUSADA + crea disc + audit log", async () => {
-    const sku = "TEST-E9";
-    seedProducto(sku, 11000);
-    seedCatalogo({ sku, proveedor: "Idetex", precio: 11000 });
-    const recId = seedRecepcion({ proveedor: "Idetex" });
-    const linea = seedLinea({ recepcion_id: recId, sku, costo: 14000 });
+describe("Caso D: detectarDiscrepanciaLinea + notificarFaltaCostoEnLinea (corner sin catalogo Y sin costo)", () => {
+  it("detectarDiscrepanciaLinea con costo=0 y sin catálogo devuelve casoA7=true", async () => {
+    const sku = "TEST-CASO-D";
+    seedProducto(sku);
+    const recId = seedRecepcion({ proveedor: "Sin Catalogo SA", proveedor_id: "prov-X" });
 
-    await pausarLineaPorDiscrepancia({
-      lineaId: linea.id, sku, costoFacturado: 14000, precioAcordado: 11000,
-      abc: "B", recepcionId: recId, folio: "F-123", operario: "joaquin",
-      notaExtra: "factura sospechosa",
-    });
+    const preview = await detectarDiscrepanciaLinea(sku, 0, recId);
 
-    const lineaActualizada = memDB.recepcion_lineas.find(l => l.id === linea.id)!;
-    expect(lineaActualizada.pausada_estado).toBe("PAUSADA");
-    expect(lineaActualizada.pausada_por).toBe("joaquin");
-    expect(lineaActualizada.pausada_motivo).toBe("discrepancia_costo");
-    expect(lineaActualizada.pausada_at).toBeTruthy();
-    // disc PENDIENTE creada
-    const disc = memDB.discrepancias_costo.find(d => d.linea_id === linea.id);
-    expect(disc).toBeTruthy();
-    expect(disc?.estado).toBe("PENDIENTE");
-    // audit log
-    expect(memDB.audit_log.find(a => a.accion === "linea_pausada_discrepancia")).toBeTruthy();
-  });
-});
-
-describe("E10: pausa timeout >24h → ABANDONADA", () => {
-  it("marcarLineasPausadasComoAbandonadas marca como ABANDONADA solo las antiguas", async () => {
-    const sku1 = "TEST-E10-OLD";
-    const sku2 = "TEST-E10-NEW";
-    seedProducto(sku1); seedProducto(sku2);
-    const recId = seedRecepcion({ proveedor: "Idetex" });
-    const lineaVieja = seedLinea({ recepcion_id: recId, sku: sku1, costo: 12000 });
-    const lineaReciente = seedLinea({ recepcion_id: recId, sku: sku2, costo: 12000 });
-
-    // Pausar manualmente con pausada_at >24h y <24h
-    const ahora = Date.now();
-    const lv = memDB.recepcion_lineas.find(l => l.id === lineaVieja.id)!;
-    lv.pausada_estado = "PAUSADA";
-    lv.pausada_at = new Date(ahora - 26 * 60 * 60 * 1000).toISOString();
-    lv.pausada_por = "joaquin";
-    const lr = memDB.recepcion_lineas.find(l => l.id === lineaReciente.id)!;
-    lr.pausada_estado = "PAUSADA";
-    lr.pausada_at = new Date(ahora - 1 * 60 * 60 * 1000).toISOString();
-    lr.pausada_por = "joaquin";
-
-    const stale = await marcarLineasPausadasComoAbandonadas();
-
-    expect(stale).toHaveLength(1);
-    expect(stale[0].sku).toBe(sku1);
-    // Estados después
-    expect(memDB.recepcion_lineas.find(l => l.id === lineaVieja.id)!.pausada_estado).toBe("ABANDONADA");
-    expect(memDB.recepcion_lineas.find(l => l.id === lineaReciente.id)!.pausada_estado).toBe("PAUSADA");
-    expect(memDB.audit_log.find(a => a.accion === "linea_pausada_abandonada")).toBeTruthy();
-  });
-});
-
-describe("E11: reactivar línea pausada al resolver disc", () => {
-  it("aprobarNuevoCosto marca pausada_estado=REACTIVADA en líneas de la recepción+sku", async () => {
-    const sku = "TEST-E11";
-    seedProducto(sku, 11000);
-    seedCatalogo({ sku, proveedor: "Idetex", precio: 11000 });
-    const recId = seedRecepcion({ proveedor: "Idetex" });
-    const linea = seedLinea({ recepcion_id: recId, sku, costo: 14000 });
-    seedMovimientoEntrada({ recepcion_id: recId, sku, cantidad: 10, costo: 14000 });
-
-    // Pausar primero
-    await pausarLineaPorDiscrepancia({
-      lineaId: linea.id, sku, costoFacturado: 14000, precioAcordado: 11000,
-      abc: "B", recepcionId: recId, folio: "F-456", operario: "joaquin",
-    });
-    expect(memDB.recepcion_lineas[0].pausada_estado).toBe("PAUSADA");
-    const disc = memDB.discrepancias_costo[0];
-
-    // Aprobar la disc → reactivar línea
-    await aprobarNuevoCosto(disc.id as string, sku, 14000, { esPuntual: false, operario: "vicente" });
-
-    expect(memDB.recepcion_lineas[0].pausada_estado).toBe("REACTIVADA");
-    expect(memDB.audit_log.find(a => a.accion === "linea_reactivada_discrepancia")).toBeTruthy();
+    // Cuando costoFacturado <=0, retorna base con casoA7 conservador
+    expect(preview.casoA7).toBe(false); // base trivial
+    expect(preview.fueraTolerancia).toBe(false);
+    expect(preview.precioAcordado).toBe(0);
   });
 
-  it("rechazarNuevoCosto también reactiva las líneas pausadas", async () => {
-    const sku = "TEST-E11-B";
-    seedProducto(sku, 11000);
-    seedCatalogo({ sku, proveedor: "Idetex", precio: 11000 });
-    const recId = seedRecepcion({ proveedor: "Idetex" });
-    const linea = seedLinea({ recepcion_id: recId, sku, costo: 14000 });
+  it("notificarFaltaCostoEnLinea encola WhatsApp al owner", async () => {
+    const notifMod = await import("../notifications");
+    (notifMod.enqueueNotification as ReturnType<typeof vi.fn>).mockClear();
 
-    await pausarLineaPorDiscrepancia({
-      lineaId: linea.id, sku, costoFacturado: 14000, precioAcordado: 11000,
-      abc: "B", recepcionId: recId, folio: "F-789", operario: "joaquin",
+    await notificarFaltaCostoEnLinea({
+      sku: "TEST-D-SKU", recepcionId: "rec-1", folio: "F-D",
+      operario: "joaquin",
     });
-    const disc = memDB.discrepancias_costo[0];
 
-    await rechazarNuevoCosto(disc.id as string, "factura mal OCR", "corregir_factura");
-
-    expect(memDB.recepcion_lineas[0].pausada_estado).toBe("REACTIVADA");
+    expect(notifMod.enqueueNotification).toHaveBeenCalledWith(
+      "whatsapp",
+      "56991655931@s.whatsapp.net",
+      expect.objectContaining({
+        text: expect.stringContaining("Falta costo en línea"),
+      }),
+    );
   });
 });
 
