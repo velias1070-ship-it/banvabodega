@@ -17,6 +17,7 @@ import AdminReposicion from "@/components/AdminReposicion";
 import RecepcionDiscBanner from "@/components/RecepcionDiscBanner";
 import DiscrepanciaActionsModal from "@/components/DiscrepanciaActionsModal";
 import RecepcionDocumentosPanel from "@/components/RecepcionDocumentosPanel";
+import SkuTimeline from "@/components/SkuTimeline";
 import AdminAgentes from "@/components/AdminAgentes";
 import AdminInteligencia from "@/components/AdminInteligencia";
 import AdminSemaforo from "@/components/AdminSemaforo";
@@ -395,7 +396,7 @@ export default function AdminPage() {
             {tab==="pricing"&&<AdminPricingConfig/>}
             {tab==="autopostular"&&<AdminAutoPostular/>}
             {tab==="agentes"&&<AdminAgentes/>}
-            {tab==="timeline"&&<AdminTimeline/>}
+            {tab==="timeline"&&<TimelineWrapper/>}
             {tab==="config"&&<Configuracion refresh={r} initialSubTab={mlAuthReturn ? "ml" : undefined} currentUser={auth.user}/>}
           </div>
         </main>
@@ -11859,7 +11860,32 @@ function PriorizarRecepciones({ recs }: { recs: DBRecepcion[] }) {
   );
 }
 
-// ==================== TIMELINE ====================
+// ==================== TIMELINE WRAPPER (sub-tab toggle) ====================
+function TimelineWrapper() {
+  const [view, setView] = useState<"trayecto" | "eventos">("trayecto");
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 0, marginBottom: 16 }}>
+        {([["trayecto", "📈 Trayecto SKU (WAC + stock)"], ["eventos", "📊 Eventos (movs + ML + reservas)"]] as const).map(([key, label], i, arr) => (
+          <button key={key} onClick={() => setView(key)}
+            style={{
+              flex: 1, padding: "10px 0", fontSize: 12, fontWeight: 700, cursor: "pointer",
+              borderRadius: i === 0 ? "8px 0 0 8px" : i === arr.length - 1 ? "0 8px 8px 0" : "0",
+              background: view === key ? "var(--cyan)" : "var(--bg3)",
+              color: view === key ? "#000" : "var(--txt2)",
+              border: `1px solid ${view === key ? "var(--cyan)" : "var(--bg4)"}`,
+              borderLeft: i > 0 ? "none" : undefined,
+            }}>
+            {label}
+          </button>
+        ))}
+      </div>
+      {view === "trayecto" ? <SkuTimeline /> : <AdminTimeline />}
+    </div>
+  );
+}
+
+// ==================== TIMELINE (eventos) ====================
 function AdminTimeline() {
   const [q, setQ] = useState("");
   const [selectedSku, setSelectedSku] = useState<string|null>(null);
