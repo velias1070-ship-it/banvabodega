@@ -16,6 +16,7 @@ import SheetSync from "@/components/SheetSync";
 import AdminReposicion from "@/components/AdminReposicion";
 import RecepcionDiscBanner from "@/components/RecepcionDiscBanner";
 import DiscrepanciaActionsModal from "@/components/DiscrepanciaActionsModal";
+import RecepcionDocumentosPanel from "@/components/RecepcionDocumentosPanel";
 import AdminAgentes from "@/components/AdminAgentes";
 import AdminInteligencia from "@/components/AdminInteligencia";
 import AdminSemaforo from "@/components/AdminSemaforo";
@@ -1130,6 +1131,16 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                         : `No llegó todo: te deben nota de crédito por ${fmtMoney(Math.abs(diffNeto))} neto`}
                     </div>
                   </div>
+                )}
+
+                {/* Documentos asociados (NCs recibidas + esperadas + factura adicional) */}
+                {selRec && (
+                  <RecepcionDocumentosPanel
+                    recepcion={selRec}
+                    lineas={lineas}
+                    discrepancias={discrepancias}
+                    discrepanciasQty={discrepanciasQty}
+                  />
                 )}
 
                 {/* Historial de ajustes */}
