@@ -57,6 +57,12 @@ export default function CatalogoVerPanel() {
   const [editNombre, setEditNombre] = useState<string>("");
   const [editInner, setEditInner] = useState<string>("");
   const [historiaSku, setHistoriaSku] = useState<{ sku: string; proveedor: string } | null>(null);
+  // Selección múltiple para edición masiva
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkInner, setBulkInner] = useState<string>("");
+  const [bulkPrecio, setBulkPrecio] = useState<string>("");
+  const [bulkSaving, setBulkSaving] = useState(false);
 
   const cargar = useCallback(async () => {
     setLoading(true);
@@ -148,6 +154,75 @@ export default function CatalogoVerPanel() {
     await cargar();
   };
 
+  const ejecutarBulk = async () => {
+    if (selected.size === 0) return;
+    const innerNum = bulkInner.trim() === "" ? undefined : parseInt(bulkInner);
+    const precioNum = bulkPrecio.trim() === "" ? undefined : parseFloat(bulkPrecio);
+    if (innerNum !== undefined && (!Number.isFinite(innerNum) || innerNum < 1)) {
+      alert("Inner pack inválido (entero ≥ 1)"); return;
+    }
+    if (precioNum !== undefined && (!Number.isFinite(precioNum) || precioNum < 0)) {
+      alert("Precio inválido"); return;
+    }
+    if (innerNum === undefined && precioNum === undefined) {
+      alert("Ingresá al menos un valor (inner pack o precio)"); return;
+    }
+    if (!confirm(`Aplicar a ${selected.size} fila${selected.size === 1 ? "" : "s"}?\n\n${
+      innerNum !== undefined ? `Inner pack → ${innerNum}\n` : ""
+    }${precioNum !== undefined ? `Precio neto → $${precioNum.toLocaleString("es-CL")}\n` : ""}`)) return;
+    setBulkSaving(true);
+    const sb = getSupabase();
+    if (!sb) { setBulkSaving(false); return; }
+    const cambios: string[] = [];
+    if (innerNum !== undefined) cambios.push(`inner=${innerNum}`);
+    if (precioNum !== undefined) cambios.push(`precio=${precioNum}`);
+    const update: Record<string, unknown> = {
+      updated_at: new Date().toISOString(),
+      updated_by: "admin_bulk_ui",
+      motivo_ultimo_cambio: `bulk edit UI 2026-05-06: ${cambios.join(", ")}`,
+    };
+    if (innerNum !== undefined) update.inner_pack = innerNum;
+    if (precioNum !== undefined) update.precio_neto = precioNum;
+    const ids = Array.from(selected);
+    // Update en chunks de 200 (limit safety)
+    for (let i = 0; i < ids.length; i += 200) {
+      const chunk = ids.slice(i, i + 200);
+      const { error } = await sb.from("proveedor_catalogo").update(update).in("id", chunk);
+      if (error) {
+        alert(`Error en chunk ${i}-${i + chunk.length}: ${error.message}`);
+        setBulkSaving(false); return;
+      }
+    }
+    setBulkSaving(false);
+    setBulkOpen(false);
+    setBulkInner(""); setBulkPrecio("");
+    setSelected(new Set());
+    await cargar();
+    alert(`✓ Actualizadas ${ids.length} filas`);
+  };
+
+  const visibles = useMemo(() => filtered.slice(0, 500).map(r => r.id), [filtered]);
+  const todasVisiblesSeleccionadas = visibles.length > 0 && visibles.every(id => selected.has(id));
+  const toggleTodasVisibles = () => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (todasVisiblesSeleccionadas) {
+        for (const id of visibles) next.delete(id);
+      } else {
+        for (const id of visibles) next.add(id);
+      }
+      return next;
+    });
+  };
+  const toggleFila = (id: string) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
@@ -223,9 +298,33 @@ export default function CatalogoVerPanel() {
         </div>
       ) : (
         <div className="card" style={{ padding: 0, overflow: "auto" }}>
+          {/* Bulk action bar */}
+          {selected.size > 0 && (
+            <div style={{
+              padding: "8px 12px", background: "var(--cyanBg, rgba(34,211,238,0.10))",
+              borderBottom: "1px solid var(--cyan)",
+              display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
+            }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: "var(--cyan)" }}>
+                {selected.size} fila{selected.size === 1 ? "" : "s"} seleccionada{selected.size === 1 ? "" : "s"}
+              </span>
+              <button onClick={() => setBulkOpen(true)}
+                style={{ padding: "5px 12px", borderRadius: 5, background: "var(--cyan)", color: "#0a0e17", fontSize: 11, fontWeight: 700, border: "none", cursor: "pointer" }}>
+                ✎ Editar masivamente
+              </button>
+              <button onClick={() => setSelected(new Set())}
+                style={{ padding: "5px 12px", borderRadius: 5, background: "var(--bg3)", color: "var(--txt2)", fontSize: 11, fontWeight: 600, border: "1px solid var(--bg4)", cursor: "pointer" }}>
+                Limpiar selección
+              </button>
+            </div>
+          )}
           <table className="tbl" style={{ width: "100%", fontSize: 11 }}>
             <thead>
               <tr>
+                <th style={{ textAlign: "center", padding: "8px 6px", width: 30 }}>
+                  <input type="checkbox" checked={todasVisiblesSeleccionadas} onChange={toggleTodasVisibles}
+                    title="Seleccionar/deseleccionar todos los visibles" />
+                </th>
                 <th style={{ textAlign: "left", padding: "8px 10px" }}>Proveedor</th>
                 <th style={{ textAlign: "left", padding: "8px 10px" }}>SKU origen</th>
                 <th style={{ textAlign: "left", padding: "8px 10px" }}>Nombre</th>
@@ -244,8 +343,11 @@ export default function CatalogoVerPanel() {
                 return (
                   <tr key={r.id} style={{
                     borderTop: "1px solid var(--bg4)",
-                    background: isZombi ? "rgba(245,158,11,0.04)" : "transparent",
+                    background: selected.has(r.id) ? "rgba(34,211,238,0.06)" : isZombi ? "rgba(245,158,11,0.04)" : "transparent",
                   }}>
+                    <td style={{ padding: "6px 6px", textAlign: "center" }}>
+                      <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleFila(r.id)} />
+                    </td>
                     <td style={{ padding: "6px 10px" }}>
                       {r.proveedor}
                       {!isPrincipal && <span style={{ marginLeft: 4, fontSize: 9, padding: "1px 5px", borderRadius: 3, background: "var(--bg3)", color: "var(--txt3)" }}>alt</span>}
@@ -346,6 +448,58 @@ export default function CatalogoVerPanel() {
       )}
 
       {historiaSku && <HistoriaPreciosModal sku={historiaSku.sku} proveedor={historiaSku.proveedor} onClose={() => setHistoriaSku(null)} />}
+
+      {bulkOpen && (
+        <div onClick={() => !bulkSaving && setBulkOpen(false)} style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 9999,
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+        }}>
+          <div onClick={e => e.stopPropagation()} style={{
+            background: "var(--bg2)", borderRadius: 12, border: "1px solid var(--bg4)",
+            padding: 20, maxWidth: 420, width: "100%",
+          }}>
+            <h3 style={{ margin: "0 0 8px", fontSize: 15, fontWeight: 700 }}>
+              ✎ Edición masiva — {selected.size} fila{selected.size === 1 ? "" : "s"}
+            </h3>
+            <div style={{ fontSize: 11, color: "var(--txt3)", marginBottom: 14 }}>
+              Dejá el campo vacío si no querés cambiarlo. Se aplicará el mismo valor a todas las seleccionadas.
+            </div>
+
+            <label style={{ fontSize: 11, color: "var(--txt2)", display: "block", marginBottom: 4 }}>
+              Inner pack (opcional)
+            </label>
+            <input type="number" value={bulkInner} onChange={e => setBulkInner(e.target.value)}
+              placeholder="Ej: 4 (entero, dejar vacío = no cambiar)"
+              style={{
+                width: "100%", padding: "8px 12px", borderRadius: 6,
+                background: "var(--bg3)", border: "1px solid var(--bg4)",
+                color: "var(--txt)", fontSize: 13, marginBottom: 12,
+              }} />
+
+            <label style={{ fontSize: 11, color: "var(--txt2)", display: "block", marginBottom: 4 }}>
+              Precio neto acordado (opcional)
+            </label>
+            <input type="number" value={bulkPrecio} onChange={e => setBulkPrecio(e.target.value)}
+              placeholder="Ej: 7200 (sin IVA, dejar vacío = no cambiar)"
+              style={{
+                width: "100%", padding: "8px 12px", borderRadius: 6,
+                background: "var(--bg3)", border: "1px solid var(--bg4)",
+                color: "var(--txt)", fontSize: 13, marginBottom: 16,
+              }} />
+
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={() => setBulkOpen(false)} disabled={bulkSaving}
+                style={{ padding: "8px 16px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt2)", border: "1px solid var(--bg4)", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                Cancelar
+              </button>
+              <button onClick={ejecutarBulk} disabled={bulkSaving}
+                style={{ padding: "8px 16px", borderRadius: 6, background: "var(--cyan)", color: "#0a0e17", fontSize: 12, fontWeight: 700, border: "none", cursor: bulkSaving ? "wait" : "pointer", opacity: bulkSaving ? 0.5 : 1 }}>
+                {bulkSaving ? "Aplicando..." : `Aplicar a ${selected.size}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
