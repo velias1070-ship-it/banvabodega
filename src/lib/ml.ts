@@ -76,6 +76,10 @@ export interface MLItemMap {
   sku_venta: string | null;
   sku_origen: string | null;
   titulo: string | null;
+  last_sync_error?: string | null;
+  last_sync_error_at?: string | null;
+  consecutive_sync_failures?: number | null;
+  notificado_sync_error_at?: string | null;
 }
 
 export interface PedidoFlex {
@@ -1434,42 +1438,80 @@ export async function syncStockToML(sku: string, availableQty: number): Promise<
       const result = await updateFlexStock(userProductId, availableQty, stockData.version, stockType, stockData.locations, { sku, sku_origen: map.sku_origen || sku });
       await sb.from("audit_log").insert({ accion: "stock_sync:debug", params: { sku, step: "put_result", userProductId, available: availableQty, ok: result.ok, error: result.error } });
 
+      let putOk = false;
+      let lastError: string | null = null;
+      let finalVersion = stockData.version;
+
       if (result.ok) {
-        await sb.from("ml_items_map").update({
-          ultimo_sync: new Date().toISOString(),
-          stock_flex_cache: availableQty,
-          stock_version: stockData.version + 1,
-        }).eq("id", map.id);
-        synced++;
+        putOk = true;
+        finalVersion = stockData.version;
       } else if (result.error === "VERSION_CONFLICT") {
         // 409: version mismatch — retry up to 3 times with delay
-        let retried = false;
         for (let attempt = 1; attempt <= 3; attempt++) {
           console.warn(`[ML Stock] Version conflict for ${sku}, retry ${attempt}/3...`);
           await new Promise(r => setTimeout(r, attempt * 500)); // 500ms, 1s, 1.5s
           const freshStock = await getDistributedStock(userProductId);
-          if (!freshStock) break;
+          if (!freshStock) { lastError = "VERSION_CONFLICT (fresh GET failed)"; break; }
           const retryResult = await updateFlexStock(userProductId, availableQty, freshStock.version, stockType, freshStock.locations, { sku, sku_origen: map.sku_origen || sku });
           if (retryResult.ok) {
-            await sb.from("ml_items_map").update({
-              ultimo_sync: new Date().toISOString(),
-              stock_flex_cache: availableQty,
-              stock_version: freshStock.version + 1,
-            }).eq("id", map.id);
-            synced++;
-            retried = true;
+            putOk = true;
+            finalVersion = freshStock.version;
             break;
           }
           if (retryResult.error !== "VERSION_CONFLICT") {
             console.error(`[ML Stock] Retry ${attempt} for ${sku} failed:`, retryResult.error);
+            lastError = retryResult.error || "unknown_error";
             break;
           }
-        }
-        if (!retried) {
-          console.error(`[ML Stock] All retries failed for ${sku} (VERSION_CONFLICT)`);
+          lastError = "VERSION_CONFLICT (3 retries exhausted)";
         }
       } else {
         console.error(`[ML Stock] Error syncing ${sku}:`, result.error);
+        lastError = result.error || "unknown_error";
+      }
+
+      if (putOk) {
+        await sb.from("ml_items_map").update({
+          ultimo_sync: new Date().toISOString(),
+          stock_flex_cache: availableQty,
+          stock_version: finalVersion + 1,
+          last_sync_error: null,
+          last_sync_error_at: null,
+          consecutive_sync_failures: 0,
+          notificado_sync_error_at: null,
+        }).eq("id", map.id);
+        synced++;
+      } else if (lastError) {
+        // Failure path: increment counter, store error, alert if threshold crossed.
+        // Regla 3 + Regla 5 inventory-policy: nunca tragar errores ML, cache no debe mentir.
+        const newFailures = (map.consecutive_sync_failures ?? 0) + 1;
+        const errMsg = lastError.slice(0, 500);
+        const nowIso = new Date().toISOString();
+        await sb.from("ml_items_map").update({
+          last_sync_error: errMsg,
+          last_sync_error_at: nowIso,
+          consecutive_sync_failures: newFailures,
+        }).eq("id", map.id);
+
+        // Alerta WhatsApp: a partir de 3 fallas seguidas y sólo si no se notificó hace < 24h.
+        const NOTIFY_THRESHOLD = 3;
+        const NOTIFY_COOLDOWN_HOURS = 24;
+        const lastNotif = map.notificado_sync_error_at ? new Date(map.notificado_sync_error_at).getTime() : 0;
+        const cooldownMs = NOTIFY_COOLDOWN_HOURS * 60 * 60 * 1000;
+        const cooldownPassed = !lastNotif || Date.now() - lastNotif > cooldownMs;
+        if (newFailures >= NOTIFY_THRESHOLD && cooldownPassed) {
+          const text = `[BANVA] PUT stock ML falló ${newFailures}× para ${sku} (qty=${availableQty}). Item ${map.item_id} / up=${userProductId}. Error: ${errMsg.slice(0, 200)}`;
+          const { error: notifErr } = await sb.from("notifications_outbox").insert({
+            channel: "whatsapp",
+            destination: "56991655931",
+            payload: { text },
+          });
+          if (notifErr) {
+            console.error(`[ML Stock] notifications_outbox insert failed for ${sku}: ${notifErr.message}`);
+          } else {
+            await sb.from("ml_items_map").update({ notificado_sync_error_at: nowIso }).eq("id", map.id);
+          }
+        }
       }
     } catch (err) {
       console.error(`[ML Stock] Error syncing ${sku}:`, err);

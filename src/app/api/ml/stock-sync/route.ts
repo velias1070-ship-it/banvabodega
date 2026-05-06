@@ -191,14 +191,13 @@ export async function POST(req: NextRequest) {
           params: { sku, skuOrigen, esAgotar, buffer, disponibleOrigen, unidadesPack, available },
         });
 
-        // 9. Send to ML
+        // 9. Send to ML.
+        // syncStockToML actualiza stock_flex_cache SOLO cuando el PUT sale OK
+        // y graba last_sync_error + consecutive_sync_failures cuando falla.
+        // No sobreescribir cache acá: si el PUT falla, el valor anterior es la verdad
+        // (Regla 3 + Regla 5 de inventory-policy — caso histórico TXTLVAL4G6PBG abr 2026).
         const count = await syncStockToML(sku, available);
         if (count > 0) synced++;
-        // Always update stock_flex_cache so timeline shows current value
-        await sb.from("ml_items_map")
-          .update({ stock_flex_cache: available, cache_updated_at: new Date().toISOString() })
-          .eq("sku", sku)
-          .or("activo.eq.true,sku_venta.not.is.null");
       } catch (err) {
         errors.push(`${sku}: ${String(err)}`);
       }
