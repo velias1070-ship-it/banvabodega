@@ -3839,14 +3839,17 @@ export async function aprobarNuevoCosto(
   await recomputarVentasPosterioresRecepcion(disc.recepcion_id, skuUp, "aprobacion_disc");
 
   // 6. Claim contra proveedor (Chunk 7 LITE, v103).
-  // Si nuevoCosto < costo_factura → quedó claim implícito por la diferencia
-  // (el proveedor cobró más de lo aprobado, debería emitir NC).
+  // Si nuevoCosto < costo_factura → quedó claim implícito por la diferencia.
+  // IMPORTANTE: usar qty_factura (no qty_recibida). La NC del proveedor
+  // cubre sobrecargo de uds facturadas. Si recibiste uds extras (sobrante),
+  // esas se reclaman vía factura adicional separada (panel "Documentos
+  // asociados" lo trackea como bloque distinto).
   let claimMonto: number | null = null;
   let claimEstado: "ESPERANDO_NC" | null = null;
   if (nuevoCosto < disc.costo_factura) {
     const { data: lineaRow } = await sb.from("recepcion_lineas")
-      .select("qty_recibida").eq("id", disc.linea_id).maybeSingle();
-    const qty = (lineaRow as { qty_recibida: number } | null)?.qty_recibida || 0;
+      .select("qty_factura").eq("id", disc.linea_id).maybeSingle();
+    const qty = (lineaRow as { qty_factura: number } | null)?.qty_factura || 0;
     if (qty > 0) {
       claimMonto = Math.round((disc.costo_factura - nuevoCosto) * qty);
       claimEstado = "ESPERANDO_NC";
