@@ -146,6 +146,17 @@ export interface DBRecepcionLinea {
   etiqueta_impresa?: boolean;
   tiene_variantes?: boolean;
   sku_venta?: string;
+  /** @deprecated Schema v100 reservó estos campos para un lifecycle de pausa
+   *  por discrepancia de costo. El owner descartó ese diseño (operador no
+   *  debe ver discrepancias). Las columnas siguen en DB pero no se escriben.
+   *  Quedan tipados para no romper queries existentes. */
+  pausada_at?: string | null;
+  /** @deprecated ver pausada_at */
+  pausada_por?: string | null;
+  /** @deprecated ver pausada_at */
+  pausada_motivo?: string | null;
+  /** @deprecated ver pausada_at */
+  pausada_estado?: "PAUSADA" | "REACTIVADA" | "ABANDONADA" | null;
 }
 
 export interface DBMapConfig {
@@ -178,6 +189,15 @@ export interface DBDiscrepanciaCosto {
   notas?: string;
   costo_esperado_post_nc?: number | null;
   created_at?: string;
+  // v100 columns (sistema de costos rediseñado)
+  es_puntual?: boolean | null;
+  precio_anterior_snapshot?: number | null;
+  revertido_at?: string | null;
+  revertido_por?: string | null;
+  // v103 columns (Chunk 7 LITE — tracking claims contra proveedor)
+  claim_monto_pendiente?: number | null;
+  claim_estado?: "ESPERANDO_NC" | "RESUELTO_CON_NC" | "DESCARTADO" | null;
+  claim_resuelto_por_nc_id?: string | null;
 }
 
 export type DiscrepanciaQtyTipo = "FALTANTE" | "SOBRANTE" | "SKU_ERRONEO" | "NO_EN_FACTURA";

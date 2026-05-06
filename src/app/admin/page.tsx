@@ -14,6 +14,8 @@ import { getSupabase } from "@/lib/supabase";
 import Link from "next/link";
 import SheetSync from "@/components/SheetSync";
 import AdminReposicion from "@/components/AdminReposicion";
+import RecepcionDiscBanner from "@/components/RecepcionDiscBanner";
+import DiscrepanciaActionsModal from "@/components/DiscrepanciaActionsModal";
 import AdminAgentes from "@/components/AdminAgentes";
 import AdminInteligencia from "@/components/AdminInteligencia";
 import AdminSemaforo from "@/components/AdminSemaforo";
@@ -469,6 +471,9 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   const [showAnular, setShowAnular] = useState(false);
   const [anularMotivo, setAnularMotivo] = useState("");
 
+  // Discrepancia action modal (Chunk 6 — reemplaza confirm() legacy)
+  const [discActionModal, setDiscActionModal] = useState<{ disc: DBDiscrepanciaCosto; modo: "aprobar" | "rechazar" | "revertir" } | null>(null);
+
   // Error report modal
   const [errorLinea, setErrorLinea] = useState<DBRecepcionLinea|null>(null);
   const [errorMode, setErrorMode] = useState<"menu"|"conteo"|"sku"|"sustitucion">("menu");
@@ -630,40 +635,9 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
     setEditing(false); await refreshDetail(); setLoading(false);
   };
 
-  // ---- Discrepancy actions ----
-  const doAprobar = async (disc: DBDiscrepanciaCosto) => {
-    if (!confirm(`Aprobar nuevo costo para ${disc.sku}?\nDiccionario: ${fmtMoney(disc.costo_diccionario)} → Factura: ${fmtMoney(disc.costo_factura)}\nEl diccionario se actualizará con el nuevo costo.`)) return;
-    setLoading(true);
-    try {
-      const result = await aprobarNuevoCosto(disc.id!, disc.sku, disc.costo_factura);
-      const sr = result.sheetResult;
-      if (sr?.ok) {
-        alert(`Costo aprobado y actualizado.\nDB: OK\nGoogle Sheet: fila ${sr.row}, celda ${sr.cell}`);
-      } else {
-        alert(`Costo aprobado en DB.\nGoogle Sheet: ${sr?.error || JSON.stringify(sr)}\n\nRevisa /api/sheet/update-cost en el navegador para diagnosticar.`);
-      }
-      await refreshDetail();
-    } catch (e: unknown) {
-      console.error("Error aprobando costo:", e);
-      alert(`Error al aprobar: ${e instanceof Error ? e.message : e}`);
-    } finally {
-      setLoading(false);
-    }
-  };
-  const doRechazar = async (disc: DBDiscrepanciaCosto) => {
-    const nota = prompt("Motivo del rechazo (error proveedor, etc):", "Error de proveedor - reclamar");
-    if (nota === null) return;
-    setLoading(true);
-    try {
-      await rechazarNuevoCosto(disc.id!, nota);
-      await refreshDetail();
-    } catch (e: unknown) {
-      console.error("Error rechazando costo:", e);
-      alert(`Error al rechazar: ${e instanceof Error ? e.message : e}`);
-    } finally {
-      setLoading(false);
-    }
-  };
+  // Discrepancy actions: las acciones (aprobar/rechazar/revertir) viven en
+  // RecepcionDiscBanner (banner inline bajo cada linea) y en AdminDiscrepancias
+  // (tab global). El panel resumen legacy se elimino en Chunk 6 final.
 
   // ---- Line actions ----
   const doResetLinea = async (lineaId: string) => {
@@ -1344,72 +1318,9 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
           </div>
         )}
 
-        {/* Discrepancy panel */}
-        {discrepancias.length > 0 && (
-          <div className="card" style={{marginTop:12,border: tieneDiscrepanciasPendientes(discrepancias) ? "2px solid var(--amber)" : "1px solid var(--bg4)"}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-              <div style={{fontSize:13,fontWeight:700,color: tieneDiscrepanciasPendientes(discrepancias) ? "var(--amber)" : "var(--green)"}}>
-                Discrepancias de costo ({discrepancias.filter(d=>d.estado==="PENDIENTE").length} pendientes)
-              </div>
-              <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                {tieneDiscrepanciasPendientes(discrepancias) && (
-                  <span style={{fontSize:10,padding:"3px 8px",borderRadius:4,background:"var(--amberBg)",color:"var(--amber)",fontWeight:700,border:"1px solid var(--amberBd)"}}>
-                    Resolver antes de cerrar
-                  </span>
-                )}
-              </div>
-            </div>
-            <div style={{overflowX:"auto"}}>
-              <table className="tbl">
-                <thead><tr>
-                  <th>SKU</th>
-                  <th style={{textAlign:"right"}}>Diccionario</th>
-                  <th style={{textAlign:"right"}}>Factura</th>
-                  <th style={{textAlign:"right"}}>Diferencia</th>
-                  <th>Estado</th>
-                  <th>Acciones</th>
-                </tr></thead>
-                <tbody>{discrepancias.map(d => (
-                  <tr key={d.id} style={{background: d.estado==="PENDIENTE" ? "var(--amberBg)" : d.estado==="APROBADO" ? "var(--greenBg)" : "var(--redBg)"}}>
-                    <td className="mono" style={{fontSize:11,fontWeight:700}}>{d.sku}</td>
-                    <td className="mono" style={{textAlign:"right",fontSize:12}}>{d.costo_diccionario > 0 ? fmtMoney(d.costo_diccionario) : <span style={{color:"var(--txt3)",fontSize:10}}>Sin costo</span>}</td>
-                    <td className="mono" style={{textAlign:"right",fontSize:12,fontWeight:700}}>{fmtMoney(d.costo_factura)}</td>
-                    <td className="mono" style={{textAlign:"right",fontSize:12,fontWeight:700,color:d.diferencia>0?"var(--red)":"var(--green)"}}>
-                      {d.diferencia > 0 ? "+" : ""}{fmtMoney(d.diferencia)} ({d.porcentaje > 0 ? "+" : ""}{d.porcentaje}%)
-                    </td>
-                    <td>
-                      <span style={{fontSize:10,fontWeight:700,padding:"2px 6px",borderRadius:4,
-                        background: d.estado==="PENDIENTE" ? "var(--amberBg)" : d.estado==="APROBADO" ? "var(--greenBg)" : "var(--redBg)",
-                        color: d.estado==="PENDIENTE" ? "var(--amber)" : d.estado==="APROBADO" ? "var(--green)" : "var(--red)",
-                        border: `1px solid ${d.estado==="PENDIENTE" ? "var(--amberBd)" : d.estado==="APROBADO" ? "var(--greenBd,var(--green))" : "var(--redBd,var(--red))"}`}}>
-                        {d.estado}
-                      </span>
-                      {d.notas && <div style={{fontSize:9,color:"var(--txt3)",marginTop:2}}>{d.notas}</div>}
-                    </td>
-                    <td style={{whiteSpace:"nowrap"}}>
-                      {d.estado === "PENDIENTE" ? (
-                        <div style={{display:"flex",gap:4}}>
-                          <button onClick={()=>doAprobar(d)} disabled={loading}
-                            style={{padding:"4px 8px",borderRadius:4,background:"var(--green)",color:"#fff",fontSize:10,fontWeight:700,cursor:"pointer",border:"none"}}
-                            title="Aprobar: actualizar diccionario con nuevo costo">
-                            Aprobar
-                          </button>
-                          <button onClick={()=>doRechazar(d)} disabled={loading}
-                            style={{padding:"4px 8px",borderRadius:4,background:"var(--red)",color:"#fff",fontSize:10,fontWeight:700,cursor:"pointer",border:"none"}}
-                            title="Rechazar: error del proveedor, reclamar">
-                            Rechazar
-                          </button>
-                        </div>
-                      ) : (
-                        <span style={{fontSize:10,color:"var(--txt3)"}}>{d.resuelto_at ? fmtDate(d.resuelto_at) : ""}</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}</tbody>
-              </table>
-            </div>
-          </div>
-        )}
+        {/* Discrepancia de costo: cada disc se muestra como banner inline bajo
+            su linea correspondiente (RecepcionDiscBanner). El panel resumen
+            anterior fue eliminado para evitar duplicacion (Chunk 6 final). */}
 
         {/* Quantity discrepancy panel */}
         {discrepanciasQty.length > 0 && (
@@ -1746,6 +1657,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
               <tbody>{lineas.map(l => {
                 const lockInfo = isLineaBloqueada(l, "__admin__");
                 const disc = discrepancias.find(d => d.linea_id === l.id && d.estado === "PENDIENTE");
+                const discResolvable = discrepancias.find(d => d.linea_id === l.id && (d.estado === "PENDIENTE" || d.estado === "APROBADO"));
                 const discQty = discrepanciasQty.find(d => d.linea_id === l.id && d.estado === "PENDIENTE");
                 const isEd = editLineaId === l.id;
                 const inputStyle = {width:58,textAlign:"right" as const,padding:"3px 6px",borderRadius:4,border:"1px solid var(--cyan)",background:"var(--bg)",color:"var(--txt1)",fontSize:11,fontFamily:"inherit"};
@@ -1870,6 +1782,18 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                   </td>}
                 </tr>
                 );
+              })}
+              {/* Banner inline de discrepancias bajo cada línea (Chunk 6) */}
+              {lineas.flatMap(l => {
+                const dRes = discrepancias.find(d => d.linea_id === l.id && (d.estado === "PENDIENTE" || d.estado === "APROBADO"));
+                if (!dRes) return [];
+                return [(
+                  <tr key={`disc-${l.id}`}>
+                    <td colSpan={isEditable ? 10 : 9} style={{padding:"4px 8px"}}>
+                      <RecepcionDiscBanner disc={dRes} onResuelto={refreshDetail} />
+                    </td>
+                  </tr>
+                )];
               })}</tbody>
             </table>
           </div>
@@ -2379,6 +2303,18 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
         const rec = all.find(r => r.id === recId);
         if (rec) { setView("facturas"); await openRec(rec); }
       }} />}
+
+      {discActionModal && (
+        <DiscrepanciaActionsModal
+          modo={discActionModal.modo}
+          discId={discActionModal.disc.id!}
+          sku={discActionModal.disc.sku}
+          costoFactura={discActionModal.disc.costo_factura}
+          costoCatalogo={discActionModal.disc.costo_diccionario}
+          onCerrar={() => setDiscActionModal(null)}
+          onResuelto={refreshDetail}
+        />
+      )}
     </div>
   );
 }

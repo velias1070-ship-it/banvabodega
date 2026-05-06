@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { initStore, isStoreReady, getRecepcionesParaOperario, getLineasDeRecepciones, getRecepcionLineas, contarLinea, etiquetarLinea, ubicarLinea, actualizarRecepcion, actualizarLineaRecepcion, activePositions, findPosition, bloquearLinea, desbloquearLinea, renovarBloqueo, isLineaBloqueada, getVentasPorSkuOrigen, getNotasOperativas } from "@/lib/store";
+import { initStore, isStoreReady, getRecepcionesParaOperario, getLineasDeRecepciones, getRecepcionLineas, contarLinea, etiquetarLinea, ubicarLinea, actualizarRecepcion, actualizarLineaRecepcion, activePositions, findPosition, bloquearLinea, desbloquearLinea, renovarBloqueo, isLineaBloqueada, getVentasPorSkuOrigen, getNotasOperativas, detectarDiscrepanciaLinea, autoPopularCatalogoCasoA7, crearDiscrepanciaPendienteParaUbicar, notificarFaltaCostoEnLinea } from "@/lib/store";
 import type { DBRecepcion, DBRecepcionLinea, ComposicionVenta } from "@/lib/store";
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -519,6 +519,38 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, folio, prov
     if (!ubicarPos || ubicarQty <= 0) return;
     setSaving(true);
     try {
+      // Chunk 5 silent flow: detectar discrepancia y, si aplica, crear disc
+      // PENDIENTE antes de invocar la RPC. La RPC v37 detecta la disc y
+      // aplica precio_acordado en lugar del costo facturado. El operador
+      // no ve nada de esto — ubica como siempre.
+      const costoFact = linea.costo_unitario || 0;
+      const preview = await detectarDiscrepanciaLinea(linea.sku, costoFact, recepcionId);
+
+      // Caso D: sin catálogo principal Y sin costo facturado válido →
+      // bloqueamos y avisamos a Vicente. No se puede ubicar a ciegas.
+      if (preview.casoA7 && costoFact <= 0) {
+        await notificarFaltaCostoEnLinea({
+          sku: linea.sku, recepcionId, folio, operario,
+        });
+        showToast("Falta info de costo. Avisé a Vicente.");
+        setSaving(false);
+        return;
+      }
+
+      if (preview.casoA7) {
+        // A7: sin catálogo principal pero con factura → auto-popula y ubica
+        await autoPopularCatalogoCasoA7(linea.sku, costoFact, recepcionId);
+      } else if (preview.fueraTolerancia) {
+        // Fuera tolerancia: crear disc PENDIENTE; la RPC aplicará override
+        await crearDiscrepanciaPendienteParaUbicar({
+          lineaId: linea.id!,
+          sku: linea.sku,
+          costoFacturado: preview.costoFacturado,
+          precioAcordado: preview.precioAcordado,
+          recepcionId,
+        });
+      }
+
       const skuVentaVal = ubicarSkuVenta === "__SIN_ETIQUETAR__" ? null : ubicarSkuVenta;
       await ubicarLinea(linea.id!, linea.sku, ubicarPos, ubicarQty, operario, recepcionId, {
         skuVenta: skuVentaVal, folio, proveedor,
