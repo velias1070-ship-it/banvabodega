@@ -33,7 +33,7 @@ type RawMov = {
   recepcion_id: string | null;
   posicion_id: string | null;
   motivo: string | null;
-  notas: string | null;
+  nota: string | null;
   operario: string | null;
   created_at: string;
 };
@@ -73,7 +73,7 @@ export default function SkuTimeline() {
     try {
       const [{ data: movsData, error: movErr }, { data: prodData }] = await Promise.all([
         sb.from("movimientos")
-          .select("id, sku, tipo, cantidad, costo_unitario, recepcion_id, posicion_id, motivo, notas, operario, created_at")
+          .select("id, sku, tipo, cantidad, costo_unitario, recepcion_id, posicion_id, motivo, nota, operario, created_at")
           .eq("sku", sku)
           .order("created_at", { ascending: true })
           .limit(1000),
@@ -159,7 +159,7 @@ export default function SkuTimeline() {
         kind = "ajuste";
       }
       const rec = m.recepcion_id ? recs.get(m.recepcion_id) : null;
-      const motivoTexto = m.motivo || m.notas || "";
+      const motivoTexto = m.motivo || m.nota || "";
       return {
         fecha: m.created_at,
         tipo: kind,
