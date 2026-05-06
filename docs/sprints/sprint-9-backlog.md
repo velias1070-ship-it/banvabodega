@@ -543,8 +543,301 @@ Si no aparecen, el margen queda. Si aparecen, el sprint no descalibra.
 
 Sprint 9 cerrable en 1 sesión.
 
+### Sub-issue P5 — Bodega vacía con SKU activo (caso XYCMN405)
+
+**Detectado durante validación P1, 2026-05-06:**
+
+`XYCMN405` "Botella Kit Niña Manualidades" (Container) tiene
+`stock_bodega=0`, `stock_full=28`, vendiendo 21 uds/30d (vel real
+4.9/sem). El motor lo da por OK porque `stock_total (28) ≥ stock_objetivo (26)`,
+pero operativamente:
+
+- Si Full quiebra (cob ~5.7 sem) no hay buffer en Bodega para reabastecer.
+- Lead time Container ~5d → ventana de quiebre 7-12 días.
+- Alerta `flex_no_publicado` activa: SKU sin publicación Flex hoy.
+
+**Causa raíz:** la fórmula `qty_raw` trata `stock_total` como **fungible
+entre Bodega y Full**. No distingue:
+
+```
+Caso A: bodega=14, full=14   → motor OK
+Caso B: bodega=0,  full=28   → motor OK (mismo total, peor operativamente)
+```
+
+El filtro WHERE de `v_compras_pendientes` tampoco lo captura porque las
+3 ramas existentes (bajo_rop, is_new_sku, full<pre_full AND bodega>flex)
+se cumplen todas falso.
+
+**Solución (fix doble: filtro + fórmula):**
+
+**1. Extender qty_raw** para incluir piso de Bodega:
+
+```sql
+target_bodega_minimo = reserva_flex_target + ROUND(d_avg_dia × lt_decl)
+                       ↑ flex                ↑ cycle stock cubrir LT proveedor
+
+deficit_bodega = GREATEST(0,
+  target_bodega_minimo - stock_bodega - in_transit_oc_bodega)
+
+qty_raw = GREATEST(
+  stock_objetivo - stock_total - in_transit_total,    -- formula original
+  deficit_bodega                                       -- nuevo: piso bodega
+)
+```
+
+**2. Extender filtro WHERE** sin condición `pct_flex > 0`:
+
+```sql
+OR (stock_bodega < target_bodega_minimo
+    AND uds_30d_real > 0)
+```
+
+**Doctrina del fix:** "tener stock en Bodega es para reabastecer Full
+cuando se vacíe, NO solo para Flex". Aplica a todos los SKUs activos.
+Si `pct_flex=0`, `reserva_flex_target=0` automáticamente, sin necesidad
+de condicionar el filtro.
+
+**Verificación numérica con XYCMN405:**
+
+```
+d_avg_dia    = 3.23/7 = 0.46
+lt_decl      = 5
+cycle_bodega = round(0.46 × 5) = 2
+flex_target  = 2
+target_bodega_minimo = 2 + 2 = 4
+
+deficit_bodega = MAX(0, 4 - 0 - 0) = 4
+
+qty_raw = MAX(stock_objetivo - stock_total, deficit_bodega)
+       = MAX(-3, 4)
+       = 4
+
+inner_pack = 1
+qty_a_comprar = 4 uds
+```
+
+**CLP estimado correcto:**
+- `productos.costo_promedio` (XYCMN405) = $4.370 NETO
+- 4 uds × $4.370 = **$17.480 neto**
+- Con IVA (1.19): **$20.801 bruto**
+
+`clp_estimado` en `v_compras_pendientes` usa `costo_promedio × qty`
+(neto). Para reportes de gasto bruto, multiplicar por 1.19. (Mi
+estimación previa de $44K era error mío, mezclé con costo de Sabana
+Daloa $11K/uds.)
+
+**Test invariante T32 (propuesto):**
+
+```sql
+-- T32: SKUs activos con bodega bajo target_bodega_minimo deben aparecer
+-- en v_compras_pendientes con qty_a_comprar > 0
+SELECT COUNT(*) AS skus_bodega_vacia_invisible
+FROM v_safety_stock vss
+JOIN sku_intelligence si ON si.sku_origen = vss.sku_origen
+LEFT JOIN v_compras_pendientes vcp ON vcp.sku_origen = vss.sku_origen
+WHERE vss.node_id = 'bodega_central'
+  AND si.uds_30d_real > 0
+  AND vss.policy_status = 'active'
+  -- Bodega bajo target mínimo (cycle + flex):
+  AND (SELECT qty_on_hand - COALESCE(qty_reserved, 0)
+       FROM v_stock_por_nodo
+       WHERE sku_origen = vss.sku_origen
+         AND node_id = 'bodega_central') < (vss.reserva_flex_target + ROUND(vss.d_avg_dia × vss.lt_dias))
+  AND (vcp.sku_origen IS NULL OR vcp.qty_a_comprar IS NULL OR vcp.qty_a_comprar = 0);
+-- Expected post-fix: 0
+-- Pre-fix: ≥1 (caso XYCMN405)
+```
+
+**No bloqueante de P1.** Toca `v_compras_pendientes` (extender CTE
+`qty_calc` con `deficit_bodega` + extender WHERE final).
+
+### Sub-issue P1.9 — `pct_flex_efectivo` cuando `flex_no_publicado` (DECISIÓN OWNER PENDIENTE)
+
+**Detectado durante análisis P5, 2026-05-06:**
+
+Hay contradicción de datos en SKUs con alerta `flex_no_publicado`:
+
+```
+XYCMN405:
+  pct_flex = 0.2     (histórico: 20% ventas vía Flex)
+  alerta   = flex_no_publicado  (HOY no se publica Flex)
+```
+
+`pct_flex` se calcula del histórico de ventas y NO se ajusta por la
+publicación Flex actual. El motor lo trata como si Flex estuviera vivo,
+calculando `reserva_flex_target` > 0 → cuando bodega < flex_target,
+el motor pide stock para una reserva que nunca se va a usar (porque
+Flex está apagado).
+
+**Fix técnico simple:**
+```sql
+pct_flex_efectivo = CASE WHEN flex_no_publicado THEN 0 ELSE pct_flex END
+```
+
+**PERO la decisión es doctrinal, no técnica.** Trade-off:
+
+**Opción A — apagar `pct_flex` cuando `flex_no_publicado`:**
+- Motor se adapta al statu quo "Flex apagado".
+- `reserva_flex_target = 0` para esos SKUs.
+- Alerta queda vacía operativamente (no genera presión por uds reservadas).
+- XYCMN405 pediría qty=2 (solo cycle_stock_bodega) en vez de qty=4.
+
+**Opción B — mantener `pct_flex` histórico:**
+- Motor reserva stock como si Flex estuviera activo.
+- Alerta `flex_no_publicado` tiene "carne": uds reservadas que no se
+  publican = oportunidad perdida visible.
+- Presiona al owner a reactivar publicación Flex (o aceptar que
+  pct_flex caiga naturalmente con el tiempo si nunca se reactiva).
+
+**Argumentos a favor de B (mantener):**
+- La alerta queda con peso real, no decorativa.
+- Owner ve costo de oportunidad cada vez que mira esos SKUs.
+- Reflexión forzada: "publico Flex o asumo el ajuste".
+
+**Argumentos a favor de A (apagar):**
+- Motor más coherente con la realidad operativa.
+- Menos sobre-pedidos al proveedor.
+- Cálculos más limpios.
+
+**Decisión owner pendiente.** No implementar sin discusión.
+
+**Importante para secuenciamiento:** si P1.9 se aplica ANTES que P5,
+XYCMN405 quedaría con qty=2 (solo cycle_stock_bodega). Eso es
+matemáticamente coherente pero operativamente perverso — el motor
+coopera con el statu quo en vez de presionar a reactivar Flex.
+
+**Recomendación:** documentar P1.9 acá pero NO implementar antes de P5
+(y posiblemente nunca, si la doctrina de "alerta con peso" gana).
+
+### Sub-issue P1.10 — Pickings COMPLETADA fantasma entre cierre y inbound ML
+
+**Detectado durante análisis P5, 2026-05-06:**
+
+Sesión `ae0547bc-c7e9-44c5-a815-e13e60bc2236` (Envío a Full 04-may):
+
+```
+Estado:                COMPLETADA
+Lineas:                58 (49 SKUs distintos)
+Componentes pickeados: 58 / 58 (100%)
+Uds pickeadas:         426
+Created:               2026-05-04 01:39
+Completed:             2026-05-05 18:15
+```
+
+Esas 426 uds están en limbo:
+- `stock_bodega` ya descontó (RPC al pickear).
+- `in_transit_picking_full` = 0 (sesión COMPLETADA queda fuera del
+  filtro `estado IN ('ABIERTA','EN_PROCESO')` de `v_in_transit_por_nodo`).
+- `stock_full` aún puede no reflejarlas (lag inbound ML 1-3d, a veces
+  más en alta demanda).
+
+**Resultado:** durante la ventana 1-5 días post-completar y antes de
+que ML reporte el inbound, las uds son **invisibles para el motor**.
+Decisiones de `mandar_full_uds` y `qty_a_comprar` quedan
+**subestimando inventario disponible** (tanto en Bodega como en Full).
+
+**Doctrina actual** (Sprint 7 Fase 0.A, `v_in_transit_por_nodo`):
+```sql
+WHERE ps.estado IN ('ABIERTA','EN_PROCESO')
+```
+Asume que cuando `ps.estado = 'COMPLETADA'`, `stock_full` ya las refleja.
+**Asunción incorrecta** dado el lag ML.
+
+**Opciones de fix evaluadas:**
+
+**(a) Extender filtro a `estado IN ('ABIERTA','EN_PROCESO','COMPLETADA')` con TTL:**
+
+```sql
+WHERE (
+  ps.estado IN ('ABIERTA','EN_PROCESO')
+  OR (ps.estado = 'COMPLETADA' AND ps.completed_at >= NOW() - INTERVAL '5 days')
+)
+```
+
+- ✅ Simple, una línea de cambio.
+- ✅ Cubre el lag típico de ML (1-3d con margen).
+- ❌ TTL=5d arbitrario (calibrar contra incidencias reales).
+- ❌ Falsa visibilidad si el shipment ya fue recibido pero la sesión
+  no se cerró en sistema (raro, pero pasa).
+
+**(b) Cruzar con `ml_shipments` inbound:**
+
+```
+COMPLETADA cuenta como in_transit MIENTRAS no haya shipment ML asociado
+(matched por SKU + cantidad).
+```
+
+- ✅ Deriva del estado real ML, no del calendario.
+- ❌ Matching complejo (shipments parciales, splits por bodega ML, IDs
+  no siempre asociados al picking).
+- ❌ Más superficie de bug.
+
+**(c) Nuevo estado intermedio `RECEPCIONADO_ML`:**
+
+Operador o cron transiciona `COMPLETADA → RECEPCIONADO_ML` cuando
+detecta el inbound en `stock_full_cache`. Filtro queda
+`estado IN ('ABIERTA','EN_PROCESO','COMPLETADA')` y `RECEPCIONADO_ML`
+se excluye.
+
+- ✅ Más robusto, refleja el flujo real.
+- ❌ Cambia el modelo (migración, UI, app móvil de operador).
+- ❌ Requiere cron de auto-transición o intervención manual.
+
+**Recomendación:** **(a) con TTL=5d como primer fix.** Simple, atajo
+inmediato. (b) o (c) como Sprint 10+ si el TTL se queda corto en
+incidencias reales.
+
+**Sección UI propuesta — "Envíos a Full"** (en `/admin` tab Inteligencia
+o sub-tab nueva):
+
+- Pickings activos (`ABIERTA` / `EN_PROCESO`) con SKUs y uds.
+- Pickings `COMPLETADA` recientes (últimos 14d) con detección de
+  descuadres `uds_enviadas` vs `uds_recibidas_ml`.
+- Alerta cuando `COMPLETADA` lleva >5d sin reflejarse en `stock_full`
+  (posible pérdida en tránsito o error en el envío).
+
+**Casos testigo:**
+- Sesión `ae0547bc` (04-may, 49 SKUs, 426 uds, completada 2026-05-05 18:15)
+  → debería estar en `in_transit_picking_full` con TTL=5d hoy. Hoy
+  está invisible (commit fix la haría visible inmediatamente).
+- Sesión `5ef84040` (06-may, 41 SKUs, todas PENDIENTE) → ya cubierto
+  por sub-issue P1.8 (picking pendiente).
+
+**Test invariante T31 (propuesto):**
+
+```sql
+-- T31: SKUs en pickings COMPLETADA recientes (<5d) deben aparecer
+-- en in_transit_picking_full hasta TTL/confirmación inbound ML
+WITH completada_reciente AS (
+  SELECT
+    UPPER(TRIM(comp.value->>'skuOrigen')) AS sku_origen,
+    SUM((comp.value->>'unidades')::int) AS uds_completadas
+  FROM picking_sessions ps,
+       jsonb_array_elements(ps.lineas) linea(value),
+       jsonb_array_elements(linea.value->'componentes') comp(value)
+  WHERE ps.tipo = 'envio_full'
+    AND ps.estado = 'COMPLETADA'
+    AND ps.completed_at >= NOW() - INTERVAL '5 days'
+    AND comp.value->>'estado' = 'PICKEADO'
+  GROUP BY UPPER(TRIM(comp.value->>'skuOrigen'))
+)
+SELECT COUNT(*) AS skus_completada_invisible
+FROM completada_reciente cr
+LEFT JOIN v_in_transit_por_nodo v ON v.sku_origen = cr.sku_origen
+                                  AND v.to_node_id = 'full_ml'
+WHERE COALESCE(v.qty_in_transit, 0) < cr.uds_completadas;
+-- Expected post-fix: 0 (todas las COMPLETADA <5d cuentan como in_transit)
+-- Pre-fix: ≥1 (caso ae0547bc, 426 uds invisibles)
+```
+
+**No bloqueante de P1.** Toca `v_in_transit_por_nodo` (una línea de
+WHERE).
+
 ## Tags de cierre Sprint 9
 
 - `[milestone:sprint-9-cell-sync-canon]` — sync cell_efectiva canónico
 - `[hotfix:cz-alta-vel]` — template CZ con vel real
 - `[hotfix:ui-cell-render]` — render columna ABC + badges
+- `[hotfix:bodega-vacia-buffer]` — P5 fix doble qty_raw + filtro
+- `[hotfix:picking-completada-ttl]` — P1.10 TTL en v_in_transit_por_nodo
+- `[decision-pending:flex-no-publicado-pct]` — P1.9 decisión owner
