@@ -5771,6 +5771,7 @@ function Inventario() {
   const [selectedSku, setSelectedSku] = useState<string|null>(null);
   const [mlRefresh, setMlRefresh] = useState(0);
   const [viewMode, setViewMode] = useState<"fisico"|"ml">("fisico");
+  const [mlSyncErrors, setMlSyncErrors] = useState<{sku:string;item_id:string;consecutive_sync_failures:number;last_sync_error:string|null;last_sync_error_at:string|null}[]>([]);
   const [soloSinEtiquetar, setSoloSinEtiquetar] = useState(false);
   const [soloComprometidos, setSoloComprometidos] = useState(false);
   const [soloSinFlex, setSoloSinFlex] = useState(false);
@@ -5862,6 +5863,26 @@ function Inventario() {
     }).catch(() => { if (!cancelled) setSkuMovsLoading(false); });
     return () => { cancelled = true; };
   }, [expanded, selectedSku]);
+
+  // SKUs con fallas consecutivas de PUT a ML (v99). Vacío si todo OK.
+  // Solo se rellena cuando viewMode==='ml' para no querear de gusto.
+  useEffect(() => {
+    if (viewMode !== "ml") return;
+    let cancelled = false;
+    (async () => {
+      const sb = (await import("@/lib/supabase")).getSupabase();
+      if (!sb) return;
+      const { data, error } = await sb.from("ml_items_map")
+        .select("sku, item_id, consecutive_sync_failures, last_sync_error, last_sync_error_at")
+        .gt("consecutive_sync_failures", 0)
+        .order("consecutive_sync_failures", { ascending: false })
+        .limit(50);
+      if (cancelled) return;
+      if (error) { console.error("[mlSyncErrors] fetch failed", error.message); return; }
+      setMlSyncErrors((data || []) as typeof mlSyncErrors);
+    })();
+    return () => { cancelled = true; };
+  }, [viewMode, mlRefresh]);
 
   // ML canal data para vista SKU (publicado Flex + stock Full)
   const [mlSkuData, setMlSkuData] = useState<{
@@ -6860,6 +6881,34 @@ function Inventario() {
       {viewMode === "ml" ? (
         /* ===== ML PUBLICATIONS VIEW ===== */
         <>
+          {mlSyncErrors.length > 0 && (
+            <div className="card" style={{padding:12,marginBottom:8,background:"var(--redBg)",border:"1px solid var(--redBd)"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                <div style={{fontSize:13,fontWeight:700,color:"var(--red)"}}>
+                  ⚠ {mlSyncErrors.length} SKU{mlSyncErrors.length!==1?"s":""} con PUT a ML fallando
+                </div>
+                <div style={{fontSize:10,color:"var(--txt3)"}}>cache local puede estar desfasado vs ML real</div>
+              </div>
+              <div style={{maxHeight:180,overflowY:"auto"}}>
+                <table className="tbl" style={{margin:0}}>
+                  <thead><tr>
+                    <th>SKU</th><th>Item ML</th><th style={{textAlign:"right"}}>Fallas</th><th>Último error</th><th>Último intento</th>
+                  </tr></thead>
+                  <tbody>
+                    {mlSyncErrors.map(e => (
+                      <tr key={`${e.sku}-${e.item_id}`} style={{cursor:"pointer"}} onClick={()=>setSelectedSku(e.sku)}>
+                        <td className="mono" style={{fontWeight:700,fontSize:12}}>{e.sku}</td>
+                        <td className="mono" style={{fontSize:11,color:"var(--amber)"}}>{e.item_id}</td>
+                        <td className="mono" style={{textAlign:"right",fontWeight:700,color:"var(--red)"}}>{e.consecutive_sync_failures}</td>
+                        <td style={{fontSize:10,color:"var(--txt2)",maxWidth:400,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={e.last_sync_error || ""}>{e.last_sync_error || "—"}</td>
+                        <td style={{fontSize:10,color:"var(--txt3)"}}>{e.last_sync_error_at ? `${fmtDate(e.last_sync_error_at)} ${fmtTime(e.last_sync_error_at)}` : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
           <div className="desktop-only">
             <div className="card" style={{padding:0,overflow:"hidden"}}>
               <table className="tbl">
