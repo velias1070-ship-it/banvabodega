@@ -2139,6 +2139,7 @@ export default function AdminInteligencia() {
               else if (col === "ip") { va = a.innerPack; vb = b.innerPack; }
               else if (col === "bultos") { va = a.bultos; vb = b.bultos; }
               else if (col === "accion") { va = a.accion; vb = b.accion; }
+              else if (col === "diff") { va = a.mandarSugerido - a.mandarMotor; vb = b.mandarSugerido - b.mandarMotor; }
               const cmp = typeof va === "string" ? va.localeCompare(vb as string) : (va as number) - (vb as number);
               return asc ? cmp : -cmp;
             });
@@ -2152,7 +2153,10 @@ export default function AdminInteligencia() {
               {/* Filters */}
               <div style={{ display: "flex", gap: 4, marginBottom: 8, flexWrap: "wrap" }}>
                 {([["todos","Todos"],["sin_ip","Sin IP"],["abc_a","ABC A"],["abc_b","ABC B"],["abc_c","ABC C"],["urgente","Urgentes"],["stock_insuf","Stock insuf."],["overshoot","⚠ Overshoot pack"]] as const).map(([key, label]) => (
-                  <button key={key} onClick={() => setEnvioFilter(key)}
+                  <button key={key} onClick={() => {
+                    setEnvioFilter(key);
+                    if (key === "overshoot") setEnvioSort({ col: "diff", asc: false });
+                  }}
                     style={{ padding: "4px 10px", borderRadius: 4, fontSize: 10, fontWeight: 600, border: `1px solid ${envioFilter === key ? "var(--cyan)" : "var(--bg4)"}`,
                       background: envioFilter === key ? "var(--cyan)" : "var(--bg3)", color: envioFilter === key ? "#000" : "var(--txt3)", cursor: "pointer" }}>
                     {label} ({envioItems.filter(i => {
