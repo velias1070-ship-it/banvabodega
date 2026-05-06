@@ -1503,7 +1503,7 @@ export async function syncStockToML(sku: string, availableQty: number): Promise<
           const text = `[BANVA] PUT stock ML falló ${newFailures}× para ${sku} (qty=${availableQty}). Item ${map.item_id} / up=${userProductId}. Error: ${errMsg.slice(0, 200)}`;
           const { error: notifErr } = await sb.from("notifications_outbox").insert({
             channel: "whatsapp",
-            destination: "56991655931",
+            destination: "56991655931@s.whatsapp.net",
             payload: { text },
           });
           if (notifErr) {
@@ -2242,7 +2242,7 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
           const text = `[BANVA] ${nuevos.length} item(s) ML sin mapping (${catalogCount} catalog):\n${lineas.join("\n")}${nuevos.length > 5 ? `\n• ...y ${nuevos.length - 5} más` : ""}`;
           const { error: notifErr } = await sb.from("notifications_outbox").insert({
             channel: "whatsapp",
-            destination: "56991655931",
+            destination: "56991655931@s.whatsapp.net",
             payload: { text },
           });
           if (notifErr) {
