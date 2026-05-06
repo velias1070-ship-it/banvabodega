@@ -339,8 +339,20 @@ PICKEADO → COMPLETADA, por eso `qty_a_comprar` ya está bien calculado en
 cualquier estado. No tocar.
 
 **Solución correcta:** columna nueva `qty_picking_pendiente_full` que
-**solo se descuenta de `disponible_para_full`**, NO se suma a
-`in_transit_total` ni a `stock_total`:
+**se descuenta de AMBOS sub-cálculos** (`deficit_full` y
+`disponible_para_full`), NO se suma a `in_transit_total` ni a
+`stock_total`. Razón de aplicarlo en ambos:
+
+- `deficit_full` mide "cuánto falta a Full". Un picking PENDIENTE ya
+  está cubriendo parte de ese gap → si no se descuenta, el motor
+  sigue calculando déficit como si nada estuviera por llegar.
+- `disponible_para_full` mide "cuánto puedo sacar de bodega". Un
+  picking PENDIENTE ya está comprometido → si no se descuenta,
+  el motor cree que tiene más bodega libre de la real.
+
+Aplicarlo solo en `disponible_para_full` no resuelve el caso testigo
+porque el bottleneck del `LEAST` sigue siendo el `deficit_full` no
+ajustado.
 
 ```sql
 WITH picking_pendiente AS (
@@ -355,25 +367,73 @@ WITH picking_pendiente AS (
     AND comp.value->>'estado' = 'PENDIENTE'
   GROUP BY UPPER(TRIM(comp.value->>'skuOrigen'))
 )
--- En v_compras_pendientes:
-disponible_para_full = stock_bodega - reserva_flex_target
-                     - COALESCE(pp.qty_picking_pendiente_full, 0)
+-- En v_compras_pendientes (cambios en AMBOS):
+deficit_full = GREATEST(0, pre_full_target
+                          - stock_full
+                          - in_transit_picking_full
+                          - COALESCE(pp.qty_picking_pendiente_full, 0))
+
+disponible_para_full = GREATEST(0, stock_bodega
+                                  - reserva_flex_target
+                                  - COALESCE(pp.qty_picking_pendiente_full, 0))
+
 mandar_full_uds = LEAST(deficit_full, disponible_para_full)
 ```
 
 `qty_a_comprar` queda intacto. Solo `mandar_full_uds` deja de ser ciego.
 
-**Caso testigo confirmado:** LITAF400G4PNG con 16 uds picking pendiente.
-- Hoy: motor sugiere mandar 19 más a Full (ciego al picking).
-- Con fix: `disponible_para_full` baja en 16 → `mandar_full_uds` = 0 o
-  reducido. Motor deja de proponer doble envío.
+**Caso testigo verificado numéricamente con LITAF400G4PNG (Toallas A.Family Negro):**
+
+```
+Datos crudos hoy:
+  pre_full_target:           77
+  stock_full:                58
+  in_transit_picking_full:    0
+  qty_picking_pendiente_full:16
+  stock_bodega:              46
+  reserva_flex_target:       13
+
+Sin fix (hoy):
+  deficit_full        = 77 - 58 - 0     = 19
+  disponible_para_full = 46 - 13        = 33
+  mandar_full_uds     = LEAST(19, 33)   = 19  ⚠️ overshoot
+
+Fix incompleto (solo disponible_para_full):
+  deficit_full        = 19  (sin cambio)
+  disponible_para_full = 46 - 13 - 16   = 17
+  mandar_full_uds     = LEAST(19, 17)   = 17  ⚠️ insuficiente
+
+Fix doble (correcto):
+  deficit_full        = 77 - 58 - 0 - 16 = 3
+  disponible_para_full = 46 - 13 - 16    = 17
+  mandar_full_uds     = LEAST(3, 17)     = 3   ✅
+```
+
+**Verificación invariante:** total que llega a Full = 16 (picking) + 3
+(nuevo) = 19 uds → stock_full final = 58+19 = 77 = pre_full_target.
+Cero overshoot, exactamente al target.
+
+**Test invariante T30 (`tests/sql/regression_sprint9_picking_pendiente.sql`):**
+
+```sql
+-- T30: con picking PENDIENTE, mandar_full + ya_comprometido
+-- nunca debe exceder el deficit pre-pickeo
+SELECT COUNT(*) AS skus_overshoot_picking_pendiente
+FROM v_compras_pendientes vcp
+WHERE qty_picking_pendiente_full > 0
+  AND (mandar_full_uds + qty_picking_pendiente_full)
+      > GREATEST(0, pre_full_target - stock_full);
+-- Expected: 0 post-fix
+-- Pre-fix: ≥1 (caso LITAF400G4PNG: 19+16=35 > 19, FAIL)
+```
 
 **Alternativa UI (sin migración SQL):** badge en columna MANDAR cuando
 hay picking activo del mismo SKU pendiente, indicando "ya hay X uds
 en picking, vas a mandar +Y más". Decisión queda en el owner.
 
-**No bloqueante.** Toca `v_compras_pendientes` (agregar CTE + ajuste
-en `disponible_para_full`). Riesgo bajo, scope acotado.
+**No bloqueante.** Toca `v_compras_pendientes` (agregar CTE
+`picking_pendiente` + ajuste en AMBOS sub-cálculos
+`deficit_full` y `disponible_para_full`). Riesgo bajo, scope acotado.
 
 ## Prioridad 2 — Gap 2: política CZ + alertas operativas
 
