@@ -54,6 +54,8 @@ export default function CatalogoVerPanel() {
   const [soloZombi, setSoloZombi] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [editPrecio, setEditPrecio] = useState<string>("");
+  const [editNombre, setEditNombre] = useState<string>("");
+  const [editInner, setEditInner] = useState<string>("");
   const [historiaSku, setHistoriaSku] = useState<{ sku: string; proveedor: string } | null>(null);
 
   const cargar = useCallback(async () => {
@@ -110,19 +112,30 @@ export default function CatalogoVerPanel() {
     sin_precio: rows.filter(r => r.es_principal && (!r.precio_neto || r.precio_neto <= 0)).length,
   }), [rows]);
 
-  const guardarPrecio = async (row: CatRow) => {
-    const nuevo = parseFloat(editPrecio);
-    if (!Number.isFinite(nuevo) || nuevo < 0) {
-      alert("Precio inválido");
-      return;
+  const guardarFila = async (row: CatRow) => {
+    const nuevoPrecio = parseFloat(editPrecio);
+    if (!Number.isFinite(nuevoPrecio) || nuevoPrecio < 0) {
+      alert("Precio inválido"); return;
     }
+    const innerNum = editInner.trim() === "" ? null : parseInt(editInner);
+    if (innerNum !== null && (!Number.isFinite(innerNum) || innerNum < 1)) {
+      alert("Inner pack inválido (debe ser entero ≥ 1 o vacío)"); return;
+    }
+    const nombreTrim = editNombre.trim();
     const sb = getSupabase();
     if (!sb) return;
+    const cambios: string[] = [];
+    if (nuevoPrecio !== row.precio_neto) cambios.push(`precio ${row.precio_neto} → ${nuevoPrecio}`);
+    if (nombreTrim !== (row.nombre || "")) cambios.push(`nombre cambiado`);
+    if (innerNum !== row.inner_pack) cambios.push(`inner ${row.inner_pack ?? "—"} → ${innerNum ?? "—"}`);
+    const motivo = cambios.length > 0 ? `edicion UI 2026-05-06: ${cambios.join(", ")}` : "edicion UI sin cambios";
     const { error } = await sb.from("proveedor_catalogo").update({
-      precio_neto: nuevo,
+      precio_neto: nuevoPrecio,
+      nombre: nombreTrim || null,
+      inner_pack: innerNum,
       updated_at: new Date().toISOString(),
       updated_by: "admin_ui",
-      motivo_ultimo_cambio: `edicion manual UI 2026-05-06: precio anterior ${row.precio_neto}`,
+      motivo_ultimo_cambio: motivo,
     }).eq("id", row.id);
     if (error) {
       alert("Error al guardar: " + error.message);
@@ -130,6 +143,8 @@ export default function CatalogoVerPanel() {
     }
     setEditId(null);
     setEditPrecio("");
+    setEditNombre("");
+    setEditInner("");
     await cargar();
   };
 
@@ -236,17 +251,33 @@ export default function CatalogoVerPanel() {
                       {!isPrincipal && <span style={{ marginLeft: 4, fontSize: 9, padding: "1px 5px", borderRadius: 3, background: "var(--bg3)", color: "var(--txt3)" }}>alt</span>}
                     </td>
                     <td className="mono" style={{ padding: "6px 10px", fontWeight: 700 }}>{r.sku_origen}</td>
-                    <td style={{ padding: "6px 10px", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {r.nombre || <span style={{ color: "var(--txt3)" }}>—</span>}
+                    <td style={{ padding: "6px 10px", maxWidth: 280 }}>
+                      {isEdit ? (
+                        <input type="text" value={editNombre} onChange={e => setEditNombre(e.target.value)}
+                          onKeyDown={e => { if (e.key === "Enter") guardarFila(r); if (e.key === "Escape") setEditId(null); }}
+                          placeholder="Nombre origen (proveedor)"
+                          style={{ width: "100%", padding: "2px 6px", borderRadius: 4, background: "var(--bg)", color: "var(--txt)", border: "1px solid var(--cyan)", fontSize: 11 }} />
+                      ) : (
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "inline-block", maxWidth: 260 }}>
+                          {r.nombre || <span style={{ color: "var(--txt3)" }}>—</span>}
+                        </span>
+                      )}
                     </td>
                     <td className="mono" style={{ padding: "6px 10px", textAlign: "right" }}>
-                      {r.inner_pack ?? "—"}
+                      {isEdit ? (
+                        <input type="number" value={editInner} onChange={e => setEditInner(e.target.value)}
+                          onKeyDown={e => { if (e.key === "Enter") guardarFila(r); if (e.key === "Escape") setEditId(null); }}
+                          placeholder="—"
+                          style={{ width: 60, padding: "2px 6px", borderRadius: 4, background: "var(--bg)", color: "var(--txt)", border: "1px solid var(--cyan)", fontSize: 11, fontFamily: "JetBrains Mono, monospace", textAlign: "right" }} />
+                      ) : (
+                        r.inner_pack ?? "—"
+                      )}
                     </td>
                     <td className="mono" style={{ padding: "6px 10px", textAlign: "right", fontWeight: 700 }}>
                       {isEdit ? (
                         <input type="number" value={editPrecio} onChange={e => setEditPrecio(e.target.value)}
                           autoFocus
-                          onKeyDown={e => { if (e.key === "Enter") guardarPrecio(r); if (e.key === "Escape") setEditId(null); }}
+                          onKeyDown={e => { if (e.key === "Enter") guardarFila(r); if (e.key === "Escape") setEditId(null); }}
                           style={{ width: 100, padding: "2px 6px", borderRadius: 4, background: "var(--bg)", color: "var(--txt)", border: "1px solid var(--cyan)", fontSize: 11, fontFamily: "JetBrains Mono, monospace", textAlign: "right" }} />
                       ) : (
                         <span style={{ color: r.precio_neto > 0 ? "var(--cyan)" : "var(--red)" }}>
@@ -274,7 +305,7 @@ export default function CatalogoVerPanel() {
                     <td style={{ padding: "6px 10px", textAlign: "center", whiteSpace: "nowrap" }}>
                       {isEdit ? (
                         <>
-                          <button onClick={() => guardarPrecio(r)}
+                          <button onClick={() => guardarFila(r)}
                             style={{ padding: "3px 8px", borderRadius: 4, background: "var(--green)", color: "#0a0e17", fontSize: 10, fontWeight: 700, border: "none", marginRight: 3, cursor: "pointer" }}>
                             ✓ Guardar
                           </button>
@@ -285,7 +316,12 @@ export default function CatalogoVerPanel() {
                         </>
                       ) : (
                         <>
-                          <button onClick={() => { setEditId(r.id); setEditPrecio(String(r.precio_neto)); }}
+                          <button onClick={() => {
+                            setEditId(r.id);
+                            setEditPrecio(String(r.precio_neto));
+                            setEditNombre(r.nombre || "");
+                            setEditInner(r.inner_pack != null ? String(r.inner_pack) : "");
+                          }}
                             style={{ padding: "3px 8px", borderRadius: 4, background: "var(--bg3)", color: "var(--cyan)", fontSize: 10, fontWeight: 700, border: "1px solid var(--bg4)", marginRight: 3, cursor: "pointer" }}>
                             ✎ Editar
                           </button>
