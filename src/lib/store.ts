@@ -3444,6 +3444,9 @@ export async function detectarDiscrepanciaLinea(
  * Auto-popula proveedor_catalogo con el costo facturado en caso A7
  * (SKU sin catálogo previo o con precio_neto=0 zombie). Llamar antes
  * de ubicar para que la línea quede con catálogo válido.
+ *
+ * Match prioritario por proveedor_id (FK) para evitar filas huérfanas
+ * por desnormalización (mismo bug que alimentarCatalogoProveedor).
  */
 export async function autoPopularCatalogoCasoA7(
   sku: string, costoFacturado: number, recepcionId: string,
@@ -3457,15 +3460,44 @@ export async function autoPopularCatalogoCasoA7(
   const rec = recRow as { proveedor: string | null; proveedor_id: string | null } | null;
   const proveedor = rec?.proveedor;
   if (!proveedor) return;
-  const upsert: Record<string, unknown> = {
-    proveedor, sku_origen: skuUp, precio_neto: costoFacturado,
+  const proveedorIdRec = rec?.proveedor_id || null;
+
+  const fields: Record<string, unknown> = {
+    precio_neto: costoFacturado,
     es_principal: true,
     updated_at: new Date().toISOString(),
     updated_by: "auto-primera-factura",
     motivo_ultimo_cambio: `auto-primera-factura recepcion ${recepcionId.slice(0, 8)}`,
   };
-  if (rec?.proveedor_id) upsert.proveedor_id = rec.proveedor_id;
-  await sb.from("proveedor_catalogo").upsert(upsert, { onConflict: "proveedor,sku_origen" });
+
+  // 1. Match por proveedor_id si lo tenemos
+  if (proveedorIdRec) {
+    const { data: byFK } = await sb.from("proveedor_catalogo")
+      .select("id").eq("sku_origen", skuUp).eq("proveedor_id", proveedorIdRec).maybeSingle();
+    if (byFK) {
+      await sb.from("proveedor_catalogo")
+        .update(fields).eq("id", (byFK as { id: string }).id);
+      return;
+    }
+  }
+
+  // 2. Match por proveedor texto exacto
+  const { data: byString } = await sb.from("proveedor_catalogo")
+    .select("id, proveedor_id").eq("sku_origen", skuUp).eq("proveedor", proveedor).maybeSingle();
+  if (byString) {
+    const updates = { ...fields };
+    const existing = byString as { id: string; proveedor_id: string | null };
+    if (proveedorIdRec && !existing.proveedor_id) updates.proveedor_id = proveedorIdRec;
+    await sb.from("proveedor_catalogo").update(updates).eq("id", existing.id);
+    return;
+  }
+
+  // 3. No hay row para este (sku, proveedor): INSERT como nuevo principal
+  const insertRow: Record<string, unknown> = {
+    proveedor, sku_origen: skuUp, ...fields,
+  };
+  if (proveedorIdRec) insertRow.proveedor_id = proveedorIdRec;
+  await sb.from("proveedor_catalogo").insert(insertRow);
 }
 
 /**
@@ -3602,10 +3634,17 @@ export async function notificarFaltaCostoEnLinea(opts: {
 /**
  * Alimenta proveedor_catalogo con el costo aprobado de una discrepancia (Chunk 3).
  *
- * - Match por proveedor_id (FK canónico) si la recepción lo tiene.
- *   Fallback a (proveedor texto, sku_origen) para recepciones legacy sin FK.
- * - Si no existe fila principal, marca la nueva como es_principal=true.
- * - Audita updated_by y motivo_ultimo_cambio.
+ * Estrategia de match (en orden de prioridad para evitar filas huérfanas):
+ *   1. Match por (proveedor_id, sku_origen) — FK canónico, sobrevive a la
+ *      desnormalización del string `proveedor` ("Idetex" vs "IDETEX S.A.").
+ *   2. Match por (proveedor texto exacto, sku_origen) — para recepciones
+ *      legacy sin FK. Si la recepción aporta proveedor_id, lo backfilea.
+ *   3. Si no hay match: INSERT. es_principal=true solo si no existe ningún
+ *      principal para este SKU (de cualquier proveedor).
+ *
+ * Bug histórico (2026-05-06): el upsert con onConflict (proveedor, sku_origen)
+ * creaba fila huérfana cuando recepciones.proveedor='IDETEX S.A.' (raw del
+ * DTE) no matcheaba con proveedor_catalogo.proveedor='Idetex' (canónico).
  */
 async function alimentarCatalogoProveedor(
   discId: string, sku: string, nuevoCosto: number, motivo: string, operario: string,
@@ -3621,36 +3660,66 @@ async function alimentarCatalogoProveedor(
     const { data: rec } = await sb.from("recepciones")
       .select("proveedor, proveedor_id").eq("id", recepcionId).single();
     const recProv = (rec as { proveedor: string | null; proveedor_id: string | null } | null);
-    const proveedor = recProv?.proveedor;
-    if (!proveedor) return;
+    const proveedorRaw = recProv?.proveedor;
+    if (!proveedorRaw) return;
+    const proveedorIdRec = recProv?.proveedor_id || null;
 
-    // ¿Ya hay fila principal para este SKU? Si sí, conserva es_principal en esa.
-    const { data: existing } = await sb.from("proveedor_catalogo")
-      .select("id, proveedor, proveedor_id")
-      .eq("sku_origen", sku)
-      .eq("es_principal", true)
-      .maybeSingle();
-    const existingPrincipal = existing as { proveedor: string | null } | null;
-    // Mantener es_principal=true si la fila existente es la misma que estamos
-    // upserteando (mismo proveedor + sku_origen → conflicto los hace una sola fila).
-    // Si el principal pertenece a OTRO proveedor, esta fila es secundaria.
-    const seraPrincipal = !existingPrincipal || existingPrincipal.proveedor === proveedor;
-
-    const upsert: Record<string, unknown> = {
-      proveedor,
-      sku_origen: sku,
+    const fields: Record<string, unknown> = {
       precio_neto: nuevoCosto,
       updated_at: new Date().toISOString(),
       updated_by: operario,
       motivo_ultimo_cambio: motivo,
+    };
+
+    // 1. Match canónico por proveedor_id si lo tenemos
+    if (proveedorIdRec) {
+      const { data: byFK } = await sb.from("proveedor_catalogo")
+        .select("id, es_principal")
+        .eq("sku_origen", sku)
+        .eq("proveedor_id", proveedorIdRec)
+        .maybeSingle();
+      if (byFK) {
+        const { error } = await sb.from("proveedor_catalogo")
+          .update(fields).eq("id", (byFK as { id: string }).id);
+        if (error) console.error(`[alimentarCatalogoProveedor] update by FK ${proveedorIdRec}/${sku}: ${error.message}`);
+        return;
+      }
+    }
+
+    // 2. Match por (proveedor texto exacto, sku_origen)
+    const { data: byString } = await sb.from("proveedor_catalogo")
+      .select("id, proveedor_id")
+      .eq("sku_origen", sku)
+      .eq("proveedor", proveedorRaw)
+      .maybeSingle();
+    if (byString) {
+      const updates = { ...fields };
+      const existing = byString as { id: string; proveedor_id: string | null };
+      // Bonus: si la fila existente no tenía FK pero la recepción sí, backfilea
+      if (proveedorIdRec && !existing.proveedor_id) {
+        updates.proveedor_id = proveedorIdRec;
+      }
+      const { error } = await sb.from("proveedor_catalogo")
+        .update(updates).eq("id", existing.id);
+      if (error) console.error(`[alimentarCatalogoProveedor] update by string ${proveedorRaw}/${sku}: ${error.message}`);
+      return;
+    }
+
+    // 3. No hay row para este (sku, proveedor): INSERT
+    const { data: existingPrincipal } = await sb.from("proveedor_catalogo")
+      .select("id").eq("sku_origen", sku).eq("es_principal", true).maybeSingle();
+    const seraPrincipal = !existingPrincipal;
+
+    const insertRow: Record<string, unknown> = {
+      proveedor: proveedorRaw,
+      sku_origen: sku,
+      ...fields,
       es_principal: seraPrincipal,
     };
-    if (recProv?.proveedor_id) upsert.proveedor_id = recProv.proveedor_id;
+    if (proveedorIdRec) insertRow.proveedor_id = proveedorIdRec;
 
-    const { error } = await sb.from("proveedor_catalogo").upsert(
-      upsert, { onConflict: "proveedor,sku_origen" },
-    );
-    if (error) console.error(`[alimentarCatalogoProveedor] upsert ${proveedor}/${sku}: ${error.message}`);
+    const { error } = await sb.from("proveedor_catalogo").insert(insertRow);
+    if (error) console.error(`[alimentarCatalogoProveedor] insert ${proveedorRaw}/${sku}: ${error.message}`);
   } catch (e) {
     console.error("[alimentarCatalogoProveedor] error:", e);
   }

@@ -865,3 +865,56 @@ describe("E12: caso A7 con precio_neto=0 (zombi reactivado)", () => {
     expect(cat?.precio_neto).toBe(8500);
   });
 });
+
+describe("E13: alimentarCatalogo con proveedor desnormalizado matchea por proveedor_id", () => {
+  it("recepción 'IDETEX S.A.' actualiza fila canónica 'Idetex' por FK, sin crear huérfana", async () => {
+    const sku = "TEST-E13";
+    const proveedorId = "prov-idetex-uuid";
+    seedProducto(sku, 11000);
+    // Catálogo canónico ya populado con nombre "Idetex" (canonicalizado por resolver)
+    seedCatalogo({ sku, proveedor: "Idetex", proveedor_id: proveedorId, precio: 11000 });
+    // Recepción con proveedor RAW del DTE — distinto string pero MISMO proveedor_id
+    const recId = seedRecepcion({
+      proveedor: "IDETEX S.A.", proveedor_id: proveedorId,
+      createdAt: "2026-04-01T10:00:00Z",
+    });
+    const linea = seedLinea({ recepcion_id: recId, sku, costo: 12000 });
+    seedMovimientoEntrada({ recepcion_id: recId, sku, cantidad: 10, costo: 12000, fecha: "2026-04-01T10:30:00Z" });
+
+    const discs = await detectarDiscrepancias(recId, [linea] as never);
+    expect(discs).toHaveLength(1);
+    await aprobarNuevoCosto(discs[0].id!, sku, 12000, { esPuntual: false, operario: "vicente" });
+
+    // Solo UNA fila en el catálogo (sin huérfana)
+    const filas = memDB.proveedor_catalogo.filter(c => c.sku_origen === sku);
+    expect(filas).toHaveLength(1);
+    // La fila canónica fue actualizada
+    expect(filas[0].proveedor).toBe("Idetex"); // string canónico preservado
+    expect(filas[0].precio_neto).toBe(12000);
+    expect(filas[0].es_principal).toBe(true);
+    expect(filas[0].proveedor_id).toBe(proveedorId);
+  });
+
+  it("recepción legacy SIN proveedor_id matchea por string exacto y backfilea FK si la recepción aporta", async () => {
+    const sku = "TEST-E13B";
+    const proveedorId = "prov-idetex-uuid-2";
+    seedProducto(sku, 11000);
+    // Catálogo legacy SIN proveedor_id, solo string
+    seedCatalogo({ sku, proveedor: "Idetex", proveedor_id: null, precio: 11000 });
+    // Recepción aporta FK
+    const recId = seedRecepcion({
+      proveedor: "Idetex", proveedor_id: proveedorId,
+    });
+    const linea = seedLinea({ recepcion_id: recId, sku, costo: 12500 });
+    seedMovimientoEntrada({ recepcion_id: recId, sku, cantidad: 10, costo: 12500 });
+
+    const discs = await detectarDiscrepancias(recId, [linea] as never);
+    await aprobarNuevoCosto(discs[0].id!, sku, 12500, { esPuntual: false });
+
+    const filas = memDB.proveedor_catalogo.filter(c => c.sku_origen === sku);
+    expect(filas).toHaveLength(1);
+    expect(filas[0].precio_neto).toBe(12500);
+    // Backfill del FK
+    expect(filas[0].proveedor_id).toBe(proveedorId);
+  });
+});
