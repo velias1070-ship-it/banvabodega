@@ -895,6 +895,26 @@ describe("E13: alimentarCatalogo con proveedor desnormalizado matchea por provee
     expect(filas[0].proveedor_id).toBe(proveedorId);
   });
 
+  it("recepción 'IDETEX S.A.' SIN proveedor_id matchea fuzzy contra 'Idetex' canónico", async () => {
+    // Caso real prod 2026-05-06 (folio 530456)
+    const sku = "TEST-E13-FUZZY";
+    seedProducto(sku, 11000);
+    seedCatalogo({ sku, proveedor: "Idetex", proveedor_id: "uuid-idetex-canon", precio: 11000 });
+    // Recepción CON nombre raw del DTE pero SIN proveedor_id
+    const recId = seedRecepcion({ proveedor: "IDETEX S.A.", proveedor_id: null });
+    const linea = seedLinea({ recepcion_id: recId, sku, costo: 12000 });
+    seedMovimientoEntrada({ recepcion_id: recId, sku, cantidad: 10, costo: 12000 });
+
+    const discs = await detectarDiscrepancias(recId, [linea] as never);
+    await aprobarNuevoCosto(discs[0].id!, sku, 12000, { esPuntual: false });
+
+    const filas = memDB.proveedor_catalogo.filter(c => c.sku_origen === sku);
+    expect(filas).toHaveLength(1);
+    expect(filas[0].proveedor).toBe("Idetex");
+    expect(filas[0].precio_neto).toBe(12000);
+    expect(filas[0].es_principal).toBe(true);
+  });
+
   it("recepción legacy SIN proveedor_id matchea por string exacto y backfilea FK si la recepción aporta", async () => {
     const sku = "TEST-E13B";
     const proveedorId = "prov-idetex-uuid-2";

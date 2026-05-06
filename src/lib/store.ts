@@ -3441,6 +3441,20 @@ export async function detectarDiscrepanciaLinea(
 }
 
 /**
+ * Normaliza nombre de proveedor para match flexible: uppercase, sin
+ * sufijos legales (S.A./SPA/LTDA/LIMITADA/SRL/EIRL), sin signos de
+ * puntuación, espacios colapsados.
+ *
+ * Usado por alimentarCatalogoProveedor y autoPopularCatalogoCasoA7
+ * para el path de match "fuzzy" cuando no hay proveedor_id.
+ */
+function normalizarProveedor(s: string | null | undefined): string {
+  return (s || "").toUpperCase().trim()
+    .replace(/\s+(S\.?A\.?|SPA|LTDA\.?|LIMITADA|SRL|EIRL)\.?$/i, "")
+    .replace(/[.,]/g, "").replace(/\s+/g, " ").trim();
+}
+
+/**
  * Auto-popula proveedor_catalogo con el costo facturado en caso A7
  * (SKU sin catálogo previo o con precio_neto=0 zombie). Llamar antes
  * de ubicar para que la línea quede con catálogo válido.
@@ -3489,6 +3503,19 @@ export async function autoPopularCatalogoCasoA7(
     const existing = byString as { id: string; proveedor_id: string | null };
     if (proveedorIdRec && !existing.proveedor_id) updates.proveedor_id = proveedorIdRec;
     await sb.from("proveedor_catalogo").update(updates).eq("id", existing.id);
+    return;
+  }
+
+  // 2.5. Match por proveedor normalizado contra todas las filas del SKU
+  const { data: candidatos } = await sb.from("proveedor_catalogo")
+    .select("id, proveedor, proveedor_id").eq("sku_origen", skuUp);
+  const candList = (candidatos || []) as Array<{ id: string; proveedor: string; proveedor_id: string | null }>;
+  const recNorm = normalizarProveedor(proveedor);
+  const fuzzy = candList.find(c => normalizarProveedor(c.proveedor) === recNorm);
+  if (fuzzy) {
+    const updates = { ...fields };
+    if (proveedorIdRec && !fuzzy.proveedor_id) updates.proveedor_id = proveedorIdRec;
+    await sb.from("proveedor_catalogo").update(updates).eq("id", fuzzy.id);
     return;
   }
 
@@ -3695,13 +3722,29 @@ async function alimentarCatalogoProveedor(
     if (byString) {
       const updates = { ...fields };
       const existing = byString as { id: string; proveedor_id: string | null };
-      // Bonus: si la fila existente no tenía FK pero la recepción sí, backfilea
       if (proveedorIdRec && !existing.proveedor_id) {
         updates.proveedor_id = proveedorIdRec;
       }
       const { error } = await sb.from("proveedor_catalogo")
         .update(updates).eq("id", existing.id);
       if (error) console.error(`[alimentarCatalogoProveedor] update by string ${proveedorRaw}/${sku}: ${error.message}`);
+      return;
+    }
+
+    // 2.5. Match por proveedor NORMALIZADO contra todas las filas del SKU.
+    // Cubre el caso real: rec.proveedor='IDETEX S.A.' (raw DTE) vs
+    // catálogo.proveedor='Idetex' (canonicalizado). Mismo proveedor real.
+    const { data: candidatos } = await sb.from("proveedor_catalogo")
+      .select("id, proveedor, proveedor_id").eq("sku_origen", sku);
+    const candList = (candidatos || []) as Array<{ id: string; proveedor: string; proveedor_id: string | null }>;
+    const recNorm = normalizarProveedor(proveedorRaw);
+    const fuzzy = candList.find(c => normalizarProveedor(c.proveedor) === recNorm);
+    if (fuzzy) {
+      const updates = { ...fields };
+      if (proveedorIdRec && !fuzzy.proveedor_id) updates.proveedor_id = proveedorIdRec;
+      const { error } = await sb.from("proveedor_catalogo")
+        .update(updates).eq("id", fuzzy.id);
+      if (error) console.error(`[alimentarCatalogoProveedor] update fuzzy ${proveedorRaw}≈${fuzzy.proveedor}/${sku}: ${error.message}`);
       return;
     }
 
