@@ -98,6 +98,15 @@ WITH t32 AS (
          + COALESCE(vcp.in_transit_oc_bodega, 0))
         < (vss.reserva_flex_target + ROUND(vss.d_avg_dia * vss.lt_dias))
     -- Pero invisible o sin compra propuesta:
+    -- P2.bis: excluir SKUs sin proveedor + SKUs en liquidación
+    -- (qty_a_comprar=0 por override AGOTADO/LIQUIDACION).
+    AND COALESCE(si.tiene_stock_prov, true) = true
+    AND (vss.sku_origen NOT IN (
+           SELECT snp.sku_origen FROM sku_node_policy snp
+           WHERE snp.node_id = 'bodega_central'
+             AND snp.liquidacion_accion IS NOT NULL
+             AND snp.liquidacion_accion::text NOT IN ('monitorear', 'no_aplica')
+         ))
     AND (vcp.sku_origen IS NULL
          OR COALESCE(vcp.qty_a_comprar, 0) = 0)
 )

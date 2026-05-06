@@ -30,7 +30,7 @@ legacy** o **alimento** del motor nuevo, no SSoT.
 
 | Dominio | SSoT canónica | Lectura | Notas |
 |---|---|---|---|
-| Acción operativa (`URGENTE`, `MANDAR_FULL`, `PEDIR_PROVEEDOR`, `PLANIFICAR`, `LIQUIDACION`, `OK`) | `v_reposicion_explain.accion` | `/api/intelligence/sku-venta-v2`, `AdminInteligencia.tsx` | Desplaza `sku_intelligence.accion` (motor viejo). |
+| Acción operativa (`URGENTE`, `AGOTADO_SIN_PROVEEDOR`, `LIQUIDACION`, `MANDAR_FULL`, `PEDIR_PROVEEDOR`, `EN_TRANSITO`, `PLANIFICAR`, `NUEVO`, `EXCESO`, `OK`) | `v_reposicion_explain.accion` | `/api/intelligence/sku-venta-v2`, `AdminInteligencia.tsx` | Sprint 9 P2.bis: 10 reglas evaluadas en orden, primera que matchea gana. Desplaza `sku_intelligence.accion` (motor viejo, expuesto como `accion_motor_viejo` para auditoría). **`URGENTE` = "operativamente urgente", NO "compra disponible"**: SKUs con `vel>0 + stock=0 + tiene_stock_prov=false` caen en `URGENTE` (Rule 1) antes que `AGOTADO_SIN_PROVEEDOR` (Rule 2) — el quiebre está pasando aunque no haya proveedor. Para distinguir casos accionables, cruzar `accion='URGENTE'` con `tiene_stock_prov` o con la alerta `sin_stock_proveedor`. |
 | Cobertura Full (`cob_full`) | `v_reposicion_explain.cob_full` | mismo endpoint | Calculada con `d_avg_sem` efectivo (rampup-aware). |
 | Velocidad efectiva (`d_avg_sem`) | `v_safety_stock.d_avg_sem` | vistas downstream | Aplica `factor_rampup_aplicado` y `vel_pre_quiebre` cuando `dias_en_quiebre >= 14`. Ver `feedback_velocidad_efectiva`. |
 | Safety stock (`safety_stock_uds`) | `v_safety_stock.safety_stock_uds` | `v_compras_pendientes`, `v_reposicion_explain` | King method por ABC×XYZ. |

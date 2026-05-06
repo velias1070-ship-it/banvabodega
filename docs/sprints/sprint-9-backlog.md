@@ -435,6 +435,35 @@ en picking, vas a mandar +Y más". Decisión queda en el owner.
 `picking_pendiente` + ajuste en AMBOS sub-cálculos
 `deficit_full` y `disponible_para_full`). Riesgo bajo, scope acotado.
 
+### Sub-issue P2.bis-followup — Rule 0 INACTIVO antes de Rule 1 URGENTE
+
+**Detectado 2026-05-06 post-fix P2.bis.** Sprint 10, no bloqueante.
+
+**Síntoma:** 8 SKUs antes en `accion='INACTIVO'` (motor viejo:
+`vel=0 + velPreQuiebre=0 + stock_total=0`) ahora caen en `NUEVO`
+(`is_new_sku=true` heurística amplia) o `EXCESO` (`dio>60`). Las 10
+reglas P2.bis no incluyen INACTIVO — pierde el filtro operativo
+"skus muertos" en `/admin Inteligencia`.
+
+**Propuesta:** agregar Rule 0 antes de Rule 1 URGENTE:
+
+```sql
+-- Rule 0: INACTIVO — sin venta + sin stock + sin movimiento
+WHEN COALESCE(vsf.d_avg_dia, 0::numeric) = 0::numeric
+  AND COALESCE(stock_total, 0::numeric) = 0::numeric
+  AND COALESCE(uds_180d, 0::numeric) = 0::numeric
+  AND NOT COALESCE(vcp.is_new_sku, false)
+  THEN 'INACTIVO'::text
+```
+
+**Caso testigo:** los 8 SKUs originales en INACTIVO pre-P2.bis
+(capturar lista en query antes de moverlos para snapshot).
+
+**Estimado:** ~5 LOC en `v_reposicion_explain` (override en CASE
+expression). No requiere migración nueva — recreación de la view.
+
+**Cuándo:** Sprint 10 o post-validación P2.bis 24h.
+
 ## Prioridad 2 — Gap 2: política CZ + alertas operativas
 
 ### Problema
