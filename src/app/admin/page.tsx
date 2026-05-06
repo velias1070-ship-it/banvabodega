@@ -3746,17 +3746,25 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
       // For picked lines: adjust qty/unidades directly without rebuilding
       const comp0 = linea.componentes[0] ? { ...linea.componentes[0], unidades: newQty } : null;
       const nuevosComponentes = comp0 ? [comp0, ...linea.componentes.slice(1)] : linea.componentes;
+      // En envio_full, qtyVenta debe seguir el cambio en simple/pack (combo = qtyVenta no editable por componente)
+      let nuevoQtyVenta: number | undefined;
+      if (isFull) {
+        if (linea.tipoFull === "simple") nuevoQtyVenta = newQty;
+        else if (linea.tipoFull === "pack" && linea.unidadesPorPack && linea.unidadesPorPack > 0) nuevoQtyVenta = Math.floor(newQty / linea.unidadesPorPack);
+      }
       setSaving(true);
-      const ok = await patchLineaPicking(session.id!, lineaId, {
+      const patchPicked: Partial<PickingLinea> = {
         qtyPedida: newQty,
         qtyFisica: newQty,
         componentes: nuevosComponentes,
-      });
+      };
+      if (nuevoQtyVenta !== undefined) patchPicked.qtyVenta = nuevoQtyVenta;
+      const ok = await patchLineaPicking(session.id!, lineaId, patchPicked);
       if (!ok) { setSaving(false); showToast("Error ajustando cantidad"); return; }
       setSession(s => ({
         ...s,
         lineas: s.lineas.map(l => l.id === lineaId
-          ? { ...l, qtyPedida: newQty, qtyFisica: newQty, componentes: nuevosComponentes }
+          ? { ...l, ...patchPicked }
           : l),
       }));
       setSaving(false);
@@ -3770,11 +3778,22 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
       // Preserve Full-specific fields
       if (isFull) {
         rebuilt.tipoFull = linea.tipoFull;
-        rebuilt.qtyVenta = linea.qtyVenta;
         rebuilt.unidadesPorPack = linea.unidadesPorPack;
         rebuilt.instruccionArmado = linea.instruccionArmado;
         rebuilt.estadoArmado = linea.estadoArmado;
         rebuilt.posicionOrden = linea.posicionOrden;
+        // qtyFisica/qtyVenta dependen del tipo:
+        // simple: qtyFisica = qtyVenta = newQty (1 listing = 1 fisica)
+        // pack:   qtyFisica = newQty fisicas, qtyVenta = newQty / unidadesPorPack listings
+        // combo:  qtyFisica = newQty (este componente), qtyVenta se mantiene (se edita a nivel sku_venta no por componente)
+        rebuilt.qtyFisica = newQty;
+        if (linea.tipoFull === "simple") {
+          rebuilt.qtyVenta = newQty;
+        } else if (linea.tipoFull === "pack" && linea.unidadesPorPack && linea.unidadesPorPack > 0) {
+          rebuilt.qtyVenta = Math.floor(newQty / linea.unidadesPorPack);
+        } else {
+          rebuilt.qtyVenta = linea.qtyVenta;
+        }
       }
       const patch: Partial<PickingLinea> = {
         estado: rebuilt.estado,
