@@ -13,6 +13,7 @@ import { exportarOCExcel, fetchOCRecepcionesItems } from "@/lib/oc-export";
 import dynamic from "next/dynamic";
 
 const AdminConciliacionDocs = dynamic(() => import("./AdminConciliacionDocs"), { ssr: false });
+const CatalogoVerPanel = dynamic(() => import("./CatalogoVerPanel"), { ssr: false });
 
 // ============================================
 // Helpers
@@ -71,7 +72,7 @@ interface FaltanteCatalogo {
 }
 
 export default function AdminCompras() {
-  const [tab, setTab] = useState<"ocs" | "proveedores" | "catalogo" | "conciliacion">("ocs");
+  const [tab, setTab] = useState<"ocs" | "proveedores" | "vercatalogo" | "catalogo" | "conciliacion">("ocs");
   const [ocs, setOcs] = useState<DBOrdenCompra[]>([]);
   const [loading, setLoading] = useState(true);
   const [filtroEstado, setFiltroEstado] = useState<string>("todos");
@@ -1030,7 +1031,7 @@ export default function AdminCompras() {
     <div style={{ padding: "0 4px" }}>
       {/* Tabs */}
       <div style={{ display: "flex", gap: 4, marginBottom: 12, borderBottom: "1px solid var(--bg4)" }}>
-        {(["ocs", "proveedores", "catalogo", "conciliacion"] as const).map(t => (
+        {(["ocs", "proveedores", "vercatalogo", "catalogo", "conciliacion"] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
             style={{
               padding: "8px 14px", border: "none", background: "none",
@@ -1040,7 +1041,8 @@ export default function AdminCompras() {
             }}>
             {t === "ocs" ? "Órdenes de Compra"
               : t === "proveedores" ? "Proveedores"
-              : t === "catalogo" ? "Cargar Catálogo"
+              : t === "vercatalogo" ? "📚 Ver Catálogo"
+              : t === "catalogo" ? "Cargar Faltantes"
               : "🧾 Conciliación"}
           </button>
         ))}
@@ -1131,6 +1133,8 @@ export default function AdminCompras() {
             <strong>fallback</strong>: 5 días + σ=1.5 (default)
           </div>
         </div>
+      ) : tab === "vercatalogo" ? (
+        <CatalogoVerPanel />
       ) : tab === "catalogo" ? (
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
