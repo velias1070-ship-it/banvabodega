@@ -43,6 +43,23 @@ export default function RecepcionDiscBanner({ disc, onResuelto }: Props) {
               PUNTUAL
             </span>
           )}
+          {disc.claim_estado === "ESPERANDO_NC" && disc.claim_monto_pendiente && (
+            <span style={{
+              fontSize: 10, padding: "2px 6px", borderRadius: 3,
+              background: "rgba(245,158,11,0.15)", color: "var(--amber)", fontWeight: 700,
+              border: "1px solid var(--amberBd)",
+            }}>
+              ⏳ esperando NC por {fmtMoney(disc.claim_monto_pendiente)}
+            </span>
+          )}
+          {disc.claim_estado === "RESUELTO_CON_NC" && (
+            <span style={{
+              fontSize: 10, padding: "2px 6px", borderRadius: 3,
+              background: "rgba(16,185,129,0.15)", color: "var(--green)", fontWeight: 700,
+            }}>
+              ✓ reconciliada con NC
+            </span>
+          )}
           <div style={{ flex: 1 }} />
           <button
             onClick={() => setModal("revertir")}

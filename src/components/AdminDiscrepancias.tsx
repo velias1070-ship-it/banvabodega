@@ -179,7 +179,9 @@ export default function AdminDiscrepancias() {
   const abrir = (row: Row, modo: "aprobar" | "rechazar" | "revertir") =>
     setActionModal({ row, modo });
 
-  // Cross-match NCs ↔ recepciones con discrepancias PENDIENTES
+  // Cross-match NCs ↔ recepciones con discrepancias PENDIENTES o APROBADAS-con-claim
+  // (Chunk 7 LITE, v103): incluye APROBADAS cuyo claim_estado='ESPERANDO_NC'
+  // para que el match cierre el claim contra el proveedor.
   const ncsLinkables = useMemo(() => {
     type NcMatch = {
       nc: DBRcvCompra;
@@ -192,14 +194,17 @@ export default function AdminDiscrepancias() {
     for (const nc of ncs) {
       if (!nc.factura_ref_folio) continue;
       const provNc = normProv(nc.razon_social || "");
-      // Buscar recepcion con folio=factura_ref_folio y proveedor matcheando razon_social
       const entries = Array.from(recepciones.entries());
       for (const [recId, rec] of entries) {
         if (rec.folio !== nc.factura_ref_folio) continue;
         if (normProv(rec.proveedor || "") !== provNc) continue;
-        const pend = rows.filter(r => r.recepcion_id === recId && r.estado === "PENDIENTE");
-        if (pend.length === 0) continue;
-        out.push({ nc, recepcionId: recId, folioFactura: rec.folio, proveedorRec: rec.proveedor || "", discrepancias: pend });
+        const matched = rows.filter(r =>
+          r.recepcion_id === recId
+          && (r.estado === "PENDIENTE"
+            || (r.estado === "APROBADO" && r.claim_estado === "ESPERANDO_NC")),
+        );
+        if (matched.length === 0) continue;
+        out.push({ nc, recepcionId: recId, folioFactura: rec.folio, proveedorRec: rec.proveedor || "", discrepancias: matched });
       }
     }
     return out;
@@ -210,18 +215,37 @@ export default function AdminDiscrepancias() {
     const notas = `NC ${match.nc.nro_doc} del ${match.nc.fecha_docto?.slice(0,10) || ""} por ${fmtMoney(match.nc.monto_total)}`;
     setActioning(match.nc.id || match.recepcionId);
     try {
+      const sb = getSupabase();
+      // Procesar disc según estado:
+      //  - PENDIENTE → aprobarNuevoCosto con WAC (puede crear claim implícito que se cierra acá)
+      //  - APROBADO (ESPERANDO_NC) → solo actualiza claim_estado a RESUELTO_CON_NC
+      const claimReconciliados: string[] = [];
       for (const d of match.discrepancias) {
-        const prod = productos.get(d.sku);
-        const wac = prod?.costo_promedio || 0;
-        const costoFinal = wac > 0 ? wac : d.costo_diccionario || d.costo_factura;
-        await aprobarNuevoCosto(d.id!, d.sku, Number(costoFinal));
+        if (d.estado === "PENDIENTE") {
+          const prod = productos.get(d.sku);
+          const wac = prod?.costo_promedio || 0;
+          const costoFinal = wac > 0 ? wac : d.costo_diccionario || d.costo_factura;
+          await aprobarNuevoCosto(d.id!, d.sku, Number(costoFinal));
+          // Si la aprobación creó un claim (costoFinal < costo_factura), reconciliarlo
+          if (Number(costoFinal) < d.costo_factura) {
+            claimReconciliados.push(d.id!);
+          }
+        } else if (d.estado === "APROBADO" && d.claim_estado === "ESPERANDO_NC") {
+          claimReconciliados.push(d.id!);
+        }
       }
-      // Marcar notas de las que se cerraron con esta NC (post-approve)
-      const sb = (await import("@/lib/supabase")).getSupabase();
       if (sb) {
         await sb.from("discrepancias_costo")
           .update({ notas })
           .in("id", match.discrepancias.map(d => d.id!));
+        if (claimReconciliados.length > 0) {
+          await sb.from("discrepancias_costo")
+            .update({
+              claim_estado: "RESUELTO_CON_NC",
+              claim_resuelto_por_nc_id: match.nc.id,
+            })
+            .in("id", claimReconciliados);
+        }
       }
       setNcBulkOpen(null);
       await cargar();
@@ -451,8 +475,20 @@ export default function AdminDiscrepancias() {
                         {row.estado}
                       </span>
                     </td>
-                    <td style={{ padding: "8px 10px", maxWidth: 180, fontSize: 10, color: "var(--txt3)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {row.notas || (row.resuelto_at ? fmtDate(row.resuelto_at) : "—")}
+                    <td style={{ padding: "8px 10px", maxWidth: 180, fontSize: 10, color: "var(--txt3)" }}>
+                      {row.claim_estado === "ESPERANDO_NC" && (
+                        <div style={{ marginBottom: 2, color: "var(--amber)", fontWeight: 700 }}>
+                          ⏳ NC pend. {fmtMoney(row.claim_monto_pendiente)}
+                        </div>
+                      )}
+                      {row.claim_estado === "RESUELTO_CON_NC" && (
+                        <div style={{ marginBottom: 2, color: "var(--green)", fontWeight: 700 }}>
+                          ✓ reconciliada
+                        </div>
+                      )}
+                      <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {row.notas || (row.resuelto_at ? fmtDate(row.resuelto_at) : "—")}
+                      </div>
                     </td>
                     <td style={{ padding: "8px 10px", textAlign: "center", whiteSpace: "nowrap" }}>
                       {row.estado === "PENDIENTE" && (

@@ -194,6 +194,10 @@ export interface DBDiscrepanciaCosto {
   precio_anterior_snapshot?: number | null;
   revertido_at?: string | null;
   revertido_por?: string | null;
+  // v103 columns (Chunk 7 LITE — tracking claims contra proveedor)
+  claim_monto_pendiente?: number | null;
+  claim_estado?: "ESPERANDO_NC" | "RESUELTO_CON_NC" | "DESCARTADO" | null;
+  claim_resuelto_por_nc_id?: string | null;
 }
 
 export type DiscrepanciaQtyTipo = "FALTANTE" | "SOBRANTE" | "SKU_ERRONEO" | "NO_EN_FACTURA";

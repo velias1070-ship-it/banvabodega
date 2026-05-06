@@ -89,6 +89,10 @@
       "schedule": "0 * * * *"
     },
     {
+      "path": "/api/cron/catalogo-zombi-alert",
+      "schedule": "0 9 * * *"
+    },
+    {
       "path": "/api/pricing/recalcular-floors",
       "schedule": "30 11 * * *"
     },

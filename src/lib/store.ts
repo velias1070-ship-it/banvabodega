@@ -3797,8 +3797,8 @@ export async function aprobarNuevoCosto(
 
   // Discrepancia → recepción
   const { data: discRow } = await sb.from("discrepancias_costo")
-    .select("recepcion_id, costo_diccionario, costo_factura").eq("id", discId).single();
-  const disc = discRow as { recepcion_id: string; costo_diccionario: number; costo_factura: number } | null;
+    .select("recepcion_id, linea_id, costo_diccionario, costo_factura").eq("id", discId).single();
+  const disc = discRow as { recepcion_id: string; linea_id: string; costo_diccionario: number; costo_factura: number } | null;
   if (!disc) throw new Error(`Discrepancia ${discId} no encontrada`);
 
   // 1. Snapshot del catálogo principal antes de tocarlo
@@ -3829,7 +3829,22 @@ export async function aprobarNuevoCosto(
   // 5. Recompute ventas_ml_cache para órdenes posteriores a la recepción
   await recomputarVentasPosterioresRecepcion(disc.recepcion_id, skuUp, "aprobacion_disc");
 
-  // 6. UPDATE discrepancia con estado, es_puntual y snapshot
+  // 6. Claim contra proveedor (Chunk 7 LITE, v103).
+  // Si nuevoCosto < costo_factura → quedó claim implícito por la diferencia
+  // (el proveedor cobró más de lo aprobado, debería emitir NC).
+  let claimMonto: number | null = null;
+  let claimEstado: "ESPERANDO_NC" | null = null;
+  if (nuevoCosto < disc.costo_factura) {
+    const { data: lineaRow } = await sb.from("recepcion_lineas")
+      .select("qty_recibida").eq("id", disc.linea_id).maybeSingle();
+    const qty = (lineaRow as { qty_recibida: number } | null)?.qty_recibida || 0;
+    if (qty > 0) {
+      claimMonto = Math.round((disc.costo_factura - nuevoCosto) * qty);
+      claimEstado = "ESPERANDO_NC";
+    }
+  }
+
+  // 7. UPDATE discrepancia con estado, es_puntual, snapshot y claim
   const updateDisc: Record<string, unknown> = {
     estado: "APROBADO",
     resuelto_por: operario,
@@ -3838,16 +3853,20 @@ export async function aprobarNuevoCosto(
     precio_anterior_snapshot,
   };
   if (notas) updateDisc.notas = notas;
+  if (claimMonto !== null) {
+    updateDisc.claim_monto_pendiente = claimMonto;
+    updateDisc.claim_estado = claimEstado;
+  }
   await db.updateDiscrepancia(discId, updateDisc);
 
-  // 7. Audit log
+  // 8. Audit log
   await sb.from("audit_log").insert({
     accion: "costo_aprobado_v2",
     entidad: "discrepancias_costo",
     entidad_id: discId,
     operario,
     params: { sku: skuUp, nuevo_costo: nuevoCosto, es_puntual: esPuntual, recepcion_id: disc.recepcion_id },
-    resultado: { precio_anterior_snapshot, wac_nuevo, catalogo_actualizado: !esPuntual },
+    resultado: { precio_anterior_snapshot, wac_nuevo, catalogo_actualizado: !esPuntual, claim_monto: claimMonto, claim_estado: claimEstado },
   });
 
   // Trigger
@@ -3990,12 +4009,15 @@ export async function revertirAprobacion(
   if (_cache.products[skuUp] && wac_post != null) _cache.products[skuUp].costAvg = wac_post;
   await recomputarVentasPosterioresRecepcion(disc.recepcion_id, skuUp, "revertir_disc");
 
-  // 4. Volver disc a PENDIENTE limpiando snapshot y resolución
+  // 4. Volver disc a PENDIENTE limpiando snapshot, resolución y claim (v103)
   await db.updateDiscrepancia(discId, {
     estado: "PENDIENTE",
     revertido_at: new Date().toISOString(),
     revertido_por: operario,
     notas: `Revertido: ${motivo}`,
+    claim_monto_pendiente: null,
+    claim_estado: null,
+    claim_resuelto_por_nc_id: null,
   });
 
   // 5. Audit
