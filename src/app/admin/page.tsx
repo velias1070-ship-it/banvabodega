@@ -635,9 +635,9 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
     setEditing(false); await refreshDetail(); setLoading(false);
   };
 
-  // ---- Discrepancy actions: abren el modal compartido (Chunk 6) ----
-  const doAprobar = (disc: DBDiscrepanciaCosto) => setDiscActionModal({ disc, modo: "aprobar" });
-  const doRechazar = (disc: DBDiscrepanciaCosto) => setDiscActionModal({ disc, modo: "rechazar" });
+  // Discrepancy actions: las acciones (aprobar/rechazar/revertir) viven en
+  // RecepcionDiscBanner (banner inline bajo cada linea) y en AdminDiscrepancias
+  // (tab global). El panel resumen legacy se elimino en Chunk 6 final.
 
   // ---- Line actions ----
   const doResetLinea = async (lineaId: string) => {
@@ -1318,72 +1318,9 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
           </div>
         )}
 
-        {/* Discrepancy panel */}
-        {discrepancias.length > 0 && (
-          <div className="card" style={{marginTop:12,border: tieneDiscrepanciasPendientes(discrepancias) ? "2px solid var(--amber)" : "1px solid var(--bg4)"}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-              <div style={{fontSize:13,fontWeight:700,color: tieneDiscrepanciasPendientes(discrepancias) ? "var(--amber)" : "var(--green)"}}>
-                Discrepancias de costo ({discrepancias.filter(d=>d.estado==="PENDIENTE").length} pendientes)
-              </div>
-              <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                {tieneDiscrepanciasPendientes(discrepancias) && (
-                  <span style={{fontSize:10,padding:"3px 8px",borderRadius:4,background:"var(--amberBg)",color:"var(--amber)",fontWeight:700,border:"1px solid var(--amberBd)"}}>
-                    Resolver antes de cerrar
-                  </span>
-                )}
-              </div>
-            </div>
-            <div style={{overflowX:"auto"}}>
-              <table className="tbl">
-                <thead><tr>
-                  <th>SKU</th>
-                  <th style={{textAlign:"right"}}>Diccionario</th>
-                  <th style={{textAlign:"right"}}>Factura</th>
-                  <th style={{textAlign:"right"}}>Diferencia</th>
-                  <th>Estado</th>
-                  <th>Acciones</th>
-                </tr></thead>
-                <tbody>{discrepancias.map(d => (
-                  <tr key={d.id} style={{background: d.estado==="PENDIENTE" ? "var(--amberBg)" : d.estado==="APROBADO" ? "var(--greenBg)" : "var(--redBg)"}}>
-                    <td className="mono" style={{fontSize:11,fontWeight:700}}>{d.sku}</td>
-                    <td className="mono" style={{textAlign:"right",fontSize:12}}>{d.costo_diccionario > 0 ? fmtMoney(d.costo_diccionario) : <span style={{color:"var(--txt3)",fontSize:10}}>Sin costo</span>}</td>
-                    <td className="mono" style={{textAlign:"right",fontSize:12,fontWeight:700}}>{fmtMoney(d.costo_factura)}</td>
-                    <td className="mono" style={{textAlign:"right",fontSize:12,fontWeight:700,color:d.diferencia>0?"var(--red)":"var(--green)"}}>
-                      {d.diferencia > 0 ? "+" : ""}{fmtMoney(d.diferencia)} ({d.porcentaje > 0 ? "+" : ""}{d.porcentaje}%)
-                    </td>
-                    <td>
-                      <span style={{fontSize:10,fontWeight:700,padding:"2px 6px",borderRadius:4,
-                        background: d.estado==="PENDIENTE" ? "var(--amberBg)" : d.estado==="APROBADO" ? "var(--greenBg)" : "var(--redBg)",
-                        color: d.estado==="PENDIENTE" ? "var(--amber)" : d.estado==="APROBADO" ? "var(--green)" : "var(--red)",
-                        border: `1px solid ${d.estado==="PENDIENTE" ? "var(--amberBd)" : d.estado==="APROBADO" ? "var(--greenBd,var(--green))" : "var(--redBd,var(--red))"}`}}>
-                        {d.estado}
-                      </span>
-                      {d.notas && <div style={{fontSize:9,color:"var(--txt3)",marginTop:2}}>{d.notas}</div>}
-                    </td>
-                    <td style={{whiteSpace:"nowrap"}}>
-                      {d.estado === "PENDIENTE" ? (
-                        <div style={{display:"flex",gap:4}}>
-                          <button onClick={()=>doAprobar(d)} disabled={loading}
-                            style={{padding:"4px 8px",borderRadius:4,background:"var(--green)",color:"#fff",fontSize:10,fontWeight:700,cursor:"pointer",border:"none"}}
-                            title="Aprobar: actualizar diccionario con nuevo costo">
-                            Aprobar
-                          </button>
-                          <button onClick={()=>doRechazar(d)} disabled={loading}
-                            style={{padding:"4px 8px",borderRadius:4,background:"var(--red)",color:"#fff",fontSize:10,fontWeight:700,cursor:"pointer",border:"none"}}
-                            title="Rechazar: error del proveedor, reclamar">
-                            Rechazar
-                          </button>
-                        </div>
-                      ) : (
-                        <span style={{fontSize:10,color:"var(--txt3)"}}>{d.resuelto_at ? fmtDate(d.resuelto_at) : ""}</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}</tbody>
-              </table>
-            </div>
-          </div>
-        )}
+        {/* Discrepancia de costo: cada disc se muestra como banner inline bajo
+            su linea correspondiente (RecepcionDiscBanner). El panel resumen
+            anterior fue eliminado para evitar duplicacion (Chunk 6 final). */}
 
         {/* Quantity discrepancy panel */}
         {discrepanciasQty.length > 0 && (

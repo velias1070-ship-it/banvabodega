@@ -151,17 +151,6 @@ export default function RecepcionDiscBanner({ disc, onResuelto }: Props) {
           >
             ❌ Rechazar
           </button>
-          <button
-            disabled
-            title="La disc queda PENDIENTE — no hace falta acción explícita"
-            style={{
-              padding: "6px 12px", borderRadius: 5, background: "transparent",
-              color: "var(--txt3)", fontSize: 11, fontWeight: 600,
-              border: "1px solid var(--bg4)", cursor: "not-allowed",
-            }}
-          >
-            💤 Dejar pendiente
-          </button>
         </div>
       </div>
 
