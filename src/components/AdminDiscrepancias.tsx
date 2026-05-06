@@ -307,12 +307,22 @@ export default function AdminDiscrepancias() {
             <span style={{ fontSize: 10, color: "var(--txt3)" }}>Match automático rcv_compras ↔ recepciones</span>
           </div>
           {ncsLinkables.map(m => {
-            // Δ esperado = Σ (diferencia_unitaria × qty_recibida) × 1.19 (IVA)
-            // para comparar contra NC.monto_total (bruto del SII).
+            // Δ esperado:
+            //  - APROBADAS con claim → usa claim_monto_pendiente (ya calculado correcto)
+            //  - PENDIENTES con costo_diccionario>0 → diff × qty (sobrecargo real)
+            //  - PENDIENTES con costo_diccionario=$0 → 0 (es catálogo zombi, no claim)
+            const pend = m.discrepancias.filter(d => d.estado === "PENDIENTE");
+            const aprobConClaim = m.discrepancias.filter(d => d.estado === "APROBADO" && d.claim_estado === "ESPERANDO_NC");
             const deltaNeto = m.discrepancias.reduce((s, d) => {
-              const linea = lineas.get(d.linea_id);
-              const qty = linea?.qty_recibida || 0;
-              return s + Math.abs((d.diferencia || 0) * qty);
+              if (d.estado === "APROBADO" && d.claim_monto_pendiente) {
+                return s + Number(d.claim_monto_pendiente);
+              }
+              if (d.estado === "PENDIENTE" && (d.costo_diccionario || 0) > 0) {
+                const linea = lineas.get(d.linea_id);
+                const qty = linea?.qty_recibida || 0;
+                return s + Math.abs((d.diferencia || 0) * qty);
+              }
+              return s;
             }, 0);
             const deltaEsperado = Math.round(deltaNeto * 1.19);
             const ncMonto = Number(m.nc.monto_total) || 0;
@@ -331,10 +341,15 @@ export default function AdminDiscrepancias() {
                       {m.proveedorRec} · ref factura <span className="mono">{m.folioFactura}</span>
                     </div>
                     <div style={{ fontSize: 11, marginTop: 4 }}>
-                      <span style={{ color: "var(--amber)", fontWeight: 600 }}>{m.discrepancias.length} discrepancias PENDIENTES</span>
+                      <span style={{ color: "var(--amber)", fontWeight: 600 }}>
+                        {m.discrepancias.length} disc asociables
+                      </span>
+                      <span style={{ color: "var(--txt3)", marginLeft: 6, fontSize: 10 }}>
+                        ({pend.length} pend{aprobConClaim.length > 0 ? ` + ${aprobConClaim.length} con claim` : ""})
+                      </span>
                       <span style={{ color: "var(--txt3)", marginLeft: 8 }}>· Δ esperado: {fmtMoney(deltaEsperado)}</span>
                       <span style={{ marginLeft: 8, fontSize: 10, color: coincide ? "var(--green)" : "var(--amber)" }}>
-                        {coincide ? "✓ coincide con NC" : "⚠ no coincide con NC"}
+                        {coincide ? "✓ coincide con NC" : "⚠ no coincide"}
                       </span>
                     </div>
                   </div>
