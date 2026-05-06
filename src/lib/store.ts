@@ -3,6 +3,7 @@ import * as db from "./db";
 import { isConfigured, getSupabase } from "./supabase";
 import { preloadCostos, resolverCostoVenta, calcularMargenVenta } from "./costos";
 import { calcularMargenNeto } from "./ads";
+import { dentroDeTolerancia, type ABCClase } from "./config-costos";
 export { isConfigured as isSupabaseConfigured } from "./supabase";
 
 // ==================== TYPES (backward compatible) ====================
@@ -1059,6 +1060,12 @@ export async function actualizarLineaRecepcion(id: string, fields: Partial<db.DB
  * corregida a posteriori), para que la cache de costo promedio y el audit
  * trail de movimientos reflejen el costo correcto.
  */
+/**
+ * Sincronizar costo unitario de movimientos de una recepción + recalcular WAC (Chunk 3).
+ *
+ * Usado cuando el admin edita el costo unitario de una línea de recepción.
+ * El recálculo del WAC delega en recalcular_wac_running (canónico v102).
+ */
 export async function sincronizarCostoMovimientosRecepcion(
   skuOrigen: string,
   recepcionId: string,
@@ -1075,44 +1082,27 @@ export async function sincronizarCostoMovimientosRecepcion(
     .eq("sku", skuUp)
     .eq("tipo", "entrada");
 
-  // 2. Recalcular productos.costo_promedio como promedio ponderado real
-  const { data: mvs } = await sb.from("movimientos")
-    .select("cantidad,costo_unitario")
-    .eq("sku", skuUp)
-    .eq("tipo", "entrada")
-    .not("costo_unitario", "is", null)
-    .gt("costo_unitario", 0);
-
-  if (mvs && mvs.length > 0) {
-    let sumQty = 0;
-    let sumQtyCost = 0;
-    for (const m of mvs as Array<{ cantidad: number; costo_unitario: number }>) {
-      sumQty += m.cantidad;
-      sumQtyCost += m.cantidad * m.costo_unitario;
-    }
-    const nuevoPromedio = sumQty > 0 ? Math.round((sumQtyCost / sumQty) * 100) / 100 : 0;
-    await sb.from("productos").update({ costo_promedio: nuevoPromedio }).eq("sku", skuUp);
-    // Sync cache
-    if (_cache.products[skuUp]) {
-      _cache.products[skuUp].costAvg = nuevoPromedio;
-    }
-  } else {
-    // No hay movimientos con costo — dejar costo_promedio igual a costo catálogo si existe
-    const { data: p } = await sb.from("productos").select("costo").eq("sku", skuUp).limit(1);
-    const costoCat = (p?.[0] as { costo?: number } | undefined)?.costo || 0;
-    if (costoCat > 0) {
-      await sb.from("productos").update({ costo_promedio: costoCat }).eq("sku", skuUp);
-      if (_cache.products[skuUp]) _cache.products[skuUp].costAvg = costoCat;
-    }
-  }
+  // 2. Delegar recálculo WAC al canónico (NIC 2 stock_total + fallback opción C)
+  const { data: wacData, error: wacErr } = await sb.rpc("recalcular_wac_running", { p_sku: skuUp });
+  if (wacErr) console.error(`[sincronizarCostoMovimientosRecepcion] recalcular_wac_running: ${wacErr.message}`);
+  const nuevoPromedio = (wacData as number | null) ?? 0;
+  if (_cache.products[skuUp]) _cache.products[skuUp].costAvg = nuevoPromedio;
 
   await db.auditLog("sincronizarCostoMovimientosRecepcion", {
     entidad: "recepcion", entidad_id: recepcionId, operario: "admin",
     params: { sku: skuUp, nuevoCostoUnitario },
-    resultado: { movs_actualizados: true },
+    resultado: { movs_actualizados: true, wac_post: nuevoPromedio },
   });
 }
 
+/**
+ * @deprecated Eliminado en Chunk 3 (2026-05-05). Sustituido por:
+ *   aprobarNuevoCosto(discId, sku, costo, { esPuntual: false }) — para
+ *   aprobaciones que cambian el catálogo + recompute ventas_ml_cache.
+ *
+ * Tipo conservado solo para typecheck transitorio en UI legacy.
+ * Eliminar cuando AdminDiscrepancias migre a flujo v2.
+ */
 export interface CongelarCostoPreview {
   discrepanciaId: string;
   sku: string;
@@ -1138,137 +1128,18 @@ export interface CongelarCostoPreview {
 }
 
 /**
- * Congela el costo de una discrepancia PENDIENTE al valor `costoAplicar`
- * (default = costo_diccionario). Reescribe el costo_unitario de movimientos
- * de esa recepción, recalcula WAC desde movimientos, y recomputa los
- * snapshots de ventas_ml_cache posteriores a la recepción que quedaron
- * contaminados con el costo facturado.
- *
- * La discrepancia QUEDA en PENDIENTE. Este flujo es para el caso:
- * "proveedor facturó mal, esperamos NC, mientras tanto no dejemos que el
- * costo facturado contamine WAC ni márgenes de ventas ya hechas".
- *
- * Idempotente: ejecutar dos veces con el mismo costoAplicar produce el
- * mismo resultado.
+ * @deprecated Eliminado en Chunk 3 (2026-05-05). Stub solo para compatibilidad
+ * de typecheck con UI legacy. Llamarla tira error explícito.
+ * Migración: aprobarNuevoCosto(discId, sku, costo, { esPuntual: false }).
  */
 export async function congelarCostoDiscrepancia(
-  discrepanciaId: string,
-  costoAplicar: number | null,
-  dryRun: boolean,
+  _discrepanciaId: string,
+  _costoAplicar: number | null,
+  _dryRun: boolean,
 ): Promise<CongelarCostoPreview> {
-  const sb = getSupabase();
-  if (!sb) throw new Error("Sin conexión a Supabase");
-
-  const { data: discRow, error: discErr } = await sb.from("discrepancias_costo")
-    .select("id, recepcion_id, linea_id, sku, costo_diccionario, costo_factura, estado")
-    .eq("id", discrepanciaId).single();
-  if (discErr || !discRow) throw new Error(`Discrepancia no encontrada: ${discErr?.message || discrepanciaId}`);
-  const disc = discRow as { id: string; recepcion_id: string; sku: string; costo_diccionario: number; costo_factura: number; estado: string };
-
-  const skuUp = (disc.sku || "").toUpperCase();
-  const aplicar = costoAplicar != null ? costoAplicar : disc.costo_diccionario;
-  if (!aplicar || aplicar <= 0) throw new Error("No se puede congelar: costo diccionario = 0 y no se entregó costo manual");
-
-  const { data: recRow } = await sb.from("recepciones").select("id, created_at").eq("id", disc.recepcion_id).single();
-  const cutoff = (recRow as { created_at: string } | null)?.created_at || new Date().toISOString();
-
-  // 1. Calcular WAC simulado: recomputar promedio sobre movimientos con override para los de esta recepción
-  const { data: movs } = await sb.from("movimientos")
-    .select("cantidad, costo_unitario, recepcion_id")
-    .eq("sku", skuUp).eq("tipo", "entrada")
-    .not("costo_unitario", "is", null).gt("costo_unitario", 0);
-  let sumQty = 0, sumQtyCost = 0;
-  for (const m of (movs || []) as Array<{ cantidad: number; costo_unitario: number; recepcion_id: string | null }>) {
-    const cu = m.recepcion_id === disc.recepcion_id ? aplicar : m.costo_unitario;
-    sumQty += m.cantidad;
-    sumQtyCost += m.cantidad * cu;
-  }
-  const wacSimulado = sumQty > 0 ? Math.round((sumQtyCost / sumQty) * 100) / 100 : aplicar;
-
-  const { data: prodRow } = await sb.from("productos").select("costo_promedio").eq("sku", skuUp).single();
-  const wacAnterior = (prodRow as { costo_promedio: number } | null)?.costo_promedio || 0;
-
-  // 2. Cargar preload y sobreescribir WAC del SKU con el simulado
-  const preload = await preloadCostos(sb);
-  const prodSim = preload.productos.get(skuUp) || { costo_promedio: 0, costo: 0 };
-  preload.productos.set(skuUp, { costo_promedio: wacSimulado, costo: prodSim.costo });
-
-  // 3. sku_ventas que contienen este sku_origen
-  const { data: compRows } = await sb.from("composicion_venta").select("sku_venta").eq("sku_origen", skuUp);
-  const skuVentas = new Set<string>([skuUp, ...((compRows || []) as Array<{ sku_venta: string }>).map(c => (c.sku_venta || "").toUpperCase())]);
-
-  // 4. Ventas afectadas post-recepción
-  const { data: ventasRaw } = await sb.from("ventas_ml_cache")
-    .select("order_id, sku_venta, cantidad, fecha, subtotal, total_neto, costo_producto, margen, ads_cost_asignado")
-    .in("sku_venta", Array.from(skuVentas))
-    .gte("fecha", cutoff)
-    .eq("anulada", false);
-  const ventas = (ventasRaw || []) as Array<{ order_id: string; sku_venta: string; cantidad: number; fecha: string; subtotal: number; total_neto: number; costo_producto: number; margen: number; ads_cost_asignado: number }>;
-
-  const detalles: CongelarCostoPreview["detalles"] = [];
-  let margenDeltaTotal = 0;
-  const updatesParaEjecutar: Array<{ order_id: string; sku_venta: string; costo_nuevo: number; margen: number; margen_pct: number; margen_neto: number; margen_neto_pct: number; detalle: unknown }> = [];
-
-  for (const v of ventas) {
-    const resolved = resolverCostoVenta(v.sku_venta, v.cantidad, preload);
-    const mBruto = calcularMargenVenta(v.total_neto, resolved.costo_producto, v.subtotal);
-    const mn = calcularMargenNeto(mBruto.margen, v.ads_cost_asignado || 0, v.subtotal);
-    const margenAnt = v.margen || 0;
-    const margenNetoAnt = margenAnt - (v.ads_cost_asignado || 0);
-    const delta = mBruto.margen - margenAnt;
-    margenDeltaTotal += delta;
-    detalles.push({
-      order_id: v.order_id, sku_venta: v.sku_venta, fecha: v.fecha,
-      costo_anterior: v.costo_producto || 0, costo_nuevo: resolved.costo_producto,
-      margen_anterior: margenAnt, margen_nuevo: mBruto.margen,
-      margen_neto_anterior: margenNetoAnt, margen_neto_nuevo: mn.margen_neto,
-    });
-    updatesParaEjecutar.push({
-      order_id: v.order_id, sku_venta: v.sku_venta,
-      costo_nuevo: resolved.costo_producto,
-      margen: mBruto.margen, margen_pct: mBruto.margen_pct,
-      margen_neto: mn.margen_neto, margen_neto_pct: mn.margen_neto_pct,
-      detalle: resolved.detalle,
-    });
-  }
-
-  const preview: CongelarCostoPreview = {
-    discrepanciaId, sku: skuUp, recepcionId: disc.recepcion_id,
-    costoAplicar: aplicar, costoFacturaActual: disc.costo_factura,
-    wacAnterior, wacSimulado, cutoff,
-    ventasAfectadas: ventas.length, margenDelta: margenDeltaTotal, detalles,
-  };
-
-  if (dryRun) return preview;
-
-  // 5. Ejecutar: sincronizar movimientos+WAC
-  await sincronizarCostoMovimientosRecepcion(skuUp, disc.recepcion_id, aplicar);
-
-  // 5b. Alimentar proveedor_catalogo con el costo congelado
-  await alimentarCatalogoProveedor(discrepanciaId, skuUp, aplicar);
-
-  // 6. Update ventas_ml_cache
-  const snapshotAt = new Date().toISOString();
-  for (const u of updatesParaEjecutar) {
-    const { error: upErr } = await sb.from("ventas_ml_cache").update({
-      costo_producto: u.costo_nuevo,
-      costo_fuente: "congelado_pre_nc",
-      costo_snapshot_at: snapshotAt,
-      costo_detalle: u.detalle,
-      margen: u.margen, margen_pct: u.margen_pct,
-      margen_neto: u.margen_neto, margen_neto_pct: u.margen_neto_pct,
-      updated_at: snapshotAt,
-    }).eq("order_id", u.order_id).eq("sku_venta", u.sku_venta);
-    if (upErr) console.error(`[congelarCosto] update venta_ml_cache ${u.order_id}/${u.sku_venta}: ${upErr.message}`);
-  }
-
-  await db.auditLog("congelarCostoDiscrepancia", {
-    entidad: "discrepancias_costo", entidad_id: discrepanciaId, operario: "admin",
-    params: { sku: skuUp, recepcion_id: disc.recepcion_id, costoAplicar: aplicar, wacAnterior, wacSimulado, cutoff, ventasAfectadas: ventas.length, margenDelta: margenDeltaTotal },
-    resultado: { ok: true, updates: updatesParaEjecutar.length },
-  });
-
-  return preview;
+  throw new Error(
+    "congelarCostoDiscrepancia fue eliminado en Chunk 3. Usar aprobarNuevoCosto(discId, sku, costo, { esPuntual: false }).",
+  );
 }
 
 // Reset línea a PENDIENTE — revierte stock si ya fue ubicada
@@ -3104,12 +2975,30 @@ export async function pickearLineaFull(
           idempotency_key_prefix: `full-pick-${sessionId}-${linea.id}`,
         }).catch(() => {}); // Ignore if no reservation exists
         // Always register the stock movement separately (single source of truth)
-        await db.registrarMovimientoStock({
+        const movId = await db.registrarMovimientoStock({
           sku: skuOrigen, posicion, delta: -unidades, tipo: "salida",
           motivo: "envio_full", operario,
           nota: `Envío Full: ${skuVentaLabel} (${unidades} uds) — ${freshSession.titulo || `Sesión ${sessionId.slice(0, 8)}`}`,
           idempotency_key: `full-pick-${sessionId}-${linea.id}`,
         });
+        // Chunk 3: registrar tránsito Full (bodega → ML facility) hasta que se reconcilie
+        // contra stock_full_cache. Esto cierra el gap de "stock invisible en tránsito".
+        try {
+          const sb2 = db.getSupabase();
+          if (sb2) {
+            const { error: tErr } = await sb2.from("stock_en_transito_full").insert({
+              sku_origen: skuOrigen,
+              cantidad: unidades,
+              fecha_salida_bodega: new Date().toISOString(),
+              movimiento_salida_id: movId || null,
+              estado: "EN_TRANSITO",
+              notas: `picking ${sessionId.slice(0, 8)} → ${skuVentaLabel}`,
+            });
+            if (tErr) console.error(`[pickearLineaFull] insert transito: ${tErr.message}`);
+          }
+        } catch (eT) {
+          console.error("[pickearLineaFull] transito insert error:", eT);
+        }
         await db.auditLog("pickearLineaFull:ok", {
           entidad: "picking_session", entidad_id: sessionId, operario,
           resultado: { lineaId, sku: skuOrigen, qty: unidades, posicion, skuVenta: skuVentaLabel, sessionDone },
@@ -3383,44 +3272,101 @@ export async function backfillFacturaOriginal(recepcionId: string, lineas: db.DB
 
 // ==================== DISCREPANCIAS DE COSTO ====================
 
+/**
+ * Detección de discrepancias de costo (Chunk 3, plan §2.1).
+ *
+ * - Comparación: factura vs proveedor_catalogo.precio_neto WHERE es_principal=true.
+ * - Tolerancia ABC: A=$1, B=2%, C=5% (config-costos.ts).
+ * - Sin early-return: re-detecta líneas nuevas aunque la recepción ya tenga
+ *   discrepancias previas (las PENDIENTE existentes se preservan vía linea_id check).
+ * - Caso A7 (auto-poblar catálogo): si NO hay catálogo principal, o el precio_neto
+ *   es 0 (zombie), upserta el catálogo con el costo_facturado y NO crea disc.
+ *   La primera factura se vuelve la fuente de verdad para ese SKU/proveedor.
+ */
 export async function detectarDiscrepancias(recepcionId: string, lineas: db.DBRecepcionLinea[]): Promise<db.DBDiscrepanciaCosto[]> {
+  const sb = getSupabase();
+  if (!sb) return db.fetchDiscrepancias(recepcionId);
+
   const existentes = await db.fetchDiscrepancias(recepcionId);
-  if (existentes.length > 0) return existentes;
+  // Indexar por linea_id para evitar duplicar disc cuando se vuelve a llamar
+  const existentesPorLinea = new Set(existentes.map(d => d.linea_id).filter(Boolean));
+
+  // Lookup: ABC por SKU
+  const skus = Array.from(new Set(lineas.map(l => (l.sku || "").toUpperCase()).filter(Boolean)));
+  let abcPorSku = new Map<string, ABCClase>();
+  if (skus.length > 0) {
+    const { data: intelRows } = await sb.from("sku_intelligence")
+      .select("sku_origen, abc")
+      .in("sku_origen", skus);
+    abcPorSku = new Map(((intelRows || []) as Array<{ sku_origen: string; abc: string | null }>)
+      .map(r => [r.sku_origen.toUpperCase(), (r.abc || "C") as ABCClase]));
+  }
+
+  // Lookup: catálogo principal por SKU
+  let catalogoPorSku = new Map<string, { precio: number; provId: string | null; provNombre: string | null }>();
+  if (skus.length > 0) {
+    const { data: catRows } = await sb.from("proveedor_catalogo")
+      .select("sku_origen, precio_neto, proveedor_id, proveedor")
+      .eq("es_principal", true)
+      .in("sku_origen", skus);
+    catalogoPorSku = new Map(((catRows || []) as Array<{ sku_origen: string; precio_neto: number; proveedor_id: string | null; proveedor: string | null }>)
+      .map(r => [r.sku_origen.toUpperCase(), { precio: r.precio_neto || 0, provId: r.proveedor_id, provNombre: r.proveedor }]));
+  }
+
+  // Recepción → proveedor para auto-poblar catálogo en caso A7
+  const { data: recRow } = await sb.from("recepciones")
+    .select("proveedor, proveedor_id").eq("id", recepcionId).single();
+  const recProveedor = (recRow as { proveedor: string | null; proveedor_id: string | null } | null);
 
   const nuevas: Omit<db.DBDiscrepanciaCosto, "id" | "created_at">[] = [];
   for (const l of lineas) {
-    const prod = _cache.products[l.sku];
-    // Fuente de verdad para discrepancias: WAC (costo_promedio) del SKU origen.
-    // El WAC se reconstruye desde movimientos reales (registrar_movimiento_stock RPC)
-    // y ya representa el costo unitario del producto fisico.
-    //
-    // Antes comparabamos contra prod.cost (productos.costo), que a su vez se deriva
-    // del Google Sheet de diccionario mediante aritmetica de packs
-    // (costo_pack / unidades). Eso generaba falsos positivos si el Sheet tenia
-    // una fila mal cargada o si el sku_venta pack contaminaba la columna Costo
-    // del origen.
-    //
-    // Fallback a prod.cost solo cuando el WAC no existe (SKU sin entradas reales
-    // todavia, ej. primera recepcion historica).
-    let costoDic = 0;
-    if (prod) {
-      if (prod.costAvg > 0) costoDic = prod.costAvg;
-      else if (prod.cost > 0) costoDic = prod.cost;
-    }
+    if (!l.id || existentesPorLinea.has(l.id)) continue; // skip líneas que ya tienen disc
+    const skuUp = (l.sku || "").toUpperCase();
+    if (!skuUp) continue;
+
     const costoFact = l.costo_unitario || 0;
-    if (costoDic === 0 && costoFact === 0) continue;
-    if (Math.abs(costoDic - costoFact) < 1) continue;
-    const diff = costoFact - costoDic;
-    const pct = costoDic > 0 ? Math.round((diff / costoDic) * 1000) / 10 : 100;
+    if (costoFact <= 0) continue;
+
+    const cat = catalogoPorSku.get(skuUp);
+    const precioCatalogo = cat?.precio || 0;
+
+    // Caso A7: sin catálogo o catálogo zombie → auto-poblar y NO crear disc
+    if (precioCatalogo <= 0) {
+      const proveedor = cat?.provNombre || recProveedor?.proveedor || null;
+      if (proveedor) {
+        const upsert: Record<string, unknown> = {
+          proveedor,
+          sku_origen: skuUp,
+          precio_neto: costoFact,
+          es_principal: true,
+          updated_at: new Date().toISOString(),
+          updated_by: "auto-primera-factura",
+          motivo_ultimo_cambio: `auto-creado-primera-factura folio recepcion ${recepcionId.slice(0, 8)}`,
+        };
+        if (cat?.provId || recProveedor?.proveedor_id) {
+          upsert.proveedor_id = cat?.provId || recProveedor?.proveedor_id;
+        }
+        const { error: upErr } = await sb.from("proveedor_catalogo")
+          .upsert(upsert, { onConflict: "proveedor,sku_origen" });
+        if (upErr) console.error(`[detectarDiscrepancias:A7] upsert ${proveedor}/${skuUp}: ${upErr.message}`);
+      }
+      continue;
+    }
+
+    // Caso normal: comparar factura vs catálogo con tolerancia ABC
+    const abc = abcPorSku.get(skuUp);
+    if (dentroDeTolerancia(precioCatalogo, costoFact, abc)) continue;
+
+    const diff = costoFact - precioCatalogo;
+    const pct = Math.round((diff / precioCatalogo) * 1000) / 10;
     nuevas.push({
-      recepcion_id: recepcionId, linea_id: l.id!, sku: l.sku,
-      costo_diccionario: costoDic, costo_factura: costoFact,
+      recepcion_id: recepcionId, linea_id: l.id, sku: skuUp,
+      costo_diccionario: precioCatalogo, costo_factura: costoFact,
       diferencia: diff, porcentaje: pct, estado: "PENDIENTE",
     });
   }
   if (nuevas.length > 0) {
     await db.insertDiscrepancias(nuevas);
-    // Trigger: discrepancias de costo detectadas
     import("./agents-triggers").then(m => m.dispararTrigger("discrepancia_costo_detectada", {
       recepcion_id: recepcionId, cantidad: nuevas.length,
       skus: nuevas.map(n => n.sku),
@@ -3440,12 +3386,304 @@ export async function recalcularDiscrepancias(recepcionId: string, lineas: db.DB
 }
 
 /**
- * Alimenta proveedor_catalogo con el costo resuelto de una discrepancia.
- * Lee el proveedor de la recepción asociada y hace upsert de (proveedor, sku_origen, precio_neto).
- * Así el próximo OC para ese SKU usa el precio correcto via fuente = "catalogo".
- * No-op si no hay proveedor o si nuevoCosto <= 0.
+ * Detección "preview" de discrepancia para una línea individual al momento
+ * de ubicar (Chunk 5, plan §6.1). NO crea disc — solo informa al UI si
+ * debe mostrar el modal o auto-popular catálogo (caso A7).
  */
-async function alimentarCatalogoProveedor(discId: string, sku: string, nuevoCosto: number): Promise<void> {
+export interface DiscrepanciaLineaPreview {
+  /** true si la diferencia entre factura y catálogo supera la tolerancia ABC */
+  fueraTolerancia: boolean;
+  /** true si no hay catálogo principal con precio>0 (auto-popular antes de ubicar) */
+  casoA7: boolean;
+  precioAcordado: number;
+  costoFacturado: number;
+  abc: ABCClase;
+  /** Proveedor de la recepción (para auto-popular catálogo en caso A7) */
+  proveedorRecepcion: string | null;
+  proveedorIdRecepcion: string | null;
+}
+
+export async function detectarDiscrepanciaLinea(
+  sku: string, costoFacturado: number, recepcionId: string,
+): Promise<DiscrepanciaLineaPreview> {
+  const sb = getSupabase();
+  const skuUp = (sku || "").toUpperCase().trim();
+  const base: DiscrepanciaLineaPreview = {
+    fueraTolerancia: false, casoA7: false,
+    precioAcordado: 0, costoFacturado: costoFacturado || 0,
+    abc: null,
+    proveedorRecepcion: null, proveedorIdRecepcion: null,
+  };
+  if (!sb || !skuUp || costoFacturado <= 0) return base;
+
+  const [{ data: catRow }, { data: intelRow }, { data: recRow }] = await Promise.all([
+    sb.from("proveedor_catalogo")
+      .select("precio_neto").eq("sku_origen", skuUp).eq("es_principal", true).maybeSingle(),
+    sb.from("sku_intelligence").select("abc").eq("sku_origen", skuUp).maybeSingle(),
+    sb.from("recepciones").select("proveedor, proveedor_id").eq("id", recepcionId).maybeSingle(),
+  ]);
+
+  const precio = (catRow as { precio_neto: number } | null)?.precio_neto || 0;
+  const abc = ((intelRow as { abc: string | null } | null)?.abc || null) as ABCClase;
+  const rec = recRow as { proveedor: string | null; proveedor_id: string | null } | null;
+
+  base.precioAcordado = precio;
+  base.abc = abc;
+  base.proveedorRecepcion = rec?.proveedor || null;
+  base.proveedorIdRecepcion = rec?.proveedor_id || null;
+
+  if (precio <= 0) {
+    base.casoA7 = true;
+    return base;
+  }
+  base.fueraTolerancia = !dentroDeTolerancia(precio, costoFacturado, abc);
+  return base;
+}
+
+/**
+ * Auto-popula proveedor_catalogo con el costo facturado en caso A7
+ * (SKU sin catálogo previo o con precio_neto=0 zombie). Llamar antes
+ * de ubicar para que la línea quede con catálogo válido.
+ */
+export async function autoPopularCatalogoCasoA7(
+  sku: string, costoFacturado: number, recepcionId: string,
+): Promise<void> {
+  const sb = getSupabase();
+  if (!sb) return;
+  const skuUp = (sku || "").toUpperCase().trim();
+  if (!skuUp || !costoFacturado || costoFacturado <= 0) return;
+  const { data: recRow } = await sb.from("recepciones")
+    .select("proveedor, proveedor_id").eq("id", recepcionId).maybeSingle();
+  const rec = recRow as { proveedor: string | null; proveedor_id: string | null } | null;
+  const proveedor = rec?.proveedor;
+  if (!proveedor) return;
+  const upsert: Record<string, unknown> = {
+    proveedor, sku_origen: skuUp, precio_neto: costoFacturado,
+    es_principal: true,
+    updated_at: new Date().toISOString(),
+    updated_by: "auto-primera-factura",
+    motivo_ultimo_cambio: `auto-primera-factura recepcion ${recepcionId.slice(0, 8)}`,
+  };
+  if (rec?.proveedor_id) upsert.proveedor_id = rec.proveedor_id;
+  await sb.from("proveedor_catalogo").upsert(upsert, { onConflict: "proveedor,sku_origen" });
+}
+
+/**
+ * Crea una discrepancia PENDIENTE asociada a una línea, antes de invocar
+ * registrar_movimiento_stock. La RPC v37 detectará la disc y aplicará
+ * el precio_acordado del catálogo en lugar del costo facturado.
+ *
+ * Devuelve el id de la disc creada (o existente si ya había una para esa línea).
+ */
+export async function crearDiscrepanciaPendienteParaUbicar(opts: {
+  lineaId: string;
+  sku: string;
+  costoFacturado: number;
+  precioAcordado: number;
+  recepcionId: string;
+}): Promise<string> {
+  const sb = getSupabase();
+  if (!sb) throw new Error("Sin conexión a Supabase");
+  const skuUp = (opts.sku || "").toUpperCase().trim();
+  // Ya hay disc para esta línea? evitar duplicar
+  const existentes = await db.fetchDiscrepancias(opts.recepcionId);
+  const existing = existentes.find(d => d.linea_id === opts.lineaId);
+  if (existing && existing.id) return existing.id;
+
+  const diff = opts.costoFacturado - opts.precioAcordado;
+  const pct = opts.precioAcordado > 0
+    ? Math.round((diff / opts.precioAcordado) * 1000) / 10
+    : 0;
+  const { data, error } = await sb.from("discrepancias_costo").insert({
+    recepcion_id: opts.recepcionId,
+    linea_id: opts.lineaId,
+    sku: skuUp,
+    costo_diccionario: opts.precioAcordado,
+    costo_factura: opts.costoFacturado,
+    diferencia: diff,
+    porcentaje: pct,
+    estado: "PENDIENTE",
+  }).select("id").single();
+  if (error) throw new Error(`crearDiscrepanciaPendienteParaUbicar: ${error.message}`);
+  const created = data as { id?: string } | null;
+  if (!created?.id) throw new Error("crearDiscrepanciaPendienteParaUbicar: insert no devolvió id");
+  return created.id;
+}
+
+/**
+ * Pausa una línea por discrepancia de costo (Chunk 5, plan §6.1.1).
+ *
+ * - UPDATE recepcion_lineas con pausada_at/por/motivo/estado.
+ * - Encola notificación WhatsApp a Vicente con el formato exacto del plan.
+ * - audit_log.
+ *
+ * NO ubica. NO crea disc (la disc se crea cuando alguien resuelve, ya sea
+ * vía "Ubicar con acordado" o vía aprobación de admin).
+ */
+export async function pausarLineaPorDiscrepancia(opts: {
+  lineaId: string;
+  sku: string;
+  costoFacturado: number;
+  precioAcordado: number;
+  abc: ABCClase;
+  recepcionId: string;
+  folio: string;
+  operario: string;
+  notaExtra?: string;
+}): Promise<void> {
+  const sb = getSupabase();
+  if (!sb) throw new Error("Sin conexión a Supabase");
+  const ahora = new Date().toISOString();
+
+  // 1. UPDATE recepcion_lineas
+  await db.updateRecepcionLinea(opts.lineaId, {
+    pausada_at: ahora,
+    pausada_por: opts.operario,
+    pausada_motivo: "discrepancia_costo",
+    pausada_estado: "PAUSADA",
+  });
+
+  // 2. Crear disc PENDIENTE (para que admin la pueda resolver desde su panel)
+  await crearDiscrepanciaPendienteParaUbicar({
+    lineaId: opts.lineaId, sku: opts.sku,
+    costoFacturado: opts.costoFacturado,
+    precioAcordado: opts.precioAcordado,
+    recepcionId: opts.recepcionId,
+  });
+
+  // 3. Notificar Vicente vía outbox
+  const diff = opts.costoFacturado - opts.precioAcordado;
+  const pct = opts.precioAcordado > 0
+    ? ((diff / opts.precioAcordado) * 100).toFixed(1)
+    : "—";
+  const signo = diff >= 0 ? "+" : "";
+  const lines = [
+    "⚠️ Línea pausada",
+    `SKU: ${opts.sku}`,
+    `Costo acordado: $${Math.round(opts.precioAcordado).toLocaleString("es-CL")}`,
+    `Factura: $${Math.round(opts.costoFacturado).toLocaleString("es-CL")}`,
+    `Diferencia: ${signo}${pct}%`,
+    `Operario: ${opts.operario}`,
+    `Recepción: ${opts.folio}`,
+    "Acción: Resolver discrepancia para que el operador pueda ubicar.",
+  ];
+  if (opts.notaExtra) lines.push(`Nota operario: ${opts.notaExtra}`);
+  try {
+    const mod = await import("./notifications");
+    await mod.enqueueNotification("whatsapp", "56991655931@s.whatsapp.net", {
+      text: lines.join("\n"),
+    });
+  } catch (e) {
+    console.error("[pausarLineaPorDiscrepancia] notify error:", e);
+  }
+
+  // 4. Audit log
+  await sb.from("audit_log").insert({
+    accion: "linea_pausada_discrepancia",
+    entidad: "recepcion_lineas",
+    entidad_id: opts.lineaId,
+    operario: opts.operario,
+    params: {
+      sku: opts.sku, costo_facturado: opts.costoFacturado,
+      precio_acordado: opts.precioAcordado, abc: opts.abc,
+      recepcion_id: opts.recepcionId, nota_extra: opts.notaExtra || null,
+    },
+    resultado: { estado: "PAUSADA" },
+  });
+}
+
+/**
+ * Marca como ABANDONADA todas las líneas PAUSADA con pausada_at más viejo
+ * que `cutoffMs` (default 24h). Helper compartido entre el cron diario
+ * y los tests E10.
+ *
+ * Devuelve la lista de líneas afectadas (id, sku, recepcion_id, pausada_at, pausada_por).
+ */
+export async function marcarLineasPausadasComoAbandonadas(opts?: {
+  cutoffMs?: number;
+}): Promise<Array<{ id: string; sku: string; recepcion_id: string; pausada_at: string; pausada_por: string | null }>> {
+  const sb = getSupabase();
+  if (!sb) return [];
+  const cutoffMs = opts?.cutoffMs ?? 24 * 60 * 60 * 1000;
+  const cutoffISO = new Date(Date.now() - cutoffMs).toISOString();
+
+  const { data } = await sb.from("recepcion_lineas")
+    .select("id, sku, recepcion_id, pausada_at, pausada_por")
+    .eq("pausada_estado", "PAUSADA");
+  const all = (data || []) as Array<{ id: string; sku: string; recepcion_id: string; pausada_at: string; pausada_por: string | null }>;
+  const stale = all.filter(r => r.pausada_at && r.pausada_at < cutoffISO);
+
+  for (const row of stale) {
+    await sb.from("recepcion_lineas")
+      .update({ pausada_estado: "ABANDONADA" })
+      .eq("id", row.id);
+    await sb.from("audit_log").insert({
+      accion: "linea_pausada_abandonada",
+      entidad: "recepcion_lineas",
+      entidad_id: row.id,
+      operario: "cron",
+      params: { sku: row.sku, recepcion_id: row.recepcion_id, pausada_at: row.pausada_at },
+      resultado: { estado: "ABANDONADA" },
+    });
+  }
+  return stale;
+}
+
+/**
+ * Reactiva todas las líneas PAUSADA de una recepción para un SKU dado.
+ * Llamado desde aprobarNuevoCosto / rechazarNuevoCosto cuando se resuelve
+ * la discrepancia. Notifica al operario que originalmente pausó.
+ */
+async function reactivarLineasPausadasDeRecepcion(
+  recepcionId: string, sku: string, operarioAdmin: string,
+): Promise<void> {
+  const sb = getSupabase();
+  if (!sb) return;
+  const skuUp = (sku || "").toUpperCase().trim();
+  const { data: filas } = await sb.from("recepcion_lineas")
+    .select("id, pausada_por")
+    .eq("recepcion_id", recepcionId)
+    .eq("sku", skuUp)
+    .eq("pausada_estado", "PAUSADA");
+  const lineas = (filas || []) as Array<{ id: string; pausada_por: string | null }>;
+  if (lineas.length === 0) return;
+
+  for (const l of lineas) {
+    await db.updateRecepcionLinea(l.id, {
+      pausada_estado: "REACTIVADA",
+    });
+    await sb.from("audit_log").insert({
+      accion: "linea_reactivada_discrepancia",
+      entidad: "recepcion_lineas",
+      entidad_id: l.id,
+      operario: operarioAdmin,
+      params: { sku: skuUp, recepcion_id: recepcionId, pausada_por: l.pausada_por },
+      resultado: { estado: "REACTIVADA" },
+    });
+    if (l.pausada_por) {
+      try {
+        const mod = await import("./notifications");
+        await mod.enqueueNotification("whatsapp", "56991655931@s.whatsapp.net", {
+          text: `✅ Línea reactivada (${skuUp}). ${l.pausada_por}, podés ubicarla.`,
+        });
+      } catch (e) {
+        console.error("[reactivarLineasPausadas] notify error:", e);
+      }
+    }
+  }
+}
+
+/**
+ * Alimenta proveedor_catalogo con el costo aprobado de una discrepancia (Chunk 3).
+ *
+ * - Match por proveedor_id (FK canónico) si la recepción lo tiene.
+ *   Fallback a (proveedor texto, sku_origen) para recepciones legacy sin FK.
+ * - Si no existe fila principal, marca la nueva como es_principal=true.
+ * - Audita updated_by y motivo_ultimo_cambio.
+ */
+async function alimentarCatalogoProveedor(
+  discId: string, sku: string, nuevoCosto: number, motivo: string, operario: string,
+): Promise<void> {
   if (!nuevoCosto || nuevoCosto <= 0) return;
   const sb = getSupabase();
   if (!sb) return;
@@ -3455,125 +3693,352 @@ async function alimentarCatalogoProveedor(discId: string, sku: string, nuevoCost
     const recepcionId = (disc as { recepcion_id: string } | null)?.recepcion_id;
     if (!recepcionId) return;
     const { data: rec } = await sb.from("recepciones")
-      .select("proveedor").eq("id", recepcionId).single();
-    const proveedor = (rec as { proveedor: string } | null)?.proveedor;
+      .select("proveedor, proveedor_id").eq("id", recepcionId).single();
+    const recProv = (rec as { proveedor: string | null; proveedor_id: string | null } | null);
+    const proveedor = recProv?.proveedor;
     if (!proveedor) return;
-    const { error } = await sb.from("proveedor_catalogo").upsert({
-      proveedor, sku_origen: sku, precio_neto: nuevoCosto,
+
+    // ¿Ya hay fila principal para este SKU? Si sí, conserva es_principal en esa.
+    const { data: existing } = await sb.from("proveedor_catalogo")
+      .select("id, proveedor, proveedor_id")
+      .eq("sku_origen", sku)
+      .eq("es_principal", true)
+      .maybeSingle();
+    const existingPrincipal = existing as { proveedor: string | null } | null;
+    // Mantener es_principal=true si la fila existente es la misma que estamos
+    // upserteando (mismo proveedor + sku_origen → conflicto los hace una sola fila).
+    // Si el principal pertenece a OTRO proveedor, esta fila es secundaria.
+    const seraPrincipal = !existingPrincipal || existingPrincipal.proveedor === proveedor;
+
+    const upsert: Record<string, unknown> = {
+      proveedor,
+      sku_origen: sku,
+      precio_neto: nuevoCosto,
       updated_at: new Date().toISOString(),
-    }, { onConflict: "proveedor,sku_origen" });
+      updated_by: operario,
+      motivo_ultimo_cambio: motivo,
+      es_principal: seraPrincipal,
+    };
+    if (recProv?.proveedor_id) upsert.proveedor_id = recProv.proveedor_id;
+
+    const { error } = await sb.from("proveedor_catalogo").upsert(
+      upsert, { onConflict: "proveedor,sku_origen" },
+    );
     if (error) console.error(`[alimentarCatalogoProveedor] upsert ${proveedor}/${sku}: ${error.message}`);
   } catch (e) {
     console.error("[alimentarCatalogoProveedor] error:", e);
   }
 }
 
-export async function aprobarNuevoCosto(discId: string, sku: string, nuevoCosto: number): Promise<{ dbOk: boolean; sheetResult?: Record<string, unknown> }> {
-  await db.updateDiscrepancia(discId, {
-    estado: "APROBADO", resuelto_por: "admin", resuelto_at: new Date().toISOString(),
+/**
+ * Aprobar nuevo costo de discrepancia (Chunk 3, plan §2.1, §6.2).
+ *
+ * Pasos:
+ *  1. Snapshot del precio anterior del catálogo (para revertirAprobacion).
+ *  2. UPDATE movimientos.costo_unitario para esta recepción+sku.
+ *  3. recalcular_wac_running(sku) → productos.costo_promedio (canónico v102).
+ *  4. Si !esPuntual: UPSERT proveedor_catalogo.precio_neto con motivo+updated_by.
+ *  5. Recompute ventas_ml_cache para órdenes posteriores a la recepción.
+ *  6. UPDATE discrepancias_costo: estado=APROBADO + es_puntual + snapshot.
+ *  7. audit_log accion='costo_aprobado_v2'.
+ */
+export async function aprobarNuevoCosto(
+  discId: string,
+  sku: string,
+  nuevoCosto: number,
+  opciones?: { esPuntual?: boolean; notas?: string; operario?: string },
+): Promise<{ dbOk: boolean; sheetResult?: Record<string, unknown>; wac_nuevo?: number; precio_anterior_snapshot: number }> {
+  if (!nuevoCosto || nuevoCosto <= 0) throw new Error("nuevoCosto debe ser > 0");
+  const sb = getSupabase();
+  if (!sb) throw new Error("Sin conexión a Supabase");
+
+  const skuUp = (sku || "").toUpperCase().trim();
+  const esPuntual = !!opciones?.esPuntual;
+  const operario = opciones?.operario || "admin";
+  const notas = opciones?.notas;
+
+  // Discrepancia → recepción
+  const { data: discRow } = await sb.from("discrepancias_costo")
+    .select("recepcion_id, costo_diccionario, costo_factura").eq("id", discId).single();
+  const disc = discRow as { recepcion_id: string; costo_diccionario: number; costo_factura: number } | null;
+  if (!disc) throw new Error(`Discrepancia ${discId} no encontrada`);
+
+  // 1. Snapshot del catálogo principal antes de tocarlo
+  const { data: catRow } = await sb.from("proveedor_catalogo")
+    .select("precio_neto").eq("sku_origen", skuUp).eq("es_principal", true).maybeSingle();
+  const precio_anterior_snapshot = (catRow as { precio_neto: number } | null)?.precio_neto || 0;
+
+  // 2. UPDATE movimientos.costo_unitario para esta recepción+sku
+  const { error: movErr } = await sb.from("movimientos")
+    .update({ costo_unitario: nuevoCosto })
+    .eq("recepcion_id", disc.recepcion_id)
+    .eq("sku", skuUp)
+    .eq("tipo", "entrada");
+  if (movErr) console.error(`[aprobarNuevoCosto] update movimientos: ${movErr.message}`);
+
+  // 3. recalcular_wac_running canónico (NIC 2 stock_total + fallback opción C)
+  const { data: wacData, error: wacErr } = await sb.rpc("recalcular_wac_running", { p_sku: skuUp });
+  if (wacErr) console.error(`[aprobarNuevoCosto] recalcular_wac_running: ${wacErr.message}`);
+  const wac_nuevo = (wacData as number | null) ?? null;
+  if (_cache.products[skuUp]) _cache.products[skuUp].costAvg = wac_nuevo || _cache.products[skuUp].costAvg;
+
+  // 4. Alimentar catálogo (solo si NO es puntual)
+  if (!esPuntual) {
+    const motivoCat = `aprobacion_disc_${discId.slice(0, 8)}: factura ${nuevoCosto} aceptada`;
+    await alimentarCatalogoProveedor(discId, skuUp, nuevoCosto, motivoCat, operario);
+  }
+
+  // 5. Recompute ventas_ml_cache para órdenes posteriores a la recepción
+  await recomputarVentasPosterioresRecepcion(disc.recepcion_id, skuUp, "aprobacion_disc");
+
+  // 5b. Reactivar líneas pausadas (Chunk 5 §6.1.1)
+  await reactivarLineasPausadasDeRecepcion(disc.recepcion_id, skuUp, operario);
+
+  // 6. UPDATE discrepancia con estado, es_puntual y snapshot
+  const updateDisc: Record<string, unknown> = {
+    estado: "APROBADO",
+    resuelto_por: operario,
+    resuelto_at: new Date().toISOString(),
+    es_puntual: esPuntual,
+    precio_anterior_snapshot,
+  };
+  if (notas) updateDisc.notas = notas;
+  await db.updateDiscrepancia(discId, updateDisc);
+
+  // 7. Audit log
+  await sb.from("audit_log").insert({
+    accion: "costo_aprobado_v2",
+    entidad: "discrepancias_costo",
+    entidad_id: discId,
+    operario,
+    params: { sku: skuUp, nuevo_costo: nuevoCosto, es_puntual: esPuntual, recepcion_id: disc.recepcion_id },
+    resultado: { precio_anterior_snapshot, wac_nuevo, catalogo_actualizado: !esPuntual },
   });
-  // Update the unit cost in productos table
-  const costoAnterior = _cache.products[sku]?.cost || 0;
-  await db.updateProductoCosto(sku, nuevoCosto);
-  if (_cache.products[sku]) _cache.products[sku].cost = nuevoCosto;
-  // Alimentar proveedor_catalogo para que futuras OCs usen este precio
-  await alimentarCatalogoProveedor(discId, sku, nuevoCosto);
-  // Trigger: costo aprobado
-  import("./agents-triggers").then(m => m.dispararTrigger("costo_aprobado", { sku, costo_anterior: costoAnterior, costo_nuevo: nuevoCosto })).catch(() => {});
 
-  // Build list of all SKU venta rows that use this SKU origen, with their unidades
-  // So the Sheet API can update each row: cost = nuevoCosto * unidades
-  const ventasDelSku = _cache.composicion.filter(c => c.skuOrigen === sku);
+  // Trigger
+  import("./agents-triggers").then(m => m.dispararTrigger("costo_aprobado", {
+    sku: skuUp, costo_anterior: precio_anterior_snapshot, costo_nuevo: nuevoCosto, es_puntual: esPuntual,
+  })).catch(() => {});
+
+  // Update Google Sheet (all rows for this SKU origen)
+  const ventasDelSku = _cache.composicion.filter(c => c.skuOrigen === skuUp);
   const filas = ventasDelSku.map(v => ({ skuVenta: v.skuVenta, unidades: v.unidades }));
-
-  // Try to update Google Sheet (all rows for this SKU origen)
   try {
     const res = await fetch("/api/sheet/update-cost", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sku, nuevoCosto, filas }),
+      body: JSON.stringify({ sku: skuUp, nuevoCosto, filas }),
     });
     const data = await res.json();
-    return { dbOk: true, sheetResult: data };
+    return { dbOk: true, sheetResult: data, wac_nuevo: wac_nuevo ?? undefined, precio_anterior_snapshot };
   } catch (e: unknown) {
-    return { dbOk: true, sheetResult: { error: e instanceof Error ? e.message : "fetch failed" } };
+    return {
+      dbOk: true,
+      sheetResult: { error: e instanceof Error ? e.message : "fetch failed" },
+      wac_nuevo: wac_nuevo ?? undefined, precio_anterior_snapshot,
+    };
   }
-}
-
-export async function rechazarNuevoCosto(discId: string, notas?: string) {
-  await db.updateDiscrepancia(discId, {
-    estado: "RECHAZADO", resuelto_por: "admin", resuelto_at: new Date().toISOString(),
-    notas: notas || "Rechazado - error de proveedor",
-  });
 }
 
 /**
- * Marcar discrepancia como "esperando NC" del proveedor + corregir WAC preventivamente.
- *
- * Caso de uso: el proveedor (ej. Idetex) facturó con costo erróneo, ya confirmó que
- * va a emitir una nota de crédito por la diferencia, pero la NC todavía no llegó.
- * Mientras tanto, el WAC ya quedó contaminado con el costo facturado.
- *
- * Este flujo:
- *  1. Marca la discrepancia como PENDIENTE_NC con el costo esperado y notas.
- *  2. Override del WAC y catálogo a `costoEsperado` para que motor/margen operen
- *     con el valor correcto desde ya.
- *  3. Audit log con accion='override_pre_nc' para trazabilidad.
- *
- * Cuando llegue la NC, ingresarla como recepción negativa o ajuste, y aprobar/cerrar
- * la discrepancia manualmente desde la UI.
+ * @deprecated Eliminado en Chunk 3 (2026-05-05). Estado PENDIENTE_NC ya no existe.
+ * Migración:
+ *   - Si proveedor confirmó NC pero no llegó: usar aprobarNuevoCosto con
+ *     esPuntual=true y `costoEsperado`. La NC posterior se reconcilia desde
+ *     /api/sii (no requiere flujo aparte).
+ *   - Si querés revertir después: revertirAprobacion(discId, motivo).
  */
 export async function marcarPendienteNC(
-  discId: string,
-  sku: string,
-  costoEsperado: number,
-  notas: string,
+  _discId: string,
+  _sku: string,
+  _costoEsperado: number,
+  _notas: string,
 ): Promise<{ ok: boolean; wac_anterior: number; wac_nuevo: number }> {
-  if (!notas || notas.trim().length === 0) {
-    throw new Error("Las notas son obligatorias para marcar como pendiente NC");
+  throw new Error(
+    "marcarPendienteNC fue eliminado en Chunk 3. Usar aprobarNuevoCosto(..., { esPuntual: true, notas }).",
+  );
+}
+
+/** Sub-acción de RECHAZAR (plan §6.2.1). */
+export type RechazarSubAccion = "corregir_factura" | "anular_linea" | "cerrar_dejando_basura";
+
+/**
+ * Rechazar discrepancia (Chunk 3, plan §6.2.1).
+ *
+ * Tres sub-acciones (todas marcan disc=RECHAZADO + auditan):
+ *  - corregir_factura: el operador edita la línea con el costo correcto;
+ *    después se relanza detectarDiscrepancias y la línea queda sin disc.
+ *    NO toca movimientos (eso lo hace la edición de línea).
+ *  - anular_linea: marca la línea como anulada (qty_factura = 0); el WAC se
+ *    recalcula sin esa entrada. Caller debe haber actualizado la línea.
+ *  - cerrar_dejando_basura: registra que el WAC quedará contaminado a propósito
+ *    (caso degenerado, dejamos auditoría).
+ */
+export async function rechazarNuevoCosto(
+  discId: string,
+  notas?: string,
+  subAccion?: RechazarSubAccion,
+  operario: string = "admin",
+) {
+  const sb = getSupabase();
+  if (!sb) throw new Error("Sin conexión a Supabase");
+  // Buscar la disc para saber recepción + sku (para reactivar líneas pausadas)
+  const { data: discRow } = await sb.from("discrepancias_costo")
+    .select("recepcion_id, sku").eq("id", discId).maybeSingle();
+  const disc = discRow as { recepcion_id: string; sku: string } | null;
+
+  await db.updateDiscrepancia(discId, {
+    estado: "RECHAZADO", resuelto_por: operario, resuelto_at: new Date().toISOString(),
+    notas: notas || "Rechazado - error de proveedor",
+  });
+  await sb.from("audit_log").insert({
+    accion: "costo_rechazado_v2",
+    entidad: "discrepancias_costo",
+    entidad_id: discId,
+    operario,
+    params: { sub_accion: subAccion || "sin_subaccion", notas },
+    resultado: { estado: "RECHAZADO" },
+  });
+
+  // Reactivar líneas pausadas — al rechazar, la línea queda igualmente desbloqueada
+  // (el operador puede ubicar con el costo facturado o esperar siguiente flujo).
+  if (disc) {
+    await reactivarLineasPausadasDeRecepcion(disc.recepcion_id, disc.sku, operario);
   }
-  if (costoEsperado <= 0) {
-    throw new Error("El costo esperado debe ser mayor a 0");
+}
+
+/**
+ * Revertir aprobación de discrepancia (Chunk 3, plan §6.2.2).
+ *
+ * Restaura el precio_neto del catálogo al snapshot tomado al aprobar,
+ * recalcula WAC y deja la discrepancia en estado PENDIENTE para nueva resolución.
+ * Solo aplica si la disc está en APROBADO y tiene snapshot.
+ */
+export async function revertirAprobacion(
+  discId: string,
+  motivo: string,
+  operario: string = "admin",
+): Promise<{ ok: boolean; precio_restaurado: number; wac_post: number | null }> {
+  if (!motivo || motivo.trim().length === 0) {
+    throw new Error("El motivo de revertir es obligatorio");
   }
   const sb = getSupabase();
   if (!sb) throw new Error("Sin conexión a Supabase");
 
-  // 1. Leer WAC anterior para audit
-  const { data: prodPrev } = await sb.from("productos")
-    .select("costo, costo_promedio")
-    .eq("sku", sku)
-    .single();
-  const wacAnterior = (prodPrev?.costo_promedio as number) || 0;
+  const { data: discRow } = await sb.from("discrepancias_costo")
+    .select("estado, sku, recepcion_id, es_puntual, precio_anterior_snapshot, costo_factura")
+    .eq("id", discId).single();
+  const disc = discRow as {
+    estado: string; sku: string; recepcion_id: string;
+    es_puntual: boolean | null; precio_anterior_snapshot: number | null;
+    costo_factura: number;
+  } | null;
+  if (!disc) throw new Error(`Discrepancia ${discId} no encontrada`);
+  if (disc.estado !== "APROBADO") throw new Error(`Solo se puede revertir disc APROBADO, estado actual: ${disc.estado}`);
 
-  // 2. Marcar discrepancia como PENDIENTE_NC con costo esperado
+  const skuUp = (disc.sku || "").toUpperCase();
+
+  // 1. Restaurar catálogo solo si NO fue puntual y hay snapshot
+  if (!disc.es_puntual && (disc.precio_anterior_snapshot ?? 0) > 0) {
+    const precio = disc.precio_anterior_snapshot as number;
+    const { error } = await sb.from("proveedor_catalogo")
+      .update({
+        precio_neto: precio,
+        updated_at: new Date().toISOString(),
+        updated_by: operario,
+        motivo_ultimo_cambio: `revertir_disc_${discId.slice(0, 8)}: ${motivo}`,
+      })
+      .eq("sku_origen", skuUp).eq("es_principal", true);
+    if (error) console.error(`[revertirAprobacion] update catalogo: ${error.message}`);
+  }
+
+  // 2. Restaurar costo_unitario en movimientos al precio del catálogo (si existe)
+  const precioObjetivo = disc.precio_anterior_snapshot ?? 0;
+  if (precioObjetivo > 0) {
+    await sb.from("movimientos")
+      .update({ costo_unitario: precioObjetivo })
+      .eq("recepcion_id", disc.recepcion_id).eq("sku", skuUp).eq("tipo", "entrada");
+  }
+
+  // 3. Recalcular WAC + ventas posteriores
+  const { data: wacData } = await sb.rpc("recalcular_wac_running", { p_sku: skuUp });
+  const wac_post = (wacData as number | null) ?? null;
+  if (_cache.products[skuUp] && wac_post != null) _cache.products[skuUp].costAvg = wac_post;
+  await recomputarVentasPosterioresRecepcion(disc.recepcion_id, skuUp, "revertir_disc");
+
+  // 4. Volver disc a PENDIENTE limpiando snapshot y resolución
   await db.updateDiscrepancia(discId, {
-    estado: "PENDIENTE_NC",
-    resuelto_por: "admin",
-    resuelto_at: new Date().toISOString(),
-    notas,
-    costo_esperado_post_nc: costoEsperado,
+    estado: "PENDIENTE",
+    revertido_at: new Date().toISOString(),
+    revertido_por: operario,
+    notas: `Revertido: ${motivo}`,
   });
 
-  // 3. Override WAC + catálogo al costo esperado
-  await sb.from("productos")
-    .update({ costo: costoEsperado, costo_promedio: costoEsperado, updated_at: new Date().toISOString() })
-    .eq("sku", sku);
-  if (_cache.products[sku]) _cache.products[sku].cost = costoEsperado;
-
-  // 3b. Alimentar proveedor_catalogo con el costo esperado post-NC
-  await alimentarCatalogoProveedor(discId, sku, costoEsperado);
-
-  // 4. Audit log
+  // 5. Audit
   await sb.from("audit_log").insert({
-    accion: "override_pre_nc",
-    entidad: "productos",
-    entidad_id: sku,
-    params: { costo_anterior: wacAnterior, costo_esperado: costoEsperado, discrepancia_id: discId },
-    resultado: { wac_actualizado: true, motivo: notas },
-    operario: "admin",
+    accion: "costo_revertido_v2",
+    entidad: "discrepancias_costo",
+    entidad_id: discId,
+    operario,
+    params: { sku: skuUp, motivo, precio_restaurado: precioObjetivo },
+    resultado: { wac_post, ok: true },
   });
 
-  return { ok: true, wac_anterior: wacAnterior, wac_nuevo: costoEsperado };
+  return { ok: true, precio_restaurado: precioObjetivo, wac_post };
+}
+
+/**
+ * Recompute ventas_ml_cache para órdenes posteriores a una recepción
+ * después de un cambio de costo (aprobación, reverso, sincronización).
+ * Compartido entre aprobarNuevoCosto, revertirAprobacion y sincronización.
+ */
+async function recomputarVentasPosterioresRecepcion(
+  recepcionId: string, skuOrigen: string, motivoFuente: string,
+): Promise<void> {
+  const sb = getSupabase();
+  if (!sb) return;
+  const { data: recRow } = await sb.from("recepciones")
+    .select("created_at").eq("id", recepcionId).single();
+  const cutoff = (recRow as { created_at: string } | null)?.created_at;
+  if (!cutoff) return;
+
+  const skuUp = (skuOrigen || "").toUpperCase();
+  const { data: compRows } = await sb.from("composicion_venta")
+    .select("sku_venta").eq("sku_origen", skuUp);
+  const skuVentas = new Set<string>([
+    skuUp,
+    ...((compRows || []) as Array<{ sku_venta: string }>).map(c => (c.sku_venta || "").toUpperCase()),
+  ]);
+  if (skuVentas.size === 0) return;
+
+  const preload = await preloadCostos(sb);
+
+  const { data: ventasRaw } = await sb.from("ventas_ml_cache")
+    .select("order_id, sku_venta, cantidad, fecha, subtotal, total_neto, ads_cost_asignado")
+    .in("sku_venta", Array.from(skuVentas))
+    .gte("fecha", cutoff)
+    .eq("anulada", false);
+  const ventas = (ventasRaw || []) as Array<{
+    order_id: string; sku_venta: string; cantidad: number; fecha: string;
+    subtotal: number; total_neto: number; ads_cost_asignado: number;
+  }>;
+
+  const snapshotAt = new Date().toISOString();
+  for (const v of ventas) {
+    const resolved = resolverCostoVenta(v.sku_venta, v.cantidad, preload);
+    const mBruto = calcularMargenVenta(v.total_neto, resolved.costo_producto, v.subtotal);
+    const mn = calcularMargenNeto(mBruto.margen, v.ads_cost_asignado || 0, v.subtotal);
+    const { error } = await sb.from("ventas_ml_cache").update({
+      costo_producto: resolved.costo_producto,
+      costo_fuente: motivoFuente,
+      costo_snapshot_at: snapshotAt,
+      costo_detalle: resolved.detalle,
+      margen: mBruto.margen, margen_pct: mBruto.margen_pct,
+      margen_neto: mn.margen_neto, margen_neto_pct: mn.margen_neto_pct,
+      updated_at: snapshotAt,
+    }).eq("order_id", v.order_id).eq("sku_venta", v.sku_venta);
+    if (error) console.error(`[recomputarVentas] ${v.order_id}/${v.sku_venta}: ${error.message}`);
+  }
 }
 
 export function tieneDiscrepanciasPendientes(discs: db.DBDiscrepanciaCosto[]): boolean {

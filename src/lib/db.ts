@@ -146,6 +146,11 @@ export interface DBRecepcionLinea {
   etiqueta_impresa?: boolean;
   tiene_variantes?: boolean;
   sku_venta?: string;
+  // v100: lifecycle pausa por discrepancia de costo (Chunk 5)
+  pausada_at?: string | null;
+  pausada_por?: string | null;
+  pausada_motivo?: string | null;
+  pausada_estado?: "PAUSADA" | "REACTIVADA" | "ABANDONADA" | null;
 }
 
 export interface DBMapConfig {
@@ -178,6 +183,11 @@ export interface DBDiscrepanciaCosto {
   notas?: string;
   costo_esperado_post_nc?: number | null;
   created_at?: string;
+  // v100 columns (sistema de costos rediseñado)
+  es_puntual?: boolean | null;
+  precio_anterior_snapshot?: number | null;
+  revertido_at?: string | null;
+  revertido_por?: string | null;
 }
 
 export type DiscrepanciaQtyTipo = "FALTANTE" | "SOBRANTE" | "SKU_ERRONEO" | "NO_EN_FACTURA";

@@ -1,9 +1,10 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { initStore, isStoreReady, getRecepcionesParaOperario, getLineasDeRecepciones, getRecepcionLineas, contarLinea, etiquetarLinea, ubicarLinea, actualizarRecepcion, actualizarLineaRecepcion, activePositions, findPosition, bloquearLinea, desbloquearLinea, renovarBloqueo, isLineaBloqueada, getVentasPorSkuOrigen, getNotasOperativas } from "@/lib/store";
-import type { DBRecepcion, DBRecepcionLinea, ComposicionVenta } from "@/lib/store";
+import { initStore, isStoreReady, getRecepcionesParaOperario, getLineasDeRecepciones, getRecepcionLineas, contarLinea, etiquetarLinea, ubicarLinea, actualizarRecepcion, actualizarLineaRecepcion, activePositions, findPosition, bloquearLinea, desbloquearLinea, renovarBloqueo, isLineaBloqueada, getVentasPorSkuOrigen, getNotasOperativas, detectarDiscrepanciaLinea, autoPopularCatalogoCasoA7, crearDiscrepanciaPendienteParaUbicar, pausarLineaPorDiscrepancia } from "@/lib/store";
+import type { DBRecepcion, DBRecepcionLinea, ComposicionVenta, DiscrepanciaLineaPreview } from "@/lib/store";
 import dynamic from "next/dynamic";
 import Link from "next/link";
+import OperadorDiscrepanciaModal from "@/components/OperadorDiscrepanciaModal";
 const BarcodeScanner = dynamic(() => import("@/components/BarcodeScanner"), { ssr: false });
 
 const ESTADO_ICON: Record<string, string> = { PENDIENTE: "\u{1F534}", CONTADA: "\u{1F7E1}", EN_ETIQUETADO: "\u{1F535}", ETIQUETADA: "\u{1F7E2}", UBICADA: "\u2705" };
@@ -318,13 +319,15 @@ function OperarioLogin({ onLogin }: { onLogin: (name: string) => void }) {
 function LineaCard({ linea: l, operario, onTap, priority }: { linea: DBRecepcionLinea; operario: string; onTap: () => void; priority?: boolean }) {
   const icon = ESTADO_ICON[l.estado] || "⚪";
   const lock = isLineaBloqueada(l, operario);
+  const pausada = l.pausada_estado === "PAUSADA";
 
   return (
     <div onClick={lock.blocked ? undefined : onTap}
+      title={pausada ? "Pausada por discrepancia. Esperando resolución de Vicente." : undefined}
       style={{
         padding:"12px 14px",marginBottom:6,borderRadius:8,
-        background: lock.blocked ? "var(--bg3)" : priority ? "rgba(239,68,68,0.08)" : "var(--bg2)",
-        border: `1px solid ${priority ? "var(--red)" : lock.blocked ? "var(--bg4)" : "var(--bg3)"}`,
+        background: lock.blocked ? "var(--bg3)" : pausada ? "rgba(245,158,11,0.08)" : priority ? "rgba(239,68,68,0.08)" : "var(--bg2)",
+        border: `1px solid ${pausada ? "var(--amber)" : priority ? "var(--red)" : lock.blocked ? "var(--bg4)" : "var(--bg3)"}`,
         cursor: lock.blocked ? "not-allowed" : "pointer",
         opacity: lock.blocked ? 0.6 : 1,
         display:"flex",justifyContent:"space-between",alignItems:"center",
@@ -332,8 +335,10 @@ function LineaCard({ linea: l, operario, onTap, priority }: { linea: DBRecepcion
       <div style={{flex:1}}>
         <div style={{display:"flex",alignItems:"center",gap:6}}>
           <span>{lock.blocked ? "🔒" : icon}</span>
+          {pausada && <span style={{fontSize:14}} title="Pausada por discrepancia">⏸</span>}
           <span className="mono" style={{fontWeight:700,fontSize:13}}>{l.sku}</span>
           {priority && <span style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:3,background:"var(--red)",color:"#fff"}}>FULL</span>}
+          {pausada && <span style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:3,background:"var(--amber)",color:"#0a0e17"}}>PAUSADA</span>}
           {lock.blocked && <span style={{fontSize:10,color:"var(--amber)",fontWeight:600}}>{lock.by}</span>}
         </div>
         <div style={{fontSize:11,color:"var(--txt3)",marginTop:2}}>{l.nombre}</div>
@@ -515,14 +520,35 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, folio, prov
     if (linea.sku_venta) setUbicarSkuVenta(linea.sku_venta);
   }, [linea]);
 
+  // Modal de discrepancia (Chunk 5)
+  const [discPreview, setDiscPreview] = useState<DiscrepanciaLineaPreview | null>(null);
+
+  const ubicarFisico = async () => {
+    const skuVentaVal = ubicarSkuVenta === "__SIN_ETIQUETAR__" ? null : ubicarSkuVenta;
+    await ubicarLinea(linea.id!, linea.sku, ubicarPos, ubicarQty, operario, recepcionId, {
+      skuVenta: skuVentaVal, folio, proveedor,
+    });
+  };
+
   const doUbicar = async () => {
     if (!ubicarPos || ubicarQty <= 0) return;
     setSaving(true);
     try {
-      const skuVentaVal = ubicarSkuVenta === "__SIN_ETIQUETAR__" ? null : ubicarSkuVenta;
-      await ubicarLinea(linea.id!, linea.sku, ubicarPos, ubicarQty, operario, recepcionId, {
-        skuVenta: skuVentaVal, folio, proveedor,
-      });
+      // Chunk 5 §6.1: detectar discrepancia antes de ubicar
+      const costoFact = linea.costo_unitario || 0;
+      if (costoFact > 0) {
+        const preview = await detectarDiscrepanciaLinea(linea.sku, costoFact, recepcionId);
+        if (preview.casoA7) {
+          // Sin catálogo: auto-popula con factura y ubica normal (no es disc)
+          await autoPopularCatalogoCasoA7(linea.sku, costoFact, recepcionId);
+        } else if (preview.fueraTolerancia) {
+          // Mostrar modal y abortar la ubicación hasta que el operador decida
+          setDiscPreview(preview);
+          setSaving(false);
+          return;
+        }
+      }
+      await ubicarFisico();
       showToast(`${ubicarQty} uds ubicadas en ${ubicarPos}`);
       await refreshLinea();
       setUbicarPos("");
@@ -531,6 +557,58 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, folio, prov
       const msg = e instanceof Error ? e.message : "Error desconocido al ubicar";
       showToast(`ERROR: ${msg}`);
       await refreshLinea();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // "Ubicar con acordado": crear disc PENDIENTE, ubicar; el RPC v37 detecta
+  // la disc y aplica precio_acordado del catálogo en lugar del facturado.
+  const doUbicarConAcordado = async () => {
+    if (!discPreview) return;
+    setSaving(true);
+    try {
+      await crearDiscrepanciaPendienteParaUbicar({
+        lineaId: linea.id!,
+        sku: linea.sku,
+        costoFacturado: discPreview.costoFacturado,
+        precioAcordado: discPreview.precioAcordado,
+        recepcionId,
+      });
+      await ubicarFisico();
+      showToast(`Ubicado con $${Math.round(discPreview.precioAcordado).toLocaleString("es-CL")} (acordado)`);
+      setDiscPreview(null);
+      await refreshLinea();
+      setUbicarPos("");
+      onStepComplete();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Error desconocido al ubicar";
+      showToast(`ERROR: ${msg}`);
+      await refreshLinea();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const doPausar = async (notaExtra?: string) => {
+    if (!discPreview) return;
+    setSaving(true);
+    try {
+      await pausarLineaPorDiscrepancia({
+        lineaId: linea.id!,
+        sku: linea.sku,
+        costoFacturado: discPreview.costoFacturado,
+        precioAcordado: discPreview.precioAcordado,
+        abc: discPreview.abc,
+        recepcionId, folio, operario, notaExtra,
+      });
+      showToast("Línea pausada — Vicente fue notificado");
+      setDiscPreview(null);
+      await refreshLinea();
+      onBack();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Error al pausar";
+      showToast(`ERROR: ${msg}`);
     } finally {
       setSaving(false);
     }
@@ -817,6 +895,18 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, folio, prov
           </div>
         )}
       </div>
+
+      <OperadorDiscrepanciaModal
+        visible={!!discPreview}
+        sku={linea.sku}
+        costoFacturado={discPreview?.costoFacturado || 0}
+        costoAcordado={discPreview?.precioAcordado || 0}
+        abc={discPreview?.abc ?? null}
+        saving={saving}
+        onUbicarConAcordado={doUbicarConAcordado}
+        onPausar={doPausar}
+        onCancelar={() => setDiscPreview(null)}
+      />
     </div>
   );
 }

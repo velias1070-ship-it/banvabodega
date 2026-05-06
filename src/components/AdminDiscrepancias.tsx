@@ -2,8 +2,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { fetchDiscrepanciasGlobal, fetchProductos, fetchRecepciones, fetchRcvCompras, fetchEmpresaDefault, getSupabase } from "@/lib/db";
 import type { DBDiscrepanciaCosto, DBProduct, DBRecepcion, DBRcvCompra, DBRecepcionLinea } from "@/lib/db";
-import { aprobarNuevoCosto, rechazarNuevoCosto, marcarPendienteNC, congelarCostoDiscrepancia } from "@/lib/store";
-import type { CongelarCostoPreview } from "@/lib/store";
+import { aprobarNuevoCosto, rechazarNuevoCosto } from "@/lib/store";
 
 // Normaliza nombre de proveedor/razon social para match flexible
 const normProv = (s: string): string => (s || "").toUpperCase().trim()
@@ -61,7 +60,7 @@ export default function AdminDiscrepancias() {
   const [lineas, setLineas] = useState<Map<string, DBRecepcionLinea>>(new Map()); // key = linea_id
   const [loading, setLoading] = useState(true);
   const [actioning, setActioning] = useState<string | null>(null);
-  const [congelarModal, setCongelarModal] = useState<{ row: Row; preview: CongelarCostoPreview | null; costoInput: string } | null>(null);
+  const [congelarModal, setCongelarModal] = useState<{ row: Row; costoInput: string } | null>(null);
   const [ncs, setNcs] = useState<DBRcvCompra[]>([]);
   const [ncBulkOpen, setNcBulkOpen] = useState<string | null>(null); // nc.id abierto para confirmar cierre
 
@@ -270,8 +269,8 @@ export default function AdminDiscrepancias() {
     if (!confirma) return;
     setActioning(row.id!);
     try {
-      const res = await marcarPendienteNC(row.id!, row.sku, n, notas);
-      alert(`WAC actualizado: ${fmtMoney(res.wac_anterior)} → ${fmtMoney(res.wac_nuevo)}`);
+      const res = await aprobarNuevoCosto(row.id!, row.sku, n, { esPuntual: true, notas });
+      alert(`WAC recalculado: ${fmtMoney(res.precio_anterior_snapshot)} → ${fmtMoney(res.wac_nuevo)}`);
       await cargar();
     } catch (e) {
       alert("Error: " + (e instanceof Error ? e.message : e));
@@ -282,34 +281,26 @@ export default function AdminDiscrepancias() {
 
   const abrirCongelar = async (row: Row) => {
     const sugerido = row.costo_diccionario && row.costo_diccionario > 0 ? row.costo_diccionario : 0;
-    setCongelarModal({ row, preview: null, costoInput: String(sugerido) });
-  };
-
-  const previewCongelar = async () => {
-    if (!congelarModal) return;
-    const n = Number(congelarModal.costoInput);
-    if (!Number.isFinite(n) || n <= 0) { alert("Costo inválido"); return; }
-    setActioning(congelarModal.row.id!);
-    try {
-      const preview = await congelarCostoDiscrepancia(congelarModal.row.id!, n, true);
-      setCongelarModal({ ...congelarModal, preview });
-    } catch (e) {
-      alert("Error preview: " + (e instanceof Error ? e.message : e));
-    } finally {
-      setActioning(null);
-    }
+    setCongelarModal({ row, costoInput: String(sugerido) });
   };
 
   const confirmarCongelar = async () => {
-    if (!congelarModal || !congelarModal.preview) return;
+    if (!congelarModal) return;
     const n = Number(congelarModal.costoInput);
-    if (!window.confirm(`Aplicar costo ${fmtMoney(n)} al WAC y recomputar ${congelarModal.preview.ventasAfectadas} ventas?\n\nLa discrepancia queda PENDIENTE.`)) return;
+    if (!Number.isFinite(n) || n <= 0) { alert("Costo inválido"); return; }
+    if (!window.confirm(
+      `Aplicar costo ${fmtMoney(n)} a ${congelarModal.row.sku}?\n\n`
+      + `• Actualiza catálogo proveedor (es_principal)\n`
+      + `• Recalcula WAC running\n`
+      + `• Recomputa margen de ventas posteriores\n`
+      + `• Estado: APROBADO`
+    )) return;
     setActioning(congelarModal.row.id!);
     try {
-      await congelarCostoDiscrepancia(congelarModal.row.id!, n, false);
+      const res = await aprobarNuevoCosto(congelarModal.row.id!, congelarModal.row.sku, n, { esPuntual: false });
       setCongelarModal(null);
       await cargar();
-      alert("Costo congelado y ventas recomputadas.");
+      alert(`Aplicado. WAC: ${fmtMoney(res.precio_anterior_snapshot)} → ${fmtMoney(res.wac_nuevo)}`);
     } catch (e) {
       alert("Error: " + (e instanceof Error ? e.message : e));
     } finally {
@@ -666,74 +657,19 @@ export default function AdminDiscrepancias() {
             <div style={{ marginBottom: 12 }}>
               <label style={{ fontSize: 11, color: "var(--txt2)", display: "block", marginBottom: 4 }}>Costo a aplicar al WAC (neto, sin IVA)</label>
               <input type="number" value={congelarModal.costoInput}
-                onChange={e => setCongelarModal({ ...congelarModal, costoInput: e.target.value, preview: null })}
+                onChange={e => setCongelarModal({ ...congelarModal, costoInput: e.target.value })}
                 style={{ width: "100%", padding: "8px 12px", borderRadius: 6, background: "var(--bg3)", border: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 14 }} />
             </div>
-            {!congelarModal.preview ? (
-              <button disabled={actioning === congelarModal.row.id}
-                onClick={previewCongelar}
-                style={{ width: "100%", padding: "10px 16px", borderRadius: 6, background: "var(--blueBg)", color: "var(--blue)", fontWeight: 700, fontSize: 12, border: "1px solid var(--blueBd)", cursor: "pointer" }}>
-                {actioning === congelarModal.row.id ? "Calculando…" : "Previsualizar impacto"}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={() => setCongelarModal(null)} disabled={!!actioning}
+                style={{ padding: "8px 14px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt3)", fontSize: 11, fontWeight: 600, border: "1px solid var(--bg4)", cursor: "pointer" }}>
+                Cancelar
               </button>
-            ) : (
-              <>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10, fontSize: 11 }}>
-                  <div style={{ padding: 8, background: "var(--bg3)", borderRadius: 6 }}>
-                    <div style={{ color: "var(--txt3)", fontSize: 10 }}>WAC</div>
-                    <div className="mono">{fmtMoney(congelarModal.preview.wacAnterior)} → <span style={{ color: "var(--green)" }}>{fmtMoney(congelarModal.preview.wacSimulado)}</span></div>
-                  </div>
-                  <div style={{ padding: 8, background: "var(--bg3)", borderRadius: 6 }}>
-                    <div style={{ color: "var(--txt3)", fontSize: 10 }}>Ventas afectadas</div>
-                    <div className="mono" style={{ fontWeight: 700 }}>
-                      {congelarModal.preview.ventasAfectadas}
-                      <span style={{ marginLeft: 8, fontSize: 10, color: congelarModal.preview.margenDelta >= 0 ? "var(--green)" : "var(--red)" }}>
-                        Δ margen: {congelarModal.preview.margenDelta >= 0 ? "+" : ""}{fmtMoney(congelarModal.preview.margenDelta)}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-                {congelarModal.preview.detalles.length > 0 && (
-                  <div style={{ maxHeight: 280, overflow: "auto", border: "1px solid var(--bg4)", borderRadius: 6, marginBottom: 12 }}>
-                    <table style={{ width: "100%", fontSize: 10, borderCollapse: "collapse" }}>
-                      <thead style={{ background: "var(--bg3)", position: "sticky", top: 0 }}>
-                        <tr>
-                          <th style={{ padding: "6px 8px", textAlign: "left", color: "var(--txt3)" }}>Orden</th>
-                          <th style={{ padding: "6px 8px", textAlign: "left", color: "var(--txt3)" }}>SKU venta</th>
-                          <th style={{ padding: "6px 8px", textAlign: "left", color: "var(--txt3)" }}>Fecha</th>
-                          <th style={{ padding: "6px 8px", textAlign: "right", color: "var(--txt3)" }}>Costo ant→nuevo</th>
-                          <th style={{ padding: "6px 8px", textAlign: "right", color: "var(--txt3)" }}>Margen ant→nuevo</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {congelarModal.preview.detalles.map(d => (
-                          <tr key={d.order_id + "/" + d.sku_venta} style={{ borderTop: "1px solid var(--bg4)" }}>
-                            <td className="mono" style={{ padding: "5px 8px" }}>{d.order_id}</td>
-                            <td className="mono" style={{ padding: "5px 8px" }}>{d.sku_venta}</td>
-                            <td style={{ padding: "5px 8px", color: "var(--txt3)" }}>{fmtDate(d.fecha)}</td>
-                            <td className="mono" style={{ padding: "5px 8px", textAlign: "right" }}>
-                              {fmtMoney(d.costo_anterior)} → <span style={{ color: d.costo_nuevo < d.costo_anterior ? "var(--green)" : "var(--red)" }}>{fmtMoney(d.costo_nuevo)}</span>
-                            </td>
-                            <td className="mono" style={{ padding: "5px 8px", textAlign: "right" }}>
-                              {fmtMoney(d.margen_anterior)} → <span style={{ color: d.margen_nuevo >= d.margen_anterior ? "var(--green)" : "var(--red)" }}>{fmtMoney(d.margen_nuevo)}</span>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                  <button onClick={() => setCongelarModal(null)} disabled={!!actioning}
-                    style={{ padding: "8px 14px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt3)", fontSize: 11, fontWeight: 600, border: "1px solid var(--bg4)", cursor: "pointer" }}>
-                    Cancelar
-                  </button>
-                  <button onClick={confirmarCongelar} disabled={!!actioning}
-                    style={{ padding: "8px 14px", borderRadius: 6, background: "var(--blue)", color: "#0a0e17", fontSize: 11, fontWeight: 700, border: "none", cursor: "pointer" }}>
-                    {actioning ? "Aplicando…" : "Aplicar y recomputar"}
-                  </button>
-                </div>
-              </>
-            )}
+              <button onClick={confirmarCongelar} disabled={!!actioning}
+                style={{ padding: "8px 14px", borderRadius: 6, background: "var(--blue)", color: "#0a0e17", fontSize: 11, fontWeight: 700, border: "none", cursor: "pointer" }}>
+                {actioning ? "Aplicando…" : "Aplicar y recomputar"}
+              </button>
+            </div>
           </div>
         </div>
       )}

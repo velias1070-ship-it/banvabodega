@@ -89,6 +89,10 @@
       "schedule": "0 * * * *"
     },
     {
+      "path": "/api/recepciones/abandonar-pausadas-stale",
+      "schedule": "0 9 * * *"
+    },
+    {
       "path": "/api/pricing/recalcular-floors",
       "schedule": "30 11 * * *"
     },
