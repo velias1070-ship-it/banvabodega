@@ -318,16 +318,62 @@ en picking pendiente; motor sugiere mandar +19 más a Full. Si owner
 confirma, terminás con 35 uds en tránsito cuando probablemente alcanzaba
 con las 16 originales.
 
-**Regla propuesta:** ampliar `v_in_transit_por_nodo` para contar también
-componentes con `estado IN ('PENDIENTE', 'PICKEADO')`. Tradeoff: si un
-picking se cancela, esas uds vuelven a contar — pero la cancelación es
-infrecuente vs el daño del doble pedido durante el delay normal.
+**Análisis correcto del scope (revisión 2026-05-06):** la primera versión
+de este sub-issue proponía ampliar `v_in_transit_por_nodo` a
+`estado IN ('PENDIENTE', 'PICKEADO')`. **Esa propuesta es incorrecta** —
+causa double counting que rompe `qty_a_comprar`.
 
-**Alternativa:** marcar UI de Envío a Full / Pedido a Proveedor con
-indicador "ya hay picking activo de X uds para este SKU" para que
-el owner decida manualmente.
+Razón del double counting: en estado PENDIENTE, las uds **siguen físicamente
+en `stock` table** (no se ejecutó `registrar_movimiento_stock` aún). Si las
+sumamos también a `in_transit_total`:
 
-**No bloqueante.** Toca `v_in_transit_por_nodo` directamente.
+```
+qty_raw = stock_objetivo − stock_total − in_transit_total
+                          (incluye uds)   (incluye uds)
+                              ↑               ↑
+                          double count, sub-pedido al proveedor
+```
+
+`stock_total + in_transit_total` se mantiene constante durante PENDIENTE →
+PICKEADO → COMPLETADA, por eso `qty_a_comprar` ya está bien calculado en
+cualquier estado. No tocar.
+
+**Solución correcta:** columna nueva `qty_picking_pendiente_full` que
+**solo se descuenta de `disponible_para_full`**, NO se suma a
+`in_transit_total` ni a `stock_total`:
+
+```sql
+WITH picking_pendiente AS (
+  SELECT
+    UPPER(TRIM(comp.value->>'skuOrigen')) AS sku_origen,
+    SUM((comp.value->>'unidades')::int) AS qty_picking_pendiente_full
+  FROM picking_sessions ps,
+       jsonb_array_elements(ps.lineas) linea(value),
+       jsonb_array_elements(linea.value->'componentes') comp(value)
+  WHERE ps.tipo = 'envio_full'
+    AND ps.estado IN ('ABIERTA', 'EN_PROCESO')
+    AND comp.value->>'estado' = 'PENDIENTE'
+  GROUP BY UPPER(TRIM(comp.value->>'skuOrigen'))
+)
+-- En v_compras_pendientes:
+disponible_para_full = stock_bodega - reserva_flex_target
+                     - COALESCE(pp.qty_picking_pendiente_full, 0)
+mandar_full_uds = LEAST(deficit_full, disponible_para_full)
+```
+
+`qty_a_comprar` queda intacto. Solo `mandar_full_uds` deja de ser ciego.
+
+**Caso testigo confirmado:** LITAF400G4PNG con 16 uds picking pendiente.
+- Hoy: motor sugiere mandar 19 más a Full (ciego al picking).
+- Con fix: `disponible_para_full` baja en 16 → `mandar_full_uds` = 0 o
+  reducido. Motor deja de proponer doble envío.
+
+**Alternativa UI (sin migración SQL):** badge en columna MANDAR cuando
+hay picking activo del mismo SKU pendiente, indicando "ya hay X uds
+en picking, vas a mandar +Y más". Decisión queda en el owner.
+
+**No bloqueante.** Toca `v_compras_pendientes` (agregar CTE + ajuste
+en `disponible_para_full`). Riesgo bajo, scope acotado.
 
 ## Prioridad 2 — Gap 2: política CZ + alertas operativas
 
