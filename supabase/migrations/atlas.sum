@@ -1,4 +1,4 @@
-h1:Aw+tQZqD/YZ2J2QTgUN/Rq77QK+jvuuEvGVehY+bC9o=
+h1:e0gRQ9ZCYZJatMNTNT3XIR1Nup+qKXCzH+3E7o0eRU0=
 20260501230000_sprint0_master_cleanup.sql h1:tA3qmGD/etqX1WcEPKgZyHUrK3acd+Mupv6uec3hgyo=
 20260502120000_sprint1_nodes_lanes_policy.sql h1:AmuvEjqlfjs6wtgrtBEZzhjp1lq26Jolw48Ip4kOYEE=
 20260502_001500_sprint0_post_dedup_orphans.sql h1:nx63Nkj6LrffXd6tdD7cauEFgI3p0l86NSCeWYtgd3w=
@@ -45,3 +45,4 @@ h1:Aw+tQZqD/YZ2J2QTgUN/Rq77QK+jvuuEvGVehY+bC9o=
 20260505170000_sprint85_relax_is_new_sku_uds90d.sql h1:VohKuQhZ0aOjH9ezqQI4rE3RzT+ol/93q4cTk0APcHs=
 20260505180000_sprint85_v_compras_pendientes_full_dispatch.sql h1:lWiufTEzBhl3tlw03rXRoT3z3jhaXfzldJBc5ItPdC4=
 20260505190000_sprint9_p1_v_safety_stock_resolve_cell_efectiva.sql h1:qnqYetCZ2YFxBitMgEgMnMDtdSsq2tvkG8A6z5CzmN0=
+20260506060000_sprint9_p1_8_p5_p1_10_combined.sql h1:ceEbH6oxXFtBqnrCRGY9nRdzEXROXpZ9cQ0lzFLJY+Q=
