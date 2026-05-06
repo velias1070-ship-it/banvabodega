@@ -60,12 +60,24 @@ export default function CatalogoVerPanel() {
     setLoading(true);
     const sb = getSupabase();
     if (!sb) { setLoading(false); return; }
-    const { data, error } = await sb.from("proveedor_catalogo")
-      .select("id, proveedor, sku_origen, nombre, inner_pack, precio_neto, stock_disponible, updated_at, updated_by, motivo_ultimo_cambio, es_principal")
-      .order("proveedor")
-      .order("sku_origen");
-    if (error) console.error("[CatalogoVerPanel] fetch:", error.message);
-    setRows((data || []) as CatRow[]);
+    // Paginar (Supabase tiene cap de 1000 por query)
+    const all: CatRow[] = [];
+    const PAGE = 1000;
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await sb.from("proveedor_catalogo")
+        .select("id, proveedor, sku_origen, nombre, inner_pack, precio_neto, stock_disponible, updated_at, updated_by, motivo_ultimo_cambio, es_principal")
+        .order("proveedor")
+        .order("sku_origen")
+        .range(from, from + PAGE - 1);
+      if (error) {
+        console.error("[CatalogoVerPanel] fetch:", error.message);
+        break;
+      }
+      const chunk = (data || []) as CatRow[];
+      all.push(...chunk);
+      if (chunk.length < PAGE) break;
+    }
+    setRows(all);
     setLoading(false);
   }, []);
 
