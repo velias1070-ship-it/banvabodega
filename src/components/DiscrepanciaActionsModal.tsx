@@ -130,10 +130,27 @@ function ContentAprobar({ discId, sku, costoFactura, costoCatalogo, onCerrar, on
         }}
       />
 
-      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, marginBottom: 12, cursor: "pointer" }}>
-        <input type="checkbox" checked={esPuntual} onChange={e => setEsPuntual(e.target.checked)} />
-        <span>Es descuento puntual (no actualizar precio acordado del catálogo)</span>
-      </label>
+      <div style={{
+        marginBottom: 12, padding: "8px 10px", borderRadius: 6,
+        background: esPuntual ? "rgba(245,158,11,0.10)" : "transparent",
+        border: `1px solid ${esPuntual ? "var(--amberBd)" : "var(--bg4)"}`,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+          <input
+            type="checkbox" id="esPuntualCheckbox"
+            checked={esPuntual} onChange={e => setEsPuntual(e.target.checked)}
+            style={{ width: 16, height: 16, cursor: "pointer", flexShrink: 0 }}
+          />
+          <label htmlFor="esPuntualCheckbox" style={{ cursor: "pointer", fontWeight: 600, color: esPuntual ? "var(--amber)" : "var(--txt2)" }}>
+            Es descuento puntual
+          </label>
+        </div>
+        <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 4, paddingLeft: 24 }}>
+          {esPuntual
+            ? "⚠️ El catálogo NO se va a actualizar. WAC y mov sí. Útil sólo para descuentos one-off."
+            : "Si lo marcás, el catálogo NO se actualiza con el nuevo costo (uso: descuentos one-off)."}
+        </div>
+      </div>
 
       <label style={{ fontSize: 11, color: "var(--txt2)", display: "block", marginBottom: 4 }}>
         Notas (opcional)
