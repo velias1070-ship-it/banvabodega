@@ -295,6 +295,40 @@ en vel declarada.
 o agrega CTE en `v_safety_stock` para usar `vel_real_sem` cuando
 drift_high.
 
+### Sub-issue P1.8 — `in_transit_picking_full` no cuenta picking PENDIENTE
+
+**Detectado durante validación P1, 2026-05-06:**
+
+Picking session `5ef84040-657d-4b71-9c5c-fa574589fb61` creado por owner
+con 41 componentes, todos en estado `PENDIENTE` (recién creado, sin
+escanear). `v_in_transit_por_nodo` filtra `componente.estado = 'PICKEADO'`,
+así que **el motor no ve esas 41 líneas como "en tránsito"**.
+
+**Impacto operativo:** mientras el picking esté entre creado y completado
+(1-3 días en operación normal), el motor calcula con stock desactualizado:
+
+- `stock_bodega` todavía incluye uds que están "comprometidas" al picking
+  (no se descontaron físicamente).
+- `in_transit_picking_full` = 0 → motor cree que no hay nada en camino a Full.
+- `stock_full` actual (sin las uds del picking) → motor sugiere mandar
+  más a Full.
+
+**Caso testigo más claro:** `LITAF400G4PNG` (Toallas Naranja) tiene 16 uds
+en picking pendiente; motor sugiere mandar +19 más a Full. Si owner
+confirma, terminás con 35 uds en tránsito cuando probablemente alcanzaba
+con las 16 originales.
+
+**Regla propuesta:** ampliar `v_in_transit_por_nodo` para contar también
+componentes con `estado IN ('PENDIENTE', 'PICKEADO')`. Tradeoff: si un
+picking se cancela, esas uds vuelven a contar — pero la cancelación es
+infrecuente vs el daño del doble pedido durante el delay normal.
+
+**Alternativa:** marcar UI de Envío a Full / Pedido a Proveedor con
+indicador "ya hay picking activo de X uds para este SKU" para que
+el owner decida manualmente.
+
+**No bloqueante.** Toca `v_in_transit_por_nodo` directamente.
+
 ## Prioridad 2 — Gap 2: política CZ + alertas operativas
 
 ### Problema
