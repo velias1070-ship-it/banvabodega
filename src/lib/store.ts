@@ -3814,6 +3814,15 @@ export async function aprobarNuevoCosto(
     .eq("tipo", "entrada");
   if (movErr) console.error(`[aprobarNuevoCosto] update movimientos: ${movErr.message}`);
 
+  // 2b. UPDATE recepcion_lineas.costo_unitario al costo aprobado (Chunk 7 fix UX 2026-05-06).
+  // El snapshot del costo factura original vive en recepciones.factura_original
+  // (no se rompe). Esto sincroniza la "Factura Ajustada (Real)" con el costo
+  // que terminamos aplicando.
+  const { error: lineaErr } = await sb.from("recepcion_lineas")
+    .update({ costo_unitario: nuevoCosto })
+    .eq("id", disc.linea_id);
+  if (lineaErr) console.error(`[aprobarNuevoCosto] update recepcion_lineas: ${lineaErr.message}`);
+
   // 3. recalcular_wac_running canónico (NIC 2 stock_total + fallback opción C)
   const { data: wacData, error: wacErr } = await sb.rpc("recalcular_wac_running", { p_sku: skuUp });
   if (wacErr) console.error(`[aprobarNuevoCosto] recalcular_wac_running: ${wacErr.message}`);
@@ -3969,10 +3978,10 @@ export async function revertirAprobacion(
   if (!sb) throw new Error("Sin conexión a Supabase");
 
   const { data: discRow } = await sb.from("discrepancias_costo")
-    .select("estado, sku, recepcion_id, es_puntual, precio_anterior_snapshot, costo_factura")
+    .select("estado, sku, recepcion_id, linea_id, es_puntual, precio_anterior_snapshot, costo_factura")
     .eq("id", discId).single();
   const disc = discRow as {
-    estado: string; sku: string; recepcion_id: string;
+    estado: string; sku: string; recepcion_id: string; linea_id: string;
     es_puntual: boolean | null; precio_anterior_snapshot: number | null;
     costo_factura: number;
   } | null;
@@ -4002,6 +4011,13 @@ export async function revertirAprobacion(
       .update({ costo_unitario: precioObjetivo })
       .eq("recepcion_id", disc.recepcion_id).eq("sku", skuUp).eq("tipo", "entrada");
   }
+
+  // 2b. Restaurar recepcion_lineas.costo_unitario al costo factura original
+  // (lo que estaba antes de la aprobación). El snapshot factura_original
+  // de recepciones se mantiene independiente.
+  await sb.from("recepcion_lineas")
+    .update({ costo_unitario: disc.costo_factura })
+    .eq("id", disc.linea_id);
 
   // 3. Recalcular WAC + ventas posteriores
   const { data: wacData } = await sb.rpc("recalcular_wac_running", { p_sku: skuUp });

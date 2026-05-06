@@ -1790,7 +1790,7 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                 return [(
                   <tr key={`disc-${l.id}`}>
                     <td colSpan={isEditable ? 10 : 9} style={{padding:"4px 8px"}}>
-                      <RecepcionDiscBanner disc={dRes} onResuelto={refreshDetail} />
+                      <RecepcionDiscBanner disc={dRes} costoLineaActual={l.costo_unitario} onResuelto={refreshDetail} />
                     </td>
                   </tr>
                 )];

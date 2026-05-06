@@ -14,14 +14,19 @@ import DiscrepanciaActionsModal from "./DiscrepanciaActionsModal";
 interface Props {
   disc: DBDiscrepanciaCosto;
   onResuelto: () => void;
+  /** Costo unitario actual de la línea (sincronizado al aprobar). Si no se pasa,
+      se usa disc.costo_factura como fallback. Pase linea.costo_unitario desde el
+      caller para mostrar el costo aprobado real en el banner verde. */
+  costoLineaActual?: number;
 }
 
 const fmtMoney = (n: number) =>
   (n >= 0 ? "" : "−") + "$" + Math.abs(Math.round(n)).toLocaleString("es-CL");
 const fmtPct = (n: number) => (n >= 0 ? "+" : "") + Number(n).toFixed(1) + "%";
 
-export default function RecepcionDiscBanner({ disc, onResuelto }: Props) {
+export default function RecepcionDiscBanner({ disc, onResuelto, costoLineaActual }: Props) {
   const [modal, setModal] = useState<"aprobar" | "rechazar" | "revertir" | null>(null);
+  const costoFinal = costoLineaActual ?? disc.costo_factura;
 
   if (disc.estado === "APROBADO") {
     return (
@@ -39,7 +44,12 @@ export default function RecepcionDiscBanner({ disc, onResuelto }: Props) {
             {disc.sku}
           </span>
           <span style={{ fontSize: 11, color: "var(--txt2)" }}>
-            costo final {fmtMoney(disc.costo_factura)}
+            costo final <strong className="mono" style={{ color: "var(--txt)" }}>{fmtMoney(costoFinal)}</strong>
+            {costoLineaActual != null && costoLineaActual !== disc.costo_factura && (
+              <span style={{ color: "var(--txt3)", marginLeft: 4, fontSize: 10 }}>
+                (factura {fmtMoney(disc.costo_factura)})
+              </span>
+            )}
           </span>
           {disc.es_puntual && (
             <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: "var(--bg3)", color: "var(--cyan)", fontWeight: 600 }}>
