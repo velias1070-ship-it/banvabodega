@@ -35,6 +35,9 @@ export default function RecepcionDiscBanner({ disc, onResuelto }: Props) {
           <span style={{ fontSize: 11, color: "var(--green)", fontWeight: 700 }}>
             ✅ Disc aprobada
           </span>
+          <span className="mono" style={{ fontSize: 11, fontWeight: 700, color: "var(--txt)", padding: "1px 6px", borderRadius: 3, background: "var(--bg3)" }}>
+            {disc.sku}
+          </span>
           <span style={{ fontSize: 11, color: "var(--txt2)" }}>
             costo final {fmtMoney(disc.costo_factura)}
           </span>
@@ -111,6 +114,9 @@ export default function RecepcionDiscBanner({ disc, onResuelto }: Props) {
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, flexWrap: "wrap" }}>
           <span style={{ fontSize: 12, color: "var(--amber)", fontWeight: 700 }}>
             ⚠️ Discrepancia de costo
+          </span>
+          <span className="mono" style={{ fontSize: 11, fontWeight: 700, color: "var(--txt)", padding: "1px 6px", borderRadius: 3, background: "var(--bg3)" }}>
+            {disc.sku}
           </span>
           <span style={{ fontSize: 11, color: "var(--txt2)" }}>
             acordado <strong className="mono">{fmtMoney(disc.costo_diccionario)}</strong>
