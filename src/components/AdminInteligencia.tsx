@@ -421,7 +421,7 @@ export default function AdminInteligencia() {
   // PR4 Fase 1 — contador de estacionales con revisión vencida (banner en tab Accuracy)
   const [estacionalesVencidos, setEstacionalesVencidos] = useState<number>(0);
   const [envioSort, setEnvioSort] = useState<{ col: string; asc: boolean }>({ col: "accion", asc: true });
-  const [envioFilter, setEnvioFilter] = useState<"todos"|"sin_ip"|"abc_a"|"abc_b"|"abc_c"|"urgente"|"stock_insuf">("todos");
+  const [envioFilter, setEnvioFilter] = useState<"todos"|"sin_ip"|"abc_a"|"abc_b"|"abc_c"|"urgente"|"stock_insuf"|"overshoot">("todos");
   const [envioIpEdits, setEnvioIpEdits] = useState<Map<string, number>>(new Map());
   const [envioManualSearch, setEnvioManualSearch] = useState("");
   const [envioManualItems, setEnvioManualItems] = useState<{skuVenta:string;nombre:string;qty:number}[]>([]);
@@ -2119,6 +2119,7 @@ export default function AdminInteligencia() {
               if (envioFilter === "abc_c") return item.abc === "C";
               if (envioFilter === "urgente") return item.accion === "URGENTE" || item.accion === "AGOTADO_PEDIR";
               if (envioFilter === "stock_insuf") return item.stockBodega < item.mandarEditado;
+              if (envioFilter === "overshoot") return item.innerPack > 1 && item.mandarMotor > 0 && item.mandarSugerido > item.mandarMotor * 1.5;
               return true;
             });
             // Sort
@@ -2150,7 +2151,7 @@ export default function AdminInteligencia() {
             return <>
               {/* Filters */}
               <div style={{ display: "flex", gap: 4, marginBottom: 8, flexWrap: "wrap" }}>
-                {([["todos","Todos"],["sin_ip","Sin IP"],["abc_a","ABC A"],["abc_b","ABC B"],["abc_c","ABC C"],["urgente","Urgentes"],["stock_insuf","Stock insuf."]] as const).map(([key, label]) => (
+                {([["todos","Todos"],["sin_ip","Sin IP"],["abc_a","ABC A"],["abc_b","ABC B"],["abc_c","ABC C"],["urgente","Urgentes"],["stock_insuf","Stock insuf."],["overshoot","⚠ Overshoot pack"]] as const).map(([key, label]) => (
                   <button key={key} onClick={() => setEnvioFilter(key)}
                     style={{ padding: "4px 10px", borderRadius: 4, fontSize: 10, fontWeight: 600, border: `1px solid ${envioFilter === key ? "var(--cyan)" : "var(--bg4)"}`,
                       background: envioFilter === key ? "var(--cyan)" : "var(--bg3)", color: envioFilter === key ? "#000" : "var(--txt3)", cursor: "pointer" }}>
@@ -2161,6 +2162,7 @@ export default function AdminInteligencia() {
                       if (key === "abc_c") return i.abc === "C";
                       if (key === "urgente") return i.accion === "URGENTE" || i.accion === "AGOTADO_PEDIR";
                       if (key === "stock_insuf") return i.stockBodega < i.mandarEditado;
+                      if (key === "overshoot") return i.innerPack > 1 && i.mandarMotor > 0 && i.mandarSugerido > i.mandarMotor * 1.5;
                       return true;
                     }).length})
                   </button>
@@ -2244,12 +2246,22 @@ export default function AdminInteligencia() {
                             title="Sugerencia cruda del motor antes de redondear al inner_pack"
                           >
                             {fmtInt(item.mandarMotor)}
-                            {item.mandarMotor !== item.mandarSugerido && (
-                              <span style={{ fontSize: 9, marginLeft: 2, color: item.mandarSugerido > item.mandarMotor ? "var(--amber)" : "var(--green)" }}
-                                    title={item.redondeoRazon || ""}>
-                                →{item.mandarSugerido}
-                              </span>
-                            )}
+                            {item.mandarMotor !== item.mandarSugerido && (() => {
+                              const overshootPct = item.mandarMotor > 0 ? (item.mandarSugerido - item.mandarMotor) / item.mandarMotor : 0;
+                              const isHighOvershoot = item.innerPack > 1 && item.mandarSugerido > item.mandarMotor && overshootPct > 0.5;
+                              const color = item.mandarSugerido > item.mandarMotor
+                                ? (isHighOvershoot ? "var(--red)" : "var(--amber)")
+                                : "var(--green)";
+                              const tooltip = isHighOvershoot
+                                ? `⚠ Overshoot ${Math.round(overshootPct * 100)}%: motor pidió ${item.mandarMotor}, pack ${item.innerPack} obliga a ${item.mandarSugerido} (+${item.mandarSugerido - item.mandarMotor} uds extra). ${item.redondeoRazon || ""}`
+                                : (item.redondeoRazon || "");
+                              return (
+                                <span style={{ fontSize: 9, marginLeft: 2, color, fontWeight: isHighOvershoot ? 700 : 400 }}
+                                      title={tooltip}>
+                                  →{item.mandarSugerido}{isHighOvershoot && " ⚠"}
+                                </span>
+                              );
+                            })()}
                           </td>
                           <td style={{ textAlign: "right" }}>
                             <MandarCell
