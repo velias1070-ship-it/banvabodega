@@ -15,6 +15,7 @@ import Link from "next/link";
 import SheetSync from "@/components/SheetSync";
 import AdminReposicion from "@/components/AdminReposicion";
 import RecepcionDiscBanner from "@/components/RecepcionDiscBanner";
+import DiscrepanciaActionsModal from "@/components/DiscrepanciaActionsModal";
 import AdminAgentes from "@/components/AdminAgentes";
 import AdminInteligencia from "@/components/AdminInteligencia";
 import AdminSemaforo from "@/components/AdminSemaforo";
@@ -470,6 +471,9 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   const [showAnular, setShowAnular] = useState(false);
   const [anularMotivo, setAnularMotivo] = useState("");
 
+  // Discrepancia action modal (Chunk 6 — reemplaza confirm() legacy)
+  const [discActionModal, setDiscActionModal] = useState<{ disc: DBDiscrepanciaCosto; modo: "aprobar" | "rechazar" | "revertir" } | null>(null);
+
   // Error report modal
   const [errorLinea, setErrorLinea] = useState<DBRecepcionLinea|null>(null);
   const [errorMode, setErrorMode] = useState<"menu"|"conteo"|"sku"|"sustitucion">("menu");
@@ -631,40 +635,9 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
     setEditing(false); await refreshDetail(); setLoading(false);
   };
 
-  // ---- Discrepancy actions ----
-  const doAprobar = async (disc: DBDiscrepanciaCosto) => {
-    if (!confirm(`Aprobar nuevo costo para ${disc.sku}?\nDiccionario: ${fmtMoney(disc.costo_diccionario)} → Factura: ${fmtMoney(disc.costo_factura)}\nEl diccionario se actualizará con el nuevo costo.`)) return;
-    setLoading(true);
-    try {
-      const result = await aprobarNuevoCosto(disc.id!, disc.sku, disc.costo_factura);
-      const sr = result.sheetResult;
-      if (sr?.ok) {
-        alert(`Costo aprobado y actualizado.\nDB: OK\nGoogle Sheet: fila ${sr.row}, celda ${sr.cell}`);
-      } else {
-        alert(`Costo aprobado en DB.\nGoogle Sheet: ${sr?.error || JSON.stringify(sr)}\n\nRevisa /api/sheet/update-cost en el navegador para diagnosticar.`);
-      }
-      await refreshDetail();
-    } catch (e: unknown) {
-      console.error("Error aprobando costo:", e);
-      alert(`Error al aprobar: ${e instanceof Error ? e.message : e}`);
-    } finally {
-      setLoading(false);
-    }
-  };
-  const doRechazar = async (disc: DBDiscrepanciaCosto) => {
-    const nota = prompt("Motivo del rechazo (error proveedor, etc):", "Error de proveedor - reclamar");
-    if (nota === null) return;
-    setLoading(true);
-    try {
-      await rechazarNuevoCosto(disc.id!, nota);
-      await refreshDetail();
-    } catch (e: unknown) {
-      console.error("Error rechazando costo:", e);
-      alert(`Error al rechazar: ${e instanceof Error ? e.message : e}`);
-    } finally {
-      setLoading(false);
-    }
-  };
+  // ---- Discrepancy actions: abren el modal compartido (Chunk 6) ----
+  const doAprobar = (disc: DBDiscrepanciaCosto) => setDiscActionModal({ disc, modo: "aprobar" });
+  const doRechazar = (disc: DBDiscrepanciaCosto) => setDiscActionModal({ disc, modo: "rechazar" });
 
   // ---- Line actions ----
   const doResetLinea = async (lineaId: string) => {
@@ -2393,6 +2366,18 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
         const rec = all.find(r => r.id === recId);
         if (rec) { setView("facturas"); await openRec(rec); }
       }} />}
+
+      {discActionModal && (
+        <DiscrepanciaActionsModal
+          modo={discActionModal.modo}
+          discId={discActionModal.disc.id!}
+          sku={discActionModal.disc.sku}
+          costoFactura={discActionModal.disc.costo_factura}
+          costoCatalogo={discActionModal.disc.costo_diccionario}
+          onCerrar={() => setDiscActionModal(null)}
+          onResuelto={refreshDetail}
+        />
+      )}
     </div>
   );
 }
