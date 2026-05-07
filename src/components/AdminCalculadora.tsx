@@ -20,10 +20,13 @@ const PREMIUM_DELTA_PP = 3.0; // Premium suma ~3pp sobre Clasica (referencia)
 type Canal = "flex" | "full";
 type TipoPub = "clasica" | "premium";
 
-// Calcula peso volumetrico ML (largo*ancho*alto/6000) en gramos. Inputs en cm.
+// Calcula peso volumetrico ML Chile (largo*ancho*alto/4000) en gramos.
+// Inputs en cm. Divisor ML Chile = 4000 (resultado en kg). Equivalente:
+// (L*A*H)/4 da el peso volumetrico directo en gramos.
+const ML_DIVISOR_VOLUMETRICO = 4000;
 function pesoVolumetrico(largoCm: number, anchoCm: number, altoCm: number): number {
   if (largoCm <= 0 || anchoCm <= 0 || altoCm <= 0) return 0;
-  return Math.round((largoCm * anchoCm * altoCm) / 6000 * 1000);
+  return Math.round((largoCm * anchoCm * altoCm) / ML_DIVISOR_VOLUMETRICO * 1000);
 }
 
 export default function AdminCalculadora() {
