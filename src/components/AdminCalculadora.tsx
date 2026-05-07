@@ -20,13 +20,13 @@ const PREMIUM_DELTA_PP = 3.0; // Premium suma ~3pp sobre Clasica (referencia)
 type Canal = "flex" | "full";
 type TipoPub = "clasica" | "premium";
 
-// Calcula peso volumetrico ML Chile (largo*ancho*alto/4000) en gramos.
-// Inputs en cm. Divisor ML Chile = 4000 (resultado en kg). Equivalente:
-// (L*A*H)/4 da el peso volumetrico directo en gramos.
-const ML_DIVISOR_VOLUMETRICO = 4000;
-function pesoVolumetrico(largoCm: number, anchoCm: number, altoCm: number): number {
-  if (largoCm <= 0 || anchoCm <= 0 || altoCm <= 0) return 0;
-  return Math.round((largoCm * anchoCm * altoCm) / ML_DIVISOR_VOLUMETRICO * 1000);
+// Divisor volumetrico ML Chile = 4000 (resultado en kg).
+// Editable en UI por si ML actualiza la formula o para escenarios "what-if".
+const ML_DIVISOR_VOLUMETRICO_DEFAULT = 4000;
+
+function pesoVolumetrico(largoCm: number, anchoCm: number, altoCm: number, divisor: number): number {
+  if (largoCm <= 0 || anchoCm <= 0 || altoCm <= 0 || divisor <= 0) return 0;
+  return Math.round((largoCm * anchoCm * altoCm) / divisor * 1000);
 }
 
 export default function AdminCalculadora() {
@@ -41,6 +41,7 @@ export default function AdminCalculadora() {
   const [largoStr, setLargoStr] = useState("");
   const [anchoStr, setAnchoStr] = useState("");
   const [altoStr, setAltoStr] = useState("");
+  const [divisorStr, setDivisorStr] = useState(String(ML_DIVISOR_VOLUMETRICO_DEFAULT));
 
   // --- ML ---
   const [categoriaKey, setCategoriaKey] = useState<string>("plumones");
@@ -59,7 +60,8 @@ export default function AdminCalculadora() {
   const costoBruto = Math.round(costoNeto * (1 + IVA_PCT));
 
   const pesoReal = Number(pesoRealStr) || 0;
-  const pesoVol = pesoVolumetrico(Number(largoStr) || 0, Number(anchoStr) || 0, Number(altoStr) || 0);
+  const divisorVol = Number(divisorStr) || ML_DIVISOR_VOLUMETRICO_DEFAULT;
+  const pesoVol = pesoVolumetrico(Number(largoStr) || 0, Number(anchoStr) || 0, Number(altoStr) || 0, divisorVol);
   const pesoFacturable = modoPeso === "dimensiones"
     ? Math.max(pesoReal, pesoVol)
     : (Number(pesoGrStr) || 0);
@@ -183,9 +185,15 @@ export default function AdminCalculadora() {
                   <Field label="Ancho (cm)"><input className="form-input" inputMode="decimal" value={anchoStr} onChange={e => setAnchoStr(e.target.value.replace(/[^\d.]/g, ""))} placeholder="30" /></Field>
                   <Field label="Alto (cm)"><input className="form-input" inputMode="decimal" value={altoStr} onChange={e => setAltoStr(e.target.value.replace(/[^\d.]/g, ""))} placeholder="15" /></Field>
                 </div>
+                <Field label={`Divisor volumetrico (default ML Chile = ${ML_DIVISOR_VOLUMETRICO_DEFAULT})`}>
+                  <input className="form-input" inputMode="numeric" value={divisorStr} onChange={e => setDivisorStr(e.target.value.replace(/[^\d]/g, ""))} placeholder="4000" />
+                  <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 4 }}>
+                    Formula: (L × A × H) / divisor = peso vol en kg. ML Chile usa 4000. IATA aereo 6000. DHL 5000.
+                  </div>
+                </Field>
                 {(pesoReal > 0 || pesoVol > 0) && (
                   <div style={{ fontSize: 12, color: "var(--txt3)", marginTop: 6 }}>
-                    Real <span style={numStyle}>{pesoReal}g</span> · Volumetrico <span style={numStyle}>{pesoVol}g</span> · ML usa el mayor: <b style={numStyle}>{pesoFacturable}g</b>
+                    Real <span style={numStyle}>{pesoReal}g</span> · Volumetrico <span style={numStyle}>{pesoVol}g</span> (÷{divisorVol}) · ML usa el mayor: <b style={numStyle}>{pesoFacturable}g</b>
                   </div>
                 )}
               </>
