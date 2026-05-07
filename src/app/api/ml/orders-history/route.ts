@@ -476,9 +476,13 @@ export async function GET(req: NextRequest) {
     }
     console.log(`[ML Orders History] ${packIds.size} packs consultados, ${packSizeMap.size} resueltos`);
 
-    // 5a. Pre-fetch dimensiones para split de envio proporcional al costo teorico por SKU.
-    //     ML cobra el envio Full por unidad segun peso facturable + tier de precio.
-    //     El split flat (packCostoEnvio / lineas) sesga el margen por SKU en packs heterogeneos.
+    // 5a. Pre-fetch peso_facturable real para split de envio proporcional al costo teorico por SKU.
+    //     ML cobra el envio Full por unidad segun peso facturable (que ML calcula con
+    //     packaging real) + tier de precio. El split flat (packCostoEnvio / lineas)
+    //     sesga el margen por SKU en packs heterogeneos.
+    //     Fuente preferida: ml_margin_cache.peso_facturable (viene de ML API
+    //     /users/{sellerId}/shipping_options/free.coverage.all_country.billable_weight).
+    //     Fallback: calcular desde dimensiones registradas (subestima ~30-40% vs real).
     const allSkus = new Set<string>();
     for (const [, packOrders] of Array.from(shipGroups.entries())) {
       for (const o of packOrders) {
@@ -489,26 +493,42 @@ export async function GET(req: NextRequest) {
     }
     const skuPesoFacturableGr = new Map<string, number>();
     if (sb && allSkus.size > 0) {
-      type ProdDims = {
-        sku: string;
-        ml_largo_cm: number | null; ml_ancho_cm: number | null; ml_alto_cm: number | null; ml_peso_gr: number | null;
-        largo_cm: number | null; ancho_cm: number | null; alto_cm: number | null; peso_real_gr: number | null;
-      };
       const skuList = Array.from(allSkus);
+      // 1) Preferido: peso_facturable de ml_margin_cache (medicion ML real)
       for (let i = 0; i < skuList.length; i += 500) {
         const chunk = skuList.slice(i, i + 500);
-        const { data } = await sb.from("productos")
-          .select("sku, ml_largo_cm, ml_ancho_cm, ml_alto_cm, ml_peso_gr, largo_cm, ancho_cm, alto_cm, peso_real_gr")
+        const { data } = await sb.from("ml_margin_cache")
+          .select("sku, peso_facturable")
           .in("sku", chunk);
-        for (const p of (data || []) as ProdDims[]) {
-          const largo = p.ml_largo_cm ?? p.largo_cm;
-          const ancho = p.ml_ancho_cm ?? p.ancho_cm;
-          const alto = p.ml_alto_cm ?? p.alto_cm;
-          const pesoReal = p.ml_peso_gr ?? p.peso_real_gr ?? 0;
-          if (largo && ancho && alto) {
-            const pesoVol = (Number(largo) * Number(ancho) * Number(alto)) / 4000;
-            const pesoFacturable = Math.max(Number(pesoReal) || 0, pesoVol);
-            if (pesoFacturable > 0) skuPesoFacturableGr.set((p.sku || "").toUpperCase(), pesoFacturable);
+        for (const r of (data || []) as { sku: string; peso_facturable: number | null }[]) {
+          if (r.peso_facturable && r.peso_facturable > 0) {
+            skuPesoFacturableGr.set((r.sku || "").toUpperCase(), r.peso_facturable);
+          }
+        }
+      }
+      // 2) Fallback: dimensiones registradas para los SKU que no estaban en margin_cache
+      const faltantes = skuList.filter(s => !skuPesoFacturableGr.has(s));
+      if (faltantes.length > 0) {
+        type ProdDims = {
+          sku: string;
+          ml_largo_cm: number | null; ml_ancho_cm: number | null; ml_alto_cm: number | null; ml_peso_gr: number | null;
+          largo_cm: number | null; ancho_cm: number | null; alto_cm: number | null; peso_real_gr: number | null;
+        };
+        for (let i = 0; i < faltantes.length; i += 500) {
+          const chunk = faltantes.slice(i, i + 500);
+          const { data } = await sb.from("productos")
+            .select("sku, ml_largo_cm, ml_ancho_cm, ml_alto_cm, ml_peso_gr, largo_cm, ancho_cm, alto_cm, peso_real_gr")
+            .in("sku", chunk);
+          for (const p of (data || []) as ProdDims[]) {
+            const largo = p.ml_largo_cm ?? p.largo_cm;
+            const ancho = p.ml_ancho_cm ?? p.ancho_cm;
+            const alto = p.ml_alto_cm ?? p.alto_cm;
+            const pesoReal = p.ml_peso_gr ?? p.peso_real_gr ?? 0;
+            if (largo && ancho && alto) {
+              const pesoVol = (Number(largo) * Number(ancho) * Number(alto)) / 4000;
+              const pesoFacturable = Math.max(Number(pesoReal) || 0, pesoVol);
+              if (pesoFacturable > 0) skuPesoFacturableGr.set((p.sku || "").toUpperCase(), pesoFacturable);
+            }
           }
         }
       }
