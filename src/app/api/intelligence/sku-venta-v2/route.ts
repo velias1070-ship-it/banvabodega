@@ -227,7 +227,12 @@ export async function GET(request: Request) {
       const intel = intelMap.get(skuOrigen);
       if (!intel) return;
 
-      const velOrigenPonderada = num(intel.vel_ponderada);
+      // Aplicar multiplicador_evento — el motor del origen ya lo aplica para
+      // mandar_full_uds y pre_full_target, pero vel_decl_sem se expone cruda.
+      // Sin esto la cob/vel mostrada infla en factor del multiplicador durante
+      // eventos (Cyber Day ×2.5 → cob mostrada 2.5x mayor que la real).
+      const multEvento = num(intel.multiplicador_evento) || 1;
+      const velOrigenPonderada = num(intel.vel_ponderada) * multEvento;
       const totalFisicasOrigen = fisicasPorOrigen.get(skuOrigen) || 0;
       const costoNeto = productoCostos.get(skuOrigen) || 0;
       const costoBruto = costoNeto > 0 ? Math.round(costoNeto * 1.19) : 0;
