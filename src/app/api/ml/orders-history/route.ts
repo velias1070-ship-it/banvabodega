@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { mlGet, getMLConfig } from "@/lib/ml";
 import { getServerSupabase } from "@/lib/supabase-server";
+import { calcularCostoEnvioML } from "@/lib/ml-shipping";
 
 export const maxDuration = 300; // 5 min (Vercel Pro)
 export const dynamic = "force-dynamic";
@@ -475,7 +476,45 @@ export async function GET(req: NextRequest) {
     }
     console.log(`[ML Orders History] ${packIds.size} packs consultados, ${packSizeMap.size} resueltos`);
 
-    // 5. Map to MappedOrder format, prorate shipping across pack
+    // 5a. Pre-fetch dimensiones para split de envio proporcional al costo teorico por SKU.
+    //     ML cobra el envio Full por unidad segun peso facturable + tier de precio.
+    //     El split flat (packCostoEnvio / lineas) sesga el margen por SKU en packs heterogeneos.
+    const allSkus = new Set<string>();
+    for (const [, packOrders] of Array.from(shipGroups.entries())) {
+      for (const o of packOrders) {
+        for (const it of o.order_items) {
+          allSkus.add((it.item.seller_sku || `ML-${it.item.id}`).toUpperCase());
+        }
+      }
+    }
+    const skuPesoFacturableGr = new Map<string, number>();
+    if (sb && allSkus.size > 0) {
+      type ProdDims = {
+        sku: string;
+        ml_largo_cm: number | null; ml_ancho_cm: number | null; ml_alto_cm: number | null; ml_peso_gr: number | null;
+        largo_cm: number | null; ancho_cm: number | null; alto_cm: number | null; peso_real_gr: number | null;
+      };
+      const skuList = Array.from(allSkus);
+      for (let i = 0; i < skuList.length; i += 500) {
+        const chunk = skuList.slice(i, i + 500);
+        const { data } = await sb.from("productos")
+          .select("sku, ml_largo_cm, ml_ancho_cm, ml_alto_cm, ml_peso_gr, largo_cm, ancho_cm, alto_cm, peso_real_gr")
+          .in("sku", chunk);
+        for (const p of (data || []) as ProdDims[]) {
+          const largo = p.ml_largo_cm ?? p.largo_cm;
+          const ancho = p.ml_ancho_cm ?? p.ancho_cm;
+          const alto = p.ml_alto_cm ?? p.alto_cm;
+          const pesoReal = p.ml_peso_gr ?? p.peso_real_gr ?? 0;
+          if (largo && ancho && alto) {
+            const pesoVol = (Number(largo) * Number(ancho) * Number(alto)) / 4000;
+            const pesoFacturable = Math.max(Number(pesoReal) || 0, pesoVol);
+            if (pesoFacturable > 0) skuPesoFacturableGr.set((p.sku || "").toUpperCase(), pesoFacturable);
+          }
+        }
+      }
+    }
+
+    // 5b. Map to MappedOrder format, prorate shipping across pack
     const ordenes: MappedOrder[] = [];
     const debugData: Array<{ order_id: number; billing: BillingOrderDetail | undefined; order: MLOrderFull }> = [];
 
@@ -529,6 +568,26 @@ export async function GET(req: NextRequest) {
         }
       }
 
+      // Pre-calcular costo teorico de envio por linea para prorrateo proporcional.
+      // Si todas las lineas del pack tienen dimensiones, usamos prorrateo segun tarifa ML.
+      // Si falta alguna, fallback al split flat por linea.
+      const itemTeorico = new Map<string, number>(); // key: order_id|item_id|variation_id|qty
+      const itemKey = (orderId: number, itemId: string, variationId: number | undefined, qty: number) =>
+        `${orderId}|${itemId}|${variationId ?? ""}|${qty}`;
+      let totalTeoricoPack = 0;
+      let allItemsHaveDims = true;
+      for (const order of packOrders) {
+        for (const item of order.order_items) {
+          const skuV = (item.item.seller_sku || `ML-${item.item.id}`).toUpperCase();
+          const peso = skuPesoFacturableGr.get(skuV);
+          if (!peso) { allItemsHaveDims = false; continue; }
+          const teorico = calcularCostoEnvioML(peso, item.unit_price) * item.quantity;
+          itemTeorico.set(itemKey(order.id, item.item.id, item.item.variation_id, item.quantity), teorico);
+          totalTeoricoPack += teorico;
+        }
+      }
+      const usarProrrateo = allItemsHaveDims && totalTeoricoPack > 0;
+
       for (const order of packOrders) {
         const logisticType = groupLogisticType;
 
@@ -543,9 +602,13 @@ export async function GET(req: NextRequest) {
           const comisionUnitaria = Math.round(item.sale_fee || 0);
           const comisionTotal = comisionUnitaria * item.quantity;
 
-          // Shipping split equally across all items in the shipment group
-          const costoEnvio = Math.round(packCostoEnvio / packItemCount);
-          const bonificacion = Math.round(packBonificacion / packItemCount);
+          // Shipping split: prorrateado si todas las lineas tienen dims, flat por linea como fallback
+          const costoEnvio = usarProrrateo
+            ? Math.round(packCostoEnvio * ((itemTeorico.get(itemKey(order.id, item.item.id, item.item.variation_id, item.quantity)) || 0) / totalTeoricoPack))
+            : Math.round(packCostoEnvio / packItemCount);
+          const bonificacion = usarProrrateo
+            ? Math.round(packBonificacion * ((itemTeorico.get(itemKey(order.id, item.item.id, item.item.variation_id, item.quantity)) || 0) / totalTeoricoPack))
+            : Math.round(packBonificacion / packItemCount);
 
           const precioUnit = Math.round(item.unit_price);
           const subtotal = Math.round(itemSubtotal);
