@@ -52,8 +52,9 @@ export default function AdminDimensiones() {
   const [syncResult, setSyncResult] = useState<string | null>(null);
   const [editing, setEditing] = useState<DimRow | null>(null);
   const [importing, setImporting] = useState(false);
-  const [importPreview, setImportPreview] = useState<{ a_escribir: number; procesados: number; omitidos: { sku: string; razon: string }[]; preview: { sku: string; largo_cm: number | null; ancho_cm: number | null; alto_cm: number | null; peso_real_gr: number | null }[] } | null>(null);
+  const [importPreview, setImportPreview] = useState<{ a_escribir: number; procesados: number; omitidos: { sku: string; razon: string }[]; preview: { sku: string; largo_cm: number | null; ancho_cm: number | null; alto_cm: number | null; peso_real_gr: number | null }[]; available_sheets?: string[]; sheet_used?: string } | null>(null);
   const [importFile, setImportFile] = useState<File | null>(null);
+  const [importSheet, setImportSheet] = useState<string | null>(null);
 
   const fetchRows = useCallback(async () => {
     const sb = getSupabase();
@@ -111,20 +112,24 @@ export default function AdminDimensiones() {
   }, [rows, q, filtro]);
 
   // ---- Acciones ----
-  const dryRunImport = useCallback(async (file: File) => {
+  const dryRunImport = useCallback(async (file: File, sheet?: string) => {
     setImporting(true);
     setImportPreview(null);
     setImportFile(file);
+    setImportSheet(sheet || null);
     try {
       const fd = new FormData();
       fd.append("file", file);
-      const r = await fetch("/api/dimensiones/import-excel?dry_run=true", { method: "POST", body: fd });
+      const params = new URLSearchParams({ dry_run: "true" });
+      if (sheet) params.set("sheet", sheet);
+      const r = await fetch(`/api/dimensiones/import-excel?${params}`, { method: "POST", body: fd });
       const j = await r.json();
       if (!r.ok) {
-        setSyncResult(`Error preview: ${j.error || r.statusText}${j.header_detectado ? ` · header: ${JSON.stringify(j.header_detectado)}` : ""}`);
+        setSyncResult(`Error preview: ${j.error || r.statusText}${j.header_detectado ? ` · header: ${JSON.stringify(j.header_detectado)}` : ""}${j.available_sheets ? ` · hojas: ${j.available_sheets.join(", ")}` : ""}`);
         setImportFile(null);
       } else {
         setImportPreview(j);
+        if (j.sheet_used) setImportSheet(j.sheet_used);
       }
     } catch (e) {
       setSyncResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
@@ -140,14 +145,17 @@ export default function AdminDimensiones() {
     try {
       const fd = new FormData();
       fd.append("file", importFile);
-      const r = await fetch("/api/dimensiones/import-excel", { method: "POST", body: fd });
+      const params = new URLSearchParams();
+      if (importSheet) params.set("sheet", importSheet);
+      const r = await fetch(`/api/dimensiones/import-excel${params.toString() ? `?${params}` : ""}`, { method: "POST", body: fd });
       const j = await r.json();
       if (!r.ok) {
         setSyncResult(`Error: ${j.error || r.statusText}`);
       } else {
-        setSyncResult(`Excel: procesados ${j.procesados} · escritos ${j.escritos} · omitidos ${j.omitidos?.length || 0} · errores ${j.errores?.length || 0}`);
+        setSyncResult(`Excel (hoja "${j.sheet_used || "?"}"): procesados ${j.procesados} · escritos ${j.escritos} · omitidos ${j.omitidos?.length || 0} · errores ${j.errores?.length || 0}`);
         setImportPreview(null);
         setImportFile(null);
+        setImportSheet(null);
         await fetchRows();
       }
     } catch (e) {
@@ -313,20 +321,22 @@ export default function AdminDimensiones() {
           preview={importPreview}
           fileName={importFile?.name || ""}
           loading={importing}
-          onCancel={() => { setImportPreview(null); setImportFile(null); }}
+          onCancel={() => { setImportPreview(null); setImportFile(null); setImportSheet(null); }}
           onConfirm={aplicarImport}
+          onChangeSheet={(s) => { if (importFile) dryRunImport(importFile, s); }}
         />
       )}
     </div>
   );
 }
 
-function ImportPreviewModal({ preview, fileName, loading, onCancel, onConfirm }: {
-  preview: { a_escribir: number; procesados: number; omitidos: { sku: string; razon: string }[]; preview: { sku: string; largo_cm: number | null; ancho_cm: number | null; alto_cm: number | null; peso_real_gr: number | null }[] };
+function ImportPreviewModal({ preview, fileName, loading, onCancel, onConfirm, onChangeSheet }: {
+  preview: { a_escribir: number; procesados: number; omitidos: { sku: string; razon: string }[]; preview: { sku: string; largo_cm: number | null; ancho_cm: number | null; alto_cm: number | null; peso_real_gr: number | null }[]; available_sheets?: string[]; sheet_used?: string };
   fileName: string;
   loading: boolean;
   onCancel: () => void;
   onConfirm: () => void;
+  onChangeSheet: (s: string) => void;
 }) {
   return (
     <div onClick={onCancel} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
@@ -336,6 +346,21 @@ function ImportPreviewModal({ preview, fileName, loading, onCancel, onConfirm }:
           <button onClick={onCancel} style={{ fontSize: 18, color: "var(--txt3)", background: "none", border: "none" }}>✕</button>
         </div>
         <div style={{ color: "var(--txt3)", fontSize: 12, marginBottom: 12 }}>{fileName}</div>
+
+        {preview.available_sheets && preview.available_sheets.length > 1 && (
+          <div style={{ marginBottom: 12, padding: 10, background: "var(--bg3)", borderRadius: 6 }}>
+            <div style={{ fontSize: 11, color: "var(--txt3)", marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>Hoja del libro</div>
+            <select
+              className="form-input"
+              value={preview.sheet_used || preview.available_sheets[0]}
+              disabled={loading}
+              onChange={e => onChangeSheet(e.target.value)}
+              style={{ width: "100%" }}
+            >
+              {preview.available_sheets.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+        )}
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 12 }}>
           <KPI label="Procesados" value={String(preview.procesados)} />

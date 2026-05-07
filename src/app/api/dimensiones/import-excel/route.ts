@@ -24,13 +24,15 @@ export const maxDuration = 60;
  *   { ok, dry_run, procesados, escritos, omitidos[], errores[], header_detectado }
  */
 
+// Orden importante: el primer alias que matchee gana. Por eso 'sku origen'
+// va antes que 'sku venta' (queremos productos.sku = sku_origen, no sku_venta).
 const HEADER_ALIASES: Record<string, string[]> = {
-  sku: ["sku", "código", "codigo", "code"],
+  sku: ["sku origen", "sku_origen", "sku", "sku venta", "sku_venta", "código", "codigo", "code"],
   largo_cm: ["largo_cm", "largo", "length_cm", "length", "l"],
   ancho_cm: ["ancho_cm", "ancho", "width_cm", "width", "w"],
   alto_cm: ["alto_cm", "alto", "height_cm", "height", "h", "altura"],
-  peso_real_gr: ["peso_real_gr", "peso_gr", "peso_g", "peso_real", "peso", "weight_g", "weight_gr"],
-  peso_real_kg: ["peso_kg", "peso_real_kg", "weight_kg"],
+  peso_real_gr: ["peso_real_gr", "peso_gr", "peso_g", "peso_real", "peso", "peso (g)", "peso(g)", "weight_g", "weight_gr"],
+  peso_real_kg: ["peso_kg", "peso_real_kg", "weight_kg", "peso (kg)", "peso(kg)"],
 };
 
 function findColIdx(header: string[], aliases: string[]): number {
@@ -45,7 +47,9 @@ export async function POST(req: NextRequest) {
   const sb = getServerSupabase();
   if (!sb) return NextResponse.json({ error: "no_db" }, { status: 500 });
 
-  const dryRun = new URL(req.url).searchParams.get("dry_run") === "true";
+  const url = new URL(req.url);
+  const dryRun = url.searchParams.get("dry_run") === "true";
+  const sheetParam = url.searchParams.get("sheet"); // nombre o índice opcional
 
   let buf: Buffer;
   try {
@@ -61,7 +65,23 @@ export async function POST(req: NextRequest) {
   }
 
   const wb = XLSX.read(buf, { type: "buffer" });
-  const sheetName = wb.SheetNames[0];
+  // Resolver hoja a usar: param explícito (nombre o índice), default primera.
+  let sheetName: string;
+  if (sheetParam) {
+    if (/^\d+$/.test(sheetParam)) {
+      const idx = Number(sheetParam);
+      if (idx < 0 || idx >= wb.SheetNames.length) {
+        return NextResponse.json({ error: `Índice de hoja fuera de rango (0..${wb.SheetNames.length - 1})`, available_sheets: wb.SheetNames }, { status: 400 });
+      }
+      sheetName = wb.SheetNames[idx];
+    } else if (wb.SheetNames.includes(sheetParam)) {
+      sheetName = sheetParam;
+    } else {
+      return NextResponse.json({ error: `Hoja '${sheetParam}' no existe`, available_sheets: wb.SheetNames }, { status: 400 });
+    }
+  } else {
+    sheetName = wb.SheetNames[0];
+  }
   const ws = wb.Sheets[sheetName];
   const aoa = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, blankrows: false });
 
@@ -157,6 +177,8 @@ export async function POST(req: NextRequest) {
       omitidos,
       preview: updates.slice(0, 10),
       header_detectado: header,
+      available_sheets: wb.SheetNames,
+      sheet_used: sheetName,
     });
   }
 
@@ -190,5 +212,6 @@ export async function POST(req: NextRequest) {
     omitidos,
     errores,
     header_detectado: header,
+    sheet_used: sheetName,
   });
 }
