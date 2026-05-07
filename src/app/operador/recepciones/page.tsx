@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { initStore, isStoreReady, getRecepcionesParaOperario, getLineasDeRecepciones, getRecepcionLineas, contarLinea, etiquetarLinea, ubicarLinea, actualizarRecepcion, actualizarLineaRecepcion, activePositions, findPosition, bloquearLinea, desbloquearLinea, renovarBloqueo, isLineaBloqueada, getVentasPorSkuOrigen, getNotasOperativas, detectarDiscrepanciaLinea, autoPopularCatalogoCasoA7, crearDiscrepanciaPendienteParaUbicar, notificarFaltaCostoEnLinea } from "@/lib/store";
+import { initStore, isStoreReady, getRecepcionesParaOperario, getLineasDeRecepciones, getRecepcionLineas, contarLinea, etiquetarLinea, ubicarLinea, actualizarRecepcion, actualizarLineaRecepcion, activePositions, findPosition, bloquearLinea, desbloquearLinea, renovarBloqueo, isLineaBloqueada, getVentasPorSkuOrigen, getNotasOperativas, detectarDiscrepanciaLinea, autoPopularCatalogoCasoA7, crearDiscrepanciaPendienteParaUbicar, notificarFaltaCostoEnLinea, cerrarLineaSinMasCajas } from "@/lib/store";
 import type { DBRecepcion, DBRecepcionLinea, ComposicionVenta } from "@/lib/store";
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -422,12 +422,11 @@ function ProcesarLinea({ linea: initialLinea, recepcionId, operario, folio, prov
 
   // Cerrar linea cuando no hay mas cajas (recibido < factura)
   const doCerrarLinea = async () => {
-    if (!window.confirm(`¿Confirmar que no hay mas cajas?\n\nRecibido: ${prevRecibida} de ${linea.qty_factura} facturados.\nSe cerrara la linea con ${prevRecibida} unidades.`)) return;
+    if (!window.confirm(`¿Confirmar que no hay mas cajas?\n\nRecibido: ${prevRecibida} de ${linea.qty_factura} facturados.\nSe cerrara la linea con ${prevRecibida} unidades y se registrara nota de credito por la diferencia.`)) return;
     setSaving(true);
     try {
-      // Ajustar qty_factura al real recibido para que la linea pueda completarse
-      await actualizarLineaRecepcion(linea.id!, { qty_factura: prevRecibida });
-      showToast(`Linea cerrada con ${prevRecibida} unidades recibidas`);
+      await cerrarLineaSinMasCajas(linea.id!, recepcionId, operario);
+      showToast(`Linea cerrada con ${prevRecibida} uds. NC registrada por la diferencia.`);
       await refreshLinea();
       onStepComplete();
     } catch (e: unknown) {

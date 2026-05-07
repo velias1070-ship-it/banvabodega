@@ -1142,6 +1142,81 @@ export async function congelarCostoDiscrepancia(
   );
 }
 
+// Cerrar linea cuando no hay mas cajas: ajusta qty_factura al recibido,
+// crea discrepancia QTY formal (NOTA_CREDITO) con tracking, deriva estado
+// correcto segun qty_ubicada y auto-completa etiquetado si la linea no
+// requiere etiqueta.
+export async function cerrarLineaSinMasCajas(
+  lineaId: string,
+  recepcionId: string,
+  operario: string,
+) {
+  const lineas = await db.fetchRecepcionLineas(recepcionId);
+  const linea = lineas.find(l => l.id === lineaId);
+  if (!linea) throw new Error("Linea no encontrada");
+
+  const qtyRecibida = linea.qty_recibida || 0;
+  const qtyFacturaOriginal = linea.qty_factura;
+  const qtyUbicada = linea.qty_ubicada || 0;
+  const qtyEtiquetada = linea.qty_etiquetada || 0;
+  const diferencia = qtyRecibida - qtyFacturaOriginal;
+
+  let nuevoEstado: db.DBRecepcionLinea["estado"];
+  if (qtyRecibida === 0) {
+    nuevoEstado = "PENDIENTE";
+  } else if (qtyUbicada >= qtyRecibida) {
+    nuevoEstado = "UBICADA";
+  } else if (qtyEtiquetada >= qtyRecibida) {
+    nuevoEstado = "ETIQUETADA";
+  } else {
+    nuevoEstado = "CONTADA";
+  }
+
+  const updates: Partial<db.DBRecepcionLinea> = {
+    qty_factura: qtyRecibida,
+    estado: nuevoEstado,
+  };
+  if (!linea.requiere_etiqueta && qtyRecibida > 0) {
+    updates.qty_etiquetada = qtyRecibida;
+    if (!linea.ts_etiquetado) {
+      updates.ts_etiquetado = new Date().toISOString();
+    }
+  }
+  if (nuevoEstado === "UBICADA" && !linea.ts_ubicacion) {
+    updates.ts_ubicacion = new Date().toISOString();
+  }
+
+  await db.updateRecepcionLinea(lineaId, updates);
+
+  if (diferencia < 0 && qtyFacturaOriginal > 0) {
+    await db.insertDiscrepanciasQty([{
+      recepcion_id: recepcionId,
+      linea_id: lineaId,
+      sku: linea.sku,
+      tipo: "FALTANTE",
+      qty_factura: qtyFacturaOriginal,
+      qty_recibida: qtyRecibida,
+      diferencia,
+      estado: "NOTA_CREDITO",
+      resuelto_por: operario,
+      resuelto_at: new Date().toISOString(),
+      notas: "Cerrado desde operador: no hay mas cajas",
+    }]);
+  }
+
+  await db.auditLog("cerrarLineaSinMasCajas", {
+    entidad: "recepcion_linea", entidad_id: lineaId, operario,
+    params: {
+      sku: linea.sku, recepcionId,
+      qtyFacturaOriginal, qtyRecibida, qtyUbicada, qtyEtiquetada, diferencia,
+    },
+    resultado: {
+      nuevoEstado,
+      discrepancia_creada: diferencia < 0 && qtyFacturaOriginal > 0,
+    },
+  });
+}
+
 // Reset línea a PENDIENTE — revierte stock si ya fue ubicada
 export async function resetearLineaRecepcion(lineaId: string, recepcionId: string) {
   const lineas = await db.fetchRecepcionLineas(recepcionId);
