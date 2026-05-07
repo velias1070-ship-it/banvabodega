@@ -38,6 +38,13 @@ interface IntelRow {
   abc: string;
   xyz: string;
   cuadrante: string;
+  // Sprint 9: motor canónico cell + tendencia (alimentado desde v_reposicion_explain)
+  cell?: string | null;
+  cell_efectiva?: string | null;
+  cell_original?: string | null;
+  tendencia?: string | null;
+  promocion_activa?: boolean | null;
+  promocion_motivo?: string | null;
   accion: string;
   prioridad: number;
   mandar_full: number;
@@ -206,6 +213,47 @@ function cuadranteLabel(c: string): string {
     case "REVISAR": return "Revisar";
     default: return c;
   }
+}
+
+// Sprint 9 P3: render columna ABC con cell_efectiva + tooltip cell_original
+// + badge tendencia. Si cell_efectiva == cell_original (o cell_original es null),
+// no se muestra tooltip para evitar ruido.
+const TENDENCIA_BADGE: Record<string, { sym: string; color: string; bg: string }> = {
+  acelerando_fuerte:        { sym: "↗↗", color: "var(--green)",  bg: "var(--greenBg)"  },
+  acelerando:               { sym: "↗",  color: "var(--green)",  bg: "var(--greenBg)"  },
+  desacelerando:            { sym: "↘",  color: "var(--amber)",  bg: "var(--amberBg)"  },
+  desacelerando_fuerte:     { sym: "↘↘", color: "var(--red)",    bg: "var(--redBg)"    },
+  recuperacion_post_quiebre:{ sym: "↻",  color: "var(--blue)",   bg: "var(--blueBg)"   },
+};
+
+function cellRank(c: string | null | undefined): number {
+  if (!c) return 99;
+  // Lexicográfico AX < AY < AZ < BX < BY < BZ < CX < CY < CZ.
+  const letras = "ABCDEFGHI";
+  const xyz = "WXYZ";
+  const a = letras.indexOf(c.charAt(0));
+  const b = xyz.indexOf(c.charAt(1));
+  return (a >= 0 ? a : 9) * 10 + (b >= 0 ? b : 9);
+}
+
+function CellAbcCell({ row, fontSize = 9 }: { row: { cell_efectiva?: string | null; cell_original?: string | null; cell?: string | null; cuadrante?: string; tendencia?: string | null }; fontSize?: number }) {
+  const cellEf = row.cell_efectiva || row.cell || "";
+  const cellOrig = row.cell_original || null;
+  const cambio = cellOrig && cellOrig !== cellEf;
+  const badge = row.tendencia ? TENDENCIA_BADGE[row.tendencia] : null;
+  const tooltip = cambio ? `ABC original: ${cellOrig}` : undefined;
+  // Fallback al cuadrante viejo si no hay cell (motor viejo / sin sync).
+  if (!cellEf && row.cuadrante) {
+    return <span style={{ fontSize, color: "var(--txt2)" }}>{cuadranteLabel(row.cuadrante)}</span>;
+  }
+  return (
+    <span title={tooltip} style={{ fontSize, color: "var(--txt2)", display: "inline-flex", alignItems: "center", gap: 3 }}>
+      <span style={{ fontWeight: cambio ? 600 : 400, color: cambio ? "var(--cyan)" : "var(--txt2)" }}>{cellEf || "—"}</span>
+      {badge && (
+        <span style={{ fontSize: fontSize - 1, padding: "0 3px", borderRadius: 2, background: badge.bg, color: badge.color, border: `1px solid ${badge.color}33` }}>{badge.sym}</span>
+      )}
+    </span>
+  );
 }
 
 function gapColor(gap: number | null): string {
@@ -497,7 +545,8 @@ export default function AdminInteligencia() {
   // Filtros
   const [filtroAccion, setFiltroAccion] = useState<string>("todos");
   const [filtroABC, setFiltroABC] = useState<string>("todos");
-  const [filtroCuadrante, setFiltroCuadrante] = useState<string>("todos");
+  // Sprint 9 P3: filtro por cell_efectiva (AX-CZ) en lugar de cuadrante BCG.
+  const [filtroCell, setFiltroCell] = useState<string>("todos");
   const [filtroProveedor, setFiltroProveedor] = useState<string>("todos");
   const [filtroAlerta, setFiltroAlerta] = useState<string>("todos");
   const [busqueda, setBusqueda] = useState("");
@@ -1581,7 +1630,7 @@ export default function AdminInteligencia() {
   let filtered: AnyRow[] = activeRows;
   if (filtroAccion !== "todos") filtered = filtered.filter((r: AnyRow) => r.accion === filtroAccion);
   if (filtroABC !== "todos") filtered = filtered.filter((r: AnyRow) => r.abc === filtroABC);
-  if (filtroCuadrante !== "todos") filtered = filtered.filter((r: AnyRow) => r.cuadrante === filtroCuadrante);
+  if (filtroCell !== "todos") filtered = filtered.filter((r: AnyRow) => ((r as IntelRow).cell_efectiva || (r as IntelRow).cell || "") === filtroCell);
   if (filtroProveedor !== "todos") filtered = filtered.filter((r: AnyRow) => r.proveedor === filtroProveedor);
   if (filtroAlerta !== "todos") filtered = filtered.filter((r: AnyRow) => (r.alertas || []).includes(filtroAlerta));
   if (busqueda.trim()) {
@@ -1628,6 +1677,11 @@ export default function AdminInteligencia() {
         const gapA = a.gap_vel_pct ?? 999;
         const gapB = b.gap_vel_pct ?? 999;
         return gapA - gapB;
+      }
+      case "abc": {
+        // Sprint 9 P3: orden lexicográfico por cell_efectiva (AX < AY < ... < CZ).
+        return cellRank((a as IntelRow).cell_efectiva || (a as IntelRow).cell)
+             - cellRank((b as IntelRow).cell_efectiva || (b as IntelRow).cell);
       }
       default: return 0;
     }
@@ -1874,12 +1928,9 @@ export default function AdminInteligencia() {
           <option value="B">B</option>
           <option value="C">C</option>
         </select>
-        <select value={filtroCuadrante} onChange={e => setFiltroCuadrante(e.target.value)} className="form-input" style={{ fontSize: 11, padding: "5px 6px" }}>
-          <option value="todos">Cuad: Todos</option>
-          <option value="ESTRELLA">Estrella</option>
-          <option value="VOLUMEN">Volumen</option>
-          <option value="CASHCOW">Cash Cow</option>
-          <option value="REVISAR">Revisar</option>
+        <select value={filtroCell} onChange={e => setFiltroCell(e.target.value)} className="form-input" style={{ fontSize: 11, padding: "5px 6px" }}>
+          <option value="todos">Cell: Todos</option>
+          {["AX","AY","AZ","BX","BY","BZ","CX","CY","CZ"].map(c => <option key={c} value={c}>{c}</option>)}
         </select>
         <select value={filtroProveedor} onChange={e => setFiltroProveedor(e.target.value)} className="form-input" style={{ fontSize: 11, padding: "5px 6px" }}>
           <option value="todos">Prov: Todos</option>
@@ -1897,6 +1948,7 @@ export default function AdminInteligencia() {
           <option value="venta_perdida">V.Perdida</option>
           <option value="gmroi">GMROI</option>
           <option value="dio">DIO</option>
+          <option value="abc">ABC (cell)</option>
           <option value="gap">Gap Vel.Obj</option>
         </select>
       </div>}
@@ -1983,7 +2035,7 @@ export default function AdminInteligencia() {
                   <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.margen_flex_30d < 0 ? "var(--red)" : r.margen_flex_30d > 0 ? "var(--green)" : "var(--txt3)" }}>{fmtMoney(r.margen_flex_30d)}</td>
                   <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtN(r.gmroi || 0, 1)}</td>
                   <td className="mono" style={{ textAlign: "right", fontSize: 11, color: (r.dio || 0) > 90 ? "var(--red)" : (r.dio || 0) > 60 ? "var(--amber)" : "var(--txt)" }}>{fmtN(r.dio || 0, 0)}</td>
-                  <td style={{ fontSize: 9, color: "var(--txt2)" }}>{cuadranteLabel(r.cuadrante)}</td>
+                  <td><CellAbcCell row={r} /></td>
                   <td>
                     <div style={{ display: "flex", gap: 2, flexWrap: "wrap", maxWidth: 140 }}>
                       {(r.alertas || []).slice(0, 3).map((a: string, i: number) => (
@@ -2074,7 +2126,7 @@ export default function AdminInteligencia() {
                   <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.margen_flex_30d < 0 ? "var(--red)" : r.margen_flex_30d > 0 ? "var(--green)" : "var(--txt3)" }}>{fmtMoney(r.margen_flex_30d)}</td>
                   <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtN(r.gmroi, 1)}</td>
                   <td className="mono" style={{ textAlign: "right", fontSize: 11, color: r.dio > 90 ? "var(--red)" : r.dio > 60 ? "var(--amber)" : "var(--txt)" }}>{fmtN(r.dio, 0)}</td>
-                  <td style={{ fontSize: 9, color: "var(--txt2)" }}>{cuadranteLabel(r.cuadrante)}</td>
+                  <td><CellAbcCell row={r} /></td>
                   <td>
                     <div style={{ display: "flex", gap: 2, flexWrap: "wrap", maxWidth: 140 }}>
                       {(r.alertas || []).slice(0, 3).map((a: string, i: number) => (
@@ -3319,6 +3371,8 @@ function KpiBadge({ label, value, color, title }: { label: string; value: string
 function exportarCSVOrigen(filtered: IntelRow[]) {
   const headers = [
     "SKU Origen","Nombre","Accion","ABC","XYZ","Cuadrante",
+    // Sprint 9 P3: cell motor canónico + tendencia + promo motivo.
+    "Cell Efectiva","Cell Original","Tendencia","Promo Motivo",
     "Vel/Sem","Vel 7d","Vel 30d","Vel 60d","Vel Ponderada","Vel Objetivo","Gap %",
     "%Full","%Flex","Stock Full","Stock Bodega","Stock Total",
     "En Transito","Cob Full (dias)","Cob Total (dias)","Target dias",
@@ -3332,6 +3386,8 @@ function exportarCSVOrigen(filtered: IntelRow[]) {
       r.sku_origen,
       (r.nombre || "").replace(/;/g, ","),
       r.accion, r.abc, r.xyz, r.cuadrante,
+      r.cell_efectiva || r.cell || "", r.cell_original || "",
+      r.tendencia || "", (r.promocion_motivo || "").replace(/;/g, ","),
       fmtN(r.vel_ponderada, 2), fmtN(r.vel_7d, 2), fmtN(r.vel_30d, 2),
       fmtN(r.vel_60d, 2), fmtN(r.vel_ponderada, 2),
       r.vel_objetivo > 0 ? fmtN(r.vel_objetivo, 2) : "",
