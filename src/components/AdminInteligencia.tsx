@@ -598,6 +598,7 @@ export default function AdminInteligencia() {
                   "abc_pre_quiebre, gmroi, vel_objetivo, gap_vel_pct, " +
                   "venta_perdida_pesos, oportunidad_perdida_es_estimacion, " +
                   "es_catch_up, vel_full, vel_flex, pct_full, pct_flex, " +
+                  "cob_full, cob_flex, cob_total, " +
                   "margen_full_30d, margen_flex_30d, canal_mas_rentable, precio_promedio, " +
                   "costo_neto, costo_bruto, ingreso_30d, dias_sin_stock_full, " +
                   "stock_proveedor, tiene_stock_prov, " +
