@@ -630,9 +630,13 @@ function SessionDetail({session,operario,onPickComp,onRefresh,shipCount}:{sessio
         }).map(linea => {
           const isArmado = armados.has(linea.id);
           const skuUp = linea.skuVenta.toUpperCase();
-          const shipMatch = shipments.find(s => s.items.some(it =>
-            (it.seller_sku?.toUpperCase() === skuUp || it.item_id?.toUpperCase() === skuUp)
-          ));
+          const lineShipIds = linea.shipmentIds || [];
+          const shipMatch = (lineShipIds.length > 0
+            ? shipments.find(s => lineShipIds.includes(s.shipment_id))
+            : undefined)
+            ?? shipments.find(s => s.items.some(it =>
+              (it.seller_sku?.toUpperCase() === skuUp || it.item_id?.toUpperCase() === skuUp)
+            ));
           const orderId = shipMatch?.order_ids?.[0];
           const comp = linea.componentes[0];
 
