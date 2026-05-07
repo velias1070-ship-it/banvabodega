@@ -4,6 +4,32 @@ import { getSupabase } from "@/lib/supabase";
 
 const ML_DIVISOR_VOLUMETRICO = 4000;
 
+type AuditoriaItem = {
+  sku: string;
+  nombre: string | null;
+  peso_banva_gr: number;
+  peso_ml_gr: number;
+  tramo_banva: string;
+  tramo_ml: string;
+  uds_30d: number;
+  precio_prom: number;
+  delta_x_venta: number;
+  impacto_30d: number;
+  direccion: "banva_pesa_mas" | "banva_pesa_menos";
+};
+
+type AuditoriaResult = {
+  items: AuditoriaItem[];
+  totales: {
+    skus_con_drift: number;
+    skus_vendidos: number;
+    perdida_30d: number;
+    ganancia_oculta_30d: number;
+    neto_30d: number;
+    skus_pack_excluidos: number;
+  };
+};
+
 type DimRow = {
   sku: string;
   nombre: string | null;
@@ -51,6 +77,11 @@ export default function AdminDimensiones() {
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<string | null>(null);
   const [editing, setEditing] = useState<DimRow | null>(null);
+  const [view, setView] = useState<"tabla" | "auditoria">("tabla");
+  const [auditoria, setAuditoria] = useState<AuditoriaResult | null>(null);
+  const [loadingAud, setLoadingAud] = useState(false);
+  const [filtroDir, setFiltroDir] = useState<"todos" | "ml_cobra_de_mas" | "ml_subdeclara">("todos");
+  const [soloVendidos, setSoloVendidos] = useState(true);
   const [importing, setImporting] = useState(false);
   const [importPreview, setImportPreview] = useState<{ a_escribir: number; procesados: number; omitidos: { sku: string; razon: string }[]; preview: { sku: string; largo_cm: number | null; ancho_cm: number | null; alto_cm: number | null; peso_real_gr: number | null }[]; available_sheets?: string[]; sheet_used?: string } | null>(null);
   const [importFile, setImportFile] = useState<File | null>(null);
@@ -74,6 +105,29 @@ export default function AdminDimensiones() {
   }, []);
 
   useEffect(() => { fetchRows(); }, [fetchRows]);
+
+  const fetchAuditoria = useCallback(async () => {
+    setLoadingAud(true);
+    try {
+      const r = await fetch("/api/dimensiones/auditoria");
+      const j = await r.json();
+      if (!r.ok) {
+        setSyncResult(`Error auditoria: ${j.error || r.statusText}`);
+        return;
+      }
+      setAuditoria(j as AuditoriaResult);
+    } catch (e) {
+      setSyncResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setLoadingAud(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (view === "auditoria" && !auditoria && !loadingAud) {
+      fetchAuditoria();
+    }
+  }, [view, auditoria, loadingAud, fetchAuditoria]);
 
   // ---- Stats ----
   const stats = useMemo(() => {
@@ -195,6 +249,34 @@ export default function AdminDimensiones() {
         BANVA = la verdad medida (gana sobre ML para cálculo de envío). ML = espejo de lo declarado en la publicación.
       </div>
 
+      <div style={{ display: "flex", gap: 6, marginBottom: 14, borderBottom: "1px solid var(--bg4)" }}>
+        <button
+          onClick={() => setView("tabla")}
+          style={{
+            padding: "8px 14px", fontSize: 12,
+            background: "none", border: "none",
+            color: view === "tabla" ? "var(--cyan)" : "var(--txt3)",
+            borderBottom: view === "tabla" ? "2px solid var(--cyan)" : "2px solid transparent",
+            fontWeight: view === "tabla" ? 600 : 400, cursor: "pointer",
+          }}
+        >
+          Tabla productos
+        </button>
+        <button
+          onClick={() => setView("auditoria")}
+          style={{
+            padding: "8px 14px", fontSize: 12,
+            background: "none", border: "none",
+            color: view === "auditoria" ? "var(--cyan)" : "var(--txt3)",
+            borderBottom: view === "auditoria" ? "2px solid var(--cyan)" : "2px solid transparent",
+            fontWeight: view === "auditoria" ? 600 : 400, cursor: "pointer",
+          }}
+        >
+          Auditoría envíos $
+        </button>
+      </div>
+
+      {view === "tabla" && (<>
       {/* KPIs */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 14 }}>
         <KPI label="SKUs total" value={`${stats.total}`} />
@@ -309,6 +391,20 @@ export default function AdminDimensiones() {
         </div>
       </div>
 
+      </>)}
+
+      {view === "auditoria" && (
+        <AuditoriaPanel
+          data={auditoria}
+          loading={loadingAud}
+          filtroDir={filtroDir}
+          setFiltroDir={setFiltroDir}
+          soloVendidos={soloVendidos}
+          setSoloVendidos={setSoloVendidos}
+          onRefresh={fetchAuditoria}
+        />
+      )}
+
       {editing && (
         <EditModal
           row={editing}
@@ -326,6 +422,120 @@ export default function AdminDimensiones() {
           onChangeSheet={(s) => { if (importFile) dryRunImport(importFile, s); }}
         />
       )}
+    </div>
+  );
+}
+
+function fmtCLP(n: number): string {
+  const sign = n < 0 ? "-" : "";
+  const abs = Math.abs(Math.round(n));
+  return sign + "$" + abs.toLocaleString("es-CL");
+}
+
+function AuditoriaPanel({ data, loading, filtroDir, setFiltroDir, soloVendidos, setSoloVendidos, onRefresh }: {
+  data: AuditoriaResult | null;
+  loading: boolean;
+  filtroDir: "todos" | "ml_cobra_de_mas" | "ml_subdeclara";
+  setFiltroDir: (f: "todos" | "ml_cobra_de_mas" | "ml_subdeclara") => void;
+  soloVendidos: boolean;
+  setSoloVendidos: (v: boolean) => void;
+  onRefresh: () => void;
+}) {
+  const numStyle: React.CSSProperties = { fontFamily: "var(--font-mono, JetBrains Mono, monospace)" };
+
+  if (loading || !data) {
+    return (
+      <div className="card" style={{ padding: 24, textAlign: "center", color: "var(--txt3)" }}>
+        {loading ? "Calculando auditoría..." : "Sin datos"}
+      </div>
+    );
+  }
+
+  const visibles = data.items.filter(i => {
+    if (soloVendidos && i.uds_30d === 0) return false;
+    if (filtroDir === "ml_cobra_de_mas" && i.delta_x_venta >= 0) return false;
+    if (filtroDir === "ml_subdeclara" && i.delta_x_venta <= 0) return false;
+    return true;
+  });
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 14 }}>
+        <div style={{ background: "var(--bg3)", padding: 12, borderRadius: 8 }}>
+          <div style={{ fontSize: 10, color: "var(--txt3)", textTransform: "uppercase", letterSpacing: 0.5 }}>SKUs con drift de tramo</div>
+          <div style={{ fontSize: 22, fontWeight: 700, ...numStyle, marginTop: 2 }}>{data.totales.skus_con_drift}</div>
+          <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 2 }}>{data.totales.skus_vendidos} con ventas 30d · {data.totales.skus_pack_excluidos} packs excluidos</div>
+        </div>
+        <div style={{ background: "var(--bg3)", padding: 12, borderRadius: 8 }}>
+          <div style={{ fontSize: 10, color: "var(--txt3)", textTransform: "uppercase", letterSpacing: 0.5 }}>Pérdida 30d (ML te cobra de más)</div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: "var(--red)", ...numStyle, marginTop: 2 }}>{fmtCLP(data.totales.perdida_30d)}</div>
+          <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 2 }}>recuperable corrigiendo dim ML</div>
+        </div>
+        <div style={{ background: "var(--bg3)", padding: 12, borderRadius: 8 }}>
+          <div style={{ fontSize: 10, color: "var(--txt3)", textTransform: "uppercase", letterSpacing: 0.5 }}>Ganancia oculta 30d</div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: "var(--amber)", ...numStyle, marginTop: 2 }}>{fmtCLP(data.totales.ganancia_oculta_30d)}</div>
+          <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 2 }}>riesgo si ML mide y ajusta</div>
+        </div>
+        <div style={{ background: "var(--bg3)", padding: 12, borderRadius: 8 }}>
+          <div style={{ fontSize: 10, color: "var(--txt3)", textTransform: "uppercase", letterSpacing: 0.5 }}>Neto 30d</div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: data.totales.neto_30d >= 0 ? "var(--green)" : "var(--red)", ...numStyle, marginTop: 2 }}>{fmtCLP(data.totales.neto_30d)}</div>
+          <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 2 }}>balance final</div>
+        </div>
+      </div>
+
+      <div className="card" style={{ padding: 12, marginBottom: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <select className="form-input" value={filtroDir} onChange={e => setFiltroDir(e.target.value as typeof filtroDir)}>
+          <option value="todos">Todos los drifts</option>
+          <option value="ml_cobra_de_mas">Solo ML cobra de más (perdiendo $)</option>
+          <option value="ml_subdeclara">Solo ML subdeclara (riesgo de ajuste)</option>
+        </select>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--txt2)" }}>
+          <input type="checkbox" checked={soloVendidos} onChange={e => setSoloVendidos(e.target.checked)} />
+          Solo con ventas 30d
+        </label>
+        <button onClick={onRefresh} className="scan-btn blue" style={{ padding: "6px 12px", fontSize: 11, marginLeft: "auto" }}>↻ Refresh</button>
+      </div>
+
+      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+        <div style={{ maxHeight: "60vh", overflowY: "auto" }}>
+          <table className="tbl" style={{ width: "100%", fontSize: 12 }}>
+            <thead style={{ position: "sticky", top: 0, background: "var(--bg2)", zIndex: 1 }}>
+              <tr>
+                <th style={{ textAlign: "left" }}>SKU</th>
+                <th style={{ textAlign: "left" }}>Producto</th>
+                <th style={{ textAlign: "right" }}>BANVA peso</th>
+                <th style={{ textAlign: "right" }}>ML peso</th>
+                <th style={{ textAlign: "left" }}>Tramo BANVA</th>
+                <th style={{ textAlign: "left" }}>Tramo ML</th>
+                <th style={{ textAlign: "right" }}>Uds 30d</th>
+                <th style={{ textAlign: "right" }}>Δ/venta</th>
+                <th style={{ textAlign: "right" }}>Impacto 30d</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibles.length === 0 && (
+                <tr><td colSpan={9} style={{ padding: 20, textAlign: "center", color: "var(--txt3)" }}>Sin resultados con los filtros actuales</td></tr>
+              )}
+              {visibles.map(r => {
+                const tone = r.delta_x_venta < 0 ? "var(--red)" : r.delta_x_venta > 0 ? "var(--amber)" : undefined;
+                return (
+                  <tr key={r.sku}>
+                    <td className="mono" style={{ fontWeight: 600 }}>{r.sku}</td>
+                    <td style={{ color: "var(--txt2)", maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.nombre || "—"}</td>
+                    <td className="mono" style={{ textAlign: "right" }}>{(r.peso_banva_gr/1000).toFixed(1)}kg</td>
+                    <td className="mono" style={{ textAlign: "right", color: "var(--txt2)" }}>{(r.peso_ml_gr/1000).toFixed(1)}kg</td>
+                    <td style={{ fontSize: 11 }}>{r.tramo_banva}</td>
+                    <td style={{ fontSize: 11, color: "var(--txt2)" }}>{r.tramo_ml}</td>
+                    <td className="mono" style={{ textAlign: "right" }}>{r.uds_30d || <span style={{ color: "var(--txt3)" }}>0</span>}</td>
+                    <td className="mono" style={{ textAlign: "right", color: tone }}>{fmtCLP(r.delta_x_venta)}</td>
+                    <td className="mono" style={{ textAlign: "right", color: tone, fontWeight: 600 }}>{r.uds_30d > 0 ? fmtCLP(r.impacto_30d) : "—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }
