@@ -18,6 +18,16 @@ type AuditoriaItem = {
   direccion: "banva_pesa_mas" | "banva_pesa_menos";
 };
 
+type SinMedirItem = {
+  sku: string;
+  nombre: string | null;
+  uds_30d: number;
+  ml_largo_cm: number | null;
+  ml_ancho_cm: number | null;
+  ml_alto_cm: number | null;
+  ml_peso_gr: number | null;
+};
+
 type AuditoriaResult = {
   items: AuditoriaItem[];
   totales: {
@@ -28,6 +38,7 @@ type AuditoriaResult = {
     neto_30d: number;
     skus_pack_excluidos: number;
   };
+  sin_medir?: SinMedirItem[];
 };
 
 type DimRow = {
@@ -442,6 +453,7 @@ function AuditoriaPanel({ data, loading, filtroDir, setFiltroDir, soloVendidos, 
   onRefresh: () => void;
 }) {
   const numStyle: React.CSSProperties = { fontFamily: "var(--font-mono, JetBrains Mono, monospace)" };
+  const [expandSinMedir, setExpandSinMedir] = useState(false);
 
   if (loading || !data) {
     return (
@@ -450,6 +462,9 @@ function AuditoriaPanel({ data, loading, filtroDir, setFiltroDir, soloVendidos, 
       </div>
     );
   }
+
+  const sinMedir = data.sin_medir || [];
+  const sinMedirUds = sinMedir.reduce((s, i) => s + i.uds_30d, 0);
 
   const visibles = data.items.filter(i => {
     if (soloVendidos && i.uds_30d === 0) return false;
@@ -460,6 +475,50 @@ function AuditoriaPanel({ data, loading, filtroDir, setFiltroDir, soloVendidos, 
 
   return (
     <div>
+      {sinMedir.length > 0 && (
+        <div className="card" style={{ padding: 12, marginBottom: 14, background: "var(--amberBg)", border: "1px solid var(--amberBd)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }} onClick={() => setExpandSinMedir(!expandSinMedir)}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--amber)" }}>
+                ⚠️ {sinMedir.length} SKUs vendidos sin medir en BANVA ({sinMedirUds} uds 30d)
+              </div>
+              <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 2 }}>
+                Estos NO aparecen en la auditoría — toca medirlos para evaluar costo de envío real.
+              </div>
+            </div>
+            <div style={{ fontSize: 11, color: "var(--txt3)" }}>{expandSinMedir ? "▲ ocultar" : "▼ ver lista"}</div>
+          </div>
+          {expandSinMedir && (
+            <div style={{ marginTop: 12, maxHeight: 300, overflowY: "auto" }}>
+              <table className="tbl" style={{ width: "100%", fontSize: 12 }}>
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: "left" }}>SKU</th>
+                    <th style={{ textAlign: "left" }}>Producto</th>
+                    <th style={{ textAlign: "right" }}>Uds 30d</th>
+                    <th style={{ textAlign: "right" }}>ML L×A×H</th>
+                    <th style={{ textAlign: "right" }}>ML peso</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sinMedir.map(r => (
+                    <tr key={r.sku}>
+                      <td className="mono" style={{ fontWeight: 600 }}>{r.sku}</td>
+                      <td style={{ color: "var(--txt2)", maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.nombre || "—"}</td>
+                      <td className="mono" style={{ textAlign: "right" }}>{r.uds_30d}</td>
+                      <td className="mono" style={{ textAlign: "right", color: "var(--txt2)" }}>
+                        {r.ml_largo_cm !== null ? `${r.ml_largo_cm}×${r.ml_ancho_cm}×${r.ml_alto_cm}` : "—"}
+                      </td>
+                      <td className="mono" style={{ textAlign: "right", color: "var(--txt2)" }}>{r.ml_peso_gr ? `${r.ml_peso_gr}g` : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 14 }}>
         <div style={{ background: "var(--bg3)", padding: 12, borderRadius: 8 }}>
           <div style={{ fontSize: 10, color: "var(--txt3)", textTransform: "uppercase", letterSpacing: 0.5 }}>SKUs con drift de tramo</div>

@@ -97,7 +97,35 @@ export async function GET(_req: NextRequest) {
     ventasPorOrigen.set(cv.sku_origen, cur);
   }
 
-  // 6. Calcular discrepancias (solo cambio de tramo)
+  // 6a. SKUs vendidos sin dim BANVA — lista priorizada para medir.
+  // Necesitamos productos con sku que tengan ventas pero largo_cm IS NULL.
+  const { data: prodsSinDim, error: pndErr } = await sb
+    .from("productos")
+    .select("sku, nombre, ml_largo_cm, ml_ancho_cm, ml_alto_cm, ml_peso_gr")
+    .is("largo_cm", null);
+  if (pndErr) {
+    console.error("[auditoria] productos sin dim query failed:", pndErr.message);
+    return NextResponse.json({ error: pndErr.message }, { status: 500 });
+  }
+  type SinMedirItem = {
+    sku: string; nombre: string | null;
+    uds_30d: number;
+    ml_largo_cm: number | null; ml_ancho_cm: number | null; ml_alto_cm: number | null;
+    ml_peso_gr: number | null;
+  };
+  const sinMedir: SinMedirItem[] = [];
+  for (const p of prodsSinDim || []) {
+    const v = ventasPorOrigen.get(p.sku);
+    if (!v || v.uds === 0) continue;
+    sinMedir.push({
+      sku: p.sku, nombre: p.nombre, uds_30d: v.uds,
+      ml_largo_cm: p.ml_largo_cm, ml_ancho_cm: p.ml_ancho_cm,
+      ml_alto_cm: p.ml_alto_cm, ml_peso_gr: p.ml_peso_gr,
+    });
+  }
+  sinMedir.sort((a, b) => b.uds_30d - a.uds_30d);
+
+  // 6b. Calcular discrepancias (solo cambio de tramo)
   type Item = {
     sku: string; nombre: string | null;
     peso_banva_gr: number; peso_ml_gr: number;
@@ -150,5 +178,5 @@ export async function GET(_req: NextRequest) {
     skus_pack_excluidos: skuEnPack.size,
   };
 
-  return NextResponse.json({ items, totales });
+  return NextResponse.json({ items, totales, sin_medir: sinMedir });
 }
