@@ -80,12 +80,20 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 2. Load composicion_venta for pack resolution
-    const { data: composiciones } = await sb.from("composicion_venta").select("sku_venta, sku_origen, unidades");
+    // 2. Load composicion_venta for pack resolution.
+    // Solo `componente` (o NULL legacy) gana en compMap. Los `alternativo` solo
+    // amplían siblings/origenToVentas pero NO resuelven sku_origen del sku_venta —
+    // si entra primero por orden de inserción, el sync publicaría el stock del
+    // alternativo en vez del principal (caso RAPAC50X70AFA, audit 2026-05-04).
+    const { data: composiciones } = await sb.from("composicion_venta")
+      .select("sku_venta, sku_origen, unidades, tipo_relacion");
     const compMap: Record<string, { sku_origen: string; unidades: number }> = {};
     const origenToVentas: Record<string, string[]> = {};
-    for (const c of (composiciones || []) as { sku_venta: string; sku_origen: string; unidades: number }[]) {
-      compMap[c.sku_venta] = { sku_origen: c.sku_origen, unidades: c.unidades };
+    for (const c of (composiciones || []) as { sku_venta: string; sku_origen: string; unidades: number; tipo_relacion: string | null }[]) {
+      const esComponente = c.tipo_relacion === "componente" || c.tipo_relacion === null;
+      if (esComponente && !compMap[c.sku_venta]) {
+        compMap[c.sku_venta] = { sku_origen: c.sku_origen, unidades: c.unidades };
+      }
       if (!origenToVentas[c.sku_origen]) origenToVentas[c.sku_origen] = [];
       if (!origenToVentas[c.sku_origen].includes(c.sku_venta)) {
         origenToVentas[c.sku_origen].push(c.sku_venta);
