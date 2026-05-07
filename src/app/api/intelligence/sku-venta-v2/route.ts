@@ -285,7 +285,11 @@ export async function GET(request: Request) {
         const velFull = velPonderada * pctFull;
         const velFlex = velPonderada * pctFlex;
 
-        const cobFull = velFull > 0 ? (stFull / velFull) * 7 : 999;
+        // Cob coherente: stFull (uds-listing) × unidades = uds físicas, mismo
+        // que velFull (físicas/sem). Sin esto los packs muestran cob/uds (mitad
+        // para uds=2).
+        const stFullFisicas = stFull * unidades;
+        const cobFull = velFull > 0 ? (stFullFisicas / velFull) * 7 : 999;
         const canalMasRentable = margenFull30d >= margenFlex30d ? "Full" : "Flex";
         const precioPromedio = precioCount > 0 ? precioSum / precioCount : 0;
 
@@ -315,9 +319,19 @@ export async function GET(request: Request) {
           stock_bodega_compartido: (ventasCountPorOrigen.get(skuOrigen) || 1) > 1,
           stock_bodega_formatos: ventasCountPorOrigen.get(skuOrigen) || 1,
           stock_en_transito: intel.stock_en_transito,
-          mandar_full: share > 0 ? Math.round(num(intel.mandar_full) * share) : 0,
-          pedir_proveedor: share > 0 ? Math.round(num(intel.pedir_proveedor) * share) : 0,
-          pedir_proveedor_sin_rampup: share > 0 ? Math.round(num(intel.pedir_proveedor_sin_rampup) * share) : 0,
+          // Motor del origen pide en uds físicas. Dividir por uds del listing
+          // para devolver en uds del sku_venta (como espera la UI). Sin esta
+          // división los packs reciben double-count cuando AdminInteligencia
+          // multiplica de nuevo por unidadesPorPack en udsFisicas.
+          mandar_full: share > 0 && unidades > 0
+            ? Math.round((num(intel.mandar_full) * share) / unidades)
+            : 0,
+          pedir_proveedor: share > 0 && unidades > 0
+            ? Math.round((num(intel.pedir_proveedor) * share) / unidades)
+            : 0,
+          pedir_proveedor_sin_rampup: share > 0 && unidades > 0
+            ? Math.round((num(intel.pedir_proveedor_sin_rampup) * share) / unidades)
+            : 0,
           factor_rampup_aplicado: intel.factor_rampup_aplicado,
           rampup_motivo: intel.rampup_motivo,
           evento_activo: intel.evento_activo,
