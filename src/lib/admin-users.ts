@@ -51,6 +51,7 @@ const ADMIN_TAB_CATALOG_INTERNAL = [
   { key: "margenes", label: "Margenes", group: "Comercial" },
   { key: "pricing", label: "Pricing Config", group: "Comercial" },
   { key: "calc", label: "Calculadora", group: "Comercial" },
+  { key: "dim", label: "Dimensiones", group: "Comercial" },
   { key: "autopostular", label: "Motor auto", group: "Comercial" },
   { key: "agentes", label: "Agentes IA", group: "Sistema" },
   { key: "config", label: "Configuracion", group: "Sistema" },
