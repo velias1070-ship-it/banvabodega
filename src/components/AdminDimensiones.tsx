@@ -120,7 +120,7 @@ export default function AdminDimensiones() {
     try {
       const fd = new FormData();
       fd.append("file", file);
-      const params = new URLSearchParams({ dry_run: "true" });
+      const params = new URLSearchParams({ dry_run: "true", origin: "bodega" });
       if (sheet) params.set("sheet", sheet);
       const r = await fetch(`/api/dimensiones/import-excel?${params}`, { method: "POST", body: fd });
       const j = await r.json();
@@ -145,9 +145,9 @@ export default function AdminDimensiones() {
     try {
       const fd = new FormData();
       fd.append("file", importFile);
-      const params = new URLSearchParams();
+      const params = new URLSearchParams({ origin: "bodega" });
       if (importSheet) params.set("sheet", importSheet);
-      const r = await fetch(`/api/dimensiones/import-excel${params.toString() ? `?${params}` : ""}`, { method: "POST", body: fd });
+      const r = await fetch(`/api/dimensiones/import-excel?${params}`, { method: "POST", body: fd });
       const j = await r.json();
       if (!r.ok) {
         setSyncResult(`Error: ${j.error || r.statusText}`);

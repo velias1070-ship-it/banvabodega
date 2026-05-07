@@ -50,6 +50,12 @@ export async function POST(req: NextRequest) {
   const url = new URL(req.url);
   const dryRun = url.searchParams.get("dry_run") === "true";
   const sheetParam = url.searchParams.get("sheet"); // nombre o índice opcional
+  const originParam = url.searchParams.get("origin") || "excel"; // bodega|excel|manual
+  const ALLOWED_ORIGINS = ["excel", "bodega", "manual"] as const;
+  if (!ALLOWED_ORIGINS.includes(originParam as (typeof ALLOWED_ORIGINS)[number])) {
+    return NextResponse.json({ error: `origin inválido: ${originParam}. Permitidos: ${ALLOWED_ORIGINS.join(",")}` }, { status: 400 });
+  }
+  const origen = originParam as "excel" | "bodega" | "manual";
 
   let buf: Buffer;
   try {
@@ -187,9 +193,9 @@ export async function POST(req: NextRequest) {
   const errores: { sku: string; error: string }[] = [];
   for (const u of updates) {
     const payload: Record<string, unknown> = {
-      dimensiones_origen: "excel",
+      dimensiones_origen: origen,
       dimensiones_updated_at: nowIso,
-      dimensiones_updated_by: "excel-import",
+      dimensiones_updated_by: `excel-import (${origen})`,
     };
     if (u.largo_cm !== null) payload.largo_cm = u.largo_cm;
     if (u.ancho_cm !== null) payload.ancho_cm = u.ancho_cm;
