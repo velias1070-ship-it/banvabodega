@@ -582,7 +582,7 @@ export default function AdminInteligencia() {
           .select("sku_origen, nombre, categoria, proveedor_nombre, cell, cell_efectiva, cell_original, " +
                   "target_dias_template, target_dias_flex, " +
                   "vel_decl_sem, vel_7d_decl, vel_30d_decl, vel_60d_decl, " +
-                  "stock_bodega, stock_full, stock_total, in_transit_bodega, in_transit_picking_full, " +
+                  "stock_bodega, stock_full, stock_total, in_transit_bodega, in_transit_oc_bodega, in_transit_picking_full, " +
                   "cycle_stock, safety_stock, reorder_point, pre_full_target, reserva_flex_target, " +
                   "qty_a_comprar, clp_estimado, dias_cobertura_actual, bajo_rop, " +
                   "es_quiebre_proveedor, vel_pre_quiebre, dias_en_quiebre, " +
@@ -628,7 +628,12 @@ export default function AdminInteligencia() {
           vel_30d: Number(explain.vel_30d_decl) || 0,
           vel_60d: Number(explain.vel_60d_decl) || 0,
           target_dias_full: Number(explain.target_dias_template) || 0,
-          stock_en_transito: Number(explain.in_transit_bodega) || 0,
+          // stock_en_transito en Pedido a Proveedor = solo OCs reales al proveedor.
+          // v_reposicion_explain.in_transit_bodega contiene el TOTAL (oc + picking),
+          // por eso usamos in_transit_oc_bodega que es solo proveedor → bodega.
+          // El picking bodega→Full ya lo descuenta el motor en deficit_full para
+          // mandar_full_uds, no debe aparecer como "OC pendiente".
+          stock_en_transito: Number(explain.in_transit_oc_bodega) || 0,
           stock_seguridad: Number(explain.safety_stock) || 0,
           punto_reorden: Number(explain.reorder_point) || 0,
           pedir_proveedor: Number(explain.qty_a_comprar) || 0,
