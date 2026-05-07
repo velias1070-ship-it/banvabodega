@@ -51,6 +51,9 @@ export default function AdminDimensiones() {
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<string | null>(null);
   const [editing, setEditing] = useState<DimRow | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importPreview, setImportPreview] = useState<{ a_escribir: number; procesados: number; omitidos: { sku: string; razon: string }[]; preview: { sku: string; largo_cm: number | null; ancho_cm: number | null; alto_cm: number | null; peso_real_gr: number | null }[] } | null>(null);
+  const [importFile, setImportFile] = useState<File | null>(null);
 
   const fetchRows = useCallback(async () => {
     const sb = getSupabase();
@@ -108,6 +111,52 @@ export default function AdminDimensiones() {
   }, [rows, q, filtro]);
 
   // ---- Acciones ----
+  const dryRunImport = useCallback(async (file: File) => {
+    setImporting(true);
+    setImportPreview(null);
+    setImportFile(file);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const r = await fetch("/api/dimensiones/import-excel?dry_run=true", { method: "POST", body: fd });
+      const j = await r.json();
+      if (!r.ok) {
+        setSyncResult(`Error preview: ${j.error || r.statusText}${j.header_detectado ? ` · header: ${JSON.stringify(j.header_detectado)}` : ""}`);
+        setImportFile(null);
+      } else {
+        setImportPreview(j);
+      }
+    } catch (e) {
+      setSyncResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
+      setImportFile(null);
+    } finally {
+      setImporting(false);
+    }
+  }, []);
+
+  const aplicarImport = useCallback(async () => {
+    if (!importFile || importing) return;
+    setImporting(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", importFile);
+      const r = await fetch("/api/dimensiones/import-excel", { method: "POST", body: fd });
+      const j = await r.json();
+      if (!r.ok) {
+        setSyncResult(`Error: ${j.error || r.statusText}`);
+      } else {
+        setSyncResult(`Excel: procesados ${j.procesados} · escritos ${j.escritos} · omitidos ${j.omitidos?.length || 0} · errores ${j.errores?.length || 0}`);
+        setImportPreview(null);
+        setImportFile(null);
+        await fetchRows();
+      }
+    } catch (e) {
+      setSyncResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setImporting(false);
+    }
+  }, [importFile, importing, fetchRows]);
+
   const syncDesdeML = useCallback(async () => {
     if (syncing) return;
     setSyncing(true);
@@ -151,6 +200,20 @@ export default function AdminDimensiones() {
         <button className="scan-btn blue" style={{ padding: "8px 14px", fontSize: 12, opacity: syncing ? 0.6 : 1 }} disabled={syncing} onClick={syncDesdeML}>
           {syncing ? "Sincronizando..." : "↻ Sync desde ML"}
         </button>
+        <label className="scan-btn green" style={{ padding: "8px 14px", fontSize: 12, opacity: importing ? 0.6 : 1, cursor: "pointer" }}>
+          📁 Importar Excel
+          <input
+            type="file"
+            accept=".xlsx,.xls"
+            disabled={importing}
+            style={{ display: "none" }}
+            onChange={e => {
+              const f = e.target.files?.[0];
+              if (f) dryRunImport(f);
+              e.target.value = "";
+            }}
+          />
+        </label>
         <input
           className="form-input"
           placeholder="Buscar SKU o nombre..."
@@ -245,6 +308,89 @@ export default function AdminDimensiones() {
           onSaved={() => { setEditing(null); fetchRows(); }}
         />
       )}
+      {importPreview && (
+        <ImportPreviewModal
+          preview={importPreview}
+          fileName={importFile?.name || ""}
+          loading={importing}
+          onCancel={() => { setImportPreview(null); setImportFile(null); }}
+          onConfirm={aplicarImport}
+        />
+      )}
+    </div>
+  );
+}
+
+function ImportPreviewModal({ preview, fileName, loading, onCancel, onConfirm }: {
+  preview: { a_escribir: number; procesados: number; omitidos: { sku: string; razon: string }[]; preview: { sku: string; largo_cm: number | null; ancho_cm: number | null; alto_cm: number | null; peso_real_gr: number | null }[] };
+  fileName: string;
+  loading: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div onClick={onCancel} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div className="card" onClick={e => e.stopPropagation()} style={{ padding: 18, maxWidth: 700, width: "100%", maxHeight: "85vh", overflowY: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+          <h3 style={{ margin: 0 }}>Preview importación</h3>
+          <button onClick={onCancel} style={{ fontSize: 18, color: "var(--txt3)", background: "none", border: "none" }}>✕</button>
+        </div>
+        <div style={{ color: "var(--txt3)", fontSize: 12, marginBottom: 12 }}>{fileName}</div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 12 }}>
+          <KPI label="Procesados" value={String(preview.procesados)} />
+          <KPI label="A escribir" value={String(preview.a_escribir)} tone="green" />
+          <KPI label="Omitidos" value={String(preview.omitidos.length)} tone={preview.omitidos.length > 0 ? "amber" : undefined} />
+        </div>
+
+        {preview.preview.length > 0 && (
+          <>
+            <div style={{ fontSize: 11, color: "var(--txt3)", marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>Primeras 10 filas</div>
+            <table className="tbl" style={{ width: "100%", fontSize: 12, marginBottom: 12 }}>
+              <thead><tr>
+                <th style={{ textAlign: "left" }}>SKU</th>
+                <th style={{ textAlign: "right" }}>Largo</th>
+                <th style={{ textAlign: "right" }}>Ancho</th>
+                <th style={{ textAlign: "right" }}>Alto</th>
+                <th style={{ textAlign: "right" }}>Peso (g)</th>
+              </tr></thead>
+              <tbody>
+                {preview.preview.map((r, i) => (
+                  <tr key={i}>
+                    <td className="mono">{r.sku}</td>
+                    <td className="mono" style={{ textAlign: "right" }}>{r.largo_cm ?? "—"}</td>
+                    <td className="mono" style={{ textAlign: "right" }}>{r.ancho_cm ?? "—"}</td>
+                    <td className="mono" style={{ textAlign: "right" }}>{r.alto_cm ?? "—"}</td>
+                    <td className="mono" style={{ textAlign: "right" }}>{r.peso_real_gr ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        )}
+
+        {preview.omitidos.length > 0 && (
+          <details style={{ marginBottom: 12 }}>
+            <summary style={{ cursor: "pointer", fontSize: 12, color: "var(--amber)" }}>
+              Ver {preview.omitidos.length} omitidos
+            </summary>
+            <div style={{ maxHeight: 200, overflowY: "auto", background: "var(--bg3)", borderRadius: 6, padding: 8, marginTop: 6, fontSize: 11 }}>
+              {preview.omitidos.map((o, i) => (
+                <div key={i} className="mono" style={{ marginBottom: 2 }}>
+                  <span style={{ color: "var(--amber)" }}>{o.sku}</span> · {o.razon}
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={onCancel} style={{ flex: 1, padding: "10px 14px", background: "var(--bg3)", border: "1px solid var(--bg4)", color: "var(--txt2)", borderRadius: 6 }}>Cancelar</button>
+          <button onClick={onConfirm} disabled={loading || preview.a_escribir === 0} className="scan-btn green" style={{ flex: 1, padding: "10px 14px", fontSize: 13, opacity: loading || preview.a_escribir === 0 ? 0.6 : 1 }}>
+            {loading ? "Aplicando..." : `Aplicar (escribir ${preview.a_escribir})`}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
