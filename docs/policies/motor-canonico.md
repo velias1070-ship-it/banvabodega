@@ -43,7 +43,7 @@ legacy** o **alimento** del motor nuevo, no SSoT.
 | Alertas autónomas | `v_sku_alertas` | UI + cron WhatsApp | 5 alertas mínimas: `sin_costo`, `sin_stock_proveedor`, `quiebre_largo`, `flex_no_publicado`, `stock_danado_full`. |
 | Narrativa explicación | `v_sku_explanation` | botón ⓘ en UI | 7 secciones JSONB + texto plano. |
 | Política por nodo | `sku_node_policy` (tabla) | overrides en vistas | Columnas `*_override` (target_dias_full_override, target_dias_flex_override, liquidacion_override). |
-| **Acción canónica de policy** (`buy`, `no_reorder`, etc.) | `policy_templates.action` resuelto vía `COALESCE(snp.cell_efectiva, snp.cell)` | `v_safety_stock.policy_action`, `v_compras_pendientes` filtra por la misma resolución (Sprint 9 P1, 2026-05-05) | `sku_node_policy.action` queda como **cache informativo, NO autoritativo**: se desincroniza cuando `refresh_trend_in_sku_node_policy` actualiza `cell_efectiva`. Toda lectura de la acción aplicable debe pasar por las vistas. T28 (`tests/sql/regression_sprint9_cell_sync.sql`) pin-to-0: SKUs degradados (cell_efectiva con primera letra peor que cell) NO deben aparecer en `v_compras_pendientes`. |
+| **Acción canónica de policy** (`buy`, `no_reorder`, etc.) | `policy_templates.action` resuelto vía `COALESCE(snp.cell_efectiva, snp.cell)` | `v_safety_stock.policy_action`, `v_compras_pendientes` filtra por la misma resolución (Sprint 9 P1, 2026-05-05) | `sku_node_policy.action` queda como **cache informativo, NO autoritativo**: se desincroniza cuando `refresh_trend_in_sku_node_policy` actualiza `cell_efectiva`. Toda lectura de la acción aplicable debe pasar por las vistas. T28 (`tests/sql/regression_sprint9_cell_sync.sql`) pin-to-0: SKUs degradados (cell_efectiva con primera letra peor que cell) NO deben aparecer en `v_compras_pendientes`. **Sprint 9 P2 (2026-05-06)**: sub-cuadrante `CZ_alta_vel` (action=reorder_normal, target=CY-like, sl/z=NULL) rescata SKUs CZ con histórico ≥10/180d (o ≥20/365d) ult_venta≤120d, o uds_30d≥1 ult_venta≤7d ("vendió esta semana"). Ver P-MOT-4 abajo. |
 | Factor rampup post-quiebre | `sku_intelligence.factor_rampup_aplicado` (motor viejo escribe, motor nuevo consume) | `v_safety_stock.d_avg_sem` | **Excepción**: el cron `recalcular` del motor viejo sigue escribiendo este campo hasta Sprint 9+. Doctrina: `src/lib/rampup.ts` (deprecated). |
 | Stock Full por SKU | `stock_full_cache` (tabla canónica) | todas las vistas | Columna zombi `ml_items_map.stock_full_cache` deprecada (v58). |
 
@@ -69,6 +69,52 @@ legacy** o **alimento** del motor nuevo, no SSoT.
   (`forecast_accuracy`, `margen_*`, `vel_objetivo`, `dias_sin_conteo`,
   `stock_danado_full`, `gmroi`, `factor_rampup_aplicado`). NO se le agrega
   lógica nueva. Borrar tras Sprint 9+ (~30d cooldown).
+
+## P-MOT-4 — Sub-cuadrante `CZ_alta_vel` (Sprint 9 P2, 2026-05-06)
+
+**Problema:** Sprint 9 P1 hizo que `v_safety_stock` filtre por
+`policy_templates.action ∈ {buy, ...}`, excluyendo `no_reorder`. La celda
+CZ (`action='no_reorder'`) silencia ~150 SKUs en bodega_central. Pero
+varios CZ tienen venta histórica relevante o vendieron esta semana — el
+motor los borra del radar y la UI no los muestra.
+
+**Solución:** sub-cuadrante `CZ_alta_vel` con `action='reorder_normal'`
+y target chico (CY-like: 7d Full, 2d Flex). `service_level=NULL` y
+`z_value=NULL` → safety_stock=0 (cycle_stock cubre LT, no inflar buffer
+en SKUs erráticos).
+
+**Reglas de promoción** (en `refresh_trend_in_sku_node_policy()` Step C):
+
+```
+SKU cell='CZ' AND cell_efectiva='CZ' (no promovido por trend) Y:
+  ((uds_180d >= 10 OR uds_365d >= 20) AND ult_venta <= 120d)
+  OR
+  (uds_30d >= 1 AND ult_venta <= 7d)  -- rescate "vendió esta semana"
+THEN cell_efectiva = 'CZ_alta_vel'
+```
+
+**Decisiones doctrinales:**
+
+- **`promocion_activa = true`** para los rescatados, con `promocion_motivo`
+  que cita las uds que motivaron el rescate (auditable).
+- **`v_safety_stock` tiene rama de visibilidad ampliada**: SKUs con
+  `cell_efectiva LIKE '%_alta_vel'` y `vel_pre_quiebre > 0` entran al
+  CTE `demand_stats` aunque `vel_ponderada=0`. Sin esta rama, casos como
+  JSAFAB397P20X (25 uds en 180d, vendió hace 80d, vel_30d=0) quedan
+  fuera del cálculo de SS/ROP/cycle.
+- **El check `policy_templates.cell ~ '^[ABC][XYZ](_[a-z_]+)?$'`** acepta
+  sub-cuadrantes con sufijo. Patrón abierto a futuros _liquidar,
+  _seasonal, _new_launch, etc.
+- **No conflicto con trend detector**: el rescate solo aplica si
+  `cell_efectiva = 'CZ'` (no fue promovido por aceleración). Si después
+  el trend detector promueve a B/A, sobrescribe `CZ_alta_vel`.
+
+**Tests pin** (`tests/sql/regression_sprint9_p2_cz_alta_vel.sql`):
+
+- T35 ≥1: count CZ_alta_vel rescatados (post-fix: 57).
+- T36 =0: JSAFAB408P20Z (5 ventas, última 100+d) NO rescatado (abandono real).
+- T37 ≥3: 3 testigos visibles en `v_safety_stock`.
+- T38 =1: JSCNAE138P25B en `v_reposicion_explain`.
 
 ## P-MOT-3 — Cómo cambiar una política
 
