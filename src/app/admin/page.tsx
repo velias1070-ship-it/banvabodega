@@ -25,6 +25,7 @@ import AdminCompras from "@/components/AdminCompras";
 import AdminDiscrepancias from "@/components/AdminDiscrepancias";
 import AdminCostoAuditoria from "@/components/AdminCostoAuditoria";
 import AdminEventos from "@/components/AdminEventos";
+import AdminMotorReglas from "@/components/AdminMotorReglas";
 import AdminVentasML from "@/components/AdminVentasML";
 import AdminComercial from "@/components/AdminComercial";
 import AdminMargenes from "@/components/AdminMargenes";
@@ -393,6 +394,7 @@ export default function AdminPage() {
             {tab==="semaforo"&&<AdminSemaforo/>}
             {tab==="compras"&&<AdminCompras/>}
             {tab==="eventos"&&<AdminEventos/>}
+            {tab==="motor_reglas"&&<AdminMotorReglas/>}
             {tab==="ventasdash"&&<AdminVentasML modo="dashboard"/>}
             {tab==="ventasord"&&<AdminVentasML modo="ordenes"/>}
             {tab==="comercial"&&<AdminComercial/>}

@@ -45,6 +45,7 @@ const ADMIN_TAB_CATALOG_INTERNAL = [
   { key: "semaforo", label: "Semaforo", group: "Inteligencia" },
   { key: "compras", label: "Compras", group: "Inteligencia" },
   { key: "eventos", label: "Eventos", group: "Inteligencia" },
+  { key: "motor_reglas", label: "Reglas Motor", group: "Inteligencia" },
   { key: "ventasdash", label: "Ventas - Dashboard", group: "Comercial" },
   { key: "ventasord", label: "Ventas - Ordenes", group: "Comercial" },
   { key: "comercial", label: "Publicaciones", group: "Comercial" },
