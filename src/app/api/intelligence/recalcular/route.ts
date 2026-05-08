@@ -361,6 +361,24 @@ async function ejecutarRecalculo(params: { skus?: string[]; full: boolean; snaps
       console.error("[intelligence] sync sku_node_policy excepción:", e);
     }
 
+    // Tendencia + rescate CZ_alta_vel (capa 3.5). Pega cell_efectiva con
+    // tendencia detectada y promueve durmientes con stock proveedor a
+    // template no_reorder bypass. Si NO se ejecuta, los rescates desaparecen
+    // hasta el próximo cron (los SKUs vuelven a quedar en CZ silenciados).
+    let trendSyncRows: number | null = null;
+    try {
+      const { data: tData, error: tErr } = await sb.rpc("refresh_trend_in_sku_node_policy");
+      if (tErr) {
+        console.error("[intelligence] sync trend/rescate falló:", tErr.message);
+      } else {
+        trendSyncRows = Array.isArray(tData) && tData[0]?.rows_affected != null
+          ? Number(tData[0].rows_affected) : null;
+        console.log(`[intelligence] trend/rescate refrescado: ${trendSyncRows} rows.`);
+      }
+    } catch (e) {
+      console.error("[intelligence] sync trend excepción:", e);
+    }
+
     await reportHealth(true);
     return NextResponse.json({
       ok: true,
@@ -368,6 +386,7 @@ async function ejecutarRecalculo(params: { skus?: string[]; full: boolean; snaps
       total_skus_evaluados: resultados.length,
       tiempo_ms: tiempo,
       policy_sync_rows: policySyncRows,
+      trend_sync_rows: trendSyncRows,
       snapshot: doSnapshot ? { history: historyCount, stock_snapshots: snapshotCount } : null,
       alertas: alertasResumen,
       resumen: {
