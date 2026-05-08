@@ -3388,10 +3388,40 @@ export async function detectarDiscrepancias(recepcionId: string, lineas: db.DBRe
       .map(r => [r.sku_origen.toUpperCase(), { precio: r.precio_neto || 0, provId: r.proveedor_id, provNombre: r.proveedor }]));
   }
 
-  // Recepción → proveedor para auto-poblar catálogo en caso A7
+  // Recepción → proveedor para auto-poblar catálogo en caso A7.
+  // Si la recepción tiene proveedor_id (resuelto al canónico), usamos su
+  // nombre_canonico desde proveedores. Si solo tiene el string (caso
+  // App Etiquetas pre-resolve), intentamos resolver por aliases / nombre
+  // antes de escribir, para no crear duplicados como "IDETEX S.A." vs "Idetex".
+  // Defensa en profundidad — el fix verdadero vive en banva1 (debe llamar
+  // /api/proveedores/resolve antes de INSERT recepciones, regla v72).
   const { data: recRow } = await sb.from("recepciones")
     .select("proveedor, proveedor_id").eq("id", recepcionId).single();
-  const recProveedor = (recRow as { proveedor: string | null; proveedor_id: string | null } | null);
+  const recProveedorRaw = (recRow as { proveedor: string | null; proveedor_id: string | null } | null);
+  let recProveedor: { proveedor: string | null; proveedor_id: string | null } | null = recProveedorRaw;
+  if (recProveedorRaw && (recProveedorRaw.proveedor_id || recProveedorRaw.proveedor)) {
+    const normStr = (s: string) => (s || "").toUpperCase().trim()
+      .replace(/\s+(S\.?A\.?|SPA|LTDA\.?|LIMITADA|SRL|EIRL)\.?$/i, "")
+      .replace(/[.,]/g, "").replace(/\s+/g, " ").trim();
+    if (recProveedorRaw.proveedor_id) {
+      const { data: provRow } = await sb.from("proveedores")
+        .select("id, nombre_canonico, nombre")
+        .eq("id", recProveedorRaw.proveedor_id).maybeSingle();
+      const canon = (provRow as { id: string; nombre_canonico: string | null; nombre: string } | null);
+      if (canon) recProveedor = { proveedor: canon.nombre_canonico || canon.nombre, proveedor_id: canon.id };
+    } else if (recProveedorRaw.proveedor) {
+      const target = normStr(recProveedorRaw.proveedor);
+      const { data: allProv } = await sb.from("proveedores")
+        .select("id, nombre_canonico, nombre, razon_social, aliases");
+      const rows = (allProv || []) as Array<{ id: string; nombre_canonico: string | null; nombre: string; razon_social: string | null; aliases: string[] | null }>;
+      const match = rows.find(p =>
+        normStr(p.razon_social || "") === target ||
+        normStr(p.nombre_canonico || p.nombre) === target ||
+        (p.aliases || []).some(a => normStr(a) === target),
+      );
+      if (match) recProveedor = { proveedor: match.nombre_canonico || match.nombre, proveedor_id: match.id };
+    }
+  }
 
   const nuevas: Omit<db.DBDiscrepanciaCosto, "id" | "created_at">[] = [];
   for (const l of lineas) {
