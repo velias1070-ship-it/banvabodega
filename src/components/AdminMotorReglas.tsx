@@ -119,7 +119,21 @@ function PolicyTemplatesTab() {
       if (error) { errCount++; console.error(`[policy_templates ${u.cell}]`, error.message); }
       else okCount++;
     }
-    setMsg(`${okCount} actualizadas, ${errCount} errores. Recordá disparar /api/policy/sync-from-templates para que los cambios bajen a sku_node_policy.`);
+    // Auto-disparar sync para que los cambios bajen a sku_node_policy sin
+    // requerir intervención manual del admin.
+    let syncMsg = "";
+    try {
+      const res = await fetch("/api/policy/sync-from-templates?run=1");
+      if (res.ok) {
+        const data = await res.json();
+        syncMsg = ` · sync: ${data.rows_affected ?? "?"} filas en ${data.duration_ms ?? "?"}ms.`;
+      } else {
+        syncMsg = ` · sync FALLÓ (HTTP ${res.status}). Tocá 'Forzar recálculo' en Inteligencia.`;
+      }
+    } catch (e) {
+      syncMsg = ` · sync error: ${(e as Error).message}.`;
+    }
+    setMsg(`${okCount} actualizadas, ${errCount} errores.${syncMsg}`);
     setEdits(new Map());
     await cargar();
     setSaving(false);
@@ -241,7 +255,21 @@ function MarkdownPolicyTab() {
       if (error) { errCount++; console.error(`[markdown ${t.k2}]`, error.message); }
       else okCount++;
     }
-    setMsg(`${okCount} actualizadas, ${errCount} errores.`);
+    // Auto-sync (markdown_policy se evalúa via calc_sku_node_policy_row, así
+    // que el sync recalcula liquidacion_accion para todos los SKUs).
+    let syncMsg = "";
+    try {
+      const res = await fetch("/api/policy/sync-from-templates?run=1");
+      if (res.ok) {
+        const data = await res.json();
+        syncMsg = ` · sync: ${data.rows_affected ?? "?"} filas.`;
+      } else {
+        syncMsg = ` · sync FALLÓ (HTTP ${res.status}).`;
+      }
+    } catch (e) {
+      syncMsg = ` · sync error: ${(e as Error).message}.`;
+    }
+    setMsg(`${okCount} actualizadas, ${errCount} errores.${syncMsg}`);
     setEdits(new Map());
     await cargar();
     setSaving(false);

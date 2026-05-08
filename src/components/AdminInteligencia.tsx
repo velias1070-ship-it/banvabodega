@@ -1864,14 +1864,18 @@ export default function AdminInteligencia() {
               🔎 Explicar SKU
             </button>
           </div>
-          <button onClick={recalcular} disabled={recalculando} style={{ padding: "6px 12px", borderRadius: 6, background: "var(--cyanBg)", color: "var(--cyan)", fontWeight: 600, fontSize: 11, border: "1px solid var(--cyanBd)", cursor: "pointer" }}>
-            {recalculando ? "Recalculando..." : "Recalcular"}
+          {/* Botón principal: Actualizar (lectura, ~1s). El cron diario hace
+              el recálculo pesado del motor automáticamente a las 11 UTC. */}
+          <button onClick={cargar} style={{ padding: "6px 12px", borderRadius: 6, background: "var(--cyanBg)", color: "var(--cyan)", fontWeight: 600, fontSize: 11, border: "1px solid var(--cyanBd)", cursor: "pointer" }}
+            title="Lee la última versión de la base de datos. Use 'Forzar recálculo' si modificaste reglas o cargaste data nueva.">
+            🔄 Actualizar
           </button>
           <button onClick={exportarCSV} disabled={filtered.length === 0} style={{ padding: "6px 12px", borderRadius: 6, background: "var(--greenBg)", color: "var(--green)", fontWeight: 600, fontSize: 11, border: "1px solid var(--greenBd)", cursor: "pointer" }}>
             CSV
           </button>
-          <button onClick={cargar} style={{ padding: "6px 12px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt2)", fontWeight: 600, fontSize: 11, border: "1px solid var(--bg4)", cursor: "pointer" }}>
-            Refrescar
+          <button onClick={recalcular} disabled={recalculando} style={{ padding: "6px 10px", borderRadius: 6, background: "var(--bg3)", color: "var(--txt2)", fontWeight: 500, fontSize: 10, border: "1px solid var(--bg4)", cursor: "pointer" }}
+            title="Re-procesa todo el motor (vel, ABC, dio, etc.) — ~5 segundos. Solo necesario si editaste reglas en 'Reglas Motor' o cargaste data nueva del proveedor.">
+            {recalculando ? "Recalculando..." : "Forzar recálculo"}
           </button>
         </div>
       </div>
