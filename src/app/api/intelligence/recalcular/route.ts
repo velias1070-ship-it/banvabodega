@@ -343,12 +343,31 @@ async function ejecutarRecalculo(params: { skus?: string[]; full: boolean; snaps
     const tiempo = Date.now() - start;
     console.log(`[intelligence] Recálculo completado. ${total} SKUs en ${tiempo}ms.`);
 
+    // Sincronizar capa 3 (sku_node_policy) inmediatamente después del recálculo.
+    // El cron diario ya hace esto, pero al disparar Recalcular manualmente
+    // queremos que el motor nuevo también refleje los cambios sin esperar
+    // al próximo cron. Idempotente, ~1s para 504 SKUs.
+    let policySyncRows: number | null = null;
+    try {
+      const { data: pData, error: pErr } = await sb.rpc("refresh_sku_node_policy_from_templates");
+      if (pErr) {
+        console.error("[intelligence] sync sku_node_policy falló:", pErr.message);
+      } else {
+        policySyncRows = Array.isArray(pData) && pData[0]?.rows_affected != null
+          ? Number(pData[0].rows_affected) : null;
+        console.log(`[intelligence] sku_node_policy refrescado: ${policySyncRows} rows.`);
+      }
+    } catch (e) {
+      console.error("[intelligence] sync sku_node_policy excepción:", e);
+    }
+
     await reportHealth(true);
     return NextResponse.json({
       ok: true,
       recalculados: total,
       total_skus_evaluados: resultados.length,
       tiempo_ms: tiempo,
+      policy_sync_rows: policySyncRows,
       snapshot: doSnapshot ? { history: historyCount, stock_snapshots: snapshotCount } : null,
       alertas: alertasResumen,
       resumen: {
