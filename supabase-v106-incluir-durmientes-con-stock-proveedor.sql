@@ -30,12 +30,15 @@ WITH demand_stats AS (
   SELECT si.sku_origen,
     CASE
       WHEN si.dias_en_quiebre >= 14 AND si.vel_pre_quiebre IS NOT NULL AND si.vel_pre_quiebre > 0::numeric AND si.vel_pre_quiebre > COALESCE(si.vel_ponderada, 0::numeric) THEN si.vel_pre_quiebre
+      -- v106: durmientes con stock proveedor usan vel_pre_quiebre (debe ir ANTES del case de evento;
+      -- si el evento case se evaluara primero, vel_pond=0 * mult_evento=1.5 → 0 y mata el rescate).
+      WHEN COALESCE(si.vel_ponderada, 0::numeric) = 0::numeric AND COALESCE(si.vel_pre_quiebre, 0::numeric) > 0::numeric
+           AND EXISTS (SELECT 1 FROM proveedor_catalogo pc WHERE pc.sku_origen = si.sku_origen AND COALESCE(pc.stock_disponible, -1) > 0)
+        THEN si.vel_pre_quiebre
+      WHEN COALESCE(si.vel_ponderada, 0::numeric) = 0::numeric AND COALESCE(si.vel_pre_quiebre, 0::numeric) > 0::numeric
+           AND EXISTS (SELECT 1 FROM sku_node_policy snp WHERE snp.sku_origen = si.sku_origen AND snp.cell_efectiva LIKE '%\_alta\_vel' ESCAPE '\')
+        THEN si.vel_pre_quiebre
       WHEN COALESCE(si.multiplicador_evento, 1.0) > 1::numeric THEN COALESCE(si.vel_ponderada, 0::numeric) * si.multiplicador_evento
-      WHEN COALESCE(si.vel_ponderada, 0::numeric) = 0::numeric AND COALESCE(si.vel_pre_quiebre, 0::numeric) > 0::numeric AND (
-        EXISTS (SELECT 1 FROM sku_node_policy snp WHERE snp.sku_origen = si.sku_origen AND snp.cell_efectiva LIKE '%\_alta\_vel' ESCAPE '\')
-        -- v106: durmientes con stock proveedor usan vel_pre_quiebre como demanda
-        OR EXISTS (SELECT 1 FROM proveedor_catalogo pc WHERE pc.sku_origen = si.sku_origen AND COALESCE(pc.stock_disponible, -1) > 0)
-      ) THEN si.vel_pre_quiebre
       ELSE COALESCE(si.vel_ponderada, 0::numeric)
     END * COALESCE(si.factor_rampup_aplicado, 1.0) AS d_avg_sem,
     COALESCE(NULLIF(si.desviacion_std, 0::numeric), COALESCE(si.vel_ponderada, 0::numeric) * 0.3) AS sigma_sem,
