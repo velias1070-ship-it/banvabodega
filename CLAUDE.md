@@ -92,7 +92,7 @@ Reglas de dominio (a respetar al escribir código): `.claude/rules/*.md`
 7. **Supabase devuelve `PromiseLike` no `Promise`**: usar `try/catch` o `void`, **nunca `.catch()`** sobre `sb.from(...)` (regla del CLAUDE.md histórico — más detalles en `inventory-policy.md` Regla 3).
 8. **Errores de Supabase**: nunca tragar con destructuring parcial. Loguear con `[contexto]` mínimo.
 9. **Endpoints con branches**: exponer en el response qué rama corrió (`enqueue_all_ran: bool`, `rows_affected: number`). Regla 4 de inventory-policy.
-10. **Git**: trabajo directo a `main`, sin feature branches (regla del repo). Commit message en formato `area(detalle): descripcion`. Modo autonomía habilitado (memoria `feedback_banva_app_autonomy`, `feedback_banvabodega_autonomy`): commits/deploys/restores sin pedir confirmación rutinaria.
+10. **Git**: trabajo directo a `main`, sin feature branches (regla del repo). Commit message en formato `area(detalle): descripcion`. Modo autonomía habilitado (memoria `feedback_banva_app_autonomy`, `feedback_banvabodega_autonomy`): **commits, push a `main`, deploys y restores sin pedir confirmación rutinaria**. No preguntar antes de `git push` salvo que sea `--force` o force-with-lease sobre `main` (esos sí requieren confirmación).
 11. **Cambios cross-repo**: si algo en banvabodega afecta a App Etiquetas (`banva1`, sibling clone en `~/banva1/`), modificar AMBOS en la misma sesión y etiquetar `(afecta banva1)` en el commit.
 
 ## Tablas críticas (SSoT)
