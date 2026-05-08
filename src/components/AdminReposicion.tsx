@@ -275,22 +275,32 @@ function parseVelocidad(wb: XLSX.WorkBook): VelocidadRaw[] {
 }
 
 function parseProveedor(wb: XLSX.WorkBook): ProveedorRaw[] {
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  if (!ws) return [];
-  const rows: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1 });
-  if (rows.length < 2) return [];
+  // Iterar TODAS las hojas del workbook. Antes solo leía SheetNames[0] y los
+  // SKUs en hojas 2+ se perdían — quedaban con datos viejos en proveedor_catalogo
+  // (caso 2026-05-07: 83 SKUs zombies con stock inferido por cleanup script).
   const out: ProveedorRaw[] = [];
-  for (let i = 1; i < rows.length; i++) {
-    const row = rows[i];
-    if (!row || !Array.isArray(row)) continue;
-    // Col B (1) = Codigo AX (SKU Origen), Col C (2) = Producto, Col D (3) = Inner Pack, Col E (4) = Precio Banva neto, Col F (5) = Stock
-    const skuOrigen = String(row[1] || "").trim();
-    if (!skuOrigen) continue;
-    const nombre = String(row[2] || "").trim();
-    const innerPack = Math.max(1, Math.round(Number(row[3]) || 1));
-    const precioNeto = Number(row[4]) || 0;
-    const stock = Math.max(0, Math.round(Number(row[5]) || 0));
-    out.push({ skuOrigen, nombre, innerPack, precioNeto, stock });
+  const skuYaVisto = new Set<string>();
+  for (const sheetName of wb.SheetNames) {
+    const ws = wb.Sheets[sheetName];
+    if (!ws) continue;
+    const rows: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1 });
+    if (rows.length < 2) continue;
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row || !Array.isArray(row)) continue;
+      // Col B (1) = Codigo AX (SKU Origen), Col C (2) = Producto, Col D (3) = Inner Pack, Col E (4) = Precio Banva neto, Col F (5) = Stock
+      const skuOrigen = String(row[1] || "").trim();
+      if (!skuOrigen) continue;
+      const skuUp = skuOrigen.toUpperCase();
+      // Si una hoja repite SKU, quedarnos con el primero (asumimos hoja 1 = canónica)
+      if (skuYaVisto.has(skuUp)) continue;
+      skuYaVisto.add(skuUp);
+      const nombre = String(row[2] || "").trim();
+      const innerPack = Math.max(1, Math.round(Number(row[3]) || 1));
+      const precioNeto = Number(row[4]) || 0;
+      const stock = Math.max(0, Math.round(Number(row[5]) || 0));
+      out.push({ skuOrigen, nombre, innerPack, precioNeto, stock });
+    }
   }
   return out;
 }
