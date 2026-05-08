@@ -34,7 +34,7 @@
     },
     {
       "path": "/api/policy/sync-from-templates",
-      "schedule": "30 11 * * 1"
+      "schedule": "30 11 * * *"
     },
     {
       "path": "/api/policy/sync-trend-detection",
