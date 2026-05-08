@@ -26,6 +26,7 @@ import AdminDiscrepancias from "@/components/AdminDiscrepancias";
 import AdminCostoAuditoria from "@/components/AdminCostoAuditoria";
 import AdminEventos from "@/components/AdminEventos";
 import AdminMotorReglas from "@/components/AdminMotorReglas";
+import AdminCatalogoAnalisis from "@/components/AdminCatalogoAnalisis";
 import AdminVentasML from "@/components/AdminVentasML";
 import AdminComercial from "@/components/AdminComercial";
 import AdminMargenes from "@/components/AdminMargenes";
@@ -149,6 +150,7 @@ const MOBILE_MENU_SECTIONS: ReadonlyArray<{ section: string; items: ReadonlyArra
     ["intel","Inteligencia","🧠"],
     ["semaforo","Semaforo","🚦"],
     ["compras","Compras","🛒"],
+    ["catalogo_analisis","Catálogo Proveedor","📦"],
     ["eventos","Eventos","📅"],
     ["motor_reglas","Reglas Motor","⚙️"],
     ["ventasdash","Ventas · Dashboard","📊"],
@@ -239,7 +241,7 @@ export default function AdminPage() {
   const SIDEBAR_GROUPS: ReadonlyArray<{ section: string; icon: string; items: ReadonlyArray<MenuItem> }> = [
     {section:"OPERACIONES",icon:"⚡",items:[["rec","Recepciones","📦"],["discrepancias","Discrepancias","💰"],["flex","Ultima Milla","🚚"],["enviosfull","Envios Full","📦"],["ops","Operaciones","⚡"],["reposicion","Reposición","🔄"]]},
     {section:"INVENTARIO",icon:"📦",items:[["inv","Inventario","📦"],["mov","Movimientos","📋"],["timeline","Timeline","📊"],["prod","Productos","🏷️"],["costoauditoria","Auditoría Costos","📊"]]},
-    {section:"INTELIGENCIA",icon:"🧠",items:[["intel","Inteligencia","🧠"],["semaforo","Semaforo","🚦"],["compras","Compras","🛒"],["eventos","Eventos","📅"],["motor_reglas","Reglas Motor","⚙️"]]},
+    {section:"INTELIGENCIA",icon:"🧠",items:[["intel","Inteligencia","🧠"],["semaforo","Semaforo","🚦"],["compras","Compras","🛒"],["catalogo_analisis","Catálogo Proveedor","📦"],["eventos","Eventos","📅"],["motor_reglas","Reglas Motor","⚙️"]]},
     {section:"COMERCIAL",icon:"🏪",items:[["ventasdash","Ventas · Dashboard","📊"],["ventasord","Ventas · Órdenes","📋"],["comercial","Publicaciones","📢"],["margenes","Márgenes","💹"],["pricing","Pricing Config","💰"],["calc","Calculadora","🧮"],["dim","Dimensiones","📐"],["autopostular","Motor auto","🤖"]]},
     {section:"SISTEMA",icon:"⚙️",items:[["agentes","Agentes IA","🤖"],["config","Configuración","⚙️"]]},
   ];
@@ -396,6 +398,7 @@ export default function AdminPage() {
             {tab==="compras"&&<AdminCompras/>}
             {tab==="eventos"&&<AdminEventos/>}
             {tab==="motor_reglas"&&<AdminMotorReglas/>}
+            {tab==="catalogo_analisis"&&<AdminCatalogoAnalisis/>}
             {tab==="ventasdash"&&<AdminVentasML modo="dashboard"/>}
             {tab==="ventasord"&&<AdminVentasML modo="ordenes"/>}
             {tab==="comercial"&&<AdminComercial/>}

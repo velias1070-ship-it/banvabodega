@@ -46,6 +46,7 @@ const ADMIN_TAB_CATALOG_INTERNAL = [
   { key: "compras", label: "Compras", group: "Inteligencia" },
   { key: "eventos", label: "Eventos", group: "Inteligencia" },
   { key: "motor_reglas", label: "Reglas Motor", group: "Inteligencia" },
+  { key: "catalogo_analisis", label: "Catalogo Proveedor", group: "Inteligencia" },
   { key: "ventasdash", label: "Ventas - Dashboard", group: "Comercial" },
   { key: "ventasord", label: "Ventas - Ordenes", group: "Comercial" },
   { key: "comercial", label: "Publicaciones", group: "Comercial" },
