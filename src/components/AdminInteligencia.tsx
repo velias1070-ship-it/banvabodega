@@ -655,8 +655,15 @@ export default function AdminInteligencia() {
             : null,
         } as IntelRow);
       }
-      // Filtro equivalente al .or("vel_ponderada.gt.0,stock_total.gt.0") + sort por prioridad.
-      const filtered = merged.filter(r => (r.vel_ponderada || 0) > 0 || (r.stock_total || 0) > 0);
+      // Filtro: SKUs vivos (vel>0 o stock>0) + SKUs durmiendo con stock en
+      // proveedor (caso reactivable: vendió histórico, está paused o sin stock
+      // propio, pero el proveedor lo tiene → admin puede pedir y reactivar).
+      // Caso testigo JSAFAB425P20S: 80d sin venta, stock=0, stock_proveedor=10.
+      const filtered = merged.filter(r =>
+        (r.vel_ponderada || 0) > 0
+        || (r.stock_total || 0) > 0
+        || ((r.stock_proveedor || 0) > 0),
+      );
       filtered.sort((a, b) => (a.prioridad || 99) - (b.prioridad || 99));
       const limited = filtered.slice(0, 500);
       setRows(limited);
@@ -665,7 +672,7 @@ export default function AdminInteligencia() {
       // Default: motor viejo (sku_intelligence).
       const { data } = await sb.from("sku_intelligence")
         .select("*")
-        .or("vel_ponderada.gt.0,stock_total.gt.0")
+        .or("vel_ponderada.gt.0,stock_total.gt.0,stock_proveedor.gt.0")
         .order("prioridad", { ascending: true })
         .limit(500);
       const r = (data || []) as IntelRow[];
