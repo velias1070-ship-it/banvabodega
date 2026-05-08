@@ -625,14 +625,21 @@ export default function AdminInteligencia() {
       // accuracy, vel_objetivo, etc.) que aún viven en sku_intelligence per frontera-policy.
       // Sprint 8.5 — Query A canónica del motor nuevo. Aliases mandar_full
       // y prioridad al shape v1 que consume IntelRow.
-      const [explainRes, casoCRes] = await Promise.all([
+      //
+      // SPLIT en 2 chunks (2026-05-08): el SELECT con 51 columnas hace el VIEW
+      // exceder los 8s de timeout PostgREST. Bisecté: chunk1 (cols base+stock+qty)
+      // ~4s, chunk2 (clp+flags+alertas) ~4s. En paralelo total ~5s, ambos dentro
+      // del límite. Mergeo por sku_origen client-side.
+      const [explainRes1, explainRes2, casoCRes] = await Promise.all([
         sb.from("v_reposicion_explain")
           .select("sku_origen, nombre, categoria, proveedor_nombre, cell, cell_efectiva, cell_original, " +
                   "target_dias_template, target_dias_flex, " +
                   "vel_decl_sem, vel_7d_decl, vel_30d_decl, vel_60d_decl, " +
                   "stock_bodega, stock_full, stock_total, in_transit_bodega, in_transit_oc_bodega, in_transit_picking_full, " +
                   "cycle_stock, safety_stock, reorder_point, pre_full_target, reserva_flex_target, " +
-                  "qty_a_comprar, qty_raw, clp_estimado, dias_cobertura_actual, bajo_rop, " +
+                  "qty_a_comprar, qty_raw"),
+        sb.from("v_reposicion_explain")
+          .select("sku_origen, clp_estimado, dias_cobertura_actual, bajo_rop, " +
                   "es_quiebre_proveedor, vel_pre_quiebre, dias_en_quiebre, " +
                   "factor_rampup_aplicado, rampup_motivo, evento_activo, multiplicador_evento, " +
                   "mandar_full:mandar_full_uds, accion, prioridad:prioridad_nueva, " +
@@ -653,12 +660,36 @@ export default function AdminInteligencia() {
                   "forecast_wmape_8s, forecast_bias_8s, forecast_tracking_signal_8s, forecast_semanas_evaluadas_8s, forecast_es_confiable_8s, forecast_calculado_at, " +
                   "skus_venta, updated_at"),
       ]);
+      // Regla 3: loguear errores explícitos. Si cualquiera de los chunks falla,
+      // dejar la UI en estado vacío con error visible en consola en vez de
+      // pintar datos parciales.
+      if (explainRes1.error) {
+        console.error("[cargarOrigen] explainRes1 (cols base+stock+qty) failed:", explainRes1.error.message, `code=${explainRes1.error.code}`);
+        return;
+      }
+      if (explainRes2.error) {
+        console.error("[cargarOrigen] explainRes2 (clp+flags+alertas) failed:", explainRes2.error.message, `code=${explainRes2.error.code}`);
+        return;
+      }
+      if (casoCRes.error) {
+        console.error("[cargarOrigen] casoCRes (sku_intelligence) failed:", casoCRes.error.message, `code=${casoCRes.error.code}`);
+        return;
+      }
+      // Merge chunks 1 + 2 por sku_origen
+      const explain2Map = new Map<string, Record<string, unknown>>();
+      for (const row of ((explainRes2.data || []) as unknown) as Array<Record<string, unknown>>) {
+        explain2Map.set((row.sku_origen as string).toUpperCase(), row);
+      }
+      const explainRows = ((explainRes1.data || []) as unknown as Array<Record<string, unknown>>).map(r1 => ({
+        ...r1,
+        ...(explain2Map.get((r1.sku_origen as string).toUpperCase()) || {}),
+      }));
       const casoCMap = new Map<string, Record<string, unknown>>();
       for (const row of ((casoCRes.data || []) as unknown) as Array<Record<string, unknown>>) {
         casoCMap.set((row.sku_origen as string).toUpperCase(), row);
       }
       const merged: IntelRow[] = [];
-      for (const explain of ((explainRes.data || []) as unknown) as Array<Record<string, unknown>>) {
+      for (const explain of explainRows) {
         const skuKey = (explain.sku_origen as string).toUpperCase();
         const casoC = casoCMap.get(skuKey) || {};
         // Merge con renames para mantener compatibilidad con IntelRow (shape v1).
