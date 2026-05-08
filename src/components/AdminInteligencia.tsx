@@ -323,6 +323,17 @@ interface PedidoProveedorItem {
   cobTotal: number;
   pedirSugerido: number;
   pedirEditado: number;
+  /** Cantidad cruda del motor (qty_raw) antes de redondear al inner_pack.
+   *  Sirve como referencia para mostrar cuánto te estás pasando al respetar IP. */
+  pedirMotor: number;
+  /** % extra sobre lo que pidió el motor: ((pedirEditado - pedirMotor) / pedirMotor) * 100.
+   *  Solo cuenta lo que se pasa por encima (no se reporta cuando el admin reduce). */
+  pctSobreMotor: number;
+  /** $ extra invertidos por redondeo IP o sobre-pedido manual: delta_uds × costo_unit. */
+  pesosExtra: number;
+  /** Cobertura post-OC usando vel_ponderada BASE (sin multiplicador de evento).
+   *  Refleja la cobertura real cuando termine Cyber/Black/etc. */
+  cobPostSinEvento: number;
   innerPack: number;
   bultos: number;
   costoUnit: number;
@@ -1387,6 +1398,25 @@ export default function AdminInteligencia() {
           costo = wacNeto;
           costoFuente = "wac_fallback";
         }
+        // Sobre-pedido vs motor: cuánto te estás pasando respecto a qty_raw.
+        // Usamos qty_raw (pedir_proveedor_raw) como referencia "lo que el motor
+        // realmente quería" antes del redondeo al inner_pack o del cap por
+        // tiene_stock_prov. Si el admin reduce manualmente por debajo de motor,
+        // delta=0 (no se reporta extra; estás pidiendo menos, no más).
+        const pedirMotor = Math.max(0, r.pedir_proveedor_raw ?? r.pedir_proveedor ?? 0);
+        const deltaUds = Math.max(0, pedir - pedirMotor);
+        const pctSobreMotor = pedirMotor > 0
+          ? (deltaUds / pedirMotor) * 100
+          : (pedir > 0 ? 100 : 0);
+        const pesosExtra = deltaUds * costo;
+        // Cobertura post-OC SIN multiplicador de evento: usa vel_ponderada base
+        // (no vel_ajustada_evento). Refleja la cobertura real cuando termine
+        // Cyber/Black/etc., evitando el espejismo del 1.5× que acorta cobs
+        // artificialmente. 999 = vel<=0 (sin tracción suficiente).
+        const stockProyectado = (r.stock_total ?? 0) + pedir;
+        const cobPostSinEvento = r.vel_ponderada > 0
+          ? (stockProyectado / r.vel_ponderada) * 7
+          : 999;
         return {
           skuOrigen: r.sku_origen,
           nombre: r.nombre || "",
@@ -1398,6 +1428,10 @@ export default function AdminInteligencia() {
           cobTotal: r.cob_total,
           pedirSugerido: pedirRedondeado,
           pedirEditado: pedir,
+          pedirMotor,
+          pctSobreMotor,
+          pesosExtra,
+          cobPostSinEvento,
           innerPack: ip,
           bultos: ip > 1 ? Math.ceil(pedir / ip) : pedir,
           costoUnit: costo,
@@ -2775,6 +2809,10 @@ export default function AdminInteligencia() {
               else if (col === "transito") { va = a.stockEnTransito; vb = b.stockEnTransito; }
               else if (col === "cob") { va = a.cobTotal; vb = b.cobTotal; }
               else if (col === "pedir") { va = a.pedirEditado; vb = b.pedirEditado; }
+              else if (col === "motor") { va = a.pedirMotor; vb = b.pedirMotor; }
+              else if (col === "pct") { va = a.pctSobreMotor; vb = b.pctSobreMotor; }
+              else if (col === "extra") { va = a.pesosExtra; vb = b.pesosExtra; }
+              else if (col === "cobPost") { va = a.cobPostSinEvento; vb = b.cobPostSinEvento; }
               else if (col === "ip") { va = a.innerPack; vb = b.innerPack; }
               else if (col === "bultos") { va = a.bultos; vb = b.bultos; }
               else if (col === "subtotal") { va = a.subtotal; vb = b.subtotal; }
@@ -2831,7 +2869,7 @@ export default function AdminInteligencia() {
                   {!collapsed && (
                     <>
                       <div style={{ overflowX: "auto", border: "1px solid var(--bg4)", borderTop: "none" }}>
-                        <table className="tbl" style={{ minWidth: 1400 }}>
+                        <table className="tbl" style={{ minWidth: 1700 }}>
                           <thead>
                             <tr>
                               <th style={{ width: 28 }}>
@@ -2853,6 +2891,10 @@ export default function AdminInteligencia() {
                               <PSH col="transito" label="En Transito" right />
                               <PSH col="cob" label="Cob Total" right />
                               <PSH col="pedir" label="Pedir" right />
+                              <PSH col="motor" label="Motor" right />
+                              <PSH col="pct" label="% Sobre" right />
+                              <PSH col="extra" label="$ Extra" right />
+                              <PSH col="cobPost" label="Cob Post" right />
                               <th style={{ textAlign: "center" }}>Rampup</th>
                               <PSH col="ip" label="IP" right />
                               <PSH col="bultos" label="Bultos" right />
@@ -2899,6 +2941,41 @@ export default function AdminInteligencia() {
                                       onChange={e => setPedidoEdits(prev => new Map(prev).set(item.skuOrigen, Math.max(0, parseInt(e.target.value) || 0)))}
                                       title={item.factorRampup !== 1.0 ? `Pre-rampup: ${item.pedirSinRampup} uds` : undefined}
                                       style={{ width: 60, textAlign: "right", padding: "2px 4px", fontSize: 11, background: "var(--bg3)", border: "1px solid var(--bg4)", borderRadius: 4, color: "var(--txt)", fontFamily: "var(--font-mono)" }} />
+                                  </td>
+                                  {/* Motor sugiere (qty_raw, sin redondear al IP) */}
+                                  <td className="mono" style={{ textAlign: "right", fontSize: 11, color: "var(--txt2)" }}
+                                    title="Sugerencia cruda del motor (qty_raw) antes de redondear al inner_pack o capar por proveedor sin stock.">
+                                    {fmtInt(item.pedirMotor)}
+                                  </td>
+                                  {/* % sobre motor — verde<30, amber 30-200, rojo>200 */}
+                                  <td className="mono" style={{
+                                    textAlign: "right", fontSize: 11, fontWeight: 600,
+                                    color: item.pctSobreMotor < 30 ? "var(--green)"
+                                         : item.pctSobreMotor <= 200 ? "var(--amber)"
+                                         : "var(--red)",
+                                  }}
+                                    title={`Pidiendo ${item.pedirEditado} vs motor ${item.pedirMotor} → ${item.pctSobreMotor.toFixed(0)}% sobre lo necesario.\nCausas posibles: redondeo IP=${item.innerPack}, edición manual.`}>
+                                    {item.pctSobreMotor === 0 ? "—" : `+${fmtN(item.pctSobreMotor, 0)}%`}
+                                  </td>
+                                  {/* $ extra invertidos por sobre-pedido */}
+                                  <td className="mono" style={{
+                                    textAlign: "right", fontSize: 11, fontWeight: 600,
+                                    color: item.pesosExtra < 30000 ? "var(--green)"
+                                         : item.pesosExtra <= 100000 ? "var(--amber)"
+                                         : "var(--red)",
+                                  }}
+                                    title={`$ ${fmtMoney(item.pesosExtra)} invertidos extra por encima del motor (delta_uds × costo_unit).`}>
+                                    {item.pesosExtra <= 0 ? "—" : fmtMoney(item.pesosExtra)}
+                                  </td>
+                                  {/* Cobertura post-OC sin evento (vel base, no ajustada por Cyber/etc.) */}
+                                  <td className="mono" style={{
+                                    textAlign: "right", fontSize: 11,
+                                    color: item.cobPostSinEvento <= 90 ? "var(--green)"
+                                         : item.cobPostSinEvento <= 180 ? "var(--amber)"
+                                         : "var(--red)",
+                                  }}
+                                    title={`(${fmtInt(item.stockBodega + item.stockFull + item.stockEnTransito)} stock + ${item.pedirEditado} OC) / ${fmtN(item.velPonderada, 2)} vel/sem × 7 = cobertura post-OC en días, usando vel BASE (sin multiplicador de evento).`}>
+                                    {item.cobPostSinEvento >= 999 ? "—" : `${fmtN(item.cobPostSinEvento, 0)}d`}
                                   </td>
                                   <td style={{ textAlign: "center" }}>
                                     {(() => {
