@@ -2589,7 +2589,7 @@ export default function AdminInteligencia() {
                     if (items.length === 0) return;
                     const headers = "SKU Venta;SKU Origen;Nombre;Mandar;Inner Pack;Bultos;Stock Bodega;Stock Full;Cob Full (dias)";
                     const csvRows = items.map(i =>
-                      [i.skuVenta, i.skuOrigen, (i.nombre || "").replace(/;/g, ","), i.mandarEditado, i.innerPack > 1 ? i.innerPack : "", i.bultos, i.stockBodega, i.stockFull, i.cobFull].join(";")
+                      [csvSku(i.skuVenta), csvSku(i.skuOrigen), (i.nombre || "").replace(/;/g, ","), i.mandarEditado, i.innerPack > 1 ? i.innerPack : "", i.bultos, i.stockBodega, i.stockFull, i.cobFull].join(";")
                     );
                     const csv = "\uFEFF" + headers + "\n" + csvRows.join("\n");
                     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -2615,7 +2615,7 @@ export default function AdminInteligencia() {
                     if (items.length === 0) return;
                     const headers = "SKU;Nombre;Cantidad";
                     const csvRows = items.map(i =>
-                      [i.skuVenta, (i.nombre || "").replace(/;/g, ","), i.mandarEditado].join(";")
+                      [csvSku(i.skuVenta), (i.nombre || "").replace(/;/g, ","), i.mandarEditado].join(";")
                     );
                     const csv = "\uFEFF" + headers + "\n" + csvRows.join("\n");
                     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -2902,7 +2902,7 @@ export default function AdminInteligencia() {
                           onClick={() => {
                             let csv = "SKU;Nombre;Cantidad;Inner Pack;Bultos\n";
                             for (const i of selectedItems) {
-                              csv += `${i.skuOrigen};${(i.nombre || "").replace(/;/g, ",")};${i.pedirEditado};${i.innerPack > 1 ? i.innerPack : ""};${i.bultos}\n`;
+                              csv += `${csvSku(i.skuOrigen)};${(i.nombre || "").replace(/;/g, ",")};${i.pedirEditado};${i.innerPack > 1 ? i.innerPack : ""};${i.bultos}\n`;
                             }
                             const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
                             const url = URL.createObjectURL(blob);
@@ -3422,7 +3422,7 @@ function exportarCSVOrigen(filtered: IntelRow[]) {
   const csvRows = [headers.join(";")];
   for (const r of filtered) {
     csvRows.push([
-      r.sku_origen,
+      csvSku(r.sku_origen),
       (r.nombre || "").replace(/;/g, ","),
       r.accion, r.abc, r.xyz, r.cuadrante,
       r.cell_efectiva || r.cell || "", r.cell_original || "",
@@ -3460,7 +3460,7 @@ function exportarCSVVenta(filtered: VentaRow[]) {
   const csvRows = [headers.join(";")];
   for (const r of filtered) {
     csvRows.push([
-      r.sku_venta, r.sku_origen,
+      csvSku(r.sku_venta), csvSku(r.sku_origen),
       (r.nombre || "").replace(/;/g, ","),
       r.es_pack ? "Si" : "No", r.unidades_por_pack,
       r.accion, r.abc, r.xyz, r.cuadrante,
@@ -3495,5 +3495,14 @@ function descargarCSV(csvRows: string[], prefix: string) {
   a.download = `${prefix}_${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+// Para SKUs 100% num\u00E9ricos (ISBNs, EANs largos), Excel los interpreta como
+// notaci\u00F3n cient\u00EDfica (9,78848E+12). Envolver con ="..." fuerza a Excel a
+// tratarlo como texto literal sin perder d\u00EDgitos. Para SKUs alfanum\u00E9ricos
+// (TXV23QLAT20BE) se devuelve sin cambios.
+function csvSku(sku: string | null | undefined): string {
+  if (!sku) return "";
+  return /^\d+$/.test(sku) ? `="${sku}"` : sku;
 }
 
