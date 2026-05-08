@@ -20,13 +20,32 @@ import type { FinancialAgg } from "@/lib/reposicion";
  *      docs/discovery/inteligencia-migration-2026-05-04.md
  */
 
-/** Paginar queries de Supabase (máx 1000 filas por request) */
+// Forzar dynamic + sin cache: estos datos cambian en cada recálculo y la UI
+// no tolera respuestas stale. Sin esto, Next.js o un edge intermedio puede
+// servir una respuesta vieja con 0 rows tras un deploy o un recalcular.
+export const dynamic = "force-dynamic";
+export const fetchCache = "force-no-store";
+export const revalidate = 0;
+
+/** Paginar queries de Supabase (máx 1000 filas por request).
+ *
+ *  IMPORTANTE: loguea errores explícitos (Regla 3 inventory-policy). Si la
+ *  query subyacente falla, antes esto retornaba [] silenciosamente y la UI
+ *  pintaba "0 de 0" sin señal. Ahora propagamos como excepción para que el
+ *  caller decida (o vea el error en el log de Vercel). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function paginate(queryFn: () => any): Promise<Record<string, unknown>[]> {
+async function paginate(queryFn: () => any, ctx: string): Promise<Record<string, unknown>[]> {
   const result: Record<string, unknown>[] = [];
   let off = 0;
   while (true) {
-    const { data } = await queryFn().range(off, off + 999);
+    const { data, error } = await queryFn().range(off, off + 999);
+    if (error) {
+      // Regla 3: nunca tragar errores silenciosos. Loguear con contexto y
+      // tirar para que el endpoint responda 500 — preferible que la UI
+      // muestre estado de error que pintar "0 SKUs" silencioso.
+      console.error(`[sku-venta-v2/paginate ${ctx}] error offset=${off}: ${error.message} (code=${error.code})`);
+      throw new Error(`paginate ${ctx} failed at offset=${off}: ${error.message}`);
+    }
     if (!data || data.length === 0) break;
     result.push(...data);
     if (data.length < 1000) break;
@@ -74,21 +93,21 @@ export async function GET(request: Request) {
         "deficit_full, disponible_para_full, " +
         "tendencia, promocion_activa, promocion_motivo, alerta_operativa, " +
         "sku_intelligence_updated_at"
-      )),
+      ), "v_reposicion_explain"),
       paginate(() => sb.from("sku_intelligence").select(
         "sku_origen, abc, xyz, cuadrante, " +
         "abc_pre_quiebre, gmroi, vel_objetivo, gap_vel_pct, " +
         "venta_perdida_pesos, oportunidad_perdida_es_estimacion, " +
         "es_catch_up, updated_at"
-      )),
-      paginate(() => sb.from("composicion_venta").select("sku_venta, sku_origen, unidades, tipo_relacion")),
-      paginate(() => sb.from("stock_full_cache").select("sku_venta, cantidad")),
+      ), "sku_intelligence"),
+      paginate(() => sb.from("composicion_venta").select("sku_venta, sku_origen, unidades, tipo_relacion"), "composicion_venta"),
+      paginate(() => sb.from("stock_full_cache").select("sku_venta, cantidad"), "stock_full_cache"),
       paginate(() => sb.from("orders_history")
         .select("sku_venta, cantidad, canal, fecha, subtotal, comision_total, costo_envio, ingreso_envio, total")
         .eq("estado", "Pagada")
         .gte("fecha", fechaDesde)
-        .order("fecha", { ascending: false })),
-      paginate(() => sb.from("productos").select("sku, costo, costo_promedio")),
+        .order("fecha", { ascending: false }), "orders_history"),
+      paginate(() => sb.from("productos").select("sku, costo, costo_promedio"), "productos"),
     ]) as [
       Record<string, unknown>[],
       Record<string, unknown>[],

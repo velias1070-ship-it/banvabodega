@@ -734,27 +734,36 @@ export default function AdminInteligencia() {
       // Sprint 5 — endpoint v2 (motor nuevo) detrás del mismo flag que cargarOrigen.
       const useNewEngine = isFeatureEnabled(FEATURE_FLAGS.INTEL_USE_NEW_ENGINE);
       const endpoint = useNewEngine ? "/api/intelligence/sku-venta-v2" : "/api/intelligence/sku-venta";
-      const res = await fetch(endpoint);
-      if (!res.ok) {
-        console.error(`[cargarVenta] HTTP ${res.status} desde ${endpoint}`);
-        return;
-      }
-      const json = await res.json();
-      const vRows = (json.rows || []) as VentaRow[];
-      // Si el endpoint devuelve 0 rows pero el motor tiene datos (race
-      // durante recalcular), reintentar 1 vez tras 1 seg. Evita pintar
-      // la UI con "0 de 0" cuando es un estado transitorio.
-      if (vRows.length === 0 && (json.total === 0 || (json.summary?.total_caso_c ?? 0) > 0)) {
-        console.warn(`[cargarVenta] endpoint devolvió 0 rows pero caso_c=${json.summary?.total_caso_c}. Reintento en 1s.`);
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        const res2 = await fetch(endpoint);
-        if (res2.ok) {
-          const json2 = await res2.json();
-          const vRows2 = (json2.rows || []) as VentaRow[];
-          setVentaRows(vRows2);
-          if (vRows2.length > 0 && !lastUpdate) setLastUpdate(vRows2[0].updated_at);
-          return;
+      // Cache-bust + no-store: la respuesta cambia con cada recálculo y la UI
+      // no tolera datos stale. Sin esto, el browser/Next.js puede servir una
+      // respuesta vieja con 0 rows tras un deploy.
+      const fetchOnce = async () => {
+        const res = await fetch(`${endpoint}?ts=${Date.now()}`, { cache: "no-store" });
+        if (!res.ok) {
+          console.error(`[cargarVenta] HTTP ${res.status} desde ${endpoint}`);
+          return null;
         }
+        return await res.json();
+      };
+      let json = await fetchOnce();
+      if (!json) return;
+      let vRows = (json.rows || []) as VentaRow[];
+      // Si el endpoint devuelve 0 rows pero el motor tiene datos (race durante
+      // recalcular o transitorio v_reposicion_explain), reintentar hasta 3 veces
+      // con backoff (1s, 2s, 4s). Evita pintar la UI con "0 de 0" cuando es un
+      // estado transitorio. Sale del retry loop apenas hay rows o se agotan
+      // los intentos.
+      const esTransitorio = (j: { total?: number; summary?: { total_caso_c?: number } } | null) =>
+        !!j && (j.total ?? 0) === 0 && (j.summary?.total_caso_c ?? 0) > 0;
+      let intentos = 0;
+      while (vRows.length === 0 && esTransitorio(json) && intentos < 3) {
+        const wait = 1000 * Math.pow(2, intentos);
+        console.warn(`[cargarVenta] endpoint devolvió 0 rows pero caso_c=${json.summary?.total_caso_c}. Reintento ${intentos + 1}/3 en ${wait}ms.`);
+        await new Promise(resolve => setTimeout(resolve, wait));
+        json = await fetchOnce();
+        if (!json) break;
+        vRows = (json.rows || []) as VentaRow[];
+        intentos += 1;
       }
       setVentaRows(vRows);
       if (vRows.length > 0 && !lastUpdate) {
