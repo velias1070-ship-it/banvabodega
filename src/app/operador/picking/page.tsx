@@ -249,9 +249,13 @@ export default function PickingPage() {
               </div>
             );
           })()}
-          {flexSession ? (
-            <SessionDetail session={flexSession} operario={operario} onPickComp={(l,i)=>{setActiveSes(flexSession);setActiveLinea(l);setActiveCompIdx(i);setScreen("pick");}} onRefresh={refreshActiveFlex} shipCount={flexShipCount}/>
-          ) : (
+          {flexSession ? (() => {
+            // Compute cancelled shipment IDs: están en sesión pero ya no en ML
+            const appShipIds = new Set<number>();
+            for (const l of flexSession.lineas) { for (const sid of (l.shipmentIds || [])) appShipIds.add(sid); }
+            const cancelledShipmentIds = new Set<number>(Array.from(appShipIds).filter(id => !flexMlShipIds.has(id)));
+            return <SessionDetail session={flexSession} operario={operario} onPickComp={(l,i)=>{setActiveSes(flexSession);setActiveLinea(l);setActiveCompIdx(i);setScreen("pick");}} onRefresh={refreshActiveFlex} shipCount={flexShipCount} cancelledShipmentIds={cancelledShipmentIds}/>;
+          })() : (
             <div style={{textAlign:"center",padding:40,color:"#94a3b8"}}>
               <div style={{fontSize:40,marginBottom:12}}>📋</div>
               <div style={{fontSize:16,fontWeight:700}}>Sin pedidos Flex por ahora</div>
@@ -343,7 +347,7 @@ function SessionList({sessions,onSelect,onRefresh}:{sessions:DBPickingSession[];
 }
 
 // ==================== SESSION DETAIL (Flex — 2 fases: Recolección + Armado) ====================
-function SessionDetail({session,operario,onPickComp,onRefresh,shipCount}:{session:DBPickingSession;operario:string;onPickComp:(l:PickingLinea,i:number)=>void;onRefresh:()=>void;shipCount?:number}) {
+function SessionDetail({session,operario,onPickComp,onRefresh,shipCount,cancelledShipmentIds}:{session:DBPickingSession;operario:string;onPickComp:(l:PickingLinea,i:number)=>void;onRefresh:()=>void;shipCount?:number;cancelledShipmentIds?:Set<number>}) {
   const tc=session.lineas.reduce((s,l)=>s+l.componentes.length,0);
   const dc=session.lineas.reduce((s,l)=>s+l.componentes.filter(c=>c.estado==="PICKEADO").length,0);
   const pctRecoleccion=tc>0?Math.round((dc/tc)*100):0;
@@ -413,6 +417,24 @@ function SessionDetail({session,operario,onPickComp,onRefresh,shipCount}:{sessio
     await despickearComponente(session.id!, linea.id, idx, operario, session);
     await onRefresh();
     setResetting(false);
+  };
+
+  // Pedido cancelado por ML: devolver todas las uds pickeadas a stock
+  const handleCancelledReturn = async (linea: PickingLinea) => {
+    setResetting(true);
+    for (let i = 0; i < linea.componentes.length; i++) {
+      if (linea.componentes[i].estado === "PICKEADO") {
+        await despickearComponente(session.id!, linea.id, i, operario, session);
+      }
+    }
+    await onRefresh();
+    setResetting(false);
+  };
+
+  // Helper: ¿la línea fue cancelada por ML después de incluirse en la sesión?
+  const isLineaCancelled = (linea: PickingLinea): boolean => {
+    if (!cancelledShipmentIds || cancelledShipmentIds.size === 0) return false;
+    return (linea.shipmentIds || []).some(sid => cancelledShipmentIds.has(sid));
   };
 
   const marcarArmado = (id: string | number) => {
@@ -536,8 +558,12 @@ function SessionDetail({session,operario,onPickComp,onRefresh,shipCount}:{sessio
 
         <button onClick={onRefresh} style={{width:"100%",padding:8,marginBottom:12,borderRadius:6,background:"var(--bg3)",color:"#06b6d4",fontSize:11,fontWeight:600,border:"1px solid var(--bg4)"}}>Refrescar</button>
 
-        {/* Consolidated picking lines — pendientes primero, nuevos arriba */}
+        {/* Consolidated picking lines — cancelados primero, luego pendientes, nuevos arriba */}
         {[...session.lineas].sort((a, b) => {
+          // Cancelados por ML SIEMPRE primero (prioridad operativa: devolver el producto)
+          const aCancel = isLineaCancelled(a) ? 0 : 1;
+          const bCancel = isLineaCancelled(b) ? 0 : 1;
+          if (aCancel !== bCancel) return aCancel - bCancel;
           const aDone = a.componentes.every(c => c.estado === "PICKEADO") ? 1 : 0;
           const bDone = b.componentes.every(c => c.estado === "PICKEADO") ? 1 : 0;
           if (aDone !== bDone) return aDone - bDone;
@@ -546,6 +572,32 @@ function SessionDetail({session,operario,onPickComp,onRefresh,shipCount}:{sessio
           const bNew = b.componentes.some(c => !c.pickedAt && c.estado === "PENDIENTE") ? 0 : 1;
           return aNew - bNew;
         }).map(linea=>{
+          // Pedido cancelado por ML: render simple con banda roja + botón devolver
+          if (isLineaCancelled(linea)) {
+            const pickeados = linea.componentes.filter(c => c.estado === "PICKEADO");
+            return (
+              <div key={linea.id} style={{padding:14,marginBottom:6,borderRadius:10,background:"#ef444418",border:"2px solid #ef4444"}}>
+                <div style={{display:"flex",alignItems:"center",gap:10}}>
+                  <div style={{fontSize:24}}>🚫</div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:11,color:"#fca5a5",fontWeight:700,marginBottom:2}}>Cancelado por ML</div>
+                    <div className="mono" style={{fontSize:13,fontWeight:700}}>{linea.skuVenta}</div>
+                    {pickeados.length === 0 ? (
+                      <div style={{fontSize:11,color:"#94a3b8",marginTop:2}}>Aún no pickeado — no hay nada que devolver</div>
+                    ) : pickeados.map((c,i)=>(
+                      <div key={i} style={{fontSize:11,color:"#94a3b8",marginTop:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                        {c.nombre} → <strong style={{color:"var(--green)"}}>{c.posicion}</strong>
+                      </div>
+                    ))}
+                  </div>
+                  <button onClick={()=>handleCancelledReturn(linea)} disabled={resetting||pickeados.length===0}
+                    style={{padding:"10px 14px",borderRadius:8,background:pickeados.length===0?"var(--bg4)":"#10b981",color:"#fff",fontSize:12,fontWeight:700,border:"none",cursor:resetting||pickeados.length===0?"default":"pointer",flexShrink:0}}>
+                    {resetting?"...":pickeados.length===0?"Sin pickear":"✓ Devuelto"}
+                  </button>
+                </div>
+              </div>
+            );
+          }
           const allDone=linea.componentes.every(c=>c.estado==="PICKEADO");
           return(
             <div key={linea.id} style={{padding:14,marginBottom:6,borderRadius:10,
@@ -620,6 +672,10 @@ function SessionDetail({session,operario,onPickComp,onRefresh,shipCount}:{sessio
 
         {/* Show picking lines as armado cards — match with shipment for extra info */}
         {!todoCompleto && [...session.lineas].filter(l => l.estado === "PICKEADO").sort((a,b) => {
+          // Cancelados por ML primero (acción urgente: devolver)
+          const aCancel = isLineaCancelled(a) ? 0 : 1;
+          const bCancel = isLineaCancelled(b) ? 0 : 1;
+          if (aCancel !== bCancel) return aCancel - bCancel;
           const aArm = armados.has(a.id) ? 1 : 0;
           const bArm = armados.has(b.id) ? 1 : 0;
           if (aArm !== bArm) return aArm - bArm;
@@ -628,6 +684,32 @@ function SessionDetail({session,operario,onPickComp,onRefresh,shipCount}:{sessio
           const bTime = b.componentes[0]?.pickedAt || "";
           return bTime.localeCompare(aTime);
         }).map(linea => {
+          // Pedido cancelado por ML: render simple con banda roja + botón devolver
+          if (isLineaCancelled(linea)) {
+            const pickeados = linea.componentes.filter(c => c.estado === "PICKEADO");
+            return (
+              <div key={linea.id} style={{padding:14,marginBottom:8,borderRadius:10,background:"#ef444418",border:"2px solid #ef4444"}}>
+                <div style={{display:"flex",alignItems:"center",gap:10}}>
+                  <div style={{fontSize:24}}>🚫</div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:11,color:"#fca5a5",fontWeight:700,marginBottom:2}}>Cancelado por ML</div>
+                    <div className="mono" style={{fontSize:13,fontWeight:700}}>{linea.skuVenta}</div>
+                    {pickeados.length === 0 ? (
+                      <div style={{fontSize:11,color:"#94a3b8",marginTop:2}}>Aún no pickeado — no hay nada que devolver</div>
+                    ) : pickeados.map((c,i)=>(
+                      <div key={i} style={{fontSize:11,color:"#94a3b8",marginTop:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                        {c.nombre} → <strong style={{color:"var(--green)"}}>{c.posicion}</strong>
+                      </div>
+                    ))}
+                  </div>
+                  <button onClick={()=>handleCancelledReturn(linea)} disabled={resetting||pickeados.length===0}
+                    style={{padding:"10px 14px",borderRadius:8,background:pickeados.length===0?"var(--bg4)":"#10b981",color:"#fff",fontSize:12,fontWeight:700,border:"none",cursor:resetting||pickeados.length===0?"default":"pointer",flexShrink:0}}>
+                    {resetting?"...":pickeados.length===0?"Sin pickear":"✓ Devuelto"}
+                  </button>
+                </div>
+              </div>
+            );
+          }
           const isArmado = armados.has(linea.id);
           const skuUp = linea.skuVenta.toUpperCase();
           const lineShipIds = linea.shipmentIds || [];
