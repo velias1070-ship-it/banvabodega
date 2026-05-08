@@ -724,15 +724,34 @@ export default function AdminInteligencia() {
       const useNewEngine = isFeatureEnabled(FEATURE_FLAGS.INTEL_USE_NEW_ENGINE);
       const endpoint = useNewEngine ? "/api/intelligence/sku-venta-v2" : "/api/intelligence/sku-venta";
       const res = await fetch(endpoint);
-      if (res.ok) {
-        const json = await res.json();
-        const vRows = (json.rows || []) as VentaRow[];
-        setVentaRows(vRows);
-        if (vRows.length > 0 && !lastUpdate) {
-          setLastUpdate(vRows[0].updated_at);
+      if (!res.ok) {
+        console.error(`[cargarVenta] HTTP ${res.status} desde ${endpoint}`);
+        return;
+      }
+      const json = await res.json();
+      const vRows = (json.rows || []) as VentaRow[];
+      // Si el endpoint devuelve 0 rows pero el motor tiene datos (race
+      // durante recalcular), reintentar 1 vez tras 1 seg. Evita pintar
+      // la UI con "0 de 0" cuando es un estado transitorio.
+      if (vRows.length === 0 && (json.total === 0 || (json.summary?.total_caso_c ?? 0) > 0)) {
+        console.warn(`[cargarVenta] endpoint devolvió 0 rows pero caso_c=${json.summary?.total_caso_c}. Reintento en 1s.`);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        const res2 = await fetch(endpoint);
+        if (res2.ok) {
+          const json2 = await res2.json();
+          const vRows2 = (json2.rows || []) as VentaRow[];
+          setVentaRows(vRows2);
+          if (vRows2.length > 0 && !lastUpdate) setLastUpdate(vRows2[0].updated_at);
+          return;
         }
       }
-    } catch { /* silenciar */ }
+      setVentaRows(vRows);
+      if (vRows.length > 0 && !lastUpdate) {
+        setLastUpdate(vRows[0].updated_at);
+      }
+    } catch (err) {
+      console.error("[cargarVenta] error:", err);
+    }
   }, [lastUpdate]);
 
   const cargarMlMap = useCallback(async () => {
