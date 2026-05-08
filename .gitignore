@@ -7,3 +7,4 @@ node_modules/
 public/wasm/
 .vercel
 .env*.local
+.DS_Store

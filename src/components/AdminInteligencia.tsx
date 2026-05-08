@@ -343,6 +343,29 @@ interface PedidoProveedorItem {
   bloqueadoSinStockProv?: boolean;
 }
 
+interface DurmienteRow {
+  sku_origen: string;
+  nombre: string | null;
+  proveedor: string | null;
+  uds_180d: number;
+  uds_90d: number;
+  uds_60d: number;
+  uds_30d: number;
+  ordenes_180d: number;
+  ultima_venta: string;
+  dias_sin_venta: number;
+  stock_proveedor: number | null;
+  disponibilidad_nota: string | null;
+  abc: string | null;
+  cuadrante: string | null;
+  accion_motor: string | null;
+  vel_ponderada: number;
+  vel_pre_quiebre: number;
+  vel_historico_sem: number;
+  costo_promedio: number;
+  ingreso_estimado_180d: number;
+}
+
 const ENVIO_ACCION_ORDEN: Record<string, number> = {
   URGENTE: 0,
   AGOTADO_PEDIR: 1,
@@ -483,6 +506,13 @@ export default function AdminInteligencia() {
   const envioManualItemsRef = useRef(envioManualItems);
   useEffect(() => { envioManualItemsRef.current = envioManualItems; }, [envioManualItems]);
   const [vistaPedido, setVistaPedido] = useState(false);
+
+  // Vista "Durmientes" — SKUs con uds_180d altas pero ventana 60d vacía
+  // (motor los entierra pero pueden ser minas de oro perdidas).
+  const [vistaDurmientes, setVistaDurmientes] = useState(false);
+  const [durmientesItems, setDurmientesItems] = useState<DurmienteRow[]>([]);
+  const [durmientesLoading, setDurmientesLoading] = useState(false);
+  const [durmientesSort, setDurmientesSort] = useState<{ col: string; asc: boolean }>({ col: "uds_180d", asc: false });
 
   // Vista "Explicar SKU" — sección dedicada
   const [vistaExplicar, setVistaExplicar] = useState(false);
@@ -728,6 +758,27 @@ export default function AdminInteligencia() {
       }
     } catch { /* ignore */ }
   }, []);
+
+  const cargarDurmientes = useCallback(async () => {
+    setDurmientesLoading(true);
+    try {
+      const res = await fetch("/api/intelligence/durmientes");
+      if (res.ok) {
+        const data = await res.json();
+        setDurmientesItems((data.rows || []) as DurmienteRow[]);
+      }
+    } catch (err) {
+      console.error("[durmientes] fetch failed:", err);
+    } finally {
+      setDurmientesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (vistaDurmientes && durmientesItems.length === 0 && !durmientesLoading) {
+      void cargarDurmientes();
+    }
+  }, [vistaDurmientes, durmientesItems.length, durmientesLoading, cargarDurmientes]);
 
   const cargarCatalogo = useCallback(async () => {
     const sb = getSupabase();
@@ -1769,25 +1820,28 @@ export default function AdminInteligencia() {
         </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
           <div style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--bg4)" }}>
-            <button onClick={() => { setVistaOrigen(false); setVistaEnvio(false); setVistaPedido(false); setVistaProveedorAgotado(false); setVistaAccuracy(false); setVistaExplicar(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: !vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar ? "var(--cyan)" : "var(--bg3)", color: !vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+            <button onClick={() => { setVistaOrigen(false); setVistaEnvio(false); setVistaPedido(false); setVistaProveedorAgotado(false); setVistaAccuracy(false); setVistaExplicar(false); setVistaDurmientes(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: !vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar && !vistaDurmientes ? "var(--cyan)" : "var(--bg3)", color: !vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar && !vistaDurmientes ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
               SKU Venta
             </button>
-            <button onClick={() => { setVistaOrigen(true); setVistaEnvio(false); setVistaPedido(false); setVistaProveedorAgotado(false); setVistaAccuracy(false); setVistaExplicar(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar ? "var(--cyan)" : "var(--bg3)", color: vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+            <button onClick={() => { setVistaOrigen(true); setVistaEnvio(false); setVistaPedido(false); setVistaProveedorAgotado(false); setVistaAccuracy(false); setVistaExplicar(false); setVistaDurmientes(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar && !vistaDurmientes ? "var(--cyan)" : "var(--bg3)", color: vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar && !vistaDurmientes ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
               SKU Origen
             </button>
-            <button onClick={() => { setVistaEnvio(true); setVistaOrigen(false); setVistaPedido(false); setVistaProveedorAgotado(false); setVistaAccuracy(false); setVistaExplicar(false); setPickingCreado(null); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaEnvio ? "var(--blue)" : "var(--bg3)", color: vistaEnvio ? "#fff" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+            <button onClick={() => { setVistaEnvio(true); setVistaOrigen(false); setVistaPedido(false); setVistaProveedorAgotado(false); setVistaAccuracy(false); setVistaExplicar(false); setVistaDurmientes(false); setPickingCreado(null); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaEnvio ? "var(--blue)" : "var(--bg3)", color: vistaEnvio ? "#fff" : "var(--txt3)", border: "none", cursor: "pointer" }}>
               Envio a Full
             </button>
-            <button onClick={() => { setVistaPedido(true); setVistaEnvio(false); setVistaOrigen(false); setVistaProveedorAgotado(false); setVistaAccuracy(false); setVistaExplicar(false); setOcCreada(null); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaPedido ? "var(--amber)" : "var(--bg3)", color: vistaPedido ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+            <button onClick={() => { setVistaPedido(true); setVistaEnvio(false); setVistaOrigen(false); setVistaProveedorAgotado(false); setVistaAccuracy(false); setVistaExplicar(false); setVistaDurmientes(false); setOcCreada(null); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaPedido ? "var(--amber)" : "var(--bg3)", color: vistaPedido ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }}>
               Pedido a Proveedor
             </button>
-            <button onClick={() => { setVistaProveedorAgotado(true); setVistaEnvio(false); setVistaOrigen(false); setVistaPedido(false); setVistaAccuracy(false); setVistaExplicar(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaProveedorAgotado ? "var(--red)" : "var(--bg3)", color: vistaProveedorAgotado ? "#fff" : "var(--txt3)", border: "none", cursor: "pointer" }}>
+            <button onClick={() => { setVistaProveedorAgotado(true); setVistaEnvio(false); setVistaOrigen(false); setVistaPedido(false); setVistaAccuracy(false); setVistaExplicar(false); setVistaDurmientes(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaProveedorAgotado ? "var(--red)" : "var(--bg3)", color: vistaProveedorAgotado ? "#fff" : "var(--txt3)", border: "none", cursor: "pointer" }}>
               Ventana Proveedor
             </button>
-            <button onClick={() => { setVistaAccuracy(true); setVistaOrigen(false); setVistaEnvio(false); setVistaPedido(false); setVistaProveedorAgotado(false); setVistaExplicar(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaAccuracy ? "var(--cyan)" : "var(--bg3)", color: vistaAccuracy ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }} title="Forecast accuracy — mide el error de vel_ponderada">
+            <button onClick={() => { setVistaDurmientes(true); setVistaEnvio(false); setVistaOrigen(false); setVistaPedido(false); setVistaProveedorAgotado(false); setVistaAccuracy(false); setVistaExplicar(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaDurmientes ? "var(--amber)" : "var(--bg3)", color: vistaDurmientes ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }} title="SKUs con ventas históricas (180d) que el motor enterró por ventana 60d vacía. Posibles minas de oro reactivables.">
+              💤 Durmientes
+            </button>
+            <button onClick={() => { setVistaAccuracy(true); setVistaOrigen(false); setVistaEnvio(false); setVistaPedido(false); setVistaProveedorAgotado(false); setVistaExplicar(false); setVistaDurmientes(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaAccuracy ? "var(--cyan)" : "var(--bg3)", color: vistaAccuracy ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }} title="Forecast accuracy — mide el error de vel_ponderada">
               📊 Accuracy
             </button>
-            <button onClick={() => { setVistaExplicar(true); setVistaOrigen(false); setVistaEnvio(false); setVistaPedido(false); setVistaProveedorAgotado(false); setVistaAccuracy(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaExplicar ? "var(--cyan)" : "var(--bg3)", color: vistaExplicar ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }} title="Trazabilidad: cómo el motor calcula cada métrica de un SKU">
+            <button onClick={() => { setVistaExplicar(true); setVistaOrigen(false); setVistaEnvio(false); setVistaPedido(false); setVistaProveedorAgotado(false); setVistaAccuracy(false); setVistaDurmientes(false); }} style={{ padding: "5px 12px", fontSize: 10, fontWeight: 600, background: vistaExplicar ? "var(--cyan)" : "var(--bg3)", color: vistaExplicar ? "#000" : "var(--txt3)", border: "none", cursor: "pointer" }} title="Trazabilidad: cómo el motor calcula cada métrica de un SKU">
               🔎 Explicar SKU
             </button>
           </div>
@@ -1908,7 +1962,7 @@ export default function AdminInteligencia() {
       )}
 
       {/* ═══ 3.5. CHIPS DE RED DE SEGURIDAD: SKUs sin costo, stale, sin LT, bajo MOQ ═══ */}
-      {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar && (() => {
+      {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar && !vistaDurmientes && (() => {
         const sinCosto = activeRows.filter((r: AnyRow) => (r.alertas || []).includes("sin_costo"));
         const costoStale = activeRows.filter((r: AnyRow) => (r.alertas || []).includes("costo_posiblemente_obsoleto"));
         const sinLt = activeRows.filter((r: AnyRow) => "lead_time_fuente" in r && r.lead_time_fuente === "fallback_default" && (r.vel_ponderada || 0) > 0);
@@ -1945,7 +1999,7 @@ export default function AdminInteligencia() {
       })()}
 
       {/* ═══ 4. FILTROS ═══ */}
-      {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar && <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+      {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar && !vistaDurmientes && <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
         <input
           type="text"
           placeholder="Buscar SKU, nombre o ML..."
@@ -1998,12 +2052,12 @@ export default function AdminInteligencia() {
         </select>
       </div>}
 
-      {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar && <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 6 }}>
+      {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar && !vistaDurmientes && <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 6 }}>
         {filtered.length} de {vistaOrigen ? totalSkus : totalVentas} {vistaOrigen ? "SKUs Origen" : "SKUs Venta"}
       </div>}
 
       {/* ═══ 5. TABLA SKU VENTA ═══ */}
-      {!vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar && (
+      {!vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar && !vistaDurmientes && (
         <div style={{ overflowX: "auto" }}>
           <table className="tbl" style={{ minWidth: 1500 }}>
             <thead>
@@ -2102,7 +2156,7 @@ export default function AdminInteligencia() {
       )}
 
       {/* ═══ 5b. TABLA SKU ORIGEN ═══ */}
-      {vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar && (
+      {vistaOrigen && !vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar && !vistaDurmientes && (
         <div style={{ overflowX: "auto" }}>
           <table className="tbl" style={{ minWidth: 1500 }}>
             <thead>
@@ -3117,7 +3171,95 @@ export default function AdminInteligencia() {
         </div>
       )}
 
-      {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar && filtered.length === 0 && <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>No hay datos. Ejecuta &quot;Recalcular&quot; para generar.</div>}
+      {!vistaEnvio && !vistaPedido && !vistaProveedorAgotado && !vistaAccuracy && !vistaExplicar && !vistaDurmientes && filtered.length === 0 && <div style={{ textAlign: "center", padding: 40, color: "var(--txt3)" }}>No hay datos. Ejecuta &quot;Recalcular&quot; para generar.</div>}
+
+      {vistaDurmientes && (
+        <div className="card" style={{ padding: 16, marginTop: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 700 }}>💤 Durmientes Reactivables ({durmientesItems.length})</div>
+              <div style={{ fontSize: 11, color: "var(--txt3)" }}>
+                SKUs con ventas históricas (≥3 uds en 180d) pero ventana 60d vacía. El motor los entierra como EXCESO/INACTIVO/DEAD_STOCK porque no ve actividad reciente. Pueden ser minas de oro perdidas (ML pausó la publicación al agotarse el stock).
+              </div>
+            </div>
+            <button onClick={() => void cargarDurmientes()} disabled={durmientesLoading}
+              style={{ padding: "6px 14px", fontSize: 11, fontWeight: 600, background: "var(--bg3)", color: "var(--cyan)", border: "1px solid var(--bg4)", borderRadius: 4, cursor: durmientesLoading ? "default" : "pointer" }}>
+              {durmientesLoading ? "Cargando..." : "🔄 Refrescar"}
+            </button>
+          </div>
+          {durmientesItems.length === 0 ? (
+            <div style={{ textAlign: "center", padding: 30, color: "var(--txt3)", fontSize: 12 }}>
+              {durmientesLoading ? "Cargando durmientes..." : "Sin SKUs durmientes con ventas históricas. ✓"}
+            </div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table className="tbl" style={{ fontSize: 11, width: "100%" }}>
+                <thead>
+                  <tr>
+                    {([
+                      ["sku", "SKU", false], ["nombre", "Nombre", false], ["proveedor", "Proveedor", false],
+                      ["abc", "ABC", false], ["accion", "Motor", false],
+                      ["uds_180d", "Uds 180d", true], ["uds_90d", "Uds 90d", true], ["ordenes", "Órdenes", true],
+                      ["dias_sin_venta", "Días s/venta", true],
+                      ["vel_hist", "Vel hist /sem", true], ["stock_prov", "Stock prov", true],
+                      ["ingreso", "Ingreso est. 180d", true],
+                    ] as const).map(([col, label, isNum]) => {
+                      const toggle = (c: string) => setDurmientesSort(prev => ({ col: c, asc: prev.col === c ? !prev.asc : !isNum }));
+                      return (
+                        <th key={col} onClick={() => toggle(col)}
+                          style={{ cursor: "pointer", textAlign: isNum ? "right" : "left", userSelect: "none", fontSize: 10 }}>
+                          {label}{durmientesSort.col === col ? (durmientesSort.asc ? " ▲" : " ▼") : ""}
+                        </th>
+                      );
+                    })}
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...durmientesItems].sort((a, b) => {
+                    const { col, asc } = durmientesSort;
+                    const va: number | string = (col === "sku") ? a.sku_origen : (col === "nombre") ? (a.nombre || "")
+                      : (col === "proveedor") ? (a.proveedor || "") : (col === "abc") ? (a.abc || "")
+                      : (col === "accion") ? (a.accion_motor || "")
+                      : (col === "uds_180d") ? a.uds_180d : (col === "uds_90d") ? a.uds_90d
+                      : (col === "ordenes") ? a.ordenes_180d : (col === "dias_sin_venta") ? a.dias_sin_venta
+                      : (col === "vel_hist") ? a.vel_historico_sem : (col === "stock_prov") ? (a.stock_proveedor ?? -1)
+                      : (col === "ingreso") ? a.ingreso_estimado_180d : 0;
+                    const vb: number | string = (col === "sku") ? b.sku_origen : (col === "nombre") ? (b.nombre || "")
+                      : (col === "proveedor") ? (b.proveedor || "") : (col === "abc") ? (b.abc || "")
+                      : (col === "accion") ? (b.accion_motor || "")
+                      : (col === "uds_180d") ? b.uds_180d : (col === "uds_90d") ? b.uds_90d
+                      : (col === "ordenes") ? b.ordenes_180d : (col === "dias_sin_venta") ? b.dias_sin_venta
+                      : (col === "vel_hist") ? b.vel_historico_sem : (col === "stock_prov") ? (b.stock_proveedor ?? -1)
+                      : (col === "ingreso") ? b.ingreso_estimado_180d : 0;
+                    const cmp = typeof va === "string" ? va.localeCompare(vb as string) : (va as number) - (vb as number);
+                    return asc ? cmp : -cmp;
+                  }).map(r => (
+                    <tr key={r.sku_origen}>
+                      <td className="mono" style={{ whiteSpace: "nowrap" }}>{r.sku_origen}</td>
+                      <td style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.nombre || ""}>{r.nombre || "—"}</td>
+                      <td style={{ fontSize: 10 }}>{r.proveedor || "—"}</td>
+                      <td style={{ textAlign: "center", color: r.abc === "A" ? "var(--green)" : r.abc === "B" ? "var(--amber)" : "var(--txt3)", fontWeight: 700 }}>{r.abc || "—"}</td>
+                      <td style={{ fontSize: 10, color: "var(--red)" }}>{r.accion_motor}</td>
+                      <td className="mono" style={{ textAlign: "right", fontWeight: 700 }}>{r.uds_180d}</td>
+                      <td className="mono" style={{ textAlign: "right" }}>{r.uds_90d}</td>
+                      <td className="mono" style={{ textAlign: "right" }}>{r.ordenes_180d}</td>
+                      <td className="mono" style={{ textAlign: "right", color: r.dias_sin_venta > 90 ? "var(--red)" : "var(--amber)" }}>{r.dias_sin_venta}d</td>
+                      <td className="mono" style={{ textAlign: "right" }}>{r.vel_historico_sem.toFixed(2)}</td>
+                      <td className="mono" style={{ textAlign: "right", color: r.stock_proveedor && r.stock_proveedor > 0 ? "var(--green)" : "var(--txt3)" }}>
+                        {r.stock_proveedor != null ? r.stock_proveedor : (r.disponibilidad_nota || "—")}
+                      </td>
+                      <td className="mono" style={{ textAlign: "right" }}>${Math.round(r.ingreso_estimado_180d).toLocaleString("es-CL")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 8 }}>
+                Ingreso estimado = uds × costo_promedio × 1.5 (markup ~50%, aproximado). El motor está enterrando estos {durmientesItems.length} SKUs — revisar si vale la pena reactivar la publicación + comprar al proveedor.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ═══════════════════════════════════════════════
           VISTA EXPLICAR SKU — trazabilidad de cálculos
