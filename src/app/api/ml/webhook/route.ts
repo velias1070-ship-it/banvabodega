@@ -4,6 +4,12 @@ import { upsertOrderToVentasCache, updateVentaEstado } from "@/lib/ventas-cache"
 import { getBaseUrl } from "@/lib/base-url";
 import { getServerSupabase } from "@/lib/supabase-server";
 
+// Forzar ejecución dinámica — Next.js NO debe cachear lecturas de ml_config
+// (token_expires_at se actualiza por refresh, una cache stale rompe el handler).
+export const dynamic = "force-dynamic";
+export const fetchCache = "force-no-store";
+export const revalidate = 0;
+
 /**
  * MercadoLibre webhook endpoint.
  * Handles: orders_v2, shipments, marketplace_fbm_stock, claims, stock-location, items.
@@ -218,13 +224,131 @@ export async function POST(req: NextRequest) {
     }
 
     if (topic === "fbm_stock_operations") {
-      // Trae /stock/fulfillment/operations/{OP_ID}. La operación detalla qué
-      // inventory_id se afectó, pero el cron cada 30min ya reconcilia este caso
-      // vía syncStockFull completo. Logueamos y dejamos pasar.
+      // Real-time stock update. ML emite este webhook ~2-40s después de cada
+      // operación de stock en Full (INBOUND_RECEPTION, SALE_CONFIRMATION,
+      // ADJUSTMENT, QUARANTINE_*, LOST_REFUND, TRANSFER_*, WITHDRAWAL_*).
+      // El cron syncStockFull cada 30min queda como safety net.
       const opMatch = resource?.match(/operations\/([^/]+)/);
       const operationId = opMatch ? opMatch[1] : null;
-      await logWebhookFinish(logId, "ok", startMs, { result: { operation_id: operationId, note: "reconciliado por cron /sync-stock-full" } });
-      return NextResponse.json({ status: "ok", operation_id: operationId, note: "reconciled_by_cron" });
+      if (!operationId) {
+        await logWebhookFinish(logId, "ignored", startMs, { result: { reason: "no_operation_id", resource } });
+        return NextResponse.json({ status: "ignored", reason: "no_operation_id" });
+      }
+
+      // Bypass del cliente Supabase JS: Next.js cachea sus respuestas a pesar
+      // del `cache: "no-store"` global, y el handler veía token_expires_at +
+      // mapeos stale. Hacemos PostgREST directo con fetch + cache: "no-store".
+      const sbUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+      const sbKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+      const sbHeaders = { apikey: sbKey, Authorization: `Bearer ${sbKey}` } as Record<string, string>;
+      const sbFetch = (path: string, init: RequestInit = {}) =>
+        fetch(`${sbUrl}/rest/v1${path}`, {
+          ...init,
+          headers: { ...sbHeaders, "Content-Type": "application/json", Prefer: "return=representation", ...(init.headers || {}) },
+          cache: "no-store",
+        });
+
+      // Tomar seller_id + access_token desde ml_config (lectura fresca).
+      const cfgResp = await sbFetch(`/ml_config?id=eq.main&select=seller_id,access_token,token_expires_at`);
+      const cfgRows = (await cfgResp.json()) as Array<{ seller_id: string; access_token: string; token_expires_at: string }>;
+      const cfg = cfgRows?.[0];
+      const sellerId = cfg?.seller_id;
+      const accessToken = cfg?.access_token;
+      if (!sellerId || !accessToken) {
+        await logWebhookFinish(logId, "error", startMs, { error: "no_credentials" });
+        return NextResponse.json({ status: "error", message: "no_credentials" });
+      }
+
+      // 1) Detalle de la operación desde ML.
+      type FbmOp = {
+        id: string | number;
+        type: string;
+        date_created: string;
+        inventory_id: string;
+        detail: { available_quantity: number };
+        result: { total: number; available_quantity?: number; not_available_quantity?: number };
+        external_references?: Array<{ type: string; value: string }>;
+      };
+      const opUrl = `https://api.mercadolibre.com/stock/fulfillment/operations/${operationId}?seller_id=${sellerId}`;
+      const opResp = await fetch(opUrl, { headers: { Authorization: `Bearer ${accessToken}` }, cache: "no-store" });
+      if (!opResp.ok) {
+        const errBody = await opResp.text().then(t => t.slice(0, 200));
+        await logWebhookFinish(logId, "error", startMs, { error: `ml_get_operation_failed status=${opResp.status}`, result: { operation_id: operationId, body: errBody } });
+        return NextResponse.json({ status: "error", message: "ml_get_operation_failed", ml_status: opResp.status });
+      }
+      const op = await opResp.json() as FbmOp;
+
+      // 2) Mapear inventory_id → sku_venta (lectura fresca via PostgREST).
+      const mResp = await sbFetch(`/ml_items_map?inventory_id=eq.${encodeURIComponent(op.inventory_id)}&select=sku,sku_venta,sku_origen&limit=1`);
+      const mRows = (await mResp.json()) as Array<{ sku?: string; sku_venta?: string; sku_origen?: string }>;
+      const skuVenta = mRows?.[0]?.sku_venta;
+      const skuOrigen = mRows?.[0]?.sku_origen || mRows?.[0]?.sku;
+      if (!skuVenta) {
+        await logWebhookFinish(logId, "ignored", startMs, { result: { reason: "inventory_not_mapped", inventory_id: op.inventory_id, operation_id: operationId }, inventory_id: op.inventory_id });
+        return NextResponse.json({ status: "ignored", reason: "inventory_not_mapped" });
+      }
+
+      // 3) Actualizar stock_full_cache (canónica) — UPSERT por sku_venta.
+      const totalAfter = Number(op.result?.total ?? 0);
+      const nowIso = new Date().toISOString();
+      const sfcResp = await sbFetch(`/stock_full_cache?on_conflict=sku_venta`, {
+        method: "POST",
+        headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+        body: JSON.stringify({ sku_venta: skuVenta, cantidad: totalAfter, updated_at: nowIso, fuente: "webhook_fbm_realtime" }),
+      });
+      const sfcOk = sfcResp.ok;
+
+      // 4) Espejear en ml_items_map (legacy, deprecated v58 pero aún consumida).
+      const mimResp = await sbFetch(`/ml_items_map?inventory_id=eq.${encodeURIComponent(op.inventory_id)}`, {
+        method: "PATCH",
+        headers: { Prefer: "return=minimal" },
+        body: JSON.stringify({ stock_full_cache: totalAfter, cache_updated_at: nowIso }),
+      });
+      const mimOk = mimResp.ok;
+
+      if (!sfcOk || !mimOk) {
+        const sfcErr = sfcOk ? "" : await sfcResp.text().then(t => t.slice(0, 150));
+        const mimErr = mimOk ? "" : await mimResp.text().then(t => t.slice(0, 150));
+        await logWebhookFinish(logId, "error", startMs, {
+          error: `sfc=${sfcErr || "ok"} mim=${mimErr || "ok"}`,
+          result: { operation_id: operationId, sku_venta: skuVenta, total_after: totalAfter },
+          sku_afectado: skuVenta,
+          inventory_id: op.inventory_id,
+        });
+        return NextResponse.json({ status: "error", message: "update_failed", sfc: sfcErr, mim: mimErr });
+      }
+
+      // 5) Recálculo del motor para ese SKU (fire-and-forget). El recálculo es
+      // por SKU (no full) — barato. Si fallan no bloquear el webhook.
+      try {
+        const baseUrl = getBaseUrl();
+        fetch(`${baseUrl}/api/intelligence/recalcular`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ full: false, skus: [skuOrigen || skuVenta] }),
+        }).catch(() => {});
+      } catch { /* fire-and-forget */ }
+
+      await logWebhookFinish(logId, "ok", startMs, {
+        result: {
+          operation_id: operationId,
+          op_type: op.type,
+          inventory_id: op.inventory_id,
+          delta: op.detail?.available_quantity,
+          total_after: totalAfter,
+          ext_ref: op.external_references?.[0],
+        },
+        sku_afectado: skuVenta,
+        inventory_id: op.inventory_id,
+      });
+      return NextResponse.json({
+        status: "ok",
+        processed: true,
+        operation_id: operationId,
+        type: op.type,
+        sku_venta: skuVenta,
+        total_after: totalAfter,
+      });
     }
 
     // ─── Items y cambios de precio ───
