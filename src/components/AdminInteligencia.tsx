@@ -3203,6 +3203,7 @@ export default function AdminInteligencia() {
                       ["dias_sin_venta", "Días s/venta", true],
                       ["vel_hist", "Vel hist /sem", true], ["stock_prov", "Stock prov", true],
                       ["ingreso", "Ingreso est. 180d", true],
+                      ["accion_btn", "Acción", false],
                     ] as const).map(([col, label, isNum]) => {
                       const toggle = (c: string) => setDurmientesSort(prev => ({ col: c, asc: prev.col === c ? !prev.asc : !isNum }));
                       return (
@@ -3249,6 +3250,29 @@ export default function AdminInteligencia() {
                         {r.stock_proveedor != null ? r.stock_proveedor : (r.disponibilidad_nota || "—")}
                       </td>
                       <td className="mono" style={{ textAlign: "right" }}>${Math.round(r.ingreso_estimado_180d).toLocaleString("es-CL")}</td>
+                      <td style={{ textAlign: "center" }}>
+                        <button
+                          onClick={async () => {
+                            if (!confirm(`Reactivar ${r.sku_origen}?\n\nEl motor lo tratará como SKU nuevo y empezará a generar acciones (URGENTE/MANDAR_FULL/PEDIR_PROVEEDOR según corresponda).`)) return;
+                            const res = await fetch("/api/intelligence/reactivar", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ sku_origen: r.sku_origen, motivo: "tab_durmientes" }),
+                            });
+                            const json = await res.json();
+                            if (res.ok) {
+                              alert(`✓ ${r.sku_origen} reactivado.\n\n${json.nota || ""}`);
+                              await cargarDurmientes();
+                            } else {
+                              alert(`Error: ${json.error || "fallo"}`);
+                            }
+                          }}
+                          style={{ padding: "3px 10px", fontSize: 10, fontWeight: 700, background: "var(--green)", color: "#000", border: "none", borderRadius: 4, cursor: "pointer" }}
+                          title="Marcar is_new_sku=true en sku_node_policy. El motor lo procesará en el próximo recálculo."
+                        >
+                          ⚡ Reactivar
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
