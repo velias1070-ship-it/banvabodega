@@ -1893,7 +1893,10 @@ function delay(ms: number): Promise<void> {
  * Itera sobre TODO `ml_items_map.activo=true` con `sku = sku_venta` y
  * `status_ml IN ('active','paused')` e inserta una fila trivial
  * `(sku_venta=X, sku_origen=X, unidades=1, tipo_relacion='componente')` en
- * `composicion_venta` si no existe.
+ * `composicion_venta` si no existe. Además crea `productos` para SKUs sin
+ * fila en esa tabla — el motor de inteligencia los necesita ahí, y si no
+ * existen quedan invisibles aunque tengan ventas históricas (caso testigo
+ * JSAFAB425P20S 2026-05-08, paused con 8 ventas hace 80d sin producto).
  *
  * Complementa al autoheal inline del paso 5b de syncStockFull, que solo
  * cubre SKUs que ML devolvió en la corrida (`mapped`). Los que ML API no
@@ -1902,38 +1905,71 @@ function delay(ms: number): Promise<void> {
  */
 export async function autohealComposicionExtendido(
   sb: NonNullable<ReturnType<typeof getServerSupabase>>,
-): Promise<{ inserted: number; candidatos: number; errores: string[] }> {
+): Promise<{ inserted: number; candidatos: number; productos_creados: number; errores: string[] }> {
   const errores: string[] = [];
+  // Necesitamos tambien `nombre` (de ml_items_map.titulo si existe; fallback al sku)
+  // para poder crear productos con un nombre legible cuando faltan.
   const { data: allActive, error: mimErr } = await sb.from("ml_items_map")
-    .select("sku, sku_venta, status_ml")
+    .select("sku, sku_venta, status_ml, titulo")
     .eq("activo", true)
     .in("status_ml", ["active", "paused"]);
   if (mimErr) {
     errores.push(`autoheal_ext ml_items_map select: ${mimErr.message}`);
-    return { inserted: 0, candidatos: 0, errores };
+    return { inserted: 0, candidatos: 0, productos_creados: 0, errores };
   }
 
   // Incluye items con sku_venta=null (comun cuando el seller no asigno
   // sku_venta explicito — el autoheal asume que sku_venta=sku en ese caso).
   // Antes exigia r.sku && r.sku_venta && r.sku === r.sku_venta lo que excluia
   // silenciosamente ~115 items (18% de los activos) cuyo sku_venta era null.
-  const skusActivos = Array.from(new Set(
-    (allActive || [])
-      .filter((r: { sku: string | null; sku_venta: string | null }) =>
-        !!r.sku && (!r.sku_venta || r.sku_venta === r.sku))
-      .map((r: { sku: string }) => r.sku),
+  const skusActivos: string[] = Array.from(new Set(
+    ((allActive || []) as Array<{ sku: string | null; sku_venta: string | null }>)
+      .filter(r => !!r.sku && (!r.sku_venta || r.sku_venta === r.sku))
+      .map(r => r.sku as string),
   ));
-  if (skusActivos.length === 0) return { inserted: 0, candidatos: 0, errores };
+  if (skusActivos.length === 0) return { inserted: 0, candidatos: 0, productos_creados: 0, errores };
+
+  // Map sku → titulo (primer match) para nombrar productos auto-creados.
+  const tituloPorSku = new Map<string, string>();
+  for (const r of ((allActive || []) as Array<{ sku: string | null; titulo: string | null }>)) {
+    if (r.sku && r.titulo && !tituloPorSku.has(r.sku)) tituloPorSku.set(r.sku, r.titulo);
+  }
 
   const { data: prodRows, error: prodErr } = await sb.from("productos")
     .select("sku").in("sku", skusActivos);
   if (prodErr) {
     errores.push(`autoheal_ext productos select: ${prodErr.message}`);
-    return { inserted: 0, candidatos: skusActivos.length, errores };
+    return { inserted: 0, candidatos: skusActivos.length, productos_creados: 0, errores };
   }
   const conProducto = new Set(
     (prodRows || []).map((p: { sku: string }) => p.sku),
   );
+
+  // Auto-crear productos faltantes (incluye items paused — caso histórico:
+  // ML no devuelve paused en fulfillment, paso 5b solo crea desde mapped,
+  // este pase rescata los huérfanos). Marca categoria='Otros', proveedor='Otro'
+  // para que admin pueda corregir manualmente desde la UI.
+  const productosACrear = skusActivos
+    .filter(s => !conProducto.has(s))
+    .map(s => ({
+      sku: s,
+      nombre: tituloPorSku.get(s) || s,
+      categoria: "Otros",
+      proveedor: "Otro",
+    }));
+  let productosCreados = 0;
+  if (productosACrear.length > 0) {
+    const { error: insProdErr } = await sb.from("productos").insert(productosACrear);
+    if (insProdErr) {
+      errores.push(`autoheal_ext productos insert: ${insProdErr.message}`);
+    } else {
+      productosCreados = productosACrear.length;
+      console.log(`[syncStockFull] Autoheal extendido: ${productosCreados} productos creados (incluye paused)`);
+      // Sumar al set para que la siguiente fase de composicion los considere
+      // como existentes (ya creados arriba).
+      for (const p of productosACrear) conProducto.add(p.sku);
+    }
+  }
 
   // Dos filtros sobre composicion_venta: como sku_origen Y como sku_venta.
   // Excluimos SKUs que ya aparecen en cualquier rol — un SKU que es sku_venta
@@ -1944,13 +1980,13 @@ export async function autohealComposicionExtendido(
     .select("sku_origen").in("sku_origen", skusActivos);
   if (compOrigenErr) {
     errores.push(`autoheal_ext composicion(origen) select: ${compOrigenErr.message}`);
-    return { inserted: 0, candidatos: skusActivos.length, errores };
+    return { inserted: 0, candidatos: skusActivos.length, productos_creados: productosCreados, errores };
   }
   const { data: compRowsVenta, error: compVentaErr } = await sb.from("composicion_venta")
     .select("sku_venta").in("sku_venta", skusActivos);
   if (compVentaErr) {
     errores.push(`autoheal_ext composicion(venta) select: ${compVentaErr.message}`);
-    return { inserted: 0, candidatos: skusActivos.length, errores };
+    return { inserted: 0, candidatos: skusActivos.length, productos_creados: productosCreados, errores };
   }
   const conCompo = new Set<string>();
   for (const c of (compRowsOrigen || []) as { sku_origen: string }[]) conCompo.add(c.sku_origen);
@@ -1963,7 +1999,7 @@ export async function autohealComposicionExtendido(
     }));
 
   if (aInsertar.length === 0) {
-    return { inserted: 0, candidatos: skusActivos.length, errores };
+    return { inserted: 0, candidatos: skusActivos.length, productos_creados: productosCreados, errores };
   }
 
   // Upsert con onConflict para inmunidad a race conditions del cron
@@ -1972,11 +2008,11 @@ export async function autohealComposicionExtendido(
     .upsert(aInsertar, { onConflict: "sku_venta,sku_origen" });
   if (insErr) {
     errores.push(`autoheal_ext composicion upsert: ${insErr.message}`);
-    return { inserted: 0, candidatos: skusActivos.length, errores };
+    return { inserted: 0, candidatos: skusActivos.length, productos_creados: productosCreados, errores };
   }
 
   console.log(`[syncStockFull] Autoheal extendido: ${aInsertar.length} composiciones triviales rescatadas`);
-  return { inserted: aInsertar.length, candidatos: skusActivos.length, errores };
+  return { inserted: aInsertar.length, candidatos: skusActivos.length, productos_creados: productosCreados, errores };
 }
 
 /**
