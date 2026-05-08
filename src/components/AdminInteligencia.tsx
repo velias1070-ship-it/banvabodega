@@ -49,6 +49,9 @@ interface IntelRow {
   prioridad: number;
   mandar_full: number;
   pedir_proveedor: number;
+  /** Cantidad bruta antes de capar por tiene_stock_prov / liquidacion. Se usa para
+   *  mostrar SKUs en quiebre de proveedor en Pedido a Proveedor con badge informativo. */
+  pedir_proveedor_raw?: number;
   pedir_proveedor_bultos: number;
   margen_full_30d: number;
   margen_flex_30d: number;
@@ -334,6 +337,10 @@ interface PedidoProveedorItem {
   rampupMotivo: string;
   diasEnQuiebre: number | null;
   esQuiebreProveedor: boolean;
+  /** True cuando aparece en la vista pero NO se puede emitir OC (proveedor sin
+   *  stock). El motor cap qty_a_comprar a 0; mostramos pedirSugerido derivado
+   *  de qty_raw para que el admin sepa cuánto pedir cuando reponga. */
+  bloqueadoSinStockProv?: boolean;
 }
 
 const ENVIO_ACCION_ORDEN: Record<string, number> = {
@@ -584,7 +591,7 @@ export default function AdminInteligencia() {
                   "vel_decl_sem, vel_7d_decl, vel_30d_decl, vel_60d_decl, " +
                   "stock_bodega, stock_full, stock_total, in_transit_bodega, in_transit_oc_bodega, in_transit_picking_full, " +
                   "cycle_stock, safety_stock, reorder_point, pre_full_target, reserva_flex_target, " +
-                  "qty_a_comprar, clp_estimado, dias_cobertura_actual, bajo_rop, " +
+                  "qty_a_comprar, qty_raw, clp_estimado, dias_cobertura_actual, bajo_rop, " +
                   "es_quiebre_proveedor, vel_pre_quiebre, dias_en_quiebre, " +
                   "factor_rampup_aplicado, rampup_motivo, evento_activo, multiplicador_evento, " +
                   "mandar_full:mandar_full_uds, accion, prioridad:prioridad_nueva, " +
@@ -637,6 +644,7 @@ export default function AdminInteligencia() {
           stock_seguridad: Number(explain.safety_stock) || 0,
           punto_reorden: Number(explain.reorder_point) || 0,
           pedir_proveedor: Number(explain.qty_a_comprar) || 0,
+          pedir_proveedor_raw: Number(explain.qty_raw) || 0,
           rop_calculado: Number(explain.reorder_point) || 0,
           updated_at: (explain.sku_intelligence_updated_at as string) || (casoC.updated_at as string),
           // necesita_pedir derivado de bajo_rop
@@ -1203,13 +1211,23 @@ export default function AdminInteligencia() {
     if (!vistaEnvio) setEnvioSelAllInit(false);
   }, [vistaEnvio]);
 
-  // ── Ventana de Acción — Proveedor Agotado: items con la alerta nueva ──
-  // Captura SKUs donde stock_proveedor=0 explícito pero todavía hay cola en Full.
-  // Es la señal temprana: tengo runway vendible pero no puedo reponer cuando se acabe.
+  // ── Ventana de Acción — Proveedor Agotado ──
+  // Captura SKUs con proveedor sin stock que aún tienen runway vendible.
+  // El motor nuevo (v_sku_alertas) emite "sin_stock_proveedor"; el viejo
+  // emitía "proveedor_agotado_con_cola_full" — aceptamos ambos para que la
+  // vista funcione bajo cualquier flag.
   const proveedorAgotadoItems = useMemo(() => {
     if (!vistaProveedorAgotado || rows.length === 0) return [];
     const items = rows
-      .filter(r => (r.alertas || []).includes("proveedor_agotado_con_cola_full"))
+      .filter(r => {
+        const a = r.alertas || [];
+        const sinProv = a.includes("sin_stock_proveedor") || a.includes("proveedor_agotado_con_cola_full");
+        if (!sinProv) return false;
+        // Mantener semántica de "ventana de acción": runway vendible (stock_full>0
+        // y vel>0). Si no hay stock_full no hay nada que vender mientras el
+        // proveedor llega — ese SKU pertenece a Pedido a Proveedor, no acá.
+        return r.stock_full > 0 && r.vel_ponderada > 0;
+      })
       .map(r => {
         // dias_hasta_quiebre = cuánto runway me queda con la velocidad actual.
         // vel_ponderada está en uds/semana → /7 = uds/día.
@@ -1246,14 +1264,27 @@ export default function AdminInteligencia() {
   }, [vistaProveedorAgotado, rows, provAgotadoSort]);
 
   // ── Pedido a Proveedor: compute items from rows ──
+  // Incluye SKUs con qty_a_comprar=0 cuando el motor capó por proveedor sin
+  // stock (bajo_rop && !tiene_stock_prov && qty_raw>0). Esos quedan flagged
+  // bloqueadoSinStockProv=true para mostrarlos como "informativo" — el admin
+  // necesita verlos aunque no pueda emitir OC todavía.
   const pedidoItems = useMemo((): PedidoProveedorItem[] => {
     if (!vistaPedido || rows.length === 0) return [];
     return rows
-      .filter(r => r.pedir_proveedor > 0)
+      .filter(r => {
+        if (r.pedir_proveedor > 0) return true;
+        const raw = r.pedir_proveedor_raw ?? 0;
+        return raw > 0 && r.necesita_pedir === true && r.tiene_stock_prov === false;
+      })
       .map(r => {
+        const bloqueadoSinStockProv = r.pedir_proveedor === 0 && r.tiene_stock_prov === false;
         const ip = pedidoIpEdits.get(r.sku_origen) || r.inner_pack || 1;
-        // Redondear al IP (misma lógica que envío a full)
-        const pedirBase = r.pedir_proveedor;
+        // Redondear al IP (misma lógica que envío a full). Cuando el motor capó
+        // por sin-stock-prov, usamos pedir_proveedor_raw como "lo que pediríamos
+        // si el proveedor reponiera" — solo informativo, no se selecciona.
+        const pedirBase = bloqueadoSinStockProv
+          ? (r.pedir_proveedor_raw ?? 0)
+          : r.pedir_proveedor;
         const pedirRedondeado = ip > 1 ? Math.ceil(pedirBase / ip) * ip : pedirBase;
         const edited = pedidoEdits.get(r.sku_origen);
         const pedir = edited !== undefined ? edited : pedirRedondeado;
@@ -1304,6 +1335,7 @@ export default function AdminInteligencia() {
           rampupMotivo: r.rampup_motivo ?? "no_aplica",
           diasEnQuiebre: r.dias_en_quiebre,
           esQuiebreProveedor: r.es_quiebre_proveedor,
+          bloqueadoSinStockProv,
         };
       })
       .sort((a, b) => a.proveedor.localeCompare(b.proveedor) || b.velPonderada - a.velPonderada);
@@ -2840,7 +2872,8 @@ export default function AdminInteligencia() {
                                   </td>
                                   <td>
                                     <div style={{ display: "flex", flexDirection: "column", gap: 1, maxWidth: 160 }}>
-                                      {sinStockProv && <span style={{ fontSize: 9, color: "var(--red)", fontWeight: 600 }}>Sin stock proveedor</span>}
+                                      {item.bloqueadoSinStockProv && <span style={{ fontSize: 9, color: "var(--red)", fontWeight: 700 }} title="Motor capó qty_a_comprar a 0 porque tiene_stock_prov=false. Pedir cuando reponga.">Informativo · prov sin stock</span>}
+                                      {sinStockProv && !item.bloqueadoSinStockProv && <span style={{ fontSize: 9, color: "var(--red)", fontWeight: 600 }}>Sin stock proveedor</span>}
                                       {item.accion === "URGENTE" && <span style={{ fontSize: 9, color: "var(--red)" }}>URGENTE</span>}
                                       {item.alertas.includes("estrella_en_quiebre") && <span style={{ fontSize: 9, color: "var(--amber)" }}>Estrella en quiebre</span>}
                                     </div>
