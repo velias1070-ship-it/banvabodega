@@ -101,9 +101,11 @@ interface SkuOrigenRow {
 interface ProveedorRaw {
   skuOrigen: string;
   nombre: string;
-  innerPack: number;
-  precioNeto: number;
-  stock: number;
+  // null = la hoja del Excel no tenía esa columna → no sobreescribir el dato
+  // existente en proveedor_catalogo. number = valor explícito del Excel.
+  innerPack: number | null;
+  precioNeto: number | null;
+  stock: number | null;
 }
 
 type ProveedorStatus = "ok" | "sin_stock" | "otro_proveedor";
@@ -274,10 +276,44 @@ function parseVelocidad(wb: XLSX.WorkBook): VelocidadRaw[] {
   return out;
 }
 
+/**
+ * Detecta layout de columnas leyendo la fila header.
+ * Excel Idetex tiene 2 hojas con estructuras distintas:
+ *   - VIGENTE: Categoria | Codigo AX | Producto | Inner Pack | Precio | Stock
+ *   - PRODUCTOS CN: Calidad | Medida | Código de artículo | Nombre | STOCK
+ * Otras hojas pueden venir con cualquier orden.
+ */
+function detectarColumnas(headerRow: unknown[]): { sku: number; nombre: number; innerPack: number; precio: number; stock: number } | null {
+  const norm = (v: unknown) => String(v ?? "").trim().toLowerCase();
+  const isSkuHeader = (s: string) =>
+    s.includes("codigo ax") || s.includes("código de artículo") || s.includes("codigo de articulo")
+    || s === "sku" || s === "código" || s === "codigo";
+  const isStockHeader = (s: string) => s === "stock" || s === "stk";
+  const isPrecioHeader = (s: string) => s.includes("precio");
+  const isNombreHeader = (s: string) =>
+    s.includes("producto") || s.includes("nombre");
+  const isInnerHeader = (s: string) => s.includes("inner") || s.includes("pack");
+
+  let sku = -1, nombre = -1, innerPack = -1, precio = -1, stock = -1;
+  for (let i = 0; i < headerRow.length; i++) {
+    const h = norm(headerRow[i]);
+    if (sku < 0 && isSkuHeader(h)) sku = i;
+    else if (stock < 0 && isStockHeader(h)) stock = i;
+    else if (precio < 0 && isPrecioHeader(h)) precio = i;
+    else if (innerPack < 0 && isInnerHeader(h)) innerPack = i;
+    else if (nombre < 0 && isNombreHeader(h)) nombre = i;
+  }
+  // SKU es obligatorio. Otros campos opcionales (-1 = ausente).
+  if (sku < 0) return null;
+  return { sku, nombre, innerPack, precio, stock };
+}
+
 function parseProveedor(wb: XLSX.WorkBook): ProveedorRaw[] {
-  // Iterar TODAS las hojas del workbook. Antes solo leía SheetNames[0] y los
-  // SKUs en hojas 2+ se perdían — quedaban con datos viejos en proveedor_catalogo
-  // (caso 2026-05-07: 83 SKUs zombies con stock inferido por cleanup script).
+  // Itera TODAS las hojas. Detecta columnas por header en cada hoja porque
+  // distintas hojas pueden tener layouts distintos (caso real Idetex 2026-05:
+  // VIGENTE 6 cols, PRODUCTOS CN 5 cols con orden diferente).
+  // SKUs duplicados entre hojas: gana el primero (la primer hoja típica es
+  // la canónica con stock; siguientes son referencias con menos data).
   const out: ProveedorRaw[] = [];
   const skuYaVisto = new Set<string>();
   for (const sheetName of wb.SheetNames) {
@@ -285,20 +321,27 @@ function parseProveedor(wb: XLSX.WorkBook): ProveedorRaw[] {
     if (!ws) continue;
     const rows: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1 });
     if (rows.length < 2) continue;
+    const cols = detectarColumnas(rows[0]);
+    if (!cols) continue; // hoja sin columna SKU → ignorar
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
       if (!row || !Array.isArray(row)) continue;
-      // Col B (1) = Codigo AX (SKU Origen), Col C (2) = Producto, Col D (3) = Inner Pack, Col E (4) = Precio Banva neto, Col F (5) = Stock
-      const skuOrigen = String(row[1] || "").trim();
+      const skuOrigen = String(row[cols.sku] ?? "").trim();
       if (!skuOrigen) continue;
       const skuUp = skuOrigen.toUpperCase();
-      // Si una hoja repite SKU, quedarnos con el primero (asumimos hoja 1 = canónica)
       if (skuYaVisto.has(skuUp)) continue;
       skuYaVisto.add(skuUp);
-      const nombre = String(row[2] || "").trim();
-      const innerPack = Math.max(1, Math.round(Number(row[3]) || 1));
-      const precioNeto = Number(row[4]) || 0;
-      const stock = Math.max(0, Math.round(Number(row[5]) || 0));
+      const nombre = cols.nombre >= 0 ? String(row[cols.nombre] ?? "").trim() : "";
+      // null si la hoja no tiene la columna → upsert preserva el valor en BD.
+      const innerPack: number | null = cols.innerPack >= 0
+        ? Math.max(1, Math.round(Number(row[cols.innerPack]) || 1))
+        : null;
+      const precioNeto: number | null = cols.precio >= 0
+        ? (Number(row[cols.precio]) || 0)
+        : null;
+      const stock: number | null = cols.stock >= 0
+        ? Math.max(0, Math.round(Number(row[cols.stock]) || 0))
+        : null;
       out.push({ skuOrigen, nombre, innerPack, precioNeto, stock });
     }
   }
@@ -721,20 +764,23 @@ function calcularReposicion(
         continue;
       }
 
-      row.innerPack = prov.innerPack;
-      row.costoProveedor = prov.precioNeto;
-      row.stockProveedor = prov.stock;
+      // Si el Excel no traía precio/inner_pack/stock, mantener undefined.
+      row.innerPack = prov.innerPack ?? undefined;
+      row.costoProveedor = prov.precioNeto ?? undefined;
+      row.stockProveedor = prov.stock ?? undefined;
 
       // Validación de costo: comparar con diccionario WMS
       const prodWMS = store.products[row.skuOrigen];
-      if (prodWMS?.cost && prov.precioNeto > 0) {
-        const diff = Math.abs(prov.precioNeto - prodWMS.cost) / prodWMS.cost;
+      const provPrecio = prov.precioNeto;
+      if (prodWMS?.cost && provPrecio !== null && provPrecio > 0) {
+        const diff = Math.abs(provPrecio - prodWMS.cost) / prodWMS.cost;
         if (diff > 0.05) {
-          row.alertaCosto = { costoWMS: prodWMS.cost, costoProveedor: prov.precioNeto };
+          row.alertaCosto = { costoWMS: prodWMS.cost, costoProveedor: provPrecio };
         }
       }
 
-      if (prov.stock <= 0) {
+      const provStock = prov.stock;
+      if (provStock !== null && provStock <= 0) {
         // Sin stock en proveedor
         row.statusProveedor = "sin_stock";
         row.pedirReal = 0;
@@ -745,17 +791,19 @@ function calcularReposicion(
           const stockActual = row.stockBodega + row.stockFullEquiv;
           row.diasAgotamiento = Math.round((stockActual / row.velTotalFisica) * 7);
         }
-      } else {
+      } else if (provStock !== null && provStock > 0) {
         // Con stock: calcular pedir real redondeado a inner pack
         row.statusProveedor = "ok";
         const necesita = row.pedirProveedor;
-        // Si el proveedor tiene menos stock del que necesitamos, limitar
-        const cantidadBase = Math.min(necesita, prov.stock);
-        // Redondear al múltiplo de inner pack hacia arriba
-        const ip = prov.innerPack;
+        const cantidadBase = Math.min(necesita, provStock);
+        const ip = prov.innerPack ?? 1;
         row.pedirReal = cantidadBase > 0 ? Math.ceil(cantidadBase / ip) * ip : 0;
         row.bultos = ip > 0 ? row.pedirReal / ip : 0;
-        row.costoTotalLinea = row.pedirReal * prov.precioNeto;
+        row.costoTotalLinea = row.pedirReal * (provPrecio ?? 0);
+      } else {
+        // stock null: el Excel de esta hoja no trae stock — desconocido,
+        // el motor decidirá según política normal.
+        row.statusProveedor = "ok";
       }
     }
   }
@@ -1217,21 +1265,51 @@ export default function AdminReposicion() {
       const existenteSet = new Set(existentes.map(e => e.sku_origen.toUpperCase()));
 
       // 2. Upsert masivo a proveedor_catalogo
-      const catalogoRows = provData
-        .filter(p => p.skuOrigen && p.skuOrigen.trim().length > 0)
-        .map(p => ({
+      // Separar SKUs según si el Excel trae precio Y inner_pack:
+      //   - completos: hoja con todas las columnas (ej. VIGENTE)
+      //   - parciales: hoja sin precio/inner (ej. PRODUCTOS CN — solo SKU+nombre+stock)
+      // Para parciales NO incluimos precio_neto ni inner_pack en el upsert para
+      // que Postgres preserve el valor existente en BD si el SKU ya estaba.
+      const completosRaw = provData.filter(p =>
+        p.skuOrigen && p.skuOrigen.trim().length > 0
+        && p.precioNeto !== null && p.innerPack !== null,
+      );
+      const parcialesRaw = provData.filter(p =>
+        p.skuOrigen && p.skuOrigen.trim().length > 0
+        && (p.precioNeto === null || p.innerPack === null),
+      );
+
+      const catalogoRows = completosRaw.map(p => ({
+        proveedor: proveedorNombre,
+        sku_origen: p.skuOrigen.toUpperCase().trim(),
+        nombre: (p.nombre || "").substring(0, 500) || null,
+        inner_pack: Number(p.innerPack ?? 1) || 1,
+        precio_neto: Number(p.precioNeto ?? 0) || 0,
+        stock_disponible: p.stock != null && Number.isFinite(Number(p.stock)) ? Number(p.stock) : null,
+      }));
+      console.log(`[importProveedor] ${catalogoRows.length} filas completas + ${parcialesRaw.length} parciales`);
+      await upsertProveedorCatalogo(catalogoRows);
+
+      // Parciales: upsert preservando precio_neto e inner_pack existentes.
+      // Solo escribe nombre + stock_disponible (postgres no toca columnas
+      // ausentes en el INSERT ON CONFLICT UPDATE de Supabase).
+      if (parcialesRaw.length > 0) {
+        const ahora = new Date().toISOString();
+        const parcialRows = parcialesRaw.map(p => ({
           proveedor: proveedorNombre,
           sku_origen: p.skuOrigen.toUpperCase().trim(),
           nombre: (p.nombre || "").substring(0, 500) || null,
-          inner_pack: Number(p.innerPack) || 1,
-          precio_neto: Number(p.precioNeto) || 0,
-          // v42: sentinel -1 ya no existe. Si el Excel trae un número, ese
-          // es el stock explícito (0 = agotado). Si no hay row en el Excel,
-          // simplemente no se upserta → queda NULL en DB = "desconocido".
-          stock_disponible: Number.isFinite(Number(p.stock)) ? Number(p.stock) : null,
+          stock_disponible: p.stock != null && Number.isFinite(Number(p.stock)) ? Number(p.stock) : null,
+          updated_at: ahora,
+          updated_by: "excel-hoja-parcial",
         }));
-      console.log(`[importProveedor] ${catalogoRows.length} filas a upsert (de ${provData.length} parseadas)`);
-      await upsertProveedorCatalogo(catalogoRows);
+        for (let i = 0; i < parcialRows.length; i += 500) {
+          const chunk = parcialRows.slice(i, i + 500);
+          const { error } = await sb.from("proveedor_catalogo")
+            .upsert(chunk, { onConflict: "proveedor,sku_origen" });
+          if (error) console.error(`[importProveedor parciales] chunk ${i / 500 + 1}:`, error.message);
+        }
+      }
 
       // 3. Actualizar inner_pack en productos y detectar cambios de precio
       const costosChanged: { sku_origen: string; costo_anterior: number; costo_nuevo: number; diferencia_pct: number }[] = [];
@@ -1241,13 +1319,13 @@ export default function AdminReposicion() {
         for (const p of batch) {
           const skuUp = p.skuOrigen.toUpperCase().trim();
           const prod = store.products[skuUp];
-          // Actualizar inner_pack si cambió
-          if (p.innerPack > 1) {
+          // Actualizar inner_pack si cambió (solo si el Excel trajo el dato)
+          if (p.innerPack !== null && p.innerPack > 1) {
             await sb.from("productos").update({ inner_pack: p.innerPack }).eq("sku", skuUp);
             if (prod) prod.innerPack = p.innerPack;
           }
-          // Detectar cambio de precio > 5%
-          if (prod && prod.cost > 0 && p.precioNeto > 0) {
+          // Detectar cambio de precio > 5% (solo si el Excel trajo precio)
+          if (prod && prod.cost > 0 && p.precioNeto !== null && p.precioNeto > 0) {
             const diffPct = Math.abs((p.precioNeto - prod.cost) / prod.cost) * 100;
             if (diffPct > 5) {
               costosChanged.push({
@@ -1274,7 +1352,7 @@ export default function AdminReposicion() {
 
       // 5. Calcular conteos para proveedor_imports
       const skusTotal = provData.length;
-      const skusConStock = provData.filter(p => p.stock > 0).length;
+      const skusConStock = provData.filter(p => p.stock !== null && p.stock > 0).length;
       const skusSinStock = skusTotal - skusConStock;
       const skusNuevos = provData.filter(p => !existenteSet.has(p.skuOrigen.toUpperCase())).length;
 
@@ -1386,7 +1464,10 @@ export default function AdminReposicion() {
     }
     // Override con archivo proveedor si está cargado
     if (proveedor) {
-      for (const p of proveedor) ipMap.set(p.skuOrigen, p.innerPack);
+      // Si la hoja del Excel no traía inner_pack (null), no sobreescribir el ipMap.
+      for (const p of proveedor) {
+        if (p.innerPack !== null) ipMap.set(p.skuOrigen, p.innerPack);
+      }
     }
 
     return resultado.ventaRows
