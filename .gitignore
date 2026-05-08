@@ -8,3 +8,6 @@ public/wasm/
 .vercel
 .env*.local
 .DS_Store
+
+# Claude Code runtime files
+.claude/scheduled_tasks.lock
