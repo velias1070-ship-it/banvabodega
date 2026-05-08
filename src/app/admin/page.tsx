@@ -150,6 +150,7 @@ const MOBILE_MENU_SECTIONS: ReadonlyArray<{ section: string; items: ReadonlyArra
     ["semaforo","Semaforo","🚦"],
     ["compras","Compras","🛒"],
     ["eventos","Eventos","📅"],
+    ["motor_reglas","Reglas Motor","⚙️"],
     ["ventasdash","Ventas · Dashboard","📊"],
     ["ventasord","Ventas · Órdenes","📋"],
     ["comercial","Publicaciones","📣"],
@@ -238,7 +239,7 @@ export default function AdminPage() {
   const SIDEBAR_GROUPS: ReadonlyArray<{ section: string; icon: string; items: ReadonlyArray<MenuItem> }> = [
     {section:"OPERACIONES",icon:"⚡",items:[["rec","Recepciones","📦"],["discrepancias","Discrepancias","💰"],["flex","Ultima Milla","🚚"],["enviosfull","Envios Full","📦"],["ops","Operaciones","⚡"],["reposicion","Reposición","🔄"]]},
     {section:"INVENTARIO",icon:"📦",items:[["inv","Inventario","📦"],["mov","Movimientos","📋"],["timeline","Timeline","📊"],["prod","Productos","🏷️"],["costoauditoria","Auditoría Costos","📊"]]},
-    {section:"INTELIGENCIA",icon:"🧠",items:[["intel","Inteligencia","🧠"],["semaforo","Semaforo","🚦"],["compras","Compras","🛒"],["eventos","Eventos","📅"]]},
+    {section:"INTELIGENCIA",icon:"🧠",items:[["intel","Inteligencia","🧠"],["semaforo","Semaforo","🚦"],["compras","Compras","🛒"],["eventos","Eventos","📅"],["motor_reglas","Reglas Motor","⚙️"]]},
     {section:"COMERCIAL",icon:"🏪",items:[["ventasdash","Ventas · Dashboard","📊"],["ventasord","Ventas · Órdenes","📋"],["comercial","Publicaciones","📢"],["margenes","Márgenes","💹"],["pricing","Pricing Config","💰"],["calc","Calculadora","🧮"],["dim","Dimensiones","📐"],["autopostular","Motor auto","🤖"]]},
     {section:"SISTEMA",icon:"⚙️",items:[["agentes","Agentes IA","🤖"],["config","Configuración","⚙️"]]},
   ];
