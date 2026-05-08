@@ -3140,6 +3140,9 @@ export interface DBProveedorCatalogo {
   precio_neto: number;
   /** v42: null = desconocido, 0 = agotado explícito, >0 = disponible */
   stock_disponible: number | null;
+  /** Texto crudo del Excel cuando stock no es numérico ("disponible", "mayo",
+   *  "junio", "sin stock"). NULL cuando stock viene como número. */
+  disponibilidad_nota?: string | null;
   updated_at?: string;
 }
 

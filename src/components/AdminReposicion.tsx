@@ -105,7 +105,15 @@ interface ProveedorRaw {
   // existente en proveedor_catalogo. number = valor explícito del Excel.
   innerPack: number | null;
   precioNeto: number | null;
+  // stock parseado:
+  //   number ≥ 0: cantidad explícita (incluye 0 = "sin stock" textual o numérico)
+  //   null:        cantidad desconocida pero proveedor confirma disponibilidad
+  //                (caso "disponible" o nombre de mes futuro). El motor trata
+  //                stock_disponible IS NULL como tiene_stock_prov=true.
   stock: number | null;
+  // Texto crudo del Excel cuando stock no es numérico ("disponible", "mayo",
+  // "junio", "sin stock"). NULL cuando stock viene como número.
+  disponibilidadNota: string | null;
 }
 
 type ProveedorStatus = "ok" | "sin_stock" | "otro_proveedor";
@@ -339,10 +347,32 @@ function parseProveedor(wb: XLSX.WorkBook): ProveedorRaw[] {
       const precioNeto: number | null = cols.precio >= 0
         ? (Number(row[cols.precio]) || 0)
         : null;
-      const stock: number | null = cols.stock >= 0
-        ? Math.max(0, Math.round(Number(row[cols.stock]) || 0))
-        : null;
-      out.push({ skuOrigen, nombre, innerPack, precioNeto, stock });
+      // Stock: numeric → la cantidad. Texto → categoría:
+      //   "sin stock" / "agotado"             → stock=0  (proveedor sin stock)
+      //   "disponible" / "si" / "ok"          → stock=null (cantidad desconocida pero hay)
+      //   nombre de mes (mayo, junio, ...)    → stock=null (llega ese mes)
+      //   cualquier otro texto                → stock=null + nota (no asumir cero)
+      // El texto crudo se guarda en disponibilidadNota para auditoría/UI.
+      let stock: number | null = null;
+      let disponibilidadNota: string | null = null;
+      if (cols.stock >= 0) {
+        const rawVal = row[cols.stock];
+        const asNum = Number(rawVal);
+        if (rawVal !== undefined && rawVal !== null && rawVal !== "" && !Number.isNaN(asNum)) {
+          stock = Math.max(0, Math.round(asNum));
+        } else if (rawVal !== undefined && rawVal !== null && String(rawVal).trim() !== "") {
+          const txt = String(rawVal).trim().toLowerCase();
+          disponibilidadNota = txt;
+          if (txt === "sin stock" || txt === "agotado" || txt === "no" || txt === "0") {
+            stock = 0;
+          } else {
+            // "disponible", meses, etc → cantidad desconocida pero hay disponibilidad
+            stock = null;
+          }
+        }
+        // Si la celda está vacía y la columna existe: stock=null (no tocar BD).
+      }
+      out.push({ skuOrigen, nombre, innerPack, precioNeto, stock, disponibilidadNota });
     }
   }
   return out;
@@ -1286,6 +1316,7 @@ export default function AdminReposicion() {
         inner_pack: Number(p.innerPack ?? 1) || 1,
         precio_neto: Number(p.precioNeto ?? 0) || 0,
         stock_disponible: p.stock != null && Number.isFinite(Number(p.stock)) ? Number(p.stock) : null,
+        disponibilidad_nota: p.disponibilidadNota,
       }));
       console.log(`[importProveedor] ${catalogoRows.length} filas completas + ${parcialesRaw.length} parciales`);
       await upsertProveedorCatalogo(catalogoRows);
@@ -1300,6 +1331,7 @@ export default function AdminReposicion() {
           sku_origen: p.skuOrigen.toUpperCase().trim(),
           nombre: (p.nombre || "").substring(0, 500) || null,
           stock_disponible: p.stock != null && Number.isFinite(Number(p.stock)) ? Number(p.stock) : null,
+          disponibilidad_nota: p.disponibilidadNota,
           updated_at: ahora,
           updated_by: "excel-hoja-parcial",
         }));
@@ -1309,6 +1341,33 @@ export default function AdminReposicion() {
             .upsert(chunk, { onConflict: "proveedor,sku_origen" });
           if (error) console.error(`[importProveedor parciales] chunk ${i / 500 + 1}:`, error.message);
         }
+      }
+
+      // 2.5. SKUs del proveedor que NO aparecen en el Excel → marcar sin stock.
+      // Política Vicente 2026-05-08: si Idetex no lo lista en su Excel vigente,
+      // asumimos que ya no lo vende (descontinuado o agotado largo). Setea
+      // stock_disponible=0 + disponibilidad_nota='no_listado'.
+      // Solo aplica al proveedor detectado del Excel — no toca otros proveedores.
+      const skusEnExcel = new Set(provData.map(p => p.skuOrigen.toUpperCase().trim()));
+      const skusFueraExcel = existentes
+        .filter(e => !skusEnExcel.has(e.sku_origen.toUpperCase().trim()))
+        .map(e => e.sku_origen);
+      if (skusFueraExcel.length > 0) {
+        const ahora = new Date().toISOString();
+        for (let i = 0; i < skusFueraExcel.length; i += 500) {
+          const chunk = skusFueraExcel.slice(i, i + 500);
+          const { error } = await sb.from("proveedor_catalogo")
+            .update({
+              stock_disponible: 0,
+              disponibilidad_nota: "no_listado",
+              updated_at: ahora,
+              updated_by: "excel-no-listado",
+            })
+            .eq("proveedor", proveedorNombre)
+            .in("sku_origen", chunk);
+          if (error) console.error(`[importProveedor no-listado] chunk ${i / 500 + 1}:`, error.message);
+        }
+        console.log(`[importProveedor] ${skusFueraExcel.length} SKUs de ${proveedorNombre} no listados → stock=0, nota='no_listado'`);
       }
 
       // 3. Actualizar inner_pack en productos y detectar cambios de precio
