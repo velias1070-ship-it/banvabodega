@@ -1,32 +1,88 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
 
-// GET /api/proveedor-catalogo/analisis?proveedor_id=<uuid>&prefix_len=9
+// GET /api/proveedor-catalogo/analisis?proveedor_id=<uuid>
 //
-// Analiza el catalogo de un proveedor cruzandolo con productos / ventas:
-//   - SKUs del catalogo que NO existen en `productos`
-//   - Agrupados por familia (prefijo SKU configurable, default 9 chars)
-//   - Para cada familia, indica si vendes algo del prefijo (variantes match)
-//     o es linea totalmente nueva.
+// Analiza el catalogo de un proveedor agrupando por NOMBRE de producto
+// (no por prefijo SKU). Cruza el catalogo con productos del sistema:
+//   - SKUs del catalogo que NO existen en `productos` (variantes/lineas nuevas)
+//   - Agrupados por "nombre_base" = palabras significativas del nombre
+//     (ignorando colores, tallas y atributos de variante)
 //
-// Caso de uso: descubrir variantes (talla/color) que el proveedor ofrece y
-// no estas publicando, y lineas completamente nuevas que vale la pena evaluar.
+// Filosofía: el nombre del producto es lo que el humano usa para identificar
+// categorías. El SKU es metadata técnica del proveedor. Agrupar por nombre
+// captura categorías reales sin depender del esquema de SKU del proveedor.
 
 export const dynamic = "force-dynamic";
 
 interface FamiliaRow {
-  familia: string;
-  /** Lista de prefijos SKU agrupados (cuando varios prefijos comparten nombre). */
-  familias_skus?: string[];
-  /** Nombre legible inferido. */
+  /** Clave canónica de la familia: tokens significativos en lowercase. */
+  familia_key: string;
+  /** Nombre legible (cased original, primer producto representativo). */
   nombre_familia: string;
   /** Categoría inferida del producto representativo (puede ser null). */
   categoria: string | null;
+  /** Prefijos SKU observados en la familia (info técnica). */
+  prefijos_sku: string[];
   skus_nuevos: Array<{ sku: string; nombre: string | null; precio_neto: number; stock_disponible: number; inner_pack: number }>;
   skus_que_ya_tenemos: number;
   uds_180d_familia: number;
   top_3_vendidos: Array<{ sku: string; nombre: string | null; uds_180d: number }>;
   match: boolean;
+}
+
+// Stopwords de variante: colores, tallas, atributos que NO son parte de la
+// categoría. Filtrados al computar nombre_base.
+const STOPWORDS_VARIANTE = new Set([
+  // Colores
+  "rojo","red","azul","blue","negro","black","blanco","white","verde","green","gris","grey","gray",
+  "rosa","pink","amarillo","yellow","violeta","purple","celeste","beige","cafe","brown","crema","cream",
+  "naranja","orange","oro","gold","plata","silver","fucsia","turquesa","lila","mostaza","menta",
+  "olivo","caqui","khaki","marfil","perla","pearl","coral","salmon","vino","wine","burdeos",
+  "petroleo","azulino","ocre","carmin","damasco","peach","cobre","copper","bronce","nude","malva",
+  "grafito","graphite","drago","cala","ben","aba","bera","roy","sopa","starry","stars","ball","unic",
+  // Tallas/plazas
+  "1p","2p","3p","4p","5p","6p","7p","8p","1.5p","2.5p","10p","15p","20p","25p","30p",
+  "1pl","2pl","king","queen","twin","single","s26","s23","s24","s25",
+  "10","15","20","25","30",
+  // Genéricos de variante
+  "unico","unica","liso","lisa","color","talla","estampado","estampada","est","reversible","matrimonial",
+]);
+const STOPWORDS_FUNCION = new Set(["de","la","el","los","las","y","o","con","sin","del","al","x"]);
+
+function tokenizar(nombre: string): string[] {
+  return nombre.toLowerCase().split(/\s+/).filter(t => t.length > 0);
+}
+
+/** Tokens significativos: ≥2 chars, sin stopwords de variante ni función. */
+function tokensSignificativos(nombre: string): string[] {
+  return tokenizar(nombre).filter(t =>
+    t.length >= 2 && !STOPWORDS_VARIANTE.has(t) && !STOPWORDS_FUNCION.has(t)
+  );
+}
+
+/** Nombre canónico para agrupación: primeras N palabras significativas
+ *  (excluyendo colores/tallas/atributos). Si las primeras significativas son
+ *  los mismos N tokens, dos productos van al mismo grupo. */
+function nombreBase(nombre: string, maxTokens = 4): string {
+  const sig = tokensSignificativos(nombre);
+  return sig.slice(0, maxTokens).join(" ");
+}
+
+/** Versión legible del nombre_base: usa la cased original del primer nombre.
+ *  Ejemplo: nombre_base="quilt mf roma" + nombre_original="Quilt MF Roma 20P"
+ *  → "Quilt MF Roma". */
+function nombreLegible(nombreOriginal: string, maxTokens = 4): string {
+  const palabrasOriginales = nombreOriginal.split(/\s+/);
+  const significativasOrig: string[] = [];
+  for (const w of palabrasOriginales) {
+    const wl = w.toLowerCase();
+    if (wl.length >= 2 && !STOPWORDS_VARIANTE.has(wl) && !STOPWORDS_FUNCION.has(wl)) {
+      significativasOrig.push(w);
+      if (significativasOrig.length >= maxTokens) break;
+    }
+  }
+  return significativasOrig.join(" ");
 }
 
 export async function GET(req: NextRequest) {
@@ -36,13 +92,12 @@ export async function GET(req: NextRequest) {
   const proveedorId = req.nextUrl.searchParams.get("proveedor_id");
   if (!proveedorId) return NextResponse.json({ error: "proveedor_id requerido" }, { status: 400 });
 
-  // Default 7 chars: agrupa por categoría (ej TXSB144 = sábanas 144 hilos,
-  // TXSB180 = sábanas 180 hilos, JSAFAB4 = quilts modelo 4xx). Antes era 9
-  // pero sub-dividía por diseño/color y perdía la noción de categoría.
-  const prefixLen = Math.max(4, Math.min(15, Number(req.nextUrl.searchParams.get("prefix_len") || "7")));
+  // Cuántas palabras significativas usar para agrupar. 3 = más agresivo
+  // (más fusiones), 4-5 = más conservador.
+  const tokensAgrupacion = Math.max(2, Math.min(8, Number(req.nextUrl.searchParams.get("tokens") || "3")));
   const start = Date.now();
 
-  // 1. Catalogo del proveedor (incluye los con proveedor_id null si proveedorId es 'null')
+  // 1. Catálogo del proveedor
   let catQuery = sb.from("proveedor_catalogo")
     .select("sku_origen, nombre, precio_neto, stock_disponible, inner_pack");
   if (proveedorId === "null") {
@@ -58,24 +113,21 @@ export async function GET(req: NextRequest) {
 
   const skusCatalogo = catalogo.map(c => c.sku_origen);
 
-  // 2. Cuales ya existen en productos
-  const { data: prodRows, error: prodErr } = await sb.from("productos")
-    .select("sku").in("sku", skusCatalogo);
+  // 2. Productos del proveedor con nombre + categoría
+  let prodQuery = sb.from("productos").select("sku, nombre, categoria");
+  if (proveedorId !== "null") prodQuery = prodQuery.eq("proveedor_id", proveedorId);
+  const { data: prodRows, error: prodErr } = await prodQuery;
   if (prodErr) return NextResponse.json({ error: prodErr.message }, { status: 500 });
-  const skusEnProductos = new Set((prodRows || []).map(p => p.sku));
 
-  // 3. Productos del proveedor (todos, para detectar familias conocidas)
-  let prodProvQuery = sb.from("productos").select("sku, nombre, categoria");
-  if (proveedorId !== "null") prodProvQuery = prodProvQuery.eq("proveedor_id", proveedorId);
-  const { data: prodProv, error: prodProvErr } = await prodProvQuery;
-  if (prodProvErr) return NextResponse.json({ error: prodProvErr.message }, { status: 500 });
+  const productosPorSku = new Map<string, { sku: string; nombre: string | null; categoria: string | null }>();
+  for (const p of (prodRows || []) as Array<{ sku: string; nombre: string | null; categoria: string | null }>) {
+    productosPorSku.set(p.sku, p);
+  }
 
-  // 4. Ventas 180d por sku_origen — para ranking de familia
-  type VentaRow = { sku_origen: string; uds_180d: number };
-  const ventasMap = new Map<string, number>();
+  const skusEnProductos = new Set(productosPorSku.keys());
+
+  // 3. Ventas 180d
   const desde180 = new Date(Date.now() - 180 * 86400000).toISOString().slice(0, 10);
-
-  // Pull ventas via composicion_venta (paginado para evitar limite default)
   const ventasRaw: Array<{ sku_venta: string; cantidad: number }> = [];
   for (let off = 0; ; off += 1000) {
     const { data, error } = await sb.from("ventas_ml_cache")
@@ -96,135 +148,97 @@ export async function GET(req: NextRequest) {
       skuVentaToOrigen.set(c.sku_venta.toUpperCase(), c.sku_origen);
     }
   }
+  const ventasMap = new Map<string, number>();
   for (const v of ventasRaw) {
     const so = skuVentaToOrigen.get(v.sku_venta.toUpperCase()) || v.sku_venta;
     ventasMap.set(so, (ventasMap.get(so) || 0) + v.cantidad);
   }
 
-  // 5. Agrupar
-  const fam = (sku: string) => sku.toUpperCase().substring(0, prefixLen);
-  type ProdRow = { sku: string; nombre: string | null; categoria: string | null };
-  const familiasConocidas = new Map<string, {
-    skus: ProdRow[];
-    uds_180d: number;
-    top_vendidos: Array<{ sku: string; nombre: string | null; uds: number }>;
-  }>();
-  for (const p of (prodProv || []) as ProdRow[]) {
-    const f = fam(p.sku);
+  // 4. Agrupar TODO (productos existentes + catálogo nuevo) por nombre_base.
+  const familias = new Map<string, FamiliaRow>();
+
+  // 4a. Productos existentes del proveedor (alimentan match + uds_180d).
+  for (const p of (prodRows || []) as Array<{ sku: string; nombre: string | null; categoria: string | null }>) {
+    if (!p.nombre) continue;
+    const key = nombreBase(p.nombre, tokensAgrupacion);
+    if (!key) continue;
     const uds = ventasMap.get(p.sku) || 0;
-    let entry = familiasConocidas.get(f);
-    if (!entry) { entry = { skus: [], uds_180d: 0, top_vendidos: [] }; familiasConocidas.set(f, entry); }
-    entry.skus.push(p);
-    entry.uds_180d += uds;
-    if (uds > 0) entry.top_vendidos.push({ sku: p.sku, nombre: p.nombre, uds });
+    let entry = familias.get(key);
+    if (!entry) {
+      entry = {
+        familia_key: key,
+        nombre_familia: nombreLegible(p.nombre, tokensAgrupacion),
+        categoria: p.categoria,
+        prefijos_sku: [],
+        skus_nuevos: [],
+        skus_que_ya_tenemos: 0,
+        uds_180d_familia: 0,
+        top_3_vendidos: [],
+        match: true,
+      };
+      familias.set(key, entry);
+    }
+    entry.skus_que_ya_tenemos += 1;
+    entry.uds_180d_familia += uds;
+    if (uds > 0) {
+      entry.top_3_vendidos.push({ sku: p.sku, nombre: p.nombre, uds_180d: uds });
+    }
+    // Acumular prefijo SKU (primeros 7 chars como referencia)
+    const prefijo = p.sku.toUpperCase().substring(0, 7);
+    if (!entry.prefijos_sku.includes(prefijo)) entry.prefijos_sku.push(prefijo);
+    // Si el producto existente NO tiene categoría pero hay otro que sí, usarla
+    if (!entry.categoria && p.categoria) entry.categoria = p.categoria;
   }
 
-  // Helper: nombre legible de la categoría inferido del nombre de los productos.
-  // Estrategia en cascada:
-  //   1. Prefijo común de palabras (ej "Quilt Atenas Beige" + "Quilt Atenas Gris" → "Quilt Atenas").
-  //   2. Si no hay prefijo (los nombres difieren desde la palabra 1), intersección de
-  //      palabras que aparecen en ≥80% de los nombres en cualquier posición. Filtra
-  //      tokens muy cortos (<3 chars) y atributos típicos de variante (colores, tallas).
-  //      Ejemplo: ["Sábana 144 hilos Daniela 1.5P", "Sábana 144 hilos Rosa 2P", "Sábana 144 hilos Liso 1P"]
-  //       → tokens comunes en ≥80%: {sábana, 144, hilos} → "Sábana 144 hilos"
-  //   3. Si tampoco, devuelve el nombre del más vendido (truncado).
-  const STOPWORDS_VARIANTE = new Set([
-    // Colores
-    "rojo","red","azul","blue","negro","black","blanco","white","verde","green","gris","grey","gray",
-    "rosa","pink","amarillo","yellow","violeta","purple","celeste","beige","cafe","brown","crema","cream",
-    "naranja","orange","oro","gold","plata","silver","fucsia","turquesa","lila","mostaza","menta",
-    "olivo","caqui","khaki","marfil","perla","pearl","coral","salmon","vino","wine","burdeos",
-    "petroleo","azulino","ocre","carmin","damasco","peach","cobre","copper","bronce","nude",
-    // Tallas/plazas (con/sin punto/decimales)
-    "1p","2p","3p","4p","5p","6p","7p","8p","1.5p","2.5p","10p","15p","20p","25p","30p",
-    "1pl","2pl","king","queen","twin","single","s26","s23","s24","s25",
-    "10","15","20","25","30","par","pares","unidad","unidades",
-    // Genéricos de variante
-    "unico","unica","liso","lisa","color","talla","estampado","estampada","reversible","matrimonial",
-  ]);
-  const tokenize = (s: string) => s.toLowerCase().split(/\s+/).filter(Boolean);
-  const nombreFamilia = (nombres: Array<string | null>): string => {
-    const validos = nombres.filter((n): n is string => !!n && n.trim().length > 0);
-    if (validos.length === 0) return "(sin nombre)";
-    if (validos.length === 1) return validos[0];
-    // (1) Prefijo común de palabras enteras
-    const palabras = validos.map(n => n.split(/\s+/));
-    const minLen = Math.min(...palabras.map(p => p.length));
-    const prefijoComun: string[] = [];
-    for (let i = 0; i < minLen; i++) {
-      const p0 = palabras[0][i].toLowerCase();
-      if (palabras.every(p => p[i].toLowerCase() === p0)) {
-        prefijoComun.push(palabras[0][i]);
-      } else break;
-    }
-    if (prefijoComun.length >= 2) return prefijoComun.join(" ");
-    // (2) Intersección de tokens (palabras comunes en ≥80% de nombres)
-    const tokenCount = new Map<string, { count: number; firstSeen: number; original: string }>();
-    const STOPWORDS_CORTAS = new Set(["de","la","el","los","las","y","o","con","sin","del","al"]);
-    validos.forEach((n, idx) => {
-      const tokensArr = Array.from(new Set(tokenize(n)));
-      for (const t of tokensArr) {
-        if (t.length < 2) continue;
-        if (STOPWORDS_CORTAS.has(t)) continue;
-        if (STOPWORDS_VARIANTE.has(t)) continue;
-        const existing = tokenCount.get(t);
-        if (existing) existing.count++;
-        else {
-          const original = (n.split(/\s+/).find(w => w.toLowerCase() === t)) || t;
-          tokenCount.set(t, { count: 1, firstSeen: idx, original });
-        }
-      }
-    });
-    const umbral = Math.ceil(validos.length * 0.8);
-    const comunes = Array.from(tokenCount.entries())
-      .filter(([, v]) => v.count >= umbral)
-      .sort((a, b) => a[1].firstSeen - b[1].firstSeen);
-    if (comunes.length >= 1) {
-      // Reordenar según el orden en el primer nombre que tiene todos los tokens
-      const tokensSet = new Set(comunes.map(([t]) => t));
-      const primerNombreConTodos = validos.find(n => tokenize(n).filter(t => tokensSet.has(t)).length === comunes.length) || validos[0];
-      const ordenado = primerNombreConTodos.split(/\s+/).filter(w => tokensSet.has(w.toLowerCase()));
-      if (ordenado.length >= 1) return ordenado.join(" ");
-    }
-    // (3) Fallback: nombre del primero, trimmed quitando stopwords/colores/tallas
-    //     desde el final. Ejemplo: "Quilt MF Roma 20P Olivo" → "Quilt MF Roma".
-    const palabras0 = validos[0].split(/\s+/);
-    while (palabras0.length > 2) {
-      const last = palabras0[palabras0.length - 1].toLowerCase();
-      if (STOPWORDS_VARIANTE.has(last) || /^\d+(\.\d+)?p?$/.test(last)) {
-        palabras0.pop();
-      } else break;
-    }
-    const trimmed = palabras0.join(" ");
-    return trimmed.length > 50 ? trimmed.substring(0, 50) + "…" : trimmed;
-  };
-
-  const familiasNuevas = new Map<string, FamiliaRow>();
+  // 4b. Catálogo: SKUs no existentes en productos van como nuevos.
   for (const c of catalogo as Array<{ sku_origen: string; nombre: string | null; precio_neto: number; stock_disponible: number | null; inner_pack: number | null }>) {
-    if (skusEnProductos.has(c.sku_origen)) continue;
-    const f = fam(c.sku_origen);
-    let entry = familiasNuevas.get(f);
+    if (skusEnProductos.has(c.sku_origen)) continue; // ya está en productos
+    if (!c.nombre) {
+      // Sin nombre, agrupamos en clave "(sin nombre)" para no mezclar con familias reales
+      const key = "__sin_nombre__";
+      let entry = familias.get(key);
+      if (!entry) {
+        entry = {
+          familia_key: key,
+          nombre_familia: "(SKUs sin nombre en catálogo)",
+          categoria: null,
+          prefijos_sku: [],
+          skus_nuevos: [],
+          skus_que_ya_tenemos: 0,
+          uds_180d_familia: 0,
+          top_3_vendidos: [],
+          match: false,
+        };
+        familias.set(key, entry);
+      }
+      entry.skus_nuevos.push({
+        sku: c.sku_origen,
+        nombre: null,
+        precio_neto: Number(c.precio_neto) || 0,
+        stock_disponible: Number(c.stock_disponible) || 0,
+        inner_pack: Number(c.inner_pack) || 1,
+      });
+      const prefijo = c.sku_origen.toUpperCase().substring(0, 7);
+      if (!entry.prefijos_sku.includes(prefijo)) entry.prefijos_sku.push(prefijo);
+      continue;
+    }
+    const key = nombreBase(c.nombre, tokensAgrupacion);
+    if (!key) continue;
+    let entry = familias.get(key);
     if (!entry) {
-      const conocida = familiasConocidas.get(f);
-      const topOrdenados = (conocida?.top_vendidos || []).sort((a, b) => b.uds - a.uds);
-      // Inferir nombre + categoría del producto más vendido (o cualquier producto si nadie vendió)
-      const repre: ProdRow | undefined = topOrdenados[0]
-        ? conocida?.skus.find(s => s.sku === topOrdenados[0].sku)
-        : conocida?.skus[0];
-      const nombreInf = conocida && conocida.skus.length > 0
-        ? nombreFamilia(conocida.skus.map(s => s.nombre))
-        : (c.nombre || "(catálogo sin nombre)");
+      // Familia nueva (no existe en productos del proveedor)
       entry = {
-        familia: f,
-        nombre_familia: nombreInf,
-        categoria: repre?.categoria ?? null,
+        familia_key: key,
+        nombre_familia: nombreLegible(c.nombre, tokensAgrupacion),
+        categoria: null,
+        prefijos_sku: [],
         skus_nuevos: [],
-        skus_que_ya_tenemos: conocida?.skus.length || 0,
-        uds_180d_familia: conocida?.uds_180d || 0,
-        top_3_vendidos: topOrdenados.slice(0, 3).map(t => ({ sku: t.sku, nombre: t.nombre, uds_180d: t.uds })),
-        match: !!conocida,
+        skus_que_ya_tenemos: 0,
+        uds_180d_familia: 0,
+        top_3_vendidos: [],
+        match: false,
       };
-      familiasNuevas.set(f, entry);
+      familias.set(key, entry);
     }
     entry.skus_nuevos.push({
       sku: c.sku_origen,
@@ -233,89 +247,33 @@ export async function GET(req: NextRequest) {
       stock_disponible: Number(c.stock_disponible) || 0,
       inner_pack: Number(c.inner_pack) || 1,
     });
+    const prefijo = c.sku_origen.toUpperCase().substring(0, 7);
+    if (!entry.prefijos_sku.includes(prefijo)) entry.prefijos_sku.push(prefijo);
   }
 
-  // ── Pase de fusión por nombre ──
-  // Algunas familias-por-SKU son la misma categoría real (ej SPAFL36/37/38
-  // = lisos y SPAFE30/31/34 = estampados, ambos "Jgo Sabana Polar AF 100%Pol").
-  // Si dos familias comparten ≥3 palabras de prefijo en nombre_familia
-  // (ignorando stopwords y atributos de variante), las fusionamos.
-  const tokensSignificativos = (n: string): string[] =>
-    tokenize(n).filter(t => t.length >= 2 && !STOPWORDS_VARIANTE.has(t) && !["de","la","el","los","las","y","o","con","sin","del","al"].includes(t));
-  const prefijoComunSignif = (a: string, b: string): string[] => {
-    const ta = tokensSignificativos(a);
-    const tb = tokensSignificativos(b);
-    const out: string[] = [];
-    const minLen = Math.min(ta.length, tb.length);
-    for (let i = 0; i < minLen; i++) {
-      if (ta[i] === tb[i]) out.push(ta[i]); else break;
-    }
-    return out;
-  };
-
-  const familiasArr = Array.from(familiasNuevas.values());
-  const grupos: FamiliaRow[][] = [];
-  const yaAsignadas = new Set<string>();
-  for (let i = 0; i < familiasArr.length; i++) {
-    if (yaAsignadas.has(familiasArr[i].familia)) continue;
-    const grupo = [familiasArr[i]];
-    yaAsignadas.add(familiasArr[i].familia);
-    for (let j = i + 1; j < familiasArr.length; j++) {
-      if (yaAsignadas.has(familiasArr[j].familia)) continue;
-      const prefij = prefijoComunSignif(familiasArr[i].nombre_familia, familiasArr[j].nombre_familia);
-      // ≥3 palabras significativas comunes Y ambas familias deben tener match
-      // (evita fusionar líneas nuevas con líneas conocidas por casualidad).
-      if (prefij.length >= 3 && familiasArr[i].match === familiasArr[j].match) {
-        grupo.push(familiasArr[j]);
-        yaAsignadas.add(familiasArr[j].familia);
-      }
-    }
-    grupos.push(grupo);
-  }
-
-  const familias: FamiliaRow[] = grupos.map(grupo => {
-    if (grupo.length === 1) return grupo[0];
-    // Fusión: combinar SKUs nuevos, top vendidos, conteos.
-    const todosNombres = grupo.map(g => g.nombre_familia);
-    const nombreFusion = (() => {
-      // Prefijo común de los nombres
-      const palabras = todosNombres.map(n => n.split(/\s+/));
-      const minLen = Math.min(...palabras.map(p => p.length));
-      const out: string[] = [];
-      for (let i = 0; i < minLen; i++) {
-        const p0 = palabras[0][i].toLowerCase();
-        if (palabras.every(p => p[i].toLowerCase() === p0)) out.push(palabras[0][i]);
-        else break;
-      }
-      return out.length >= 2 ? out.join(" ") : todosNombres[0];
-    })();
-    const topVendidos = grupo.flatMap(g => g.top_3_vendidos)
-      .sort((a, b) => b.uds_180d - a.uds_180d).slice(0, 5);
-    return {
-      familia: grupo.map(g => g.familia).join(" + "),
-      familias_skus: grupo.map(g => g.familia),
-      nombre_familia: nombreFusion,
-      categoria: grupo.find(g => g.categoria)?.categoria ?? null,
-      skus_nuevos: grupo.flatMap(g => g.skus_nuevos),
-      skus_que_ya_tenemos: grupo.reduce((s, g) => s + g.skus_que_ya_tenemos, 0),
-      uds_180d_familia: grupo.reduce((s, g) => s + g.uds_180d_familia, 0),
-      top_3_vendidos: topVendidos,
-      match: grupo[0].match,
-    };
-  }).sort((a, b) => {
-    if (a.match !== b.match) return a.match ? -1 : 1;
-    return b.uds_180d_familia - a.uds_180d_familia;
-  });
+  // 5. Procesar resultados: solo familias con SKUs nuevos en catálogo,
+  //    ordenadas por match desc + uds_180d desc.
+  const resultado = Array.from(familias.values())
+    .filter(f => f.skus_nuevos.length > 0)
+    .map(f => ({
+      ...f,
+      top_3_vendidos: f.top_3_vendidos.sort((a, b) => b.uds_180d - a.uds_180d).slice(0, 3),
+      prefijos_sku: f.prefijos_sku.sort(),
+    }))
+    .sort((a, b) => {
+      if (a.match !== b.match) return a.match ? -1 : 1;
+      return b.uds_180d_familia - a.uds_180d_familia;
+    });
 
   return NextResponse.json({
     ok: true,
     proveedor_id: proveedorId,
-    prefix_len: prefixLen,
-    total_familias: familias.length,
+    tokens_agrupacion: tokensAgrupacion,
+    total_familias: resultado.length,
     total_skus_nuevos: catalogo.length - skusEnProductos.size,
     skus_en_catalogo: catalogo.length,
     skus_ya_creados: skusEnProductos.size,
-    familias,
+    familias: resultado,
     tiempo_ms: Date.now() - start,
   });
 }

@@ -15,10 +15,10 @@ interface Proveedor { id: string; nombre_canonico: string; nombre: string | null
 interface SkuNuevo { sku: string; nombre: string | null; precio_neto: number; stock_disponible: number; inner_pack: number }
 interface TopVendido { sku: string; nombre: string | null; uds_180d: number }
 interface Familia {
-  familia: string;
-  familias_skus?: string[];
+  familia_key: string;
   nombre_familia: string;
   categoria: string | null;
+  prefijos_sku: string[];
   skus_nuevos: SkuNuevo[];
   skus_que_ya_tenemos: number;
   uds_180d_familia: number;
@@ -45,9 +45,9 @@ export default function AdminCatalogoAnalisis() {
   const [loading, setLoading] = useState(false);
   const [filtro, setFiltro] = useState<"con_match"|"sin_match"|"con_stock"|"todos">("con_match");
   const [familiaExpandida, setFamiliaExpandida] = useState<string | null>(null);
-  // Default 7: agrupa por categoría (ej TXSB144 = sábanas 144 hilos).
-  // Subir a 9-10 si querés ver sub-divisiones por diseño/color.
-  const [prefixLen, setPrefixLen] = useState(7);
+  // Cuántas palabras significativas usar para agrupar nombres.
+  // 3 = más fusiones (categoría macro). 4-5 = más conservador (sub-líneas).
+  const [tokensAgrup, setTokensAgrup] = useState(3);
 
   // Cargar proveedores activos
   useEffect(() => {
@@ -65,7 +65,7 @@ export default function AdminCatalogoAnalisis() {
     setLoading(true);
     setData(null);
     try {
-      const res = await fetch(`/api/proveedor-catalogo/analisis?proveedor_id=${proveedorId}&prefix_len=${prefixLen}`);
+      const res = await fetch(`/api/proveedor-catalogo/analisis?proveedor_id=${proveedorId}&tokens=${tokensAgrup}`);
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
         alert(`Error: ${j.error || res.status}`);
@@ -74,7 +74,7 @@ export default function AdminCatalogoAnalisis() {
       const json = await res.json() as AnalisisResponse;
       setData(json);
     } finally { setLoading(false); }
-  }, [proveedorId, prefixLen]);
+  }, [proveedorId, tokensAgrup]);
 
   useEffect(() => { void cargar(); }, [cargar]);
 
@@ -111,8 +111,8 @@ export default function AdminCatalogoAnalisis() {
           ))}
           <option value="null">(sin proveedor_id asignado)</option>
         </select>
-        <span style={{ fontSize: 11, color: "var(--txt2)", marginLeft: 12 }}>Prefijo (chars):</span>
-        <input type="number" min={4} max={15} value={prefixLen} onChange={e => setPrefixLen(Number(e.target.value) || 9)}
+        <span style={{ fontSize: 11, color: "var(--txt2)", marginLeft: 12 }} title="Cuántas palabras del nombre usar para agrupar familias. 3 = categorías macro (más fusiones). 5 = sub-líneas (menos fusiones).">Palabras:</span>
+        <input type="number" min={2} max={8} value={tokensAgrup} onChange={e => setTokensAgrup(Number(e.target.value) || 3)}
           style={{ width: 50, background: "var(--bg3)", border: "1px solid var(--bg4)", color: "var(--txt)", padding: "6px 10px", borderRadius: 4, fontSize: 12 }} />
         <button onClick={() => void cargar()} disabled={loading || !proveedorId}
           style={{ padding: "6px 14px", fontSize: 11, background: "var(--cyan)", border: "none", color: "#000", fontWeight: 700, borderRadius: 4, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
@@ -189,30 +189,24 @@ export default function AdminCatalogoAnalisis() {
             </thead>
             <tbody>
               {familiasFiltradas.map(f => {
-                const expandida = familiaExpandida === f.familia;
+                const expandida = familiaExpandida === f.familia_key;
                 const topNombre = f.top_3_vendidos[0]?.nombre || null;
                 return (
                   <>
-                    <tr key={f.familia}
+                    <tr key={f.familia_key}
                       style={{ background: expandida ? "var(--bg3)" : "transparent", cursor: "pointer" }}
-                      onClick={() => setFamiliaExpandida(expandida ? null : f.familia)}>
+                      onClick={() => setFamiliaExpandida(expandida ? null : f.familia_key)}>
                       <td>
                         <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                           <div style={{ fontSize: 12, fontWeight: 700, color: "var(--txt)" }}>
                             {expandida ? "▼" : "▶"} {f.nombre_familia}
                           </div>
-                          <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 9, color: "var(--txt3)" }}>
+                          <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 9, color: "var(--txt3)", flexWrap: "wrap" }}>
                             <span className="mono">
-                              {f.familias_skus && f.familias_skus.length > 1
-                                ? f.familias_skus.map(s => s + "…").join(" + ")
-                                : f.familia + "…"}
+                              {f.prefijos_sku.slice(0, 4).map(p => p + "…").join(" / ")}
+                              {f.prefijos_sku.length > 4 ? ` +${f.prefijos_sku.length - 4}` : ""}
                             </span>
                             {f.categoria && <span style={{ padding: "1px 5px", background: "var(--bg4)", borderRadius: 2 }}>{f.categoria}</span>}
-                            {f.familias_skus && f.familias_skus.length > 1 && (
-                              <span style={{ padding: "1px 5px", background: "var(--cyanBg)", color: "var(--cyan)", borderRadius: 2 }}>
-                                {f.familias_skus.length} sub-familias fusionadas
-                              </span>
-                            )}
                           </div>
                         </div>
                       </td>
@@ -237,7 +231,7 @@ export default function AdminCatalogoAnalisis() {
                       </td>
                     </tr>
                     {expandida && (
-                      <tr key={f.familia + "_exp"}>
+                      <tr key={f.familia_key + "_exp"}>
                         <td colSpan={6} style={{ background: "var(--bg2)", padding: 12 }}>
                           {f.match && f.top_3_vendidos.length > 0 && (
                             <div style={{ marginBottom: 12, padding: 10, background: "var(--bg3)", borderRadius: 6, border: "1px solid var(--bg4)" }}>
