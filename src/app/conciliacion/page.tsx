@@ -585,32 +585,33 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   }, [data]);
 
   // Mapa de monto aplicado por compra (sumando todas las conciliaciones por MONTO, no ocurrencias)
+  // IMPORTANTE: Supabase devuelve `numeric` como string en JSON. Sin Number() explícito,
+  // `0 + "78000"` se concatena a `"078000"` y comparaciones quedan en orden lexicográfico
+  // (`"078001" >= "78000"` → false porque '0' < '7'), provocando que BHE/facturas conciliadas
+  // muestren "Asignar Pago" aunque en DB suma_aplicado >= monto_total.
   const montoAplicadoPorCompra = useMemo(() => {
     const map = new Map<string, number>();
     const concById = new Map(conciliaciones.map(c => [c.id, c]));
-    // Match simple: rcv_compra_id directo → suma monto_aplicado de la conciliacion
     for (const c of conciliaciones) {
       if (c.estado === "confirmado" && c.rcv_compra_id) {
-        map.set(c.rcv_compra_id, (map.get(c.rcv_compra_id) || 0) + (c.monto_aplicado || 0));
+        map.set(c.rcv_compra_id, (map.get(c.rcv_compra_id) || 0) + Number(c.monto_aplicado || 0));
       }
     }
-    // Multi-doc / anulaciones: items en conciliacion_items
     for (const item of conciliacionItems) {
       if (item.documento_tipo !== "rcv_compra") continue;
       const conc = concById.get(item.conciliacion_id);
       if (!conc || conc.estado !== "confirmado") continue;
-      // Evitar doble conteo: si la conciliacion tiene rcv_compra_id igual al item, ya se sumó arriba
       if (conc.rcv_compra_id === item.documento_id) continue;
-      map.set(item.documento_id, (map.get(item.documento_id) || 0) + (item.monto_aplicado || 0));
+      map.set(item.documento_id, (map.get(item.documento_id) || 0) + Number(item.monto_aplicado || 0));
     }
     return map;
   }, [conciliaciones, conciliacionItems]);
-  // Factura "pagada" cuando el monto acumulado cubre el total (tolerancia 1 peso)
   const concCompraIds = useMemo(() => {
     const s = new Set<string>();
     for (const c of comprasGlobal) {
       const aplicado = montoAplicadoPorCompra.get(c.id!) || 0;
-      if (aplicado + 1 >= (c.monto_total || 0) && aplicado > 0) s.add(c.id!);
+      const total = Number(c.monto_total || 0);
+      if (aplicado + 1 >= total && aplicado > 0) s.add(c.id!);
     }
     return s;
   }, [montoAplicadoPorCompra, comprasGlobal]);
@@ -2398,20 +2399,22 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
     }
   };
 
-  // Monto conciliado acumulado por compra
+  // Monto conciliado acumulado por compra. Number() explícito porque Supabase devuelve
+  // numeric como string en JSON y `0 + "X"` concatena en vez de sumar.
   const concPorCompra = new Map<string, number>();
   for (const c of conciliaciones) {
     if (c.estado === "confirmado" && c.rcv_compra_id) {
-      concPorCompra.set(c.rcv_compra_id, (concPorCompra.get(c.rcv_compra_id) || 0) + (c.monto_aplicado || 0));
+      concPorCompra.set(c.rcv_compra_id, (concPorCompra.get(c.rcv_compra_id) || 0) + Number(c.monto_aplicado || 0));
     }
   }
   const isConciliada = (c: DBRcvCompra) => {
     const yaConc = concPorCompra.get(c.id!) || 0;
-    return yaConc >= (c.monto_total || 0);
+    return yaConc >= Number(c.monto_total || 0);
   };
   const isParcial = (c: DBRcvCompra) => {
     const yaConc = concPorCompra.get(c.id!) || 0;
-    return yaConc > 0 && yaConc < (c.monto_total || 0);
+    const total = Number(c.monto_total || 0);
+    return yaConc > 0 && yaConc < total;
   };
   const concCompraIds = new Set(concPorCompra.keys());
   // Anuladas (estado='ANULADA' viene del SII via Railway sync) van a su propio bucket
