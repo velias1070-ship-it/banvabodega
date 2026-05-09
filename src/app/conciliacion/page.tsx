@@ -737,7 +737,9 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
 
   // Filtrar por texto, tipo, proveedor y estado conciliación
   // "todos" usa data (período actual). Los filtros de estado usan comprasAnio (todo el año).
-  let filtered: DBRcvCompra[] = concFilter === "todos" ? data : comprasAnio;
+  // Las anuladas solo aparecen cuando concFilter === "anuladas"; el resto las descarta.
+  const dataVigente = data.filter(c => !isAnulada(c));
+  let filtered: DBRcvCompra[] = concFilter === "todos" ? dataVigente : comprasAnio;
   if (tipoFilter !== "todos") filtered = filtered.filter(c => String(c.tipo_doc) === tipoFilter);
   if (provFilterSet) filtered = filtered.filter(c => {
     const match = provFilterSet.has(c.rut_proveedor || "");
@@ -926,7 +928,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
       <div style={{ display: "flex", gap: 0, borderBottom: "2px solid var(--bg4)", marginBottom: 16, alignItems: "center", justifyContent: "space-between" }}>
         <div style={{ display: "flex", gap: 0 }}>
           {([
-            { key: "todos" as typeof concFilter, label: "Registro", count: data.length, color: "var(--cyan)" },
+            { key: "todos" as typeof concFilter, label: "Registro", count: dataVigente.length, color: "var(--cyan)" },
             { key: "por_pagar" as typeof concFilter, label: "Por pagar", count: porPagarList.length, color: "var(--amber)" },
             { key: "vencidas" as typeof concFilter, label: "Vencidas", count: vencidasList.length, color: "var(--red)" },
             { key: "pagadas" as typeof concFilter, label: "Pagadas", count: totalPagadas, color: "var(--green)" },
