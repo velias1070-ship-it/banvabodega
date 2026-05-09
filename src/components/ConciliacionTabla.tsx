@@ -93,6 +93,7 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
   // Filtros
   const [tab, setTab] = useState<TabFilter>((initialFilter === "abonos" || initialFilter === "cargos") ? initialFilter : "todos");
   const [soloPendientes, setSoloPendientes] = useState(true);
+  const [comentarioFilter, setComentarioFilter] = useState<"todos" | "con" | "sin">("todos");
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("fecha");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
@@ -170,6 +171,8 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
     if (soloPendientes) list = list.filter(m => m.estado_conciliacion !== "ignorado" && m.estado_conciliacion !== "conciliado");
     if (tab === "abonos") list = list.filter(m => m.monto > 0);
     else if (tab === "cargos") list = list.filter(m => m.monto < 0);
+    if (comentarioFilter === "con") list = list.filter(m => (m.notas || "").trim().length > 0);
+    else if (comentarioFilter === "sin") list = list.filter(m => !(m.notas || "").trim());
     if (search) {
       const q = search.toLowerCase();
       const qNum = q.replace(/[.,]/g, "");
@@ -190,7 +193,7 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
       return sortDir === "desc" ? -cmp : cmp;
     });
     return list;
-  }, [movBanco, tab, soloPendientes, search, sortKey, sortDir, concMovIds]);
+  }, [movBanco, tab, soloPendientes, comentarioFilter, search, sortKey, sortDir, concMovIds]);
 
   // Contadores
   const movReales = movBanco.filter(isMovReal);
@@ -455,6 +458,13 @@ export default function ConciliacionTabla({ empresa, periodo, initialFilter }: {
             <input type="checkbox" checked={soloPendientes} onChange={e => setSoloPendientes(e.target.checked)} style={{ accentColor: "var(--cyan)" }} />
             Por conciliar
           </label>
+          <select value={comentarioFilter} onChange={e => setComentarioFilter(e.target.value as "todos" | "con" | "sin")}
+            title="Filtrar por comentario del usuario"
+            style={{ padding: "5px 8px", fontSize: 11, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 6, cursor: "pointer" }}>
+            <option value="todos">Comentario: todos</option>
+            <option value="con">Con comentario</option>
+            <option value="sin">Sin comentario</option>
+          </select>
           <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar..."
             style={{ padding: "5px 10px", fontSize: 11, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 6, width: 160 }} />
           <button onClick={handleSyncMP} disabled={syncingMP}
