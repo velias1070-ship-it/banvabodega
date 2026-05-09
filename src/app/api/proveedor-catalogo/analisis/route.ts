@@ -128,11 +128,18 @@ export async function GET(req: NextRequest) {
   //       → tokens comunes en ≥80%: {sábana, 144, hilos} → "Sábana 144 hilos"
   //   3. Si tampoco, devuelve el nombre del más vendido (truncado).
   const STOPWORDS_VARIANTE = new Set([
+    // Colores
     "rojo","red","azul","blue","negro","black","blanco","white","verde","green","gris","grey","gray",
     "rosa","pink","amarillo","yellow","violeta","purple","celeste","beige","cafe","brown","crema","cream",
-    "naranja","orange","oro","gold","plata","silver","fucsia","turquesa","lila","mostaza","mostaza",
+    "naranja","orange","oro","gold","plata","silver","fucsia","turquesa","lila","mostaza","menta",
+    "olivo","caqui","khaki","marfil","perla","pearl","coral","salmon","vino","wine","burdeos",
+    "petroleo","azulino","ocre","carmin","damasco","peach","cobre","copper","bronce","nude",
+    // Tallas/plazas (con/sin punto/decimales)
     "1p","2p","3p","4p","5p","6p","7p","8p","1.5p","2.5p","10p","15p","20p","25p","30p",
-    "10","15","20","25","30","unico","unica","liso","lisa","par","pares","unidad","unidades",
+    "1pl","2pl","king","queen","twin","single","s26","s23","s24","s25",
+    "10","15","20","25","30","par","pares","unidad","unidades",
+    // Genéricos de variante
+    "unico","unica","liso","lisa","color","talla","estampado","estampada","reversible","matrimonial",
   ]);
   const tokenize = (s: string) => s.toLowerCase().split(/\s+/).filter(Boolean);
   const nombreFamilia = (nombres: Array<string | null>): string => {
@@ -152,10 +159,12 @@ export async function GET(req: NextRequest) {
     if (prefijoComun.length >= 2) return prefijoComun.join(" ");
     // (2) Intersección de tokens (palabras comunes en ≥80% de nombres)
     const tokenCount = new Map<string, { count: number; firstSeen: number; original: string }>();
+    const STOPWORDS_CORTAS = new Set(["de","la","el","los","las","y","o","con","sin","del","al"]);
     validos.forEach((n, idx) => {
       const tokensArr = Array.from(new Set(tokenize(n)));
       for (const t of tokensArr) {
-        if (t.length < 3) continue;
+        if (t.length < 2) continue;
+        if (STOPWORDS_CORTAS.has(t)) continue;
         if (STOPWORDS_VARIANTE.has(t)) continue;
         const existing = tokenCount.get(t);
         if (existing) existing.count++;
@@ -176,8 +185,17 @@ export async function GET(req: NextRequest) {
       const ordenado = primerNombreConTodos.split(/\s+/).filter(w => tokensSet.has(w.toLowerCase()));
       if (ordenado.length >= 1) return ordenado.join(" ");
     }
-    // (3) Fallback: nombre del primero (más vendido viene primero en el array)
-    return validos[0].length > 50 ? validos[0].substring(0, 50) + "…" : validos[0];
+    // (3) Fallback: nombre del primero, trimmed quitando stopwords/colores/tallas
+    //     desde el final. Ejemplo: "Quilt MF Roma 20P Olivo" → "Quilt MF Roma".
+    const palabras0 = validos[0].split(/\s+/);
+    while (palabras0.length > 2) {
+      const last = palabras0[palabras0.length - 1].toLowerCase();
+      if (STOPWORDS_VARIANTE.has(last) || /^\d+(\.\d+)?p?$/.test(last)) {
+        palabras0.pop();
+      } else break;
+    }
+    const trimmed = palabras0.join(" ");
+    return trimmed.length > 50 ? trimmed.substring(0, 50) + "…" : trimmed;
   };
 
   const familiasNuevas = new Map<string, FamiliaRow>();
