@@ -424,7 +424,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("");
   const [tipoFilter, setTipoFilter] = useState<string>("todos");
-  const [concFilter, setConcFilter] = useState<"todos" | "por_pagar" | "vencidas" | "pagadas" | "por_clasificar">("todos");
+  const [concFilter, setConcFilter] = useState<"todos" | "por_pagar" | "vencidas" | "pagadas" | "por_clasificar" | "anuladas">("todos");
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
   const [showBheModal, setShowBheModal] = useState(false);
@@ -715,8 +715,12 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   // se ve desde cualquier mes de 2026, pero no aparecen facturas de 2025.
   const anioActual = periodo.slice(0, 4);
   const comprasAnio = comprasGlobal.filter(c => (c.periodo || "").startsWith(anioActual));
+  // Anuladas (estado='ANULADA' viene del SII via Railway sync) no son obligaciones reales:
+  // no entran en Por pagar / Vencidas / Por clasificar. Tienen su propia pestaña.
+  const isAnulada = (c: DBRcvCompra) => c.estado === "ANULADA";
+  const anuladasAnio = comprasAnio.filter(c => isAnulada(c));
   const totalPagadas = comprasAnio.filter(c => concCompraIds.has(c.id!)).length;
-  const porPagarList = comprasAnio.filter(c => !concCompraIds.has(c.id!) && c.tipo_doc !== 61);
+  const porPagarList = comprasAnio.filter(c => !concCompraIds.has(c.id!) && c.tipo_doc !== 61 && !isAnulada(c));
   const vencidasList = porPagarList.filter(c => {
     const venc = getVencimiento(c);
     return venc && venc.diasRestantes < 0;
@@ -739,13 +743,14 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
     const match = provFilterSet.has(c.rut_proveedor || "");
     return provFilterMode === "incluir" ? match : !match;
   });
-  if (concFilter === "por_pagar") filtered = filtered.filter(c => !concCompraIds.has(c.id!) && c.tipo_doc !== 61);
+  if (concFilter === "por_pagar") filtered = filtered.filter(c => !concCompraIds.has(c.id!) && c.tipo_doc !== 61 && !isAnulada(c));
   else if (concFilter === "vencidas") filtered = filtered.filter(c => {
     const venc = getVencimiento(c);
-    return !concCompraIds.has(c.id!) && c.tipo_doc !== 61 && venc && venc.diasRestantes < 0;
+    return !concCompraIds.has(c.id!) && c.tipo_doc !== 61 && !isAnulada(c) && venc && venc.diasRestantes < 0;
   });
   else if (concFilter === "pagadas") filtered = filtered.filter(c => concCompraIds.has(c.id!));
-  else if (concFilter === "por_clasificar") filtered = filtered.filter(c => !getClasificacion(c));
+  else if (concFilter === "por_clasificar") filtered = filtered.filter(c => !getClasificacion(c) && !isAnulada(c));
+  else if (concFilter === "anuladas") filtered = filtered.filter(c => isAnulada(c));
   if (filter) {
     const q = filter.toLowerCase();
     const qNum = q.replace(/[.,]/g, "");
@@ -794,7 +799,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const totalIva = filtered.reduce((s, c) => s + (c.monto_iva || 0), 0);
   const total = filtered.reduce((s, c) => s + (c.monto_total || 0), 0);
 
-  const sinClasificar = data.filter(c => !getClasificacion(c));
+  const sinClasificar = data.filter(c => !getClasificacion(c) && !isAnulada(c));
   const pctConciliado = data.length > 0 ? Math.round((totalPagadas / data.length) * 100) : 0;
 
   return (
@@ -925,6 +930,7 @@ function TabRcvCompras({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
             { key: "por_pagar" as typeof concFilter, label: "Por pagar", count: porPagarList.length, color: "var(--amber)" },
             { key: "vencidas" as typeof concFilter, label: "Vencidas", count: vencidasList.length, color: "var(--red)" },
             { key: "pagadas" as typeof concFilter, label: "Pagadas", count: totalPagadas, color: "var(--green)" },
+            ...(anuladasAnio.length > 0 ? [{ key: "anuladas" as typeof concFilter, label: "Anuladas", count: anuladasAnio.length, color: "var(--red)" }] : []),
           ]).map(t => (
             <button key={t.key} onClick={() => setConcFilter(t.key)}
               style={{
