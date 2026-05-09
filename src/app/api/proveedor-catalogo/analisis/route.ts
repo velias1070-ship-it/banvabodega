@@ -190,46 +190,52 @@ export async function GET(req: NextRequest) {
     if (!entry.categoria && p.categoria) entry.categoria = p.categoria;
   }
 
-  // 4b. Catálogo: SKUs no existentes en productos van como nuevos.
+  // 4b. Pre-computar mapa prefijo SKU → familia, para SKUs nuevos sin nombre
+  //     en catálogo (caso típico Idetex: catálogo viene sin nombres pero en
+  //     productos sí tenemos el nombre completo del SKU base de la familia).
+  //     Si SPAFE30E25W26 entra sin nombre, miramos qué familia tiene productos
+  //     con prefijo SPAFE30 — y asociamos ahí.
+  const prefijoAFamilia = new Map<string, string>(); // prefijo (7 chars) → familia_key
+  for (const entry of Array.from(familias.values())) {
+    for (const prefijo of entry.prefijos_sku) {
+      if (!prefijoAFamilia.has(prefijo)) prefijoAFamilia.set(prefijo, entry.familia_key);
+    }
+  }
+
+  // 4c. Catálogo: SKUs no existentes en productos van como nuevos.
   for (const c of catalogo as Array<{ sku_origen: string; nombre: string | null; precio_neto: number; stock_disponible: number | null; inner_pack: number | null }>) {
     if (skusEnProductos.has(c.sku_origen)) continue; // ya está en productos
-    if (!c.nombre) {
-      // Sin nombre, agrupamos en clave "(sin nombre)" para no mezclar con familias reales
-      const key = "__sin_nombre__";
-      let entry = familias.get(key);
-      if (!entry) {
-        entry = {
-          familia_key: key,
-          nombre_familia: "(SKUs sin nombre en catálogo)",
-          categoria: null,
-          prefijos_sku: [],
-          skus_nuevos: [],
-          skus_que_ya_tenemos: 0,
-          uds_180d_familia: 0,
-          top_3_vendidos: [],
-          match: false,
-        };
-        familias.set(key, entry);
-      }
-      entry.skus_nuevos.push({
-        sku: c.sku_origen,
-        nombre: null,
-        precio_neto: Number(c.precio_neto) || 0,
-        stock_disponible: Number(c.stock_disponible) || 0,
-        inner_pack: Number(c.inner_pack) || 1,
-      });
-      const prefijo = c.sku_origen.toUpperCase().substring(0, 7);
-      if (!entry.prefijos_sku.includes(prefijo)) entry.prefijos_sku.push(prefijo);
-      continue;
+    const skuItem = {
+      sku: c.sku_origen,
+      nombre: c.nombre,
+      precio_neto: Number(c.precio_neto) || 0,
+      stock_disponible: Number(c.stock_disponible) || 0,
+      inner_pack: Number(c.inner_pack) || 1,
+    };
+    const prefijo = c.sku_origen.toUpperCase().substring(0, 7);
+    let key: string | null = null;
+
+    if (c.nombre && c.nombre.trim()) {
+      // (a) Tiene nombre en catálogo → agrupar por nombre.
+      key = nombreBase(c.nombre, tokensAgrupacion);
+    } else {
+      // (b) Sin nombre → fallback a prefijo SKU si matchea con familia conocida.
+      key = prefijoAFamilia.get(prefijo) || null;
     }
-    const key = nombreBase(c.nombre, tokensAgrupacion);
-    if (!key) continue;
+
+    if (!key) {
+      // (c) Sin nombre y sin match por prefijo → agrupar por prefijo
+      //     (al menos junta SKUs hermanos de la misma colección sin nombre).
+      key = `__sku_prefijo:${prefijo}`;
+    }
+
     let entry = familias.get(key);
     if (!entry) {
-      // Familia nueva (no existe en productos del proveedor)
       entry = {
         familia_key: key,
-        nombre_familia: nombreLegible(c.nombre, tokensAgrupacion),
+        nombre_familia: c.nombre
+          ? nombreLegible(c.nombre, tokensAgrupacion)
+          : `(${prefijo}… sin nombre)`,
         categoria: null,
         prefijos_sku: [],
         skus_nuevos: [],
@@ -240,15 +246,11 @@ export async function GET(req: NextRequest) {
       };
       familias.set(key, entry);
     }
-    entry.skus_nuevos.push({
-      sku: c.sku_origen,
-      nombre: c.nombre,
-      precio_neto: Number(c.precio_neto) || 0,
-      stock_disponible: Number(c.stock_disponible) || 0,
-      inner_pack: Number(c.inner_pack) || 1,
-    });
-    const prefijo = c.sku_origen.toUpperCase().substring(0, 7);
+    entry.skus_nuevos.push(skuItem);
     if (!entry.prefijos_sku.includes(prefijo)) entry.prefijos_sku.push(prefijo);
+    // Si el grupo se asoció por prefijo (caso b), asegurar que el mapa
+    // se actualice para futuros SKUs con el mismo prefijo.
+    if (!prefijoAFamilia.has(prefijo)) prefijoAFamilia.set(prefijo, key);
   }
 
   // 5. Procesar resultados: solo familias con SKUs nuevos en catálogo,
