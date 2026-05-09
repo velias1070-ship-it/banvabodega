@@ -33,6 +33,7 @@ import AdminAutoPostular from "@/components/AdminAutoPostular";
 import AdminPricingConfig from "@/components/AdminPricingConfig";
 import AdminCalculadora from "@/components/AdminCalculadora";
 import AdminDimensiones from "@/components/AdminDimensiones";
+import AdminSkuHistory from "@/components/AdminSkuHistory";
 import AdminUsuarios from "@/components/AdminUsuarios";
 import { loginAdminUser, canAccessTab, canAccessSubtab, canManageUsers, ADMIN_TAB_CATALOG, type AdminUser, type AdminTab } from "@/lib/admin-users";
 
@@ -158,6 +159,7 @@ const MOBILE_MENU_SECTIONS: ReadonlyArray<{ section: string; items: ReadonlyArra
     ["pricing","Pricing Config","💰"],
     ["calc","Calculadora","🧮"],
     ["dim","Dimensiones","📐"],
+    ["skuhist","Histórico SKU","📜"],
     ["autopostular","Motor auto","🤖"],
   ] },
   { section: "Sistema", items: [
@@ -240,7 +242,7 @@ export default function AdminPage() {
     {section:"OPERACIONES",icon:"⚡",items:[["rec","Recepciones","📦"],["discrepancias","Discrepancias","💰"],["flex","Ultima Milla","🚚"],["enviosfull","Envios Full","📦"],["ops","Operaciones","⚡"],["reposicion","Reposición","🔄"]]},
     {section:"INVENTARIO",icon:"📦",items:[["inv","Inventario","📦"],["mov","Movimientos","📋"],["timeline","Timeline","📊"],["prod","Productos","🏷️"],["costoauditoria","Auditoría Costos","📊"]]},
     {section:"INTELIGENCIA",icon:"🧠",items:[["intel","Inteligencia","🧠"],["semaforo","Semaforo","🚦"],["compras","Compras","🛒"],["eventos","Eventos","📅"],["motor_reglas","Reglas Motor","⚙️"]]},
-    {section:"COMERCIAL",icon:"🏪",items:[["ventasdash","Ventas · Dashboard","📊"],["ventasord","Ventas · Órdenes","📋"],["comercial","Publicaciones","📢"],["margenes","Márgenes","💹"],["pricing","Pricing Config","💰"],["calc","Calculadora","🧮"],["dim","Dimensiones","📐"],["autopostular","Motor auto","🤖"]]},
+    {section:"COMERCIAL",icon:"🏪",items:[["ventasdash","Ventas · Dashboard","📊"],["ventasord","Ventas · Órdenes","📋"],["comercial","Publicaciones","📢"],["margenes","Márgenes","💹"],["pricing","Pricing Config","💰"],["calc","Calculadora","🧮"],["dim","Dimensiones","📐"],["skuhist","Histórico SKU","📜"],["autopostular","Motor auto","🤖"]]},
     {section:"SISTEMA",icon:"⚙️",items:[["agentes","Agentes IA","🤖"],["config","Configuración","⚙️"]]},
   ];
   const [openSections, setOpenSections] = useState<Record<string,boolean>>(()=>{
@@ -403,6 +405,7 @@ export default function AdminPage() {
             {tab==="pricing"&&<AdminPricingConfig/>}
             {tab==="calc"&&<AdminCalculadora/>}
             {tab==="dim"&&<AdminDimensiones/>}
+            {tab==="skuhist"&&<AdminSkuHistory/>}
             {tab==="autopostular"&&<AdminAutoPostular/>}
             {tab==="agentes"&&<AdminAgentes/>}
             {tab==="timeline"&&<TimelineWrapper/>}
