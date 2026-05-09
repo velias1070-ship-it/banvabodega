@@ -29,6 +29,8 @@ type TimelineRow = {
   fuente: string;
   motivo: string | null;
   actor: string | null;
+  evento_tag: string | null;
+  evento_subtag: string | null;
 };
 
 type VentaRow = {
@@ -39,6 +41,8 @@ type VentaRow = {
   precio_unitario: number;
   promo_name_aplicada: string | null;
   promo_pct_aplicada: number | null;
+  evento_tag?: string | null;
+  evento_subtag?: string | null;
 };
 
 type EstadoAlDia = {
@@ -48,7 +52,53 @@ type EstadoAlDia = {
   promo_pct: number | null;
   fuente: string | null;
   desde: string | null;
+  evento_tag?: string | null;
+  evento_subtag?: string | null;
+  costo?: number | null;
+  fuente_costo?: string | null;
+  margen_estimado?: number | null;
+  margen_pct_estimado?: number | null;
   nota: string;
+};
+
+function eventoTagLabel(tag: string | null | undefined, subtag?: string | null): { label: string; color: string } | null {
+  if (!tag) return null;
+  const colors: Record<string, string> = {
+    dia_madre: "var(--red)",
+    dia_padre: "var(--blue)",
+    navidad: "var(--green)",
+    black_cyber: "var(--amber)",
+    hot_sale: "var(--amber)",
+    banva_periodica: "var(--cyan)",
+    segmento_producto: "var(--cyan)",
+    ml_campaign_raw: "var(--txt3)",
+    otra: "var(--txt3)",
+  };
+  const labels: Record<string, string> = {
+    dia_madre: "Día Madre",
+    dia_padre: "Día Padre",
+    navidad: "Navidad",
+    black_cyber: "Black/Cyber",
+    hot_sale: "Hot Sale",
+    banva_periodica: "BANVA",
+    segmento_producto: "Segmento",
+    ml_campaign_raw: "ML Campaign",
+    otra: "Otra",
+  };
+  const baseLabel = labels[tag] || tag;
+  return {
+    label: subtag ? `${baseLabel} ${subtag}` : baseLabel,
+    color: colors[tag] || "var(--txt3)",
+  };
+}
+
+type StateHistoryRow = {
+  detected_at: string;
+  item_id: string;
+  campo: string;
+  valor_anterior: string | null;
+  valor_nuevo: string;
+  fuente: string;
 };
 
 type ApiResp = {
@@ -59,6 +109,7 @@ type ApiResp = {
   ventas: VentaRow[];
   estado_al_dia: EstadoAlDia | null;
   skus_venta_relacionados: string[];
+  state_history: StateHistoryRow[];
 };
 
 function fmtCLP(n: number | null | undefined): string {
@@ -173,7 +224,7 @@ export default function AdminSkuHistory() {
               </div>
               {data.estado_al_dia.precio !== null ? (
                 <>
-                  <div style={{ display: "flex", gap: 24, marginTop: 8, alignItems: "baseline" }}>
+                  <div style={{ display: "flex", gap: 24, marginTop: 8, alignItems: "baseline", flexWrap: "wrap" }}>
                     <div>
                       <div style={{ fontSize: 10, color: "var(--txt3)" }}>Precio</div>
                       <div style={{ ...numStyle, fontSize: 22, fontWeight: 700 }}>{fmtCLP(data.estado_al_dia.precio)}</div>
@@ -182,6 +233,15 @@ export default function AdminSkuHistory() {
                       <div style={{ fontSize: 10, color: "var(--txt3)" }}>Promo</div>
                       <div style={{ fontSize: 14, fontWeight: 600 }}>{data.estado_al_dia.promo_name || "(sin promo)"} {data.estado_al_dia.promo_pct ? `(${data.estado_al_dia.promo_pct}%)` : ""}</div>
                     </div>
+                    {data.estado_al_dia.evento_tag && (() => {
+                      const ev = eventoTagLabel(data.estado_al_dia.evento_tag, data.estado_al_dia.evento_subtag);
+                      return ev ? (
+                        <div>
+                          <div style={{ fontSize: 10, color: "var(--txt3)" }}>Evento</div>
+                          <div style={{ fontSize: 12, padding: "2px 8px", borderRadius: 4, background: "var(--bg3)", color: ev.color, display: "inline-block", fontWeight: 600 }}>{ev.label}</div>
+                        </div>
+                      ) : null;
+                    })()}
                     <div>
                       <div style={{ fontSize: 10, color: "var(--txt3)" }}>Fuente</div>
                       <div style={{ fontSize: 12, color: fuenteLabel(data.estado_al_dia.fuente || "").color }}>{fuenteLabel(data.estado_al_dia.fuente || "").label}</div>
@@ -190,8 +250,23 @@ export default function AdminSkuHistory() {
                       <div style={{ fontSize: 10, color: "var(--txt3)" }}>Desde</div>
                       <div style={{ fontSize: 12 }}>{data.estado_al_dia.desde ? new Date(data.estado_al_dia.desde).toLocaleString("es-CL") : "—"}</div>
                     </div>
+                    {data.estado_al_dia.costo !== null && data.estado_al_dia.costo !== undefined && (
+                      <div>
+                        <div style={{ fontSize: 10, color: "var(--txt3)" }}>Costo a la fecha</div>
+                        <div style={{ ...numStyle, fontSize: 14 }}>{fmtCLP(data.estado_al_dia.costo)}</div>
+                        <div style={{ fontSize: 10, color: "var(--txt3)" }}>{data.estado_al_dia.fuente_costo}</div>
+                      </div>
+                    )}
+                    {data.estado_al_dia.margen_pct_estimado !== null && data.estado_al_dia.margen_pct_estimado !== undefined && (
+                      <div>
+                        <div style={{ fontSize: 10, color: "var(--txt3)" }}>Margen bruto est.</div>
+                        <div style={{ ...numStyle, fontSize: 14, color: data.estado_al_dia.margen_pct_estimado < 0 ? "var(--red)" : "var(--green)" }}>
+                          {fmtCLP(data.estado_al_dia.margen_estimado)} ({data.estado_al_dia.margen_pct_estimado.toFixed(1)}%)
+                        </div>
+                      </div>
+                    )}
                   </div>
-                  <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 8, fontStyle: "italic" }}>{data.estado_al_dia.nota}</div>
+                  <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 8, fontStyle: "italic" }}>{data.estado_al_dia.nota} (margen bruto = precio - costo, sin descontar comisión/envío)</div>
                 </>
               ) : (
                 <div style={{ marginTop: 6, fontSize: 12, color: "var(--amber)" }}>{data.estado_al_dia.nota}</div>
@@ -249,6 +324,7 @@ export default function AdminSkuHistory() {
                       <th style={{ textAlign: "right" }}>Precio</th>
                       <th style={{ textAlign: "right" }}>Δ %</th>
                       <th style={{ textAlign: "left" }}>Promo</th>
+                      <th style={{ textAlign: "left" }}>Evento</th>
                       <th style={{ textAlign: "left" }}>Fuente</th>
                       <th style={{ textAlign: "left" }}>Motivo</th>
                     </tr>
@@ -256,6 +332,7 @@ export default function AdminSkuHistory() {
                   <tbody>
                     {data.timeline.map((r, i) => {
                       const f = fuenteLabel(r.fuente);
+                      const ev = eventoTagLabel(r.evento_tag, r.evento_subtag);
                       return (
                         <tr key={i} style={r.fuente === "daily_snapshot" ? { background: "var(--bg3)", color: "var(--txt3)" } : undefined}>
                           <td style={{ fontSize: 11 }}>{new Date(r.detected_at).toLocaleString("es-CL")}</td>
@@ -265,6 +342,7 @@ export default function AdminSkuHistory() {
                             {r.delta_pct ? `${r.delta_pct > 0 ? "+" : ""}${Number(r.delta_pct).toFixed(1)}%` : "—"}
                           </td>
                           <td>{r.promo_name || <span style={{ color: "var(--txt3)" }}>—</span>}</td>
+                          <td>{ev ? <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: "var(--bg3)", color: ev.color, fontWeight: 600 }}>{ev.label}</span> : <span style={{ color: "var(--txt3)" }}>—</span>}</td>
                           <td><span style={{ color: f.color, fontSize: 11 }}>{f.label}</span></td>
                           <td style={{ fontSize: 11, color: "var(--txt3)" }}>{r.motivo || "—"} {r.actor ? `· ${r.actor}` : ""}</td>
                         </tr>
@@ -275,6 +353,38 @@ export default function AdminSkuHistory() {
               </div>
             )}
           </div>
+
+          {data.state_history.length > 0 && (
+            <div className="card" style={{ padding: 14, marginBottom: 14 }}>
+              <div style={{ fontSize: 11, color: "var(--txt3)", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
+                Cambios de estado — {data.state_history.length} eventos (status_ml, listing_type, etc)
+              </div>
+              <div style={{ maxHeight: 240, overflowY: "auto" }}>
+                <table className="tbl" style={{ width: "100%", fontSize: 12 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: "left" }}>Cuándo</th>
+                      <th style={{ textAlign: "left" }}>Item</th>
+                      <th style={{ textAlign: "left" }}>Campo</th>
+                      <th style={{ textAlign: "left" }}>Antes</th>
+                      <th style={{ textAlign: "left" }}>Después</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.state_history.map((s, i) => (
+                      <tr key={i}>
+                        <td style={{ fontSize: 11 }}>{new Date(s.detected_at).toLocaleString("es-CL")}</td>
+                        <td className="mono" style={{ fontSize: 11 }}>{s.item_id}</td>
+                        <td><span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: "var(--bg3)", color: "var(--txt2)" }}>{s.campo}</span></td>
+                        <td className="mono" style={{ color: "var(--txt3)" }}>{s.valor_anterior || "—"}</td>
+                        <td className="mono" style={{ fontWeight: 600 }}>{s.valor_nuevo}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           <div className="card" style={{ padding: 14 }}>
             <div style={{ fontSize: 11, color: "var(--txt3)", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
@@ -296,22 +406,26 @@ export default function AdminSkuHistory() {
                     </tr>
                   </thead>
                   <tbody>
-                    {data.ventas.map((v) => (
-                      <tr key={v.order_id + v.sku_venta}>
-                        <td style={{ fontSize: 11 }}>{v.fecha_date}</td>
-                        <td className="mono" style={{ fontSize: 11 }}>{v.order_id}</td>
-                        <td className="mono">{v.sku_venta}</td>
-                        <td className="mono" style={{ textAlign: "right" }}>{v.cantidad}</td>
-                        <td className="mono" style={{ textAlign: "right" }}>{fmtCLP(v.precio_unitario)}</td>
-                        <td>
-                          {v.promo_name_aplicada ? (
-                            <span style={{ color: "var(--cyan)" }}>{v.promo_name_aplicada} {v.promo_pct_aplicada ? `(${v.promo_pct_aplicada}%)` : ""}</span>
-                          ) : (
-                            <span style={{ color: "var(--txt3)" }}>(no capturada — pre-v108)</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
+                    {data.ventas.map((v) => {
+                      const ev = eventoTagLabel(v.evento_tag, v.evento_subtag);
+                      return (
+                        <tr key={v.order_id + v.sku_venta}>
+                          <td style={{ fontSize: 11 }}>{v.fecha_date}</td>
+                          <td className="mono" style={{ fontSize: 11 }}>{v.order_id}</td>
+                          <td className="mono">{v.sku_venta}</td>
+                          <td className="mono" style={{ textAlign: "right" }}>{v.cantidad}</td>
+                          <td className="mono" style={{ textAlign: "right" }}>{fmtCLP(v.precio_unitario)}</td>
+                          <td>
+                            {v.promo_name_aplicada ? (
+                              <span style={{ color: "var(--cyan)" }}>{v.promo_name_aplicada} {v.promo_pct_aplicada ? `(${v.promo_pct_aplicada}%)` : ""}</span>
+                            ) : (
+                              <span style={{ color: "var(--txt3)" }}>(no capturada — pre-v108)</span>
+                            )}
+                            {ev && <span style={{ marginLeft: 6, fontSize: 10, padding: "1px 5px", borderRadius: 3, background: "var(--bg3)", color: ev.color, fontWeight: 600 }}>{ev.label}</span>}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

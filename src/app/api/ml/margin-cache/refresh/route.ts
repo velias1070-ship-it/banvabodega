@@ -467,15 +467,19 @@ async function handleRefresh(req: NextRequest) {
   // ml_price_history con fuente='sync_diff'. Precondicion del repricer
   // competitivo (BANVA_Pricing_Investigacion_Comparada §6.4).
   const itemIdsToCheck = uniqueCacheRows.map(r => r.item_id as string);
-  const prevByItemId = new Map<string, { precio_venta: number | null; price_ml: number | null }>();
+  const prevByItemId = new Map<string, { precio_venta: number | null; price_ml: number | null; status_ml: string | null; listing_type: string | null; category_id: string | null; logistic_type: string | null }>();
   const skuOrigenByItemId = new Map<string, string | null>();
   if (itemIdsToCheck.length > 0) {
     const [{ data: prevRows }, { data: mapRows }] = await Promise.all([
-      sb.from("ml_margin_cache").select("item_id, precio_venta, price_ml").in("item_id", itemIdsToCheck),
+      sb.from("ml_margin_cache").select("item_id, precio_venta, price_ml, status_ml, listing_type, category_id, logistic_type").in("item_id", itemIdsToCheck),
       sb.from("ml_items_map").select("item_id, sku_origen").in("item_id", itemIdsToCheck),
     ]);
-    for (const r of (prevRows || []) as { item_id: string; precio_venta: number | null; price_ml: number | null }[]) {
-      prevByItemId.set(r.item_id, { precio_venta: r.precio_venta, price_ml: r.price_ml });
+    for (const r of (prevRows || []) as { item_id: string; precio_venta: number | null; price_ml: number | null; status_ml: string | null; listing_type: string | null; category_id: string | null; logistic_type: string | null }[]) {
+      prevByItemId.set(r.item_id, {
+        precio_venta: r.precio_venta, price_ml: r.price_ml,
+        status_ml: r.status_ml, listing_type: r.listing_type,
+        category_id: r.category_id, logistic_type: r.logistic_type,
+      });
     }
     for (const r of (mapRows || []) as { item_id: string; sku_origen: string | null }[]) {
       if (!skuOrigenByItemId.has(r.item_id)) skuOrigenByItemId.set(r.item_id, r.sku_origen);
@@ -567,6 +571,39 @@ async function handleRefresh(req: NextRequest) {
           ejecutado_por: "cron_margin_cache",
           contexto: { tiene_promo: cr.tiene_promo === true, promo_type: cr.promo_type ?? null },
         });
+      }
+
+      // Detectar y loguear cambios de estado (status_ml, listing_type,
+      // category_id, logistic_type). Append-only en ml_item_state_history.
+      if (prev) {
+        const stateChanges: Array<{ campo: string; valor_anterior: string | null; valor_nuevo: string }> = [];
+        const camposCheck: Array<{ campo: "status_ml" | "listing_type" | "category_id" | "logistic_type"; nuevo: unknown; anterior: string | null }> = [
+          { campo: "status_ml",     nuevo: cr.status_ml,     anterior: prev.status_ml ?? null },
+          { campo: "listing_type",  nuevo: cr.listing_type,  anterior: prev.listing_type ?? null },
+          { campo: "category_id",   nuevo: cr.category_id,   anterior: prev.category_id ?? null },
+          { campo: "logistic_type", nuevo: cr.logistic_type, anterior: prev.logistic_type ?? null },
+        ];
+        for (const c of camposCheck) {
+          const nuevoStr = c.nuevo == null ? null : String(c.nuevo);
+          if (nuevoStr !== null && nuevoStr !== c.anterior) {
+            stateChanges.push({ campo: c.campo, valor_anterior: c.anterior, valor_nuevo: nuevoStr });
+          }
+        }
+        if (stateChanges.length > 0) {
+          const { error: stateErr } = await sb.from("ml_item_state_history").insert(stateChanges.map(sc => ({
+            item_id: itemId,
+            sku: (cr.sku as string) || null,
+            sku_origen: skuOrigenByItemId.get(itemId) ?? null,
+            campo: sc.campo,
+            valor_anterior: sc.valor_anterior,
+            valor_nuevo: sc.valor_nuevo,
+            fuente: "sync_diff",
+            contexto: { ejecutado_por: "cron_margin_cache" },
+          })));
+          if (stateErr) {
+            console.error(`[margin-cache] state history insert ${itemId} failed: ${stateErr.message}`);
+          }
+        }
       }
     }
   }
