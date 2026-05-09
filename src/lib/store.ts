@@ -1142,6 +1142,44 @@ export async function congelarCostoDiscrepancia(
   );
 }
 
+// Marca la recepcion como COMPLETADA si: todas las lineas UBICADA y sin
+// discrepancias pendientes (costo+qty). Idempotente y silencioso ante error
+// — el caller ya termino su trabajo. Mismas condiciones que la rama de
+// resolverDiscrepanciaQty:4337, pero aplicable a recepciones que cierran
+// limpias sin generar discrepancias.
+async function marcarRecepcionCompletadaSiCorresponde(recepcionId: string): Promise<void> {
+  try {
+    const lineas = await db.fetchRecepcionLineas(recepcionId);
+    if (lineas.length === 0) return;
+    const allUbicadas = lineas.every(l =>
+      l.estado === "UBICADA" || (l.qty_ubicada || 0) >= l.qty_factura
+    );
+    if (!allUbicadas) return;
+    const [discsQty, discsCosto] = await Promise.all([
+      db.fetchDiscrepanciasQty(recepcionId),
+      db.fetchDiscrepancias(recepcionId),
+    ]);
+    const sinPendQty = discsQty.every(d => d.estado !== "PENDIENTE");
+    const sinPendCosto = discsCosto.every(d => d.estado !== "PENDIENTE");
+    if (!sinPendQty || !sinPendCosto) return;
+    const recs = await db.fetchRecepciones();
+    const rec = recs.find(r => r.id === recepcionId);
+    if (rec?.estado !== "EN_PROCESO") return;
+    await db.updateRecepcion(recepcionId, {
+      estado: "COMPLETADA",
+      completed_at: new Date().toISOString(),
+    });
+    await db.auditLog("recepcion:auto_completada", {
+      entidad: "recepcion", entidad_id: recepcionId,
+      resultado: { lineas: lineas.length, via: "ubicarLinea/cerrarLineaSinMasCajas" },
+    });
+  } catch (e) {
+    // Silencio: el caller ya hizo su trabajo. Si el check falla, la recepcion
+    // queda en EN_PROCESO y se puede cerrar manual desde admin.
+    console.warn("[marcarRecepcionCompletadaSiCorresponde]", e);
+  }
+}
+
 // Cerrar linea cuando no hay mas cajas: ajusta qty_factura al recibido,
 // crea discrepancia QTY formal (NOTA_CREDITO) con tracking, deriva estado
 // correcto segun qty_ubicada y auto-completa etiquetado si la linea no
@@ -1215,6 +1253,12 @@ export async function cerrarLineaSinMasCajas(
       discrepancia_creada: diferencia < 0 && qtyFacturaOriginal > 0,
     },
   });
+
+  // Si esta linea quedo UBICADA y la NC ya queda registrada (no PENDIENTE),
+  // chequear si la recepcion entera puede pasar a COMPLETADA.
+  if (nuevoEstado === "UBICADA") {
+    await marcarRecepcionCompletadaSiCorresponde(recepcionId);
+  }
 }
 
 // Reset línea a PENDIENTE — revierte stock si ya fue ubicada
@@ -1393,6 +1437,12 @@ export async function ubicarLinea(lineaId: string, sku: string, posicionId: stri
     entidad: "recepcion_linea", entidad_id: lineaId, operario,
     resultado: { sku, posicionId, qty, prevQtyUbicada, newQtyUbicada, qtyTotal, estado: nextEstado, derivado: calcResult !== null },
   });
+
+  // Si esta linea quedo UBICADA, chequear si la recepcion completa puede
+  // pasar a COMPLETADA (idempotente, silencioso ante error).
+  if (allLocated) {
+    await marcarRecepcionCompletadaSiCorresponde(recepcionId);
+  }
 
   // Auto-add to envio_full if this SKU is in envio_full_pendiente
   if (isConfigured()) {
