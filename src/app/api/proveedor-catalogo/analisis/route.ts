@@ -35,7 +35,10 @@ export async function GET(req: NextRequest) {
   const proveedorId = req.nextUrl.searchParams.get("proveedor_id");
   if (!proveedorId) return NextResponse.json({ error: "proveedor_id requerido" }, { status: 400 });
 
-  const prefixLen = Math.max(4, Math.min(15, Number(req.nextUrl.searchParams.get("prefix_len") || "9")));
+  // Default 7 chars: agrupa por categoría (ej TXSB144 = sábanas 144 hilos,
+  // TXSB180 = sábanas 180 hilos, JSAFAB4 = quilts modelo 4xx). Antes era 9
+  // pero sub-dividía por diseño/color y perdía la noción de categoría.
+  const prefixLen = Math.max(4, Math.min(15, Number(req.nextUrl.searchParams.get("prefix_len") || "7")));
   const start = Date.now();
 
   // 1. Catalogo del proveedor (incluye los con proveedor_id null si proveedorId es 'null')
@@ -115,17 +118,31 @@ export async function GET(req: NextRequest) {
     if (uds > 0) entry.top_vendidos.push({ sku: p.sku, nombre: p.nombre, uds });
   }
 
-  // Helper: nombre legible de familia. Saca prefijo común de los nombres
-  // (ej: "Quilt Atenas Beige 2P" + "Quilt Atenas Gris 2P" → "Quilt Atenas").
-  // Si no hay overlap claro, devuelve el nombre del más vendido completo.
+  // Helper: nombre legible de la categoría inferido del nombre de los productos.
+  // Estrategia en cascada:
+  //   1. Prefijo común de palabras (ej "Quilt Atenas Beige" + "Quilt Atenas Gris" → "Quilt Atenas").
+  //   2. Si no hay prefijo (los nombres difieren desde la palabra 1), intersección de
+  //      palabras que aparecen en ≥80% de los nombres en cualquier posición. Filtra
+  //      tokens muy cortos (<3 chars) y atributos típicos de variante (colores, tallas).
+  //      Ejemplo: ["Sábana 144 hilos Daniela 1.5P", "Sábana 144 hilos Rosa 2P", "Sábana 144 hilos Liso 1P"]
+  //       → tokens comunes en ≥80%: {sábana, 144, hilos} → "Sábana 144 hilos"
+  //   3. Si tampoco, devuelve el nombre del más vendido (truncado).
+  const STOPWORDS_VARIANTE = new Set([
+    "rojo","red","azul","blue","negro","black","blanco","white","verde","green","gris","grey","gray",
+    "rosa","pink","amarillo","yellow","violeta","purple","celeste","beige","cafe","brown","crema","cream",
+    "naranja","orange","oro","gold","plata","silver","fucsia","turquesa","lila","mostaza","mostaza",
+    "1p","2p","3p","4p","5p","6p","7p","8p","1.5p","2.5p","10p","15p","20p","25p","30p",
+    "10","15","20","25","30","unico","unica","liso","lisa","par","pares","unidad","unidades",
+  ]);
+  const tokenize = (s: string) => s.toLowerCase().split(/\s+/).filter(Boolean);
   const nombreFamilia = (nombres: Array<string | null>): string => {
     const validos = nombres.filter((n): n is string => !!n && n.trim().length > 0);
     if (validos.length === 0) return "(sin nombre)";
     if (validos.length === 1) return validos[0];
-    // Prefijo común (palabras enteras)
+    // (1) Prefijo común de palabras enteras
     const palabras = validos.map(n => n.split(/\s+/));
     const minLen = Math.min(...palabras.map(p => p.length));
-    let prefijoComun: string[] = [];
+    const prefijoComun: string[] = [];
     for (let i = 0; i < minLen; i++) {
       const p0 = palabras[0][i].toLowerCase();
       if (palabras.every(p => p[i].toLowerCase() === p0)) {
@@ -133,7 +150,33 @@ export async function GET(req: NextRequest) {
       } else break;
     }
     if (prefijoComun.length >= 2) return prefijoComun.join(" ");
-    // Sin overlap claro: nombre del primero con "..."
+    // (2) Intersección de tokens (palabras comunes en ≥80% de nombres)
+    const tokenCount = new Map<string, { count: number; firstSeen: number; original: string }>();
+    validos.forEach((n, idx) => {
+      const tokensArr = Array.from(new Set(tokenize(n)));
+      for (const t of tokensArr) {
+        if (t.length < 3) continue;
+        if (STOPWORDS_VARIANTE.has(t)) continue;
+        const existing = tokenCount.get(t);
+        if (existing) existing.count++;
+        else {
+          const original = (n.split(/\s+/).find(w => w.toLowerCase() === t)) || t;
+          tokenCount.set(t, { count: 1, firstSeen: idx, original });
+        }
+      }
+    });
+    const umbral = Math.ceil(validos.length * 0.8);
+    const comunes = Array.from(tokenCount.entries())
+      .filter(([, v]) => v.count >= umbral)
+      .sort((a, b) => a[1].firstSeen - b[1].firstSeen);
+    if (comunes.length >= 1) {
+      // Reordenar según el orden en el primer nombre que tiene todos los tokens
+      const tokensSet = new Set(comunes.map(([t]) => t));
+      const primerNombreConTodos = validos.find(n => tokenize(n).filter(t => tokensSet.has(t)).length === comunes.length) || validos[0];
+      const ordenado = primerNombreConTodos.split(/\s+/).filter(w => tokensSet.has(w.toLowerCase()));
+      if (ordenado.length >= 1) return ordenado.join(" ");
+    }
+    // (3) Fallback: nombre del primero (más vendido viene primero en el array)
     return validos[0].length > 50 ? validos[0].substring(0, 50) + "…" : validos[0];
   };
 

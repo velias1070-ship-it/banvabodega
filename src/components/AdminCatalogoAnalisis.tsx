@@ -44,7 +44,9 @@ export default function AdminCatalogoAnalisis() {
   const [loading, setLoading] = useState(false);
   const [filtro, setFiltro] = useState<"con_match"|"sin_match"|"con_stock"|"todos">("con_match");
   const [familiaExpandida, setFamiliaExpandida] = useState<string | null>(null);
-  const [prefixLen, setPrefixLen] = useState(9);
+  // Default 7: agrupa por categoría (ej TXSB144 = sábanas 144 hilos).
+  // Subir a 9-10 si querés ver sub-divisiones por diseño/color.
+  const [prefixLen, setPrefixLen] = useState(7);
 
   // Cargar proveedores activos
   useEffect(() => {
