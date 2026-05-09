@@ -144,6 +144,31 @@ export async function upsertOrderToVentasCache(
   const adsPairs = Array.from(skuToItemId.values()).map(item_id => ({ item_id, fecha_date: fechaDate }));
   const adsPreload = await preloadAdsForSales(sb, adsPairs);
 
+  // Snapshot de promo activa al momento del sync (para guardarlo permanente
+  // en la fila de la venta y no depender de join temporal con history).
+  // Lee precio_venta/promo_name/promo_pct/price_ml de ml_margin_cache para
+  // los item_ids relevantes.
+  const promoSnapshotByItemId = new Map<string, {
+    promo_name: string | null;
+    promo_pct: number | null;
+    price_ml: number | null;
+  }>();
+  {
+    const itemIds = Array.from(skuToItemId.values());
+    if (itemIds.length > 0) {
+      const { data: cacheRows } = await sb.from("ml_margin_cache")
+        .select("item_id, promo_name, promo_pct, price_ml, tiene_promo")
+        .in("item_id", itemIds);
+      for (const c of (cacheRows || []) as Array<{ item_id: string; promo_name: string | null; promo_pct: number | null; price_ml: number | null; tiene_promo: boolean }>) {
+        promoSnapshotByItemId.set(c.item_id, {
+          promo_name: c.tiene_promo ? c.promo_name : null,
+          promo_pct: c.tiene_promo ? c.promo_pct : null,
+          price_ml: c.price_ml,
+        });
+      }
+    }
+  }
+
   const rows = (order.order_items || []).map(item => {
     const sku = (item.item?.seller_sku || `ML-${item.item?.id}`).toUpperCase();
     const subtotal = Math.round(item.unit_price * item.quantity);
@@ -191,6 +216,15 @@ export async function upsertOrderToVentasCache(
     const anulada = esAnulacion || (existing?.anulada === true);
     const anulada_at = existing?.anulada_at || (esAnulacion ? snapshotAt : null);
 
+    // Snapshot de promo activa al momento del sync. Si la orden ya tenía
+    // promo_name_aplicada (re-sync), no la pisamos: la promo aplicada al
+    // momento del cobro es inmutable.
+    const itemIdSku = skuToItemId.get(sku) || null;
+    const promoSnap = itemIdSku ? promoSnapshotByItemId.get(itemIdSku) : null;
+    const promo_name_aplicada = promoSnap?.promo_name ?? null;
+    const promo_pct_aplicada = promoSnap?.promo_pct ?? null;
+    const price_lista_aplicada = promoSnap?.price_ml ?? null;
+
     return {
       order_id: String(order.id),
       order_number: String(order.pack_id || order.id),
@@ -227,6 +261,9 @@ export async function upsertOrderToVentasCache(
       estado,
       documento_tributario: "",
       estado_documento: "",
+      promo_name_aplicada,
+      promo_pct_aplicada,
+      price_lista_aplicada,
       updated_at: snapshotAt,
     };
   });

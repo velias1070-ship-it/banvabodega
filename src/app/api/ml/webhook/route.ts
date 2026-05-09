@@ -353,7 +353,11 @@ export async function POST(req: NextRequest) {
 
     // ─── Items y cambios de precio ───
     // Topics: items, items_prices. Ambos apuntan a /items/MLC...
-    // Dispara re-sync del sku mapeado para mantener available_quantity fresco.
+    // - items: re-sync stock fulfillment del SKU mapeado.
+    // - items_prices: ADEMÁS dispara refresh focal de margin-cache para
+    //   capturar el cambio de precio inmediato en ml_price_history (sin
+    //   esperar al cron de cada 2 min). Latencia ML→history pasa de ~25 min
+    //   a segundos.
     if (topic === "items" || topic === "items_prices") {
       const itemMatch = resource?.match(/items\/([A-Z0-9]+)/);
       const itemId = itemMatch ? itemMatch[1] : null;
@@ -365,8 +369,21 @@ export async function POST(req: NextRequest) {
             const invId = data?.[0]?.inventory_id;
             const sku = data?.[0]?.sku;
             if (invId) await syncSingleFulfillmentStock(invId);
-            await logWebhookFinish(logId, "ok", startMs, { result: { item_id: itemId, sku, inventory_id: invId }, sku_afectado: sku, inventory_id: invId });
-            return NextResponse.json({ status: "ok", item_id: itemId, sku });
+
+            // Fire-and-forget refresh focal (solo en items_prices).
+            // No await: el webhook debe responder a ML <5s. El refresh
+            // ejecuta async y graba en ml_price_history si detecta cambio.
+            let refreshTriggered = false;
+            if (topic === "items_prices") {
+              const refreshUrl = `${req.nextUrl.origin}/api/ml/margin-cache/refresh?item_ids=${encodeURIComponent(itemId)}`;
+              fetch(refreshUrl, { method: "POST" }).catch(err => {
+                console.error(`[ML Webhook] refresh focal failed for ${itemId}: ${String(err)}`);
+              });
+              refreshTriggered = true;
+            }
+
+            await logWebhookFinish(logId, "ok", startMs, { result: { item_id: itemId, sku, inventory_id: invId, refresh_triggered: refreshTriggered }, sku_afectado: sku, inventory_id: invId });
+            return NextResponse.json({ status: "ok", item_id: itemId, sku, refresh_triggered: refreshTriggered });
           }
         } catch (err) {
           await logWebhookFinish(logId, "error", startMs, { error: String(err) });
