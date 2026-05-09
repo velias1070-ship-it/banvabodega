@@ -2312,7 +2312,7 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
-  const [concFilter, setConcFilter] = useState<"todos" | "pendiente" | "conciliada">("todos");
+  const [concFilter, setConcFilter] = useState<"todos" | "pendiente" | "conciliada" | "anulada">("todos");
   const [searchBhe, setSearchBhe] = useState("");
   const [pagoItem, setPagoItem] = useState<DBRcvCompra | null>(null);
   const [movsBanco, setMovsBanco] = useState<DBMovimientoBanco[]>([]);
@@ -2414,12 +2414,18 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
     return yaConc > 0 && yaConc < (c.monto_total || 0);
   };
   const concCompraIds = new Set(concPorCompra.keys());
-  const totalConciliadas = data.filter(c => isConciliada(c)).length;
-  const totalPendientes = data.filter(c => !isConciliada(c)).length;
+  // Anuladas (estado='ANULADA' viene del SII via Railway sync) van a su propio bucket
+  // y NO se cuentan ni en Todas, Pendientes, ni Conciliadas — no son obligación real.
+  const isAnulada = (c: DBRcvCompra) => c.estado === "ANULADA";
+  const vigentes = data.filter(c => !isAnulada(c));
+  const anuladas = data.filter(c => isAnulada(c));
+  const totalConciliadas = vigentes.filter(c => isConciliada(c)).length;
+  const totalPendientes = vigentes.filter(c => !isConciliada(c)).length;
 
-  const filteredByConc = concFilter === "pendiente" ? data.filter(c => !isConciliada(c))
-    : concFilter === "conciliada" ? data.filter(c => isConciliada(c))
-    : data;
+  const filteredByConc = concFilter === "pendiente" ? vigentes.filter(c => !isConciliada(c))
+    : concFilter === "conciliada" ? vigentes.filter(c => isConciliada(c))
+    : concFilter === "anulada" ? anuladas
+    : vigentes;
   let filtered = searchBhe
     ? filteredByConc.filter(c => {
         const q = searchBhe.toLowerCase();
@@ -2455,7 +2461,7 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
         <div>
           <h2 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>Boletas de Honorarios</h2>
-          <div style={{ fontSize: 12, color: "var(--txt3)", marginTop: 2 }}>{formatPeriodo(periodo)} · {data.length} boletas</div>
+          <div style={{ fontSize: 12, color: "var(--txt3)", marginTop: 2 }}>{formatPeriodo(periodo)} · {vigentes.length} boletas{anuladas.length > 0 ? ` · ${anuladas.length} anuladas` : ""}</div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <button onClick={handleSync} disabled={syncing}
@@ -2501,15 +2507,16 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
       {/* Filtro conciliación */}
       <div style={{ display: "flex", gap: 2, background: "var(--bg3)", borderRadius: 8, padding: 2, marginBottom: 12, width: "fit-content" }}>
         {([
-          { key: "todos" as const, label: `Todas (${data.length})` },
+          { key: "todos" as const, label: `Todas (${vigentes.length})` },
           { key: "pendiente" as const, label: `Por conciliar (${totalPendientes})` },
           { key: "conciliada" as const, label: `Conciliadas (${totalConciliadas})` },
+          ...(anuladas.length > 0 ? [{ key: "anulada" as const, label: `Anuladas (${anuladas.length})` }] : []),
         ]).map(f => (
           <button key={f.key} onClick={() => setConcFilter(f.key)}
             style={{
               padding: "5px 12px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: "pointer", border: "none",
-              background: concFilter === f.key ? (f.key === "pendiente" ? "var(--amberBg)" : f.key === "conciliada" ? "var(--greenBg)" : "var(--cyanBg)") : "transparent",
-              color: concFilter === f.key ? (f.key === "pendiente" ? "var(--amber)" : f.key === "conciliada" ? "var(--green)" : "var(--cyan)") : "var(--txt3)",
+              background: concFilter === f.key ? (f.key === "pendiente" ? "var(--amberBg)" : f.key === "conciliada" ? "var(--greenBg)" : f.key === "anulada" ? "var(--redBg)" : "var(--cyanBg)") : "transparent",
+              color: concFilter === f.key ? (f.key === "pendiente" ? "var(--amber)" : f.key === "conciliada" ? "var(--green)" : f.key === "anulada" ? "var(--red)" : "var(--cyan)") : "var(--txt3)",
             }}>
             {f.label}
           </button>
@@ -2550,7 +2557,7 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
         <div className="card" style={{ padding: 32, textAlign: "center" }}>
           <div style={{ fontSize: 32, marginBottom: 8 }}>📋</div>
           <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
-            {concFilter === "pendiente" ? "Todas las boletas están conciliadas" : concFilter === "conciliada" ? "Sin boletas conciliadas" : "Sin boletas para este período"}
+            {concFilter === "pendiente" ? "Todas las boletas están conciliadas" : concFilter === "conciliada" ? "Sin boletas conciliadas" : concFilter === "anulada" ? "Sin boletas anuladas" : "Sin boletas para este período"}
           </div>
           {concFilter === "todos" && (
             <div style={{ fontSize: 12, color: "var(--txt3)", marginBottom: 12 }}>Importa las boletas desde el SII</div>
@@ -2572,8 +2579,10 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
               </tr>
             </thead>
             <tbody>
-              {filtered.map((c, i) => (
-                <tr key={c.id || i}>
+              {filtered.map((c, i) => {
+                const anulada = isAnulada(c);
+                return (
+                <tr key={c.id || i} style={anulada ? { opacity: 0.55, textDecoration: "line-through" } : undefined}>
                   <td className="mono" style={{ fontWeight: 600 }}>{c.nro_doc}</td>
                   <td className="mono">{fmtDate(c.fecha_docto)}</td>
                   <td className="mono" style={{ fontSize: 10 }}>{c.rut_proveedor}</td>
@@ -2581,7 +2590,10 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                   <td className="mono" style={{ textAlign: "right" }}>{fmtMoney(c.monto_neto || 0)}</td>
                   <td className="mono" style={{ textAlign: "right", color: "var(--amber)" }}>{fmtMoney(c.monto_iva || 0)}</td>
                   <td className="mono" style={{ textAlign: "right", fontWeight: 600, color: "var(--green)" }}>{fmtMoney(c.monto_total || 0)}</td>
-                  <td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
+                  <td style={{ whiteSpace: "nowrap", textAlign: "right", textDecoration: "none" }}>
+                    {anulada ? (
+                      <span style={{ fontSize: 11, fontWeight: 600, padding: "4px 12px", borderRadius: 6, background: "var(--redBg)", color: "var(--red)" }}>Anulada</span>
+                    ) : (
                     <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
                       <span style={{ fontSize: 10, color: "var(--txt3)" }}>
                         {isConciliada(c) ? fmtMoney(c.monto_total || 0) : isParcial(c) ? `${fmtMoney((c.monto_total || 0) - (concPorCompra.get(c.id!) || 0))} por pagar` : `${fmtMoney(c.monto_total || 0)} por pagar`}
@@ -2627,9 +2639,11 @@ function TabHonorarios({ empresa, periodo }: { empresa: DBEmpresa; periodo: stri
                         </div>
                       )}
                     </div>
+                    )}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
             <tfoot>
               <tr style={{ fontWeight: 700, background: "var(--bg3)" }}>
