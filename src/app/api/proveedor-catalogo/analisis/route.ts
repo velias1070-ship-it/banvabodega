@@ -16,8 +16,9 @@ export const dynamic = "force-dynamic";
 
 interface FamiliaRow {
   familia: string;
-  /** Nombre legible inferido: nombre del producto más vendido de la familia.
-   *  Si la familia no tiene match, usa el nombre del primer SKU del catálogo. */
+  /** Lista de prefijos SKU agrupados (cuando varios prefijos comparten nombre). */
+  familias_skus?: string[];
+  /** Nombre legible inferido. */
   nombre_familia: string;
   /** Categoría inferida del producto representativo (puede ser null). */
   categoria: string | null;
@@ -234,7 +235,74 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  const familias = Array.from(familiasNuevas.values()).sort((a, b) => {
+  // ── Pase de fusión por nombre ──
+  // Algunas familias-por-SKU son la misma categoría real (ej SPAFL36/37/38
+  // = lisos y SPAFE30/31/34 = estampados, ambos "Jgo Sabana Polar AF 100%Pol").
+  // Si dos familias comparten ≥3 palabras de prefijo en nombre_familia
+  // (ignorando stopwords y atributos de variante), las fusionamos.
+  const tokensSignificativos = (n: string): string[] =>
+    tokenize(n).filter(t => t.length >= 2 && !STOPWORDS_VARIANTE.has(t) && !["de","la","el","los","las","y","o","con","sin","del","al"].includes(t));
+  const prefijoComunSignif = (a: string, b: string): string[] => {
+    const ta = tokensSignificativos(a);
+    const tb = tokensSignificativos(b);
+    const out: string[] = [];
+    const minLen = Math.min(ta.length, tb.length);
+    for (let i = 0; i < minLen; i++) {
+      if (ta[i] === tb[i]) out.push(ta[i]); else break;
+    }
+    return out;
+  };
+
+  const familiasArr = Array.from(familiasNuevas.values());
+  const grupos: FamiliaRow[][] = [];
+  const yaAsignadas = new Set<string>();
+  for (let i = 0; i < familiasArr.length; i++) {
+    if (yaAsignadas.has(familiasArr[i].familia)) continue;
+    const grupo = [familiasArr[i]];
+    yaAsignadas.add(familiasArr[i].familia);
+    for (let j = i + 1; j < familiasArr.length; j++) {
+      if (yaAsignadas.has(familiasArr[j].familia)) continue;
+      const prefij = prefijoComunSignif(familiasArr[i].nombre_familia, familiasArr[j].nombre_familia);
+      // ≥3 palabras significativas comunes Y ambas familias deben tener match
+      // (evita fusionar líneas nuevas con líneas conocidas por casualidad).
+      if (prefij.length >= 3 && familiasArr[i].match === familiasArr[j].match) {
+        grupo.push(familiasArr[j]);
+        yaAsignadas.add(familiasArr[j].familia);
+      }
+    }
+    grupos.push(grupo);
+  }
+
+  const familias: FamiliaRow[] = grupos.map(grupo => {
+    if (grupo.length === 1) return grupo[0];
+    // Fusión: combinar SKUs nuevos, top vendidos, conteos.
+    const todosNombres = grupo.map(g => g.nombre_familia);
+    const nombreFusion = (() => {
+      // Prefijo común de los nombres
+      const palabras = todosNombres.map(n => n.split(/\s+/));
+      const minLen = Math.min(...palabras.map(p => p.length));
+      const out: string[] = [];
+      for (let i = 0; i < minLen; i++) {
+        const p0 = palabras[0][i].toLowerCase();
+        if (palabras.every(p => p[i].toLowerCase() === p0)) out.push(palabras[0][i]);
+        else break;
+      }
+      return out.length >= 2 ? out.join(" ") : todosNombres[0];
+    })();
+    const topVendidos = grupo.flatMap(g => g.top_3_vendidos)
+      .sort((a, b) => b.uds_180d - a.uds_180d).slice(0, 5);
+    return {
+      familia: grupo.map(g => g.familia).join(" + "),
+      familias_skus: grupo.map(g => g.familia),
+      nombre_familia: nombreFusion,
+      categoria: grupo.find(g => g.categoria)?.categoria ?? null,
+      skus_nuevos: grupo.flatMap(g => g.skus_nuevos),
+      skus_que_ya_tenemos: grupo.reduce((s, g) => s + g.skus_que_ya_tenemos, 0),
+      uds_180d_familia: grupo.reduce((s, g) => s + g.uds_180d_familia, 0),
+      top_3_vendidos: topVendidos,
+      match: grupo[0].match,
+    };
+  }).sort((a, b) => {
     if (a.match !== b.match) return a.match ? -1 : 1;
     return b.uds_180d_familia - a.uds_180d_familia;
   });

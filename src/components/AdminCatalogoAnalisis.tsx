@@ -16,6 +16,7 @@ interface SkuNuevo { sku: string; nombre: string | null; precio_neto: number; st
 interface TopVendido { sku: string; nombre: string | null; uds_180d: number }
 interface Familia {
   familia: string;
+  familias_skus?: string[];
   nombre_familia: string;
   categoria: string | null;
   skus_nuevos: SkuNuevo[];
@@ -201,8 +202,17 @@ export default function AdminCatalogoAnalisis() {
                             {expandida ? "▼" : "▶"} {f.nombre_familia}
                           </div>
                           <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 9, color: "var(--txt3)" }}>
-                            <span className="mono">{f.familia}…</span>
+                            <span className="mono">
+                              {f.familias_skus && f.familias_skus.length > 1
+                                ? f.familias_skus.map(s => s + "…").join(" + ")
+                                : f.familia + "…"}
+                            </span>
                             {f.categoria && <span style={{ padding: "1px 5px", background: "var(--bg4)", borderRadius: 2 }}>{f.categoria}</span>}
+                            {f.familias_skus && f.familias_skus.length > 1 && (
+                              <span style={{ padding: "1px 5px", background: "var(--cyanBg)", color: "var(--cyan)", borderRadius: 2 }}>
+                                {f.familias_skus.length} sub-familias fusionadas
+                              </span>
+                            )}
                           </div>
                         </div>
                       </td>
