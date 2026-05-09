@@ -16,10 +16,15 @@ export const dynamic = "force-dynamic";
 
 interface FamiliaRow {
   familia: string;
+  /** Nombre legible inferido: nombre del producto más vendido de la familia.
+   *  Si la familia no tiene match, usa el nombre del primer SKU del catálogo. */
+  nombre_familia: string;
+  /** Categoría inferida del producto representativo (puede ser null). */
+  categoria: string | null;
   skus_nuevos: Array<{ sku: string; nombre: string | null; precio_neto: number; stock_disponible: number; inner_pack: number }>;
   skus_que_ya_tenemos: number;
   uds_180d_familia: number;
-  top_3_vendidos: string[];
+  top_3_vendidos: Array<{ sku: string; nombre: string | null; uds_180d: number }>;
   match: boolean;
 }
 
@@ -56,7 +61,7 @@ export async function GET(req: NextRequest) {
   const skusEnProductos = new Set((prodRows || []).map(p => p.sku));
 
   // 3. Productos del proveedor (todos, para detectar familias conocidas)
-  let prodProvQuery = sb.from("productos").select("sku, nombre");
+  let prodProvQuery = sb.from("productos").select("sku, nombre, categoria");
   if (proveedorId !== "null") prodProvQuery = prodProvQuery.eq("proveedor_id", proveedorId);
   const { data: prodProv, error: prodProvErr } = await prodProvQuery;
   if (prodProvErr) return NextResponse.json({ error: prodProvErr.message }, { status: 500 });
@@ -94,16 +99,43 @@ export async function GET(req: NextRequest) {
 
   // 5. Agrupar
   const fam = (sku: string) => sku.toUpperCase().substring(0, prefixLen);
-  const familiasConocidas = new Map<string, { skus: string[]; uds_180d: number; top_vendidos: Array<{ sku: string; uds: number }> }>();
-  for (const p of (prodProv || []) as Array<{ sku: string }>) {
+  type ProdRow = { sku: string; nombre: string | null; categoria: string | null };
+  const familiasConocidas = new Map<string, {
+    skus: ProdRow[];
+    uds_180d: number;
+    top_vendidos: Array<{ sku: string; nombre: string | null; uds: number }>;
+  }>();
+  for (const p of (prodProv || []) as ProdRow[]) {
     const f = fam(p.sku);
     const uds = ventasMap.get(p.sku) || 0;
     let entry = familiasConocidas.get(f);
     if (!entry) { entry = { skus: [], uds_180d: 0, top_vendidos: [] }; familiasConocidas.set(f, entry); }
-    entry.skus.push(p.sku);
+    entry.skus.push(p);
     entry.uds_180d += uds;
-    if (uds > 0) entry.top_vendidos.push({ sku: p.sku, uds });
+    if (uds > 0) entry.top_vendidos.push({ sku: p.sku, nombre: p.nombre, uds });
   }
+
+  // Helper: nombre legible de familia. Saca prefijo común de los nombres
+  // (ej: "Quilt Atenas Beige 2P" + "Quilt Atenas Gris 2P" → "Quilt Atenas").
+  // Si no hay overlap claro, devuelve el nombre del más vendido completo.
+  const nombreFamilia = (nombres: Array<string | null>): string => {
+    const validos = nombres.filter((n): n is string => !!n && n.trim().length > 0);
+    if (validos.length === 0) return "(sin nombre)";
+    if (validos.length === 1) return validos[0];
+    // Prefijo común (palabras enteras)
+    const palabras = validos.map(n => n.split(/\s+/));
+    const minLen = Math.min(...palabras.map(p => p.length));
+    let prefijoComun: string[] = [];
+    for (let i = 0; i < minLen; i++) {
+      const p0 = palabras[0][i].toLowerCase();
+      if (palabras.every(p => p[i].toLowerCase() === p0)) {
+        prefijoComun.push(palabras[0][i]);
+      } else break;
+    }
+    if (prefijoComun.length >= 2) return prefijoComun.join(" ");
+    // Sin overlap claro: nombre del primero con "..."
+    return validos[0].length > 50 ? validos[0].substring(0, 50) + "…" : validos[0];
+  };
 
   const familiasNuevas = new Map<string, FamiliaRow>();
   for (const c of catalogo as Array<{ sku_origen: string; nombre: string | null; precio_neto: number; stock_disponible: number | null; inner_pack: number | null }>) {
@@ -112,12 +144,22 @@ export async function GET(req: NextRequest) {
     let entry = familiasNuevas.get(f);
     if (!entry) {
       const conocida = familiasConocidas.get(f);
+      const topOrdenados = (conocida?.top_vendidos || []).sort((a, b) => b.uds - a.uds);
+      // Inferir nombre + categoría del producto más vendido (o cualquier producto si nadie vendió)
+      const repre: ProdRow | undefined = topOrdenados[0]
+        ? conocida?.skus.find(s => s.sku === topOrdenados[0].sku)
+        : conocida?.skus[0];
+      const nombreInf = conocida && conocida.skus.length > 0
+        ? nombreFamilia(conocida.skus.map(s => s.nombre))
+        : (c.nombre || "(catálogo sin nombre)");
       entry = {
         familia: f,
+        nombre_familia: nombreInf,
+        categoria: repre?.categoria ?? null,
         skus_nuevos: [],
         skus_que_ya_tenemos: conocida?.skus.length || 0,
         uds_180d_familia: conocida?.uds_180d || 0,
-        top_3_vendidos: (conocida?.top_vendidos || []).sort((a, b) => b.uds - a.uds).slice(0, 3).map(t => t.sku),
+        top_3_vendidos: topOrdenados.slice(0, 3).map(t => ({ sku: t.sku, nombre: t.nombre, uds_180d: t.uds })),
         match: !!conocida,
       };
       familiasNuevas.set(f, entry);

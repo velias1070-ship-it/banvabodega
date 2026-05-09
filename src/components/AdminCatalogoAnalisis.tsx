@@ -13,12 +13,15 @@ import { getSupabase } from "@/lib/supabase";
 
 interface Proveedor { id: string; nombre_canonico: string; nombre: string | null; rut: string | null }
 interface SkuNuevo { sku: string; nombre: string | null; precio_neto: number; stock_disponible: number; inner_pack: number }
+interface TopVendido { sku: string; nombre: string | null; uds_180d: number }
 interface Familia {
   familia: string;
+  nombre_familia: string;
+  categoria: string | null;
   skus_nuevos: SkuNuevo[];
   skus_que_ya_tenemos: number;
   uds_180d_familia: number;
-  top_3_vendidos: string[];
+  top_3_vendidos: TopVendido[];
   match: boolean;
 }
 interface AnalisisResponse {
@@ -170,59 +173,92 @@ export default function AdminCatalogoAnalisis() {
 
       {data && familiasFiltradas.length > 0 && (
         <div style={{ border: "1px solid var(--bg4)", borderRadius: 8, overflowX: "auto" }}>
-          <table className="tbl" style={{ width: "100%", minWidth: 900 }}>
+          <table className="tbl" style={{ width: "100%", minWidth: 1100 }}>
             <thead>
               <tr>
-                <th style={{ width: 110 }}>Familia</th>
-                <th style={{ width: 70, textAlign: "center" }}>Match</th>
-                <th style={{ textAlign: "right", width: 90 }}>SKUs nuevos</th>
-                <th style={{ textAlign: "right", width: 110 }}>Ya tenés</th>
-                <th style={{ textAlign: "right", width: 110 }}>Uds 180d</th>
-                <th>Top 3 vendidos (familia)</th>
-                <th>SKUs nuevos en catálogo</th>
+                <th>Producto / Familia</th>
+                <th style={{ width: 90, textAlign: "center" }}>Tipo</th>
+                <th style={{ textAlign: "right", width: 90 }}>Variantes nuevas</th>
+                <th style={{ textAlign: "right", width: 90 }}>Ya tenés</th>
+                <th style={{ textAlign: "right", width: 100 }}>Uds 180d</th>
+                <th>Top vendido</th>
               </tr>
             </thead>
             <tbody>
               {familiasFiltradas.map(f => {
                 const expandida = familiaExpandida === f.familia;
+                const topNombre = f.top_3_vendidos[0]?.nombre || null;
                 return (
                   <>
                     <tr key={f.familia}
                       style={{ background: expandida ? "var(--bg3)" : "transparent", cursor: "pointer" }}
                       onClick={() => setFamiliaExpandida(expandida ? null : f.familia)}>
-                      <td className="mono" style={{ fontWeight: 700, fontSize: 11 }}>
-                        {expandida ? "▼" : "▶"} {f.familia}
+                      <td>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--txt)" }}>
+                            {expandida ? "▼" : "▶"} {f.nombre_familia}
+                          </div>
+                          <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 9, color: "var(--txt3)" }}>
+                            <span className="mono">{f.familia}…</span>
+                            {f.categoria && <span style={{ padding: "1px 5px", background: "var(--bg4)", borderRadius: 2 }}>{f.categoria}</span>}
+                          </div>
+                        </div>
                       </td>
                       <td style={{ textAlign: "center" }}>
                         {f.match
-                          ? <span style={{ fontSize: 9, padding: "2px 6px", borderRadius: 3, background: "var(--greenBg)", color: "var(--green)", fontWeight: 700 }}>✅ Conocida</span>
-                          : <span style={{ fontSize: 9, padding: "2px 6px", borderRadius: 3, background: "var(--amberBg)", color: "var(--amber)", fontWeight: 700 }}>🆕 Nueva</span>
+                          ? <span style={{ fontSize: 9, padding: "2px 6px", borderRadius: 3, background: "var(--greenBg)", color: "var(--green)", fontWeight: 700 }} title="Variantes (talla/color) de un producto que ya vendés">✅ Variante</span>
+                          : <span style={{ fontSize: 9, padding: "2px 6px", borderRadius: 3, background: "var(--amberBg)", color: "var(--amber)", fontWeight: 700 }} title="Línea completamente nueva — nunca vendiste nada del prefijo">🆕 Línea nueva</span>
                         }
                       </td>
-                      <td className="mono" style={{ textAlign: "right", fontSize: 12, fontWeight: 700, color: "var(--amber)" }}>{fmtInt(f.skus_nuevos.length)}</td>
-                      <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{fmtInt(f.skus_que_ya_tenemos)}</td>
-                      <td className="mono" style={{ textAlign: "right", fontSize: 11, color: f.uds_180d_familia > 100 ? "var(--cyan)" : f.uds_180d_familia > 0 ? "var(--txt2)" : "var(--txt3)", fontWeight: f.uds_180d_familia > 100 ? 700 : 400 }}>
+                      <td className="mono" style={{ textAlign: "right", fontSize: 13, fontWeight: 700, color: "var(--amber)" }}>{fmtInt(f.skus_nuevos.length)}</td>
+                      <td className="mono" style={{ textAlign: "right", fontSize: 11, color: "var(--txt2)" }}>{fmtInt(f.skus_que_ya_tenemos)}</td>
+                      <td className="mono" style={{ textAlign: "right", fontSize: 12, color: f.uds_180d_familia > 100 ? "var(--cyan)" : f.uds_180d_familia > 0 ? "var(--txt2)" : "var(--txt3)", fontWeight: f.uds_180d_familia > 100 ? 700 : 400 }}>
                         {f.uds_180d_familia > 0 ? fmtInt(f.uds_180d_familia) : "—"}
                       </td>
-                      <td className="mono" style={{ fontSize: 10, color: "var(--txt2)" }}>
-                        {f.top_3_vendidos.length > 0 ? f.top_3_vendidos.join(", ") : "—"}
-                      </td>
-                      <td style={{ fontSize: 10, color: "var(--txt2)" }}>
-                        {f.skus_nuevos.slice(0, 4).map(s => s.sku).join(", ")}
-                        {f.skus_nuevos.length > 4 ? ` … +${f.skus_nuevos.length - 4}` : ""}
+                      <td style={{ fontSize: 11, color: "var(--txt2)" }}>
+                        {topNombre ? (
+                          <div title={f.top_3_vendidos.map(t => `${t.sku}: ${t.uds_180d} uds`).join("\n")}>
+                            {topNombre.length > 60 ? topNombre.substring(0, 60) + "…" : topNombre}
+                            {f.top_3_vendidos.length > 1 && <span style={{ color: "var(--txt3)", fontSize: 10 }}> +{f.top_3_vendidos.length - 1}</span>}
+                          </div>
+                        ) : <span style={{ color: "var(--txt3)" }}>—</span>}
                       </td>
                     </tr>
                     {expandida && (
                       <tr key={f.familia + "_exp"}>
-                        <td colSpan={7} style={{ background: "var(--bg2)", padding: 12 }}>
+                        <td colSpan={6} style={{ background: "var(--bg2)", padding: 12 }}>
+                          {f.match && f.top_3_vendidos.length > 0 && (
+                            <div style={{ marginBottom: 12, padding: 10, background: "var(--bg3)", borderRadius: 6, border: "1px solid var(--bg4)" }}>
+                              <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 6, fontWeight: 600 }}>VARIANTES QUE YA VENDÉS DE ESTA FAMILIA:</div>
+                              <table className="tbl" style={{ width: "100%" }}>
+                                <thead>
+                                  <tr>
+                                    <th style={{ width: 160 }}>SKU</th>
+                                    <th>Nombre</th>
+                                    <th style={{ textAlign: "right", width: 100 }}>Uds 180d</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {f.top_3_vendidos.map(t => (
+                                    <tr key={t.sku}>
+                                      <td className="mono" style={{ fontSize: 11 }}>{t.sku}</td>
+                                      <td style={{ fontSize: 11, color: "var(--txt2)" }}>{t.nombre || "—"}</td>
+                                      <td className="mono" style={{ textAlign: "right", fontSize: 11, color: "var(--cyan)", fontWeight: 600 }}>{fmtInt(t.uds_180d)}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                          <div style={{ fontSize: 10, color: "var(--txt3)", marginBottom: 6, fontWeight: 600 }}>VARIANTES NUEVAS DEL CATÁLOGO ({f.skus_nuevos.length}):</div>
                           <table className="tbl" style={{ width: "100%" }}>
                             <thead>
                               <tr>
-                                <th>SKU nuevo</th>
+                                <th style={{ width: 160 }}>SKU nuevo</th>
                                 <th>Nombre catálogo</th>
-                                <th style={{ textAlign: "right" }}>Precio neto</th>
-                                <th style={{ textAlign: "right" }}>Stock prov.</th>
-                                <th style={{ textAlign: "right" }}>IP</th>
+                                <th style={{ textAlign: "right", width: 100 }}>Precio neto</th>
+                                <th style={{ textAlign: "right", width: 90 }}>Stock prov.</th>
+                                <th style={{ textAlign: "right", width: 50 }}>IP</th>
                               </tr>
                             </thead>
                             <tbody>
@@ -231,7 +267,7 @@ export default function AdminCatalogoAnalisis() {
                                   <td className="mono" style={{ fontSize: 11, fontWeight: 600 }}>{s.sku}</td>
                                   <td style={{ fontSize: 11, color: "var(--txt2)" }}>{s.nombre || <span style={{ color: "var(--txt3)" }}>—</span>}</td>
                                   <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{s.precio_neto > 0 ? fmtMoney(s.precio_neto) : "—"}</td>
-                                  <td className="mono" style={{ textAlign: "right", fontSize: 11, color: s.stock_disponible > 0 ? "var(--green)" : "var(--txt3)" }}>{fmtInt(s.stock_disponible)}</td>
+                                  <td className="mono" style={{ textAlign: "right", fontSize: 11, color: s.stock_disponible > 0 ? "var(--green)" : "var(--txt3)", fontWeight: s.stock_disponible > 0 ? 600 : 400 }}>{fmtInt(s.stock_disponible)}</td>
                                   <td className="mono" style={{ textAlign: "right", fontSize: 11 }}>{s.inner_pack}</td>
                                 </tr>
                               ))}
