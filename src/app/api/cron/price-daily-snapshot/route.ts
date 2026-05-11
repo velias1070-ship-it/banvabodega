@@ -105,7 +105,7 @@ export async function GET(req: NextRequest) {
       delta_pct: 0,
       promo_pct: it.promo_pct ?? null,
       promo_name: it.promo_name ?? null,
-      fuente: "daily_snapshot",
+      fuente: "snapshot_diario",
       motivo: "snapshot_diario",
       actor: "auto",
       contexto: {

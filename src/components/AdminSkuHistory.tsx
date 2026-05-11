@@ -123,7 +123,7 @@ function fuenteLabel(f: string): { label: string; color: string } {
   if (f === "sync_diff") return { label: "auto-sync", color: "var(--txt2)" };
   if (f === "promo_join") return { label: "promo postulada", color: "var(--cyan)" };
   if (f === "item_update_api") return { label: "manual API", color: "var(--amber)" };
-  if (f === "daily_snapshot") return { label: "snapshot diario", color: "var(--txt3)" };
+  if (f === "snapshot_diario") return { label: "snapshot diario", color: "var(--txt3)" };
   return { label: f, color: "var(--txt3)" };
 }
 
@@ -334,7 +334,7 @@ export default function AdminSkuHistory() {
                       const f = fuenteLabel(r.fuente);
                       const ev = eventoTagLabel(r.evento_tag, r.evento_subtag);
                       return (
-                        <tr key={i} style={r.fuente === "daily_snapshot" ? { background: "var(--bg3)", color: "var(--txt3)" } : undefined}>
+                        <tr key={i} style={r.fuente === "snapshot_diario" ? { background: "var(--bg3)", color: "var(--txt3)" } : undefined}>
                           <td style={{ fontSize: 11 }}>{new Date(r.detected_at).toLocaleString("es-CL")}</td>
                           <td className="mono" style={{ textAlign: "right" }}>{fmtCLP(r.precio_anterior)}</td>
                           <td className="mono" style={{ textAlign: "right", fontWeight: 600 }}>{fmtCLP(r.precio)}</td>
