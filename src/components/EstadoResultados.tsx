@@ -124,7 +124,8 @@ function signoCompra(tipoDoc: number | string): 1 | -1 {
   return td === 61 ? -1 : 1;
 }
 function montoCompra(c: DBRcvCompra): number {
-  return (c.monto_total || 0) * signoCompra(c.tipo_doc);
+  // Number() porque Supabase devuelve numeric como string; 0 + "X" concatena en otros call sites.
+  return Number(c.monto_total || 0) * signoCompra(c.tipo_doc);
 }
 
 // Color por tipo de cuenta
@@ -311,9 +312,9 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
   const lineas = useMemo((): LineaER[] => {
     const result: LineaER[] = [];
 
-    // Totales por tipo
-    const totalIngresosAct = ventasAct.reduce((s, v) => s + (v.monto_total || 0), 0);
-    const totalIngresosAnt = ventasAnt.reduce((s, v) => s + (v.monto_total || 0), 0);
+    // Totales por tipo. Number() porque numeric viene como string en JSON de Supabase.
+    const totalIngresosAct = ventasAct.reduce((s, v) => s + Number(v.monto_total || 0), 0);
+    const totalIngresosAnt = ventasAnt.reduce((s, v) => s + Number(v.monto_total || 0), 0);
 
     // === Mapas auxiliares ===
     const cuentaTipoOf = (cuentaId: string | null | undefined): string | null => {
@@ -363,11 +364,12 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
     // (si un mov está conciliado a una compra que ya sumó por su cuenta de proveedor, no sumar de nuevo)
     const procesarMovs = (movs: DBMovimientoBanco[], key: "act" | "ant") => {
       for (const m of movs) {
-        if (m.monto >= 0) continue;
+        const monto = Number(m.monto || 0);
+        if (monto >= 0) continue;
         const compraId = m.id ? compraByMovId.get(m.id) : undefined;
         if (compraId) continue; // ya contada vía la compra
         if (m.categoria_cuenta_id) {
-          addMonto(m.categoria_cuenta_id, key, Math.abs(m.monto));
+          addMonto(m.categoria_cuenta_id, key, Math.abs(monto));
         }
         // sin categoría se trata aparte (línea sin_cat)
       }
@@ -376,11 +378,11 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
     procesarMovs(movBancoAnt, "ant");
 
     const sinCatGastosAct = movBanco.reduce(
-      (s, m) => s + (m.monto < 0 && !m.categoria_cuenta_id && (!m.id || !compraByMovId.has(m.id)) ? Math.abs(m.monto) : 0),
+      (s, m) => s + (Number(m.monto || 0) < 0 && !m.categoria_cuenta_id && (!m.id || !compraByMovId.has(m.id)) ? Math.abs(Number(m.monto || 0)) : 0),
       0,
     );
     const sinCatGastosAnt = movBancoAnt.reduce(
-      (s, m) => s + (m.monto < 0 && !m.categoria_cuenta_id && (!m.id || !compraByMovId.has(m.id)) ? Math.abs(m.monto) : 0),
+      (s, m) => s + (Number(m.monto || 0) < 0 && !m.categoria_cuenta_id && (!m.id || !compraByMovId.has(m.id)) ? Math.abs(Number(m.monto || 0)) : 0),
       0,
     );
 

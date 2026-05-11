@@ -106,21 +106,22 @@ export default function DashboardConciliacion({ empresa, periodo, onChangePeriod
   const totalMov = movReales.filter(m => m.estado_conciliacion !== "ignorado").length;
   const pctMov = totalMov > 0 ? Math.round((movConciliados.length / totalMov) * 100) : 0;
 
-  // Cuentas por cobrar (facturas venta sin conciliar)
+  // Cuentas por cobrar (facturas venta sin conciliar). Number() porque Supabase devuelve numeric
+  // como string en JSON: 0 + "X" concatena en vez de sumar y todos los KPIs quedan en orden lex.
   const ventasPendientes = ventas.filter(v => !concVentaIds.has(v.id!));
   const ventasCobradas = ventas.filter(v => concVentaIds.has(v.id!));
-  const totalPorCobrar = ventasPendientes.reduce((s, v) => s + (v.monto_total || 0), 0);
+  const totalPorCobrar = ventasPendientes.reduce((s, v) => s + Number(v.monto_total || 0), 0);
 
-  // Cuentas por pagar (facturas compra sin conciliar)
-  const comprasPendientes = compras.filter(c => !concCompraIds.has(c.id!) && c.tipo_doc !== 71);
-  const honorariosPend = compras.filter(c => !concCompraIds.has(c.id!) && c.tipo_doc === 71);
+  // Cuentas por pagar (facturas compra sin conciliar; excluir anuladas)
+  const comprasPendientes = compras.filter(c => !concCompraIds.has(c.id!) && c.tipo_doc !== 71 && c.estado !== "ANULADA");
+  const honorariosPend = compras.filter(c => !concCompraIds.has(c.id!) && c.tipo_doc === 71 && c.estado !== "ANULADA");
   const comprasPagadas = compras.filter(c => concCompraIds.has(c.id!));
-  const totalPorPagar = comprasPendientes.reduce((s, c) => s + (c.monto_total || 0), 0) + honorariosPend.reduce((s, c) => s + (c.monto_total || 0), 0);
+  const totalPorPagar = comprasPendientes.reduce((s, c) => s + Number(c.monto_total || 0), 0) + honorariosPend.reduce((s, c) => s + Number(c.monto_total || 0), 0);
 
   // Resultado operacional
-  const totalIngresos = ventas.reduce((s, v) => s + (v.monto_neto || 0), 0);
-  const totalCostos = compras.reduce((s, c) => s + (c.monto_total || 0), 0);
-  const gastosOp = Math.abs(movReales.filter(m => m.monto < 0 && m.categoria_cuenta_id).reduce((s, m) => s + m.monto, 0));
+  const totalIngresos = ventas.reduce((s, v) => s + Number(v.monto_neto || 0), 0);
+  const totalCostos = compras.filter(c => c.estado !== "ANULADA").reduce((s, c) => s + Number(c.monto_total || 0), 0);
+  const gastosOp = Math.abs(movReales.filter(m => m.monto < 0 && m.categoria_cuenta_id).reduce((s, m) => s + Number(m.monto || 0), 0));
   const resultado = totalIngresos - totalCostos - gastosOp;
 
   // Tareas totales
