@@ -86,7 +86,7 @@ export async function GET(req: NextRequest) {
     promo_pct: number | null;
     promo_name: string | null;
     fuente: string;
-    motivo: string;
+    motivo: string | null;
     actor: string;
     contexto: Record<string, unknown>;
   }> = [];
@@ -106,7 +106,8 @@ export async function GET(req: NextRequest) {
       promo_pct: it.promo_pct ?? null,
       promo_name: it.promo_name ?? null,
       fuente: "snapshot_diario",
-      motivo: "snapshot_diario",
+      motivo: null, // snapshot no es un cambio real, no aplica motivo de la taxonomía
+
       actor: "auto",
       contexto: {
         tiene_promo: it.tiene_promo === true,
