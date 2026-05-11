@@ -1,7 +1,7 @@
 "use client";
 /* v3.1 — conteos + pedidos ML + cron fix */
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, refreshStore, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, eliminarPicking, anularPicking, duplicarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote, reconciliarStock, aplicarReconciliacion, editarStockVariante, sustituirProducto, getRecepcionAjustes, registrarAjuste, backfillFacturaOriginal, getNotasOperativas, despickearComponente, buildPickingLineasFull, getSkuFisicoPorSkuVenta, syncFlexPickingSession, resetearLineaRecepcion, sincronizarCostoMovimientosRecepcion, getCodigosMlBySkuOrigen, getCodigoMlPrimario } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, refreshStore, savePosAsync, deletePosAsync, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, eliminarPicking, anularPicking, duplicarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote, reconciliarStock, aplicarReconciliacion, editarStockVariante, sustituirProducto, getRecepcionAjustes, registrarAjuste, backfillFacturaOriginal, getNotasOperativas, despickearComponente, buildPickingLineasFull, getSkuFisicoPorSkuVenta, syncFlexPickingSession, resetearLineaRecepcion, sincronizarCostoMovimientosRecepcion, getCodigosMlBySkuOrigen, getCodigoMlPrimario } from "@/lib/store";
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia, IntegrityError } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
@@ -8099,16 +8099,24 @@ function Productos({ refresh }: { refresh: () => void }) {
 function Posiciones({ refresh }: { refresh: () => void }) {
   const s = getStore();
   const [newId,setNewId]=useState("");const [newLabel,setNewLabel]=useState("");const [newType,setNewType]=useState<"pallet"|"shelf">("pallet");
-  const addPos=()=>{
+  const addPos=async()=>{
     if(!newId.trim())return;const id=newId.trim();
     if(s.positions.find(p=>p.id===id)){alert("Ya existe "+id);return;}
-    s.positions.push({id,label:newLabel||("Posición "+id),type:newType,active:true});
-    saveStore();setNewId("");setNewLabel("");refresh();
+    try{
+      await savePosAsync({id,label:newLabel||("Posición "+id),type:newType,active:true});
+      setNewId("");setNewLabel("");refresh();
+    }catch(err){alert("No se pudo guardar la posición: "+(err instanceof Error?err.message:String(err)));}
   };
-  const toggleActive=(id:string)=>{const p=s.positions.find(x=>x.id===id);if(p){p.active=!p.active;saveStore();refresh();}};
-  const removePos=(id:string)=>{
+  const toggleActive=async(id:string)=>{
+    const p=s.positions.find(x=>x.id===id);if(!p)return;
+    try{await savePosAsync({...p,active:!p.active});refresh();}
+    catch(err){alert("No se pudo actualizar la posición: "+(err instanceof Error?err.message:String(err)));}
+  };
+  const removePos=async(id:string)=>{
     const items=posContents(id);if(items.length>0){alert("Tiene stock, no se puede eliminar");return;}
-    if(!confirm("Eliminar "+id+"?"))return;s.positions=s.positions.filter(p=>p.id!==id);saveStore();refresh();
+    if(!confirm("Eliminar "+id+"?"))return;
+    try{await deletePosAsync(id);refresh();}
+    catch(err){alert("No se pudo eliminar la posición: "+(err instanceof Error?err.message:String(err)));}
   };
   const pallets=s.positions.filter(p=>p.type==="pallet");const shelves=s.positions.filter(p=>p.type==="shelf");
 

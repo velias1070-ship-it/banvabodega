@@ -269,17 +269,20 @@ export async function fetchPosiciones(): Promise<DBPosition[]> {
 
 export async function upsertPosicion(p: DBPosition) {
   const sb = getSupabase(); if (!sb) return;
-  await sb.from("posiciones").upsert(p, { onConflict: "id" });
+  const { error } = await sb.from("posiciones").upsert(p, { onConflict: "id" });
+  if (error) throw new Error(`upsertPosicion failed for ${p.id}: ${error.message}`);
 }
 
 export async function updatePosicion(id: string, fields: Partial<DBPosition>) {
   const sb = getSupabase(); if (!sb) return;
-  await sb.from("posiciones").update(fields).eq("id", id);
+  const { error } = await sb.from("posiciones").update(fields).eq("id", id);
+  if (error) throw new Error(`updatePosicion failed for ${id}: ${error.message}`);
 }
 
 export async function deletePosicion(id: string) {
   const sb = getSupabase(); if (!sb) return;
-  await sb.from("posiciones").delete().eq("id", id);
+  const { error } = await sb.from("posiciones").delete().eq("id", id);
+  if (error) throw new Error(`deletePosicion failed for ${id}: ${error.message}`);
 }
 
 // Re-export for store.ts to use directly
