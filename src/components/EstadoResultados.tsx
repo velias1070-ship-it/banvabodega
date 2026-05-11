@@ -168,6 +168,8 @@ interface DrillDoc {
   conciliada: boolean;
   fechaPago: string | null;   // fecha del mov banco conciliado (cuando se pagó)
   bancoPago: string | null;   // banco/cuenta donde salió el pago
+  ncAplicada: boolean;        // tipo_doc=61 con factura_ref_id: ya cumplió su función, no necesita pago
+  ncRefFolio: string | null;  // folio de la factura que la NC modifica (para mostrar "NC aplicada a XXX")
 }
 
 // ==================== COMPONENTE ====================
@@ -506,6 +508,8 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
     const mapCompra = (c: DBRcvCompra): DrillDoc => {
       const conc = concByCompraId.get(c.id!);
       const movPago = conc?.movimiento_banco_id ? movById.get(conc.movimiento_banco_id) : undefined;
+      // NC con factura_ref_id ya cumplió su función reduciendo la factura referida; no necesita pago.
+      const ncAplicada = c.tipo_doc === 61 && !!c.factura_ref_id;
       return {
         id: c.id || null, tabla: "rcv_compras",
         periodoDevengo: c.periodo_devengo || null,
@@ -516,6 +520,8 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
         conciliada: !!conc,
         fechaPago: movPago?.fecha || null,
         bancoPago: movPago?.banco || null,
+        ncAplicada,
+        ncRefFolio: ncAplicada ? (c.factura_ref_folio || null) : null,
       };
     };
 
@@ -536,6 +542,8 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
         nota: notaPartes.join(" — "), conciliada: !!conc,
         fechaPago: m.fecha,
         bancoPago: m.banco,
+        ncAplicada: false,
+        ncRefFolio: null,
       };
     };
 
@@ -545,8 +553,8 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
         id: v.id || null, tabla: null, periodoDevengo: null,
         tipo: "Venta", doc: TIPO_DOC[v.tipo_doc] || String(v.tipo_doc),
         nro: v.folio || v.nro || "—", rut: v.rut_emisor || "—",
-        razon: "", fecha: v.fecha_docto || "—", monto: v.monto_total || 0, nota: "", conciliada: false,
-        fechaPago: null, bancoPago: null,
+        razon: "", fecha: v.fecha_docto || "—", monto: Number(v.monto_total || 0), nota: "", conciliada: false,
+        fechaPago: null, bancoPago: null, ncAplicada: false, ncRefFolio: null,
       }));
     }
     if (expandedRow === "cos_sin_cat") {
@@ -568,8 +576,8 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
         id: v.id || null, tabla: null, periodoDevengo: null,
         tipo: "Venta", doc: TIPO_DOC[v.tipo_doc] || String(v.tipo_doc),
         nro: v.folio || v.nro || "—", rut: v.rut_emisor || "—",
-        razon: "", fecha: v.fecha_docto || "—", monto: v.monto_total || 0, nota: "", conciliada: false,
-        fechaPago: null, bancoPago: null,
+        razon: "", fecha: v.fecha_docto || "—", monto: Number(v.monto_total || 0), nota: "", conciliada: false,
+        fechaPago: null, bancoPago: null, ncAplicada: false, ncRefFolio: null,
       }));
     }
 
@@ -604,6 +612,8 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
     const mapCompra = (c: DBRcvCompra): DrillDoc => {
       const conc = concByCompraId.get(c.id!);
       const movPago = conc?.movimiento_banco_id ? movById.get(conc.movimiento_banco_id) : undefined;
+      // NC con factura_ref_id ya cumplió su función reduciendo la factura referida; no necesita pago.
+      const ncAplicada = c.tipo_doc === 61 && !!c.factura_ref_id;
       return {
         id: c.id || null, tabla: "rcv_compras",
         periodoDevengo: c.periodo_devengo || null,
@@ -614,6 +624,8 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
         conciliada: !!conc,
         fechaPago: movPago?.fecha || null,
         bancoPago: movPago?.banco || null,
+        ncAplicada,
+        ncRefFolio: ncAplicada ? (c.factura_ref_folio || null) : null,
       };
     };
 
@@ -634,6 +646,8 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
         nota: notaPartes.join(" — "), conciliada: !!conc,
         fechaPago: m.fecha,
         bancoPago: m.banco,
+        ncAplicada: false,
+        ncRefFolio: null,
       };
     };
 
@@ -644,8 +658,8 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
       id: v.id || null, tabla: null, periodoDevengo: null,
       tipo: "Venta", doc: TIPO_DOC[v.tipo_doc] || String(v.tipo_doc),
       nro: v.folio || v.nro || "—", rut: v.rut_emisor || "—",
-      razon: "", fecha: v.fecha_docto || "—", monto: v.monto_total || 0, nota: "", conciliada: false,
-      fechaPago: null, bancoPago: null,
+      razon: "", fecha: v.fecha_docto || "—", monto: Number(v.monto_total || 0), nota: "", conciliada: false,
+      fechaPago: null, bancoPago: null, ncAplicada: false, ncRefFolio: null,
     }));
     if (cuentasIngreso.length > 0) {
       out.set(cuentasIngreso[0].id!, ventasAsDocs);
@@ -731,6 +745,11 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
                     <span title={d.bancoPago || ""} style={{ fontSize: 9, fontWeight: 600, padding: "1px 5px", borderRadius: 3, background: "var(--greenBg)", color: "var(--green)" }}>PAGADA</span>
                     {d.bancoPago && (<span style={{ fontSize: 9, color: "var(--txt3)", maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.bancoPago}</span>)}
                   </div>
+                ) : d.ncAplicada ? (
+                  <span title={d.ncRefFolio ? `NC aplicada a factura ${d.ncRefFolio}` : "NC aplicada a factura"}
+                    style={{ fontSize: 9, fontWeight: 600, padding: "1px 5px", borderRadius: 3, background: "var(--cyanBg)", color: "var(--cyan)" }}>
+                    NC APL.
+                  </span>
                 ) : (
                   <span style={{ fontSize: 9, fontWeight: 600, padding: "1px 5px", borderRadius: 3, background: "var(--amberBg)", color: "var(--amber)" }}>PEND.</span>
                 )}
@@ -897,7 +916,7 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
                       periodoDevengo: null, tipo: "", doc: "", nro: dragItem.nro,
                       rut: dragItem.rut, razon: dragItem.razon, fecha: "",
                       monto: 0, nota: "", conciliada: dragItem.conciliada,
-                      fechaPago: null, bancoPago: null,
+                      fechaPago: null, bancoPago: null, ncAplicada: false, ncRefFolio: null,
                     };
                     setDragItem(null);
                     void handleChangeCuenta(dragDoc, l.id);
