@@ -2890,18 +2890,22 @@ export async function updateMovimientoBanco(id: string, fields: Partial<DBMovimi
   await sb.from("movimientos_banco").update(fields).eq("id", id);
 }
 
-// Recalcular estado de conciliación de un movimiento basado en monto_aplicado de sus conciliaciones
+// Recalcular estado de conciliación de un movimiento basado en monto_aplicado de sus conciliaciones.
+// IMPORTANTE: Supabase devuelve `numeric` como string. Number() explícito evita concatenación
+// (0 + "5000" = "05000") que dejaba monto_conciliado mal y el estado calculado en orden lexicográfico.
 export async function syncEstadoConciliacion(movId: string, montoMov: number): Promise<{ estado: string; monto_conciliado: number }> {
   const sb = getSupabase();
   if (!sb) return { estado: "pendiente", monto_conciliado: 0 };
-  const { data: concs } = await sb.from("conciliaciones")
+  const { data: concs, error: selErr } = await sb.from("conciliaciones")
     .select("monto_aplicado")
     .eq("movimiento_banco_id", movId)
     .eq("estado", "confirmado");
-  const total = (concs || []).reduce((s, c) => s + (c.monto_aplicado || 0), 0);
-  const absMonto = Math.abs(montoMov);
+  if (selErr) console.error(`[syncEstadoConciliacion ${movId}] select failed: ${selErr.message}`);
+  const total = (concs || []).reduce((s, c) => s + Number(c.monto_aplicado || 0), 0);
+  const absMonto = Math.abs(Number(montoMov || 0));
   const estado = total >= absMonto ? "conciliado" : total > 0 ? "parcial" : "pendiente";
-  await sb.from("movimientos_banco").update({ estado_conciliacion: estado, monto_conciliado: total }).eq("id", movId);
+  const { error: updErr } = await sb.from("movimientos_banco").update({ estado_conciliacion: estado, monto_conciliado: total }).eq("id", movId);
+  if (updErr) console.error(`[syncEstadoConciliacion ${movId}] update failed: ${updErr.message}`);
   return { estado, monto_conciliado: total };
 }
 
