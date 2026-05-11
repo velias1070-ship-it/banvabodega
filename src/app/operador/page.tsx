@@ -674,6 +674,10 @@ function Traspaso({ refresh }: { refresh: () => void }) {
       {step === 0 && (
         <div className="card">
           <div style={{fontSize:15,fontWeight:700,marginBottom:12,color:"#06b6d4"}}>🔄 ¿De dónde mueves?</div>
+          <button onClick={()=>{setSourcePos("SIN_ASIGNAR");setSourcePosLabel("Sin asignar");setStep(1);setCam(false);}}
+            style={{width:"100%",padding:14,marginBottom:12,borderRadius:10,fontWeight:700,fontSize:14,color:"#fff",background:"linear-gradient(135deg,#0891b2,#06b6d4)"}}>
+            📦 Ubicar desde SIN_ASIGNAR
+          </button>
           <BarcodeScanner active={true} onScan={handleScanSource} label="Escanea posición ORIGEN" mode="qr"/>
           <div style={{fontSize:11,color:"#94a3b8",marginBottom:6}}>O toca en el mapa:</div>
           <OperatorMiniMap selectedPos={sourcePos} onSelectPos={(id)=>{
