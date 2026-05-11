@@ -398,10 +398,16 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
     const sumaSeccion = (cuentas: DBPlanCuentas[], key: "act" | "ant") =>
       cuentas.reduce((s, c) => s + (montoPorCuenta.get(c.id!)?.[key] || 0), 0);
 
-    const totalCostosAct = sumaSeccion(cuentasCosto, "act") + sinCatCostosAct;
-    const totalCostosAnt = sumaSeccion(cuentasCosto, "ant") + sinCatCostosAnt;
-    const totalGastosOpAct = sumaSeccion(cuentasGOp, "act") + sinCatGastosAct;
-    const totalGastosOpAnt = sumaSeccion(cuentasGOp, "ant") + sinCatGastosAnt;
+    // Sin clasificar unificado: compras RCV sin cuenta de proveedor + movs banco sin categoria.
+    // Se reportan en una unica seccion "POR CLASIFICAR" para que el lector vea cuanta plata
+    // real esta sin asignar. Se restan del resultado operacional (es plata que salio).
+    const sinCatTotalAct = sinCatCostosAct + sinCatGastosAct;
+    const sinCatTotalAnt = sinCatCostosAnt + sinCatGastosAnt;
+
+    const totalCostosAct = sumaSeccion(cuentasCosto, "act");
+    const totalCostosAnt = sumaSeccion(cuentasCosto, "ant");
+    const totalGastosOpAct = sumaSeccion(cuentasGOp, "act");
+    const totalGastosOpAnt = sumaSeccion(cuentasGOp, "ant");
     const totalGastosNoOpAct = sumaSeccion(cuentasGNoOp, "act");
     const totalGastosNoOpAnt = sumaSeccion(cuentasGNoOp, "ant");
 
@@ -431,10 +437,7 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
         esHoja: true, nivel: 1, montoActual: m.act, montoAnterior: m.ant,
       });
     }
-    if (sinCatCostosAct > 0 || sinCatCostosAnt > 0) {
-      result.push({ id: "cos_sin_cat", codigo: "", nombre: "Sin categorizar", tipo: "costo", esHoja: true, nivel: 1, montoActual: sinCatCostosAct, montoAnterior: sinCatCostosAnt });
-    }
-    if (cuentasCosto.length === 0 && sinCatCostosAct === 0 && sinCatCostosAnt === 0) {
+    if (cuentasCosto.length === 0) {
       result.push({ id: "cos_total", codigo: "", nombre: "Compras totales", tipo: "costo", esHoja: true, nivel: 1, montoActual: 0, montoAnterior: 0 });
     }
 
@@ -453,13 +456,15 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
         esHoja: true, nivel: 1, montoActual: m.act, montoAnterior: m.ant,
       });
     }
-    if (sinCatGastosAct > 0 || sinCatGastosAnt > 0) {
-      result.push({ id: "sin_cat", codigo: "", nombre: "Sin categorizar", tipo: "gasto_operacional", esHoja: true, nivel: 1, montoActual: sinCatGastosAct, montoAnterior: sinCatGastosAnt });
+    // === POR CLASIFICAR === (seccion propia, unificada: compras sin cuenta + movs banco sin categoria)
+    if (sinCatTotalAct > 0 || sinCatTotalAnt > 0) {
+      result.push({ id: "sec_sin_cat", codigo: "(-)", nombre: "POR CLASIFICAR", tipo: "gasto_operacional", esHoja: false, nivel: 0, montoActual: sinCatTotalAct, montoAnterior: sinCatTotalAnt, esSeparador: true });
+      result.push({ id: "sin_cat_unif", codigo: "", nombre: "Sin categorizar", tipo: "gasto_operacional", esHoja: true, nivel: 1, montoActual: sinCatTotalAct, montoAnterior: sinCatTotalAnt });
     }
 
-    // === RESULTADO OPERACIONAL ===
-    const resOpAct = margenAct - totalGastosOpAct;
-    const resOpAnt = margenAnt - totalGastosOpAnt;
+    // === RESULTADO OPERACIONAL === (incluye sin clasificar como gasto real)
+    const resOpAct = margenAct - totalGastosOpAct - sinCatTotalAct;
+    const resOpAnt = margenAnt - totalGastosOpAnt - sinCatTotalAnt;
     result.push({ id: "res_op", codigo: "(=)", nombre: "RESULTADO OPERACIONAL", tipo: "ingreso", esHoja: false, nivel: 0, montoActual: resOpAct, montoAnterior: resOpAnt, esSubtotal: true });
 
     // === GASTOS NO OPERACIONALES ===
@@ -557,15 +562,13 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
         fechaPago: null, bancoPago: null, ncAplicada: false, ncRefFolio: null,
       }));
     }
-    if (expandedRow === "cos_sin_cat") {
-      // Compras sin cuenta efectiva (variables sin override, o proveedor sin mapeo)
+    if (expandedRow === "sin_cat_unif") {
+      // Unificado: compras RCV sin cuenta del proveedor + movs banco sin categoria.
+      // Mismo bucket porque conceptualmente son lo mismo (faltan asignar cuenta), aunque
+      // el origen sea distinto (SII vs banco directo).
       const sinCuenta = comprasAct.filter(c => !cuentaIdDeCompra(c, provCuentaInfo));
-      return sinCuenta.map(mapCompra);
-    }
-    if (expandedRow === "sin_cat") {
-      // Movs banco sin categoría AND sin compra conciliada
       const movsSinCat = movBanco.filter(m => m.monto < 0 && !m.categoria_cuenta_id && (!m.id || !compraByMovId.has(m.id)));
-      return movsSinCat.map(mapMov);
+      return [...sinCuenta.map(mapCompra), ...movsSinCat.map(mapMov)];
     }
 
     const cuenta = planCuentas.find(c => c.id === expandedRow);
@@ -667,14 +670,11 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
       out.set("ing_total", ventasAsDocs);
     }
 
+    // Sin clasificar unificado (compras RCV sin cuenta + movs banco sin categoria)
     const sinCuentaCompras = comprasAct.filter(c => !cuentaIdDeCompra(c, provCuentaInfo));
-    if (sinCuentaCompras.length > 0) {
-      out.set("cos_sin_cat", sinCuentaCompras.map(mapCompra));
-    }
-
     const movsSinCat = movBanco.filter(m => m.monto < 0 && !m.categoria_cuenta_id && (!m.id || !compraByMovId.has(m.id)));
-    if (movsSinCat.length > 0) {
-      out.set("sin_cat", movsSinCat.map(mapMov));
+    if (sinCuentaCompras.length > 0 || movsSinCat.length > 0) {
+      out.set("sin_cat_unif", [...sinCuentaCompras.map(mapCompra), ...movsSinCat.map(mapMov)]);
     }
 
     for (const cuenta of cuentasHojaActivas) {
@@ -974,10 +974,10 @@ export default function EstadoResultados({ empresa, periodo: periodoRaw }: { emp
       {expandedRow && drillDocs.length > 0 && (
         <div className="card" style={{ marginTop: 8, padding: 12 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <h4 style={{ fontSize: 13, fontWeight: 600, margin: 0 }}>Detalle: {planCuentas.find(c => c.id === expandedRow)?.nombre || (expandedRow === "cos_sin_cat" || expandedRow === "sin_cat" ? "Sin categorizar" : "Documentos")}</h4>
+            <h4 style={{ fontSize: 13, fontWeight: 600, margin: 0 }}>Detalle: {planCuentas.find(c => c.id === expandedRow)?.nombre || (expandedRow === "sin_cat_unif" ? "Sin categorizar" : "Documentos")}</h4>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <span style={{ fontSize: 11, color: "var(--txt3)" }}>{drillDocs.length} documentos</span>
-              {(expandedRow === "cos_sin_cat" || expandedRow === "sin_cat") && (
+              {expandedRow === "sin_cat_unif" && (
                 <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
                   <select value={assignCuenta} onChange={e => setAssignCuenta(e.target.value)}
                     style={{ padding: "3px 6px", fontSize: 10, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", borderRadius: 4 }}>
