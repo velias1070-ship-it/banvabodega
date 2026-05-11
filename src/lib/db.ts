@@ -2676,13 +2676,24 @@ export async function deleteMovimientosBancoByIds(ids: string[]): Promise<void> 
 
 export async function fetchConciliaciones(empresaId: string, periodo?: string): Promise<DBConciliacion[]> {
   const sb = getSupabase(); if (!sb) return [];
-  let q = sb.from("conciliaciones").select("*").eq("empresa_id", empresaId);
-  if (periodo) {
-    // Filtrar por movimientos del periodo (via join o filtro post-fetch)
-    // Por ahora retorna todas y se filtra en el frontend
+  // Paginar. Sin paginacion Supabase corta a 1000 y las conciliaciones mas viejas
+  // desaparecian silenciosamente -> facturas pagadas reaparecian como "Asignar pago".
+  const all: DBConciliacion[] = [];
+  const PAGE = 1000;
+  let from = 0;
+  while (true) {
+    let q = sb.from("conciliaciones").select("*").eq("empresa_id", empresaId);
+    if (periodo) {
+      // Reservado: filtrado por periodo del movimiento (join o post-fetch). Hoy no se aplica.
+    }
+    const { data, error } = await q.order("created_at", { ascending: false }).range(from, from + PAGE - 1);
+    if (error) { console.error(`[fetchConciliaciones] page ${from}: ${error.message}`); break; }
+    if (!data || data.length === 0) break;
+    all.push(...(data as DBConciliacion[]));
+    if (data.length < PAGE) break;
+    from += PAGE;
   }
-  const { data } = await q.order("created_at", { ascending: false });
-  return (data || []) as DBConciliacion[];
+  return all;
 }
 
 export async function upsertConciliacion(c: DBConciliacion): Promise<void> {
