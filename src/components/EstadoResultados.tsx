@@ -90,6 +90,9 @@ function cuentaIdDeCompra(c: DBRcvCompra, provCuentaInfo: Map<string, DBProveedo
 // Caso típico: ML por periodo 27→26 está excluido por proveedor; una factura
 // específica de compra real a ML se "rescata" con incluir_eerr=true.
 function compraExcluidaDeEERR(c: DBRcvCompra, provCuentaInfo: Map<string, DBProveedorCuenta>): boolean {
+  // BHE/facturas con estado='ANULADA' (Reclamadas en el SII, ver Railway sync) no son gasto real.
+  // Antes inflaban el EERR; ahora se excluyen siempre, sin importar incluir_eerr/excluir_eerr.
+  if (c.estado === "ANULADA") return true;
   if (c.incluir_eerr === true) return false;
   if (c.incluir_eerr === false) return true;
   const pc = c.rut_proveedor ? provCuentaInfo.get(c.rut_proveedor) : undefined;
