@@ -819,21 +819,21 @@ export async function deleteProductAsync(sku: string) {
   if (isConfigured()) await db.deleteProducto(sku);
 }
 
-// Position CRUD (async)
+// Position CRUD (async) — persist FIRST, then mutate cache so the UI never lies on Supabase failure.
 export async function savePosAsync(p: Position) {
-  const idx = _cache.positions.findIndex(x => x.id === p.id);
-  if (idx >= 0) _cache.positions[idx] = p; else _cache.positions.push(p);
   if (isConfigured()) {
     await db.upsertPosicion({
       id: p.id, label: p.label, tipo: p.type, activa: p.active,
       mx: p.mx || 0, my: p.my || 0, mw: p.mw || 2, mh: p.mh || 2, color: p.color || "#3b82f6",
     });
   }
+  const idx = _cache.positions.findIndex(x => x.id === p.id);
+  if (idx >= 0) _cache.positions[idx] = p; else _cache.positions.push(p);
 }
 
 export async function deletePosAsync(id: string) {
-  _cache.positions = _cache.positions.filter(p => p.id !== id);
   if (isConfigured()) await db.deletePosicion(id);
+  _cache.positions = _cache.positions.filter(p => p.id !== id);
 }
 
 // ==================== MAP CONFIG ====================
