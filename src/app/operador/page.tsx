@@ -621,8 +621,31 @@ function Traspaso({ refresh }: { refresh: () => void }) {
   const [qty, setQty] = useState(1);
   const [cam, setCam] = useState(false);
   const [camDest, setCamDest] = useState(false);
+  const [srcFilter, setSrcFilter] = useState("");
+  const [srcScan, setSrcScan] = useState(false);
 
-  const sourceItems = sourcePos ? posContents(sourcePos) : [];
+  const allSourceItems = sourcePos ? posContents(sourcePos) : [];
+  const sourceItems = srcFilter.trim().length >= 1
+    ? allSourceItems.filter(i => {
+        const q = srcFilter.toLowerCase();
+        return i.sku.toLowerCase().includes(q) || i.name.toLowerCase().includes(q);
+      })
+    : allSourceItems;
+
+  const handleScanSourceProduct = useCallback((code: string) => {
+    const comps = getComponentesPorML(code);
+    let targetSku: string | null = null;
+    if (comps.length > 0) targetSku = comps[0].skuOrigen;
+    else {
+      const found = findProduct(code);
+      if (found.length > 0) targetSku = found[0].sku;
+    }
+    if (!targetSku) { show(`Código no reconocido: ${code}`, "err"); return; }
+    const item = allSourceItems.find(i => i.sku === targetSku);
+    if (!item) { show(`${targetSku} no está en ${sourcePos}`, "err"); return; }
+    setProduct(item); setQty(item.qty); setStep(2); setSrcScan(false); setSrcFilter("");
+    if (navigator.vibrate) navigator.vibrate(100);
+  }, [allSourceItems, sourcePos]);
 
   const handleScanSource = useCallback((code: string) => {
     const p = findPosition(code);
@@ -691,14 +714,26 @@ function Traspaso({ refresh }: { refresh: () => void }) {
       {step === 1 && (
         <div className="card">
           <SelTag color="#06b6d4" label="Origen" value={`${sourcePos} — ${sourcePosLabel}`}/>
-          <div style={{fontSize:15,fontWeight:700,marginBottom:10,marginTop:8}}>¿Qué mueves?</div>
-          {sourceItems.length === 0 ? (
+          <div style={{fontSize:15,fontWeight:700,marginBottom:10,marginTop:8}}>¿Qué mueves? <span style={{fontSize:11,fontWeight:500,color:"#94a3b8"}}>({allSourceItems.length})</span></div>
+          {allSourceItems.length > 0 && (
+            <div style={{display:"flex",gap:6,marginBottom:8}}>
+              <input value={srcFilter} onChange={e=>setSrcFilter(e.target.value)}
+                placeholder="Buscar SKU o nombre..."
+                style={{flex:1,padding:"10px 12px",borderRadius:8,background:"var(--bg3)",border:"1px solid var(--bg4)",color:"var(--txt)",fontSize:13}}/>
+              <button onClick={()=>setSrcScan(s=>!s)}
+                style={{padding:"10px 14px",borderRadius:8,background:srcScan?"#06b6d4":"var(--bg3)",color:srcScan?"#fff":"#06b6d4",border:"1px solid #06b6d433",fontSize:14,fontWeight:700}}>📷</button>
+            </div>
+          )}
+          {srcScan && <div style={{marginBottom:8}}><BarcodeScanner active={true} onScan={handleScanSourceProduct} label="Escanea código de barras" mode="barcode"/></div>}
+          {allSourceItems.length === 0 ? (
             <div style={{padding:20,textAlign:"center",color:"#94a3b8"}}>
               <div style={{fontSize:24,marginBottom:8}}>📭</div>
               <div>Posición vacía</div>
             </div>
+          ) : sourceItems.length === 0 ? (
+            <div style={{padding:16,textAlign:"center",color:"#94a3b8",fontSize:12}}>Sin resultados para "{srcFilter}"</div>
           ) : sourceItems.map(item => (
-            <button key={item.sku} onClick={()=>{setProduct(item);setQty(item.qty);setStep(2);}}
+            <button key={item.sku} onClick={()=>{setProduct(item);setQty(item.qty);setStep(2);setSrcFilter("");setSrcScan(false);}}
               style={{width:"100%",padding:"14px 16px",marginBottom:6,borderRadius:10,background:"var(--bg2)",border:"1px solid var(--bg4)",
                 display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer",textAlign:"left"}}>
               <div style={{flex:1,minWidth:0}}>
