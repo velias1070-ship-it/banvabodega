@@ -2698,16 +2698,16 @@ export async function fetchConciliaciones(empresaId: string, periodo?: string): 
 
 export async function upsertConciliacion(c: DBConciliacion): Promise<void> {
   const sb = getSupabase(); if (!sb) return;
-  if (c.id) {
-    await sb.from("conciliaciones").update(c).eq("id", c.id);
-  } else {
-    await sb.from("conciliaciones").insert(c);
-  }
+  const { error } = c.id
+    ? await sb.from("conciliaciones").update(c).eq("id", c.id)
+    : await sb.from("conciliaciones").insert(c);
+  if (error) console.error(`[upsertConciliacion ${c.id || "nuevo"}] ${error.message}`);
 }
 
 export async function updateConciliacion(id: string, fields: Partial<DBConciliacion>): Promise<void> {
   const sb = getSupabase(); if (!sb) return;
-  await sb.from("conciliaciones").update(fields).eq("id", id);
+  const { error } = await sb.from("conciliaciones").update(fields).eq("id", id);
+  if (error) console.error(`[updateConciliacion ${id}] ${error.message}`);
 }
 
 // ==================== CONCILIADOR — ALERTAS ====================
@@ -2810,7 +2810,8 @@ export async function incrementReglaMatches(id: string): Promise<void> {
 
 export async function fetchConciliacionItems(conciliacionId: string): Promise<DBConciliacionItem[]> {
   const sb = getSupabase(); if (!sb) return [];
-  const { data } = await sb.from("conciliacion_items").select("*").eq("conciliacion_id", conciliacionId);
+  const { data, error } = await sb.from("conciliacion_items").select("*").eq("conciliacion_id", conciliacionId);
+  if (error) console.error(`[fetchConciliacionItems ${conciliacionId}] ${error.message}`);
   return (data || []) as DBConciliacionItem[];
 }
 
@@ -2820,7 +2821,8 @@ export async function fetchAllConciliacionItems(): Promise<DBConciliacionItem[]>
   const PAGE = 1000;
   let from = 0;
   while (true) {
-    const { data } = await sb.from("conciliacion_items").select("*").range(from, from + PAGE - 1);
+    const { data, error } = await sb.from("conciliacion_items").select("*").range(from, from + PAGE - 1);
+    if (error) { console.error(`[fetchAllConciliacionItems] page ${from}: ${error.message}`); break; }
     if (!data || data.length === 0) break;
     all.push(...(data as DBConciliacionItem[]));
     if (data.length < PAGE) break;
@@ -2831,7 +2833,8 @@ export async function fetchAllConciliacionItems(): Promise<DBConciliacionItem[]>
 
 export async function insertConciliacionItems(items: DBConciliacionItem[]): Promise<void> {
   const sb = getSupabase(); if (!sb) return;
-  await sb.from("conciliacion_items").insert(items);
+  const { error } = await sb.from("conciliacion_items").insert(items);
+  if (error) console.error(`[insertConciliacionItems ${items.length} items] ${error.message}`);
 }
 
 // ==================== FINANZAS v8 — PASARELAS PAGO ====================
