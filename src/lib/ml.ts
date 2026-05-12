@@ -1286,27 +1286,24 @@ export async function updateFlexStock(
   const delta = quantity - currentInML;
   const sb = getServerSupabase();
 
+  // Bodega activa BANVA tras mudanza 2026-05-11. Stock va siempre a Casa Central (Los Fresnos 600).
+  // La bodega vieja (Los Libertadores 74) queda con qty=0 — ML no permite eliminar locations via API,
+  // solo neutralizar. Cuando se desactive la bodega vieja desde el panel ML, este remap se puede borrar.
+  const ACTIVE_STORE = { store_id: "82225378", network_node_id: "CLP19538063214" };
+  const NEUTRALIZE_STORES = [{ store_id: "73722087", network_node_id: "CLP19538063212" }];
+
   try {
     let body: unknown;
     if (stockType === "seller_warehouse") {
-      if (warehouseLocations.length === 0) {
-        return { ok: false, error: "seller_warehouse requiere locations con store_id" };
-      }
-      const seen = new Set<string>();
-      const uniqueLocations: { store_id: string; network_node_id: string; quantity: number }[] = [];
-      for (const l of warehouseLocations) {
-        if (l.type !== "seller_warehouse" || !l.store_id || !l.network_node_id) continue;
-        const nodeId = l.network_node_id as string;
-        const storeId = l.store_id as string;
-        if (!seen.has(nodeId)) {
-          seen.add(nodeId);
-          uniqueLocations.push({ store_id: storeId, network_node_id: nodeId, quantity });
+      const locs: { store_id: string; network_node_id: string; quantity: number }[] = [
+        { ...ACTIVE_STORE, quantity },
+      ];
+      for (const old of NEUTRALIZE_STORES) {
+        if (warehouseLocations.some(l => l.store_id === old.store_id)) {
+          locs.push({ ...old, quantity: 0 });
         }
       }
-      if (uniqueLocations.length === 0) {
-        return { ok: false, error: "seller_warehouse locations sin network_node_id válido" };
-      }
-      body = { locations: uniqueLocations };
+      body = { locations: locs };
     } else {
       body = { quantity };
     }
