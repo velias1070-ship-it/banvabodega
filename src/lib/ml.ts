@@ -1424,6 +1424,20 @@ export async function syncStockToML(sku: string, availableQty: number): Promise<
         continue;
       }
 
+      // 2a. Cache last_location_types (Fase 2 — detección proactiva de SKUs sin Flex).
+      // El GET de getDistributedStock devuelve todas las locations con su type.
+      // Lo cacheamos para que activate-warehouse-all detecte SKUs que perdieron
+      // seller_warehouse silenciosamente. Regla 3 inventory-policy: error logueado.
+      try {
+        const locTypes = stockData.locations.map(l => l.type);
+        const { error: locErr } = await sb.from("ml_items_map")
+          .update({ last_location_types: locTypes })
+          .eq("id", map.id);
+        if (locErr) console.error(`[syncStockToML] update last_location_types failed for ${sku}: ${locErr.message}`);
+      } catch (e) {
+        console.error(`[syncStockToML] update last_location_types threw for ${sku}: ${String(e)}`);
+      }
+
       // 2b. Determine seller-controlled stock type
       const stockType = getSellerStockType(stockData.locations);
       if (!stockType) {
