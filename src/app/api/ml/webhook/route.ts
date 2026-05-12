@@ -183,16 +183,7 @@ export async function POST(req: NextRequest) {
       if (userProductId) {
         console.log(`[ML Webhook] Stock change for user_product ${userProductId}`);
         const skuVenta = await syncStockByUserProductId(userProductId);
-        if (skuVenta) {
-          try {
-            const baseUrl = getBaseUrl();
-            fetch(`${baseUrl}/api/intelligence/recalcular`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ full: false, skus: [skuVenta] }),
-            }).catch(() => {});
-          } catch { /* fire and forget */ }
-        }
+        // Removed fire-and-forget al motor — saturaba pool (incidente 2026-05-12). Cron diario lo cubre.
         await logWebhookFinish(logId, "ok", startMs, { result: { user_product_id: userProductId, sku_venta: skuVenta }, sku_afectado: skuVenta });
         return NextResponse.json({ status: "ok", user_product_id: userProductId, sku_venta: skuVenta });
       }
@@ -206,16 +197,7 @@ export async function POST(req: NextRequest) {
       if (inventoryId) {
         console.log(`[ML Webhook] Stock change (legacy) for inventory ${inventoryId}`);
         const skuVenta = await syncSingleFulfillmentStock(inventoryId);
-        if (skuVenta) {
-          try {
-            const baseUrl = getBaseUrl();
-            fetch(`${baseUrl}/api/intelligence/recalcular`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ full: false, skus: [skuVenta] }),
-            }).catch(() => {});
-          } catch { /* fire and forget */ }
-        }
+        // Removed fire-and-forget al motor — saturaba pool (incidente 2026-05-12). Cron diario lo cubre.
         await logWebhookFinish(logId, "ok", startMs, { result: { inventory_id: inventoryId, sku_venta: skuVenta }, sku_afectado: skuVenta, inventory_id: inventoryId });
         return NextResponse.json({ status: "ok", inventory_id: inventoryId, sku_venta: skuVenta });
       }
@@ -370,17 +352,9 @@ export async function POST(req: NextRequest) {
             const sku = data?.[0]?.sku;
             if (invId) await syncSingleFulfillmentStock(invId);
 
-            // Fire-and-forget refresh focal (solo en items_prices).
-            // No await: el webhook debe responder a ML <5s. El refresh
-            // ejecuta async y graba en ml_price_history si detecta cambio.
-            let refreshTriggered = false;
-            if (topic === "items_prices") {
-              const refreshUrl = `${req.nextUrl.origin}/api/ml/margin-cache/refresh?item_ids=${encodeURIComponent(itemId)}`;
-              fetch(refreshUrl, { method: "POST" }).catch(err => {
-                console.error(`[ML Webhook] refresh focal failed for ${itemId}: ${String(err)}`);
-              });
-              refreshTriggered = true;
-            }
+            // Removed fire-and-forget a margin-cache/refresh — saturaba pool (incidente 2026-05-12).
+            // Cron /api/ml/margin-cache/refresh?stale=true cada 2min cubre el caso con latencia aceptable.
+            const refreshTriggered = false;
 
             await logWebhookFinish(logId, "ok", startMs, { result: { item_id: itemId, sku, inventory_id: invId, refresh_triggered: refreshTriggered }, sku_afectado: sku, inventory_id: invId });
             return NextResponse.json({ status: "ok", item_id: itemId, sku, refresh_triggered: refreshTriggered });
