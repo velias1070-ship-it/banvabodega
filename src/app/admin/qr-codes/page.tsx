@@ -10,7 +10,7 @@ export default function QRCodesPage() {
   const [mounted, setMounted] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
   const [filterType, setFilterType] = useState("all");
-  const [selectedPos, setSelectedPos] = useState("");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [qrSize, setQrSize] = useState(200);
   const [generating, setGenerating] = useState(false);
   const [qrImages, setQrImages] = useState<Record<string,string>>({});
@@ -35,7 +35,11 @@ export default function QRCodesPage() {
 
   const positions = activePositions();
   const filteredByType = filterType === "all" ? positions : positions.filter(p => p.type === filterType);
-  const filtered = selectedPos ? filteredByType.filter(p => p.id === selectedPos) : filteredByType;
+  const selectedSet = new Set(selectedIds);
+  const filtered = selectedIds.length > 0 ? filteredByType.filter(p => selectedSet.has(p.id)) : filteredByType;
+  const toggleSelect = (id: string) => setSelectedIds(prev => prev.includes(id) ? prev.filter(x=>x!==id) : [...prev, id]);
+  const selectAll = () => setSelectedIds(filteredByType.map(p=>p.id));
+  const clearSelection = () => setSelectedIds([]);
 
   const generateQRs = async () => {
     setGenerating(true);
@@ -88,26 +92,35 @@ export default function QRCodesPage() {
       </div>
       <div style={{padding:16}}>
         <div className="card">
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
-            <div className="form-group">
-              <label className="form-label">Tipo</label>
-              <select className="form-select" value={filterType} onChange={e=>{setFilterType(e.target.value);setSelectedPos("");setQrImages({});}}>
-                <option value="all">Todas ({positions.length})</option>
-                <option value="pallet">Pallets ({positions.filter(p=>p.type==="pallet").length})</option>
-                <option value="shelf">Estantes ({positions.filter(p=>p.type==="shelf").length})</option>
-              </select>
+          <div className="form-group" style={{marginBottom:12}}>
+            <label className="form-label">Tipo</label>
+            <select className="form-select" value={filterType} onChange={e=>{setFilterType(e.target.value);setSelectedIds([]);setQrImages({});}}>
+              <option value="all">Todas ({positions.length})</option>
+              <option value="pallet">Pallets ({positions.filter(p=>p.type==="pallet").length})</option>
+              <option value="shelf">Estantes ({positions.filter(p=>p.type==="shelf").length})</option>
+            </select>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+            <label className="form-label" style={{margin:0}}>Posiciones ({selectedIds.length>0?selectedIds.length:"todas"} de {filteredByType.length})</label>
+            <div style={{display:"flex",gap:6}}>
+              <button onClick={selectAll} style={{fontSize:11,padding:"4px 10px",borderRadius:6,background:"var(--bg3)",color:"var(--cyan)",border:"1px solid var(--bg4)",cursor:"pointer"}}>Marcar todas</button>
+              <button onClick={clearSelection} style={{fontSize:11,padding:"4px 10px",borderRadius:6,background:"var(--bg3)",color:"var(--txt3)",border:"1px solid var(--bg4)",cursor:"pointer"}}>Limpiar</button>
             </div>
-            <div className="form-group">
-              <label className="form-label">Posicion</label>
-              <select className="form-select" value={selectedPos} onChange={e=>{setSelectedPos(e.target.value);setQrImages({});}}>
-                <option value="">Todas ({filteredByType.length})</option>
-                {filteredByType.map(p => <option key={p.id} value={p.id}>{p.id} — {p.label}</option>)}
-              </select>
-            </div>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(110px,1fr))",gap:6,marginBottom:12,maxHeight:240,overflowY:"auto",padding:6,background:"var(--bg3)",borderRadius:8}}>
+            {filteredByType.map(p => {
+              const checked = selectedSet.has(p.id);
+              return (
+                <label key={p.id} style={{display:"flex",alignItems:"center",gap:6,padding:"6px 8px",borderRadius:6,background:checked?"var(--cyanBg)":"var(--bg2)",border:`1px solid ${checked?"var(--cyan)":"var(--bg4)"}`,cursor:"pointer",fontSize:12}}>
+                  <input type="checkbox" checked={checked} onChange={()=>{toggleSelect(p.id);setQrImages({});}}/>
+                  <span className="mono" style={{fontWeight:700,color:checked?"var(--cyan)":"var(--txt)"}}>{p.id}</span>
+                </label>
+              );
+            })}
           </div>
           <div style={{fontSize:11,color:"var(--txt3)",marginBottom:10,textAlign:"center"}}>
             Etiquetas de 10cm x 15cm — un QR por hoja
-            {selectedPos && <span style={{color:"var(--cyan)",fontWeight:700}}> — Solo: {selectedPos}</span>}
+            {selectedIds.length > 0 && <span style={{color:"var(--cyan)",fontWeight:700}}> — Solo seleccionadas: {selectedIds.length}</span>}
           </div>
           <button className="btn-primary" onClick={generateQRs} disabled={generating}>{generating ? "Generando..." : `Generar QR${filtered.length === 1 ? "" : "s"} (${filtered.length})`}</button>
         </div>
