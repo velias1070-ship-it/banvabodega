@@ -1,17 +1,37 @@
 "use client";
 import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { getStore, activePositions, initStore } from "@/lib/store";
+import { canAccessTab, type AdminUser } from "@/lib/admin-users";
 import Link from "next/link";
 
 export default function QRCodesPage() {
+  const router = useRouter();
   const [mounted, setMounted] = useState(false);
+  const [authChecked, setAuthChecked] = useState(false);
   const [filterType, setFilterType] = useState("all");
   const [selectedPos, setSelectedPos] = useState("");
   const [qrSize, setQrSize] = useState(200);
   const [generating, setGenerating] = useState(false);
   const [qrImages, setQrImages] = useState<Record<string,string>>({});
 
-  useEffect(() => { initStore().then(() => setMounted(true)); }, []);
+  useEffect(() => {
+    let user: AdminUser | null = null;
+    try {
+      const remembered = localStorage.getItem("banva_admin_auth_remember");
+      if (remembered) {
+        const parsed = JSON.parse(remembered) as { user: AdminUser; ts: number };
+        if ((Date.now() - parsed.ts) / 86400000 < 30) user = parsed.user;
+      }
+      if (!user) {
+        const saved = sessionStorage.getItem("banva_admin_auth_user");
+        if (saved) user = JSON.parse(saved) as AdminUser;
+      }
+    } catch { /* ignore */ }
+    if (!user || !canAccessTab(user, "qr_codes")) { router.replace("/admin"); return; }
+    setAuthChecked(true);
+    initStore().then(() => setMounted(true));
+  }, [router]);
 
   const positions = activePositions();
   const filteredByType = filterType === "all" ? positions : positions.filter(p => p.type === filterType);
@@ -57,7 +77,7 @@ export default function QRCodesPage() {
     w.document.close();
   };
 
-  if (!mounted) return null;
+  if (!authChecked || !mounted) return null;
 
   return (
     <div className="app">

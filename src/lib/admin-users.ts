@@ -56,6 +56,7 @@ const ADMIN_TAB_CATALOG_INTERNAL = [
   { key: "skuhist", label: "Historico SKU", group: "Comercial" },
   { key: "autopostular", label: "Motor auto", group: "Comercial" },
   { key: "agentes", label: "Agentes IA", group: "Sistema" },
+  { key: "qr_codes", label: "Imprimir QRs", group: "Sistema" },
   { key: "config", label: "Configuracion", group: "Sistema" },
   // Sub-tabs de Configuracion (granularidad fina para rol custom).
   { key: "config.por_atender", label: "Por Atender", group: "Sistema", parent: "config" },
@@ -91,7 +92,7 @@ export function isKnownTab(key: string): boolean {
 const ROL_PERMISOS: Record<Exclude<AdminRol, "custom">, string[]> = {
   super_admin: ADMIN_TAB_CATALOG.map(t => t.key),
   admin: ADMIN_TAB_CATALOG.map(t => t.key),
-  operaciones: ["dash", "rec", "discrepancias", "flex", "enviosfull", "ops", "reposicion"],
+  operaciones: ["dash", "rec", "discrepancias", "flex", "enviosfull", "ops", "reposicion", "qr_codes"],
   viewer: ["dash", "inv", "mov", "timeline"],
 };
 
