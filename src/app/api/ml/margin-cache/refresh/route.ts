@@ -58,6 +58,29 @@ function calcularPrecioFijoML(p: PromoInfo): number {
 type ShipFree = { coverage?: { all_country?: { list_cost: number; billable_weight: number } } };
 type FeeInfo = { sale_fee_amount: number; sale_fee_details?: { percentage_fee: number } };
 
+// Timeout local para envolver llamadas ML. Si ML cuelga o responde lento, la
+// query Supabase del mismo handler queda idle-in-transaction ocupando una
+// conexion del pool indefinidamente. Bajo carga del cron (cada 2min, ~50 items,
+// 3 calls ML por item = 150/corrida) eso satura el pool.
+//
+// Tratamos timeout como `null` (mismo contrato que mlGet ante error), el
+// downstream ya maneja null gracefully via Promise.allSettled.
+//
+// Incidente 2026-05-12.
+const ML_TIMEOUT_MS = 15_000;
+function withTimeout<T>(p: Promise<T | null>, ms: number, label: string, itemId: string): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<null>((resolve) => {
+    timer = setTimeout(() => {
+      console.warn(`[margin-cache] ML timeout ${ms / 1000}s on ${label} for ${itemId}`);
+      resolve(null);
+    }, ms);
+  });
+  return Promise.race([p, timeoutPromise]).finally(() => {
+    if (timer) clearTimeout(timer);
+  }) as Promise<T | null>;
+}
+
 // POST /api/ml/margin-cache/refresh?offset=0&limit=20
 // POST /api/ml/margin-cache/refresh?item_ids=MLC123,MLC456  ← refresh focalizado
 // POST /api/ml/margin-cache/refresh?stale=true&limit=30     ← refresca los N mas viejos
@@ -312,13 +335,30 @@ async function handleRefresh(req: NextRequest) {
       const sellerId = (await sb.from("ml_config").select("seller_id").eq("id", "main").limit(1)).data?.[0]?.seller_id;
       if (sellerId) {
         const [shipFreeRes, promosRes, feePctRes] = await Promise.allSettled([
-          mlGet<ShipFree>(`/users/${sellerId}/shipping_options/free?item_id=${row.item_id}`),
-          mlGet<PromoInfo[]>(`/seller-promotions/items/${row.item_id}?app_version=v2`),
-          categoryId ? getFeePct(categoryId, listingType, priceList || 20000) : Promise.resolve(0),
+          withTimeout(
+            mlGet<ShipFree>(`/users/${sellerId}/shipping_options/free?item_id=${row.item_id}`),
+            ML_TIMEOUT_MS,
+            "shipping/free",
+            row.item_id,
+          ),
+          withTimeout(
+            mlGet<PromoInfo[]>(`/seller-promotions/items/${row.item_id}?app_version=v2`),
+            ML_TIMEOUT_MS,
+            "seller-promotions",
+            row.item_id,
+          ),
+          categoryId
+            ? withTimeout<number>(
+                getFeePct(categoryId, listingType, priceList || 20000),
+                ML_TIMEOUT_MS,
+                "fee-pct",
+                row.item_id,
+              )
+            : Promise.resolve(0 as number | null),
         ]);
         const shipFree = shipFreeRes.status === "fulfilled" ? shipFreeRes.value : null;
         const promos = promosRes.status === "fulfilled" ? promosRes.value : null;
-        const feePct = feePctRes.status === "fulfilled" ? feePctRes.value : 0;
+        const feePct = feePctRes.status === "fulfilled" ? (feePctRes.value ?? 0) : 0;
         if (shipFreeRes.status === "rejected") {
           syncError = `shipFree: ${String(shipFreeRes.reason)}`;
         }
