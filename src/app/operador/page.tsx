@@ -753,7 +753,14 @@ function Traspaso({ refresh }: { refresh: () => void }) {
           <SelTag color="#06b6d4" label="Origen" value={sourcePos}/>
           <SelTag color="#3b82f6" label="Producto" value={`${product.sku} — ${product.name} (${product.qty})`}/>
           <div style={{fontSize:15,fontWeight:700,marginBottom:12,marginTop:8}}>¿A dónde lo mueves?</div>
-          <BarcodeScanner active={true} onScan={handleScanDest} label="Escanea posición DESTINO" mode="qr"/>
+          <select value="" onChange={e=>{if(e.target.value) selectDestPos(e.target.value);}}
+            style={{width:"100%",padding:"12px",marginBottom:10,borderRadius:8,background:"var(--bg3)",border:"1px solid var(--bg4)",color:"var(--txt)",fontSize:14}}>
+            <option value="">Elegir posición DESTINO...</option>
+            {activePositions().filter(p=>p.id!==sourcePos && p.id!=="SIN_ASIGNAR").map(p=>(
+              <option key={p.id} value={p.id}>{p.id} — {p.label}</option>
+            ))}
+          </select>
+          <BarcodeScanner active={true} onScan={handleScanDest} label="O escanea QR de la posición" mode="qr"/>
           <div style={{fontSize:11,color:"#94a3b8",marginBottom:6}}>O toca en el mapa:</div>
           <OperatorMiniMap selectedPos={destPos} onSelectPos={selectDestPos}/>
           <CancelBtn onClick={()=>setStep(1)} label="Volver"/>
