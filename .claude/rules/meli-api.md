@@ -115,3 +115,25 @@ const ML_API = "https://api.mercadolibre.com";
 const ML_AUTH = "https://auth.mercadolibre.cl"; // Chile
 const SITE_ID = "MLC";
 ```
+
+## Warehouses (SSoT)
+
+Fuente única de verdad para tiendas/bodegas ML activas y deprecadas:
+
+**Archivo:** `src/lib/ml-warehouses.ts`
+
+```ts
+export const ACTIVE_WAREHOUSE = {
+  store_id: "82225378",
+  network_node_id: "CLP19538063214",
+  nombre: "Casa Central Los Fresnos 600",
+};
+export const NEUTRALIZE_WAREHOUSES = [...];  // bodegas viejas a neutralizar a qty=0
+```
+
+**Cambios futuros de bodega:** Editar `ACTIVE_WAREHOUSE` y `NEUTRALIZE_WAREHOUSES` SOLO en `ml-warehouses.ts`. Los callers reciben el cambio automáticamente:
+- `src/lib/ml.ts` — función `updateFlexStock` (cron stock-sync)
+- `src/app/api/ml/activate-warehouse-all/route.ts` — cron horario
+- `src/app/api/ml/activate-warehouse/route.ts` — endpoint manual
+
+**Regla 5** (inventory-policy.md): fuente única canónica. Cualquier nuevo código que necesite store_id/network_node_id debe importar desde `ml-warehouses.ts`, nunca hardcodear.

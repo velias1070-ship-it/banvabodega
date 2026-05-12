@@ -1,13 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase-server";
 import { mlPut, getDistributedStock, getItemUserProductId } from "@/lib/ml";
+import { ACTIVE_WAREHOUSE } from "@/lib/ml-warehouses";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const maxDuration = 60;
 
-const STORE_ID = "73722087";
-const NETWORK_NODE_ID = "CLP19538063212";
+// SSoT: src/lib/ml-warehouses.ts (Regla 5 inventory-policy)
+const STORE_ID = ACTIVE_WAREHOUSE.store_id;
+const NETWORK_NODE_ID = ACTIVE_WAREHOUSE.network_node_id;
 const THROTTLE_MS = 350;
 
 /**

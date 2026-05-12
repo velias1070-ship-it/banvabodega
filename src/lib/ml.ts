@@ -6,6 +6,7 @@
  */
 import { getServerSupabase } from "./supabase-server";
 import { getBaseUrl } from "./base-url";
+import { ACTIVE_WAREHOUSE, NEUTRALIZE_WAREHOUSES } from "./ml-warehouses";
 
 const ML_API = "https://api.mercadolibre.com";
 const ML_AUTH = "https://auth.mercadolibre.cl"; // Chile
@@ -1286,11 +1287,10 @@ export async function updateFlexStock(
   const delta = quantity - currentInML;
   const sb = getServerSupabase();
 
-  // Bodega activa BANVA tras mudanza 2026-05-11. Stock va siempre a Casa Central (Los Fresnos 600).
-  // La bodega vieja (Los Libertadores 74) queda con qty=0 — ML no permite eliminar locations via API,
-  // solo neutralizar. Cuando se desactive la bodega vieja desde el panel ML, este remap se puede borrar.
-  const ACTIVE_STORE = { store_id: "82225378", network_node_id: "CLP19538063214" };
-  const NEUTRALIZE_STORES = [{ store_id: "73722087", network_node_id: "CLP19538063212" }];
+  // Bodegas: SSoT en src/lib/ml-warehouses.ts (Regla 5 inventory-policy).
+  // ML no permite eliminar locations via API, solo neutralizar a qty=0.
+  const ACTIVE_STORE = { store_id: ACTIVE_WAREHOUSE.store_id, network_node_id: ACTIVE_WAREHOUSE.network_node_id };
+  const NEUTRALIZE_STORES = NEUTRALIZE_WAREHOUSES.map(w => ({ store_id: w.store_id, network_node_id: w.network_node_id }));
 
   try {
     let body: unknown;
