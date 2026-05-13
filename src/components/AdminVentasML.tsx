@@ -961,7 +961,14 @@ export default function AdminVentasML({ modo }: { modo?: VentasMlModo } = {}) {
                   <td className="mono" style={{ fontSize: 10, whiteSpace: "nowrap", color: "var(--txt2)" }}>
                     {o.fecha ? (() => { const d = new Date(o.fecha); return `${d.toLocaleDateString("es-CL",{day:"2-digit",month:"2-digit",year:"2-digit",timeZone:"America/Santiago"})} ${d.toLocaleTimeString("es-CL",{hour:"2-digit",minute:"2-digit",timeZone:"America/Santiago"})}`; })() : "—"}
                   </td>
-                  <td className="mono" style={{ fontSize: 10 }}>{o.order_id}{enMediacion && <span style={{ display: "block", fontSize: 9, color: o.estado === "Cancelada" ? "var(--red)" : "var(--amber)", textDecoration: "none" }}>{o.estado?.toUpperCase()}</span>}</td>
+                  <td className="mono" style={{ fontSize: 10 }}>
+                    <a href={`https://www.mercadolibre.cl/ventas/${o.order_id}/detalle`} target="_blank" rel="noopener noreferrer"
+                      style={{ color: "var(--cyan)", textDecoration: "none" }}
+                      onMouseEnter={e=>(e.currentTarget.style.textDecoration="underline")}
+                      onMouseLeave={e=>(e.currentTarget.style.textDecoration="none")}
+                      title="Abrir en MercadoLibre">{o.order_id}</a>
+                    {enMediacion && <span style={{ display: "block", fontSize: 9, color: o.estado === "Cancelada" ? "var(--red)" : "var(--amber)", textDecoration: "none" }}>{o.estado?.toUpperCase()}</span>}
+                  </td>
                   <td style={{ maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.sku_venta}</td>
                   <td style={{ textAlign: "center" }}>{o.cantidad}</td>
                   <td><span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: o.canal === "Full" ? "var(--blueBg)" : "var(--cyanBg)", color: o.canal === "Full" ? "var(--blue)" : "var(--cyan)" }}>{o.canal}</span></td>
