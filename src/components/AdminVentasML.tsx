@@ -893,6 +893,7 @@ export default function AdminVentasML({ modo }: { modo?: VentasMlModo } = {}) {
           <table className="tbl" style={{ width: "100%", fontSize: 11 }}>
             <thead>
               <tr>
+                <SortHeader label="Fecha" sortKey="fecha" align="left" state={ordenesSort} setState={setOrdenesSort} />
                 <SortHeader label="Order" sortKey="order_id" align="left" state={ordenesSort} setState={setOrdenesSort} />
                 <SortHeader label="SKU" sortKey="sku_venta" align="left" state={ordenesSort} setState={setOrdenesSort} />
                 <SortHeader label="Qty" sortKey="cantidad" align="left" state={ordenesSort} setState={setOrdenesSort} />
@@ -911,7 +912,7 @@ export default function AdminVentasML({ modo }: { modo?: VentasMlModo } = {}) {
             </thead>
             <tbody>
               {filtered.length === 0 && (
-                <tr><td colSpan={14} style={{ textAlign: "center", padding: 20, color: "var(--txt3)" }}>Sin resultados para &quot;{mlDirectoSearch}&quot;</td></tr>
+                <tr><td colSpan={15} style={{ textAlign: "center", padding: 20, color: "var(--txt3)" }}>Sin resultados para &quot;{mlDirectoSearch}&quot;</td></tr>
               )}
               {filtered.map((o, i) => {
                 const enMediacion = excludedEstados.has(o.estado || "");
@@ -957,6 +958,9 @@ export default function AdminVentasML({ modo }: { modo?: VentasMlModo } = {}) {
                 ) : null;
                 return (
                 <tr key={i} style={enMediacion ? { opacity: 0.5, textDecoration: "line-through" } : undefined}>
+                  <td className="mono" style={{ fontSize: 10, whiteSpace: "nowrap", color: "var(--txt2)" }}>
+                    {o.fecha ? (() => { const d = new Date(o.fecha); return `${d.toLocaleDateString("es-CL",{day:"2-digit",month:"2-digit",year:"2-digit",timeZone:"America/Santiago"})} ${d.toLocaleTimeString("es-CL",{hour:"2-digit",minute:"2-digit",timeZone:"America/Santiago"})}`; })() : "—"}
+                  </td>
                   <td className="mono" style={{ fontSize: 10 }}>{o.order_id}{enMediacion && <span style={{ display: "block", fontSize: 9, color: o.estado === "Cancelada" ? "var(--red)" : "var(--amber)", textDecoration: "none" }}>{o.estado?.toUpperCase()}</span>}</td>
                   <td style={{ maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.sku_venta}</td>
                   <td style={{ textAlign: "center" }}>{o.cantidad}</td>
