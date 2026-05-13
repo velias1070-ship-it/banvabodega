@@ -5768,7 +5768,7 @@ function Inventario() {
       const sb = (await import("@/lib/supabase")).getSupabase();
       if (!sb) return;
       const [itemsRes, fullRes, compRes] = await Promise.all([
-        sb.from("ml_items_map").select("sku, sku_origen, stock_flex_cache").eq("activo", true),
+        sb.from("ml_items_map").select("sku, sku_origen, stock_flex_cache, last_location_types").eq("activo", true),
         sb.from("stock_full_cache").select("sku_venta, cantidad"),
         sb.from("composicion_venta").select("sku_venta, sku_origen"),
       ]);
@@ -5789,10 +5789,14 @@ function Inventario() {
       setSkusVirtualesPuros(virtualesPuros);
       const flexSet = new Set<string>();
       const mappingSet = new Set<string>();
-      for (const i of ((itemsRes.data || []) as {sku:string;sku_origen:string|null;stock_flex_cache:number|null}[])) {
+      // "Tiene Flex" = ML reporta slot seller_warehouse activo (last_location_types). Fallback
+      // a stock_flex_cache > 0 para SKUs aun sin cache poblado (Fase 2, columna nueva v112).
+      for (const i of ((itemsRes.data || []) as {sku:string;sku_origen:string|null;stock_flex_cache:number|null;last_location_types:string[]|null}[])) {
         const origen = i.sku_origen || svToOrigen[i.sku] || i.sku;
         mappingSet.add(origen);
-        if ((i.stock_flex_cache || 0) > 0) flexSet.add(origen);
+        const hasFlexSlot = Array.isArray(i.last_location_types) && i.last_location_types.includes("seller_warehouse");
+        const cacheUnknown = !Array.isArray(i.last_location_types) || i.last_location_types.length === 0;
+        if (hasFlexSlot || (cacheUnknown && (i.stock_flex_cache || 0) > 0)) flexSet.add(origen);
       }
       const fullSet = new Set<string>();
       for (const r of ((fullRes.data || []) as {sku_venta:string;cantidad:number}[])) {
