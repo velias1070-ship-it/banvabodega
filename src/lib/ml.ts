@@ -51,6 +51,7 @@ export interface MLOrder {
     item: { id: string; title: string; seller_sku: string | null; variation_id?: number };
     quantity: number;
     unit_price: number;
+    gross_price?: number;  // Precio sin promo aplicada al momento exacto de la compra (ML lo emite por order_item)
     sale_fee?: number;
   }>;
   shipping: {

@@ -15,6 +15,7 @@ interface MLOrderForCache {
     item: { id: string; title: string; seller_sku: string | null };
     quantity: number;
     unit_price: number;
+    gross_price?: number;  // Precio sin promo al momento de la compra (ML lo emite por order_item)
     sale_fee: number;
   }>;
   shipping: { id: number; logistic_type?: string };
@@ -223,7 +224,11 @@ export async function upsertOrderToVentasCache(
     const promoSnap = itemIdSku ? promoSnapshotByItemId.get(itemIdSku) : null;
     const promo_name_aplicada = promoSnap?.promo_name ?? null;
     const promo_pct_aplicada = promoSnap?.promo_pct ?? null;
-    const price_lista_aplicada = promoSnap?.price_ml ?? null;
+    // gross_price (ML order_item) es la fuente más fiel del precio lista al momento de la compra.
+    // Si está, usamos eso; si no, fallback al snapshot del cache de margen (puede estar desfasado).
+    const price_lista_aplicada = (item.gross_price && item.gross_price > item.unit_price)
+      ? Math.round(item.gross_price)
+      : (promoSnap?.price_ml ?? null);
 
     return {
       order_id: String(order.id),

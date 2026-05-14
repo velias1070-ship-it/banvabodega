@@ -115,6 +115,10 @@
     {
       "path": "/api/promos-eventos/auto-tag",
       "schedule": "10 4 * * *"
+    },
+    {
+      "path": "/api/cron/promo-backfill?days=60",
+      "schedule": "30 4 * * *"
     }
   ]
 }

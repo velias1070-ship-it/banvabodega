@@ -370,6 +370,8 @@ export async function GET(req: NextRequest) {
             cantidad: item.quantity,
             canal,
             precio_unitario: Math.round(item.unit_price),
+            // Precio sin promo al momento de la compra (ML lo entrega en cada order_item).
+            price_lista_aplicada: (item.gross_price && item.gross_price > item.unit_price) ? Math.round(item.gross_price) : null,
             subtotal,
             comision_unitaria: comisionUnit,
             comision_total: comisionTotal,
@@ -453,7 +455,7 @@ interface MLOrder {
   date_created: string;
   date_closed: string;
   status: string;
-  order_items: Array<{ item: { id: string; title: string; seller_sku: string | null }; quantity: number; unit_price: number; sale_fee: number }>;
+  order_items: Array<{ item: { id: string; title: string; seller_sku: string | null }; quantity: number; unit_price: number; gross_price?: number; sale_fee: number }>;
   shipping: { id: number; logistic_type?: string };
   pack_id: number | null;
   buyer: { id: number; nickname: string; first_name?: string; last_name?: string };

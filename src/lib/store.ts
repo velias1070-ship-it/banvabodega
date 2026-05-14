@@ -2533,6 +2533,54 @@ export async function anularPicking(id: string, motivo?: string): Promise<boolea
   return true;
 }
 
+// Forzar cierre manual de sesión atascada en EN_PROCESO.
+// Usar solo cuando el operador confirma que todo el trabajo físico ya está hecho
+// pero la sesión no cerró sola (bug de sincronización ya documentado).
+// Valida que TODAS las líneas estén PICKEADO y que las que requieren armado
+// estén COMPLETADO antes de cerrar. Si hay líneas pendientes, falla.
+export async function forzarCierrePicking(
+  id: string,
+  operario: string,
+  motivo?: string
+): Promise<{ ok: boolean; error?: string }> {
+  const sb = db.getSupabase();
+  if (!sb) return { ok: false, error: "Sin conexión a Supabase" };
+
+  const sessions = await db.getActivePickingSessions();
+  const session = sessions.find(s => s.id === id);
+  if (!session) return { ok: false, error: "Sesión no encontrada o ya cerrada" };
+
+  const lineasPendientes = session.lineas.filter(l => l.estado !== "PICKEADO");
+  if (lineasPendientes.length > 0) {
+    return { ok: false, error: `Hay ${lineasPendientes.length} línea(s) sin pickear. No se puede forzar cierre.` };
+  }
+  const lineasSinArmar = session.lineas.filter(l => l.estadoArmado === "PENDIENTE");
+  if (lineasSinArmar.length > 0) {
+    return { ok: false, error: `Hay ${lineasSinArmar.length} línea(s) con armado PENDIENTE. Marcá armado primero o anulalas.` };
+  }
+
+  const { error } = await sb
+    .from("picking_sessions")
+    .update({ estado: "COMPLETADA", completed_at: new Date().toISOString() })
+    .eq("id", id)
+    .eq("estado", "EN_PROCESO");
+  if (error) return { ok: false, error: error.message };
+
+  void sb.from("audit_log").insert({
+    accion: "picking:forzarCierre",
+    entidad: "picking_sessions",
+    entidad_id: id,
+    operario,
+    params: {
+      tipo: session.tipo,
+      lineas: session.lineas.length,
+      motivo: motivo || null,
+    },
+  });
+
+  return { ok: true };
+}
+
 // ==================== RUTA INTELIGENTE (SERPENTINA) ====================
 
 interface PosConCoords {

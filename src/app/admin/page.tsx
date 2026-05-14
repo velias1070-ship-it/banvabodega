@@ -1,7 +1,7 @@
 "use client";
 /* v3.1 — conteos + pedidos ML + cron fix */
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, refreshStore, savePosAsync, deletePosAsync, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, eliminarPicking, anularPicking, duplicarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote, reconciliarStock, aplicarReconciliacion, editarStockVariante, sustituirProducto, getRecepcionAjustes, registrarAjuste, backfillFacturaOriginal, getNotasOperativas, despickearComponente, buildPickingLineasFull, getSkuFisicoPorSkuVenta, syncFlexPickingSession, resetearLineaRecepcion, sincronizarCostoMovimientosRecepcion, getCodigosMlBySkuOrigen, getCodigoMlPrimario } from "@/lib/store";
+import { getStore, saveStore, resetStore, skuTotal, skuPositions, posContents, skuStockDetalle, SIN_ETIQUETAR, activePositions, fmtDate, fmtTime, fmtMoney, IN_REASONS, OUT_REASONS, getCategorias, saveCategorias, getProveedores, saveProveedores, getLastSyncTime, recordMovement, recordBulkMovements, findProduct, importStockFromSheet, wasStockImported, getUnassignedStock, assignPosition, isSupabaseConfigured, getCloudStatus, initStore, isStoreReady, refreshStore, savePosAsync, deletePosAsync, getRecepciones, getRecepcionLineas, crearRecepcion, actualizarRecepcion, actualizarLineaRecepcion, getOperarios, anularRecepcion, pausarRecepcion, reactivarRecepcion, cerrarRecepcion, asignarOperariosRecepcion, parseRecepcionMeta, encodeRecepcionMeta, eliminarLineaRecepcion, agregarLineaRecepcion, getMapConfig, getSkusVenta, getComponentesPorML, getComponentesPorSkuVenta, getVentasPorSkuOrigen, buildPickingLineas, crearPickingSession, getPickingsByDate, getActivePickings, eliminarPicking, anularPicking, forzarCierrePicking, duplicarPicking, findSkuVenta, recordMovementAsync, getLineasDeRecepciones, desbloquearLinea, isLineaBloqueada, getRecepcionesActivas, detectarDiscrepancias, getDiscrepancias, aprobarNuevoCosto, rechazarNuevoCosto, tieneDiscrepanciasPendientes, recalcularDiscrepancias, auditarRecepcion, repararRecepcion, ajustarLineaAdmin, detectarDiscrepanciasQty, getDiscrepanciasQty, recalcularDiscrepanciasQty, resolverDiscrepanciaQty, crearDiscrepanciaQtyManual, tieneDiscrepanciasQtyPendientes, getResolucionesQty, reasignarFormato, updateMovementNote, reconciliarStock, aplicarReconciliacion, editarStockVariante, sustituirProducto, getRecepcionAjustes, registrarAjuste, backfillFacturaOriginal, getNotasOperativas, despickearComponente, buildPickingLineasFull, getSkuFisicoPorSkuVenta, syncFlexPickingSession, resetearLineaRecepcion, sincronizarCostoMovimientosRecepcion, getCodigosMlBySkuOrigen, getCodigoMlPrimario } from "@/lib/store";
 import type { AuditResult, DBDiscrepanciaQty, DiscrepanciaQtyTipo, StockDiscrepancia, IntegrityError } from "@/lib/store";
 import type { Product, Movement, Position, InReason, OutReason, DBRecepcion, DBRecepcionLinea, DBOperario, ComposicionVenta, DBPickingSession, PickingLinea, RecepcionMeta } from "@/lib/store";
 import type { DBDiscrepanciaCosto, DBRecepcionAjuste, FacturaOriginal } from "@/lib/db";
@@ -3347,6 +3347,19 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
     else alert("No se pudo anular la sesión.");
   };
 
+  const doForzarCierre = async () => {
+    const motivo = prompt("¿Por qué forzás el cierre? (recomendado, queda en audit log)\n\nUsar solo si TODAS las líneas ya están pickeadas físicamente pero la sesión no cerró sola.");
+    if (motivo === null) return;
+    if (!confirm("¿Marcar esta sesión como COMPLETADA?\n\nSe valida que todas las líneas estén PICKEADO y los armados estén COMPLETADO. No se libera stock ni se anula nada.")) return;
+    const res = await forzarCierrePicking(session.id!, "admin", motivo || undefined);
+    if (res.ok) {
+      showToast("Sesión cerrada");
+      setTimeout(() => onBack(), 800);
+    } else {
+      alert(`No se pudo cerrar:\n\n${res.error || "error desconocido"}`);
+    }
+  };
+
   const doDuplicar = async () => {
     if (!confirm("¿Crear un nuevo envío basado en este?\n\nToma los SKU venta originales y recalcula componentes/posiciones con stock actual. El envío original queda intacto.")) return;
     const { newId, errors } = await duplicarPicking(session.id!);
@@ -4018,6 +4031,9 @@ function PickingSessionDetail({ session: initialSession, onBack }: { session: DB
             </button>
           )}
           <button onClick={doDuplicar} style={{padding:"6px 14px",borderRadius:6,background:"var(--cyanBg)",color:"var(--cyan)",fontSize:11,fontWeight:600,border:"1px solid var(--cyanBd)"}} title="Crear nuevo envío basado en éste, con stock actual">📋 Duplicar</button>
+          {session.estado === "EN_PROCESO" && session.lineas.every(l => l.estado === "PICKEADO") && session.lineas.every(l => l.estadoArmado !== "PENDIENTE") && (
+            <button onClick={doForzarCierre} style={{padding:"6px 14px",borderRadius:6,background:"var(--greenBg)",color:"var(--green)",fontSize:11,fontWeight:600,border:"1px solid var(--greenBd)"}} title="Forzar cierre: marca COMPLETADA. Usar solo si todas las líneas están realmente pickeadas pero la sesión no cerró sola.">✅ Forzar cierre</button>
+          )}
           <button onClick={doAnular} style={{padding:"6px 14px",borderRadius:6,background:"var(--amberBg)",color:"var(--amber)",fontSize:11,fontWeight:600,border:"1px solid var(--amberBd)"}} title="Anular (mantiene historial)">🚫 Anular</button>
           <button onClick={doDelete} style={{padding:"6px 14px",borderRadius:6,background:"var(--redBg)",color:"var(--red)",fontSize:11,fontWeight:600,border:"1px solid var(--red)33"}}>Eliminar</button>
         </div>
