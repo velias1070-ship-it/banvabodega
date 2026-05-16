@@ -1739,6 +1739,10 @@ interface MLMarketplaceItem {
   sold_quantity: number;
   seller_custom_field?: string;
   user_product_id?: string;
+  // ML guarda el SKU en attributes[id='SELLER_SKU'].value_name cuando se carga
+  // desde el panel moderno. seller_custom_field es legacy y suele quedar vacío.
+  // Leer ambos para no perder items recién publicados.
+  attributes?: Array<{ id: string; value_name?: string | null }>;
   variations?: Array<{
     id: number;
     inventory_id?: string;
@@ -1746,7 +1750,24 @@ interface MLMarketplaceItem {
     sold_quantity: number;
     seller_custom_field?: string;
     user_product_id?: string;
+    attributes?: Array<{ id: string; value_name?: string | null }>;
   }>;
+}
+
+// Lee el SKU del seller desde cualquiera de los 2 lugares posibles:
+//   1. seller_custom_field (legacy, sigue funcionando si el seller lo carga ahí)
+//   2. attributes[SELLER_SKU].value_name (panel moderno, donde ML lo guarda ahora)
+// Si ambos están vacíos, retorna null.
+function getSellerSkuFromML(
+  scf: string | null | undefined,
+  attrs: Array<{ id: string; value_name?: string | null }> | null | undefined,
+): string | null {
+  if (scf && scf.trim()) return scf.trim();
+  if (Array.isArray(attrs)) {
+    const sellerSku = attrs.find(a => a.id === "SELLER_SKU")?.value_name;
+    if (sellerSku && String(sellerSku).trim()) return String(sellerSku).trim();
+  }
+  return null;
 }
 
 interface FulfillmentStockDetail {
@@ -2119,7 +2140,8 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
           // Item con variaciones: cada variación tiene su inventory_id
           for (const v of item.variations) {
             const invId = v.inventory_id || null;
-            const skuVenta = resolveSkuVenta(invId, v.seller_custom_field || null);
+            const vSku = getSellerSkuFromML(v.seller_custom_field, v.attributes);
+            const skuVenta = resolveSkuVenta(invId, vSku);
             const skuOrigen = skuVenta ? (skuVentaToSkuOrigen.get(skuVenta.toUpperCase()) || null) : null;
             if (!invId) sinInventoryId++;
             itemsMapRows.push({
@@ -2139,7 +2161,8 @@ export async function syncStockFull(): Promise<SyncStockFullResult> {
         } else {
           // Item sin variaciones
           const invId = item.inventory_id || null;
-          const skuVenta = resolveSkuVenta(invId, item.seller_custom_field || null);
+          const itemSku = getSellerSkuFromML(item.seller_custom_field, item.attributes);
+          const skuVenta = resolveSkuVenta(invId, itemSku);
           const skuOrigen = skuVenta ? (skuVentaToSkuOrigen.get(skuVenta.toUpperCase()) || null) : null;
           if (!invId) sinInventoryId++;
           itemsMapRows.push({
