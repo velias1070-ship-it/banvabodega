@@ -429,7 +429,7 @@ const ESTADO_LABELS_A: Record<string, string> = {
   CERRADA: "Cerrada", ANULADA: "Anulada", PAUSADA: "Pausada",
 };
 
-type RecFilter = "activas"|"pausadas"|"completadas"|"anuladas"|"todas";
+type RecFilter = "activas"|"pausadas"|"completadas"|"anuladas"|"todas"|"con_disc"|"disc_resueltas"|"sin_disc";
 type RecView = "dia"|"recepcion_dia"|"priorizar"|"facturas"|"precios";
 
 const LINEA_ESTADO_COLORS: Record<string, string> = {
@@ -519,6 +519,10 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
   const [addSku, setAddSku] = useState("");
   const [addQty, setAddQty] = useState(1);
 
+  // Resumen de discrepancias (costo + qty) por recepcion_id para badges y filtros del listado.
+  // pendientes = costo_pendiente OR qty_pendiente; resueltas = ninguna pendiente pero >=1 cerrada.
+  const [discPorRec, setDiscPorRec] = useState<Record<string, { pend: number; res: number }>>({});
+
   const loadRecs = async () => {
     setLoading(true);
     const [allRecs, ops] = await Promise.all([getRecepciones(), getOperarios()]);
@@ -530,6 +534,29 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
       setDayLineas(await getLineasDeRecepciones(activeIds));
     } else {
       setDayLineas([]);
+    }
+    // Bulk: resumen de discrepancias por recepcion_id
+    const sb = getSupabase();
+    if (sb && allRecs.length > 0) {
+      const ids = allRecs.map(r => r.id!).filter(Boolean);
+      const [dcRes, dqRes] = await Promise.all([
+        sb.from("discrepancias_costo").select("recepcion_id,estado").in("recepcion_id", ids),
+        sb.from("discrepancias_qty").select("recepcion_id,estado").in("recepcion_id", ids),
+      ]);
+      const map: Record<string, { pend: number; res: number }> = {};
+      const acc = (rows: Array<{ recepcion_id: string; estado: string }> | null) => {
+        for (const row of rows || []) {
+          if (!row.recepcion_id) continue;
+          const slot = map[row.recepcion_id] || (map[row.recepcion_id] = { pend: 0, res: 0 });
+          if (row.estado === "PENDIENTE") slot.pend++;
+          else if (row.estado) slot.res++;
+        }
+      };
+      acc(dcRes.data as Array<{ recepcion_id: string; estado: string }> | null);
+      acc(dqRes.data as Array<{ recepcion_id: string; estado: string }> | null);
+      setDiscPorRec(map);
+    } else {
+      setDiscPorRec({});
     }
     setLoading(false);
   };
@@ -548,12 +575,16 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
     })();
   }, [recs, recDiaFecha]);
 
+  const discInfo = (r: DBRecepcion) => discPorRec[r.id || ""] || { pend: 0, res: 0 };
   const counts: Record<RecFilter, number> = {
     activas: recs.filter(r=>["CREADA","EN_PROCESO"].includes(r.estado)).length,
     pausadas: recs.filter(r=>r.estado==="PAUSADA").length,
     completadas: recs.filter(r=>["COMPLETADA","CERRADA"].includes(r.estado)).length,
     anuladas: recs.filter(r=>r.estado==="ANULADA").length,
     todas: recs.length,
+    con_disc: recs.filter(r=>discInfo(r).pend>0).length,
+    disc_resueltas: recs.filter(r=>{const d=discInfo(r); return d.pend===0 && d.res>0;}).length,
+    sin_disc: recs.filter(r=>{const d=discInfo(r); return d.pend===0 && d.res===0;}).length,
   };
 
   const filteredRecs = recs.filter(r => {
@@ -561,6 +592,9 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
     if (filter==="pausadas") return r.estado==="PAUSADA";
     if (filter==="completadas") return ["COMPLETADA","CERRADA"].includes(r.estado);
     if (filter==="anuladas") return r.estado==="ANULADA";
+    if (filter==="con_disc") return discInfo(r).pend > 0;
+    if (filter==="disc_resueltas") { const d=discInfo(r); return d.pend===0 && d.res>0; }
+    if (filter==="sin_disc") { const d=discInfo(r); return d.pend===0 && d.res===0; }
     return true;
   });
 
@@ -1131,12 +1165,29 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
                   <div style={{...costBlockStyle,
                     background: diffNeto === 0 ? "var(--greenBg)" : diffNeto > 0 ? "var(--amberBg)" : "var(--redBg)",
                     border: `1px solid ${diffNeto === 0 ? "var(--greenBd,var(--green))" : diffNeto > 0 ? "var(--amberBd)" : "var(--redBd,var(--red))"}`}}>
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
                       <div style={{fontSize:12}}>
                         <span style={{fontWeight:700,color:diffNeto===0?"var(--green)":diffNeto>0?"var(--amber)":"var(--red)"}}>
                           Diferencia: {diffNeto>=0?"+":""}{ fmtMoney(diffNeto)} neto | {diffBruto>=0?"+":""}{fmtMoney(diffBruto)} bruto
                         </span>
                       </div>
+                      {/* Omitir redondeo (<=$200 diff): cuadra costo_neto/iva/bruto a la suma exacta de las lineas */}
+                      {diffNeto !== 0 && Math.abs(diffNeto) <= 200 && selRec && (
+                        <button
+                          onClick={async () => {
+                            if (!selRec) return;
+                            if (!confirm(`Cuadrar la factura a la suma exacta de líneas (ajuste de ${fmtMoney(diffNeto)} neto por redondeo)?`)) return;
+                            await actualizarRecepcion(selRec.id!, { costo_neto: netoAjustado, iva: ivaAjustado, costo_bruto: brutoAjustado });
+                            const updated = await getRecepciones();
+                            const fresh = updated.find(r => r.id === selRec.id) || null;
+                            if (fresh) setSelRec(fresh);
+                            setRecs(updated);
+                          }}
+                          title="Acepta la diferencia como redondeo aritmético y cuadra los totales declarados a la suma de líneas. No genera nota de crédito ni discrepancia."
+                          style={{padding:"4px 10px",borderRadius:6,background:"var(--bg3)",color:"var(--txt2)",fontSize:10,fontWeight:700,border:"1px solid var(--bg4)",cursor:"pointer",whiteSpace:"nowrap"}}>
+                          Omitir (redondeo)
+                        </button>
+                      )}
                     </div>
                     <div style={{fontSize:11,marginTop:4,fontWeight:600,color:diffNeto===0?"var(--green)":diffNeto>0?"var(--amber)":"var(--red)"}}>
                       {diffNeto === 0
@@ -2270,15 +2321,20 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
       {view === "facturas" && (<>
       {/* Filter tabs */}
       <div style={{display:"flex",gap:4,marginBottom:12,flexWrap:"wrap"}}>
-        {(["activas","pausadas","completadas","anuladas","todas"] as RecFilter[]).map(f => (
-          <button key={f} onClick={()=>setFilter(f)}
-            style={{padding:"6px 12px",borderRadius:6,fontSize:11,fontWeight:600,cursor:"pointer",
-              background:filter===f?"var(--cyan)":"var(--bg3)",color:filter===f?"#000":"var(--txt2)",
-              border:`1px solid ${filter===f?"var(--cyan)":"var(--bg4)"}`}}>
-            {f==="activas"?"Activas":f==="pausadas"?"Pausadas":f==="completadas"?"Completadas":f==="anuladas"?"Anuladas":"Todas"}
-            {counts[f]>0&&<span style={{marginLeft:4,opacity:0.7}}>({counts[f]})</span>}
-          </button>
-        ))}
+        {(["activas","pausadas","completadas","anuladas","todas","con_disc","disc_resueltas","sin_disc"] as RecFilter[]).map(f => {
+          const label = f==="activas"?"Activas":f==="pausadas"?"Pausadas":f==="completadas"?"Completadas":f==="anuladas"?"Anuladas":f==="todas"?"Todas":f==="con_disc"?"⚠️ Con discrepancia":f==="disc_resueltas"?"✅ Resueltas":"Sin discrepancia";
+          const isDisc = f==="con_disc" || f==="disc_resueltas" || f==="sin_disc";
+          const activeColor = f==="con_disc"?"var(--amber)":f==="disc_resueltas"?"var(--green)":"var(--cyan)";
+          return (
+            <button key={f} onClick={()=>setFilter(f)}
+              style={{padding:"6px 12px",borderRadius:6,fontSize:11,fontWeight:600,cursor:"pointer",
+                background:filter===f?activeColor:"var(--bg3)",color:filter===f?"#000":isDisc?activeColor:"var(--txt2)",
+                border:`1px solid ${filter===f?activeColor:"var(--bg4)"}`}}>
+              {label}
+              {counts[f]>0&&<span style={{marginLeft:4,opacity:0.7}}>({counts[f]})</span>}
+            </button>
+          );
+        })}
       </div>
 
       {filteredRecs.length === 0 && !loading && (
@@ -2289,15 +2345,22 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
 
       <div className="desktop-only">
         <table className="tbl">
-          <thead><tr><th>Folio</th><th>Proveedor</th><th>Fecha</th><th>Estado</th><th>Operarios</th><th></th></tr></thead>
+          <thead><tr><th>Folio</th><th>Proveedor</th><th>Fecha</th><th>Estado</th><th>Discrep.</th><th>Operarios</th><th></th></tr></thead>
           <tbody>{filteredRecs.map(rec => {
             const m = parseRecepcionMeta(rec.notas||"");
+            const d = discInfo(rec);
+            const discBadge = d.pend > 0
+              ? <span title={`${d.pend} discrepancia(s) pendiente(s)`} style={{padding:"2px 8px",borderRadius:4,background:"var(--amberBg)",color:"var(--amber)",fontSize:10,fontWeight:700,border:"1px solid var(--amberBd)"}}>⚠️ {d.pend} pend</span>
+              : d.res > 0
+              ? <span title={`${d.res} discrepancia(s) resuelta(s)`} style={{padding:"2px 8px",borderRadius:4,background:"var(--greenBg)",color:"var(--green)",fontSize:10,fontWeight:700,border:"1px solid var(--greenBd,var(--green))"}}>✅ {d.res} res</span>
+              : <span style={{fontSize:10,color:"var(--txt3)"}}>—</span>;
             return (
               <tr key={rec.id} onClick={()=>openRec(rec)} style={{cursor:"pointer",opacity:rec.estado==="ANULADA"?0.6:1}}>
                 <td className="mono" style={{fontWeight:700}}>{rec.folio}</td>
                 <td>{rec.proveedor}</td>
                 <td style={{fontSize:11,color:"var(--txt3)"}}>{fmtDate(rec.created_at||"")} {fmtTime(rec.created_at||"")}</td>
                 <td><span style={{padding:"2px 8px",borderRadius:4,background:ESTADO_COLORS_A[rec.estado],color:"#fff",fontSize:10,fontWeight:700}}>{ESTADO_LABELS_A[rec.estado]||rec.estado}</span></td>
+                <td>{discBadge}</td>
                 <td style={{fontSize:11,color:m.asignados.length>0?"var(--cyan)":"var(--txt3)"}}>{m.asignados.length>0?m.asignados.join(", "):"Todos"}</td>
                 <td><button style={{fontSize:10,padding:"4px 8px",borderRadius:4,background:"var(--bg3)",color:"var(--cyan)",border:"1px solid var(--bg4)"}}>Ver</button></td>
               </tr>
@@ -2309,11 +2372,16 @@ function AdminRecepciones({ refresh }: { refresh: () => void }) {
       <div className="mobile-only">
         {filteredRecs.map(rec => {
           const m = parseRecepcionMeta(rec.notas||"");
+          const d = discInfo(rec);
           return (
             <div key={rec.id} onClick={()=>openRec(rec)} style={{padding:12,marginBottom:6,borderRadius:8,background:"var(--bg2)",border:"1px solid var(--bg3)",cursor:"pointer",opacity:rec.estado==="ANULADA"?0.6:1}}>
-              <div style={{display:"flex",justifyContent:"space-between"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:6}}>
                 <div style={{fontWeight:700,fontSize:13}}>{rec.proveedor}</div>
-                <span style={{padding:"2px 8px",borderRadius:4,background:ESTADO_COLORS_A[rec.estado],color:"#fff",fontSize:10,fontWeight:700}}>{ESTADO_LABELS_A[rec.estado]||rec.estado}</span>
+                <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                  {d.pend > 0 && <span title="Pendientes" style={{padding:"1px 6px",borderRadius:4,background:"var(--amberBg)",color:"var(--amber)",fontSize:9,fontWeight:700}}>⚠️ {d.pend}</span>}
+                  {d.pend === 0 && d.res > 0 && <span title="Resueltas" style={{padding:"1px 6px",borderRadius:4,background:"var(--greenBg)",color:"var(--green)",fontSize:9,fontWeight:700}}>✅ {d.res}</span>}
+                  <span style={{padding:"2px 8px",borderRadius:4,background:ESTADO_COLORS_A[rec.estado],color:"#fff",fontSize:10,fontWeight:700}}>{ESTADO_LABELS_A[rec.estado]||rec.estado}</span>
+                </div>
               </div>
               <div style={{fontSize:11,color:"var(--txt3)"}}>Folio: {rec.folio} · {fmtDate(rec.created_at||"")}</div>
               {m.asignados.length > 0 && <div style={{fontSize:10,color:"var(--cyan)",marginTop:2}}>Asignado: {m.asignados.join(", ")}</div>}
