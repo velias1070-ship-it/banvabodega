@@ -173,7 +173,7 @@ export async function initStore(): Promise<void> {
       products[p.sku] = {
         sku: p.sku, name: p.nombre,
         cat: p.categoria, prov: p.proveedor, cost: p.costo, costAvg: p.costo_promedio || p.costo || 0,
-        price: p.precio, reorder: p.reorder,
+        price: 0, reorder: p.reorder,
         requiresLabel: p.requiere_etiqueta,
         tamano: p.tamano || "", color: p.color || "",
         innerPack: p.inner_pack,
@@ -288,12 +288,16 @@ function scheduleFlush() {
   _flushTimer = setTimeout(flushToSupabase, 500);
 }
 
+let _lastFlushError: string | null = null;
+export function getLastFlushError(): string | null { return _lastFlushError; }
+export function clearLastFlushError(): void { _lastFlushError = null; }
+
 async function flushToSupabase() {
   try {
     // Flush products
     const dbProds: db.DBProduct[] = Object.values(_cache.products).map(p => ({
       sku: p.sku, nombre: p.name,
-      categoria: p.cat, proveedor: p.prov, costo: p.cost, costo_promedio: p.costAvg, precio: p.price,
+      categoria: p.cat, proveedor: p.prov, costo: p.cost, costo_promedio: p.costAvg,
       reorder: p.reorder, requiere_etiqueta: p.requiresLabel !== false,
       tamano: p.tamano || "", color: p.color || "",
       inner_pack: p.innerPack ?? null,
@@ -312,7 +316,8 @@ async function flushToSupabase() {
     // Stock is managed exclusively via delta-based operations (recordMovement/ubicarLinea)
     // to avoid race conditions with concurrent updates. No stock reconciliation here.
   } catch (err) {
-    console.error("Flush to Supabase error:", err);
+    _lastFlushError = err instanceof Error ? err.message : String(err);
+    console.error("[flush] Supabase error:", _lastFlushError);
   }
 }
 
@@ -801,7 +806,7 @@ export async function saveProductAsync(p: Product) {
   if (isConfigured()) {
     await db.upsertProducto({
       sku: p.sku, nombre: p.name,
-      categoria: p.cat, proveedor: p.prov, costo: p.cost, costo_promedio: p.costAvg, precio: p.price,
+      categoria: p.cat, proveedor: p.prov, costo: p.cost, costo_promedio: p.costAvg,
       reorder: p.reorder, requiere_etiqueta: p.requiresLabel !== false,
       tamano: p.tamano || "", color: p.color || "",
       inner_pack: p.innerPack ?? null,
@@ -876,7 +881,7 @@ export async function syncFromSheet(): Promise<{ added: number; updated: number;
     _cache.products[p.sku] = {
       sku: p.sku, name: p.nombre,
       cat: p.categoria, prov: p.proveedor, cost: p.costo, costAvg: p.costo_promedio || p.costo || 0,
-      price: p.precio, reorder: p.reorder,
+      price: 0, reorder: p.reorder,
       requiresLabel: p.requiere_etiqueta,
       tamano: p.tamano || "", color: p.color || "",
     };
@@ -1760,7 +1765,7 @@ export async function repararRecepcion(recepcionId: string, posicionDestino: str
     // Step 1: Create product if missing
     if (!existeProducto) {
       try {
-        await db.upsertProducto({ sku: l.sku, nombre: l.nombre, categoria: "Otros", proveedor: "Otro", costo: l.costo_unitario || 0, costo_promedio: l.costo_unitario || 0, precio: 0, reorder: 20, requiere_etiqueta: true, tamano: "", color: "" });
+        await db.upsertProducto({ sku: l.sku, nombre: l.nombre, categoria: "Otros", proveedor: "Otro", costo: l.costo_unitario || 0, costo_promedio: l.costo_unitario || 0, reorder: 20, requiere_etiqueta: true, tamano: "", color: "" });
         result.detalle += `Producto ${l.sku} creado. `;
       } catch (e: unknown) {
         result.problema = `No se pudo crear producto: ${e instanceof Error ? e.message : e}`;

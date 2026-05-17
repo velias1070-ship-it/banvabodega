@@ -10,7 +10,6 @@ export interface DBProduct {
   proveedor: string;
   costo: number;
   costo_promedio?: number;
-  precio: number;
   reorder: number;
   requiere_etiqueta: boolean;
   tamano: string;
@@ -223,14 +222,16 @@ export interface DBDiscrepanciaQty {
 
 // Strip auto-generated fields (created_at, updated_at) that Supabase rejects on upsert
 function cleanProduct(p: DBProduct): DBProduct {
-  return {
+  const cleaned: DBProduct = {
     sku: (p.sku || "").toUpperCase().trim(),
     nombre: p.nombre, categoria: p.categoria, proveedor: p.proveedor,
-    costo: p.costo, precio: p.precio, reorder: p.reorder,
+    costo: p.costo, reorder: p.reorder,
     requiere_etiqueta: p.requiere_etiqueta, tamano: p.tamano, color: p.color,
     inner_pack: p.inner_pack,
     estado_sku: p.estado_sku ?? null,
   };
+  if (p.costo_promedio !== undefined) cleaned.costo_promedio = p.costo_promedio;
+  return cleaned;
 }
 
 export async function fetchProductos(): Promise<DBProduct[]> {
@@ -1008,7 +1009,6 @@ export async function syncDiccionarioFromSheet(): Promise<{
           categoria: row.categoria,
           proveedor: row.proveedor,
           costo: row.unidades === 1 ? row.costo : (row.unidades > 0 ? Math.round(row.costo / row.unidades) : row.costo),
-          precio: 0,
           reorder: 20,
           requiere_etiqueta: !!row.codigoMl,
           tamano: row.tamano,
@@ -1185,7 +1185,7 @@ export async function importStockFromSheet(): Promise<{ imported: number; totalU
       if (nombre) {
         await upsertProducto({
           sku, nombre,
-          categoria: "Otros", proveedor: "Otro", costo: 0, precio: 0,
+          categoria: "Otros", proveedor: "Otro", costo: 0,
           reorder: 20, requiere_etiqueta: true, tamano: "", color: "",
         });
       }
