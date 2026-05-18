@@ -54,6 +54,9 @@ interface MLAttribute {
 
 const fmt = (n: number) => "$" + n.toLocaleString("es-CL");
 
+// Valores canónicos de MATTRESS_SIZE para categorías textiles ML Chile (MLC440169 y similares)
+const MATTRESS_SIZE_OPTIONS = ["Cuna", "1 plaza", "1.5 plazas", "Full", "2 plazas", "2.5 plazas", "Queen", "King", "Súper queen", "Súper king", "Twin"] as const;
+
 // ==================== MAIN COMPONENT ====================
 
 export default function AdminComercial() {
@@ -1163,16 +1166,26 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                 <div style={{ fontSize: 12, color: "var(--txt2)" }}>Aplicar a {bulkSelected.size} publicación{bulkSelected.size !== 1 ? "es" : ""}</div>
                 <div>
                   <label style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", display: "block", marginBottom: 4 }}>Nuevo valor</label>
-                  <input value={bulkAttrModal.value_name} onChange={e => setBulkAttrModal({ ...bulkAttrModal, value_name: e.target.value })}
-                    placeholder={placeholder} disabled={bulkAttrRunning}
-                    style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt)", fontSize: 13, boxSizing: "border-box" }} />
-                  {suggestions.length > 0 && (
-                    <div style={{ marginTop: 6, display: "flex", gap: 4, flexWrap: "wrap" }}>
-                      {suggestions.map(v => (
-                        <button key={v} onClick={() => setBulkAttrModal({ ...bulkAttrModal, value_name: v })} disabled={bulkAttrRunning}
-                          style={{ padding: "3px 8px", borderRadius: 4, fontSize: 10, background: "var(--bg3)", color: "var(--txt2)", border: "1px solid var(--bg4)", cursor: "pointer" }}>{v}</button>
-                      ))}
-                    </div>
+                  {bulkAttrModal.attr_id === "MATTRESS_SIZE" ? (
+                    <select value={bulkAttrModal.value_name} onChange={e => setBulkAttrModal({ ...bulkAttrModal, value_name: e.target.value })} disabled={bulkAttrRunning}
+                      style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt)", fontSize: 13, boxSizing: "border-box" }}>
+                      <option value="">— selecciona un valor —</option>
+                      {MATTRESS_SIZE_OPTIONS.map(v => <option key={v} value={v}>{v}</option>)}
+                    </select>
+                  ) : (
+                    <>
+                      <input value={bulkAttrModal.value_name} onChange={e => setBulkAttrModal({ ...bulkAttrModal, value_name: e.target.value })}
+                        placeholder={placeholder} disabled={bulkAttrRunning}
+                        style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt)", fontSize: 13, boxSizing: "border-box" }} />
+                      {suggestions.length > 0 && (
+                        <div style={{ marginTop: 6, display: "flex", gap: 4, flexWrap: "wrap" }}>
+                          {suggestions.map(v => (
+                            <button key={v} onClick={() => setBulkAttrModal({ ...bulkAttrModal, value_name: v })} disabled={bulkAttrRunning}
+                              style={{ padding: "3px 8px", borderRadius: 4, fontSize: 10, background: "var(--bg3)", color: "var(--txt2)", border: "1px solid var(--bg4)", cursor: "pointer" }}>{v}</button>
+                          ))}
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
                 {bulkAttrResult && <div style={{ fontSize: 11, padding: "8px 10px", borderRadius: 6, background: bulkAttrResult.startsWith("Error") ? "var(--redBg)" : "var(--greenBg)", color: bulkAttrResult.startsWith("Error") ? "var(--red)" : "var(--green)" }}>{bulkAttrResult}</div>}
@@ -1235,9 +1248,14 @@ function MisPublicaciones({ onAddVariante }: { onAddVariante: (itemId: string) =
                 </div>
                 <div>
                   <label style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", display: "block", marginBottom: 4 }}>Tamaño cama</label>
-                  <input value={editLoadingAttrs ? "Cargando..." : editMattressSize} onChange={e => setEditMattressSize(e.target.value)} disabled={editLoadingAttrs}
-                    placeholder="Ej: 1.5 plazas, 2 plazas, King..."
-                    style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt)", fontSize: 13, boxSizing: "border-box" }} />
+                  <select value={editLoadingAttrs ? "" : editMattressSize} onChange={e => setEditMattressSize(e.target.value)} disabled={editLoadingAttrs}
+                    style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid var(--bg4)", background: "var(--bg3)", color: "var(--txt)", fontSize: 13, boxSizing: "border-box" }}>
+                    <option value="">{editLoadingAttrs ? "Cargando..." : "— sin valor —"}</option>
+                    {MATTRESS_SIZE_OPTIONS.map(v => <option key={v} value={v}>{v}</option>)}
+                    {editMattressSize && !MATTRESS_SIZE_OPTIONS.includes(editMattressSize as typeof MATTRESS_SIZE_OPTIONS[number]) && (
+                      <option value={editMattressSize}>{editMattressSize} (no canónico)</option>
+                    )}
+                  </select>
                 </div>
               </div>
               <div style={{ fontSize: 10, color: "var(--txt3)" }}>Al cambiar estos atributos, ML actualiza el título automáticamente.</div>
