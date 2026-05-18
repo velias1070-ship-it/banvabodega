@@ -19,6 +19,7 @@ on:
 jobs:
   backup:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       issues: write
@@ -62,6 +63,7 @@ jobs:
       - name: Create dump
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          PGCONNECT_TIMEOUT: '15'
         shell: bash
         run: |
           set -euo pipefail
@@ -71,7 +73,38 @@ jobs:
           echo "DATE=$DATE" >> "$GITHUB_ENV"
           echo "HM=$HM" >> "$GITHUB_ENV"
           echo "YM=$YM" >> "$GITHUB_ENV"
-          /usr/lib/postgresql/17/bin/pg_dump -F c -d "$SUPABASE_DB_URL" -f dump.bin
+
+          PG_DUMP=/usr/lib/postgresql/17/bin/pg_dump
+          MAX_ATTEMPTS=3
+          attempt=1
+
+          while true; do
+            echo "=== Dump attempt ${attempt}/${MAX_ATTEMPTS}"
+            rm -f dump.bin
+            rc=0
+            timeout 600 "$PG_DUMP" -F c -d "$SUPABASE_DB_URL" -f dump.bin || rc=$?
+
+            if [ "$rc" -eq 0 ]; then
+              echo "Dump OK on attempt ${attempt}"
+              break
+            fi
+
+            echo "Dump attempt ${attempt} failed (exit ${rc})"
+            if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
+              echo "All ${MAX_ATTEMPTS} dump attempts failed"
+              exit 1
+            fi
+
+            backoff=$((attempt * 60))
+            echo "Retrying in ${backoff}s..."
+            sleep "$backoff"
+            attempt=$((attempt + 1))
+          done
+
+          if [ ! -s dump.bin ]; then
+            echo "ERROR: dump.bin is empty"
+            exit 1
+          fi
           ls -lh dump.bin
 
       - name: Upload to targets
@@ -177,7 +210,7 @@ jobs:
           fi
           echo "Prune OK"
 
-      - name: Open issue on failure
+      - name: Open or update issue on failure
         if: failure()
         uses: actions/github-script@v7
         with:
@@ -185,10 +218,22 @@ jobs:
             const { owner, repo } = context.repo;
             const date = new Date().toISOString().slice(0, 10);
             const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
-            await github.rest.issues.create({
-              owner,
-              repo,
-              title: `DB backup failed ${date}`,
-              body: `Multi-tier Supabase backup workflow failed.\n\nRun: ${runUrl}\n\nCheck the logs to see which step (dump, upload, or prune) failed and which target/prefix was affected.`,
-              labels: ['backup']
+            const title = `DB backup failed ${date}`;
+            const body = `Multi-tier Supabase backup workflow failed.\n\nRun: ${runUrl}\n\nCheck the logs to see which step (dump, upload, or prune) failed and which target/prefix was affected.`;
+
+            const existing = await github.rest.issues.listForRepo({
+              owner, repo, state: 'open', labels: 'backup', per_page: 100
             });
+            const match = existing.data.find(i => i.title === title);
+
+            if (match) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: match.number, body
+              });
+              console.log(`Commented on existing issue #${match.number}`);
+            } else {
+              const created = await github.rest.issues.create({
+                owner, repo, title, body, labels: ['backup']
+              });
+              console.log(`Created issue #${created.data.number}`);
+            }
