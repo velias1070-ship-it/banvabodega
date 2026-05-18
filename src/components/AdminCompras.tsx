@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   fetchOrdenesCompra, fetchOrdenCompra, fetchOrdenCompraLineas,
-  updateOrdenCompra, updateOrdenCompraLinea, deleteOrdenCompra,
+  updateOrdenCompra, updateOrdenCompraLinea, deleteOrdenCompra, deleteOrdenCompraLinea, recalcOCTotales,
   fetchRecepcionesDeOC, fetchRecepcionesSinOC, vincularRecepcionOC,
   fetchRecepcionLineas, fetchLineasDeRecepciones, insertAdminActionLog,
   insertOrdenCompra, insertOrdenCompraLineas, nextOCNumero,
@@ -193,6 +193,11 @@ export default function AdminCompras() {
   const [expandidoOcRec, setExpandidoOcRec] = useState<Set<string>>(new Set());
   const [filtroLineaEstado, setFiltroLineaEstado] = useState<"todos" | "pendiente" | "parcial" | "recibida">("todos");
   const [busquedaLinea, setBusquedaLinea] = useState("");
+  // Agregar línea (BORRADOR)
+  const [addLineSku, setAddLineSku] = useState("");
+  const [addLineQty, setAddLineQty] = useState<number>(1);
+  const [addLineCostoOverride, setAddLineCostoOverride] = useState<string>(""); // vacío = auto
+  const [addingLine, setAddingLine] = useState(false);
 
   // Modals
   const [modalEnviar, setModalEnviar] = useState(false);
@@ -444,6 +449,102 @@ export default function AdminCompras() {
     await insertAdminActionLog("eliminar_oc", "ordenes_compra", selectedOC.id!, { numero: selectedOC.numero });
     backToList();
   }, [selectedOC, backToList]);
+
+  // Agregar nueva línea a OC en BORRADOR
+  const agregarLineaOC = useCallback(async () => {
+    if (!selectedOC || !addLineSku.trim()) return;
+    const sku = addLineSku.trim().toUpperCase();
+    const qty = Math.floor(addLineQty);
+    if (qty <= 0) { alert("La cantidad debe ser > 0"); return; }
+    if (ocLineas.some(l => l.sku_origen.toUpperCase() === sku)) {
+      alert(`${sku} ya está en la OC. Editá la cantidad en la línea existente o elimínala primero.`);
+      return;
+    }
+    setAddingLine(true);
+    try {
+      // Resolver nombre, inner_pack, costo (catálogo > productos.costo > override)
+      const sb = getSupabase();
+      let nombre = "";
+      let innerPack = 1;
+      let costo = 0;
+      let fuente = "manual";
+      if (sb) {
+        // 1. Producto (nombre, inner_pack, costo fallback)
+        const { data: prod } = await sb.from("productos").select("nombre, inner_pack, costo, costo_promedio").eq("sku", sku).maybeSingle();
+        if (!prod) {
+          alert(`SKU ${sku} no existe en productos. Creálo primero desde Admin → Productos.`);
+          return;
+        }
+        nombre = prod.nombre || "";
+        innerPack = prod.inner_pack || 1;
+        // 2. Catálogo del proveedor de la OC
+        const { data: cat } = await sb.from("proveedor_catalogo")
+          .select("precio_neto, inner_pack")
+          .eq("proveedor", selectedOC.proveedor)
+          .ilike("sku_origen", sku)
+          .limit(1).maybeSingle();
+        if (cat?.precio_neto) {
+          costo = Number(cat.precio_neto);
+          innerPack = cat.inner_pack || innerPack;
+          fuente = "catalogo";
+        } else if (prod.costo) {
+          costo = Number(prod.costo);
+          fuente = "productos_costo";
+        }
+      }
+      // Override manual si el usuario ingresó un costo
+      const overrideNum = parseFloat(addLineCostoOverride);
+      if (!isNaN(overrideNum) && overrideNum > 0) {
+        costo = overrideNum;
+        fuente = "manual";
+      }
+      if (costo <= 0) {
+        alert(`No encontré precio para ${sku} en catálogo ni en productos. Ingresá un costo manual.`);
+        return;
+      }
+      const bultos = Math.ceil(qty / (innerPack || 1));
+      await insertOrdenCompraLineas([{
+        orden_id: selectedOC.id!,
+        sku_origen: sku,
+        nombre,
+        cantidad_pedida: qty,
+        costo_unitario: costo,
+        inner_pack: innerPack,
+        bultos,
+        estado: "PENDIENTE",
+        precio_fuente: fuente,
+      }]);
+      const totales = await recalcOCTotales(selectedOC.id!);
+      await insertAdminActionLog("agregar_linea_oc", "ordenes_compra", selectedOC.id!, {
+        oc_id: selectedOC.id, numero: selectedOC.numero, sku, qty, costo, fuente,
+      });
+      // Refrescar líneas y header
+      const lineas = await fetchOrdenCompraLineas(selectedOC.id!);
+      setOcLineas(lineas);
+      if (totales) setSelectedOC({ ...selectedOC, total_neto: totales.neto, total_bruto: totales.bruto });
+      setAddLineSku(""); setAddLineQty(1); setAddLineCostoOverride("");
+    } finally {
+      setAddingLine(false);
+    }
+  }, [selectedOC, addLineSku, addLineQty, addLineCostoOverride, ocLineas]);
+
+  // Eliminar una línea (solo BORRADOR)
+  const eliminarLineaOC = useCallback(async (lineaId: string, sku: string) => {
+    if (!selectedOC) return;
+    if (!window.confirm(`¿Eliminar la línea de ${sku}? Solo válido para OCs en BORRADOR.`)) return;
+    try {
+      await deleteOrdenCompraLinea(lineaId);
+      const totales = await recalcOCTotales(selectedOC.id!);
+      await insertAdminActionLog("eliminar_linea_oc", "ordenes_compra", selectedOC.id!, {
+        oc_id: selectedOC.id, numero: selectedOC.numero, sku, linea_id: lineaId,
+      });
+      const lineas = await fetchOrdenCompraLineas(selectedOC.id!);
+      setOcLineas(lineas);
+      if (totales) setSelectedOC({ ...selectedOC, total_neto: totales.neto, total_bruto: totales.bruto });
+    } catch (err) {
+      alert(`No se pudo eliminar: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, [selectedOC]);
 
   const anularOC = useCallback(async () => {
     if (!selectedOC) return;
@@ -709,6 +810,49 @@ export default function AdminCompras() {
           );
         })()}
 
+        {/* Agregar línea (solo BORRADOR) */}
+        {estado === "BORRADOR" && (
+          <div style={{ display: "flex", gap: 6, marginBottom: 10, padding: 10, background: "var(--bg2)", border: "1px solid var(--bg4)", borderRadius: 6, flexWrap: "wrap", alignItems: "center" }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: "var(--txt2)" }}>+ Agregar SKU:</span>
+            <input
+              type="text"
+              placeholder="SKU origen"
+              value={addLineSku}
+              onChange={e => setAddLineSku(e.target.value.toUpperCase())}
+              onKeyDown={e => { if (e.key === "Enter") agregarLineaOC(); }}
+              style={{ width: 160, padding: "6px 8px", borderRadius: 5, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 11, fontFamily: "var(--font-mono, monospace)" }}
+            />
+            <input
+              type="number"
+              min={1}
+              placeholder="Qty"
+              value={addLineQty}
+              onChange={e => setAddLineQty(Math.max(1, parseInt(e.target.value) || 1))}
+              onKeyDown={e => { if (e.key === "Enter") agregarLineaOC(); }}
+              style={{ width: 70, padding: "6px 8px", borderRadius: 5, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 11 }}
+            />
+            <input
+              type="text"
+              placeholder="Costo (opc. auto)"
+              value={addLineCostoOverride}
+              onChange={e => setAddLineCostoOverride(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") agregarLineaOC(); }}
+              style={{ width: 130, padding: "6px 8px", borderRadius: 5, background: "var(--bg3)", color: "var(--txt)", border: "1px solid var(--bg4)", fontSize: 11 }}
+              title="Vacío = busca en catálogo del proveedor, luego en productos.costo"
+            />
+            <button
+              onClick={agregarLineaOC}
+              disabled={addingLine || !addLineSku.trim()}
+              style={{ padding: "6px 14px", borderRadius: 5, background: addingLine || !addLineSku.trim() ? "var(--bg3)" : "var(--green)", color: addingLine || !addLineSku.trim() ? "var(--txt3)" : "#000", border: "none", fontSize: 11, fontWeight: 700, cursor: addingLine || !addLineSku.trim() ? "not-allowed" : "pointer" }}
+            >
+              {addingLine ? "Agregando..." : "Agregar"}
+            </button>
+            <span style={{ fontSize: 10, color: "var(--txt3)", marginLeft: 8 }}>
+              Precio: catálogo → productos.costo → manual
+            </span>
+          </div>
+        )}
+
         {/* Líneas */}
         <div style={{ overflowX: "auto", marginBottom: 16 }}>
           <table className="tbl" style={{ minWidth: 900 }}>
@@ -725,6 +869,7 @@ export default function AdminCompras() {
                 <th style={{ textAlign: "right" }}>Vel</th>
                 <th style={{ textAlign: "right" }}>Cob al pedir</th>
                 <th>Estado</th>
+                {estado === "BORRADOR" && <th></th>}
               </tr>
             </thead>
             <tbody>
@@ -738,7 +883,7 @@ export default function AdminCompras() {
                   return true;
                 });
                 if (filtradas.length === 0) {
-                  return <tr><td colSpan={11} style={{ textAlign: "center", padding: 20, color: "var(--txt3)", fontSize: 11 }}>Sin coincidencias</td></tr>;
+                  return <tr><td colSpan={estado === "BORRADOR" ? 12 : 11} style={{ textAlign: "center", padding: 20, color: "var(--txt3)", fontSize: 11 }}>Sin coincidencias</td></tr>;
                 }
                 return filtradas.map(l => {
                 const recibido = recibidoPorSku.get(l.sku_origen.toUpperCase()) || 0;
@@ -762,6 +907,17 @@ export default function AdminCompras() {
                         {estadoLinea}
                       </span>
                     </td>
+                    {estado === "BORRADOR" && (
+                      <td>
+                        <button
+                          onClick={() => eliminarLineaOC(l.id!, l.sku_origen)}
+                          title="Eliminar línea"
+                          style={{ padding: "3px 7px", borderRadius: 4, background: "var(--redBg)", color: "var(--red)", border: "1px solid var(--redBd)", fontSize: 11, fontWeight: 700, cursor: "pointer", lineHeight: 1 }}
+                        >
+                          🗑
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 );
               });

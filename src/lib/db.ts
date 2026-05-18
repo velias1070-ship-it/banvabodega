@@ -3345,6 +3345,30 @@ export async function updateOrdenCompraLinea(id: string, fields: Partial<DBOrden
   await sb.from("ordenes_compra_lineas").update(fields).eq("id", id);
 }
 
+export async function deleteOrdenCompraLinea(id: string) {
+  const sb = getSupabase(); if (!sb) return;
+  const { error } = await sb.from("ordenes_compra_lineas").delete().eq("id", id);
+  if (error) throw new Error(`deleteOrdenCompraLinea failed: ${error.message}`);
+}
+
+/**
+ * Recalcula total_neto y total_bruto (IVA 19%) de una OC sumando sus líneas.
+ * Usar después de agregar/eliminar/editar líneas en estado BORRADOR.
+ */
+export async function recalcOCTotales(ordenId: string): Promise<{ neto: number; bruto: number } | null> {
+  const sb = getSupabase(); if (!sb) return null;
+  const { data, error } = await sb
+    .from("ordenes_compra_lineas")
+    .select("cantidad_pedida, costo_unitario")
+    .eq("orden_id", ordenId);
+  if (error) { console.error("[recalcOCTotales]", error); return null; }
+  const neto = (data || []).reduce((s, l: { cantidad_pedida: number; costo_unitario: number }) => s + l.cantidad_pedida * l.costo_unitario, 0);
+  const bruto = Math.round(neto * 1.19);
+  const { error: uErr } = await sb.from("ordenes_compra").update({ total_neto: neto, total_bruto: bruto }).eq("id", ordenId);
+  if (uErr) { console.error("[recalcOCTotales] update", uErr); return null; }
+  return { neto, bruto };
+}
+
 /** Generar siguiente número de OC */
 export async function nextOCNumero(): Promise<string> {
   const sb = getSupabase(); if (!sb) return "OC-001";
