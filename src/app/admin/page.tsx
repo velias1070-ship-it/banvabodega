@@ -5823,6 +5823,7 @@ function Inventario() {
   const [soloSinFull, setSoloSinFull] = useState(false);
   const [soloSinMapping, setSoloSinMapping] = useState(false);
   const [skusConFlex, setSkusConFlex] = useState<Set<string>>(new Set());
+  const [flexPublicadoBySku, setFlexPublicadoBySku] = useState<Map<string, number>>(new Map());
   const [skusConFull, setSkusConFull] = useState<Set<string>>(new Set());
   const [skusConMapping, setSkusConMapping] = useState<Set<string>>(new Set());
   const [skusVirtualesPuros, setSkusVirtualesPuros] = useState<Set<string>>(new Set());
@@ -5873,14 +5874,17 @@ function Inventario() {
       setSkusVirtualesPuros(virtualesPuros);
       const flexSet = new Set<string>();
       const mappingSet = new Set<string>();
+      const flexPubMap = new Map<string, number>();
       // "Tiene Flex" = ML reporta slot seller_warehouse activo (last_location_types). Fallback
       // a stock_flex_cache > 0 para SKUs aun sin cache poblado (Fase 2, columna nueva v112).
+      // flexPubMap suma stock_flex_cache por sku_origen para el filtro "Sin Flex" real.
       for (const i of ((itemsRes.data || []) as {sku:string;sku_origen:string|null;stock_flex_cache:number|null;last_location_types:string[]|null}[])) {
         const origen = i.sku_origen || svToOrigen[i.sku] || i.sku;
         mappingSet.add(origen);
         const hasFlexSlot = Array.isArray(i.last_location_types) && i.last_location_types.includes("seller_warehouse");
         const cacheUnknown = !Array.isArray(i.last_location_types) || i.last_location_types.length === 0;
         if (hasFlexSlot || (cacheUnknown && (i.stock_flex_cache || 0) > 0)) flexSet.add(origen);
+        flexPubMap.set(origen, (flexPubMap.get(origen) || 0) + (i.stock_flex_cache || 0));
       }
       const fullSet = new Set<string>();
       for (const r of ((fullRes.data || []) as {sku_venta:string;cantidad:number}[])) {
@@ -5890,6 +5894,7 @@ function Inventario() {
         }
       }
       setSkusConFlex(flexSet);
+      setFlexPublicadoBySku(flexPubMap);
       setSkusConFull(fullSet);
       setSkusConMapping(mappingSet);
     })();
@@ -5997,7 +6002,9 @@ function Inventario() {
     return detalle.some(d => d.skuVenta === SIN_ETIQUETAR && d.qty > 0);
   });
   const skusComprometidos = allSkus.filter(sku => (stockProy.get(sku)?.reserved || 0) > 0);
-  const skusSinFlex = allSkus.filter(sku => skuTotal(sku) > 0 && !skusConFlex.has(sku));
+  // "Sin Flex" real: hay stock en bodega y 0 unidades publicadas hoy en Flex (suma de stock_flex_cache por sku_origen).
+  // Antes miraba last_location_types.includes("seller_warehouse"), que confundia "tuvo Flex alguna vez" con "esta vendiendo en Flex hoy".
+  const skusSinFlex = allSkus.filter(sku => skuTotal(sku) > 0 && (flexPublicadoBySku.get(sku) || 0) === 0);
   const skusSinFull = allSkus.filter(sku => skuTotal(sku) > 0 && !skusConFull.has(sku));
   const skusSinMapping = allSkus.filter(sku => skuTotal(sku) > 0 && !skusConMapping.has(sku) && (s.products[sku]?.estadoSku || "activo") !== "descontinuado");
   const filteredSkus = soloComprometidos ? skusComprometidos
@@ -6769,7 +6776,7 @@ function Inventario() {
             <button onClick={()=>{setSoloSinFlex(!soloSinFlex);setSoloSinEtiquetar(false);setSoloComprometidos(false);setSoloSinFull(false);setSoloSinMapping(false);}} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
               background:soloSinFlex?"var(--cyanBg)":"var(--bg3)",color:soloSinFlex?"var(--cyan)":"var(--txt3)",
               border:soloSinFlex?"1px solid var(--cyan)":"1px solid var(--bg4)"}}
-              title="Con stock en bodega pero 0 publicado en Flex (posiblemente bloqueados por buffer)">
+              title="Con stock en bodega y 0 unidades publicadas hoy en Flex (puede ser buffer, paused, item solo-Full, o nunca enviado)">
               Sin Flex ({skusSinFlex.length})
             </button>
             <button onClick={()=>{setSoloSinFull(!soloSinFull);setSoloSinEtiquetar(false);setSoloComprometidos(false);setSoloSinFlex(false);setSoloSinMapping(false);}} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,
