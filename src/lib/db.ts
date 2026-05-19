@@ -1158,6 +1158,26 @@ export async function syncProductosFromSheet(): Promise<{ added: number; updated
 // Import stock from Sheet (keep for backward compat, uses old sheet)
 const STOCK_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRqskx-hK2bLc8vDOflxzx6dtyZZZm81c_pfLhSPz1KJL_FVTcGQjg75iftOyi-tU9hJGidJqu6jjtW/pub?gid=224135022&single=true&output=csv";
 
+/**
+ * ⚠️ BUG CONOCIDO (documentado 2026-05-19):
+ *
+ * Esta función borra stock SIN_ASIGNAR directo con DELETE y luego inserta nuevas
+ * filas sin generar movimientos en la tabla `movimientos`. Eso genera drift
+ * entre el log y la tabla `stock` (el trigger v115 lo va a loggear como NOTICE).
+ *
+ * Causó la "carga_inicial fantasma" del 2026-02-26: ~1200 unidades quedaron
+ * en el log que nunca estuvieron físicamente. Cleanup retroactivo aplicado
+ * en v_baseline_csv 2026-05-19 (56 SKUs limpiados).
+ *
+ * Hoy esta función NO se está usando (no hay UI activa que la llame).
+ * Si en el futuro se reactiva la importación desde Sheet, ANTES hay que:
+ *   1. Sacar el DELETE directo a stock.
+ *   2. Para cada SKU del sheet: usar registrarMovimientoStock con
+ *      tipo='entrada' motivo='carga_inicial' delta=qty.
+ *   3. Para SKUs que ya tienen stock SIN_ASIGNAR: calcular delta = nuevo - actual.
+ *
+ * Hasta entonces, NO LLAMAR esta función desde producción.
+ */
 export async function importStockFromSheet(): Promise<{ imported: number; totalUnits: number }> {
   const result = { imported: 0, totalUnits: 0 };
   try {
@@ -1168,6 +1188,7 @@ export async function importStockFromSheet(): Promise<{ imported: number; totalU
     if (lines.length < 2) return result;
 
     // Clear existing SIN_ASIGNAR stock
+    // ⚠️ BUG: este DELETE no genera movimiento de salida. Ver comentario al inicio de la función.
     const sb = getSupabase(); if (!sb) return result;
     await sb.from("stock").delete().eq("posicion_id", "SIN_ASIGNAR");
 
