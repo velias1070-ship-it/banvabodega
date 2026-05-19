@@ -213,8 +213,13 @@ export default function AdminCompras() {
   const [nuevaProveedor, setNuevaProveedor] = useState("");
   const [nuevaFechaEsperada, setNuevaFechaEsperada] = useState("");
   const [nuevaNotas, setNuevaNotas] = useState("");
-  const [nuevaLineas, setNuevaLineas] = useState<Array<{ sku_origen: string; nombre: string; cantidad_pedida: number; costo_unitario: number }>>([]);
-  const [proveedorCatalogo, setProveedorCatalogo] = useState<Map<string, { proveedor: string; precio_neto: number; nombre: string }>>(new Map());
+  const [nuevaLineas, setNuevaLineas] = useState<Array<{
+    sku_origen: string; nombre: string; cantidad_pedida: number; costo_unitario: number;
+    inner_pack: number; categoria: string; esNuevoProducto: boolean;
+  }>>([]);
+  const [proveedorCatalogo, setProveedorCatalogo] = useState<Map<string, { proveedor: string; precio_neto: number; nombre: string; inner_pack: number }>>(new Map());
+  // Cache de productos existentes para distinguir SKUs nuevos vs ya en BANVA
+  const [productosCache, setProductosCache] = useState<Map<string, { nombre: string; costo: number; inner_pack: number; categoria: string }>>(new Map());
   const [skuBusqueda, setSkuBusqueda] = useState("");
 
   const cargar = useCallback(async () => {
@@ -229,21 +234,38 @@ export default function AdminCompras() {
     const sb = getSupabase();
     if (!sb) return;
     const { data } = await sb.from("proveedor_catalogo")
-      .select("sku_origen, proveedor, precio_neto, nombre")
+      .select("sku_origen, proveedor, precio_neto, nombre, inner_pack")
       .gt("precio_neto", 0);
-    const map = new Map<string, { proveedor: string; precio_neto: number; nombre: string }>();
-    for (const row of (data || []) as Array<{ sku_origen: string; proveedor: string; precio_neto: number; nombre: string }>) {
+    const map = new Map<string, { proveedor: string; precio_neto: number; nombre: string; inner_pack: number }>();
+    for (const row of (data || []) as Array<{ sku_origen: string; proveedor: string; precio_neto: number; nombre: string; inner_pack: number }>) {
       const key = (row.sku_origen || "").toUpperCase();
       const existing = map.get(key);
       // Si hay duplicados con distintos proveedores, quedarse con el de mayor precio_neto
       if (!existing || row.precio_neto > existing.precio_neto) {
-        map.set(key, { proveedor: row.proveedor, precio_neto: row.precio_neto, nombre: row.nombre || "" });
+        map.set(key, { proveedor: row.proveedor, precio_neto: row.precio_neto, nombre: row.nombre || "", inner_pack: row.inner_pack || 1 });
       }
     }
     setProveedorCatalogo(map);
   }, []);
 
-  useEffect(() => { cargar(); cargarProveedorCatalogo(); }, [cargar, cargarProveedorCatalogo]);
+  // Cargar todos los productos para distinguir SKUs nuevos vs existentes al armar OC
+  const cargarProductosCache = useCallback(async () => {
+    const sb = getSupabase();
+    if (!sb) return;
+    const { data } = await sb.from("productos").select("sku, nombre, costo, inner_pack, categoria");
+    const map = new Map<string, { nombre: string; costo: number; inner_pack: number; categoria: string }>();
+    for (const row of (data || []) as Array<{ sku: string; nombre: string; costo: number | null; inner_pack: number | null; categoria: string | null }>) {
+      map.set((row.sku || "").toUpperCase(), {
+        nombre: row.nombre || "",
+        costo: row.costo || 0,
+        inner_pack: row.inner_pack || 1,
+        categoria: row.categoria || "Otros",
+      });
+    }
+    setProductosCache(map);
+  }, []);
+
+  useEffect(() => { cargar(); cargarProveedorCatalogo(); cargarProductosCache(); }, [cargar, cargarProveedorCatalogo, cargarProductosCache]);
 
   // ── Crear Nueva OC ──
   const abrirNueva = useCallback(() => {
@@ -263,17 +285,22 @@ export default function AdminCompras() {
       return;
     }
     const cat = proveedorCatalogo.get(sku);
+    const prod = productosCache.get(sku);
+    const esNuevoProducto = !prod;
     setNuevaLineas(prev => [...prev, {
       sku_origen: sku,
-      nombre: cat?.nombre || "",
+      nombre: prod?.nombre || cat?.nombre || "",
       cantidad_pedida: 1,
-      costo_unitario: cat?.precio_neto || 0,
+      costo_unitario: cat?.precio_neto || prod?.costo || 0,
+      inner_pack: cat?.inner_pack || prod?.inner_pack || 1,
+      categoria: prod?.categoria || "Otros",
+      esNuevoProducto,
     }]);
     if (cat?.proveedor && !nuevaProveedor) setNuevaProveedor(cat.proveedor);
     setSkuBusqueda("");
-  }, [nuevaLineas, proveedorCatalogo, nuevaProveedor]);
+  }, [nuevaLineas, proveedorCatalogo, productosCache, nuevaProveedor]);
 
-  const updateLinea = useCallback((idx: number, field: "cantidad_pedida" | "costo_unitario", value: number) => {
+  const updateLineaField = useCallback(<K extends keyof typeof nuevaLineas[number]>(idx: number, field: K, value: typeof nuevaLineas[number][K]) => {
     setNuevaLineas(prev => prev.map((l, i) => i === idx ? { ...l, [field]: value } : l));
   }, []);
 
@@ -288,8 +315,70 @@ export default function AdminCompras() {
       alert("Todas las líneas deben tener cantidad y precio mayor a 0");
       return;
     }
+    // Validar que SKUs nuevos tengan nombre
+    const nuevosSinNombre = nuevaLineas.filter(l => l.esNuevoProducto && !l.nombre.trim());
+    if (nuevosSinNombre.length > 0) {
+      alert(`Faltan nombres para ${nuevosSinNombre.length} SKU(s) nuevos: ${nuevosSinNombre.map(l => l.sku_origen).join(", ")}`);
+      return;
+    }
+    const proveedorTrim = nuevaProveedor.trim();
+    const nuevos = nuevaLineas.filter(l => l.esNuevoProducto);
+    if (nuevos.length > 0) {
+      if (!window.confirm(
+        `Esta OC va a CREAR ${nuevos.length} producto(s) nuevo(s) en BANVA y cargarlos al catálogo de "${proveedorTrim}".\n\nProductos a crear:\n${nuevos.map(l => `  • ${l.sku_origen} — ${l.nombre}`).join("\n")}\n\n¿Continuar?`
+      )) return;
+    }
     setProcesando(true);
     try {
+      const sb = getSupabase();
+      // Resolver proveedor_id (best-effort): match exacto por nombre/nombre_canonico
+      let proveedorId: string | null = null;
+      if (sb) {
+        const { data: provRow } = await sb.from("proveedores")
+          .select("id")
+          .or(`nombre_canonico.ilike.${proveedorTrim},nombre.ilike.${proveedorTrim}`)
+          .limit(1).maybeSingle();
+        proveedorId = provRow?.id || null;
+      }
+      // 1. Crear productos nuevos (idempotente con ON CONFLICT skip)
+      if (sb && nuevos.length > 0) {
+        const rows = nuevos.map(l => ({
+          sku: l.sku_origen,
+          nombre: l.nombre,
+          categoria: l.categoria || "Otros",
+          proveedor: proveedorTrim,
+          proveedor_id: proveedorId,
+          costo: l.costo_unitario,
+          costo_promedio: l.costo_unitario,
+          inner_pack: l.inner_pack || 1,
+        }));
+        const { error: pErr } = await sb.from("productos").upsert(rows, { onConflict: "sku", ignoreDuplicates: true });
+        if (pErr) {
+          alert(`Error creando productos: ${pErr.message}`);
+          return;
+        }
+      }
+      // 2. Cargar al catálogo del proveedor (idempotente)
+      if (sb && nuevaLineas.length > 0) {
+        const catRows = nuevaLineas
+          .filter(l => l.costo_unitario > 0)
+          .map(l => ({
+            proveedor: proveedorTrim,
+            proveedor_id: proveedorId,
+            sku_origen: l.sku_origen,
+            nombre: l.nombre,
+            inner_pack: l.inner_pack || 1,
+            precio_neto: l.costo_unitario,
+            updated_by: "admin-compras-nueva-oc",
+            motivo_ultimo_cambio: `Carga desde Nueva OC`,
+          }));
+        if (catRows.length > 0) {
+          const { error: cErr } = await sb.from("proveedor_catalogo")
+            .upsert(catRows, { onConflict: "proveedor,sku_origen", ignoreDuplicates: true });
+          if (cErr) console.error("[crearNuevaOC] catalogo upsert", cErr); // no bloqueante
+        }
+      }
+      // 3. Crear OC
       const numero = await nextOCNumero();
       const totalNeto = nuevaLineas.reduce((s, l) => s + l.cantidad_pedida * l.costo_unitario, 0);
       const totalBruto = Math.round(totalNeto * 1.19);
@@ -297,7 +386,8 @@ export default function AdminCompras() {
 
       const ocId = await insertOrdenCompra({
         numero,
-        proveedor: nuevaProveedor.trim(),
+        proveedor: proveedorTrim,
+        proveedor_id: proveedorId,
         fecha_emision: new Date().toISOString().slice(0, 10),
         fecha_esperada: nuevaFechaEsperada || null,
         estado: estadoInicial,
@@ -314,27 +404,33 @@ export default function AdminCompras() {
         cantidad_pedida: l.cantidad_pedida,
         cantidad_recibida: 0,
         costo_unitario: l.costo_unitario,
-        inner_pack: 1,
-        bultos: 0,
+        inner_pack: l.inner_pack || 1,
+        bultos: Math.ceil(l.cantidad_pedida / (l.inner_pack || 1)),
         estado: "PENDIENTE",
         // Si se confirma directo (PENDIENTE), congelar precio acordado
         precio_acordado_neto: estadoInicial === "PENDIENTE" ? l.costo_unitario : null,
         precio_acordado_at: estadoInicial === "PENDIENTE" ? ahora : null,
+        precio_fuente: l.esNuevoProducto ? "manual" : "catalogo",
         cantidad_facturada: 0,
         estado_linea: "pendiente",
       }));
       await insertOrdenCompraLineas(lineas);
 
       await insertAdminActionLog("crear_oc", "ordenes_compra", ocId, {
-        numero, proveedor: nuevaProveedor, lineas: lineas.length, total_neto: totalNeto, estado: estadoInicial,
+        numero, proveedor: proveedorTrim, lineas: lineas.length, total_neto: totalNeto,
+        estado: estadoInicial, productos_creados: nuevos.length,
       });
+
+      // Refrescar cache para próximas OCs
+      await cargarProductosCache();
+      await cargarProveedorCatalogo();
 
       setModalNueva(false);
       cargar();
     } finally {
       setProcesando(false);
     }
-  }, [nuevaProveedor, nuevaFechaEsperada, nuevaNotas, nuevaLineas, cargar]);
+  }, [nuevaProveedor, nuevaFechaEsperada, nuevaNotas, nuevaLineas, cargar, cargarProductosCache, cargarProveedorCatalogo]);
 
   // ── Exportar OC a Excel (usa helper compartido) ──
   // exportarOCExcel está en src/lib/oc-export.ts y se usa también desde AdminInteligencia.
@@ -1619,23 +1715,40 @@ export default function AdminCompras() {
                   <thead>
                     <tr>
                       <th>SKU</th>
-                      <th>Nombre</th>
-                      <th style={{ textAlign: "right", width: 90 }}>Cantidad</th>
-                      <th style={{ textAlign: "right", width: 120 }}>Precio neto</th>
-                      <th style={{ textAlign: "right", width: 120 }}>Subtotal</th>
+                      <th style={{ minWidth: 180 }}>Nombre</th>
+                      <th style={{ textAlign: "right", width: 70 }}>Qty</th>
+                      <th style={{ textAlign: "right", width: 100 }}>Precio neto</th>
+                      <th style={{ textAlign: "right", width: 60 }}>Inner</th>
+                      <th style={{ width: 110 }}>Categoría</th>
+                      <th style={{ textAlign: "right", width: 110 }}>Subtotal</th>
                       <th style={{ width: 40 }}></th>
                     </tr>
                   </thead>
                   <tbody>
                     {nuevaLineas.map((l, i) => (
-                      <tr key={i}>
-                        <td className="mono" style={{ fontSize: 10, fontWeight: 600 }}>{l.sku_origen}</td>
-                        <td style={{ fontSize: 10, color: "var(--txt2)" }}>{l.nombre || <span style={{ color: "var(--amber)" }}>sin nombre</span>}</td>
+                      <tr key={i} style={l.esNuevoProducto ? { background: "var(--amberBg)" } : undefined}>
+                        <td className="mono" style={{ fontSize: 10, fontWeight: 600 }}>
+                          {l.sku_origen}
+                          {l.esNuevoProducto && <span title="SKU nuevo: se creará en productos + catálogo" style={{ marginLeft: 4, padding: "1px 4px", borderRadius: 3, fontSize: 8, fontWeight: 700, background: "var(--amber)", color: "#000" }}>NUEVO</span>}
+                        </td>
+                        <td>
+                          {l.esNuevoProducto ? (
+                            <input
+                              type="text"
+                              value={l.nombre}
+                              onChange={(e) => updateLineaField(i, "nombre", e.target.value)}
+                              placeholder="Nombre obligatorio"
+                              style={{ width: "100%", padding: "4px 6px", borderRadius: 4, background: "var(--bg2)", border: l.nombre ? "1px solid var(--bg4)" : "1px solid var(--amber)", color: "var(--txt)", fontSize: 10 }}
+                            />
+                          ) : (
+                            <span style={{ fontSize: 10, color: "var(--txt2)" }}>{l.nombre}</span>
+                          )}
+                        </td>
                         <td>
                           <input
                             type="number"
                             value={l.cantidad_pedida}
-                            onChange={(e) => updateLinea(i, "cantidad_pedida", parseInt(e.target.value) || 0)}
+                            onChange={(e) => updateLineaField(i, "cantidad_pedida", parseInt(e.target.value) || 0)}
                             style={{ width: "100%", padding: "4px 6px", borderRadius: 4, background: "var(--bg2)", border: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 11, textAlign: "right" }}
                           />
                         </td>
@@ -1643,9 +1756,35 @@ export default function AdminCompras() {
                           <input
                             type="number"
                             value={l.costo_unitario}
-                            onChange={(e) => updateLinea(i, "costo_unitario", parseFloat(e.target.value) || 0)}
+                            onChange={(e) => updateLineaField(i, "costo_unitario", parseFloat(e.target.value) || 0)}
                             style={{ width: "100%", padding: "4px 6px", borderRadius: 4, background: "var(--bg2)", border: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 11, textAlign: "right" }}
                           />
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            min={1}
+                            value={l.inner_pack}
+                            onChange={(e) => updateLineaField(i, "inner_pack", parseInt(e.target.value) || 1)}
+                            style={{ width: "100%", padding: "4px 6px", borderRadius: 4, background: "var(--bg2)", border: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 11, textAlign: "right" }}
+                          />
+                        </td>
+                        <td>
+                          {l.esNuevoProducto ? (
+                            <select
+                              value={l.categoria}
+                              onChange={(e) => updateLineaField(i, "categoria", e.target.value)}
+                              style={{ width: "100%", padding: "3px 5px", borderRadius: 4, background: "var(--bg2)", border: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 10 }}
+                            >
+                              <option value="Textil">Textil</option>
+                              <option value="Textil - Infantil">Textil - Infantil</option>
+                              <option value="Alfombras">Alfombras</option>
+                              <option value="Quilt">Quilt</option>
+                              <option value="Otros">Otros</option>
+                            </select>
+                          ) : (
+                            <span style={{ fontSize: 10, color: "var(--txt3)" }}>{l.categoria}</span>
+                          )}
                         </td>
                         <td className="mono" style={{ textAlign: "right", fontWeight: 700 }}>
                           {fmtMoney(l.cantidad_pedida * l.costo_unitario)}
@@ -1659,21 +1798,21 @@ export default function AdminCompras() {
                   </tbody>
                   <tfoot>
                     <tr style={{ borderTop: "2px solid var(--bg4)" }}>
-                      <td colSpan={4} style={{ textAlign: "right", fontSize: 11, fontWeight: 600, color: "var(--txt3)", padding: "8px 4px" }}>Subtotal neto:</td>
+                      <td colSpan={6} style={{ textAlign: "right", fontSize: 11, fontWeight: 600, color: "var(--txt3)", padding: "8px 4px" }}>Subtotal neto:</td>
                       <td className="mono" style={{ textAlign: "right", fontWeight: 700 }}>
                         {fmtMoney(nuevaLineas.reduce((s, l) => s + l.cantidad_pedida * l.costo_unitario, 0))}
                       </td>
                       <td></td>
                     </tr>
                     <tr>
-                      <td colSpan={4} style={{ textAlign: "right", fontSize: 11, color: "var(--txt3)", padding: "4px" }}>IVA 19%:</td>
+                      <td colSpan={6} style={{ textAlign: "right", fontSize: 11, color: "var(--txt3)", padding: "4px" }}>IVA 19%:</td>
                       <td className="mono" style={{ textAlign: "right", color: "var(--txt2)" }}>
                         {fmtMoney(Math.round(nuevaLineas.reduce((s, l) => s + l.cantidad_pedida * l.costo_unitario, 0) * 0.19))}
                       </td>
                       <td></td>
                     </tr>
                     <tr>
-                      <td colSpan={4} style={{ textAlign: "right", fontSize: 12, fontWeight: 700, padding: "4px" }}>TOTAL BRUTO:</td>
+                      <td colSpan={6} style={{ textAlign: "right", fontSize: 12, fontWeight: 700, padding: "4px" }}>TOTAL BRUTO:</td>
                       <td className="mono" style={{ textAlign: "right", fontWeight: 700, color: "var(--green)" }}>
                         {fmtMoney(Math.round(nuevaLineas.reduce((s, l) => s + l.cantidad_pedida * l.costo_unitario, 0) * 1.19))}
                       </td>
