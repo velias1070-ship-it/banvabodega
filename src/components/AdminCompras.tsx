@@ -221,6 +221,8 @@ export default function AdminCompras() {
   // Cache de productos existentes para distinguir SKUs nuevos vs ya en BANVA
   const [productosCache, setProductosCache] = useState<Map<string, { nombre: string; costo: number; inner_pack: number; categoria: string }>>(new Map());
   const [skuBusqueda, setSkuBusqueda] = useState("");
+  // Toggle global: al crear OC, agregar composicion_venta trivial (sku_venta=sku_origen, uds=1) por cada producto nuevo
+  const [crearComposicionTrivial, setCrearComposicionTrivial] = useState(true);
 
   const cargar = useCallback(async () => {
     setLoading(true);
@@ -376,6 +378,18 @@ export default function AdminCompras() {
           return;
         }
       }
+      // 1b. Crear composicion_venta trivial (sku_venta=sku_origen, uds=1) si el toggle global esta ON
+      if (sb && crearComposicionTrivial && nuevos.length > 0) {
+        const compRows = nuevos.map(l => ({
+          sku_venta: l.sku_origen,
+          sku_origen: l.sku_origen,
+          unidades: 1,
+          tipo_relacion: "componente",
+        }));
+        const { error: cvErr } = await sb.from("composicion_venta")
+          .upsert(compRows, { onConflict: "sku_venta,sku_origen", ignoreDuplicates: true });
+        if (cvErr) console.error("[crearNuevaOC] composicion_venta upsert", cvErr); // no bloqueante
+      }
       // 2. Cargar al catálogo del proveedor (idempotente)
       if (sb && nuevaLineas.length > 0) {
         const catRows = nuevaLineas
@@ -437,6 +451,7 @@ export default function AdminCompras() {
       await insertAdminActionLog("crear_oc", "ordenes_compra", ocId, {
         numero, proveedor: proveedorTrim, lineas: lineas.length, total_neto: totalNeto,
         estado: estadoInicial, productos_creados: nuevos.length,
+        composicion_trivial_creada: crearComposicionTrivial && nuevos.length > 0 ? nuevos.length : 0,
       });
 
       // Refrescar cache para próximas OCs
@@ -448,7 +463,7 @@ export default function AdminCompras() {
     } finally {
       setProcesando(false);
     }
-  }, [nuevaProveedor, nuevaFechaEsperada, nuevaNotas, nuevaLineas, cargar, cargarProductosCache, cargarProveedorCatalogo]);
+  }, [nuevaProveedor, nuevaFechaEsperada, nuevaNotas, nuevaLineas, crearComposicionTrivial, cargar, cargarProductosCache, cargarProveedorCatalogo]);
 
   // ── Exportar OC a Excel (usa helper compartido) ──
   // exportarOCExcel está en src/lib/oc-export.ts y se usa también desde AdminInteligencia.
@@ -1688,7 +1703,7 @@ export default function AdminCompras() {
                 />
               </div>
             </div>
-            <div style={{ marginBottom: 16 }}>
+            <div style={{ marginBottom: 12 }}>
               <label style={{ fontSize: 11, color: "var(--txt3)", display: "block", marginBottom: 4 }}>Notas (opcional)</label>
               <input
                 type="text"
@@ -1697,6 +1712,22 @@ export default function AdminCompras() {
                 placeholder="Ej: pedido reposición temporada invierno"
                 style={{ width: "100%", padding: "8px 10px", borderRadius: 6, background: "var(--bg3)", border: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 12 }}
               />
+            </div>
+            <div style={{ marginBottom: 16, padding: "8px 10px", background: "var(--bg3)", border: "1px solid var(--bg4)", borderRadius: 6 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 11, color: "var(--txt2)" }}>
+                <input
+                  type="checkbox"
+                  checked={crearComposicionTrivial}
+                  onChange={(e) => setCrearComposicionTrivial(e.target.checked)}
+                  style={{ cursor: "pointer" }}
+                />
+                <span>
+                  <strong>Crear composición trivial</strong> para los SKUs nuevos (vendible suelto, 1 unidad)
+                  <span style={{ display: "block", fontSize: 10, color: "var(--txt3)", marginTop: 2 }}>
+                    Recomendado ON. Activa el SKU en el diccionario de etiquetas y en el motor de ventas. Destildar solo si los nuevos SKUs son únicamente componentes de packs (no se venden sueltos).
+                  </span>
+                </span>
+              </label>
             </div>
 
             {/* Agregar línea (acepta múltiples SKUs separados por enter/coma/espacio) */}
