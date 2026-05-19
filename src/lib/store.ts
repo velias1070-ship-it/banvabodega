@@ -3065,23 +3065,50 @@ export async function pickearLineaFull(
     if (!linea) return false;
     const comp = linea.componentes[0];
     if (!comp || comp.estado === "PICKEADO") return false;
+    const skuOrigenFb = comp.skuOrigen;
+    const unidadesFb = comp.unidades;
+    const posicionFb = comp.posicion && comp.posicion !== "?" ? comp.posicion : "SIN_ASIGNAR";
+    let movIdFb: string | null = null;
     if (isConfigured()) {
-      await db.liberarReserva({
-        sku: comp.skuOrigen, cantidad: comp.unidades, descontar: false,
-        motivo: "envio_full", operario,
-        idempotency_key_prefix: `full-pick-${sessionId}-${lineaId}`,
-      }).catch(() => {});
-      await db.registrarMovimientoStock({
-        sku: comp.skuOrigen, posicion: comp.posicion && comp.posicion !== "?" ? comp.posicion : "SIN_ASIGNAR",
-        delta: -comp.unidades, tipo: "salida",
-        motivo: "envio_full", operario,
-        nota: `Envío Full: ${linea.skuVenta} (${comp.unidades} uds) — ${_session.titulo || `Sesión ${sessionId.slice(0, 8)}`} [fallback]`,
-        idempotency_key: `full-pick-${sessionId}-${lineaId}`,
-      });
+      try {
+        await db.liberarReserva({
+          sku: skuOrigenFb, cantidad: unidadesFb, descontar: false,
+          motivo: "envio_full", operario,
+          idempotency_key_prefix: `full-pick-${sessionId}-${lineaId}`,
+        });
+      } catch { /* sin reserva activa, continúa */ }
+      try {
+        movIdFb = await db.registrarMovimientoStock({
+          sku: skuOrigenFb, posicion: posicionFb,
+          delta: -unidadesFb, tipo: "salida",
+          motivo: "envio_full", operario,
+          nota: `Envío Full: ${linea.skuVenta} (${unidadesFb} uds) — ${_session.titulo || `Sesión ${sessionId.slice(0, 8)}`} [fallback]`,
+          idempotency_key: `full-pick-${sessionId}-${lineaId}`,
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error("[Picking Full fallback] Stock deduction failed:", msg);
+        throw new Error(`No se pudo descontar stock de ${skuOrigenFb}: ${msg}. Reintenta.`);
+      }
     }
     comp.estado = "PICKEADO"; comp.pickedAt = new Date().toISOString(); comp.operario = operario; linea.estado = "PICKEADO";
-    await db.updatePickingSession(sessionId, { lineas: _session.lineas, estado: _session.lineas.every(l => l.estado === "PICKEADO") ? "COMPLETADA" : "EN_PROCESO" });
-    db.enqueueAndSync([comp.skuOrigen]);
+    try {
+      await db.updatePickingSession(sessionId, { lineas: _session.lineas, estado: _session.lineas.every(l => l.estado === "PICKEADO") ? "COMPLETADA" : "EN_PROCESO" });
+    } catch (ePatch) {
+      // Rollback stock si la actualización de sesión falla
+      if (isConfigured() && movIdFb) {
+        try {
+          await db.registrarMovimientoStock({
+            sku: skuOrigenFb, posicion: posicionFb, delta: unidadesFb, tipo: "entrada",
+            motivo: "despick_auto", operario,
+            nota: `Rollback fallback: updatePickingSession falló (mov ${movIdFb})`,
+            idempotency_key: `full-pick-rollback-${sessionId}-${lineaId}`,
+          });
+        } catch (eR) { console.error("[Picking Full fallback] Rollback fallo:", eR); }
+      }
+      throw ePatch;
+    }
+    db.enqueueAndSync([skuOrigenFb]);
     return true;
   }
 
@@ -3101,8 +3128,50 @@ export async function pickearLineaFull(
     linea.qtyPedida = cantidadReal;
   }
 
-  // Mark as picked FIRST, then save to DB, then decrement stock
-  // This ensures the session update happens before stock movement
+  // v115 FIX: descontar stock ANTES de marcar PICKEADO. Si falla, la línea
+  // queda como PENDIENTE y el operador ve error en pantalla. Antes era
+  // fire-and-forget y los errores se tragaban silenciosamente (causó 370+
+  // unidades fantasma entre marzo-abril 2026).
+  const skuOrigen = comp.skuOrigen;
+  const unidades = comp.unidades;
+  const posicion = comp.posicion && comp.posicion !== "?" ? comp.posicion : "SIN_ASIGNAR";
+  const skuVentaLabel = linea.skuVenta;
+  let movId: string | null = null;
+
+  if (isConfigured()) {
+    // Release reservation WITHOUT stock deduction (just free the reservation).
+    // Tolerar error: si no hay reserva activa, no es crítico.
+    try {
+      await db.liberarReserva({
+        sku: skuOrigen, cantidad: unidades, descontar: false,
+        motivo: "envio_full", operario,
+        idempotency_key_prefix: `full-pick-${sessionId}-${linea.id}`,
+      });
+    } catch (eRes) {
+      console.warn("[Picking Full] liberarReserva fallo (continúa):", eRes);
+    }
+
+    // Descontar stock — si falla, abortar antes de marcar pickeado
+    try {
+      movId = await db.registrarMovimientoStock({
+        sku: skuOrigen, posicion, delta: -unidades, tipo: "salida",
+        motivo: "envio_full", operario,
+        nota: `Envío Full: ${skuVentaLabel} (${unidades} uds) — ${freshSession.titulo || `Sesión ${sessionId.slice(0, 8)}`}`,
+        idempotency_key: `full-pick-${sessionId}-${linea.id}`,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("[Picking Full] Stock deduction failed:", msg);
+      await db.auditLog("pickearLineaFull:stock_error", {
+        entidad: "picking_session", entidad_id: sessionId, operario,
+        params: { sku: skuOrigen, qty: unidades, posicion },
+        error: msg,
+      }).catch(() => {});
+      throw new Error(`No se pudo descontar stock de ${skuOrigen}: ${msg}. La línea NO fue marcada como pickeada. Reintenta.`);
+    }
+  }
+
+  // Stock ya descontado, ahora marcar PICKEADO en memoria + DB
   comp.estado = "PICKEADO";
   comp.pickedAt = new Date().toISOString();
   comp.operario = operario;
@@ -3120,16 +3189,29 @@ export async function pickearLineaFull(
   }
   const patched = await db.patchLineaPicking(sessionId, linea.id, patch);
   if (!patched) {
-    console.error(`[Picking Full] patchLineaPicking failed for ${linea.id}`);
+    console.error(`[Picking Full] patchLineaPicking failed for ${linea.id} — rollback stock`);
+    // Rollback: stock ya descontado pero línea no quedó pickeada. Reponer.
+    if (isConfigured() && movId) {
+      try {
+        await db.registrarMovimientoStock({
+          sku: skuOrigen, posicion, delta: unidades, tipo: "entrada",
+          motivo: "despick_auto", operario,
+          nota: `Rollback auto: patchLineaPicking falló para ${linea.id} (mov original ${movId})`,
+          idempotency_key: `full-pick-rollback-${sessionId}-${linea.id}`,
+        });
+      } catch (eR) {
+        console.error("[Picking Full] Rollback fallo tras patch error:", eR);
+      }
+    }
     await db.auditLog("pickearLineaFull:patch_error", {
       entidad: "picking_session", entidad_id: sessionId, operario,
-      params: { lineaId: linea.id, sku: comp.skuOrigen },
+      params: { lineaId: linea.id, sku: comp.skuOrigen, movId },
     }).catch(() => {});
     return false;
   }
 
-  // Probable done detection: if every other line in fresh snapshot was already
-  // PICKEADO+armado, this pick likely completed the session.
+  // Probable done detection: si todas las otras líneas ya estaban PICKEADO+armado,
+  // este pick probablemente completó la sesión.
   let sessionDone = false;
   const prevAllPickedExceptMe = freshSession.lineas.every(l => l.id === linea.id || l.estado === "PICKEADO");
   const prevAllArmadoExceptMe = freshSession.lineas.every(l => l.id === linea.id || !l.estadoArmado || l.estadoArmado === "COMPLETADO");
@@ -3138,60 +3220,29 @@ export async function pickearLineaFull(
     sessionDone = !after.some(s => s.id === sessionId);
   }
 
-  // Deduct stock fire & forget — don't block UI, session is already saved as PICKEADO
+  // Secundarios (no críticos): tránsito Full + audit + sync ML
   if (isConfigured()) {
-    const skuOrigen = comp.skuOrigen;
-    const unidades = comp.unidades;
-    const posicion = comp.posicion && comp.posicion !== "?" ? comp.posicion : "SIN_ASIGNAR";
-    const skuVentaLabel = linea.skuVenta;
-    (async () => {
-      try {
-        // Release reservation WITHOUT stock deduction (just free the reservation)
-        await db.liberarReserva({
-          sku: skuOrigen, cantidad: unidades, descontar: false,
-          motivo: "envio_full", operario,
-          idempotency_key_prefix: `full-pick-${sessionId}-${linea.id}`,
-        }).catch(() => {}); // Ignore if no reservation exists
-        // Always register the stock movement separately (single source of truth)
-        const movId = await db.registrarMovimientoStock({
-          sku: skuOrigen, posicion, delta: -unidades, tipo: "salida",
-          motivo: "envio_full", operario,
-          nota: `Envío Full: ${skuVentaLabel} (${unidades} uds) — ${freshSession.titulo || `Sesión ${sessionId.slice(0, 8)}`}`,
-          idempotency_key: `full-pick-${sessionId}-${linea.id}`,
+    try {
+      const sb2 = db.getSupabase();
+      if (sb2) {
+        const { error: tErr } = await sb2.from("stock_en_transito_full").insert({
+          sku_origen: skuOrigen,
+          cantidad: unidades,
+          fecha_salida_bodega: new Date().toISOString(),
+          movimiento_salida_id: movId || null,
+          estado: "EN_TRANSITO",
+          notas: `picking ${sessionId.slice(0, 8)} → ${skuVentaLabel}`,
         });
-        // Chunk 3: registrar tránsito Full (bodega → ML facility) hasta que se reconcilie
-        // contra stock_full_cache. Esto cierra el gap de "stock invisible en tránsito".
-        try {
-          const sb2 = db.getSupabase();
-          if (sb2) {
-            const { error: tErr } = await sb2.from("stock_en_transito_full").insert({
-              sku_origen: skuOrigen,
-              cantidad: unidades,
-              fecha_salida_bodega: new Date().toISOString(),
-              movimiento_salida_id: movId || null,
-              estado: "EN_TRANSITO",
-              notas: `picking ${sessionId.slice(0, 8)} → ${skuVentaLabel}`,
-            });
-            if (tErr) console.error(`[pickearLineaFull] insert transito: ${tErr.message}`);
-          }
-        } catch (eT) {
-          console.error("[pickearLineaFull] transito insert error:", eT);
-        }
-        await db.auditLog("pickearLineaFull:ok", {
-          entidad: "picking_session", entidad_id: sessionId, operario,
-          resultado: { lineaId, sku: skuOrigen, qty: unidades, posicion, skuVenta: skuVentaLabel, sessionDone },
-        });
-        // Sync stock to ML immediately after deduction
-        db.enqueueAndSync([skuOrigen]);
-      } catch (e) {
-        console.error("[Picking Full] Stock deduction failed:", e);
-        await db.auditLog("pickearLineaFull:stock_error", {
-          entidad: "picking_session", entidad_id: sessionId, operario,
-          params: { sku: skuOrigen, qty: unidades, posicion },
-          error: e instanceof Error ? e.message : String(e),
-        }).catch(() => {});
+        if (tErr) console.error(`[pickearLineaFull] insert transito: ${tErr.message}`);
       }
-    })().catch(console.error);
+    } catch (eT) {
+      console.error("[pickearLineaFull] transito insert error:", eT);
+    }
+    await db.auditLog("pickearLineaFull:ok", {
+      entidad: "picking_session", entidad_id: sessionId, operario,
+      resultado: { lineaId, sku: skuOrigen, qty: unidades, posicion, skuVenta: skuVentaLabel, sessionDone, movId },
+    }).catch(() => {});
+    db.enqueueAndSync([skuOrigen]);
   }
 
   if (sessionDone) {
