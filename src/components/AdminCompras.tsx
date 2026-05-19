@@ -278,25 +278,43 @@ export default function AdminCompras() {
   }, []);
 
   const agregarLinea = useCallback((skuRaw: string) => {
-    const sku = skuRaw.trim().toUpperCase();
-    if (!sku) return;
-    if (nuevaLineas.some(l => l.sku_origen === sku)) {
-      alert(`SKU ${sku} ya está en la OC`);
-      return;
+    // Soporta SKU único o batch: separadores newline, coma, punto y coma, tab o espacios
+    const tokens = skuRaw
+      .split(/[\s,;\n\r\t]+/)
+      .map(s => s.trim().toUpperCase())
+      .filter(Boolean);
+    if (tokens.length === 0) return;
+
+    const nuevos: typeof nuevaLineas = [];
+    const duplicados: string[] = [];
+    const yaEnLista = new Set(nuevaLineas.map(l => l.sku_origen));
+    let proveedorAuto = "";
+
+    for (const sku of tokens) {
+      if (yaEnLista.has(sku) || nuevos.some(n => n.sku_origen === sku)) {
+        duplicados.push(sku);
+        continue;
+      }
+      const cat = proveedorCatalogo.get(sku);
+      const prod = productosCache.get(sku);
+      const esNuevoProducto = !prod;
+      nuevos.push({
+        sku_origen: sku,
+        nombre: prod?.nombre || cat?.nombre || "",
+        cantidad_pedida: 1,
+        costo_unitario: cat?.precio_neto || prod?.costo || 0,
+        inner_pack: cat?.inner_pack || prod?.inner_pack || 1,
+        categoria: prod?.categoria || "Otros",
+        esNuevoProducto,
+      });
+      if (cat?.proveedor && !nuevaProveedor && !proveedorAuto) proveedorAuto = cat.proveedor;
     }
-    const cat = proveedorCatalogo.get(sku);
-    const prod = productosCache.get(sku);
-    const esNuevoProducto = !prod;
-    setNuevaLineas(prev => [...prev, {
-      sku_origen: sku,
-      nombre: prod?.nombre || cat?.nombre || "",
-      cantidad_pedida: 1,
-      costo_unitario: cat?.precio_neto || prod?.costo || 0,
-      inner_pack: cat?.inner_pack || prod?.inner_pack || 1,
-      categoria: prod?.categoria || "Otros",
-      esNuevoProducto,
-    }]);
-    if (cat?.proveedor && !nuevaProveedor) setNuevaProveedor(cat.proveedor);
+
+    if (nuevos.length > 0) setNuevaLineas(prev => [...prev, ...nuevos]);
+    if (proveedorAuto) setNuevaProveedor(proveedorAuto);
+    if (duplicados.length > 0) {
+      alert(`${duplicados.length} SKU(s) ya estaban en la OC: ${duplicados.slice(0, 10).join(", ")}${duplicados.length > 10 ? "…" : ""}`);
+    }
     setSkuBusqueda("");
   }, [nuevaLineas, proveedorCatalogo, productosCache, nuevaProveedor]);
 
@@ -1681,29 +1699,26 @@ export default function AdminCompras() {
               />
             </div>
 
-            {/* Agregar línea */}
-            <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-              <input
-                type="text"
-                list="sku-catalogo-list"
+            {/* Agregar línea (acepta múltiples SKUs separados por enter/coma/espacio) */}
+            <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "flex-start" }}>
+              <textarea
                 value={skuBusqueda}
                 onChange={(e) => setSkuBusqueda(e.target.value.toUpperCase())}
-                onKeyDown={(e) => { if (e.key === "Enter" && skuBusqueda.trim()) agregarLinea(skuBusqueda); }}
-                placeholder="Tipea SKU y Enter (autocompletará precio si está en catálogo)"
-                style={{ flex: 1, padding: "8px 10px", borderRadius: 6, background: "var(--bg3)", border: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 12 }}
+                onKeyDown={(e) => {
+                  // Ctrl/Cmd + Enter agrega (Enter solo permite nueva línea para multi-paste)
+                  if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && skuBusqueda.trim()) {
+                    e.preventDefault();
+                    agregarLinea(skuBusqueda);
+                  }
+                }}
+                placeholder="Tipea un SKU o pegá varios (separados por enter, coma o espacio). Ctrl+Enter para agregar."
+                rows={Math.min(8, Math.max(1, skuBusqueda.split("\n").length))}
+                style={{ flex: 1, padding: "8px 10px", borderRadius: 6, background: "var(--bg3)", border: "1px solid var(--bg4)", color: "var(--txt)", fontSize: 12, fontFamily: "var(--font-mono, monospace)", resize: "vertical", minHeight: 36 }}
               />
-              <datalist id="sku-catalogo-list">
-                {Array.from(proveedorCatalogo.entries())
-                  .filter(([, v]) => !nuevaProveedor || v.proveedor === nuevaProveedor)
-                  .slice(0, 100)
-                  .map(([sku, v]) => (
-                    <option key={sku} value={sku}>{v.nombre} — {fmtMoney(v.precio_neto)}</option>
-                  ))}
-              </datalist>
               <button
                 onClick={() => agregarLinea(skuBusqueda)}
                 disabled={!skuBusqueda.trim()}
-                style={{ padding: "8px 16px", borderRadius: 6, background: "var(--cyan)", color: "#0a0e17", fontWeight: 700, fontSize: 11, border: "none", cursor: "pointer" }}>
+                style={{ padding: "8px 16px", borderRadius: 6, background: "var(--cyan)", color: "#0a0e17", fontWeight: 700, fontSize: 11, border: "none", cursor: "pointer", alignSelf: "flex-start" }}>
                 + Agregar
               </button>
             </div>
